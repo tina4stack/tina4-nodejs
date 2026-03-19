@@ -1,0 +1,17 @@
+{
+  "name": "@tina4/swagger",
+  "version": "0.0.1",
+  "description": "Tina4 Swagger — auto-generated OpenAPI docs",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external"
+  }
+}

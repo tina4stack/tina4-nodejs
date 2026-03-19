@@ -1,0 +1,20 @@
+{
+  "name": "tina4",
+  "version": "0.0.1",
+  "description": "Tina4 CLI — This is not a framework",
+  "type": "module",
+  "bin": {
+    "tina4": "./dist/bin.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "esbuild src/bin.ts --bundle --platform=node --format=esm --outfile=dist/bin.js --banner:js='#!/usr/bin/env node' --packages=external",
+    "dev": "tsx src/bin.ts"
+  },
+  "dependencies": {
+    "@tina4/core": "*",
+    "@tina4/orm": "*",
+    "@tina4/swagger": "*"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "strict": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "composite": true
+  },
+  "references": [
+    { "path": "packages/cli" },
+    { "path": "packages/core" },
+    { "path": "packages/orm" },
+    { "path": "packages/swagger" },
+    { "path": "packages/twig" }
+  ]
+}

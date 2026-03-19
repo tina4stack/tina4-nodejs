@@ -1,0 +1,23 @@
+{
+  "name": "tina4-nodejs",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "This is not a framework. Tina4 for Node.js/TypeScript.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "clean": "rm -rf packages/*/dist",
+    "test": "tsx test/integration.ts"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "esbuild": "^0.24.0"
+  }
+}
