@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-580%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-1247%20passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/carbonah-A%2B%20rated-00cc44" alt="Carbonah A+">
   <img src="https://img.shields.io/badge/zero--dep-core-blue" alt="Zero Dependencies">
   <img src="https://img.shields.io/badge/node-20%2B-blue" alt="Node 20+">
