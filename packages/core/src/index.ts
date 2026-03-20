@@ -59,3 +59,5 @@ export {
 export type { WebSocketClient } from "./websocket.js";
 export { ServiceRunner, matchCronField, matchesCron } from "./service.js";
 export type { ServiceOptions, ServiceContext, ServiceHandler, ServiceInfo } from "./service.js";
+export { responseCache, clearCache, cacheStats } from "./cache.js";
+export type { ResponseCacheConfig } from "./cache.js";
