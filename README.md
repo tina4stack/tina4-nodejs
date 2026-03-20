@@ -1,859 +1,593 @@
-# tina4-nodejs
+<p align="center">
+  <img src="https://tina4.com/logo.svg" alt="Tina4" width="200">
+</p>
 
-> Simple. Fast. Human. This is not a framework.
+<h1 align="center">Tina4 Node.js</h1>
+<h3 align="center">This is not a framework</h3>
 
-Tina4 for Node.js/TypeScript. Convention over configuration, zero ceremony, batteries included.
+<p align="center">
+  Laravel joy. TypeScript speed. 10x less code. Zero third-party dependencies.
+</p>
 
-## Quick Start
+<p align="center">
+  <a href="https://tina4.com">Documentation</a> &bull;
+  <a href="#getting-started">Getting Started</a> &bull;
+  <a href="#features">Features</a> &bull;
+  <a href="#cli-reference">CLI Reference</a> &bull;
+  <a href="https://tina4.com">tina4.com</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/tests-580%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/carbonah-A%2B%20rated-00cc44" alt="Carbonah A+">
+  <img src="https://img.shields.io/badge/zero--dep-core-blue" alt="Zero Dependencies">
+  <img src="https://img.shields.io/badge/node-20%2B-blue" alt="Node 20+">
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT License">
+</p>
+
+---
+
+## Quickstart
 
 ```bash
-npx tina4 init my-api
-cd my-api
+npm install tina4
+npx tina4 init my-app
+cd my-app
 npx tina4 serve
+# -> http://localhost:7145
 ```
 
-Your API is running at `http://localhost:3000`. Swagger docs at `http://localhost:3000/swagger`.
+That's it. Zero configuration, zero classes, zero boilerplate.
+
+---
 
 ## What's Included
 
-| Feature | Status | Description |
-|---------|--------|-------------|
-| HTTP Server | ✅ | Native `node:http`, zero frameworks |
-| Router | ✅ | File-based + programmatic, `{id}` params, groups |
-| Callable Response | ✅ | `response({data}, HTTP_OK)` auto-detects content type |
-| ORM | ✅ | BaseModel, soft delete, validation, relationships |
-| Auto-CRUD | ✅ | Auto-generated REST endpoints from models |
-| Migrations | ✅ | Up/down with batch tracking and rollback |
-| Frond Templates | ✅ | Zero-dep Twig-like engine, 53 filters |
-| Auth/JWT | ✅ | HS256 + RS256, PBKDF2 password hashing |
-| Sessions | ✅ | File backend, flash data, TTL |
-| Queue | ✅ | File-backed job queue with retries |
-| GraphQL | ✅ | Zero-dep parser, schema builder |
-| WebSocket | ✅ | RFC 6455 server, broadcast, events |
-| i18n | ✅ | JSON locales, param substitution |
-| Seeder | ✅ | 26 fake data generators |
-| SCSS Compiler | ✅ | Variables, nesting, mixins, math |
-| Service Runner | ✅ | Cron timing, hot-reload, in-process |
-| Swagger/OpenAPI | ✅ | Auto-generated from routes + models |
-| CORS | ✅ | Configurable middleware |
-| Rate Limiter | ✅ | Sliding window, per-IP |
-| DotEnv | ✅ | .env file loading |
-| Health Check | ✅ | `/health` endpoint |
-| HTTP Constants | ✅ | HTTP_OK, APPLICATION_JSON, etc. |
+Every feature is built from scratch -- no npm install, no node_modules bloat, no third-party runtime dependencies in core.
 
-## Project Structure
+| Category | Features |
+|----------|----------|
+| **HTTP** | Native `node:http` server, file-based + programmatic routing, path params (`{id}`, `[...slug]`), middleware pipeline, CORS, rate limiting, graceful shutdown |
+| **Templates** | Frond engine (Twig-compatible), inheritance, partials, 53+ filters, macros, fragment caching, sandboxing |
+| **ORM** | Active Record, typed fields with validation, soft delete, relationships (`hasOne`/`hasMany`/`belongsTo`), scopes, result caching, auto-CRUD |
+| **Database** | SQLite, PostgreSQL, MySQL -- unified adapter interface |
+| **Auth** | Zero-dep JWT (HS256 + RS256), sessions (file backend), PBKDF2 password hashing, form tokens |
+| **API** | Swagger/OpenAPI auto-generation, GraphQL with schema builder and GraphiQL IDE |
+| **Background** | File-backed queue with priority, delayed jobs, retry, batch processing |
+| **Real-time** | Native WebSocket (RFC 6455), per-path routing, connection manager, broadcast |
+| **Frontend** | tina4-css (~24 KB), frond.js helper, SCSS compiler, live reload, CSS hot-reload |
+| **DX** | Dev admin dashboard, error overlay, request inspector, hot-reload, Carbonah green benchmarks |
+| **Data** | Migrations with rollback, 26+ fake data generators, ORM and table seeders |
+| **Other** | Service runner, localization (i18n), in-memory cache (TTL/tags/LRU), HTTP constants, health check, configurable error pages |
 
+**580 tests across all modules. All Carbonah benchmarks rated A+.**
+
+For full documentation visit **[tina4.com](https://tina4.com)**.
+
+---
+
+## Install
+
+```bash
+npm install tina4
 ```
-my-api/
-  src/
-    routes/          # File-based routing
-      api/
-        hello/
-          get.ts     # GET /api/hello
-        users/
-          get.ts     # GET /api/users (overrides auto-CRUD)
-          [id]/
-            get.ts   # GET /api/users/:id
-    models/          # Auto-CRUD models
-      User.ts
-      Product.ts
-    templates/       # Twig templates (optional)
-      pages/
-        home.html.twig
-  public/            # Static files
-    index.html
-  data/              # SQLite database (auto-created)
-    tina4.db
+
+Or scaffold a new project directly:
+
+```bash
+npx tina4 init my-app
 ```
 
 ---
 
-## Routing
+## Getting Started
 
-Routes live in `src/routes/`. The directory path becomes the URL, and the filename determines the HTTP method.
+### 1. Create a project
 
-### Basic Route
+```bash
+npx tina4 init my-app
+cd my-app
+```
+
+This creates:
 
 ```
-src/routes/api/hello/get.ts  →  GET /api/hello
+my-app/
+├── package.json        # Entry point
+├── tsconfig.json       # TypeScript config
+├── .env                # Configuration
+├── src/
+│   ├── routes/         # API + page routes (auto-discovered)
+│   ├── models/         # Database models (auto-CRUD)
+│   ├── templates/      # Frond/Twig templates
+│   ├── seeds/          # Database seeders
+│   ├── scss/           # SCSS (auto-compiled to public/css/)
+│   └── public/         # Static assets served at /
+├── migrations/         # SQL migration files
+├── data/               # SQLite database (auto-created)
+└── test/               # Tests
+```
+
+### 2. Create a route
+
+**File-based routing** -- the directory path becomes the URL:
+
+```
+src/routes/api/hello/get.ts  ->  GET /api/hello
 ```
 
 ```typescript
 // src/routes/api/hello/get.ts
 import type { Tina4Request, Tina4Response } from "@tina4/core";
 
-export default async function (req: Tina4Request, res: Tina4Response) {
-  res.json({ message: "Hello from Tina4!" });
+export default async function (request: Tina4Request, response: Tina4Response) {
+    response({message: "Hello from Tina4!"}, HTTP_OK);
 }
 ```
 
-### All HTTP Methods
-
-```
-src/routes/api/users/get.ts     →  GET    /api/users
-src/routes/api/users/post.ts    →  POST   /api/users
-src/routes/api/users/put.ts     →  PUT    /api/users
-src/routes/api/users/delete.ts  →  DELETE /api/users
-src/routes/api/users/patch.ts   →  PATCH  /api/users
-```
-
-### Dynamic Parameters
-
-Use `[param]` in directory names for dynamic segments:
-
-```
-src/routes/api/users/[id]/get.ts        →  GET /api/users/:id
-src/routes/api/posts/[postId]/comments/[commentId]/get.ts
-                                        →  GET /api/posts/:postId/comments/:commentId
-```
+**Programmatic routing** -- decorator-style in a single file:
 
 ```typescript
-// src/routes/api/users/[id]/get.ts
-export default async function (req: Tina4Request, res: Tina4Response) {
-  const userId = req.params.id;
-  res.json({ userId });
-}
+// src/routes/hello.ts
+import { get } from "@tina4/core";
+
+get("/api/hello/{name}", async (request, response) => {
+    response({message: `Hello, ${request.params.name}!`}, HTTP_OK);
+});
 ```
 
-### Catch-All Routes
+Visit `http://localhost:7145/api/hello` -- routes are auto-discovered, no imports needed.
 
-Use `[...slug]` for wildcard matching:
+### 3. Add a database
 
-```
-src/routes/api/files/[...path]/get.ts   →  GET /api/files/*
-```
+Edit `.env`:
 
-```typescript
-// src/routes/api/files/[...path]/get.ts
-export default async function (req: Tina4Request, res: Tina4Response) {
-  const filePath = req.params.path; // e.g. "docs/readme.md"
-  res.json({ filePath });
-}
+```bash
+DATABASE_URL=sqlite:///data/app.db
 ```
 
-### POST with JSON Body
+Create and run a migration:
 
-```typescript
-// src/routes/api/contact/post.ts
-export default async function (req: Tina4Request, res: Tina4Response) {
-  const { name, email, message } = req.body as {
-    name: string;
-    email: string;
-    message: string;
-  };
+```bash
+npx tina4 migrate:create "create users table"
+```
 
-  // Process the contact form...
-  res.status(201).json({ success: true, name, email });
-}
+Edit the generated SQL:
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
 ```bash
-curl -X POST http://localhost:3000/api/contact \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Andre", "email": "andre@tina4.com", "message": "Hello!"}'
+npx tina4 migrate
 ```
 
-### Query Parameters
+### 4. Create an ORM model
+
+Create `src/models/User.ts`:
 
 ```typescript
-// src/routes/api/search/get.ts
-export default async function (req: Tina4Request, res: Tina4Response) {
-  const { q, page, limit } = req.query;
-  res.json({ query: q, page: page ?? "1", limit: limit ?? "20" });
+export default class User {
+    static tableName = "users";
+
+    static fields = {
+        id:        { type: "integer" as const, primaryKey: true, autoIncrement: true },
+        name:      { type: "string" as const,  required: true, maxLength: 100 },
+        email:     { type: "string" as const,  required: true, pattern: "^[^@]+@[^@]+\\.[^@]+$" },
+        createdAt: { type: "datetime" as const, default: "now" },
+    };
 }
 ```
+
+### 5. Build a REST API
+
+**File-based** -- create `src/routes/api/users/get.ts`:
+
+```typescript
+import type { Tina4Request, Tina4Response } from "@tina4/core";
+import { getAdapter } from "@tina4/orm";
+
+export default async function (request: Tina4Request, response: Tina4Response) {
+    const db = getAdapter();
+    const users = db.query("SELECT * FROM users LIMIT 100");
+    response(users, HTTP_OK);
+}
+```
+
+Create `src/routes/api/users/[id]/get.ts`:
+
+```typescript
+export default async function (request: Tina4Request, response: Tina4Response) {
+    const db = getAdapter();
+    const user = db.query("SELECT * FROM users WHERE id = ?", [request.params.id]);
+    if (user.length) {
+        response(user[0], HTTP_OK);
+    } else {
+        response({error: "Not found"}, HTTP_NOT_FOUND);
+    }
+}
+```
+
+Create `src/routes/api/users/post.ts`:
+
+```typescript
+export default async function (request: Tina4Request, response: Tina4Response) {
+    const db = getAdapter();
+    db.execute("INSERT INTO users (name, email) VALUES (?, ?)",
+        [request.body.name, request.body.email]);
+    response({success: true}, HTTP_CREATED);
+}
+```
+
+> **Auto-CRUD alternative**: Simply define the model in `src/models/User.ts` and Tina4 auto-generates all CRUD endpoints. File routes override auto-CRUD when both exist.
+
+### 6. Add a template
+
+Create `src/templates/base.twig`:
+
+```twig
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{% block title %}My App{% endblock %}</title>
+    <link rel="stylesheet" href="/css/tina4.min.css">
+    {% block stylesheets %}{% endblock %}
+</head>
+<body>
+    {% block content %}{% endblock %}
+    <script src="/js/frond.js"></script>
+    {% block javascripts %}{% endblock %}
+</body>
+</html>
+```
+
+Create `src/templates/pages/home.twig`:
+
+```twig
+{% extends "base.twig" %}
+{% block content %}
+<div class="container mt-4">
+    <h1>{{ title }}</h1>
+    <ul>
+    {% for user in users %}
+        <li>{{ user.name }} -- {{ user.email }}</li>
+    {% endfor %}
+    </ul>
+</div>
+{% endblock %}
+```
+
+Render it from a route:
+
+```typescript
+// src/routes/page/home/get.ts
+export default async function (request: Tina4Request, response: Tina4Response) {
+    const db = getAdapter();
+    const users = db.query("SELECT * FROM users LIMIT 20");
+    await response.render("pages/home.twig", {title: "Users", users});
+}
+```
+
+### 7. Seed, test, deploy
 
 ```bash
-curl "http://localhost:3000/api/search?q=hello&page=2&limit=10"
+npx tina4 seed                          # Run seeders from src/seeds/
+npx tina4 test                          # Run test suite
+npx tina4 build                         # Build distributable
 ```
 
-### Response Helpers
-
-```typescript
-export default async function (req: Tina4Request, res: Tina4Response) {
-  // JSON response
-  res.json({ data: "hello" });
-
-  // HTML response
-  res.html("<h1>Hello</h1>");
-
-  // Set status code (chainable)
-  res.status(201).json({ created: true });
-
-  // Plain text
-  res.send("plain text");
-
-  // Redirect
-  res.redirect("/api/hello");
-  res.redirect("/api/hello", 301); // permanent
-}
-```
-
-### Route Metadata (for Swagger)
-
-Export a `meta` object to add Swagger annotations:
-
-```typescript
-// src/routes/api/users/post.ts
-export const meta = {
-  summary: "Create a new user",
-  description: "Creates a user account and returns the new user object",
-  tags: ["Users"],
-  responses: {
-    201: { description: "User created successfully" },
-    422: { description: "Validation failed" },
-  },
-};
-
-export default async function (req: Tina4Request, res: Tina4Response) {
-  // ...
-}
-```
+For the complete step-by-step guide, visit **[tina4.com](https://tina4.com)**.
 
 ---
 
-## Models & Auto-CRUD
+## Features
 
-Define a model in `src/models/` and Tina4 auto-generates a full REST API.
+### Routing
 
-### Defining a Model
+Tina4 supports both **file-based** and **programmatic** routing:
+
+```typescript
+// File-based: src/routes/api/items/get.ts
+export default async function (request: Tina4Request, response: Tina4Response) {
+    response({items: []}, HTTP_OK);
+}
+
+// Programmatic: src/routes/webhooks.ts
+import { get, post, noauth, secured, middleware } from "@tina4/core";
+
+get("/api/items", async (request, response) => {
+    response({items: []}, HTTP_OK);
+});
+
+noauth(
+    post("/api/webhook", async (request, response) => {
+        response({ok: true}, HTTP_OK);
+    })
+);
+
+secured(
+    get("/api/admin/stats", async (request, response) => {
+        response({secret: true}, HTTP_OK);
+    })
+);
+```
+
+Path parameter types: `{id}` (string), `[id]` (file-based), `[...slug]` (catch-all).
+
+### ORM
+
+Active Record with typed fields, validation, soft delete, relationships, and auto-CRUD:
 
 ```typescript
 // src/models/User.ts
 export default class User {
-  static tableName = "users";
+    static tableName = "users";
 
-  static fields = {
-    id:        { type: "integer" as const, primaryKey: true, autoIncrement: true },
-    name:      { type: "string" as const,  required: true, maxLength: 255 },
-    email:     { type: "string" as const,  required: true },
-    age:       { type: "integer" as const, min: 0, max: 150 },
-    bio:       { type: "text" as const },
-    active:    { type: "boolean" as const, default: true },
-    createdAt: { type: "datetime" as const, default: "now" },
-  };
+    static fields = {
+        id:    { type: "integer" as const, primaryKey: true, autoIncrement: true },
+        name:  { type: "string" as const,  required: true, maxLength: 100 },
+        email: { type: "string" as const,  required: true, pattern: "^[^@]+@[^@]+$" },
+        role:  { type: "string" as const,  default: "user" },
+        age:   { type: "integer" as const, min: 0, max: 150 },
+    };
 }
+
+// Auto-generates: GET/POST /api/users, GET/PUT/DELETE /api/users/:id
+// With filtering, sorting, pagination, and validation built in
 ```
 
-### Auto-Generated Endpoints
+### Database
 
-This model automatically creates:
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/users` | List all users (with filtering, sorting, pagination) |
-| `GET` | `/api/users/:id` | Get a single user by ID |
-| `POST` | `/api/users` | Create a new user |
-| `PUT` | `/api/users/:id` | Update a user |
-| `DELETE` | `/api/users/:id` | Delete a user |
-
-### Creating Records
-
-```bash
-curl -X POST http://localhost:3000/api/users \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Alice", "email": "alice@example.com", "age": 30}'
-```
-
-Response:
-```json
-{
-  "data": {
-    "id": 1,
-    "name": "Alice",
-    "email": "alice@example.com",
-    "age": 30,
-    "active": 1,
-    "createdAt": "2026-03-19 12:00:00"
-  }
-}
-```
-
-### Listing Records
-
-```bash
-curl http://localhost:3000/api/users
-```
-
-Response:
-```json
-{
-  "data": [
-    { "id": 1, "name": "Alice", "email": "alice@example.com", "age": 30 },
-    { "id": 2, "name": "Bob", "email": "bob@example.com", "age": 25 }
-  ],
-  "meta": {
-    "total": 2,
-    "page": 1,
-    "limit": 20,
-    "totalPages": 1
-  }
-}
-```
-
-### Filtering
-
-```bash
-# Exact match
-curl "http://localhost:3000/api/users?filter[name]=Alice"
-
-# Greater than
-curl "http://localhost:3000/api/users?filter[age][gt]=25"
-
-# Less than or equal
-curl "http://localhost:3000/api/users?filter[age][lte]=30"
-
-# Not equal
-curl "http://localhost:3000/api/users?filter[active][ne]=0"
-
-# LIKE pattern
-curl "http://localhost:3000/api/users?filter[name][like]=%25Ali%25"
-```
-
-Supported operators: `gt`, `gte`, `lt`, `lte`, `ne`, `like`
-
-### Sorting
-
-```bash
-# Sort ascending by name
-curl "http://localhost:3000/api/users?sort=name"
-
-# Sort descending by age
-curl "http://localhost:3000/api/users?sort=-age"
-
-# Multiple sort fields
-curl "http://localhost:3000/api/users?sort=name,-createdAt"
-```
-
-### Pagination
-
-```bash
-# Page 2, 10 items per page
-curl "http://localhost:3000/api/users?page=2&limit=10"
-```
-
-### Updating Records
-
-```bash
-curl -X PUT http://localhost:3000/api/users/1 \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Alice Updated", "age": 31}'
-```
-
-### Deleting Records
-
-```bash
-curl -X DELETE http://localhost:3000/api/users/1
-```
-
-### Validation
-
-Validation rules are inferred from field definitions:
+Unified interface across multiple engines:
 
 ```typescript
-static fields = {
-  name:  { type: "string",  required: true, minLength: 2, maxLength: 100 },
-  email: { type: "string",  required: true, pattern: "^[^@]+@[^@]+$" },
-  age:   { type: "integer", min: 0, max: 150 },
-  price: { type: "number",  required: true, min: 0 },
+import { getAdapter, initDatabase } from "@tina4/orm";
+
+const db = initDatabase("sqlite:///data/app.db");
+
+const result = db.query("SELECT * FROM users WHERE age > ?", [18]);
+const row = db.query("SELECT * FROM users WHERE id = ?", [1]);
+db.execute("INSERT INTO users (name, email) VALUES (?, ?)", ["Alice", "alice@test.com"]);
+```
+
+### Middleware
+
+```typescript
+import { middleware } from "@tina4/core";
+
+const authCheck = async (request: Tina4Request, response: Tina4Response, next: Function) => {
+    if (!request.headers.authorization) {
+        return response({error: "Unauthorized"}, HTTP_UNAUTHORIZED);
+    }
+    return next();
 };
+
+middleware(authCheck,
+    get("/protected", async (request, response) => {
+        response({secret: true}, HTTP_OK);
+    })
+);
 ```
 
-Invalid requests return structured errors:
-
-```json
-{
-  "error": "Validation failed",
-  "statusCode": 422,
-  "errors": [
-    { "field": "name", "message": "is required" },
-    { "field": "age", "message": "must be at least 0" }
-  ]
-}
-```
-
-### Field Types
-
-| Type | SQLite Type | Description |
-|------|-------------|-------------|
-| `"string"` | `TEXT` | Short text, supports `minLength`, `maxLength`, `pattern` |
-| `"text"` | `TEXT` | Long text, supports `minLength`, `maxLength` |
-| `"integer"` | `INTEGER` | Whole numbers, supports `min`, `max` |
-| `"number"` | `REAL` | Decimal numbers, supports `min`, `max` |
-| `"boolean"` | `INTEGER` | True/false (stored as 1/0) |
-| `"datetime"` | `TEXT` | ISO 8601 date/time string |
-
-### Field Options
-
-| Option | Description |
-|--------|-------------|
-| `primaryKey` | Mark as primary key |
-| `autoIncrement` | Auto-increment (integer PKs) |
-| `required` | Must be provided on create |
-| `default` | Default value (`"now"` for current timestamp) |
-| `minLength` / `maxLength` | String length constraints |
-| `min` / `max` | Numeric range constraints |
-| `pattern` | Regex validation pattern |
-
-### Multiple Models
+### JWT Authentication
 
 ```typescript
-// src/models/Product.ts
-export default class Product {
-  static tableName = "products";
+import { Auth } from "@tina4/core";
 
-  static fields = {
-    id:          { type: "integer" as const, primaryKey: true, autoIncrement: true },
-    name:        { type: "string" as const,  required: true },
-    price:       { type: "number" as const,  required: true, min: 0 },
-    description: { type: "text" as const },
-    inStock:     { type: "boolean" as const, default: true },
-    createdAt:   { type: "datetime" as const, default: "now" },
-  };
-}
+const auth = new Auth({secret: "your-secret"});
+const token = auth.createToken({userId: 42});
+const payload = auth.validateToken(token);
 ```
 
-```typescript
-// src/models/Category.ts
-export default class Category {
-  static tableName = "categories";
+POST/PUT/PATCH/DELETE routes require `Authorization: Bearer <token>` by default. Use `noauth()` to make public, `secured()` to protect GET routes.
 
-  static fields = {
-    id:   { type: "integer" as const, primaryKey: true, autoIncrement: true },
-    name: { type: "string" as const,  required: true, maxLength: 100 },
-    slug: { type: "string" as const,  required: true, pattern: "^[a-z0-9-]+$" },
-  };
-}
+### Sessions
+
+```typescript
+request.session.set("userId", 42);
+const userId = request.session.get("userId");
 ```
 
-Each model gets its own set of CRUD endpoints automatically.
+Backend: file (default). Set via `TINA4_SESSION_HANDLER` in `.env`.
 
-### Overriding Auto-CRUD
-
-File-based routes take precedence. Create a route file to override any auto-generated endpoint:
+### Queues
 
 ```typescript
-// src/routes/api/users/[id]/get.ts
-// This overrides the auto-CRUD GET /api/users/:id
-export default async function (req: Tina4Request, res: Tina4Response) {
-  // Custom logic here — maybe join with another table,
-  // add extra data, or apply access control
-  res.json({ custom: true, id: req.params.id });
-}
+import { Queue, Producer, Consumer } from "@tina4/core";
+
+new Producer(new Queue({topic: "emails"})).produce({to: "alice@example.com"});
+
+new Consumer(new Queue({topic: "emails"})).onMessage((msg) => {
+    sendEmail(msg.data);
+});
 ```
 
----
-
-## Swagger / OpenAPI
-
-Auto-generated API documentation is available at `/swagger` with zero configuration.
-
-### Viewing Docs
-
-Start your server and open:
-
-- **Swagger UI**: `http://localhost:3000/swagger`
-- **OpenAPI JSON**: `http://localhost:3000/swagger/openapi.json`
-
-### What Gets Documented
-
-- All file-based routes with path parameters
-- All auto-CRUD endpoints with full request/response schemas
-- Model schemas with field types, constraints, and required fields
-- Route metadata from exported `meta` objects
-
-### Adding Descriptions
+### GraphQL
 
 ```typescript
-// src/routes/api/auth/login/post.ts
+import { GraphQL } from "@tina4/core";
+
+const gql = new GraphQL();
+gql.schema.fromModels();
+gql.registerRoute("/graphql");   // GET = GraphiQL IDE, POST = queries
+```
+
+### WebSocket
+
+```typescript
+import { WebSocketManager } from "@tina4/core";
+
+const ws = new WebSocketManager();
+
+ws.route("/ws/chat", async (connection, message) => {
+    await ws.broadcast("/ws/chat", `User said: ${message}`);
+});
+```
+
+### Swagger / OpenAPI
+
+Auto-generated at `/swagger`:
+
+```typescript
+// src/routes/api/users/get.ts
 export const meta = {
-  summary: "User login",
-  description: "Authenticates a user and returns a session token",
-  tags: ["Authentication"],
-  responses: {
-    200: { description: "Login successful" },
-    401: { description: "Invalid credentials" },
-  },
+    summary: "Get all users",
+    tags: ["Users"],
 };
 
-export default async function (req: Tina4Request, res: Tina4Response) {
-  const { email, password } = req.body as { email: string; password: string };
-  // Authentication logic...
-  res.json({ token: "..." });
+export default async function (request: Tina4Request, response: Tina4Response) {
+    const db = getAdapter();
+    response(db.query("SELECT * FROM users"), HTTP_OK);
 }
 ```
 
----
-
-## Twig Templates
-
-Optional server-side HTML rendering using the Twig template engine. Install `@tina4/twig` to enable.
-
-### Basic Template
-
-```twig
-{# src/templates/pages/home.html.twig #}
-<!DOCTYPE html>
-<html>
-<head><title>{{ title }}</title></head>
-<body>
-  <h1>Welcome, {{ name }}!</h1>
-</body>
-</html>
-```
-
-### Rendering from a Route
+### Service Runner
 
 ```typescript
-// src/routes/api/page/get.ts
-export default async function (req: Tina4Request, res: Tina4Response) {
-  await res.render("pages/home.html.twig", {
-    title: "My App",
-    name: "World",
-  });
-}
+import { ServiceRunner } from "@tina4/core";
+
+const runner = new ServiceRunner();
+
+runner.register("cleanup", "0 */6 * * *", async () => {
+    // Runs every 6 hours
+    await cleanupExpiredSessions();
+});
 ```
 
-### Template Inheritance
+### Template Engine (Frond)
+
+Twig-compatible, 53+ filters, macros, inheritance, fragment caching, sandboxing:
 
 ```twig
-{# src/templates/layouts/base.html.twig #}
-<!DOCTYPE html>
-<html>
-<head>
-  <title>{% block title %}Tina4{% endblock %}</title>
-  {% block head %}{% endblock %}
-</head>
-<body>
-  <nav>{% block nav %}{% endblock %}</nav>
-  <main>{% block content %}{% endblock %}</main>
-  <footer>{% block footer %}&copy; 2026{% endblock %}</footer>
-</body>
-</html>
-```
-
-```twig
-{# src/templates/pages/about.html.twig #}
-{% extends "layouts/base.html.twig" %}
-
-{% block title %}About Us{% endblock %}
-
+{% extends "base.twig" %}
 {% block content %}
-  <h1>About Us</h1>
-  <p>We build with Tina4.</p>
+<h1>{{ title | upper }}</h1>
+{% for item in items %}
+    <p>{{ item.name }} -- {{ item.price | number_format(2) }}</p>
+{% endfor %}
+
+{% cache "sidebar" 300 %}
+    {% include "partials/sidebar.twig" %}
+{% endcache %}
 {% endblock %}
 ```
 
-### Loops and Conditionals
-
-```twig
-{# src/templates/pages/users.html.twig #}
-{% extends "layouts/base.html.twig" %}
-
-{% block content %}
-  <h1>Users</h1>
-
-  {% if users|length > 0 %}
-    <ul>
-      {% for user in users %}
-        <li>
-          <strong>{{ user.name }}</strong> — {{ user.email }}
-          {% if user.active %}
-            <span class="badge">Active</span>
-          {% endif %}
-        </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <p>No users found.</p>
-  {% endif %}
-{% endblock %}
-```
+### REST Client
 
 ```typescript
-// src/routes/page/users/get.ts
-export default async function (req: Tina4Request, res: Tina4Response) {
-  // Fetch users from the database
-  const { getAdapter } = await import("@tina4/orm");
-  const db = getAdapter();
-  const users = db.query("SELECT * FROM users WHERE active = 1");
+import { Api } from "@tina4/core";
 
-  await res.render("pages/users.html.twig", { users });
-}
+const api = new Api("https://api.example.com", {authHeader: "Bearer xyz"});
+const result = await api.sendRequest("/users/42");
 ```
 
-### Includes
+### Data Seeder
 
-```twig
-{# src/templates/partials/card.html.twig #}
-<div class="card">
-  <h3>{{ card_title }}</h3>
-  <p>{{ card_body }}</p>
-</div>
+```typescript
+import { Fake, seedModel } from "@tina4/core";
+
+const fake = new Fake();
+fake.name();      // "Alice Johnson"
+fake.email();     // "alice.johnson@example.com"
+
+seedModel(User, {count: 50});
 ```
 
-```twig
-{# Use it in another template #}
-{% include "partials/card.html.twig" with { card_title: "Hello", card_body: "World" } %}
+### Response Cache
+
+```typescript
+import { cached } from "@tina4/core";
+
+cached(60,
+    get("/api/stats", async (request, response) => {
+        response(computeExpensiveStats(), HTTP_OK);
+    })
+);
 ```
+
+### SCSS, Localization
+
+- **SCSS**: Drop `.scss` in `src/scss/` -- auto-compiled to CSS. Variables, nesting, mixins, `@import`, `@extend`.
+- **i18n**: JSON translation files, parameter substitution.
 
 ---
 
-## Static Files
+## Dev Mode
 
-Files in the `public/` directory are served automatically at the root URL.
+Set `TINA4_DEBUG_LEVEL=DEBUG` in `.env` to enable:
 
-```
-public/index.html    →  http://localhost:3000/
-public/css/style.css →  http://localhost:3000/css/style.css
-public/img/logo.png  →  http://localhost:3000/img/logo.png
-```
-
-Static files take precedence over routes for the root path.
+- **Live reload** -- browser auto-refreshes on code changes
+- **CSS hot-reload** -- SCSS changes apply without page refresh
+- **Error overlay** -- rich error display in the browser
+- **Dev admin** with routes, queue, requests, errors, system tabs
 
 ---
 
-## Database
-
-SQLite is embedded by default via `better-sqlite3`. Zero configuration required.
-
-### Default Location
-
-The database file is created at `./data/tina4.db` on first run. The `data/` directory is auto-created.
-
-### Auto-Migration
-
-On server startup, Tina4 compares model definitions to the database schema:
-- **New models**: Tables are created automatically
-- **New fields**: Columns are added automatically
-- **Removed fields**: Warned but not dropped (safety first)
-
-### Direct Database Access
-
-```typescript
-// In any route handler
-import { getAdapter } from "@tina4/orm";
-
-export default async function (req: Tina4Request, res: Tina4Response) {
-  const db = getAdapter();
-
-  // Raw query
-  const users = db.query("SELECT * FROM users WHERE age > ?", [25]);
-
-  // Execute (INSERT, UPDATE, DELETE)
-  db.execute("UPDATE users SET active = ? WHERE id = ?", [false, 1]);
-
-  res.json({ users });
-}
-```
-
----
-
-## CLI
-
-### `tina4 init <name>`
-
-Scaffolds a new project with:
-- `package.json` with Tina4 dependencies
-- `tsconfig.json` configured for TypeScript
-- Sample route at `src/routes/api/hello/get.ts`
-- Sample model at `src/models/Example.ts`
-- Sample template at `src/templates/welcome.html.twig`
-- Static landing page at `public/index.html`
-
-### `tina4 serve`
-
-Starts the development server with:
-- Hot-reload on file changes
-- Route auto-discovery
-- Model sync and auto-CRUD registration
-- Swagger doc generation
-- Colorized request logging
-
-Options:
-```bash
-tina4 serve              # Default port 3000
-tina4 serve --port 8080  # Custom port
-```
-
----
-
-## Full Example: Blog API
-
-Here's a complete blog API built with Tina4 in just a few files:
-
-### Models
-
-```typescript
-// src/models/Post.ts
-export default class Post {
-  static tableName = "posts";
-
-  static fields = {
-    id:          { type: "integer" as const, primaryKey: true, autoIncrement: true },
-    title:       { type: "string" as const,  required: true, maxLength: 200 },
-    slug:        { type: "string" as const,  required: true, pattern: "^[a-z0-9-]+$" },
-    body:        { type: "text" as const,    required: true },
-    published:   { type: "boolean" as const, default: false },
-    publishedAt: { type: "datetime" as const },
-    createdAt:   { type: "datetime" as const, default: "now" },
-  };
-}
-```
-
-```typescript
-// src/models/Comment.ts
-export default class Comment {
-  static tableName = "comments";
-
-  static fields = {
-    id:        { type: "integer" as const, primaryKey: true, autoIncrement: true },
-    postId:    { type: "integer" as const, required: true },
-    author:    { type: "string" as const,  required: true, maxLength: 100 },
-    body:      { type: "text" as const,    required: true },
-    createdAt: { type: "datetime" as const, default: "now" },
-  };
-}
-```
-
-### Custom Routes (overriding auto-CRUD where needed)
-
-```typescript
-// src/routes/api/posts/published/get.ts
-// Custom endpoint: GET /api/posts/published — only published posts
-import { getAdapter } from "@tina4/orm";
-
-export const meta = {
-  summary: "List published posts",
-  tags: ["Posts"],
-};
-
-export default async function (req: Tina4Request, res: Tina4Response) {
-  const db = getAdapter();
-  const posts = db.query(
-    "SELECT * FROM posts WHERE published = 1 ORDER BY publishedAt DESC"
-  );
-  res.json({ data: posts });
-}
-```
-
-```typescript
-// src/routes/api/posts/[id]/comments/get.ts
-// Custom endpoint: GET /api/posts/:id/comments
-import { getAdapter } from "@tina4/orm";
-
-export const meta = {
-  summary: "Get comments for a post",
-  tags: ["Comments"],
-};
-
-export default async function (req: Tina4Request, res: Tina4Response) {
-  const db = getAdapter();
-  const comments = db.query(
-    "SELECT * FROM comments WHERE postId = ? ORDER BY createdAt DESC",
-    [req.params.id]
-  );
-  res.json({ data: comments });
-}
-```
-
-### Using the API
+## CLI Reference
 
 ```bash
-# Create a post
-curl -X POST http://localhost:3000/api/posts \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Hello World",
-    "slug": "hello-world",
-    "body": "This is my first post!",
-    "published": true,
-    "publishedAt": "2026-03-19T12:00:00Z"
-  }'
-
-# List all posts with pagination
-curl "http://localhost:3000/api/posts?page=1&limit=10&sort=-createdAt"
-
-# Get published posts only
-curl http://localhost:3000/api/posts/published
-
-# Filter posts
-curl "http://localhost:3000/api/posts?filter[published]=1"
-
-# Add a comment
-curl -X POST http://localhost:3000/api/comments \
-  -H "Content-Type: application/json" \
-  -d '{"postId": 1, "author": "Reader", "body": "Great post!"}'
-
-# Get comments for a post
-curl http://localhost:3000/api/posts/1/comments
-
-# Update a post
-curl -X PUT http://localhost:3000/api/posts/1 \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Hello World (Updated)"}'
-
-# Delete a post
-curl -X DELETE http://localhost:3000/api/posts/1
-
-# View Swagger docs
-open http://localhost:3000/swagger
+npx tina4 init [dir]             # Scaffold a new project
+npx tina4 serve [--port 7145]    # Start dev server (default: 7145)
+npx tina4 migrate                # Run pending migrations
+npx tina4 migrate:create <desc>  # Create a migration file
+npx tina4 migrate:rollback       # Rollback last batch
+npx tina4 seed                   # Run seeders from src/seeds/
+npx tina4 routes                 # List all registered routes
+npx tina4 test                   # Run test suite
+npx tina4 build                  # Build distributable package
+npx tina4 ai [--all]             # Detect AI tools and install context
 ```
 
----
+## Environment
 
-## Architecture
-
-Tina4 is a monorepo with modular packages:
-
-| Package | npm Name | Description |
-|---------|----------|-------------|
-| `packages/cli` | `tina4` | CLI for `init` and `serve` commands |
-| `packages/core` | `@tina4/core` | HTTP server, router, route discovery, middleware |
-| `packages/orm` | `@tina4/orm` | Database adapters, models, auto-CRUD, query builder |
-| `packages/swagger` | `@tina4/swagger` | OpenAPI spec generation, Swagger UI |
-| `packages/twig` | `@tina4/twig` | Twig template engine (optional) |
-
-### Type Imports
-
-```typescript
-import type {
-  Tina4Request,
-  Tina4Response,
-  RouteHandler,
-  Tina4Config,
-  Middleware,
-} from "@tina4/core";
-
-import type {
-  FieldDefinition,
-  ModelDefinition,
-  DatabaseAdapter,
-  QueryOptions,
-} from "@tina4/orm";
+```bash
+SECRET=your-jwt-secret
+DATABASE_URL=sqlite:///data/app.db
+TINA4_DEBUG_LEVEL=DEBUG              # DEBUG, INFO, WARNING, ERROR, ALL
+TINA4_LANGUAGE=en                    # en, fr, af, zh, ja, es
+TINA4_SESSION_HANDLER=SessionFileHandler
+SWAGGER_TITLE=My API
 ```
 
+## Carbonah Green Benchmarks
+
+All benchmarks rated **A+** (South Africa grid, 1000 iterations each):
+
+| Metric | Value |
+|--------|-------|
+| Startup time | 38ms |
+| Memory usage | 104.2MB |
+| SCI score | 0.00552 gCO2eq |
+| Grade | A+ |
+
+Run locally: `npx tina4 benchmark`
+
 ---
 
-## Philosophy
+## Documentation
 
-- **Language is the hero**: You write TypeScript. Tina4 is invisible infrastructure.
-- **Zero ceremony**: Every feature works with zero configuration. Opt-in complexity, never opt-out.
-- **Tina4 DNA**: If the PHP version does it, the Node version should too — but idiomatically.
-- **Ship fast**: Developer speed and simplicity over architectural purity.
-
----
-
-## Requirements
-
-- Node.js 20+
-- TypeScript 5+
-
-## Links
-
-- [tina4.com](https://tina4.com)
-- [github.com/tina4stack](https://github.com/tina4stack)
+Full guides, API reference, and examples at **[tina4.com](https://tina4.com)**.
 
 ## License
 
-MIT
+MIT (c) 2007-2025 Tina4 Stack
+https://opensource.org/licenses/MIT
+
+---
+
+<p align="center"><b>Tina4</b> -- The framework that keeps out of the way of your coding.</p>
+
+---
+
+## Our Sponsors
+
+**Sponsored with 🩵 by Code Infinity**
+
+[<img src="https://codeinfinity.co.za/wp-content/uploads/2025/09/c8e-logo-github.png" alt="Code Infinity" width="100">](https://codeinfinity.co.za/about-open-source-policy?utm_source=github&utm_medium=website&utm_campaign=opensource_campaign&utm_id=opensource)
+
+*Supporting open source communities <span style="color: #1DC7DE;">•</span> Innovate <span style="color: #1DC7DE;">•</span> Code <span style="color: #1DC7DE;">•</span> Empower*
