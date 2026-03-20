@@ -32,7 +32,7 @@ export interface Tina4Response extends ServerResponse {
   text(content: string, status?: number): Tina4Response;
   status(code: number): Tina4Response;
   header(name: string, value: string | number | readonly string[]): Tina4Response;
-  send(data: unknown): Tina4Response;
+  send(data: unknown, statusCode?: number, contentType?: string): Tina4Response;
   redirect(url: string, code?: number): Tina4Response;
   cookie(name: string, value: string, options?: CookieOptions): Tina4Response;
   clearCookie(name: string, options?: CookieOptions): Tina4Response;

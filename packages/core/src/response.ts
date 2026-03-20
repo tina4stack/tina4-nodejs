@@ -41,9 +41,26 @@ export function createResponse(res: ServerResponse): Tina4Response {
     return this;
   };
 
-  tRes.send = function (data: unknown): Tina4Response {
-    if (typeof data === "string") {
-      if (!this.getHeader("Content-Type")) {
+  tRes.send = function (data: unknown, statusCode?: number, contentType?: string): Tina4Response {
+    if (statusCode !== undefined) {
+      this.statusCode = statusCode;
+    }
+    if (contentType) {
+      this.setHeader("Content-Type", contentType);
+      if (typeof data === "object" && data !== null && !Buffer.isBuffer(data)) {
+        this.end(JSON.stringify(data));
+      } else {
+        this.end(data == null ? "" : String(data));
+      }
+    } else if (typeof data === "object" && data !== null && !Buffer.isBuffer(data)) {
+      // dict/array → auto JSON
+      this.setHeader("Content-Type", "application/json");
+      this.end(JSON.stringify(data));
+    } else if (typeof data === "string") {
+      const trimmed = data.trim();
+      if (trimmed.startsWith("<") && trimmed.endsWith(">")) {
+        this.setHeader("Content-Type", "text/html; charset=utf-8");
+      } else {
         this.setHeader("Content-Type", "text/plain; charset=utf-8");
       }
       this.end(data);
@@ -52,8 +69,11 @@ export function createResponse(res: ServerResponse): Tina4Response {
         this.setHeader("Content-Type", "application/octet-stream");
       }
       this.end(data);
+    } else if (data == null) {
+      this.end("");
     } else {
-      this.json(data);
+      this.setHeader("Content-Type", "text/plain; charset=utf-8");
+      this.end(String(data));
     }
     return this;
   };
