@@ -35,3 +35,10 @@ export {
   APPLICATION_JSON, APPLICATION_XML, APPLICATION_FORM,
   APPLICATION_OCTET, TEXT_HTML, TEXT_PLAIN, TEXT_CSV, TEXT_XML,
 } from "./constants.js";
+export {
+  generateToken, verifyToken, decodeToken,
+  hashPassword, verifyPassword,
+  authMiddleware,
+} from "./auth.js";
+export { Session } from "./session.js";
+export type { SessionConfig } from "./session.js";
