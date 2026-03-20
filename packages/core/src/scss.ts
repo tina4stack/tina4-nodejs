@@ -1,0 +1,366 @@
+// Tina4 SCSS — Zero-dependency SCSS-to-CSS compiler (subset).
+// Supports variables, nesting, & parent selector, @import, @mixin/@include, comments, basic math.
+
+import { readFileSync, existsSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+
+// ── Types ────────────────────────────────────────────────────────
+
+export interface ScssConfig {
+  importPaths?: string[];
+  variables?: Record<string, string>;
+}
+
+// ── ScssCompiler ─────────────────────────────────────────────────
+
+export class ScssCompiler {
+  private _importPaths: string[];
+  private _variables: Record<string, string>;
+
+  constructor(config?: ScssConfig) {
+    this._importPaths = config?.importPaths ? [...config.importPaths] : [];
+    this._variables = config?.variables ? { ...config.variables } : {};
+  }
+
+  /** Compile an SCSS string to CSS. */
+  compile(source: string): string {
+    return compileString(source, this._importPaths, { ...this._variables });
+  }
+
+  /** Compile an SCSS file to CSS. */
+  compileFile(filePath: string): string {
+    const absPath = resolve(filePath);
+    const content = readFileSync(absPath, "utf-8");
+    const paths = [dirname(absPath), ...this._importPaths];
+    return compileString(content, paths, { ...this._variables });
+  }
+
+  /** Add a directory to the import resolution path. */
+  addImportPath(path: string): void {
+    this._importPaths.push(resolve(path));
+  }
+
+  /** Set or override an SCSS variable. */
+  setVariable(name: string, value: string): void {
+    // Strip leading $ if provided
+    const key = name.startsWith("$") ? name.slice(1) : name;
+    this._variables[key] = value;
+  }
+}
+
+// ── Internal Compilation Pipeline ────────────────────────────────
+
+function compileString(
+  scss: string,
+  importPaths: string[],
+  variables: Record<string, string>
+): string {
+  // 1. Resolve @import statements
+  const imported = new Set<string>();
+  scss = resolveImports(scss, importPaths, imported);
+
+  // 2. Strip single-line comments (preserve /* */ block comments)
+  scss = scss.replace(/(?<![:"'])\/\/[^\n]*/g, "");
+
+  // 3. Extract and store variables
+  scss = extractVariables(scss, variables);
+
+  // 4. Extract mixins
+  const mixins: Record<string, { params: string[]; body: string }> = {};
+  scss = extractMixins(scss, mixins);
+
+  // 5. Resolve @include
+  scss = resolveIncludes(scss, mixins);
+
+  // 6. Substitute variables
+  scss = substituteVariables(scss, variables);
+
+  // 7. Evaluate basic math in property values
+  scss = evalMath(scss);
+
+  // 8. Flatten nested rules
+  const css = flattenNesting(scss);
+
+  // 9. Cleanup
+  return cleanup(css);
+}
+
+// ── Import Resolution ────────────────────────────────────────────
+
+function resolveImports(content: string, paths: string[], imported: Set<string>): string {
+  return content.replace(/@import\s+["']?([^"';\n]+)["']?\s*;/g, (_match, name: string) => {
+    name = name.trim();
+    const candidates: string[] = [];
+    for (const base of paths) {
+      candidates.push(
+        join(base, `${name}.scss`),
+        join(base, `_${name}.scss`),
+        join(base, name),
+      );
+    }
+    for (const candidate of candidates) {
+      if (existsSync(candidate) && !imported.has(candidate)) {
+        imported.add(candidate);
+        const fileContent = readFileSync(candidate, "utf-8");
+        return resolveImports(fileContent, [dirname(candidate), ...paths], imported);
+      }
+    }
+    return `/* IMPORT NOT FOUND: ${name} */`;
+  });
+}
+
+// ── Variables ────────────────────────────────────────────────────
+
+function extractVariables(scss: string, variables: Record<string, string>): string {
+  return scss.replace(/\$([a-zA-Z_][\w-]*)\s*:\s*([^;]+);/g, (_m, name: string, value: string) => {
+    let resolved = value.trim();
+    // Resolve variable references within the value
+    for (const [vName, vVal] of Object.entries(variables)) {
+      resolved = resolved.replaceAll(`$${vName}`, vVal);
+    }
+    variables[name] = resolved;
+    return "";
+  });
+}
+
+function substituteVariables(scss: string, variables: Record<string, string>): string {
+  // Sort by longest name first to avoid partial matches
+  const sorted = Object.keys(variables).sort((a, b) => b.length - a.length);
+  for (const name of sorted) {
+    scss = scss.replaceAll(`$${name}`, variables[name]);
+  }
+  return scss;
+}
+
+// ── Mixins ───────────────────────────────────────────────────────
+
+function extractMixins(
+  scss: string,
+  mixins: Record<string, { params: string[]; body: string }>
+): string {
+  const pattern = /@mixin\s+([\w-]+)\s*(?:\(([^)]*)\))?\s*\{/g;
+  let match: RegExpExecArray | null;
+  const locations: { start: number; end: number; name: string }[] = [];
+
+  while ((match = pattern.exec(scss)) !== null) {
+    const name = match[1];
+    const paramsStr = match[2] ?? "";
+    const params = paramsStr
+      .split(",")
+      .map((p) => p.trim().replace(/^\$/, ""))
+      .filter(Boolean);
+
+    const bodyStart = match.index + match[0].length;
+    const body = findBlock(scss, bodyStart);
+    if (body !== null) {
+      mixins[name] = { params, body };
+      locations.push({
+        start: match.index,
+        end: bodyStart + body.length + 1,
+        name,
+      });
+    }
+  }
+
+  // Remove mixin definitions from source (reverse order to preserve indices)
+  let result = scss;
+  for (const loc of locations.reverse()) {
+    result = result.slice(0, loc.start) + result.slice(loc.end);
+  }
+  return result;
+}
+
+function resolveIncludes(
+  scss: string,
+  mixins: Record<string, { params: string[]; body: string }>
+): string {
+  return scss.replace(
+    /@include\s+([\w-]+)\s*(?:\(([^)]*)\))?\s*;/g,
+    (_m, name: string, argsStr: string | undefined) => {
+      if (!(name in mixins)) {
+        return `/* MIXIN NOT FOUND: ${name} */`;
+      }
+      const mixin = mixins[name];
+      const args = argsStr
+        ? argsStr.split(",").map((a) => a.trim()).filter(Boolean)
+        : [];
+      let body = mixin.body;
+      for (let i = 0; i < mixin.params.length; i++) {
+        const paramName = mixin.params[i].split(":")[0].trim();
+        const defaultVal = mixin.params[i].includes(":")
+          ? mixin.params[i].split(":").slice(1).join(":").trim()
+          : "";
+        const value = i < args.length ? args[i] : defaultVal;
+        body = body.replaceAll(`$${paramName}`, value);
+      }
+      return body;
+    }
+  );
+}
+
+// ── Math Evaluation ──────────────────────────────────────────────
+
+function evalMath(scss: string): string {
+  return scss.replace(
+    /([\d.]+)([a-z%]*)\s*([+\-*/])\s*([\d.]+)([a-z%]*)/g,
+    (_m, n1: string, u1: string, op: string, n2: string, _u2: string) => {
+      try {
+        const num1 = parseFloat(n1);
+        const num2 = parseFloat(n2);
+        let result: number;
+        switch (op) {
+          case "+": result = num1 + num2; break;
+          case "-": result = num1 - num2; break;
+          case "*": result = num1 * num2; break;
+          case "/": result = num2 !== 0 ? num1 / num2 : 0; break;
+          default: return _m;
+        }
+        const unit = u1 || "";
+        if (result === Math.floor(result)) {
+          return `${Math.floor(result)}${unit}`;
+        }
+        return `${result.toFixed(2)}${unit}`;
+      } catch {
+        return _m;
+      }
+    }
+  );
+}
+
+// ── Nesting Flattener ────────────────────────────────────────────
+
+function flattenNesting(scss: string): string {
+  const output: string[] = [];
+  flattenBlock(scss, [], output);
+  return output.join("\n");
+}
+
+function flattenBlock(content: string, parentSelectors: string[], output: string[]): void {
+  let pos = 0;
+  const properties: string[] = [];
+
+  while (pos < content.length) {
+    // Skip whitespace
+    while (pos < content.length && /[\s]/.test(content[pos])) {
+      pos++;
+    }
+    if (pos >= content.length) break;
+
+    // Block comment — preserve
+    if (content[pos] === "/" && content[pos + 1] === "*") {
+      const end = content.indexOf("*/", pos + 2);
+      if (end === -1) break;
+      output.push(content.slice(pos, end + 2));
+      pos = end + 2;
+      continue;
+    }
+
+    // @media query — special handling
+    if (content.slice(pos, pos + 6) === "@media") {
+      const brace = content.indexOf("{", pos);
+      if (brace === -1) break;
+      const mediaQuery = content.slice(pos, brace).trim();
+      const body = findBlock(content, brace + 1);
+      if (body === null) break;
+      pos = brace + 1 + body.length + 1;
+
+      const innerOutput: string[] = [];
+      flattenBlock(body, parentSelectors, innerOutput);
+      if (innerOutput.length > 0) {
+        output.push(`${mediaQuery} {`);
+        for (const line of innerOutput) {
+          output.push(`  ${line}`);
+        }
+        output.push("}");
+      }
+      continue;
+    }
+
+    // Find next { or ;
+    const bracePos = content.indexOf("{", pos);
+    const semiPos = content.indexOf(";", pos);
+
+    // Property (has ; before { or no { at all)
+    if (semiPos !== -1 && (bracePos === -1 || semiPos < bracePos)) {
+      const prop = content.slice(pos, semiPos).trim();
+      if (prop && !prop.startsWith("@")) {
+        properties.push(prop);
+      }
+      pos = semiPos + 1;
+      continue;
+    }
+
+    // Nested block
+    if (bracePos !== -1) {
+      const selectorText = content.slice(pos, bracePos).trim();
+      const body = findBlock(content, bracePos + 1);
+      if (body === null) break;
+      pos = bracePos + 1 + body.length + 1;
+
+      if (!selectorText) continue;
+
+      // Expand selectors with parent reference (&)
+      const selectors = selectorText.split(",").map((s) => s.trim());
+      const newSelectors: string[] = [];
+      for (const sel of selectors) {
+        if (parentSelectors.length > 0) {
+          for (const parent of parentSelectors) {
+            if (sel.includes("&")) {
+              newSelectors.push(sel.replace(/&/g, parent));
+            } else {
+              newSelectors.push(`${parent} ${sel}`);
+            }
+          }
+        } else {
+          newSelectors.push(sel);
+        }
+      }
+
+      flattenBlock(body, newSelectors, output);
+      continue;
+    }
+
+    // Remaining text — treat as property
+    const remaining = content.slice(pos).trim();
+    if (remaining) {
+      properties.push(remaining);
+    }
+    break;
+  }
+
+  // Emit properties for current selector
+  if (properties.length > 0 && parentSelectors.length > 0) {
+    const selectorStr = parentSelectors.join(", ");
+    output.push(`${selectorStr} {`);
+    for (const prop of properties) {
+      output.push(`  ${prop};`);
+    }
+    output.push("}");
+  }
+}
+
+// ── Utilities ────────────────────────────────────────────────────
+
+function findBlock(content: string, start: number): string | null {
+  let depth = 1;
+  let pos = start;
+  while (pos < content.length && depth > 0) {
+    if (content[pos] === "{") depth++;
+    else if (content[pos] === "}") depth--;
+    if (depth > 0) pos++;
+  }
+  return depth === 0 ? content.slice(start, pos) : null;
+}
+
+function cleanup(css: string): string {
+  // Remove empty rulesets
+  css = css.replace(/[^{}]+\{\s*\}/g, "");
+  // Remove multiple blank lines
+  css = css.replace(/\n{3,}/g, "\n\n");
+  // Remove trailing whitespace per line
+  css = css
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n");
+  return css.trim() + "\n";
+}
