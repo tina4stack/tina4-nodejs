@@ -14,6 +14,33 @@ npx tina4 serve
 
 Your API is running at `http://localhost:3000`. Swagger docs at `http://localhost:3000/swagger`.
 
+## What's Included
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| HTTP Server | ✅ | Native `node:http`, zero frameworks |
+| Router | ✅ | File-based + programmatic, `{id}` params, groups |
+| Callable Response | ✅ | `response({data}, HTTP_OK)` auto-detects content type |
+| ORM | ✅ | BaseModel, soft delete, validation, relationships |
+| Auto-CRUD | ✅ | Auto-generated REST endpoints from models |
+| Migrations | ✅ | Up/down with batch tracking and rollback |
+| Frond Templates | ✅ | Zero-dep Twig-like engine, 53 filters |
+| Auth/JWT | ✅ | HS256 + RS256, PBKDF2 password hashing |
+| Sessions | ✅ | File backend, flash data, TTL |
+| Queue | ✅ | File-backed job queue with retries |
+| GraphQL | ✅ | Zero-dep parser, schema builder |
+| WebSocket | ✅ | RFC 6455 server, broadcast, events |
+| i18n | ✅ | JSON locales, param substitution |
+| Seeder | ✅ | 26 fake data generators |
+| SCSS Compiler | ✅ | Variables, nesting, mixins, math |
+| Service Runner | ✅ | Cron timing, hot-reload, in-process |
+| Swagger/OpenAPI | ✅ | Auto-generated from routes + models |
+| CORS | ✅ | Configurable middleware |
+| Rate Limiter | ✅ | Sliding window, per-IP |
+| DotEnv | ✅ | .env file loading |
+| Health Check | ✅ | `/health` endpoint |
+| HTTP Constants | ✅ | HTTP_OK, APPLICATION_JSON, etc. |
+
 ## Project Structure
 
 ```

@@ -1,6 +1,6 @@
 {
   "name": "tina4-nodejs",
-  "version": "0.0.1",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "description": "This is not a framework. Tina4 for Node.js/TypeScript.",

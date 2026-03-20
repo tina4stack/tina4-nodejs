@@ -1,6 +1,6 @@
 {
   "name": "@tina4/twig",
-  "version": "0.0.1",
+  "version": "3.0.0",
   "description": "Tina4 Twig — optional template engine",
   "type": "module",
   "main": "./dist/index.js",

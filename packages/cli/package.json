@@ -1,6 +1,6 @@
 {
   "name": "tina4",
-  "version": "0.0.1",
+  "version": "3.0.0",
   "description": "Tina4 CLI — This is not a framework",
   "type": "module",
   "bin": {
