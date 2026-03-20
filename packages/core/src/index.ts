@@ -57,3 +57,5 @@ export {
   CLOSE_NORMAL, CLOSE_PROTOCOL_ERROR,
 } from "./websocket.js";
 export type { WebSocketClient } from "./websocket.js";
+export { ServiceRunner, matchCronField, matchesCron } from "./service.js";
+export type { ServiceOptions, ServiceContext, ServiceHandler, ServiceInfo } from "./service.js";
