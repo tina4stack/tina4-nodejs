@@ -70,6 +70,9 @@ writeFileSync(join(TEST_DIR, "src/templates/test.html.twig"), `<h1>{{ title }}</
 writeFileSync(join(TEST_DIR, "public/test.txt"), "static content");
 
 // 2. Start server
+// Set high rate limit so integration tests don't get throttled
+process.env.TINA4_RATE_LIMIT = "10000";
+
 console.log("=== Starting Tina4 Integration Test ===\n");
 
 const server = await startServer({
@@ -197,6 +200,15 @@ const staticFile = await request("GET", "/test.txt");
 assert("Static file served", staticFile.status === 200);
 assert("Static content correct", staticFile.raw === "static content");
 
+console.log("\n--- Health Check ---");
+
+const healthCheck = await request("GET", "/health");
+assert("GET /health returns 200", healthCheck.status === 200);
+assert("Health status is ok", healthCheck.data.status === "ok");
+assert("Health version is 3.0.0", healthCheck.data.version === "3.0.0");
+assert("Health framework is tina4-nodejs", healthCheck.data.framework === "tina4-nodejs");
+assert("Health uptime is a number", typeof healthCheck.data.uptime === "number");
+
 console.log("\n--- 404 Handling ---");
 
 const notFound = await request("GET", "/does/not/exist");
@@ -210,6 +222,7 @@ console.log(`${"=".repeat(50)}\n`);
 
 // Cleanup
 server.close();
+delete process.env.TINA4_RATE_LIMIT;
 rmSync(TEST_DIR, { recursive: true });
 
 process.exit(fail > 0 ? 1 : 0);

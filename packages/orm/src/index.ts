@@ -6,8 +6,8 @@ export type {
   QueryOptions,
 } from "./types.js";
 
-export { initDatabase, getAdapter, setAdapter, closeDatabase } from "./database.js";
-export type { DatabaseConfig } from "./database.js";
+export { initDatabase, getAdapter, setAdapter, closeDatabase, parseDatabaseUrl } from "./database.js";
+export type { DatabaseConfig, ParsedDatabaseUrl } from "./database.js";
 export { discoverModels } from "./model.js";
 export type { DiscoveredModel } from "./model.js";
 export { syncModels } from "./migration.js";

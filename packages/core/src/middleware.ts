@@ -36,14 +36,82 @@ export class MiddlewareChain {
   }
 }
 
-// Built-in CORS middleware
-export function cors(): Middleware {
-  return (_req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+/** Configuration for the CORS middleware */
+export interface CorsConfig {
+  /** Allowed origins. Default: "*" (or TINA4_CORS_ORIGINS env, comma-separated) */
+  origins?: string | string[];
+  /** Allowed methods. Default: standard REST methods (or TINA4_CORS_METHODS env) */
+  methods?: string | string[];
+  /** Allowed headers. Default: Content-Type, Authorization (or TINA4_CORS_HEADERS env) */
+  headers?: string | string[];
+  /** Access-Control-Max-Age in seconds. Default: 86400 (or TINA4_CORS_MAX_AGE env) */
+  maxAge?: number;
+}
 
-    if (_req.method === "OPTIONS") {
+/**
+ * Built-in CORS middleware.
+ * Reads configuration from env vars if not provided:
+ *   TINA4_CORS_ORIGINS — comma-separated list of allowed origins, or "*"
+ *   TINA4_CORS_METHODS — comma-separated list of allowed methods
+ *   TINA4_CORS_HEADERS — comma-separated list of allowed headers
+ *   TINA4_CORS_MAX_AGE — preflight cache duration in seconds
+ *
+ * Preflight (OPTIONS) returns 204 with appropriate headers.
+ * Supports wildcard ("*") and specific origin matching.
+ */
+export function cors(config?: CorsConfig): Middleware {
+  const originsRaw = config?.origins
+    ?? process.env.TINA4_CORS_ORIGINS
+    ?? "*";
+  const allowedOrigins = Array.isArray(originsRaw)
+    ? originsRaw
+    : originsRaw.split(",").map((o) => o.trim());
+
+  const methodsRaw = config?.methods
+    ?? process.env.TINA4_CORS_METHODS
+    ?? "GET, POST, PUT, DELETE, PATCH, OPTIONS";
+  const allowedMethods = Array.isArray(methodsRaw)
+    ? methodsRaw.join(", ")
+    : methodsRaw;
+
+  const headersRaw = config?.headers
+    ?? process.env.TINA4_CORS_HEADERS
+    ?? "Content-Type, Authorization";
+  const allowedHeaders = Array.isArray(headersRaw)
+    ? headersRaw.join(", ")
+    : headersRaw;
+
+  const maxAge = config?.maxAge
+    ?? (process.env.TINA4_CORS_MAX_AGE ? parseInt(process.env.TINA4_CORS_MAX_AGE, 10) : 86400);
+
+  return (req, res, next) => {
+    const requestOrigin = req.headers.origin ?? "";
+
+    // Determine the correct origin header value
+    let originHeader: string;
+    if (allowedOrigins.includes("*")) {
+      originHeader = "*";
+    } else if (allowedOrigins.includes(requestOrigin)) {
+      originHeader = requestOrigin;
+      // When responding with a specific origin, add Vary: Origin
+      res.setHeader("Vary", "Origin");
+    } else {
+      // Origin not allowed — still call next() but don't set CORS headers
+      if (req.method === "OPTIONS") {
+        res.statusCode = 204;
+        res.end();
+        return;
+      }
+      next();
+      return;
+    }
+
+    res.setHeader("Access-Control-Allow-Origin", originHeader);
+    res.setHeader("Access-Control-Allow-Methods", allowedMethods);
+    res.setHeader("Access-Control-Allow-Headers", allowedHeaders);
+
+    if (req.method === "OPTIONS") {
+      res.setHeader("Access-Control-Max-Age", String(maxAge));
       res.statusCode = 204;
       res.end();
       return;

@@ -1,0 +1,125 @@
+import { readFileSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
+
+/**
+ * Parse a .env file content string into key-value pairs.
+ * Supports:
+ *   - KEY=value
+ *   - KEY="double quoted"
+ *   - KEY='single quoted'
+ *   - export KEY=value
+ *   - # comments
+ *   - Empty lines
+ *   - Multi-line with trailing backslash \
+ */
+function parseEnvContent(content: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  const lines = content.split("\n");
+  let i = 0;
+
+  while (i < lines.length) {
+    let line = lines[i].trim();
+    i++;
+
+    // Skip empty lines and comments
+    if (line === "" || line.startsWith("#")) {
+      continue;
+    }
+
+    // Strip "export " prefix
+    if (line.startsWith("export ")) {
+      line = line.slice(7).trim();
+    }
+
+    // Find the first = sign
+    const eqIndex = line.indexOf("=");
+    if (eqIndex === -1) {
+      continue;
+    }
+
+    const key = line.slice(0, eqIndex).trim();
+    let value = line.slice(eqIndex + 1).trim();
+
+    // Handle quoted values
+    if (value.startsWith('"') && value.endsWith('"')) {
+      value = value.slice(1, -1);
+      // Process escape sequences in double-quoted values
+      value = value
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\r")
+        .replace(/\\t/g, "\t")
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, "\\");
+    } else if (value.startsWith("'") && value.endsWith("'")) {
+      // Single-quoted: literal, no escape processing
+      value = value.slice(1, -1);
+    } else {
+      // Unquoted: handle multi-line with trailing backslash
+      while (value.endsWith("\\") && i < lines.length) {
+        value = value.slice(0, -1) + lines[i].trim();
+        i++;
+      }
+      // Strip inline comments (only for unquoted values)
+      const commentIndex = value.indexOf(" #");
+      if (commentIndex !== -1) {
+        value = value.slice(0, commentIndex).trim();
+      }
+    }
+
+    result[key] = value;
+  }
+
+  return result;
+}
+
+/**
+ * Load environment variables from a .env file into process.env.
+ * Does not override existing process.env values unless they are undefined.
+ *
+ * @param path - Path to the .env file. Defaults to ".env" in the current working directory.
+ * @returns The parsed key-value pairs, or an empty object if the file doesn't exist.
+ */
+export function loadEnv(path?: string): Record<string, string> {
+  const envPath = resolve(path ?? ".env");
+
+  if (!existsSync(envPath)) {
+    return {};
+  }
+
+  const content = readFileSync(envPath, "utf-8");
+  const parsed = parseEnvContent(content);
+
+  for (const [key, value] of Object.entries(parsed)) {
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+
+  return parsed;
+}
+
+/**
+ * Get an environment variable value with an optional default.
+ *
+ * @param key - The environment variable name.
+ * @param defaultValue - Value to return if the variable is not set.
+ * @returns The environment variable value, or the default.
+ */
+export function getEnv(key: string, defaultValue?: string): string | undefined {
+  return process.env[key] ?? defaultValue;
+}
+
+/**
+ * Get a required environment variable. Throws if not set.
+ *
+ * @param key - The environment variable name.
+ * @returns The environment variable value.
+ * @throws Error if the variable is not set.
+ */
+export function requireEnv(key: string): string {
+  const value = process.env[key];
+  if (value === undefined) {
+    throw new Error(`Required environment variable "${key}" is not set.`);
+  }
+  return value;
+}

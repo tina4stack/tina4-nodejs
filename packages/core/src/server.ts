@@ -8,6 +8,9 @@ import { createRequest, parseBody } from "./request.js";
 import { createResponse } from "./response.js";
 import { MiddlewareChain, cors, requestLogger } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
+import { loadEnv } from "./dotenv.js";
+import { createHealthRoute } from "./health.js";
+import { rateLimiter } from "./rateLimiter.js";
 
 export async function startServer(config?: Tina4Config): Promise<{
   close: () => void;
@@ -20,8 +23,15 @@ export async function startServer(config?: Tina4Config): Promise<{
   const staticDir = resolve(config?.staticDir ?? "public");
   const templatesDir = resolve(config?.templatesDir ?? "src/templates");
 
+  // Load .env file
+  loadEnv();
+
   const router = new Router();
   const middleware = new MiddlewareChain();
+
+  // Register health check endpoint
+  const healthRoute = createHealthRoute("3.0.0");
+  router.addRoute(healthRoute);
 
   // Initialize Twig if available
   let twigAvailable = false;
@@ -36,6 +46,7 @@ export async function startServer(config?: Tina4Config): Promise<{
   // Built-in middleware
   middleware.use(cors());
   middleware.use(requestLogger());
+  middleware.use(rateLimiter());
 
   // Discover file-based routes
   if (existsSync(routesDir)) {
