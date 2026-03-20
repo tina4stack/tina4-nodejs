@@ -1,16 +1,17 @@
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, basename } from "node:path";
 import { execSync } from "node:child_process";
 
 export async function initProject(name: string): Promise<void> {
-  const targetDir = join(process.cwd(), name);
+  const targetDir = name === "." ? process.cwd() : join(process.cwd(), name);
+  const projectName = name === "." ? basename(process.cwd()) : name;
 
-  if (existsSync(targetDir)) {
+  if (name !== "." && existsSync(targetDir)) {
     console.error(`Error: Directory "${name}" already exists.`);
     process.exit(1);
   }
 
-  console.log(`\n  Creating Tina4 project: ${name}\n`);
+  console.log(`\n  Creating Tina4 project: ${projectName}\n`);
 
   // Create directory structure
   const dirs = [
@@ -34,7 +35,7 @@ export async function initProject(name: string): Promise<void> {
     join(targetDir, "package.json"),
     JSON.stringify(
       {
-        name,
+        name: projectName,
         version: "0.0.1",
         private: true,
         type: "module",
@@ -178,12 +179,12 @@ export default async function (req: Tina4Request, res: Tina4Response): Promise<v
     console.log("\n  Note: npm install failed. Run it manually after setting up the tina4 packages.");
   }
 
+  const cdStep = name === "." ? "" : `    cd ${name}\n`;
   console.log(`
   Done! Your Tina4 project is ready.
 
   Next steps:
-    cd ${name}
-    npx tina4 serve
+${cdStep}    tina4nodejs serve
 
   Your API will be running at http://localhost:3000
   Swagger docs at http://localhost:3000/swagger

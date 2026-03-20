@@ -160,7 +160,7 @@ import { Router } from "./router.js";  // .js even though the file is .ts
 4. **CDN for Swagger UI** — Keeps install under 8MB. Single HTML file loads from unpkg.com.
 5. **Process restart for hot-reload** — Simpler and more reliable than HMR with ESM.
 6. **SQLite default** — `better-sqlite3` is synchronous and fast. Adapter pattern for async databases.
-7. **CLI named `tina4`** (unscoped) — So `npx tina4 init` works without scope prefix.
+7. **CLI named `tina4nodejs`** (primary) with `tina4` as alias — So `npx tina4nodejs init` or `npx tina4 init` both work.
 
 ## Testing
 

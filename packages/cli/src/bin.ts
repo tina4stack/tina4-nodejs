@@ -5,11 +5,11 @@ const args = process.argv.slice(2);
 const command = args[0];
 
 const HELP = `
-  tina4 — This is not a framework.
+  tina4nodejs — This is not a framework.
 
   Usage:
-    tina4 init <name>    Create a new Tina4 project
-    tina4 serve          Start the dev server with hot-reload
+    tina4nodejs init [dir]    Create a new Tina4 project (default: current directory)
+    tina4nodejs serve         Start the dev server with hot-reload
 
   Options:
     --port <number>      Server port (default: 3000)
@@ -19,11 +19,7 @@ const HELP = `
 async function main(): Promise<void> {
   switch (command) {
     case "init": {
-      const name = args[1];
-      if (!name) {
-        console.error("Error: Project name is required.\n  Usage: tina4 init <name>");
-        process.exit(1);
-      }
+      const name = args[1] || ".";
       await initProject(name);
       break;
     }

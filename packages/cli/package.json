@@ -4,6 +4,7 @@
   "description": "Tina4 CLI — This is not a framework",
   "type": "module",
   "bin": {
+    "tina4nodejs": "./dist/bin.js",
     "tina4": "./dist/bin.js"
   },
   "main": "./dist/index.js",
