@@ -1,0 +1,238 @@
+/**
+ * Unit tests for the ORM enhancements (Phase 2).
+ * Run with: npx tsx test/orm.test.ts
+ */
+import { rmSync, mkdirSync } from "node:fs";
+import {
+  initDatabase,
+  closeDatabase,
+  getAdapter,
+  validate,
+  BaseModel,
+  syncModels,
+} from "../packages/orm/src/index.ts";
+import type { FieldDefinition, DiscoveredModel } from "../packages/orm/src/index.ts";
+
+const TEST_DB = "/tmp/tina4-orm-test/test.db";
+let pass = 0;
+let fail = 0;
+
+function assert(name: string, condition: boolean, detail = "") {
+  if (condition) {
+    console.log(`  \x1b[32mPASS\x1b[0m ${name}`);
+    pass++;
+  } else {
+    console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
+    fail++;
+  }
+}
+
+// Clean slate
+try { rmSync("/tmp/tina4-orm-test", { recursive: true }); } catch {}
+mkdirSync("/tmp/tina4-orm-test", { recursive: true });
+
+console.log("=== ORM Enhancement Tests ===\n");
+
+// Initialize database
+await initDatabase({ type: "sqlite", path: TEST_DB });
+
+// --- Define test model classes ---
+
+class User extends BaseModel {
+  static tableName = "users";
+  static fields: Record<string, FieldDefinition> = {
+    id: { type: "integer", primaryKey: true, autoIncrement: true },
+    name: { type: "string", required: true, minLength: 2, maxLength: 50 },
+    email: { type: "string", required: true, pattern: "^.+@.+\\..+$" },
+    age: { type: "integer", min: 0, max: 150 },
+  };
+}
+
+class Article extends BaseModel {
+  static tableName = "articles";
+  static softDelete = true;
+  static fields: Record<string, FieldDefinition> = {
+    id: { type: "integer", primaryKey: true, autoIncrement: true },
+    title: { type: "string", required: true },
+    body: { type: "text" },
+    author_id: { type: "integer" },
+  };
+  static hasOne = [{ model: "User", foreignKey: "author_id" }];
+}
+
+class Comment extends BaseModel {
+  static tableName = "comments";
+  static tableFilter = "approved = 1";
+  static fields: Record<string, FieldDefinition> = {
+    id: { type: "integer", primaryKey: true, autoIncrement: true },
+    text: { type: "string", required: true },
+    article_id: { type: "integer" },
+    approved: { type: "integer", default: 0 },
+  };
+}
+
+// --- Sync models (creates tables) ---
+console.log("--- Table Creation ---");
+
+const userModel: DiscoveredModel = {
+  definition: {
+    tableName: "users",
+    fields: User.fields,
+  },
+  filePath: "test",
+  modelClass: User,
+};
+
+const articleModel: DiscoveredModel = {
+  definition: {
+    tableName: "articles",
+    fields: Article.fields,
+    softDelete: true,
+  },
+  filePath: "test",
+  modelClass: Article,
+};
+
+const commentModel: DiscoveredModel = {
+  definition: {
+    tableName: "comments",
+    fields: Comment.fields,
+    tableFilter: "approved = 1",
+  },
+  filePath: "test",
+  modelClass: Comment,
+};
+
+syncModels([userModel, articleModel, commentModel]);
+
+const adapter = getAdapter();
+assert("Users table created", (adapter as any).tableExists("users"));
+assert("Articles table created", (adapter as any).tableExists("articles"));
+assert("Comments table created", (adapter as any).tableExists("comments"));
+
+// Verify soft delete column exists
+const articleCols = (adapter as any).getTableColumns("articles");
+const hasIsDeleted = articleCols.some((c: any) => c.name === "is_deleted");
+assert("Articles has is_deleted column (soft delete)", hasIsDeleted);
+
+// --- BaseModel CRUD ---
+console.log("\n--- BaseModel CRUD ---");
+
+const user = new User({ name: "Alice", email: "alice@test.com", age: 30 });
+user.save();
+assert("User saved with auto-generated ID", (user as any).id !== undefined);
+
+const userId = (user as any).id;
+const found = User.findById(userId);
+assert("findById returns saved user", found !== null && (found as any).name === "Alice");
+
+(user as any).name = "Alice Updated";
+user.save();
+const updated = User.findById(userId);
+assert("save() updates existing record", (updated as any).name === "Alice Updated");
+
+// Create more users
+const bob = new User({ name: "Bob", email: "bob@test.com", age: 25 });
+bob.save();
+const charlie = new User({ name: "Charlie", email: "charlie@test.com", age: 35 });
+charlie.save();
+
+const allUsers = User.findAll();
+assert("findAll returns all users", allUsers.length === 3);
+
+const filtered = User.findAll("age > ?", [28]);
+assert("findAll with WHERE clause", filtered.length === 2);
+
+// --- Soft Delete ---
+console.log("\n--- Soft Delete ---");
+
+const article1 = new Article({ title: "Test Article", body: "Content", author_id: userId });
+article1.save();
+const articleId = (article1 as any).id;
+
+const article2 = new Article({ title: "Another Article", body: "More content", author_id: userId });
+article2.save();
+
+// Soft delete article1
+article1.delete();
+assert("Soft delete sets is_deleted", (article1 as any).is_deleted === 1);
+
+// findById should not find soft-deleted
+const deletedArticle = Article.findById(articleId);
+assert("findById excludes soft-deleted records", deletedArticle === null);
+
+// findAll should not include soft-deleted
+const allArticles = Article.findAll();
+assert("findAll excludes soft-deleted records", allArticles.length === 1);
+
+// Verify data still in DB
+const rawRows = adapter.query(`SELECT * FROM "articles" WHERE id = ?`, [articleId]);
+assert("Soft-deleted record still in database", rawRows.length === 1);
+
+// --- Hard Delete ---
+console.log("\n--- Hard Delete ---");
+
+const userToDelete = User.findById(bob.id as number);
+assert("User exists before delete", userToDelete !== null);
+userToDelete!.delete();
+
+const afterDelete = User.findById(bob.id as number);
+assert("Hard delete removes record", afterDelete === null);
+
+// --- Table Filter / Scopes ---
+console.log("\n--- Table Filter (Scopes) ---");
+
+// Insert comments directly
+adapter.execute(`INSERT INTO "comments" (text, article_id, approved) VALUES (?, ?, ?)`, ["Good!", 1, 1]);
+adapter.execute(`INSERT INTO "comments" (text, article_id, approved) VALUES (?, ?, ?)`, ["Spam!", 1, 0]);
+adapter.execute(`INSERT INTO "comments" (text, article_id, approved) VALUES (?, ?, ?)`, ["Great!", 1, 1]);
+
+const approvedComments = Comment.findAll();
+assert("tableFilter filters to approved=1 only", approvedComments.length === 2);
+
+const allCommentsRaw = adapter.query(`SELECT * FROM "comments"`);
+assert("Raw query shows all comments", (allCommentsRaw as any[]).length === 3);
+
+// --- toArray / toJson ---
+console.log("\n--- toArray / toJson ---");
+
+const alice = User.findById(userId);
+const arr = alice!.toArray();
+assert("toArray returns plain object", typeof arr === "object" && arr.name === "Alice Updated");
+assert("toArray contains model fields", "id" in arr && "email" in arr && "age" in arr);
+
+const json = alice!.toJson();
+const parsed = JSON.parse(json);
+assert("toJson returns valid JSON", parsed.name === "Alice Updated");
+
+// --- Validation ---
+console.log("\n--- Validation ---");
+
+const v1 = validate({}, User.fields, false);
+assert("Required fields validation", v1.length >= 2); // name and email required
+
+const v2 = validate({ name: "A", email: "bad", age: 200 }, User.fields, false);
+assert("minLength validation", v2.some(e => e.field === "name" && e.message.includes("at least")));
+assert("Pattern validation", v2.some(e => e.field === "email" && e.message.includes("pattern")));
+assert("Max validation", v2.some(e => e.field === "age" && e.message.includes("at most")));
+
+const v3 = validate({ name: "Valid Name", email: "valid@test.com" }, User.fields, false);
+assert("Valid data passes validation", v3.length === 0);
+
+const v4 = validate({ name: "X" }, User.fields, true);
+assert("Update mode skips required for missing fields", !v4.some(e => e.field === "email"));
+
+// --- Integer validation ---
+const v5 = validate({ name: "Test", email: "t@t.com", age: 3.5 }, User.fields, false);
+assert("Integer validation rejects float", v5.some(e => e.field === "age" && e.message.includes("integer")));
+
+// Cleanup
+closeDatabase();
+try { rmSync("/tmp/tina4-orm-test", { recursive: true }); } catch {}
+
+// Summary
+console.log(`\n${"=".repeat(50)}`);
+console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
+console.log(`${"=".repeat(50)}\n`);
+
+process.exit(fail > 0 ? 1 : 0);

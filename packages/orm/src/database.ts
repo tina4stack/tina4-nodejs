@@ -1,6 +1,7 @@
 import type { DatabaseAdapter } from "./types.js";
 
 let activeAdapter: DatabaseAdapter | null = null;
+const namedAdapters: Map<string, DatabaseAdapter> = new Map();
 
 export function setAdapter(adapter: DatabaseAdapter): void {
   activeAdapter = adapter;
@@ -13,11 +14,33 @@ export function getAdapter(): DatabaseAdapter {
   return activeAdapter;
 }
 
+/**
+ * Register a named adapter for multi-database support.
+ * Models reference it via `static _db = 'name'`.
+ */
+export function setNamedAdapter(name: string, adapter: DatabaseAdapter): void {
+  namedAdapters.set(name, adapter);
+}
+
+/**
+ * Get a named adapter. Falls back to the default adapter if name not found.
+ */
+export function getNamedAdapter(name: string): DatabaseAdapter {
+  const adapter = namedAdapters.get(name);
+  if (adapter) return adapter;
+  // Fall back to default
+  return getAdapter();
+}
+
 export function closeDatabase(): void {
   if (activeAdapter) {
     activeAdapter.close();
     activeAdapter = null;
   }
+  for (const [, adapter] of namedAdapters) {
+    adapter.close();
+  }
+  namedAdapters.clear();
 }
 
 export interface DatabaseConfig {

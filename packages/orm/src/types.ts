@@ -13,9 +13,19 @@ export interface FieldDefinition {
   pattern?: string;
 }
 
+export interface RelationshipDefinition {
+  model: string;
+  foreignKey: string;
+}
+
 export interface ModelDefinition {
   tableName: string;
   fields: Record<string, FieldDefinition>;
+  softDelete?: boolean;
+  tableFilter?: string;
+  hasOne?: RelationshipDefinition[];
+  hasMany?: RelationshipDefinition[];
+  dbName?: string;
 }
 
 export interface DatabaseAdapter {

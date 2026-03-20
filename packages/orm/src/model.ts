@@ -1,10 +1,11 @@
 import { readdirSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
-import type { ModelDefinition, FieldDefinition } from "./types.js";
+import type { ModelDefinition, FieldDefinition, RelationshipDefinition } from "./types.js";
 
 export interface DiscoveredModel {
   definition: ModelDefinition;
   filePath: string;
+  modelClass: any;
 }
 
 export async function discoverModels(modelsDir: string): Promise<DiscoveredModel[]> {
@@ -38,9 +39,14 @@ export async function discoverModels(modelsDir: string): Promise<DiscoveredModel
       const definition: ModelDefinition = {
         tableName: ModelClass.tableName,
         fields: ModelClass.fields as Record<string, FieldDefinition>,
+        softDelete: ModelClass.softDelete ?? false,
+        tableFilter: ModelClass.tableFilter,
+        hasOne: ModelClass.hasOne as RelationshipDefinition[] | undefined,
+        hasMany: ModelClass.hasMany as RelationshipDefinition[] | undefined,
+        dbName: ModelClass._db,
       };
 
-      models.push({ definition, filePath });
+      models.push({ definition, filePath, modelClass: ModelClass });
     } catch (err) {
       console.error(`  Error loading model ${file}:`, err);
     }

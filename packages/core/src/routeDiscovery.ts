@@ -46,10 +46,17 @@ function filePathToPattern(relativePath: string): string {
   const parts = relativePath.split("/").slice(0, -1);
 
   // Convert directory segments to URL pattern
+  // File system uses [id] notation, but URL patterns use {id} to match Python
   const urlParts = parts.map((part) => {
-    // Already in bracket notation from filesystem: [id], [...slug]
+    if (part.startsWith("[...") && part.endsWith("]")) {
+      // Catch-all: [...slug] -> {...slug}
+      const name = part.slice(4, -1);
+      return `{...${name}}`;
+    }
     if (part.startsWith("[") && part.endsWith("]")) {
-      return part;
+      // Dynamic param: [id] -> {id}
+      const name = part.slice(1, -1);
+      return `{${name}}`;
     }
     return part;
   });

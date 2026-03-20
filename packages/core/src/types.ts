@@ -1,17 +1,41 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+export interface UploadedFile {
+  fieldName: string;
+  filename: string;
+  contentType: string;
+  data: Buffer;
+  size: number;
+}
+
 export interface Tina4Request extends IncomingMessage {
   params: Record<string, string>;
   query: Record<string, string>;
   body: unknown;
+  ip: string;
+  files: UploadedFile[];
+}
+
+export interface CookieOptions {
+  maxAge?: number;
+  expires?: Date;
+  path?: string;
+  domain?: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
 }
 
 export interface Tina4Response extends ServerResponse {
-  json(data: unknown): void;
-  html(content: string): void;
+  json(data: unknown, status?: number): Tina4Response;
+  html(content: string, status?: number): Tina4Response;
+  text(content: string, status?: number): Tina4Response;
   status(code: number): Tina4Response;
-  send(data: unknown): void;
-  redirect(url: string, code?: number): void;
+  header(name: string, value: string | number | readonly string[]): Tina4Response;
+  send(data: unknown): Tina4Response;
+  redirect(url: string, code?: number): Tina4Response;
+  cookie(name: string, value: string, options?: CookieOptions): Tina4Response;
+  clearCookie(name: string, options?: CookieOptions): Tina4Response;
   render?(template: string, data?: Record<string, unknown>): void;
 }
 
@@ -23,6 +47,7 @@ export interface RouteDefinition {
   handler: RouteHandler;
   filePath?: string;
   meta?: RouteMeta;
+  middlewares?: Middleware[];
 }
 
 export interface RouteMeta {

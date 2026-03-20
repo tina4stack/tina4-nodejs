@@ -8,13 +8,22 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
   const routes: RouteDefinition[] = [];
 
   for (const { definition } of models) {
-    const { tableName, fields } = definition;
+    const { tableName, fields, softDelete, tableFilter } = definition;
     const basePath = `/api/${tableName}`;
 
     // Find primary key field
     const pkField = Object.entries(fields).find(([, def]) => def.primaryKey)?.[0] ?? "id";
 
-    // GET /api/{table} — List with filtering and pagination
+    // Build extra WHERE conditions for soft delete and table filter
+    const extraConditions: string[] = [];
+    if (softDelete) {
+      extraConditions.push(`"is_deleted" = 0`);
+    }
+    if (tableFilter) {
+      extraConditions.push(tableFilter);
+    }
+
+    // GET /api/{table} -- List with filtering and pagination
     routes.push({
       method: "GET",
       pattern: basePath,
@@ -25,7 +34,7 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
       handler: async (req: Tina4Request, res: Tina4Response) => {
         const adapter = getAdapter();
         const options = parseQueryString(req.query);
-        const { sql, countSql, params } = buildQuery(tableName, options);
+        const { sql, countSql, params } = buildQuery(tableName, options, extraConditions);
 
         const countParams = params.slice(0, -2); // Remove LIMIT and OFFSET
         const items = adapter.query(sql, params);
@@ -46,19 +55,20 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
       },
     });
 
-    // GET /api/{table}/:id — Get by ID
+    // GET /api/{table}/:id -- Get by ID
     routes.push({
       method: "GET",
-      pattern: `${basePath}/[id]`,
+      pattern: `${basePath}/{id}`,
       meta: {
         summary: `Get ${tableName} by ID`,
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
         const adapter = getAdapter();
+        const conditions = [`"${pkField}" = ?`, ...extraConditions];
         const items = adapter.query(
-          `SELECT * FROM "${tableName}" WHERE "${pkField}" = ?`,
-          [req.params.id]
+          `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
+          [req.params.id],
         );
         if (items.length === 0) {
           res.status(404).json({ error: "Not Found", statusCode: 404 });
@@ -68,7 +78,7 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
       },
     });
 
-    // POST /api/{table} — Create
+    // POST /api/{table} -- Create
     routes.push({
       method: "POST",
       pattern: basePath,
@@ -97,29 +107,34 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
           return def && !(def.primaryKey && def.autoIncrement);
         });
 
+        // Add is_deleted = 0 for soft delete models
+        if (softDelete) {
+          insertFields.push(["is_deleted", 0]);
+        }
+
         const columns = insertFields.map(([k]) => `"${k}"`).join(", ");
         const placeholders = insertFields.map(() => "?").join(", ");
         const values = insertFields.map(([, v]) => v);
 
         const result = adapter.execute(
           `INSERT INTO "${tableName}" (${columns}) VALUES (${placeholders})`,
-          values
+          values,
         ) as { lastInsertRowid?: number };
 
         const id = result.lastInsertRowid;
         const created = adapter.query(
           `SELECT * FROM "${tableName}" WHERE "${pkField}" = ?`,
-          [id]
+          [id],
         );
 
         res.status(201).json({ data: created[0] });
       },
     });
 
-    // PUT /api/{table}/:id — Update
+    // PUT /api/{table}/:id -- Update
     routes.push({
       method: "PUT",
-      pattern: `${basePath}/[id]`,
+      pattern: `${basePath}/{id}`,
       meta: {
         summary: `Update ${tableName}`,
         tags: [tableName],
@@ -139,10 +154,11 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
 
         const adapter = getAdapter();
 
-        // Check exists
+        // Check exists (respect soft delete)
+        const conditions = [`"${pkField}" = ?`, ...extraConditions];
         const existing = adapter.query(
-          `SELECT * FROM "${tableName}" WHERE "${pkField}" = ?`,
-          [req.params.id]
+          `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
+          [req.params.id],
         );
         if (existing.length === 0) {
           res.status(404).json({ error: "Not Found", statusCode: 404 });
@@ -161,22 +177,22 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
 
         adapter.execute(
           `UPDATE "${tableName}" SET ${setClause} WHERE "${pkField}" = ?`,
-          values
+          values,
         );
 
         const updated = adapter.query(
           `SELECT * FROM "${tableName}" WHERE "${pkField}" = ?`,
-          [req.params.id]
+          [req.params.id],
         );
 
         res.json({ data: updated[0] });
       },
     });
 
-    // DELETE /api/{table}/:id — Delete
+    // DELETE /api/{table}/:id -- Delete (soft or hard)
     routes.push({
       method: "DELETE",
-      pattern: `${basePath}/[id]`,
+      pattern: `${basePath}/{id}`,
       meta: {
         summary: `Delete ${tableName}`,
         tags: [tableName],
@@ -184,21 +200,29 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
       handler: async (req: Tina4Request, res: Tina4Response) => {
         const adapter = getAdapter();
 
+        const conditions = [`"${pkField}" = ?`, ...extraConditions];
         const existing = adapter.query(
-          `SELECT * FROM "${tableName}" WHERE "${pkField}" = ?`,
-          [req.params.id]
+          `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
+          [req.params.id],
         );
         if (existing.length === 0) {
           res.status(404).json({ error: "Not Found", statusCode: 404 });
           return;
         }
 
-        adapter.execute(
-          `DELETE FROM "${tableName}" WHERE "${pkField}" = ?`,
-          [req.params.id]
-        );
-
-        res.json({ message: "Deleted", data: existing[0] });
+        if (softDelete) {
+          adapter.execute(
+            `UPDATE "${tableName}" SET is_deleted = 1 WHERE "${pkField}" = ?`,
+            [req.params.id],
+          );
+          res.json({ message: "Deleted (soft)", data: existing[0] });
+        } else {
+          adapter.execute(
+            `DELETE FROM "${tableName}" WHERE "${pkField}" = ?`,
+            [req.params.id],
+          );
+          res.json({ message: "Deleted", data: existing[0] });
+        }
       },
     });
   }

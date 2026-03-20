@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
-import { Router } from "./router.js";
+import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
 import { discoverRoutes } from "./routeDiscovery.js";
 import { createRequest, parseBody } from "./request.js";
 import { createResponse } from "./response.js";
@@ -28,6 +28,11 @@ export async function startServer(config?: Tina4Config): Promise<{
 
   const router = new Router();
   const middleware = new MiddlewareChain();
+
+  // Merge routes registered via top-level get(), post(), etc.
+  for (const route of defaultRouter.getRoutes()) {
+    router.addRoute(route);
+  }
 
   // Register health check endpoint
   const healthRoute = createHealthRoute("3.0.0");
@@ -84,7 +89,7 @@ export async function startServer(config?: Tina4Config): Promise<{
         const crudRoutes = orm.generateCrudRoutes(models);
         for (const route of crudRoutes) {
           // Only add if no file-based route already handles this
-          const existing = router.match(route.method, route.pattern.replace(/\[(\w+)\]/g, "test"));
+          const existing = router.match(route.method, route.pattern.replace(/\{(\w+)\}/g, "test").replace(/\[(\w+)\]/g, "test"));
           if (!existing) {
             router.addRoute(route);
           }
@@ -157,6 +162,13 @@ export async function startServer(config?: Tina4Config): Promise<{
       const match = router.match(req.method ?? "GET", pathname);
       if (match) {
         req.params = match.params;
+
+        // Run per-route middlewares if any
+        if (match.middlewares && match.middlewares.length > 0) {
+          const proceed = await runRouteMiddlewares(match.middlewares, req, res);
+          if (!proceed || res.writableEnded) return;
+        }
+
         await match.handler(req, res);
         if (!res.writableEnded) {
           res.end();

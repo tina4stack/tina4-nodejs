@@ -1,9 +1,10 @@
-import type { RouteHandler, RouteDefinition, RouteMeta } from "./types.js";
+import type { RouteHandler, RouteDefinition, RouteMeta, Middleware, Tina4Request, Tina4Response } from "./types.js";
 
 interface MatchResult {
   handler: RouteHandler;
   params: Record<string, string>;
   meta?: RouteMeta;
+  middlewares?: Middleware[];
 }
 
 interface CompiledRoute {
@@ -13,11 +14,26 @@ interface CompiledRoute {
   handler: RouteHandler;
   meta?: RouteMeta;
   filePath?: string;
+  middlewares?: Middleware[];
+  cached?: boolean;
+  cacheStore?: Map<string, { data: unknown; expires: number }>;
+  cacheTtl?: number;
+}
+
+export interface RouteInfo {
+  method: string;
+  path: string;
+  handler: string;
+  middlewareCount: number;
+  cached: boolean;
 }
 
 export class Router {
   private routes: Map<string, CompiledRoute[]> = new Map();
 
+  /**
+   * Add a raw route definition (used internally and by file-based routing).
+   */
   addRoute(definition: RouteDefinition): void {
     const method = definition.method.toUpperCase();
     const { regex, paramNames } = this.compilePattern(definition.pattern);
@@ -41,11 +57,70 @@ export class Router {
       handler: definition.handler,
       meta: definition.meta,
       filePath: definition.filePath,
+      middlewares: definition.middlewares,
     });
   }
 
+  /**
+   * Register a GET route programmatically.
+   */
+  get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    this.addRoute({ method: "GET", pattern: path, handler, middlewares, meta });
+  }
+
+  /**
+   * Register a POST route programmatically.
+   */
+  post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    this.addRoute({ method: "POST", pattern: path, handler, middlewares, meta });
+  }
+
+  /**
+   * Register a PUT route programmatically.
+   */
+  put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    this.addRoute({ method: "PUT", pattern: path, handler, middlewares, meta });
+  }
+
+  /**
+   * Register a PATCH route programmatically.
+   */
+  patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    this.addRoute({ method: "PATCH", pattern: path, handler, middlewares, meta });
+  }
+
+  /**
+   * Register a DELETE route programmatically.
+   */
+  delete(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    this.addRoute({ method: "DELETE", pattern: path, handler, middlewares, meta });
+  }
+
+  /**
+   * Register a route that matches ANY HTTP method.
+   */
+  any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]) {
+      this.addRoute({ method, pattern: path, handler, middlewares, meta });
+    }
+  }
+
+  /**
+   * Create a route group with a shared prefix and optional middlewares.
+   */
+  group(prefix: string, callback: (group: RouteGroup) => void, middlewares?: Middleware[]): void {
+    const group = new RouteGroup(this, prefix, middlewares);
+    callback(group);
+  }
+
+  /**
+   * Match a request method + pathname to a registered route.
+   */
   match(method: string, pathname: string): MatchResult | null {
-    const routes = this.routes.get(method.toUpperCase());
+    const upperMethod = method.toUpperCase();
+
+    // Try exact method first, then ANY routes are already registered under each method
+    const routes = this.routes.get(upperMethod);
     if (!routes) return null;
 
     for (const route of routes) {
@@ -55,13 +130,21 @@ export class Router {
         for (let i = 0; i < route.paramNames.length; i++) {
           params[route.paramNames[i]] = decodeURIComponent(match[i + 1]);
         }
-        return { handler: route.handler, params, meta: route.meta };
+        return {
+          handler: route.handler,
+          params,
+          meta: route.meta,
+          middlewares: route.middlewares,
+        };
       }
     }
 
     return null;
   }
 
+  /**
+   * Get all registered route definitions.
+   */
   getRoutes(): RouteDefinition[] {
     const all: RouteDefinition[] = [];
     for (const [method, routes] of this.routes) {
@@ -72,10 +155,30 @@ export class Router {
           handler: route.handler,
           meta: route.meta,
           filePath: route.filePath,
+          middlewares: route.middlewares,
         });
       }
     }
     return all;
+  }
+
+  /**
+   * List all routes in a debug-friendly format for CLI output.
+   */
+  listRoutes(): RouteInfo[] {
+    const info: RouteInfo[] = [];
+    for (const [method, routes] of this.routes) {
+      for (const route of routes) {
+        info.push({
+          method,
+          path: route.pattern,
+          handler: route.filePath ?? (route.handler.name || "(anonymous)"),
+          middlewareCount: route.middlewares?.length ?? 0,
+          cached: route.cached ?? false,
+        });
+      }
+    }
+    return info;
   }
 
   clear(): void {
@@ -85,18 +188,34 @@ export class Router {
   private compilePattern(pattern: string): { regex: RegExp; paramNames: string[] } {
     const paramNames: string[] = [];
 
+    // Supports {id} (primary, matches Python), [id] (file-based dirs), and :id (Express-style)
     const regexStr = pattern
       .split("/")
       .map((segment) => {
-        if (segment.startsWith("[...") && segment.endsWith("]")) {
-          // Catch-all: [...slug]
-          const name = segment.slice(4, -1);
+        // Catch-all: {...slug} or [...slug]
+        if (
+          (segment.startsWith("{...") && segment.endsWith("}")) ||
+          (segment.startsWith("[...") && segment.endsWith("]"))
+        ) {
+          const name = segment.startsWith("{") ? segment.slice(4, -1) : segment.slice(4, -1);
           paramNames.push(name);
           return "(.+)";
         }
-        if (segment.startsWith("[") && segment.endsWith("]")) {
-          // Dynamic param: [id]
+        // Dynamic param: {id} (primary syntax, matching Python)
+        if (segment.startsWith("{") && segment.endsWith("}")) {
           const name = segment.slice(1, -1);
+          paramNames.push(name);
+          return "([^/]+)";
+        }
+        // Dynamic param: [id] (file-based routing internal syntax)
+        if (segment.startsWith("[") && segment.endsWith("]")) {
+          const name = segment.slice(1, -1);
+          paramNames.push(name);
+          return "([^/]+)";
+        }
+        // Express-style param: :id
+        if (segment.startsWith(":")) {
+          const name = segment.slice(1);
           paramNames.push(name);
           return "([^/]+)";
         }
@@ -110,3 +229,163 @@ export class Router {
     };
   }
 }
+
+/**
+ * Route group for grouping routes under a shared prefix with optional middlewares.
+ */
+export class RouteGroup {
+  constructor(
+    private router: Router,
+    private prefix: string,
+    private groupMiddlewares?: Middleware[],
+  ) {}
+
+  private mergeMiddlewares(routeMiddlewares?: Middleware[]): Middleware[] | undefined {
+    const group = this.groupMiddlewares ?? [];
+    const route = routeMiddlewares ?? [];
+    const merged = [...group, ...route];
+    return merged.length > 0 ? merged : undefined;
+  }
+
+  get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    this.router.addRoute({
+      method: "GET",
+      pattern: this.prefix + path,
+      handler,
+      middlewares: this.mergeMiddlewares(middlewares),
+      meta,
+    });
+  }
+
+  post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    this.router.addRoute({
+      method: "POST",
+      pattern: this.prefix + path,
+      handler,
+      middlewares: this.mergeMiddlewares(middlewares),
+      meta,
+    });
+  }
+
+  put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    this.router.addRoute({
+      method: "PUT",
+      pattern: this.prefix + path,
+      handler,
+      middlewares: this.mergeMiddlewares(middlewares),
+      meta,
+    });
+  }
+
+  patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    this.router.addRoute({
+      method: "PATCH",
+      pattern: this.prefix + path,
+      handler,
+      middlewares: this.mergeMiddlewares(middlewares),
+      meta,
+    });
+  }
+
+  delete(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    this.router.addRoute({
+      method: "DELETE",
+      pattern: this.prefix + path,
+      handler,
+      middlewares: this.mergeMiddlewares(middlewares),
+      meta,
+    });
+  }
+
+  any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]) {
+      this.router.addRoute({
+        method,
+        pattern: this.prefix + path,
+        handler,
+        middlewares: this.mergeMiddlewares(middlewares),
+        meta,
+      });
+    }
+  }
+
+  /**
+   * Nested groups.
+   */
+  group(prefix: string, callback: (group: RouteGroup) => void, middlewares?: Middleware[]): void {
+    const nestedGroup = new RouteGroup(
+      this.router,
+      this.prefix + prefix,
+      this.mergeMiddlewares(middlewares),
+    );
+    callback(nestedGroup);
+  }
+}
+
+/**
+ * Run per-route middleware chain, then call the handler.
+ */
+export async function runRouteMiddlewares(
+  middlewares: Middleware[],
+  req: Tina4Request,
+  res: Tina4Response,
+): Promise<boolean> {
+  for (const mw of middlewares) {
+    let nextCalled = false;
+    await mw(req, res, () => {
+      nextCalled = true;
+    });
+    if (res.writableEnded) return false;
+    if (!nextCalled) return false;
+  }
+  return true;
+}
+
+/**
+ * Default global router instance.
+ * Top-level get(), post(), etc. register routes here.
+ * The server merges these routes on startup.
+ */
+export const defaultRouter = new Router();
+
+/**
+ * Top-level route registration functions — mirrors Python's decorator pattern.
+ *
+ * Usage:
+ *   import { get, post } from "@tina4/core";
+ *
+ *   get("/hello", async (req, res) => {
+ *     res.json({ message: "Hello" });
+ *   });
+ *
+ *   post("/users/{id}", async (req, res) => {
+ *     res.json({ id: req.params.id }, 201);
+ *   });
+ */
+export function get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+  defaultRouter.get(path, handler, middlewares, meta);
+}
+
+export function post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+  defaultRouter.post(path, handler, middlewares, meta);
+}
+
+export function put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+  defaultRouter.put(path, handler, middlewares, meta);
+}
+
+export function patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+  defaultRouter.patch(path, handler, middlewares, meta);
+}
+
+// Named "del" to avoid conflict with the "delete" keyword; also exported as "delete" alias below.
+export function del(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+  defaultRouter.delete(path, handler, middlewares, meta);
+}
+
+export function any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+  defaultRouter.any(path, handler, middlewares, meta);
+}
+
+// Re-export "del" as "delete" for developer convenience (use: import { delete as del } from "@tina4/core")
+export { del as delete };

@@ -8,9 +8,18 @@ export interface ParsedQuery {
   params: unknown[];
 }
 
-export function buildQuery(tableName: string, options: QueryOptions): { sql: string; countSql: string; params: unknown[] } {
+export function buildQuery(
+  tableName: string,
+  options: QueryOptions,
+  extraConditions?: string[],
+): { sql: string; countSql: string; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
+
+  // Add extra conditions (soft delete, table filter)
+  if (extraConditions) {
+    conditions.push(...extraConditions);
+  }
 
   // Parse filters
   if (options.filter) {
