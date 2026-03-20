@@ -83,22 +83,20 @@ export function rateLimiter(config?: RateLimiterConfig): Middleware {
     const remaining = Math.max(0, limit - entry.timestamps.length);
 
     // Set rate limit headers
-    res.setHeader("X-RateLimit-Limit", String(limit));
-    res.setHeader("X-RateLimit-Remaining", String(Math.max(0, remaining - 1)));
-    res.setHeader("X-RateLimit-Reset", String(resetTimestamp));
+    res.header("X-RateLimit-Limit", String(limit));
+    res.header("X-RateLimit-Remaining", String(Math.max(0, remaining - 1)));
+    res.header("X-RateLimit-Reset", String(resetTimestamp));
 
     if (entry.timestamps.length >= limit) {
       // Rate limited
       const retryAfter = Math.max(1, resetTimestamp - Math.ceil(now / 1000));
-      res.setHeader("Retry-After", String(retryAfter));
-      res.setHeader("X-RateLimit-Remaining", "0");
-      res.statusCode = 429;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({
+      res.header("Retry-After", String(retryAfter));
+      res.header("X-RateLimit-Remaining", "0");
+      res({
         error: "Too Many Requests",
         statusCode: 429,
         message: `Rate limit exceeded. Try again in ${retryAfter} seconds.`,
-      }));
+      }, 429);
       return;
     }
 

@@ -143,7 +143,7 @@ assert("Route with middleware has middlewares array", protectedMatch?.middleware
 
 // Test runRouteMiddlewares
 const mockReq = {} as Tina4Request;
-const mockRes = { writableEnded: false } as Tina4Response;
+const mockRes = { raw: { writableEnded: false } } as Tina4Response;
 
 logs.length = 0;
 const proceed = await runRouteMiddlewares(protectedMatch!.middlewares!, mockReq, mockRes);

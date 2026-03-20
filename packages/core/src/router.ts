@@ -335,7 +335,7 @@ export async function runRouteMiddlewares(
     await mw(req, res, () => {
       nextCalled = true;
     });
-    if (res.writableEnded) return false;
+    if (res.raw.writableEnded) return false;
     if (!nextCalled) return false;
   }
   return true;

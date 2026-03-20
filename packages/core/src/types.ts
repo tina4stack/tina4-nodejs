@@ -26,7 +26,7 @@ export interface CookieOptions {
   sameSite?: "Strict" | "Lax" | "None";
 }
 
-export interface Tina4Response extends ServerResponse {
+export interface Tina4ResponseMethods {
   json(data: unknown, status?: number): Tina4Response;
   html(content: string, status?: number): Tina4Response;
   text(content: string, status?: number): Tina4Response;
@@ -37,7 +37,24 @@ export interface Tina4Response extends ServerResponse {
   cookie(name: string, value: string, options?: CookieOptions): Tina4Response;
   clearCookie(name: string, options?: CookieOptions): Tina4Response;
   render?(template: string, data?: Record<string, unknown>): void;
+  /** The underlying ServerResponse for advanced use */
+  raw: ServerResponse;
 }
+
+/**
+ * Tina4 Response — callable AND has methods.
+ *
+ *   return response({ users: [] });                    // Auto-JSON
+ *   return response({ ok: true }, HTTP_CREATED);       // JSON with status
+ *   return response("<h1>Hi</h1>");                    // Auto-HTML
+ *   return response("Not found", HTTP_NOT_FOUND);      // Plain text
+ *   return response(data, HTTP_OK, APPLICATION_JSON);  // Explicit
+ *   return response.json(data, 201);                   // Explicit method
+ *   return response.redirect("/login");                // Special case
+ */
+export type Tina4Response =
+  ((data?: unknown, statusCode?: number, contentType?: string) => Tina4Response)
+  & Tina4ResponseMethods;
 
 export type RouteHandler = (req: Tina4Request, res: Tina4Response) => Promise<void> | void;
 

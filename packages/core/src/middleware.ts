@@ -20,7 +20,7 @@ export class MiddlewareChain {
       await this.middlewares[index](req, res, next);
 
       // If response was already sent, stop the chain
-      if (res.writableEnded) {
+      if (res.raw.writableEnded) {
         completed = false;
         break;
       }
@@ -94,26 +94,24 @@ export function cors(config?: CorsConfig): Middleware {
     } else if (allowedOrigins.includes(requestOrigin)) {
       originHeader = requestOrigin;
       // When responding with a specific origin, add Vary: Origin
-      res.setHeader("Vary", "Origin");
+      res.header("Vary", "Origin");
     } else {
       // Origin not allowed — still call next() but don't set CORS headers
       if (req.method === "OPTIONS") {
-        res.statusCode = 204;
-        res.end();
+        res(null, 204);
         return;
       }
       next();
       return;
     }
 
-    res.setHeader("Access-Control-Allow-Origin", originHeader);
-    res.setHeader("Access-Control-Allow-Methods", allowedMethods);
-    res.setHeader("Access-Control-Allow-Headers", allowedHeaders);
+    res.header("Access-Control-Allow-Origin", originHeader);
+    res.header("Access-Control-Allow-Methods", allowedMethods);
+    res.header("Access-Control-Allow-Headers", allowedHeaders);
 
     if (req.method === "OPTIONS") {
-      res.setHeader("Access-Control-Max-Age", String(maxAge));
-      res.statusCode = 204;
-      res.end();
+      res.header("Access-Control-Max-Age", String(maxAge));
+      res(null, 204);
       return;
     }
 
@@ -126,9 +124,9 @@ export function requestLogger(): Middleware {
   return (req, res, next) => {
     const start = Date.now();
 
-    res.on("finish", () => {
+    res.raw.on("finish", () => {
       const duration = Date.now() - start;
-      const status = res.statusCode;
+      const status = res.raw.statusCode;
       const method = req.method ?? "?";
       const url = req.url ?? "/";
       const color = status >= 400 ? "\x1b[31m" : status >= 300 ? "\x1b[33m" : "\x1b[32m";

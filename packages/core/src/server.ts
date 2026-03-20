@@ -146,7 +146,7 @@ export async function startServer(config?: Tina4Config): Promise<{
     try {
       // Run middleware chain
       await middleware.run(req, res);
-      if (res.writableEnded) return;
+      if (res.raw.writableEnded) return;
 
       // Parse request body
       await parseBody(req);
@@ -166,32 +166,22 @@ export async function startServer(config?: Tina4Config): Promise<{
         // Run per-route middlewares if any
         if (match.middlewares && match.middlewares.length > 0) {
           const proceed = await runRouteMiddlewares(match.middlewares, req, res);
-          if (!proceed || res.writableEnded) return;
+          if (!proceed || res.raw.writableEnded) return;
         }
 
         await match.handler(req, res);
-        if (!res.writableEnded) {
-          res.end();
+        if (!res.raw.writableEnded) {
+          res.raw.end();
         }
         return;
       }
 
       // 404
-      res.statusCode = 404;
-      res.json({
-        error: "Not Found",
-        statusCode: 404,
-        message: `No route found for ${req.method} ${pathname}`,
-      });
+      res({ error: "Not Found", statusCode: 404, message: `No route found for ${req.method} ${pathname}` }, 404);
     } catch (err) {
       console.error("  Error:", err);
-      if (!res.writableEnded) {
-        res.statusCode = 500;
-        res.json({
-          error: "Internal Server Error",
-          statusCode: 500,
-          message: process.env.NODE_ENV === "production" ? "Internal Server Error" : String(err),
-        });
+      if (!res.raw.writableEnded) {
+        res({ error: "Internal Server Error", statusCode: 500, message: process.env.NODE_ENV === "production" ? "Internal Server Error" : String(err) }, 500);
       }
     }
   });

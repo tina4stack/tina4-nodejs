@@ -47,9 +47,9 @@ export function tryServeStatic(
     const ext = extname(filePath);
     const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
 
-    res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Length", stat.size);
-    res.end(readFileSync(filePath));
+    res.raw.setHeader("Content-Type", contentType);
+    res.raw.setHeader("Content-Length", stat.size);
+    res.raw.end(readFileSync(filePath));
     return true;
   }
 
