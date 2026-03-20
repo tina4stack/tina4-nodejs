@@ -1,0 +1,20 @@
+{
+  "greeting": "Hello, {name}!",
+  "welcome": "Welcome to Tina4 Node.js",
+  "goodbye": "Goodbye!",
+  "items": {
+    "count": "You have {count} items",
+    "empty": "No items found",
+    "add": "Add a new item"
+  },
+  "errors": {
+    "notFound": "Page not found",
+    "unauthorized": "You are not authorized",
+    "serverError": "Something went wrong"
+  },
+  "nav": {
+    "home": "Home",
+    "about": "About",
+    "contact": "Contact"
+  }
+}

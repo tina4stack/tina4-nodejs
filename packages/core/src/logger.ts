@@ -15,14 +15,14 @@ interface LogEntry {
   timestamp: string;
   level: LogLevel;
   message: string;
-  requestId?: string;
-  data?: unknown;
+  request_id?: string;
+  context?: unknown;
 }
 
 /** ANSI color codes for terminal output */
 const COLORS: Record<LogLevel, string> = {
-  DEBUG: "\x1b[90m",   // gray
-  INFO: "\x1b[36m",    // cyan
+  DEBUG: "\x1b[36m",   // cyan
+  INFO: "\x1b[32m",    // green
   WARNING: "\x1b[33m", // yellow
   ERROR: "\x1b[31m",   // red
 };
@@ -165,11 +165,11 @@ export class Log {
     };
 
     if (Log.requestId) {
-      entry.requestId = Log.requestId;
+      entry.request_id = Log.requestId;
     }
 
     if (data !== undefined) {
-      entry.data = data;
+      entry.context = data;
     }
 
     const jsonLine = JSON.stringify(entry);
@@ -180,9 +180,10 @@ export class Log {
     } else {
       // Development: colorized stdout + file
       const color = COLORS[level];
-      const reqPart = Log.requestId ? ` \x1b[90m[${Log.requestId}]${RESET}` : "";
+      const paddedLevel = level.padEnd(7);
+      const reqPart = Log.requestId ? ` [${Log.requestId}]` : "";
       const dataPart = data !== undefined ? ` ${JSON.stringify(data)}` : "";
-      const humanLine = `${color}[${level}]${RESET} ${entry.timestamp}${reqPart} ${message}${dataPart}`;
+      const humanLine = `${color}${entry.timestamp} [${paddedLevel}]${reqPart} ${message}${dataPart}${RESET}`;
       console.log(humanLine);
       Log.writeToFile(jsonLine);
     }

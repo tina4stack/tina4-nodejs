@@ -193,13 +193,15 @@ assert("tableFilter filters to approved=1 only", approvedComments.length === 2);
 const allCommentsRaw = adapter.query(`SELECT * FROM "comments"`);
 assert("Raw query shows all comments", (allCommentsRaw as any[]).length === 3);
 
-// --- toArray / toJson ---
-console.log("\n--- toArray / toJson ---");
+// --- toDict / toArray / toJson ---
+console.log("\n--- toDict / toArray / toJson ---");
 
 const alice = User.findById(userId);
+const dict = alice!.toDict();
+assert("toDict returns plain object", typeof dict === "object" && dict.name === "Alice Updated");
+assert("toDict contains model fields", "id" in dict && "email" in dict && "age" in dict);
 const arr = alice!.toArray();
-assert("toArray returns plain object", typeof arr === "object" && arr.name === "Alice Updated");
-assert("toArray contains model fields", "id" in arr && "email" in arr && "age" in arr);
+assert("toArray returns array of values", Array.isArray(arr) && arr.includes("Alice Updated"));
 
 const json = alice!.toJson();
 const parsed = JSON.parse(json);

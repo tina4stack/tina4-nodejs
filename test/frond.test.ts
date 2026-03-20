@@ -272,6 +272,37 @@ testEngine.addTest("positive", (v) => typeof v === "number" && v > 0);
 assert("Custom test positive true", testEngine.renderString("{% if x is positive %}yes{% endif %}", { x: 5 }) === "yes");
 assert("Custom test positive false", testEngine.renderString("{% if x is positive %}yes{% else %}no{% endif %}", { x: -1 }) === "no");
 
+// ── Form Token Tests ──────────────────────────────────────────
+console.log("\n--- Form Token ---");
+
+{
+  const ftResult = engine.renderString("{{ form_token() | raw }}", {});
+  assert("form_token() renders hidden input", ftResult.includes('<input type="hidden" name="formToken" value="'));
+
+  // Extract JWT and verify structure
+  const tokenMatch = ftResult.match(/value="([^"]+)"/);
+  assert("form_token() contains a JWT", tokenMatch !== null);
+  if (tokenMatch) {
+    const token = tokenMatch[1];
+    const parts = token.split(".");
+    assert("form_token() JWT has 3 parts", parts.length === 3);
+
+    // Decode payload and verify type
+    const payloadJson = Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/") + "==", "base64").toString();
+    const payload = JSON.parse(payloadJson);
+    assert("form_token() JWT payload has type=form", payload.type === "form");
+    assert("form_token() JWT payload has exp", typeof payload.exp === "number");
+  }
+
+  // Test formToken alias
+  const ftResult2 = engine.renderString("{{ formToken() | raw }}", {});
+  assert("formToken() alias works", ftResult2.includes('<input type="hidden" name="formToken" value="'));
+
+  // Test as filter
+  const ftResult3 = engine.renderString('{{ "" | form_token | raw }}', {});
+  assert("form_token filter works", ftResult3.includes('<input type="hidden" name="formToken" value="'));
+}
+
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 

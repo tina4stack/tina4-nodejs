@@ -28,3 +28,6 @@ export { buildQuery, parseQueryString } from "./query.js";
 export { validate } from "./validation.js";
 export type { ValidationError } from "./validation.js";
 export { BaseModel } from "./baseModel.js";
+export { SQLTranslator, QueryCache } from "./sqlTranslation.js";
+export { FakeData } from "./fakeData.js";
+export { seedTable, seedOrm } from "./seeder.js";

@@ -4,7 +4,7 @@
  * Supports: variables, filters, if/elseif/else/endif, for/else/endfor,
  * extends/block, include, macro, set, comments, whitespace control, tests.
  */
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -740,7 +740,53 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
     return s;
   },
   dump: (v) => JSON.stringify(v),
+  formToken: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
+  form_token: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
 };
+
+// ── Form Token ────────────────────────────────────────────────
+
+function _b64url(data: Buffer): string {
+  return data.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * Generate a JWT form token and return a hidden input element.
+ *
+ * @param descriptor - Optional string to enrich the token payload.
+ *   - Empty: payload is {"type":"form"}
+ *   - "admin_panel": payload is {"type":"form","context":"admin_panel"}
+ *   - "checkout|order_123": payload is {"type":"form","context":"checkout","ref":"order_123"}
+ *
+ * @returns `<input type="hidden" name="formToken" value="TOKEN">`
+ */
+function _generateFormToken(descriptor: string = ""): SafeString {
+  const secret = process.env.SECRET || "tina4-default-secret";
+  const ttlMinutes = parseInt(process.env.TINA4_TOKEN_LIMIT || "30", 10);
+
+  const header = { alg: "HS256", typ: "JWT" };
+  const now = Math.floor(Date.now() / 1000);
+  const payload: Record<string, unknown> = { type: "form", iat: now, exp: now + ttlMinutes * 60 };
+
+  if (descriptor) {
+    if (descriptor.includes("|")) {
+      const [ctx, ref] = descriptor.split("|", 2);
+      payload.context = ctx;
+      payload.ref = ref;
+    } else {
+      payload.context = descriptor;
+    }
+  }
+
+  const h = _b64url(Buffer.from(JSON.stringify(header)));
+  const p = _b64url(Buffer.from(JSON.stringify(payload)));
+  const sigInput = `${h}.${p}`;
+  const sig = _b64url(createHmac("sha256", secret).update(sigInput).digest());
+
+  const token = `${h}.${p}.${sig}`;
+  const escaped = token.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return new SafeString(`<input type="hidden" name="formToken" value="${escaped}">`);
+}
 
 // ── Frond Engine ───────────────────────────────────────────────
 
@@ -765,6 +811,10 @@ export class Frond {
     this._allowedTags = null;
     this._allowedVars = null;
     this.fragmentCache = new Map();
+
+    // Built-in global functions
+    this.globals.formToken = (descriptor?: string) => _generateFormToken(descriptor || "");
+    this.globals.form_token = (descriptor?: string) => _generateFormToken(descriptor || "");
   }
 
   sandbox(filters?: string[], tags?: string[], vars?: string[]): Frond {

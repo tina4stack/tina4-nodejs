@@ -183,6 +183,146 @@ assert("OP_CLOSE is 0x8", OP_CLOSE === 0x8);
 assert("CLOSE_NORMAL is 1000", CLOSE_NORMAL === 1000);
 assert("CLOSE_PROTOCOL_ERROR is 1002", CLOSE_PROTOCOL_ERROR === 1002);
 
+// --- Extended Payload: 16-bit length ---
+console.log("\n--- Extended Payload: 16-bit length ---");
+
+const payload200 = Buffer.alloc(200, 0x42); // 200 bytes of 'B'
+const frame200 = buildFrame(OP_TEXT, payload200);
+const parsed200 = parseFrame(frame200);
+assert("16-bit frame parsed correctly", parsed200 !== null);
+assert("16-bit frame payload length is 200", parsed200!.payload.length === 200);
+assert("16-bit frame payload content correct", parsed200!.payload[0] === 0x42 && parsed200!.payload[199] === 0x42);
+assert("16-bit frame fin is true", parsed200!.fin === true);
+assert("16-bit frame opcode is TEXT", parsed200!.opcode === OP_TEXT);
+
+// --- Extended Payload: 64-bit length ---
+console.log("\n--- Extended Payload: 64-bit length ---");
+
+const payload70k = Buffer.alloc(70000, 0x43); // 70000 bytes of 'C'
+const frame70k = buildFrame(OP_BINARY, payload70k);
+assert("64-bit frame uses 127 extended length byte", frame70k[1] === 127);
+
+const parsed70k = parseFrame(frame70k);
+assert("64-bit frame parsed correctly", parsed70k !== null);
+assert("64-bit frame payload length is 70000", parsed70k!.payload.length === 70000);
+assert("64-bit frame payload content correct", parsed70k!.payload[0] === 0x43 && parsed70k!.payload[69999] === 0x43);
+assert("64-bit frame opcode is BINARY", parsed70k!.opcode === OP_BINARY);
+
+// --- Close codes ---
+console.log("\n--- Close codes ---");
+
+// 1000 - Normal
+const closeNormal = Buffer.alloc(2);
+closeNormal.writeUInt16BE(1000, 0);
+const closeNormalFrame = buildFrame(OP_CLOSE, closeNormal);
+const parsedCloseNormal = parseFrame(closeNormalFrame);
+assert("close 1000 (normal) round-trips", parsedCloseNormal!.payload.readUInt16BE(0) === 1000);
+
+// 1001 - Going Away
+const closeGoingAway = Buffer.alloc(2);
+closeGoingAway.writeUInt16BE(1001, 0);
+const closeGAFrame = buildFrame(OP_CLOSE, closeGoingAway);
+const parsedCloseGA = parseFrame(closeGAFrame);
+assert("close 1001 (going away) round-trips", parsedCloseGA!.payload.readUInt16BE(0) === 1001);
+
+// 1002 - Protocol Error
+const closeProto = Buffer.alloc(2);
+closeProto.writeUInt16BE(1002, 0);
+const closeProtoFrame = buildFrame(OP_CLOSE, closeProto);
+const parsedCloseProto = parseFrame(closeProtoFrame);
+assert("close 1002 (protocol error) round-trips", parsedCloseProto!.payload.readUInt16BE(0) === 1002);
+
+// Close with reason text
+const closeWithReason = Buffer.alloc(2 + Buffer.byteLength("Server shutting down"));
+closeWithReason.writeUInt16BE(1001, 0);
+closeWithReason.write("Server shutting down", 2, "utf-8");
+const closeReasonFrame = buildFrame(OP_CLOSE, closeWithReason);
+const parsedCloseReason = parseFrame(closeReasonFrame);
+assert("close with reason preserves code", parsedCloseReason!.payload.readUInt16BE(0) === 1001);
+assert("close with reason preserves text", parsedCloseReason!.payload.subarray(2).toString("utf-8") === "Server shutting down");
+
+// --- Multiple opcodes ---
+console.log("\n--- Multiple opcodes ---");
+
+// OP_CONTINUATION
+const contFrame = buildFrame(0x0, Buffer.from("continuation"));
+const parsedCont = parseFrame(contFrame);
+assert("continuation frame opcode is 0x0", parsedCont!.opcode === 0x0);
+
+// OP_PING with data
+const pingData = Buffer.from("ping-payload");
+const pingFrame2 = buildFrame(OP_PING, pingData);
+const parsedPing2 = parseFrame(pingFrame2);
+assert("ping with data round-trips", parsedPing2!.payload.toString("utf-8") === "ping-payload");
+assert("ping opcode is 0x9", parsedPing2!.opcode === 0x9);
+
+// OP_PONG with data
+const pongData = Buffer.from("pong-payload");
+const pongFrame2 = buildFrame(OP_PONG, pongData);
+const parsedPong2 = parseFrame(pongFrame2);
+assert("pong with data round-trips", parsedPong2!.payload.toString("utf-8") === "pong-payload");
+assert("pong opcode is 0xa", parsedPong2!.opcode === 0xa);
+
+// --- FIN flag ---
+console.log("\n--- FIN flag ---");
+
+const noFinFrame = buildFrame(OP_TEXT, Buffer.from("partial"), false);
+const parsedNoFin = parseFrame(noFinFrame);
+assert("non-FIN frame has fin=false", parsedNoFin!.fin === false);
+assert("non-FIN frame still has correct payload", parsedNoFin!.payload.toString("utf-8") === "partial");
+
+const finFrame = buildFrame(OP_TEXT, Buffer.from("complete"), true);
+const parsedFin = parseFrame(finFrame);
+assert("FIN frame has fin=true", parsedFin!.fin === true);
+
+// --- Empty payload frames ---
+console.log("\n--- Empty payload ---");
+
+const emptyTextFrame = buildFrame(OP_TEXT, Buffer.alloc(0));
+const parsedEmpty = parseFrame(emptyTextFrame);
+assert("empty payload frame parses", parsedEmpty !== null);
+assert("empty payload has length 0", parsedEmpty!.payload.length === 0);
+
+const emptyPingFrame = buildFrame(OP_PING, Buffer.alloc(0));
+const parsedEmptyPing = parseFrame(emptyPingFrame);
+assert("empty ping frame parses", parsedEmptyPing !== null);
+
+// --- Exactly 125 bytes (max small payload) ---
+console.log("\n--- Boundary payload sizes ---");
+
+const payload125 = Buffer.alloc(125, 0x44);
+const frame125 = buildFrame(OP_TEXT, payload125);
+assert("125-byte payload uses small length encoding", frame125[1] === 125);
+const parsed125 = parseFrame(frame125);
+assert("125-byte payload round-trips", parsed125!.payload.length === 125);
+
+const payload126 = Buffer.alloc(126, 0x45);
+const frame126 = buildFrame(OP_TEXT, payload126);
+assert("126-byte payload uses 16-bit extended length", frame126[1] === 126);
+const parsed126 = parseFrame(frame126);
+assert("126-byte payload round-trips", parsed126!.payload.length === 126);
+
+const payload65535 = Buffer.alloc(65535, 0x46);
+const frame65535 = buildFrame(OP_TEXT, payload65535);
+assert("65535-byte payload uses 16-bit extended length", frame65535[1] === 126);
+
+const payload65536 = Buffer.alloc(65536, 0x47);
+const frame65536 = buildFrame(OP_TEXT, payload65536);
+assert("65536-byte payload uses 64-bit extended length", frame65536[1] === 127);
+
+// --- Truncated extended frames ---
+console.log("\n--- Truncated frames ---");
+
+// 16-bit extended but only 3 bytes available
+const trunc16 = Buffer.from([0x81, 126, 0x00]); // missing second byte of length
+const parsedTrunc16 = parseFrame(trunc16);
+assert("truncated 16-bit frame returns null", parsedTrunc16 === null);
+
+// 64-bit extended but only 5 bytes available
+const trunc64 = Buffer.from([0x81, 127, 0x00, 0x00, 0x00]); // missing rest of 8-byte length
+const parsedTrunc64 = parseFrame(trunc64);
+assert("truncated 64-bit frame returns null", parsedTrunc64 === null);
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

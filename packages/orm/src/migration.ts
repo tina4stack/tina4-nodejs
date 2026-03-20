@@ -42,7 +42,7 @@ export function syncModels(models: DiscoveredModel[]): void {
 /**
  * Migration tracking table name.
  */
-const MIGRATION_TABLE = "_tina4_migrations";
+const MIGRATION_TABLE = "tina4_migration";
 
 /**
  * Ensure the migration tracking table exists.

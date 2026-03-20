@@ -20,7 +20,7 @@ export type { CorsConfig } from "./middleware.js";
 export { createRequest, parseBody } from "./request.js";
 export { createResponse } from "./response.js";
 export { tryServeStatic } from "./static.js";
-export { loadEnv, getEnv, requireEnv } from "./dotenv.js";
+export { loadEnv, getEnv, requireEnv, hasEnv, allEnv, resetEnv } from "./dotenv.js";
 export { Log } from "./logger.js";
 export { createHealthRoute } from "./health.js";
 export { rateLimiter } from "./rateLimiter.js";
@@ -36,14 +36,15 @@ export {
   APPLICATION_OCTET, TEXT_HTML, TEXT_PLAIN, TEXT_CSV, TEXT_XML,
 } from "./constants.js";
 export {
-  generateToken, verifyToken, decodeToken,
-  hashPassword, verifyPassword,
+  createToken, validateToken, getPayload,
+  hashPassword, checkPassword,
   authMiddleware,
+  refreshToken, authenticateRequest, validateApiKey,
 } from "./auth.js";
-export { Session } from "./session.js";
-export type { SessionConfig } from "./session.js";
+export { Session, FileSessionHandler, RedisSessionHandler } from "./session.js";
+export type { SessionConfig, SessionHandler } from "./session.js";
 export { I18n } from "./i18n.js";
-export { Seeder } from "./seeder.js";
+export { FakeData } from "./fakeData.js";
 export { ScssCompiler } from "./scss.js";
 export type { ScssConfig } from "./scss.js";
 export { Queue } from "./queue.js";
@@ -61,3 +62,26 @@ export { ServiceRunner, matchCronField, matchesCron } from "./service.js";
 export type { ServiceOptions, ServiceContext, ServiceHandler, ServiceInfo } from "./service.js";
 export { responseCache, clearCache, cacheStats } from "./cache.js";
 export type { ResponseCacheConfig } from "./cache.js";
+export { Api } from "./api.js";
+export type { ApiResult } from "./api.js";
+export { Events } from "./events.js";
+export { DevAdmin, MessageLog, RequestInspector, ErrorTracker, DevMailboxStore, DevQueue, WsTracker } from "./devAdmin.js";
+export { Messenger } from "./messenger.js";
+export type { SendResult, EmailMessage } from "./messenger.js";
+export { DevMailbox, createMessenger } from "./devMailbox.js";
+export { WSDLService, WSDLOp } from "./wsdl.js";
+export type { WSDLOperation } from "./wsdl.js";
+export { HtmlElement, htmlElement, addHtmlHelpers } from "./htmlElement.js";
+export { renderErrorOverlay, renderProductionError, isDebugMode } from "./errorOverlay.js";
+export { detectAi, detectAiNames, generateContext, installAiContext, installAllAiContext, aiStatusReport } from "./ai.js";
+export type { AiTool, AiDetection } from "./ai.js";
+export type { ImapMessage, ImapFullMessage } from "./messenger.js";
+export { RabbitMQBackend } from "./queueBackends/rabbitmqBackend.js";
+export type { RabbitMQConfig } from "./queueBackends/rabbitmqBackend.js";
+export { KafkaBackend } from "./queueBackends/kafkaBackend.js";
+export type { KafkaConfig } from "./queueBackends/kafkaBackend.js";
+export { MongoSessionHandler } from "./sessionHandlers/mongoHandler.js";
+export type { MongoSessionConfig } from "./sessionHandlers/mongoHandler.js";
+export { ValkeySessionHandler } from "./sessionHandlers/valkeyHandler.js";
+export type { ValkeySessionConfig } from "./sessionHandlers/valkeyHandler.js";
+export { tests, assertEqual, assertThrows, assertTrue, assertFalse, runAllTests, resetTests } from "./testing.js";

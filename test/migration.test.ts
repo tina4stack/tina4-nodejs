@@ -44,11 +44,11 @@ const adapter = getAdapter();
 console.log("--- Migration Table ---");
 
 ensureMigrationTable();
-assert("Migration table created", (adapter as any).tableExists("_tina4_migrations"));
+assert("Migration table created", (adapter as any).tableExists("tina4_migration"));
 
 // Calling again should be idempotent
 ensureMigrationTable();
-assert("ensureMigrationTable is idempotent", (adapter as any).tableExists("_tina4_migrations"));
+assert("ensureMigrationTable is idempotent", (adapter as any).tableExists("tina4_migration"));
 
 // --- Batch Tracking ---
 console.log("\n--- Batch Tracking ---");

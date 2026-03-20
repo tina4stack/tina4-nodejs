@@ -3,9 +3,10 @@
  * Run with: npx tsx test/auth.test.ts
  */
 import {
-  generateToken, verifyToken, decodeToken,
-  hashPassword, verifyPassword,
+  createToken, validateToken, getPayload,
+  hashPassword, checkPassword,
   authMiddleware,
+  refreshToken, authenticateRequest, validateApiKey,
 } from "../packages/core/src/auth.ts";
 import { generateKeyPairSync } from "node:crypto";
 import type { Tina4Request, Tina4Response, Middleware } from "../packages/core/src/types.ts";
@@ -32,20 +33,20 @@ console.log("=== Auth Tests ===\n");
 
 console.log("-- JWT HS256 --");
 
-const token1 = generateToken({ userId: 42, role: "admin" }, SECRET, 3600, "HS256");
-assert("generateToken returns a string", typeof token1 === "string");
+const token1 = createToken({ userId: 42, role: "admin" }, SECRET, 3600, "HS256");
+assert("createToken returns a string", typeof token1 === "string");
 assert("JWT has 3 parts", token1.split(".").length === 3);
 
-const payload1 = verifyToken(token1, SECRET, "HS256");
-assert("verifyToken returns payload", payload1 !== null);
+const payload1 = validateToken(token1, SECRET, "HS256");
+assert("validateToken returns payload", payload1 !== null);
 assert("payload contains userId", payload1?.userId === 42);
 assert("payload contains role", payload1?.role === "admin");
 assert("payload contains iat", typeof payload1?.iat === "number");
 assert("payload contains exp", typeof payload1?.exp === "number");
 
 // Standard claims
-const token2 = generateToken({ sub: "user:1", iss: "tina4" }, SECRET);
-const payload2 = verifyToken(token2, SECRET);
+const token2 = createToken({ sub: "user:1", iss: "tina4" }, SECRET);
+const payload2 = validateToken(token2, SECRET);
 assert("sub claim preserved", payload2?.sub === "user:1");
 assert("iss claim preserved", payload2?.iss === "tina4");
 
@@ -53,42 +54,42 @@ assert("iss claim preserved", payload2?.iss === "tina4");
 
 console.log("\n-- JWT Expiration --");
 
-const expiredToken = generateToken({ userId: 1 }, SECRET, -1); // already expired
-const expiredPayload = verifyToken(expiredToken, SECRET);
+const expiredToken = createToken({ userId: 1 }, SECRET, -1); // already expired
+const expiredPayload = validateToken(expiredToken, SECRET);
 assert("Expired token returns null", expiredPayload === null);
 
 // Token with no expiry (expiresIn = 0)
-const noExpToken = generateToken({ userId: 1 }, SECRET, 0);
-const noExpPayload = verifyToken(noExpToken, SECRET);
+const noExpToken = createToken({ userId: 1 }, SECRET, 0);
+const noExpPayload = validateToken(noExpToken, SECRET);
 assert("Token with expiresIn=0 has no exp claim", noExpPayload !== null && !("exp" in noExpPayload));
 
 // ── JWT Invalid Signature ─────────────────────────────────────────
 
 console.log("\n-- JWT Invalid Signature --");
 
-const badSigPayload = verifyToken(token1, "wrong-secret");
+const badSigPayload = validateToken(token1, "wrong-secret");
 assert("Wrong secret returns null", badSigPayload === null);
 
 const tamperedToken = token1.slice(0, -3) + "abc";
-const tamperedPayload = verifyToken(tamperedToken, SECRET);
+const tamperedPayload = validateToken(tamperedToken, SECRET);
 assert("Tampered token returns null", tamperedPayload === null);
 
-assert("Malformed token returns null", verifyToken("not.a.jwt", SECRET) === null);
-assert("Empty string returns null", verifyToken("", SECRET) === null);
-assert("Two parts returns null", verifyToken("a.b", SECRET) === null);
+assert("Malformed token returns null", validateToken("not.a.jwt", SECRET) === null);
+assert("Empty string returns null", validateToken("", SECRET) === null);
+assert("Two parts returns null", validateToken("a.b", SECRET) === null);
 
 // ── JWT Decode (no verification) ──────────────────────────────────
 
 console.log("\n-- JWT Decode --");
 
-const decoded1 = decodeToken(token1);
-assert("decodeToken returns payload", decoded1 !== null);
-assert("decoded contains userId", decoded1?.userId === 42);
+const decoded1 = getPayload(token1);
+assert("getPayload returns payload", decoded1 !== null);
+assert("getPayload contains userId", decoded1?.userId === 42);
 
-const decodedExpired = decodeToken(expiredToken);
-assert("decodeToken ignores expiration", decodedExpired !== null);
-assert("decodeToken ignores bad signature", decodeToken(tamperedToken) !== null);
-assert("decodeToken returns null for garbage", decodeToken("xxx") === null);
+const decodedExpired = getPayload(expiredToken);
+assert("getPayload ignores expiration", decodedExpired !== null);
+assert("getPayload ignores bad signature", getPayload(tamperedToken) !== null);
+assert("getPayload returns null for garbage", getPayload("xxx") === null);
 
 // ── JWT RS256 ─────────────────────────────────────────────────────
 
@@ -100,14 +101,14 @@ const { privateKey, publicKey } = generateKeyPairSync("rsa", {
   privateKeyEncoding: { type: "pkcs8", format: "pem" },
 });
 
-const rsaToken = generateToken({ userId: 99 }, privateKey, 3600, "RS256");
+const rsaToken = createToken({ userId: 99 }, privateKey, 3600, "RS256");
 assert("RS256 token generated", typeof rsaToken === "string");
 
-const rsaPayload = verifyToken(rsaToken, publicKey, "RS256");
+const rsaPayload = validateToken(rsaToken, publicKey, "RS256");
 assert("RS256 token verifies with public key", rsaPayload !== null);
 assert("RS256 payload contains userId", rsaPayload?.userId === 99);
 
-const rsaWrongKey = verifyToken(rsaToken, SECRET, "HS256");
+const rsaWrongKey = validateToken(rsaToken, SECRET, "HS256");
 assert("RS256 token fails with HS256 verify", rsaWrongKey === null);
 
 // ── Password Hashing ─────────────────────────────────────────────
@@ -119,23 +120,23 @@ assert("hashPassword returns a string", typeof hash1 === "string");
 assert("Hash has 4 colon-separated parts", hash1.split(":").length === 4);
 assert("Hash starts with pbkdf2_sha256", hash1.startsWith("pbkdf2_sha256:"));
 
-assert("verifyPassword correct password", verifyPassword("mypassword", hash1) === true);
-assert("verifyPassword wrong password", verifyPassword("wrongpassword", hash1) === false);
+assert("checkPassword correct password", checkPassword("mypassword", hash1) === true);
+assert("checkPassword wrong password", checkPassword("wrongpassword", hash1) === false);
 
 // Custom salt
 const hash2 = hashPassword("test", "abcdef1234567890");
 assert("Custom salt is used", hash2.includes("abcdef1234567890"));
-assert("Custom salt verifies", verifyPassword("test", hash2) === true);
+assert("Custom salt verifies", checkPassword("test", hash2) === true);
 
 // Different hashes for same password (random salt)
 const hash3 = hashPassword("same");
 const hash4 = hashPassword("same");
 assert("Different salts produce different hashes", hash3 !== hash4);
-assert("Both verify correctly", verifyPassword("same", hash3) && verifyPassword("same", hash4));
+assert("Both verify correctly", checkPassword("same", hash3) && checkPassword("same", hash4));
 
 // Edge cases
-assert("Malformed hash returns false", verifyPassword("test", "invalid") === false);
-assert("Empty hash returns false", verifyPassword("test", "") === false);
+assert("Malformed hash returns false", checkPassword("test", "invalid") === false);
+assert("Empty hash returns false", checkPassword("test", "") === false);
 
 // ── Auth Middleware ───────────────────────────────────────────────
 
@@ -170,7 +171,7 @@ function mockResponse(): { response: Tina4Response; lastCall: { data: unknown; s
 
 // Valid token
 {
-  const validToken = generateToken({ userId: 7 }, SECRET);
+  const validToken = createToken({ userId: 7 }, SECRET);
   const req = mockRequest(`Bearer ${validToken}`);
   const { response, lastCall } = mockResponse() as any;
   let nextCalled = false;
@@ -182,7 +183,7 @@ function mockResponse(): { response: Tina4Response; lastCall: { data: unknown; s
 
 // Expired token
 {
-  const expToken = generateToken({ userId: 1 }, SECRET, -1);
+  const expToken = createToken({ userId: 1 }, SECRET, -1);
   const req = mockRequest(`Bearer ${expToken}`);
   const mock = mockResponse();
   let nextCalled = false;

@@ -2,6 +2,35 @@
 
 > This is not a framework. Tina4 is invisible infrastructure: convention-over-configuration, batteries included, file system as source of truth.
 
+## How to Run the Interactive Demo
+
+From the monorepo root:
+
+```bash
+npm install                  # install workspace dependencies (once)
+npx tsx demo/app.ts          # start the demo server
+```
+
+Or from the demo directory:
+
+```bash
+cd demo
+npx tsx app.ts
+```
+
+The demo server starts at **http://localhost:3000** with:
+
+- **Landing page** at `/` listing all feature demos
+- **Swagger UI** at `/swagger` auto-documenting every endpoint
+- **Health check** at `/health`
+- **20+ feature demos** at `/demo/*` — each returns JSON showing the feature in action
+
+All demo routes return structured JSON: `{ feature, status, output, notes }`.
+
+Configuration is in `demo/.env`. The demo uses a temporary SQLite database that is cleaned up on exit.
+
+---
+
 Each demo below covers a specific feature of Tina4 for Node.js/TypeScript with working code examples.
 
 ## Getting Started

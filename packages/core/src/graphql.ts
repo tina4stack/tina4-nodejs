@@ -505,6 +505,205 @@ export class GraphQL {
     return lines.join("\n");
   }
 
+  /**
+   * Auto-generate type, queries, and CRUD mutations from an ORM model class.
+   *
+   * The model class must have static `tableName` (string) and `fields`
+   * (Record<string, { type: string; primaryKey?: boolean }>).
+   *
+   * Creates:
+   *   - A GraphQL type from the model's fields
+   *   - Queries: {modelName}(id: ID!): Type, {modelNames}(limit: Int, offset: Int): [Type]
+   *   - Mutations: create{ModelName}, update{ModelName}, delete{ModelName}
+   *
+   * @param modelClass - The model class with static tableName and fields
+   * @param adapter - Optional database adapter; if omitted, resolvers will
+   *                  import getAdapter from @tina4/orm at call time
+   */
+  fromOrm(
+    modelClass: {
+      tableName: string;
+      fields: Record<string, { type: string; primaryKey?: boolean }>;
+      name?: string;
+    },
+    adapter?: {
+      query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => T[];
+      execute: (sql: string, params?: unknown[]) => unknown;
+    },
+  ): GraphQL {
+    const tableName = modelClass.tableName;
+    const fields = modelClass.fields;
+    const className = modelClass.name ?? tableName.charAt(0).toUpperCase() + tableName.slice(1);
+
+    // Find primary key
+    let pkField = "id";
+    for (const [fname, fdef] of Object.entries(fields)) {
+      if (fdef.primaryKey) {
+        pkField = fname;
+        break;
+      }
+    }
+
+    // Map model field types to GraphQL types
+    const gqlFields: Record<string, GraphQLField> = {};
+    for (const [fname, fdef] of Object.entries(fields)) {
+      let gqlType: string;
+      if (fdef.primaryKey) {
+        gqlType = "ID";
+      } else {
+        switch (fdef.type) {
+          case "integer":
+            gqlType = "Int";
+            break;
+          case "number":
+            gqlType = "Float";
+            break;
+          case "boolean":
+            gqlType = "Boolean";
+            break;
+          case "string":
+          case "text":
+          case "datetime":
+          default:
+            gqlType = "String";
+            break;
+        }
+      }
+      gqlFields[fname] = { type: gqlType };
+    }
+
+    this.addType(className, gqlFields);
+
+    // Build singular/plural names
+    const singular = className.charAt(0).toLowerCase() + className.slice(1);
+    const plural = singular + "s";
+
+    // Helper to get the adapter (lazy so it works even if adapter is set later)
+    const getDb = () => {
+      if (adapter) return adapter;
+      // Try dynamic import fallback — caller must provide adapter
+      throw new Error(
+        `GraphQL fromOrm: no database adapter provided for ${className}. Pass an adapter to fromOrm().`,
+      );
+    };
+
+    // Query: single record by ID
+    this.addQuery(singular, { id: "ID!" }, className, (root, args) => {
+      const db = getDb();
+      const rows = db.query(
+        `SELECT * FROM "${tableName}" WHERE "${pkField}" = ?`,
+        [args.id],
+      );
+      return rows.length > 0 ? rows[0] : null;
+    });
+
+    // Query: list with pagination
+    this.addQuery(
+      plural,
+      { limit: "Int", offset: "Int" },
+      `[${className}]`,
+      (root, args) => {
+        const db = getDb();
+        const limit = (args.limit as number) ?? 10;
+        const offset = (args.offset as number) ?? 0;
+        return db.query(
+          `SELECT * FROM "${tableName}" LIMIT ? OFFSET ?`,
+          [limit, offset],
+        );
+      },
+    );
+
+    // Build mutation args (all fields except PK)
+    const mutationArgs: Record<string, string> = {};
+    for (const [fname, fdef] of Object.entries(fields)) {
+      if (fname !== pkField) {
+        mutationArgs[fname] = "String";
+      }
+    }
+
+    // Mutation: create
+    this.addMutation(
+      `create${className}`,
+      mutationArgs,
+      className,
+      (root, args) => {
+        const db = getDb();
+        const fieldNames = Object.keys(args);
+        const placeholders = fieldNames.map(() => "?");
+        const values = fieldNames.map((f) => args[f]);
+
+        db.execute(
+          `INSERT INTO "${tableName}" (${fieldNames.map((f) => `"${f}"`).join(", ")}) VALUES (${placeholders.join(", ")})`,
+          values,
+        );
+
+        // Fetch the newly created record
+        const rows = db.query(
+          `SELECT * FROM "${tableName}" ORDER BY "${pkField}" DESC LIMIT 1`,
+        );
+        return rows.length > 0 ? rows[0] : null;
+      },
+    );
+
+    // Mutation: update
+    const updateArgs: Record<string, string> = { id: "ID!", ...mutationArgs };
+    this.addMutation(
+      `update${className}`,
+      updateArgs,
+      className,
+      (root, args) => {
+        const db = getDb();
+        const id = args.id;
+        const setClauses: string[] = [];
+        const values: unknown[] = [];
+
+        for (const [k, v] of Object.entries(args)) {
+          if (k !== "id") {
+            setClauses.push(`"${k}" = ?`);
+            values.push(v);
+          }
+        }
+
+        if (setClauses.length === 0) return null;
+        values.push(id);
+
+        db.execute(
+          `UPDATE "${tableName}" SET ${setClauses.join(", ")} WHERE "${pkField}" = ?`,
+          values,
+        );
+
+        const rows = db.query(
+          `SELECT * FROM "${tableName}" WHERE "${pkField}" = ?`,
+          [id],
+        );
+        return rows.length > 0 ? rows[0] : null;
+      },
+    );
+
+    // Mutation: delete
+    this.addMutation(
+      `delete${className}`,
+      { id: "ID!" },
+      "Boolean",
+      (root, args) => {
+        const db = getDb();
+        const rows = db.query(
+          `SELECT * FROM "${tableName}" WHERE "${pkField}" = ?`,
+          [args.id],
+        );
+        if (rows.length === 0) return false;
+
+        db.execute(
+          `DELETE FROM "${tableName}" WHERE "${pkField}" = ?`,
+          [args.id],
+        );
+        return true;
+      },
+    );
+
+    return this;
+  }
+
   // ── Private helpers ──────────────────────────────────────
 
   private formatArgs(args: Record<string, string>): string {

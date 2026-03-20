@@ -21,7 +21,7 @@ Console output during sync:
 
 ## Migration Tracking
 
-For schema changes beyond what auto-sync handles (data transforms, index creation, column renames), use the migration tracking system. Migrations are tracked in a `_tina4_migrations` table with batch numbers.
+For schema changes beyond what auto-sync handles (data transforms, index creation, column renames), use the migration tracking system. Migrations are tracked in a `tina4_migration` table with batch numbers.
 
 ### Applying a Migration
 
@@ -99,7 +99,7 @@ if (isMigrationApplied("001_create_index_users_email")) {
 
 ## Migration Table Schema
 
-The `_tina4_migrations` table is created automatically when `ensureMigrationTable()` is called:
+The `tina4_migration` table is created automatically when `ensureMigrationTable()` is called:
 
 | Column | Type | Description |
 |--------|------|-------------|

@@ -92,6 +92,7 @@ export function loadEnv(path?: string): Record<string, string> {
   for (const [key, value] of Object.entries(parsed)) {
     if (process.env[key] === undefined) {
       process.env[key] = value;
+      _loadedKeys.push(key);
     }
   }
 
@@ -122,4 +123,37 @@ export function requireEnv(key: string): string {
     throw new Error(`Required environment variable "${key}" is not set.`);
   }
   return value;
+}
+
+/**
+ * Check if an environment variable exists (is defined in process.env).
+ *
+ * @param key - The environment variable name.
+ * @returns true if the variable is set, false otherwise.
+ */
+export function hasEnv(key: string): boolean {
+  return process.env[key] !== undefined;
+}
+
+/**
+ * Return all currently loaded environment variables.
+ *
+ * @returns A shallow copy of process.env as a record.
+ */
+export function allEnv(): Record<string, string | undefined> {
+  return { ...process.env };
+}
+
+/** Keys loaded by loadEnv, tracked for resetEnv(). */
+const _loadedKeys: string[] = [];
+
+/**
+ * Remove all environment variables that were loaded by loadEnv().
+ * Useful for testing. Only removes keys set by loadEnv(), not pre-existing system env vars.
+ */
+export function resetEnv(): void {
+  for (const key of _loadedKeys) {
+    delete process.env[key];
+  }
+  _loadedKeys.length = 0;
 }

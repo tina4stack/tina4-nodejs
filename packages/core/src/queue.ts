@@ -47,10 +47,21 @@ export class Queue {
   private backend: string;
   private basePath: string;
   private seq: number = 0;
+  private externalBackend: { push: (q: string, p: unknown, d?: number) => string; pop: (q: string) => QueueJob | null; size: (q: string) => number; clear: (q: string) => void } | null = null;
 
   constructor(backend?: string, config?: QueueConfig) {
     this.backend = backend ?? config?.backend ?? process.env.TINA4_QUEUE_BACKEND ?? "file";
     this.basePath = config?.path ?? process.env.TINA4_QUEUE_PATH ?? "data/queue";
+
+    // Initialize external backends
+    if (this.backend === "rabbitmq") {
+      // Dynamic import to avoid loading when not needed
+      const { RabbitMQBackend } = require("./queueBackends/rabbitmqBackend.js");
+      this.externalBackend = new RabbitMQBackend();
+    } else if (this.backend === "kafka") {
+      const { KafkaBackend } = require("./queueBackends/kafkaBackend.js");
+      this.externalBackend = new KafkaBackend();
+    }
   }
 
   /**
@@ -75,6 +86,9 @@ export class Queue {
    * Add a job to the queue. Returns job ID.
    */
   push(queue: string, payload: unknown, delay?: number): string {
+    if (this.externalBackend) {
+      return this.externalBackend.push(queue, payload, delay);
+    }
     const dir = this.ensureDir(queue);
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -99,6 +113,9 @@ export class Queue {
    * Atomically claim the next available job. Returns null if empty.
    */
   pop(queue: string): QueueJob | null {
+    if (this.externalBackend) {
+      return this.externalBackend.pop(queue);
+    }
     const dir = this.ensureDir(queue);
 
     let files: string[];
@@ -201,6 +218,9 @@ export class Queue {
    * Count pending jobs in a queue.
    */
   size(queue: string): number {
+    if (this.externalBackend) {
+      return this.externalBackend.size(queue);
+    }
     const dir = this.ensureDir(queue);
     let files: string[];
     try {
@@ -225,6 +245,10 @@ export class Queue {
    * Remove all jobs from a queue.
    */
   clear(queue: string): void {
+    if (this.externalBackend) {
+      this.externalBackend.clear(queue);
+      return;
+    }
     const dir = this.ensureDir(queue);
     try {
       const files = readdirSync(dir).filter(f => f.endsWith(".json"));

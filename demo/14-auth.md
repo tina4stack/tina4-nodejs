@@ -7,9 +7,9 @@ Tina4 provides zero-dependency JWT token generation/verification, password hashi
 ### Generate a Token
 
 ```typescript
-import { generateToken } from "@tina4/core";
+import { createToken } from "@tina4/core";
 
-const token = generateToken(
+const token = createToken(
   { userId: 1, role: "admin" },  // Payload (claims)
   "my-secret-key",                // Secret
   3600,                            // Expires in seconds (default: 3600)
@@ -21,9 +21,9 @@ const token = generateToken(
 ### Verify a Token
 
 ```typescript
-import { verifyToken } from "@tina4/core";
+import { validateToken } from "@tina4/core";
 
-const payload = verifyToken(token, "my-secret-key");
+const payload = validateToken(token, "my-secret-key");
 if (payload) {
   console.log(payload.userId); // 1
   console.log(payload.role);   // "admin"
@@ -32,15 +32,15 @@ if (payload) {
 }
 ```
 
-`verifyToken` returns `null` if the token is invalid, has a bad signature, or is expired.
+`validateToken` returns `null` if the token is invalid, has a bad signature, or is expired.
 
 ### Decode Without Verification
 
 ```typescript
-import { decodeToken } from "@tina4/core";
+import { getPayload } from "@tina4/core";
 
 // Decode payload without checking signature or expiry
-const payload = decodeToken(token);
+const payload = getPayload(token);
 ```
 
 ### Supported Algorithms
@@ -55,15 +55,15 @@ const payload = decodeToken(token);
 Uses PBKDF2-SHA256 with random salt. Constant-time comparison prevents timing attacks.
 
 ```typescript
-import { hashPassword, verifyPassword } from "@tina4/core";
+import { hashPassword, checkPassword } from "@tina4/core";
 
 // Hash a password
 const hash = hashPassword("mypassword123");
 // "pbkdf2_sha256:100000:a1b2c3d4...:e5f6g7h8..."
 
 // Verify against hash
-const isValid = verifyPassword("mypassword123", hash);  // true
-const isWrong = verifyPassword("wrongpassword", hash);   // false
+const isValid = checkPassword("mypassword123", hash);  // true
+const isWrong = checkPassword("wrongpassword", hash);   // false
 ```
 
 ### Hash Format
@@ -107,7 +107,7 @@ get("/api/profile", async (req, res) => {
 ```typescript
 // src/routes/api/auth/login/post.ts
 import type { Tina4Request, Tina4Response } from "@tina4/core";
-import { generateToken, verifyPassword } from "@tina4/core";
+import { createToken, checkPassword } from "@tina4/core";
 import { getAdapter } from "@tina4/orm";
 
 export default async function (req: Tina4Request, res: Tina4Response): Promise<void> {
@@ -119,12 +119,12 @@ export default async function (req: Tina4Request, res: Tina4Response): Promise<v
     [email],
   );
 
-  if (users.length === 0 || !verifyPassword(password, users[0].password_hash)) {
+  if (users.length === 0 || !checkPassword(password, users[0].password_hash)) {
     res.status(401).json({ error: "Invalid credentials" });
     return;
   }
 
-  const token = generateToken(
+  const token = createToken(
     { userId: users[0].id, email: users[0].email },
     process.env.JWT_SECRET ?? "change-me",
     86400, // 24 hours

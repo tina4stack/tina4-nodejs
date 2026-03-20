@@ -3,13 +3,13 @@
  *
  * Uses only Node.js built-in `crypto` module. No external dependencies.
  *
- *   import { generateToken, verifyToken, hashPassword, verifyPassword } from "./auth.js";
+ *   import { createToken, validateToken, hashPassword, checkPassword } from "./auth.js";
  *
- *   const token = generateToken({ userId: 1 }, "my-secret");
- *   const payload = verifyToken(token, "my-secret");
+ *   const token = createToken({ userId: 1 }, "my-secret");
+ *   const payload = validateToken(token, "my-secret");
  *
  *   const hash = hashPassword("secret123");
- *   verifyPassword("secret123", hash);  // true
+ *   checkPassword("secret123", hash);  // true
  */
 import { createHmac, createSign, createVerify, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Middleware, Tina4Request, Tina4Response } from "./types.js";
@@ -30,7 +30,7 @@ function base64urlDecode(str: string): Buffer {
 // ── JWT ───────────────────────────────────────────────────────────
 
 /**
- * Generate a signed JWT token.
+ * Create a signed JWT token.
  *
  * @param payload  - Claims to encode (e.g. `{ userId: 1, role: "admin" }`)
  * @param secret   - HMAC secret (HS256) or PEM private key (RS256)
@@ -38,7 +38,7 @@ function base64urlDecode(str: string): Buffer {
  * @param algorithm - "HS256" or "RS256" (default "HS256")
  * @returns Signed JWT string: header.payload.signature
  */
-export function generateToken(
+export function createToken(
   payload: Record<string, unknown>,
   secret: string,
   expiresIn: number = 3600,
@@ -61,9 +61,9 @@ export function generateToken(
 }
 
 /**
- * Verify a JWT token and return the decoded payload, or null if invalid/expired.
+ * Validate a JWT token and return the decoded payload, or null if invalid/expired.
  */
-export function verifyToken(
+export function validateToken(
   token: string,
   secret: string,
   algorithm: string = "HS256",
@@ -92,9 +92,9 @@ export function verifyToken(
 }
 
 /**
- * Decode a JWT payload WITHOUT verifying signature or expiration.
+ * Get the JWT payload WITHOUT verifying signature or expiration.
  */
-export function decodeToken(token: string): Record<string, unknown> | null {
+export function getPayload(token: string): Record<string, unknown> | null {
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
@@ -158,9 +158,9 @@ export function hashPassword(
 }
 
 /**
- * Verify a password against a PBKDF2 hash string.
+ * Check a password against a PBKDF2 hash string.
  */
-export function verifyPassword(password: string, hash: string): boolean {
+export function checkPassword(password: string, hash: string): boolean {
   try {
     const parts = hash.split(":");
     if (parts.length !== 4 || parts[0] !== "pbkdf2_sha256") return false;
@@ -199,7 +199,7 @@ export function authMiddleware(secret: string, algorithm: string = "HS256"): Mid
     }
 
     const token = authHeader.slice(7);
-    const payload = verifyToken(token, secret, algorithm);
+    const payload = validateToken(token, secret, algorithm);
 
     if (payload === null) {
       res({ error: "Unauthorized" }, 401);
@@ -209,4 +209,79 @@ export function authMiddleware(secret: string, algorithm: string = "HS256"): Mid
     (req as any).auth = payload;
     next();
   };
+}
+
+// ── Token Refresh ────────────────────────────────────────────────
+
+/**
+ * Refresh a JWT token — validate the existing token then re-sign
+ * with a fresh expiry.
+ *
+ * @param token     - Existing JWT to refresh
+ * @param secret    - HMAC secret or PEM key
+ * @param expiresIn - New lifetime in seconds (default 3600)
+ * @param algorithm - "HS256" or "RS256" (default "HS256")
+ * @returns New signed JWT string, or null if the input token is invalid/expired
+ */
+export function refreshToken(
+  token: string,
+  secret: string,
+  expiresIn: number = 3600,
+  algorithm: string = "HS256",
+): string | null {
+  const payload = validateToken(token, secret, algorithm);
+  if (payload === null) return null;
+
+  // Strip standard timing claims so createToken sets fresh ones
+  const { iat: _iat, exp: _exp, ...claims } = payload;
+  return createToken(claims, secret, expiresIn, algorithm);
+}
+
+// ── Request Authentication ───────────────────────────────────────
+
+/**
+ * Extract a Bearer token from request headers and validate it.
+ *
+ * @param headers   - Object with header keys (e.g. `{ authorization: "Bearer ..." }`)
+ * @param secret    - HMAC secret or PEM public key
+ * @param algorithm - "HS256" or "RS256" (default "HS256")
+ * @returns Decoded payload, or null if missing/invalid
+ */
+export function authenticateRequest(
+  headers: Record<string, string | string[] | undefined>,
+  secret: string,
+  algorithm: string = "HS256",
+): Record<string, unknown> | null {
+  const authHeader =
+    (headers.authorization ?? headers.Authorization ?? "") as string;
+
+  if (!authHeader.startsWith("Bearer ")) return null;
+
+  const token = authHeader.slice(7);
+  return validateToken(token, secret, algorithm);
+}
+
+// ── API Key Validation ───────────────────────────────────────────
+
+/**
+ * Compare an API key against an expected value.
+ * If `expected` is omitted, falls back to the `TINA4_API_KEY` env var.
+ *
+ * Uses constant-time comparison to prevent timing attacks.
+ *
+ * @param provided - The API key provided by the caller
+ * @param expected - The correct API key (defaults to `process.env.TINA4_API_KEY`)
+ * @returns true if the keys match
+ */
+export function validateApiKey(
+  provided: string,
+  expected?: string,
+): boolean {
+  const key = expected ?? process.env.TINA4_API_KEY;
+  if (!key || !provided) return false;
+
+  const a = Buffer.from(provided);
+  const b = Buffer.from(key);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }

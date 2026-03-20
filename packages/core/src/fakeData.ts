@@ -1,8 +1,8 @@
-// Tina4 Seeder — Fake data generation and database seeding, zero dependencies.
-// Uses Node.js built-in crypto for randomness. All methods are static.
+// Tina4 FakeData — Fake data generation and database seeding, zero dependencies.
+// Instance-based with optional seeded PRNG for deterministic output.
 
 import { randomInt, randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 
 // ── Word Banks ───────────────────────────────────────────────────
@@ -79,109 +79,150 @@ const CURRENCIES = [
   "SEK", "NZD", "MXN", "SGD", "HKD", "NOK", "ZAR", "INR",
 ];
 
-// ── Helpers ──────────────────────────────────────────────────────
+// ── Seeded PRNG (mulberry32) ─────────────────────────────────────
 
-function pick<T>(arr: readonly T[]): T {
-  return arr[randomInt(arr.length)];
+/**
+ * Mulberry32: a simple 32-bit seeded PRNG.
+ * Returns a function that produces values in [0, 1).
+ */
+function mulberry32(seed: number): () => number {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-// ── Seeder Class ─────────────────────────────────────────────────
+// ── FakeData Class ───────────────────────────────────────────────
 
-export class Seeder {
-  static firstName(): string {
-    return pick(FIRST_NAMES);
+export class FakeData {
+  private rng: () => number;
+  private seeded: boolean;
+
+  constructor(seed?: number) {
+    if (seed !== undefined) {
+      this.rng = mulberry32(seed);
+      this.seeded = true;
+    } else {
+      this.rng = Math.random;
+      this.seeded = false;
+    }
   }
 
-  static lastName(): string {
-    return pick(LAST_NAMES);
+  /** Static factory — create a seeded FakeData instance. */
+  static seed(seed: number): FakeData {
+    return new FakeData(seed);
   }
 
-  static fullName(): string {
-    return `${Seeder.firstName()} ${Seeder.lastName()}`;
+  /** Returns a random integer in [min, max) using the instance PRNG. */
+  private randInt(min: number, max: number): number {
+    if (this.seeded) {
+      return min + Math.floor(this.rng() * (max - min));
+    }
+    return randomInt(min, max);
   }
 
-  static email(): string {
-    const first = Seeder.firstName().toLowerCase();
-    const last = Seeder.lastName().toLowerCase();
-    const domain = pick(DOMAINS);
+  /** Pick a random element from an array. */
+  private pick<T>(arr: readonly T[]): T {
+    return arr[this.randInt(0, arr.length)];
+  }
+
+  firstName(): string {
+    return this.pick(FIRST_NAMES);
+  }
+
+  lastName(): string {
+    return this.pick(LAST_NAMES);
+  }
+
+  fullName(): string {
+    return `${this.firstName()} ${this.lastName()}`;
+  }
+
+  email(): string {
+    const first = this.firstName().toLowerCase();
+    const last = this.lastName().toLowerCase();
+    const domain = this.pick(DOMAINS);
     return `${first}.${last}@${domain}`;
   }
 
-  static phone(): string {
-    const area = randomInt(200, 1000);
-    const mid = randomInt(100, 1000);
-    const end = randomInt(1000, 10000);
+  phone(): string {
+    const area = this.randInt(200, 1000);
+    const mid = this.randInt(100, 1000);
+    const end = this.randInt(1000, 10000);
     return `+1 (${area}) ${mid}-${end}`;
   }
 
-  static address(): string {
-    const num = randomInt(1, 1000);
-    const street = pick(STREETS);
-    const city = pick(CITIES);
+  address(): string {
+    const num = this.randInt(1, 1000);
+    const street = this.pick(STREETS);
+    const city = this.pick(CITIES);
     return `${num} ${street}, ${city}`;
   }
 
-  static city(): string {
-    return pick(CITIES);
+  city(): string {
+    return this.pick(CITIES);
   }
 
-  static country(): string {
-    return pick(COUNTRIES);
+  country(): string {
+    return this.pick(COUNTRIES);
   }
 
-  static zipCode(): string {
-    return String(randomInt(10000, 100000));
+  zipCode(): string {
+    return String(this.randInt(10000, 100000));
   }
 
-  static company(): string {
-    const last = pick(LAST_NAMES);
+  company(): string {
+    const last = this.pick(LAST_NAMES);
     const suffixes = ["Inc", "LLC", "Corp", "Ltd", "Group", "Solutions", "Tech"];
-    return `${last} ${pick(suffixes)}`;
+    return `${last} ${this.pick(suffixes)}`;
   }
 
-  static jobTitle(): string {
-    return pick(JOB_TITLES);
+  jobTitle(): string {
+    return this.pick(JOB_TITLES);
   }
 
-  static paragraph(sentences = 4): string {
+  paragraph(sentences = 4): string {
     const parts: string[] = [];
     for (let i = 0; i < sentences; i++) {
-      parts.push(Seeder.sentence(randomInt(5, 13)));
+      parts.push(this.sentence(this.randInt(5, 13)));
     }
     return parts.join(" ");
   }
 
-  static sentence(words = 8): string {
+  sentence(words = 8): string {
     const parts: string[] = [];
     for (let i = 0; i < words; i++) {
-      parts.push(pick(WORDS));
+      parts.push(this.pick(WORDS));
     }
     const s = parts.join(" ");
     return s.charAt(0).toUpperCase() + s.slice(1) + ".";
   }
 
-  static word(): string {
-    return pick(WORDS);
+  word(): string {
+    return this.pick(WORDS);
   }
 
-  static integer(min = 0, max = 10000): number {
-    return randomInt(min, max + 1);
+  integer(min = 0, max = 10000): number {
+    return this.randInt(min, max + 1);
   }
 
-  static float(min = 0, max = 1000, decimals = 2): number {
-    const raw = min + Math.random() * (max - min);
+  float(min = 0, max = 1000, decimals = 2): number {
+    const raw = min + this.rng() * (max - min);
     return Number(raw.toFixed(decimals));
   }
 
-  static boolean(): boolean {
-    return randomInt(2) === 1;
+  boolean(): boolean {
+    return this.randInt(0, 2) === 1;
   }
 
-  static date(start?: string, end?: string): string {
+  date(start?: string, end?: string): string {
     const startDate = start ? new Date(start) : new Date("2020-01-01");
     const endDate = end ? new Date(end) : new Date("2025-12-31");
     const diffDays = Math.floor((endDate.getTime() - startDate.getTime()) / 86400000);
-    const offset = randomInt(0, diffDays + 1);
+    const offset = this.randInt(0, diffDays + 1);
     const d = new Date(startDate.getTime() + offset * 86400000);
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -189,45 +230,51 @@ export class Seeder {
     return `${yyyy}-${mm}-${dd}`;
   }
 
-  static uuid(): string {
+  uuid(): string {
+    if (this.seeded) {
+      // Generate a UUID-like string from seeded PRNG
+      const hex = () => this.randInt(0, 16).toString(16);
+      const block = (n: number) => Array.from({ length: n }, hex).join("");
+      return `${block(8)}-${block(4)}-${block(4)}-${block(4)}-${block(12)}`;
+    }
     return randomUUID();
   }
 
-  static url(): string {
-    const domain = pick(DOMAINS);
-    const p1 = pick(WORDS);
-    const p2 = pick(WORDS);
+  url(): string {
+    const domain = this.pick(DOMAINS);
+    const p1 = this.pick(WORDS);
+    const p2 = this.pick(WORDS);
     return `https://${domain}/${p1}/${p2}`;
   }
 
-  static ipAddress(): string {
-    return `${randomInt(1, 256)}.${randomInt(0, 256)}.${randomInt(0, 256)}.${randomInt(1, 256)}`;
+  ipAddress(): string {
+    return `${this.randInt(1, 256)}.${this.randInt(0, 256)}.${this.randInt(0, 256)}.${this.randInt(1, 256)}`;
   }
 
-  static color(): string {
-    return pick(COLORS);
+  color(): string {
+    return this.pick(COLORS);
   }
 
-  static hexColor(): string {
-    const hex = randomInt(0, 0x1000000).toString(16).padStart(6, "0");
+  hexColor(): string {
+    const hex = this.randInt(0, 0x1000000).toString(16).padStart(6, "0");
     return `#${hex}`;
   }
 
   /** Returns fake test credit card numbers (Luhn-valid test patterns). */
-  static creditCard(): string {
+  creditCard(): string {
     const prefixes = ["4111111111111111", "5500000000000004", "340000000000009", "30000000000004"];
-    return pick(prefixes);
+    return this.pick(prefixes);
   }
 
-  static currency(): string {
-    return pick(CURRENCIES);
+  currency(): string {
+    return this.pick(CURRENCIES);
   }
 
   /**
    * Run seed files from a directory. Each file should export a default async function.
    * Returns an array of executed file paths.
    */
-  static async seed(seedDir?: string): Promise<string[]> {
+  async runSeeds(seedDir?: string): Promise<string[]> {
     const dir = resolve(seedDir ?? "src/seeds");
     if (!existsSync(dir)) return [];
     const files = readdirSync(dir)
@@ -252,7 +299,7 @@ export class Seeder {
   /**
    * Run a generator function `count` times and return the results.
    */
-  static run(fn: () => Record<string, unknown>, count = 1): Record<string, unknown>[] {
+  run(fn: () => Record<string, unknown>, count = 1): Record<string, unknown>[] {
     const results: Record<string, unknown>[] = [];
     for (let i = 0; i < count; i++) {
       results.push(fn());
