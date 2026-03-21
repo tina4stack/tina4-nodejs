@@ -5,7 +5,7 @@
  * extends/block, include, macro, set, comments, whitespace control, tests.
  */
 import { createHash, createHmac } from "node:crypto";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 // ── Types ──────────────────────────────────────────────────────
@@ -833,6 +833,10 @@ export class Frond {
   private _allowedVars: Set<string> | null;
   private fragmentCache: Map<string, [string, number]>;
   private _autoEscape: boolean;
+  /** Token pre-compilation cache for file templates */
+  private compiled = new Map<string, { tokens: Token[]; mtime: number }>();
+  /** Token pre-compilation cache for string templates */
+  private compiledStrings = new Map<string, Token[]>();
 
   constructor(templateDir: string = "src/templates") {
     this.templateDir = resolve(templateDir);
@@ -881,13 +885,54 @@ export class Frond {
 
   render(template: string, data?: Record<string, unknown>): string {
     const context = { ...this.globals, ...(data || {}) };
-    const source = this.load(template);
-    return this.execute(source, context);
+    const filePath = join(this.templateDir, template);
+
+    if (!existsSync(filePath)) {
+      throw new Error(`Template not found: ${filePath}`);
+    }
+
+    const debugMode = (process.env.TINA4_DEBUG || "").toLowerCase() === "true";
+    const cached = this.compiled.get(template);
+
+    if (cached) {
+      if (debugMode) {
+        // Dev mode: check if file changed
+        const mtime = statSync(filePath).mtimeMs;
+        if (cached.mtime === mtime) {
+          return this.executeCached(cached.tokens, context);
+        }
+      } else {
+        // Production: skip mtime check, cache is permanent
+        return this.executeCached(cached.tokens, context);
+      }
+    }
+
+    // Cache miss — load, tokenize, cache
+    const source = readFileSync(filePath, "utf-8");
+    const mtime = statSync(filePath).mtimeMs;
+    const tokens = tokenize(source);
+    this.compiled.set(template, { tokens, mtime });
+    return this.executeWithSource(source, tokens, context);
   }
 
   renderString(source: string, data?: Record<string, unknown>): string {
     const context = { ...this.globals, ...(data || {}) };
-    return this.execute(source, context);
+
+    const key = createHash("md5").update(source).digest("hex");
+    const cachedTokens = this.compiledStrings.get(key);
+    if (cachedTokens) {
+      return this.executeCached(cachedTokens, context);
+    }
+
+    const tokens = tokenize(source);
+    this.compiledStrings.set(key, tokens);
+    return this.executeCached(tokens, context);
+  }
+
+  /** Clear all compiled template caches. */
+  clearCache(): void {
+    this.compiled.clear();
+    this.compiledStrings.clear();
   }
 
   private load(name: string): string {
@@ -896,6 +941,48 @@ export class Frond {
       throw new Error(`Template not found: ${filePath}`);
     }
     return readFileSync(filePath, "utf-8");
+  }
+
+  /** Execute pre-tokenized template against context. */
+  private executeCached(tokens: Token[], context: Record<string, unknown>): string {
+    if (Object.keys(this.tests).length > 0) {
+      context.__frond_tests__ = this.tests;
+    }
+
+    // Check if first non-text token is an extends block
+    for (const [ttype, raw] of tokens) {
+      if (ttype === "TEXT") {
+        if (raw.trim()) break;
+        continue;
+      }
+      if (ttype === "BLOCK") {
+        const [content] = stripTag(raw);
+        if (content.startsWith("extends ")) {
+          // Extends requires source-based execution for block extraction
+          const source = tokens.map(([, v]) => v).join("");
+          return this.execute(source, context);
+        }
+      }
+      break;
+    }
+    return this.renderTokens(tokens, context);
+  }
+
+  /** Execute with both source and pre-tokenized tokens available. */
+  private executeWithSource(source: string, tokens: Token[], context: Record<string, unknown>): string {
+    if (Object.keys(this.tests).length > 0) {
+      context.__frond_tests__ = this.tests;
+    }
+
+    const extendsMatch = source.match(/\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/);
+    if (extendsMatch) {
+      const parentName = extendsMatch[1];
+      const parentSource = this.load(parentName);
+      const childBlocks = this.extractBlocks(source);
+      return this.renderWithBlocks(parentSource, context, childBlocks);
+    }
+
+    return this.renderTokens(tokens, context);
   }
 
   private execute(source: string, context: Record<string, unknown>): string {

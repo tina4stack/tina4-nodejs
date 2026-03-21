@@ -416,6 +416,95 @@ assert("Inline if with missing variable",
 assert("Inline if with numeric",
   engine.renderString("{{ count if count else 0 }}", { count: 5 }) === "5");
 
+// ── Token Pre-Compilation (Cache) Tests ───────────────────────
+
+console.log("\n--- Token Cache ---");
+
+assert("render_string cache same output",
+  (() => {
+    const src = "Hello {{ name }}!";
+    const first = engine.renderString(src, { name: "World" });
+    const second = engine.renderString(src, { name: "World" });
+    return first === "Hello World!" && first === second;
+  })());
+
+assert("cached tokens work with different data",
+  (() => {
+    const src = "{{ greeting }}, {{ name }}!";
+    const r1 = engine.renderString(src, { greeting: "Hi", name: "Alice" });
+    const r2 = engine.renderString(src, { greeting: "Bye", name: "Bob" });
+    return r1 === "Hi, Alice!" && r2 === "Bye, Bob!";
+  })());
+
+assert("file render cache same output",
+  (() => {
+    writeFileSync(join(tmpDir, "cached.html"), "<p>{{ msg }}</p>");
+    const e = new Frond(tmpDir);
+    const first = e.render("cached.html", { msg: "hello" });
+    const second = e.render("cached.html", { msg: "hello" });
+    return first === "<p>hello</p>" && first === second;
+  })());
+
+assert("cached file tokens work with different data",
+  (() => {
+    writeFileSync(join(tmpDir, "cached2.html"), "{{ x }} + {{ y }}");
+    const e = new Frond(tmpDir);
+    const r1 = e.render("cached2.html", { x: 1, y: 2 });
+    const r2 = e.render("cached2.html", { x: 10, y: 20 });
+    return r1 === "1 + 2" && r2 === "10 + 20";
+  })());
+
+assert("clearCache empties caches",
+  (() => {
+    const e = new Frond(tmpDir);
+    e.renderString("{{ x }}", { x: 1 });
+    e.clearCache();
+    // After clearing, rendering still works (re-tokenizes)
+    return e.renderString("{{ x }}", { x: 2 }) === "2";
+  })());
+
+assert("for loop works from cache",
+  (() => {
+    const src = "{% for i in items %}{{ i }},{% endfor %}";
+    const data = { items: [1, 2, 3] };
+    const first = engine.renderString(src, data);
+    const second = engine.renderString(src, data);
+    return first === "1,2,3," && first === second;
+  })());
+
+assert("conditionals work from cache",
+  (() => {
+    const src = "{% if show %}visible{% else %}hidden{% endif %}";
+    const r1 = engine.renderString(src, { show: true });
+    const r2 = engine.renderString(src, { show: false });
+    return r1 === "visible" && r2 === "hidden";
+  })());
+
+assert("cache invalidation on file change (dev mode)",
+  (() => {
+    process.env.TINA4_DEBUG = "true";
+    try {
+      const cacheDir = "/tmp/frond-cache-test";
+      try { rmSync(cacheDir, { recursive: true }); } catch {}
+      mkdirSync(cacheDir, { recursive: true });
+      const e = new Frond(cacheDir);
+
+      writeFileSync(join(cacheDir, "changing.html"), "Version 1: {{ v }}");
+      const r1 = e.render("changing.html", { v: "a" });
+
+      // Simulate file change with slight delay to update mtime
+      const start = Date.now();
+      while (Date.now() - start < 50) { /* spin */ }
+      writeFileSync(join(cacheDir, "changing.html"), "Version 2: {{ v }}");
+      const r2 = e.render("changing.html", { v: "b" });
+
+      try { rmSync(cacheDir, { recursive: true }); } catch {}
+      return r1 === "Version 1: a" && r2 === "Version 2: b";
+    } finally {
+      delete process.env.TINA4_DEBUG;
+    }
+  })());
+
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 
