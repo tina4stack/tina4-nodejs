@@ -7,7 +7,10 @@ export type {
   ColumnInfo,
   QueryOptions,
   RelationshipDefinition,
+  PaginatedResult,
 } from "./types.js";
+
+export { FetchResult } from "./types.js";
 
 export { initDatabase, getAdapter, setAdapter, closeDatabase, parseDatabaseUrl, setNamedAdapter, getNamedAdapter } from "./database.js";
 export type { DatabaseConfig, ParsedDatabaseUrl } from "./database.js";

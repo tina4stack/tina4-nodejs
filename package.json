@@ -1,6 +1,6 @@
 {
   "name": "tina4-nodejs",
-  "version": "3.0.0-rc.2",
+  "version": "3.0.0",
   "type": "module",
   "description": "This is not a framework. Tina4 for Node.js/TypeScript — zero deps, 38 built-in features.",
   "keywords": ["tina4", "framework", "web", "api", "orm", "graphql", "websocket", "typescript"],
@@ -15,6 +15,7 @@
     "packages/*"
   ],
   "main": "packages/core/src/index.ts",
+  "types": "packages/core/src/index.ts",
   "exports": {
     ".": "./packages/core/src/index.ts",
     "./orm": "./packages/orm/src/index.ts",
