@@ -368,6 +368,54 @@ writeFileSync(join(tmpDir, "macros/forms.twig"), '{% macro field(label, name) %}
 assert("from import subdirectory",
   engine.renderString('{% from "macros/forms.twig" import field %}{{ field("Name", "name") }}', {}).includes("Name:name"));
 
+// ── Spaceless Tag ─────────────────────────────────────────────
+console.log("\n--- Spaceless Tag ---");
+
+assert("Spaceless removes whitespace between tags",
+  engine.renderString("{% spaceless %}<div>  <p>  Hello  </p>  </div>{% endspaceless %}", {}) === "<div><p>  Hello  </p></div>");
+
+assert("Spaceless preserves content whitespace",
+  engine.renderString("{% spaceless %}<span>  text  </span>{% endspaceless %}", {}) === "<span>  text  </span>");
+
+assert("Spaceless with multiline",
+  engine.renderString("{% spaceless %}\n<div>\n    <p>Hi</p>\n</div>\n{% endspaceless %}", {}).includes("<div><p>"));
+
+assert("Spaceless with variables",
+  engine.renderString("{% spaceless %}<div>  <span>{{ name }}</span>  </div>{% endspaceless %}", { name: "Alice" }) === "<div><span>Alice</span></div>");
+
+// ── Autoescape Tag ────────────────────────────────────────────
+console.log("\n--- Autoescape Tag ---");
+
+assert("Autoescape false disables escaping",
+  engine.renderString('{% autoescape false %}{{ html }}{% endautoescape %}', { html: "<b>bold</b>" }) === "<b>bold</b>");
+
+assert("Autoescape true keeps escaping",
+  engine.renderString('{% autoescape true %}{{ html }}{% endautoescape %}', { html: "<b>bold</b>" }).includes("&lt;b&gt;"));
+
+assert("Autoescape false with filters",
+  engine.renderString('{% autoescape false %}{{ name | upper }}{% endautoescape %}', { name: "alice" }) === "ALICE");
+
+assert("Autoescape false multiple variables",
+  engine.renderString('{% autoescape false %}{{ a }} {{ b }}{% endautoescape %}', { a: "<i>x</i>", b: "<b>y</b>" }) === "<i>x</i> <b>y</b>");
+
+// ── Inline If Expression ──────────────────────────────────────
+console.log("\n--- Inline If Expression ---");
+
+assert("Inline if true branch",
+  engine.renderString("{{ 'yes' if active else 'no' }}", { active: true }) === "yes");
+
+assert("Inline if false branch",
+  engine.renderString("{{ 'yes' if active else 'no' }}", { active: false }) === "no");
+
+assert("Inline if with variable value",
+  engine.renderString("{{ name if name else 'Anonymous' }}", { name: "Alice" }) === "Alice");
+
+assert("Inline if with missing variable",
+  engine.renderString("{{ name if name else 'Anonymous' }}", {}) === "Anonymous");
+
+assert("Inline if with numeric",
+  engine.renderString("{{ count if count else 0 }}", { count: 5 }) === "5");
+
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 

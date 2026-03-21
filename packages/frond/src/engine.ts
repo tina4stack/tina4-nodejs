@@ -183,6 +183,13 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
     }
   }
 
+  // Jinja2-style inline if: value if condition else other_value
+  const inlineIfMatch = expr.match(/^(.+?)\s+if\s+(.+?)\s+else\s+(.+)$/);
+  if (inlineIfMatch) {
+    const cond = evalExpr(inlineIfMatch[2], context);
+    return cond ? evalExpr(inlineIfMatch[1], context) : evalExpr(inlineIfMatch[3], context);
+  }
+
   // Null coalescing: value ?? "default"
   const qqIdx = expr.indexOf("??");
   if (qqIdx !== -1) {
@@ -825,6 +832,7 @@ export class Frond {
   private _allowedTags: Set<string> | null;
   private _allowedVars: Set<string> | null;
   private fragmentCache: Map<string, [string, number]>;
+  private _autoEscape: boolean;
 
   constructor(templateDir: string = "src/templates") {
     this.templateDir = resolve(templateDir);
@@ -836,6 +844,7 @@ export class Frond {
     this._allowedTags = null;
     this._allowedVars = null;
     this.fragmentCache = new Map();
+    this._autoEscape = true;
 
     // Built-in global functions
     this.globals.formToken = (descriptor?: string) => _generateFormToken(descriptor || "");
@@ -1015,6 +1024,14 @@ export class Frond {
           const [result, skip] = this.handleCache(tokens, i, context);
           output.push(result);
           i = skip;
+        } else if (tag === "spaceless") {
+          const [result, skip] = this.handleSpaceless(tokens, i, context);
+          output.push(result);
+          i = skip;
+        } else if (tag === "autoescape") {
+          const [result, skip] = this.handleAutoescape(tokens, i, context);
+          output.push(result);
+          i = skip;
         } else if (tag === "block" || tag === "endblock" || tag === "extends") {
           i++; // Already handled
         } else {
@@ -1092,8 +1109,8 @@ export class Frond {
       return value.value;
     }
 
-    // Auto-escape HTML unless marked safe
-    if (!isSafe && typeof value === "string") {
+    // Auto-escape HTML unless marked safe or auto-escape is disabled
+    if (!isSafe && this._autoEscape && typeof value === "string") {
       value = htmlEscape(value);
     }
 
@@ -1471,5 +1488,79 @@ export class Frond {
     const rendered = this.renderTokens([...bodyTokens], context);
     this.fragmentCache.set(cacheKey, [rendered, Date.now() + ttl * 1000]);
     return [rendered, i];
+  }
+
+  private handleSpaceless(tokens: Token[], start: number, context: Record<string, unknown>): [string, number] {
+    const bodyTokens: Token[] = [];
+    let i = start + 1;
+    let depth = 0;
+    while (i < tokens.length) {
+      if (tokens[i][0] === "BLOCK") {
+        const [tagContent] = stripTag(tokens[i][1]);
+        const tag = tagContent.split(/\s+/)[0] || "";
+        if (tag === "spaceless") {
+          depth++;
+          bodyTokens.push(tokens[i]);
+        } else if (tag === "endspaceless") {
+          if (depth === 0) {
+            i++;
+            break;
+          }
+          depth--;
+          bodyTokens.push(tokens[i]);
+        } else {
+          bodyTokens.push(tokens[i]);
+        }
+      } else {
+        bodyTokens.push(tokens[i]);
+      }
+      i++;
+    }
+
+    let rendered = this.renderTokens([...bodyTokens], context);
+    rendered = rendered.replace(/>\s+</g, "><");
+    return [rendered, i];
+  }
+
+  private handleAutoescape(tokens: Token[], start: number, context: Record<string, unknown>): [string, number] {
+    const [content] = stripTag(tokens[start][1]);
+    const modeMatch = content.match(/^autoescape\s+(false|true)/);
+    const autoEscapeOn = !(modeMatch && modeMatch[1] === "false");
+
+    const bodyTokens: Token[] = [];
+    let i = start + 1;
+    let depth = 0;
+    while (i < tokens.length) {
+      if (tokens[i][0] === "BLOCK") {
+        const [tagContent] = stripTag(tokens[i][1]);
+        const tag = tagContent.split(/\s+/)[0] || "";
+        if (tag === "autoescape") {
+          depth++;
+          bodyTokens.push(tokens[i]);
+        } else if (tag === "endautoescape") {
+          if (depth === 0) {
+            i++;
+            break;
+          }
+          depth--;
+          bodyTokens.push(tokens[i]);
+        } else {
+          bodyTokens.push(tokens[i]);
+        }
+      } else {
+        bodyTokens.push(tokens[i]);
+      }
+      i++;
+    }
+
+    if (!autoEscapeOn) {
+      const oldAutoEscape = this._autoEscape;
+      this._autoEscape = false;
+      const rendered = this.renderTokens([...bodyTokens], context);
+      this._autoEscape = oldAutoEscape;
+      return [rendered, i];
+    }
+
+    return [this.renderTokens([...bodyTokens], context), i];
   }
 }
