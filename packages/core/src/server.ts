@@ -21,6 +21,9 @@ const __dirname = dirname(__filename);
 /** Built-in error templates directory (ships with @tina4/core). */
 const BUILTIN_ERROR_TEMPLATES_DIR = resolve(__dirname, "..", "templates");
 
+/** Built-in public directory for framework-bundled static assets. */
+const BUILTIN_PUBLIC_DIR = resolve(__dirname, "..", "public");
+
 const TINA4_VERSION = "3.0.0";
 
 /**
@@ -92,7 +95,7 @@ function renderLandingPage(routes: Array<{ method: string; pattern: string; flag
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tina4</title>
+<title>Tina4NodeJs</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;flex-direction:column;align-items:center;position:relative}
@@ -128,7 +131,7 @@ h1{font-size:3rem;font-weight:700;margin-bottom:0.25rem;letter-spacing:-1px}
 <img src="/images/tina4-logo-icon.webp" class="bg-watermark" alt="">
 <div class="hero">
     <img src="/images/tina4-logo-icon.webp" class="logo" alt="Tina4">
-    <h1>Tina4</h1>
+    <h1>Tina4NodeJs</h1>
     <p class="tagline">This is not a framework</p>
     <div class="actions">
         <a href="https://tina4.com/nodejs" class="btn" target="_blank">Website</a>
@@ -410,8 +413,11 @@ export async function startServer(config?: Tina4Config): Promise<{
         res.raw.end = wrappedEnd;
       }
 
-      // Try static files first
+      // Try static files first (project public dir, then framework built-in public dir)
       if (existsSync(staticDir) && tryServeStatic(staticDir, req, res)) {
+        return;
+      }
+      if (tryServeStatic(BUILTIN_PUBLIC_DIR, req, res)) {
         return;
       }
 
