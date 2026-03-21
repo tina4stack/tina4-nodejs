@@ -1,4 +1,6 @@
-import type { FieldDefinition } from "./types.js";
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import type { FieldDefinition, DatabaseAdapter } from "./types.js";
 import type { SQLiteAdapter } from "./adapters/sqlite.js";
 import type { DiscoveredModel } from "./model.js";
 import { getAdapter } from "./database.js";

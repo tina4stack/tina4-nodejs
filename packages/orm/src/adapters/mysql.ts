@@ -99,6 +99,21 @@ export class MysqlAdapter implements DatabaseAdapter {
     throw new Error("Use executeAsync() for MySQL — async adapter requires async methods.");
   }
 
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint } {
+    throw new Error("Use executeManyAsync() for MySQL — async adapter requires async methods.");
+  }
+
+  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastInsertId?: number | bigint }> {
+    let totalAffected = 0;
+    let lastId: number | bigint | undefined;
+    for (const params of paramsList) {
+      const result = await this.executeAsync(sql, params) as any;
+      totalAffected += result?.affectedRows ?? 1;
+      if (result?.insertId) lastId = result.insertId;
+    }
+    return { totalAffected, lastInsertId: lastId };
+  }
+
   async executeAsync(sql: string, params?: unknown[]): Promise<unknown> {
     this.ensureConnected();
     const translated = this.translateSql(sql);

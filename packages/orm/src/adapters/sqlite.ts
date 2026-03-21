@@ -25,6 +25,26 @@ export class SQLiteAdapter implements DatabaseAdapter {
     return result;
   }
 
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint } {
+    const stmt = this.db.prepare(sql);
+    let totalAffected = 0;
+    let lastId: number | bigint | undefined;
+
+    const runMany = this.db.transaction((rows: unknown[][]) => {
+      for (const params of rows) {
+        const result = stmt.run(...params);
+        totalAffected += result.changes;
+        if (result.lastInsertRowid) {
+          lastId = result.lastInsertRowid;
+          this._lastInsertId = result.lastInsertRowid;
+        }
+      }
+    });
+
+    runMany(paramsList);
+    return { totalAffected, lastInsertId: lastId };
+  }
+
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[] {
     const stmt = this.db.prepare(sql);
     return (params ? stmt.all(...params) : stmt.all()) as T[];
@@ -47,7 +67,18 @@ export class SQLiteAdapter implements DatabaseAdapter {
     return (row as T) ?? null;
   }
 
-  insert(table: string, data: Record<string, unknown>): DatabaseResult {
+  insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): DatabaseResult {
+    // Handle list of rows — batch insert
+    if (Array.isArray(data)) {
+      if (data.length === 0) return { success: true, rowsAffected: 0 };
+      const keys = Object.keys(data[0]);
+      const placeholders = keys.map(() => "?").join(", ");
+      const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
+      const paramsList = data.map((row) => keys.map((k) => row[k]));
+      const result = this.executeMany(sql, paramsList);
+      return { success: true, rowsAffected: result.totalAffected, lastInsertId: result.lastInsertId };
+    }
+
     const keys = Object.keys(data);
     const placeholders = keys.map(() => "?").join(", ");
     const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
@@ -84,7 +115,29 @@ export class SQLiteAdapter implements DatabaseAdapter {
     }
   }
 
-  delete(table: string, filter: Record<string, unknown>): DatabaseResult {
+  delete(table: string, filter: Record<string, unknown> | string | Record<string, unknown>[]): DatabaseResult {
+    // Array of objects — delete each row
+    if (Array.isArray(filter)) {
+      let totalAffected = 0;
+      for (const row of filter) {
+        const result = this.delete(table, row);
+        totalAffected += result.rowsAffected;
+      }
+      return { success: true, rowsAffected: totalAffected };
+    }
+
+    // String filter — raw WHERE clause
+    if (typeof filter === "string") {
+      const sql = filter ? `DELETE FROM "${table}" WHERE ${filter}` : `DELETE FROM "${table}"`;
+      try {
+        const result = this.db.prepare(sql).run();
+        return { success: true, rowsAffected: result.changes };
+      } catch (e) {
+        return { success: false, rowsAffected: 0, error: (e as Error).message };
+      }
+    }
+
+    // Object filter — build WHERE from keys
     const whereClauses = Object.keys(filter).map((k) => `"${k}" = ?`).join(" AND ");
     const sql = `DELETE FROM "${table}" WHERE ${whereClauses}`;
     const values = Object.values(filter);

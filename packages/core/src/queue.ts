@@ -28,7 +28,7 @@ export interface QueueConfig {
 export interface QueueJob {
   id: string;
   payload: unknown;
-  status: "pending" | "reserved" | "failed";
+  status: "pending" | "reserved" | "failed" | "dead";
   createdAt: string;
   attempts: number;
   delayUntil: string | null;
@@ -328,6 +328,143 @@ export class Queue {
     }
 
     return false;
+  }
+
+  /**
+   * Get dead letter jobs — failed jobs that exceeded max retries.
+   */
+  deadLetters(queue: string, maxRetries: number = 3): QueueJob[] {
+    const failedDir = this.ensureFailedDir(queue);
+    const results: QueueJob[] = [];
+
+    try {
+      const files = readdirSync(failedDir).filter(f => f.endsWith(".json")).sort();
+      for (const file of files) {
+        try {
+          const job: QueueJob = JSON.parse(readFileSync(join(failedDir, file), "utf-8"));
+          if ((job.attempts || 0) >= maxRetries) {
+            job.status = "dead";
+            results.push(job);
+          }
+        } catch {
+          // skip corrupt files
+        }
+      }
+    } catch {
+      // directory might not exist
+    }
+
+    return results;
+  }
+
+  /**
+   * Delete messages by status (completed, failed, dead).
+   * For 'dead', removes failed jobs that exceeded maxRetries.
+   * For 'failed', removes failed jobs under maxRetries.
+   * For other statuses, removes matching jobs from the main queue directory.
+   */
+  purge(queue: string, status: string, maxRetries: number = 3): number {
+    let count = 0;
+
+    if (status === "dead") {
+      const failedDir = this.ensureFailedDir(queue);
+      try {
+        const files = readdirSync(failedDir).filter(f => f.endsWith(".json"));
+        for (const file of files) {
+          try {
+            const job: QueueJob = JSON.parse(readFileSync(join(failedDir, file), "utf-8"));
+            if ((job.attempts || 0) >= maxRetries) {
+              unlinkSync(join(failedDir, file));
+              count++;
+            }
+          } catch {
+            // skip corrupt files
+          }
+        }
+      } catch {
+        // directory might not exist
+      }
+    } else if (status === "failed") {
+      const failedDir = this.ensureFailedDir(queue);
+      try {
+        const files = readdirSync(failedDir).filter(f => f.endsWith(".json"));
+        for (const file of files) {
+          try {
+            const job: QueueJob = JSON.parse(readFileSync(join(failedDir, file), "utf-8"));
+            if ((job.attempts || 0) < maxRetries) {
+              unlinkSync(join(failedDir, file));
+              count++;
+            }
+          } catch {
+            // skip corrupt files
+          }
+        }
+      } catch {
+        // directory might not exist
+      }
+    } else {
+      // completed, pending, or other — scan main queue directory
+      const dir = this.ensureDir(queue);
+      try {
+        const files = readdirSync(dir).filter(f => f.endsWith(".json"));
+        for (const file of files) {
+          try {
+            const job: QueueJob = JSON.parse(readFileSync(join(dir, file), "utf-8"));
+            if (job.status === status) {
+              unlinkSync(join(dir, file));
+              count++;
+            }
+          } catch {
+            // skip corrupt files
+          }
+        }
+      } catch {
+        // directory might not exist
+      }
+    }
+
+    return count;
+  }
+
+  /**
+   * Re-queue failed jobs that haven't exceeded max retries back to pending.
+   * Returns the number of jobs re-queued.
+   */
+  retryFailed(queue: string, maxRetries: number = 3): number {
+    const failedDir = this.ensureFailedDir(queue);
+    const queueDir = this.ensureDir(queue);
+    let count = 0;
+
+    try {
+      const files = readdirSync(failedDir).filter(f => f.endsWith(".json"));
+      for (const file of files) {
+        try {
+          const filePath = join(failedDir, file);
+          const job: QueueJob = JSON.parse(readFileSync(filePath, "utf-8"));
+
+          // Only retry if under max retries (not dead)
+          if ((job.attempts || 0) >= maxRetries) {
+            continue;
+          }
+
+          job.status = "pending";
+          job.error = undefined;
+
+          // Move back to queue directory with sortable prefix
+          this.seq++;
+          const prefix = `${Date.now()}-${String(this.seq).padStart(6, "0")}`;
+          writeFileSync(join(queueDir, `${prefix}_${job.id}.json`), JSON.stringify(job, null, 2));
+          unlinkSync(filePath);
+          count++;
+        } catch {
+          // skip corrupt files
+        }
+      }
+    } catch {
+      // directory might not exist
+    }
+
+    return count;
   }
 
   /**

@@ -250,6 +250,47 @@ export class BaseModel {
   }
 
   /**
+   * Generate and execute CREATE TABLE DDL from the model's field definitions.
+   * Uses the adapter's createTable method if available, otherwise builds SQL directly.
+   */
+  static createTable(): void {
+    const db = this.getDb();
+    if (db.tableExists(this.tableName)) return;
+
+    if (typeof db.createTable === "function") {
+      db.createTable(this.tableName, this.fields);
+    } else {
+      // Fallback: build SQL manually
+      const typeMap: Record<string, string> = {
+        integer: "INTEGER",
+        string: "TEXT",
+        text: "TEXT",
+        number: "REAL",
+        numeric: "REAL",
+        boolean: "INTEGER",
+        datetime: "TEXT",
+      };
+
+      const colDefs: string[] = [];
+      for (const [colName, def] of Object.entries(this.fields)) {
+        const sqlType = typeMap[def.type] || "TEXT";
+        const parts = [`"${colName}" ${sqlType}`];
+        if (def.primaryKey) parts.push("PRIMARY KEY");
+        if (def.autoIncrement) parts.push("AUTOINCREMENT");
+        if (def.required && !def.primaryKey) parts.push("NOT NULL");
+        if (def.default !== undefined) {
+          const dv = typeof def.default === "string" ? `'${def.default}'` : String(def.default);
+          parts.push(`DEFAULT ${dv}`);
+        }
+        colDefs.push(parts.join(" "));
+      }
+
+      const sql = `CREATE TABLE IF NOT EXISTS "${this.tableName}" (${colDefs.join(", ")})`;
+      db.execute(sql);
+    }
+  }
+
+  /**
    * Find a record by primary key or throw an error if not found.
    */
   static findOrFail<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown): T {

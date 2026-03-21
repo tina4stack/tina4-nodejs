@@ -83,6 +83,24 @@ export class PostgresAdapter implements DatabaseAdapter {
     throw new Error("Use executeAsync() for PostgreSQL — async adapter requires async methods.");
   }
 
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint } {
+    throw new Error("Use executeManyAsync() for PostgreSQL — async adapter requires async methods.");
+  }
+
+  /** Async executeMany for real usage. */
+  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastInsertId?: number | bigint }> {
+    let totalAffected = 0;
+    let lastId: number | bigint | undefined;
+    for (const params of paramsList) {
+      const result = await this.executeAsync(sql, params);
+      totalAffected++;
+      if (result && typeof result === "object" && "lastInsertId" in (result as any)) {
+        lastId = (result as any).lastInsertId;
+      }
+    }
+    return { totalAffected, lastInsertId: lastId };
+  }
+
   /** Async execute for real usage. */
   async executeAsync(sql: string, params?: unknown[]): Promise<unknown> {
     this.ensureConnected();

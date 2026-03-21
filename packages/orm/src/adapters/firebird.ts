@@ -135,6 +135,19 @@ export class FirebirdAdapter implements DatabaseAdapter {
     throw new Error("Use executeAsync() for Firebird — async adapter requires async methods.");
   }
 
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint } {
+    throw new Error("Use executeManyAsync() for Firebird — async adapter requires async methods.");
+  }
+
+  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastInsertId?: number | bigint }> {
+    let totalAffected = 0;
+    for (const params of paramsList) {
+      await this.executeAsync(sql, params);
+      totalAffected++;
+    }
+    return { totalAffected };
+  }
+
   async executeAsync(sql: string, params?: unknown[]): Promise<unknown> {
     this.ensureConnected();
     await this.executePromise(sql, params);

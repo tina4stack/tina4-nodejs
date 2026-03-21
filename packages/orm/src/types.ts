@@ -47,6 +47,9 @@ export interface DatabaseAdapter {
   /** Execute a statement (INSERT, UPDATE, DELETE, DDL). */
   execute(sql: string, params?: unknown[]): unknown;
 
+  /** Execute a single SQL statement with multiple parameter sets (batch). */
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint };
+
   /** Query rows. */
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[];
 
@@ -56,14 +59,14 @@ export interface DatabaseAdapter {
   /** Fetch a single row or null. */
   fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | null;
 
-  /** Insert a row into a table, returns result with lastInsertId. */
-  insert(table: string, data: Record<string, unknown>): DatabaseResult;
+  /** Insert one or more rows into a table, returns result with lastInsertId. */
+  insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): DatabaseResult;
 
   /** Update rows in a table matching filter, returns affected row count. */
   update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): DatabaseResult;
 
-  /** Delete rows from a table matching filter, returns affected row count. */
-  delete(table: string, filter: Record<string, unknown>): DatabaseResult;
+  /** Delete rows from a table matching filter (object, string WHERE, or array of objects). */
+  delete(table: string, filter: Record<string, unknown> | string | Record<string, unknown>[]): DatabaseResult;
 
   /** Start a transaction. */
   startTransaction(): void;
