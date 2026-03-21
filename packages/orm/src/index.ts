@@ -24,7 +24,10 @@ export {
   getAppliedMigrations,
   getLastBatchMigrations,
   removeMigrationRecord,
+  migrate,
+  createMigration,
 } from "./migration.js";
+export type { MigrationResult } from "./migration.js";
 export { generateCrudRoutes } from "./autoCrud.js";
 export { buildQuery, parseQueryString } from "./query.js";
 export { validate } from "./validation.js";
