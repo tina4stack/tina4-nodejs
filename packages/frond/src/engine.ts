@@ -26,7 +26,19 @@ type Token = [TokenType, string];
 
 const TOKEN_RE = /(\{%-?\s*[\s\S]*?\s*-?%\})|(\{\{-?\s*[\s\S]*?\s*-?\}\})|(\{#[\s\S]*?#\})/g;
 
+// Regex to extract {% raw %}...{% endraw %} blocks before tokenizing
+const RAW_BLOCK_RE = /\{%-?\s*raw\s*-?%\}([\s\S]*?)\{%-?\s*endraw\s*-?%\}/g;
+
 function tokenize(source: string): Token[] {
+  // 1. Extract raw blocks and replace with placeholders
+  const rawBlocks: string[] = [];
+  source = source.replace(RAW_BLOCK_RE, (_match, content) => {
+    const idx = rawBlocks.length;
+    rawBlocks.push(content);
+    return `\x00RAW_${idx}\x00`;
+  });
+
+  // 2. Normal tokenization
   const tokens: Token[] = [];
   let pos = 0;
 
@@ -51,6 +63,19 @@ function tokenize(source: string): Token[] {
 
   if (pos < source.length) {
     tokens.push(["TEXT", source.slice(pos)]);
+  }
+
+  // 3. Restore raw block placeholders as literal TEXT
+  if (rawBlocks.length > 0) {
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i][0] === "TEXT" && tokens[i][1].includes("\x00RAW_")) {
+        let value = tokens[i][1];
+        for (let idx = 0; idx < rawBlocks.length; idx++) {
+          value = value.replace(`\x00RAW_${idx}\x00`, rawBlocks[idx]);
+        }
+        tokens[i] = ["TEXT", value];
+      }
+    }
   }
 
   return tokens;
@@ -983,6 +1008,9 @@ export class Frond {
         } else if (tag === "macro") {
           const skip = this.handleMacro(tokens, i, context);
           i = skip;
+        } else if (tag === "from") {
+          this.handleFromImport(content, context);
+          i++;
         } else if (tag === "cache") {
           const [result, skip] = this.handleCache(tokens, i, context);
           output.push(result);
@@ -1326,6 +1354,60 @@ export class Frond {
     };
 
     return i;
+  }
+
+  private handleFromImport(content: string, context: Record<string, unknown>): void {
+    const m = content.match(/^from\s+["'](.+?)["']\s+import\s+(.+)/);
+    if (!m) return;
+
+    const filename = m[1];
+    const names = m[2].split(",").map(n => n.trim()).filter(Boolean);
+
+    const source = this.load(filename);
+    const tokens = tokenize(source);
+
+    let i = 0;
+    while (i < tokens.length) {
+      const [ttype, raw] = tokens[i];
+      if (ttype === "BLOCK") {
+        const [tagContent] = stripTag(raw);
+        const tag = tagContent.split(/\s+/)[0] || "";
+        if (tag === "macro") {
+          const macroM = tagContent.match(/^macro\s+(\w+)\s*\(([^)]*)\)/);
+          if (macroM && names.includes(macroM[1])) {
+            const macroName = macroM[1];
+            const paramNames = macroM[2].split(",").map(p => p.trim()).filter(Boolean);
+
+            const bodyTokens: Token[] = [];
+            i++;
+            while (i < tokens.length) {
+              if (tokens[i][0] === "BLOCK" && tokens[i][1].includes("endmacro")) {
+                i++;
+                break;
+              }
+              bodyTokens.push(tokens[i]);
+              i++;
+            }
+
+            // Create closure with its own copy of captured values
+            const capturedBody = [...bodyTokens];
+            const capturedParams = [...paramNames];
+            const capturedCtx = { ...context };
+            const engine = this;
+
+            context[macroName] = (...args: unknown[]) => {
+              const macroCtx: Record<string, unknown> = { ...capturedCtx };
+              for (let pi = 0; pi < capturedParams.length; pi++) {
+                macroCtx[capturedParams[pi]] = pi < args.length ? args[pi] : null;
+              }
+              return new SafeString(engine.renderTokens([...capturedBody], macroCtx));
+            };
+            continue;
+          }
+        }
+      }
+      i++;
+    }
   }
 
   private handleCache(tokens: Token[], start: number, context: Record<string, unknown>): [string, number] {

@@ -327,6 +327,47 @@ console.log("\n--- Form Token ---");
   assert("form_token filter works", ftResult3.includes('<input type="hidden" name="formToken" value="'));
 }
 
+// ── Raw Block ─────────────────────────────────────────────────
+console.log("\n--- Raw Block ---");
+
+assert("raw preserves var syntax",
+  engine.renderString("{% raw %}{{ name }}{% endraw %}", { name: "Alice" }) === "{{ name }}");
+
+assert("raw preserves block syntax",
+  engine.renderString("{% raw %}{% if true %}yes{% endif %}{% endraw %}", {}) === "{% if true %}yes{% endif %}");
+
+assert("raw mixed with normal",
+  engine.renderString("Hello {{ name }}! {% raw %}{{ not_parsed }}{% endraw %} done", { name: "World" }) === "Hello World! {{ not_parsed }} done");
+
+assert("multiple raw blocks",
+  engine.renderString("{% raw %}{{ a }}{% endraw %} mid {% raw %}{{ b }}{% endraw %}", {}) === "{{ a }} mid {{ b }}");
+
+assert("raw block multiline",
+  engine.renderString("{% raw %}\n{{ var }}\n{% tag %}\n{% endraw %}", {}) === "\n{{ var }}\n{% tag %}\n");
+
+// ── From Import ───────────────────────────────────────────────
+console.log("\n--- From Import ---");
+
+writeFileSync(join(tmpDir, "macros.twig"), '{% macro greeting(name) %}Hello {{ name }}!{% endmacro %}');
+assert("from import basic",
+  engine.renderString('{% from "macros.twig" import greeting %}{{ greeting("World") }}', {}) === "Hello World!");
+
+writeFileSync(join(tmpDir, "helpers.twig"), '{% macro bold(t) %}B{{ t }}B{% endmacro %}{% macro italic(t) %}I{{ t }}I{% endmacro %}');
+{
+  const result = engine.renderString('{% from "helpers.twig" import bold, italic %}{{ bold("hi") }} {{ italic("there") }}', {});
+  assert("from import multiple - bold", result.includes("BhiB"));
+  assert("from import multiple - italic", result.includes("IthereI"));
+}
+
+writeFileSync(join(tmpDir, "mix.twig"), '{% macro used(x) %}[{{ x }}]{% endmacro %}{% macro unused(x) %}{{{ x }}}{% endmacro %}');
+assert("from import selective",
+  engine.renderString('{% from "mix.twig" import used %}{{ used("ok") }}', {}).includes("[ok]"));
+
+mkdirSync(join(tmpDir, "macros"), { recursive: true });
+writeFileSync(join(tmpDir, "macros/forms.twig"), '{% macro field(label, name) %}{{ label }}:{{ name }}{% endmacro %}');
+assert("from import subdirectory",
+  engine.renderString('{% from "macros/forms.twig" import field %}{{ field("Name", "name") }}', {}).includes("Name:name"));
+
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 
