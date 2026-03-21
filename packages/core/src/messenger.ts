@@ -4,10 +4,24 @@
  * Sends email via raw SMTP socket communication (net/tls).
  * No nodemailer, no external dependencies.
  *
- *   import { Messenger, createMessenger } from "@tina4/core";
+ * Unified .env-driven configuration with constructor override.
+ * Priority: constructor params > .env (TINA4_MAIL_* with SMTP_* fallback) > sensible defaults
  *
- *   const messenger = createMessenger();
- *   await messenger.send({ to: "alice@example.com", subject: "Hello", body: "Hi there" });
+ *   // .env
+ *   // TINA4_MAIL_HOST=smtp.gmail.com
+ *   // TINA4_MAIL_PORT=587
+ *   // TINA4_MAIL_USERNAME=user@gmail.com
+ *   // TINA4_MAIL_PASSWORD=app-password
+ *   // TINA4_MAIL_FROM=noreply@myapp.com
+ *   // TINA4_MAIL_ENCRYPTION=tls
+ *   // TINA4_MAIL_IMAP_HOST=imap.gmail.com
+ *   // TINA4_MAIL_IMAP_PORT=993
+ *
+ *   import { Messenger } from "@tina4/core";
+ *
+ *   const mail = new Messenger();                                      // reads from .env
+ *   const mail = new Messenger({ host: "smtp.office365.com", port: 587 }); // override
+ *   await mail.send({ to: "user@test.com", subject: "Welcome", body: "<h1>Hello!</h1>", html: true, text: "Hello!" });
  */
 import net from "node:net";
 import tls from "node:tls";
@@ -46,6 +60,8 @@ interface MessengerOptions {
   password?: string;
   fromAddress?: string;
   fromName?: string;
+  encryption?: string;
+  /** @deprecated Use encryption instead */
   useTls?: boolean;
   imapHost?: string;
   imapPort?: number;
@@ -80,8 +96,9 @@ interface SendOptions {
   subject: string;
   body: string;
   html?: boolean;
-  cc?: string[];
-  bcc?: string[];
+  text?: string;
+  cc?: string | string[];
+  bcc?: string | string[];
   replyTo?: string;
   attachments?: string[];
   headers?: Record<string, string>;
@@ -152,13 +169,16 @@ function buildMimeMessage(options: {
   subject: string;
   body: string;
   html: boolean;
+  text?: string;
   replyTo?: string;
   attachments?: string[];
   headers?: Record<string, string>;
   messageId: string;
 }): string {
   const boundary = `----=_Tina4_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+  const altBoundary = `----=_Tina4Alt_${Date.now()}_${Math.random().toString(36).substring(2)}`;
   const hasAttachments = options.attachments && options.attachments.length > 0;
+  const hasTextAlt = options.text !== undefined && options.html;
   const lines: string[] = [];
 
   // Headers
@@ -190,34 +210,34 @@ function buildMimeMessage(options: {
     lines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
     lines.push("");
     lines.push(`--${boundary}`);
-  }
 
-  // Body part
-  if (options.html) {
-    if (hasAttachments) {
-      lines.push("Content-Type: text/html; charset=UTF-8");
-      lines.push("Content-Transfer-Encoding: 7bit");
+    // Body part (with optional text alternative)
+    if (hasTextAlt) {
+      lines.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`);
       lines.push("");
-    } else {
-      lines.push("Content-Type: text/html; charset=UTF-8");
-      lines.push("");
-    }
-  } else {
-    if (hasAttachments) {
+      lines.push(`--${altBoundary}`);
       lines.push("Content-Type: text/plain; charset=UTF-8");
       lines.push("Content-Transfer-Encoding: 7bit");
       lines.push("");
-    } else {
-      lines.push("Content-Type: text/plain; charset=UTF-8");
+      lines.push(options.text!);
       lines.push("");
+      lines.push(`--${altBoundary}`);
+      lines.push("Content-Type: text/html; charset=UTF-8");
+      lines.push("Content-Transfer-Encoding: 7bit");
+      lines.push("");
+      lines.push(options.body);
+      lines.push("");
+      lines.push(`--${altBoundary}--`);
+    } else {
+      const contentType = options.html ? "text/html" : "text/plain";
+      lines.push(`Content-Type: ${contentType}; charset=UTF-8`);
+      lines.push("Content-Transfer-Encoding: 7bit");
+      lines.push("");
+      lines.push(options.body);
     }
-  }
 
-  lines.push(options.body);
-
-  // Attachments
-  if (hasAttachments && options.attachments) {
-    for (const filePath of options.attachments) {
+    // Attachments
+    for (const filePath of options.attachments!) {
       const fileName = basename(filePath);
       const fileData = readFileSync(filePath);
       const base64Data = fileData.toString("base64");
@@ -237,6 +257,29 @@ function buildMimeMessage(options: {
 
     lines.push("");
     lines.push(`--${boundary}--`);
+  } else if (hasTextAlt) {
+    // Text alternative without attachments
+    lines.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`);
+    lines.push("");
+    lines.push(`--${altBoundary}`);
+    lines.push("Content-Type: text/plain; charset=UTF-8");
+    lines.push("Content-Transfer-Encoding: 7bit");
+    lines.push("");
+    lines.push(options.text!);
+    lines.push("");
+    lines.push(`--${altBoundary}`);
+    lines.push("Content-Type: text/html; charset=UTF-8");
+    lines.push("Content-Transfer-Encoding: 7bit");
+    lines.push("");
+    lines.push(options.body);
+    lines.push("");
+    lines.push(`--${altBoundary}--`);
+  } else {
+    // Simple message
+    const contentType = options.html ? "text/html" : "text/plain";
+    lines.push(`Content-Type: ${contentType}; charset=UTF-8`);
+    lines.push("");
+    lines.push(options.body);
   }
 
   return lines.join("\r\n");
@@ -251,6 +294,7 @@ export class Messenger {
   private password: string;
   private fromAddress: string;
   private fromName: string;
+  private encryption: string;
   private useTls: boolean;
   private imapHost: string;
   private imapPort: number;
@@ -258,17 +302,54 @@ export class Messenger {
   private imapPass: string;
 
   constructor(options?: MessengerOptions) {
-    this.host = options?.host ?? process.env.SMTP_HOST ?? "localhost";
-    this.port = options?.port ?? parseInt(process.env.SMTP_PORT ?? "587", 10);
-    this.username = options?.username ?? process.env.SMTP_USERNAME ?? "";
-    this.password = options?.password ?? process.env.SMTP_PASSWORD ?? "";
-    this.fromAddress = options?.fromAddress ?? process.env.SMTP_FROM ?? "";
-    this.fromName = options?.fromName ?? process.env.SMTP_FROM_NAME ?? "";
-    this.useTls = options?.useTls ?? (process.env.SMTP_USE_TLS !== "false");
-    this.imapHost = options?.imapHost ?? process.env.IMAP_HOST ?? "";
-    this.imapPort = options?.imapPort ?? parseInt(process.env.IMAP_PORT ?? "993", 10);
-    this.imapUser = options?.imapUser ?? process.env.IMAP_USER ?? this.username;
-    this.imapPass = options?.imapPass ?? process.env.IMAP_PASS ?? this.password;
+    // Priority: constructor > TINA4_MAIL_* > SMTP_* > sensible default
+    this.host = options?.host
+      ?? process.env.TINA4_MAIL_HOST
+      ?? process.env.SMTP_HOST
+      ?? "localhost";
+    this.port = options?.port
+      ?? parseInt(process.env.TINA4_MAIL_PORT ?? process.env.SMTP_PORT ?? "587", 10);
+    this.username = options?.username
+      ?? process.env.TINA4_MAIL_USERNAME
+      ?? process.env.SMTP_USERNAME
+      ?? "";
+    this.password = options?.password
+      ?? process.env.TINA4_MAIL_PASSWORD
+      ?? process.env.SMTP_PASSWORD
+      ?? "";
+    this.fromAddress = options?.fromAddress
+      ?? process.env.TINA4_MAIL_FROM
+      ?? process.env.SMTP_FROM
+      ?? (this.username || "noreply@localhost");
+    this.fromName = options?.fromName
+      ?? process.env.TINA4_MAIL_FROM_NAME
+      ?? process.env.SMTP_FROM_NAME
+      ?? "";
+
+    // Encryption: constructor > .env > backward-compat useTls > default "tls"
+    const envEncryption = options?.encryption
+      ?? process.env.TINA4_MAIL_ENCRYPTION;
+    if (envEncryption) {
+      this.encryption = envEncryption.toLowerCase();
+    } else if (options?.useTls !== undefined) {
+      this.encryption = options.useTls ? "tls" : "none";
+    } else {
+      this.encryption = "tls";
+    }
+    this.useTls = ["tls", "starttls"].includes(this.encryption);
+
+    this.imapHost = options?.imapHost
+      ?? process.env.TINA4_MAIL_IMAP_HOST
+      ?? process.env.IMAP_HOST
+      ?? "";
+    this.imapPort = options?.imapPort
+      ?? parseInt(process.env.TINA4_MAIL_IMAP_PORT ?? process.env.IMAP_PORT ?? "993", 10);
+    this.imapUser = options?.imapUser
+      ?? process.env.IMAP_USER
+      ?? this.username;
+    this.imapPass = options?.imapPass
+      ?? process.env.IMAP_PASS
+      ?? this.password;
   }
 
   /**
@@ -276,8 +357,8 @@ export class Messenger {
    */
   async send(options: SendOptions): Promise<SendResult> {
     const toList = Array.isArray(options.to) ? options.to : [options.to];
-    const ccList = options.cc ?? [];
-    const bccList = options.bcc ?? [];
+    const ccList = Array.isArray(options.cc) ? options.cc : (options.cc ? [options.cc] : []);
+    const bccList = Array.isArray(options.bcc) ? options.bcc : (options.bcc ? [options.bcc] : []);
     const allRecipients = [...toList, ...ccList, ...bccList];
     const messageId = `${randomUUID()}@${this.host}`;
 
@@ -401,6 +482,7 @@ export class Messenger {
         subject: options.subject,
         body: options.body,
         html: options.html ?? false,
+        text: options.text,
         replyTo: options.replyTo,
         attachments: options.attachments,
         headers: options.headers,

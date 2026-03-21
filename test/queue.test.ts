@@ -151,6 +151,146 @@ assert("beta queue unaffected by alpha pop", q6.size("beta") === 1);
 // Clean up
 cleanup();
 
+// --- Topic-based API (unified constructor) ---
+console.log("\n--- Topic-based API ---");
+
+const TEST_PATH_TOPIC = join("/tmp", "tina4-queue-topic-test-" + Date.now());
+function cleanupTopic() {
+  try { rmSync(TEST_PATH_TOPIC, { recursive: true, force: true }); } catch {}
+}
+cleanupTopic();
+
+{
+  const qt = new Queue({ topic: "tasks", path: TEST_PATH_TOPIC });
+
+  // Push using topic-based API (payload only, no queue name)
+  const tid1 = qt.push({ action: "send_email" });
+  assert("topic push returns job ID", typeof tid1 === "string" && tid1.length > 0);
+
+  const tid2 = qt.push({ action: "process" });
+  assert("topic push returns unique IDs", tid1 !== tid2);
+
+  assert("topic size returns 2", qt.size() === 2);
+
+  const tjob1 = qt.pop();
+  assert("topic pop returns a job", tjob1 !== null);
+  assert("topic popped job has correct payload", tjob1 !== null && (tjob1.payload as any).action === "send_email");
+
+  const tjob2 = qt.pop();
+  assert("topic second pop returns second job", tjob2 !== null && (tjob2.payload as any).action === "process");
+
+  const tjob3 = qt.pop();
+  assert("topic pop on empty returns null", tjob3 === null);
+}
+
+// --- Topic with size and clear ---
+console.log("\n--- Topic Size and Clear ---");
+
+{
+  const qt2 = new Queue({ topic: "emails", path: TEST_PATH_TOPIC });
+  qt2.push({ to: "alice" });
+  qt2.push({ to: "bob" });
+  qt2.push({ to: "charlie" });
+
+  assert("topic size returns 3", qt2.size() === 3);
+
+  qt2.clear();
+  assert("topic size is 0 after clear", qt2.size() === 0);
+}
+
+// --- Topic with process ---
+console.log("\n--- Topic Process ---");
+
+{
+  const qt3 = new Queue({ topic: "processable", path: TEST_PATH_TOPIC, maxRetries: 3 });
+  qt3.push({ n: 1 });
+  qt3.push({ n: 2 });
+
+  const processed: number[] = [];
+  qt3.process((job: QueueJob) => {
+    processed.push((job.payload as any).n);
+  });
+
+  assert("topic process handles all jobs", processed.length === 2);
+  assert("topic process order is FIFO", processed[0] === 1 && processed[1] === 2);
+}
+
+// --- Topic deadLetters and retryFailed ---
+console.log("\n--- Topic Dead Letters ---");
+
+{
+  const qt4 = new Queue({ topic: "deadtest", path: TEST_PATH_TOPIC, maxRetries: 1 });
+  qt4.push({ x: 1 });
+
+  qt4.process((job: QueueJob) => {
+    throw new Error("fatal");
+  });
+
+  const dead = qt4.deadLetters();
+  assert("topic deadLetters returns dead jobs", dead.length === 1);
+  assert("topic dead job has status 'dead'", dead[0].status === "dead");
+}
+
+{
+  const qt5 = new Queue({ topic: "retrytest", path: TEST_PATH_TOPIC, maxRetries: 3 });
+  qt5.push({ x: 1 });
+
+  qt5.process((job: QueueJob) => {
+    throw new Error("fail");
+  });
+
+  const retried = qt5.retryFailed();
+  assert("topic retryFailed returns 1", retried === 1);
+  assert("topic size after retryFailed is 1", qt5.size() === 1);
+}
+
+// --- Topic purge ---
+console.log("\n--- Topic Purge ---");
+
+{
+  const qt6 = new Queue({ topic: "purgetest", path: TEST_PATH_TOPIC, maxRetries: 3 });
+  qt6.push({ x: 1 });
+
+  qt6.process((job: QueueJob) => {
+    throw new Error("fail");
+  });
+
+  const purged = qt6.purge("failed");
+  assert("topic purge returns 1", purged === 1);
+}
+
+// --- getTopic ---
+console.log("\n--- getTopic ---");
+
+{
+  const qt7 = new Queue({ topic: "my_topic", path: TEST_PATH_TOPIC });
+  assert("getTopic returns constructor topic", qt7.getTopic() === "my_topic");
+}
+
+// --- Env default ---
+console.log("\n--- Env Default ---");
+
+{
+  // When TINA4_QUEUE_BACKEND is not set, defaults to 'file'
+  delete process.env.TINA4_QUEUE_BACKEND;
+  const qt8 = new Queue({ topic: "env_default", path: TEST_PATH_TOPIC });
+  qt8.push({ test: true });
+  assert("env default uses file backend", qt8.size() === 1);
+}
+
+// --- Legacy constructor still works ---
+console.log("\n--- Legacy Constructor ---");
+
+{
+  const ql = new Queue("file", { path: TEST_PATH_TOPIC });
+  ql.push("legacy_queue", { legacy: true });
+  assert("legacy push works with queue name", ql.size("legacy_queue") === 1);
+  const lj = ql.pop("legacy_queue");
+  assert("legacy pop works with queue name", lj !== null && (lj.payload as any).legacy === true);
+}
+
+cleanupTopic();
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

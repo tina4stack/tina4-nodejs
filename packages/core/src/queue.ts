@@ -1,20 +1,33 @@
 /**
- * Tina4 Queue — File-backed job queue, zero dependencies.
+ * Tina4 Queue — Unified job queue with pluggable backends, zero dependencies.
  *
- * Production-grade queue using the file system as storage.
- * No Redis, no RabbitMQ, no external dependencies needed.
+ * Switching from file to RabbitMQ or Kafka is a .env change — no code change needed.
  *
+ * Supported backends:
+ *   - 'file'     — JSON files on disk (default)
+ *   - 'rabbitmq' — RabbitMQ via raw TCP (AMQP 0-9-1)
+ *   - 'kafka'    — Kafka via raw TCP
+ *
+ * Environment variables:
+ *   TINA4_QUEUE_BACKEND — 'file', 'rabbitmq', or 'kafka'
+ *   TINA4_QUEUE_URL     — connection URL for rabbitmq/kafka
+ *   TINA4_QUEUE_PATH    — file backend storage path (default: data/queue)
+ *
+ * Usage:
  *   import { Queue } from "@tina4/core";
  *
- *   const queue = new Queue();
- *   queue.push("emails", { to: "alice@test.com", subject: "Hello" });
+ *   // Auto-detect from env (default: file)
+ *   const queue = new Queue({ topic: "emails" });
+ *   queue.push({ to: "alice@test.com", subject: "Hello" });
  *
- *   const job = queue.pop("emails");
- *   if (job) {
- *     await processJob(job);
- *   }
+ *   // Explicit backend
+ *   const queue = new Queue({ topic: "tasks", backend: "rabbitmq" });
+ *
+ *   // Legacy usage (still works — uses file backend)
+ *   const queue = new Queue();
+ *   queue.push("emails", { to: "alice@test.com" });
  */
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, renameSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -23,6 +36,8 @@ import { randomUUID } from "node:crypto";
 export interface QueueConfig {
   backend?: string;
   path?: string;
+  topic?: string;
+  maxRetries?: number;
 }
 
 export interface QueueJob {
@@ -41,53 +56,103 @@ export interface ProcessOptions {
   maxRetries?: number;
 }
 
+export interface QueueBackendInterface {
+  push(queue: string, payload: unknown, delay?: number): string;
+  pop(queue: string): QueueJob | null;
+  size(queue: string): number;
+  clear(queue: string): void;
+}
+
 // ── Queue ────────────────────────────────────────────────────
 
 export class Queue {
-  private backend: string;
+  private backendName: string;
   private basePath: string;
+  private topic: string;
+  private maxRetries: number;
   private seq: number = 0;
-  private externalBackend: { push: (q: string, p: unknown, d?: number) => string; pop: (q: string) => QueueJob | null; size: (q: string) => number; clear: (q: string) => void } | null = null;
+  private externalBackend: QueueBackendInterface | null = null;
 
-  constructor(backend?: string, config?: QueueConfig) {
-    this.backend = backend ?? config?.backend ?? process.env.TINA4_QUEUE_BACKEND ?? "file";
-    this.basePath = config?.path ?? process.env.TINA4_QUEUE_PATH ?? "data/queue";
+  /**
+   * Unified Queue constructor.
+   *
+   * Accepts either:
+   *   - new Queue({ topic: "tasks", backend: "rabbitmq" })
+   *   - new Queue("rabbitmq", { path: "data/queue" })  // legacy
+   *   - new Queue()  // file backend, default topic
+   */
+  constructor(backendOrConfig?: string | QueueConfig, config?: QueueConfig) {
+    let resolvedConfig: QueueConfig = {};
+
+    if (typeof backendOrConfig === "string") {
+      // Legacy: new Queue("rabbitmq", { ... })
+      resolvedConfig = { ...(config ?? {}), backend: backendOrConfig };
+    } else if (typeof backendOrConfig === "object" && backendOrConfig !== null) {
+      resolvedConfig = backendOrConfig;
+    }
+
+    this.backendName = resolvedConfig.backend
+      ?? process.env.TINA4_QUEUE_BACKEND
+      ?? "file";
+    this.basePath = resolvedConfig.path
+      ?? process.env.TINA4_QUEUE_PATH
+      ?? "data/queue";
+    this.topic = resolvedConfig.topic ?? "default";
+    this.maxRetries = resolvedConfig.maxRetries ?? 3;
 
     // Initialize external backends
-    if (this.backend === "rabbitmq") {
-      // Dynamic import to avoid loading when not needed
+    if (this.backendName === "rabbitmq") {
       const { RabbitMQBackend } = require("./queueBackends/rabbitmqBackend.js");
       this.externalBackend = new RabbitMQBackend();
-    } else if (this.backend === "kafka") {
+    } else if (this.backendName === "kafka") {
       const { KafkaBackend } = require("./queueBackends/kafkaBackend.js");
       this.externalBackend = new KafkaBackend();
     }
   }
 
-  /**
-   * Ensure directory exists for a queue.
-   */
+  // ── Directory helpers ────────────────────────────────────────
+
   private ensureDir(queue: string): string {
     const dir = join(this.basePath, queue);
     mkdirSync(dir, { recursive: true });
     return dir;
   }
 
-  /**
-   * Ensure the failed subdirectory exists for a queue.
-   */
   private ensureFailedDir(queue: string): string {
     const dir = join(this.basePath, queue, "failed");
     mkdirSync(dir, { recursive: true });
     return dir;
   }
 
+  // ── Unified API (topic-aware) ────────────────────────────────
+
   /**
    * Add a job to the queue. Returns job ID.
+   *
+   * Can be called as:
+   *   queue.push(payload)                 — uses constructor topic
+   *   queue.push(payload, delay)          — uses constructor topic with delay
+   *   queue.push("queueName", payload)    — legacy: explicit queue name
    */
-  push(queue: string, payload: unknown, delay?: number): string {
+  push(queueOrPayload: string | unknown, payloadOrDelay?: unknown, delay?: number): string {
+    let queue: string;
+    let payload: unknown;
+    let actualDelay: number | undefined;
+
+    if (typeof queueOrPayload === "string" && payloadOrDelay !== undefined && typeof payloadOrDelay !== "number") {
+      // Legacy: push("queueName", payload, delay?)
+      queue = queueOrPayload;
+      payload = payloadOrDelay;
+      actualDelay = delay;
+    } else {
+      // Unified: push(payload) or push(payload, delay)
+      queue = this.topic;
+      payload = queueOrPayload;
+      actualDelay = typeof payloadOrDelay === "number" ? payloadOrDelay : delay;
+    }
+
     if (this.externalBackend) {
-      return this.externalBackend.push(queue, payload, delay);
+      return this.externalBackend.push(queue, payload, actualDelay);
     }
     const dir = this.ensureDir(queue);
     const id = randomUUID();
@@ -100,10 +165,9 @@ export class Queue {
       status: "pending",
       createdAt: now,
       attempts: 0,
-      delayUntil: delay ? new Date(Date.now() + delay * 1000).toISOString() : null,
+      delayUntil: actualDelay ? new Date(Date.now() + actualDelay * 1000).toISOString() : null,
     };
 
-    // Use timestamp + sequence prefix for FIFO ordering
     const prefix = `${Date.now()}-${String(this.seq).padStart(6, "0")}`;
     writeFileSync(join(dir, `${prefix}_${id}.json`), JSON.stringify(job, null, 2));
     return id;
@@ -111,12 +175,18 @@ export class Queue {
 
   /**
    * Atomically claim the next available job. Returns null if empty.
+   *
+   * Can be called as:
+   *   queue.pop()            — uses constructor topic
+   *   queue.pop("queueName") — legacy: explicit queue name
    */
-  pop(queue: string): QueueJob | null {
+  pop(queue?: string): QueueJob | null {
+    const q = queue ?? this.topic;
+
     if (this.externalBackend) {
-      return this.externalBackend.pop(queue);
+      return this.externalBackend.pop(q);
     }
-    const dir = this.ensureDir(queue);
+    const dir = this.ensureDir(q);
 
     let files: string[];
     try {
@@ -139,11 +209,9 @@ export class Queue {
       if (job.status !== "pending") continue;
       if (job.delayUntil && job.delayUntil > now) continue;
 
-      // Reserve the job
       job.status = "reserved";
       writeFileSync(filePath, JSON.stringify(job, null, 2));
 
-      // Remove the file (job is consumed)
       try {
         unlinkSync(filePath);
       } catch {
@@ -160,47 +228,36 @@ export class Queue {
    * Process jobs from a queue with a handler function.
    */
   process(
-    queue: string,
-    handler: (job: QueueJob) => Promise<void> | void,
+    handlerOrQueue: string | ((job: QueueJob) => Promise<void> | void),
+    handlerOrOptions?: ((job: QueueJob) => Promise<void> | void) | ProcessOptions,
     options?: ProcessOptions,
   ): void {
-    const maxJobs = options?.maxJobs ?? Infinity;
-    const maxRetries = options?.maxRetries ?? 3;
+    let queue: string;
+    let handler: (job: QueueJob) => Promise<void> | void;
+    let opts: ProcessOptions | undefined;
+
+    if (typeof handlerOrQueue === "string") {
+      // Legacy: process("queueName", handler, options)
+      queue = handlerOrQueue;
+      handler = handlerOrOptions as (job: QueueJob) => Promise<void> | void;
+      opts = options;
+    } else {
+      // Unified: process(handler, options?)
+      queue = this.topic;
+      handler = handlerOrQueue;
+      opts = handlerOrOptions as ProcessOptions | undefined;
+    }
+
+    const maxJobs = opts?.maxJobs ?? Infinity;
+    const maxRetries = opts?.maxRetries ?? this.maxRetries;
     let processed = 0;
 
-    const tick = () => {
-      if (processed >= maxJobs) return;
-
-      const job = this.pop(queue);
-      if (!job) return;
-
-      try {
-        const result = handler(job);
-        if (result instanceof Promise) {
-          result
-            .then(() => { processed++; })
-            .catch((err: Error) => {
-              this._failJob(queue, job, err.message, maxRetries);
-              processed++;
-            });
-        } else {
-          processed++;
-        }
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        this._failJob(queue, job, message, maxRetries);
-        processed++;
-      }
-    };
-
-    // Process all currently available jobs synchronously
     while (processed < maxJobs) {
       const job = this.pop(queue);
       if (!job) break;
       try {
         const result = handler(job);
         if (result instanceof Promise) {
-          // For async handlers in sync process loop, we still increment
           result.catch((err: Error) => {
             this._failJob(queue, job, err.message, maxRetries);
           });
@@ -217,11 +274,13 @@ export class Queue {
   /**
    * Count pending jobs in a queue.
    */
-  size(queue: string): number {
+  size(queue?: string): number {
+    const q = queue ?? this.topic;
+
     if (this.externalBackend) {
-      return this.externalBackend.size(queue);
+      return this.externalBackend.size(q);
     }
-    const dir = this.ensureDir(queue);
+    const dir = this.ensureDir(q);
     let files: string[];
     try {
       files = readdirSync(dir).filter(f => f.endsWith(".json"));
@@ -244,12 +303,14 @@ export class Queue {
   /**
    * Remove all jobs from a queue.
    */
-  clear(queue: string): void {
+  clear(queue?: string): void {
+    const q = queue ?? this.topic;
+
     if (this.externalBackend) {
-      this.externalBackend.clear(queue);
+      this.externalBackend.clear(q);
       return;
     }
-    const dir = this.ensureDir(queue);
+    const dir = this.ensureDir(q);
     try {
       const files = readdirSync(dir).filter(f => f.endsWith(".json"));
       for (const file of files) {
@@ -276,8 +337,9 @@ export class Queue {
   /**
    * Get all failed jobs for a queue.
    */
-  failed(queue: string): QueueJob[] {
-    const failedDir = this.ensureFailedDir(queue);
+  failed(queue?: string): QueueJob[] {
+    const q = queue ?? this.topic;
+    const failedDir = this.ensureFailedDir(q);
     const results: QueueJob[] = [];
 
     try {
@@ -301,7 +363,6 @@ export class Queue {
    * Retry a failed job by moving it back to the queue.
    */
   retry(jobId: string): boolean {
-    // Search for the job in all queue failed directories
     try {
       const queues = readdirSync(this.basePath);
       for (const queue of queues) {
@@ -314,7 +375,6 @@ export class Queue {
           job.attempts = (job.attempts || 0) + 1;
           job.error = undefined;
 
-          // Move back to queue directory with sortable prefix
           this.seq++;
           const prefix = `${Date.now()}-${String(this.seq).padStart(6, "0")}`;
           const queueDir = join(this.basePath, queue);
@@ -333,8 +393,10 @@ export class Queue {
   /**
    * Get dead letter jobs — failed jobs that exceeded max retries.
    */
-  deadLetters(queue: string, maxRetries: number = 3): QueueJob[] {
-    const failedDir = this.ensureFailedDir(queue);
+  deadLetters(queue?: string, maxRetries?: number): QueueJob[] {
+    const q = queue ?? this.topic;
+    const mr = maxRetries ?? this.maxRetries;
+    const failedDir = this.ensureFailedDir(q);
     const results: QueueJob[] = [];
 
     try {
@@ -342,7 +404,7 @@ export class Queue {
       for (const file of files) {
         try {
           const job: QueueJob = JSON.parse(readFileSync(join(failedDir, file), "utf-8"));
-          if ((job.attempts || 0) >= maxRetries) {
+          if ((job.attempts || 0) >= mr) {
             job.status = "dead";
             results.push(job);
           }
@@ -358,12 +420,25 @@ export class Queue {
   }
 
   /**
-   * Delete messages by status (completed, failed, dead).
-   * For 'dead', removes failed jobs that exceeded maxRetries.
-   * For 'failed', removes failed jobs under maxRetries.
-   * For other statuses, removes matching jobs from the main queue directory.
+   * Delete messages by status.
    */
-  purge(queue: string, status: string, maxRetries: number = 3): number {
+  purge(statusOrQueue: string, statusOrMaxRetries?: string | number, maxRetries?: number): number {
+    let queue: string;
+    let status: string;
+    let mr: number;
+
+    if (typeof statusOrMaxRetries === "string") {
+      // Legacy: purge("queueName", "status", maxRetries?)
+      queue = statusOrQueue;
+      status = statusOrMaxRetries;
+      mr = maxRetries ?? this.maxRetries;
+    } else {
+      // Unified: purge("status") or purge("status", maxRetries)
+      queue = this.topic;
+      status = statusOrQueue;
+      mr = typeof statusOrMaxRetries === "number" ? statusOrMaxRetries : (maxRetries ?? this.maxRetries);
+    }
+
     let count = 0;
 
     if (status === "dead") {
@@ -373,7 +448,7 @@ export class Queue {
         for (const file of files) {
           try {
             const job: QueueJob = JSON.parse(readFileSync(join(failedDir, file), "utf-8"));
-            if ((job.attempts || 0) >= maxRetries) {
+            if ((job.attempts || 0) >= mr) {
               unlinkSync(join(failedDir, file));
               count++;
             }
@@ -391,7 +466,7 @@ export class Queue {
         for (const file of files) {
           try {
             const job: QueueJob = JSON.parse(readFileSync(join(failedDir, file), "utf-8"));
-            if ((job.attempts || 0) < maxRetries) {
+            if ((job.attempts || 0) < mr) {
               unlinkSync(join(failedDir, file));
               count++;
             }
@@ -403,7 +478,6 @@ export class Queue {
         // directory might not exist
       }
     } else {
-      // completed, pending, or other — scan main queue directory
       const dir = this.ensureDir(queue);
       try {
         const files = readdirSync(dir).filter(f => f.endsWith(".json"));
@@ -428,11 +502,12 @@ export class Queue {
 
   /**
    * Re-queue failed jobs that haven't exceeded max retries back to pending.
-   * Returns the number of jobs re-queued.
    */
-  retryFailed(queue: string, maxRetries: number = 3): number {
-    const failedDir = this.ensureFailedDir(queue);
-    const queueDir = this.ensureDir(queue);
+  retryFailed(queue?: string, maxRetries?: number): number {
+    const q = queue ?? this.topic;
+    const mr = maxRetries ?? this.maxRetries;
+    const failedDir = this.ensureFailedDir(q);
+    const queueDir = this.ensureDir(q);
     let count = 0;
 
     try {
@@ -442,15 +517,13 @@ export class Queue {
           const filePath = join(failedDir, file);
           const job: QueueJob = JSON.parse(readFileSync(filePath, "utf-8"));
 
-          // Only retry if under max retries (not dead)
-          if ((job.attempts || 0) >= maxRetries) {
+          if ((job.attempts || 0) >= mr) {
             continue;
           }
 
           job.status = "pending";
           job.error = undefined;
 
-          // Move back to queue directory with sortable prefix
           this.seq++;
           const prefix = `${Date.now()}-${String(this.seq).padStart(6, "0")}`;
           writeFileSync(join(queueDir, `${prefix}_${job.id}.json`), JSON.stringify(job, null, 2));
@@ -465,6 +538,13 @@ export class Queue {
     }
 
     return count;
+  }
+
+  /**
+   * Get the configured topic name.
+   */
+  getTopic(): string {
+    return this.topic;
   }
 
   /**
