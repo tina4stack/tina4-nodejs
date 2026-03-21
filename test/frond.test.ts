@@ -221,6 +221,30 @@ assert("Extends and block override", engine.render("child.html", {}) === "<h1>My
 // Render parent directly (default blocks)
 assert("Parent default blocks", engine.render("base.html", {}) === "<h1>Default</h1><div>base content</div>");
 
+// Extends with leading whitespace
+writeFileSync(join(tmpDir, "child-ws.html"), '  {% extends "base.html" %}\n{% block content %}<h1>Hello</h1>{% endblock %}');
+{
+  const r = engine.render("child-ws.html", {});
+  assert("Extends with leading whitespace", r.includes("<h1>Hello</h1>") && r.includes("<div>"));
+}
+
+// Extends with leading newlines
+writeFileSync(join(tmpDir, "child-nl.html"), '\n\n{% extends "base.html" %}\n{% block content %}<h1>Hello</h1>{% endblock %}');
+{
+  const r = engine.render("child-nl.html", {});
+  assert("Extends with leading newlines", r.includes("<h1>Hello</h1>") && r.includes("<div>"));
+}
+
+// Extends with variables in blocks
+writeFileSync(join(tmpDir, "base-full.html"), '<head><title>{% block title %}Default{% endblock %}</title></head>\n<body>{% block content %}{% endblock %}</body>');
+writeFileSync(join(tmpDir, "error.html"), '\n{% extends "base-full.html" %}\n{% block title %}Error {{ code }}{% endblock %}\n{% block content %}<div class="card"><h1>{{ code }}</h1><p>{{ msg }}</p></div>{% endblock %}');
+{
+  const r = engine.render("error.html", { code: 500, msg: "Internal Server Error" });
+  assert("Extends with variables in blocks - title", r.includes("<title>Error 500</title>"));
+  assert("Extends with variables in blocks - code", r.includes("<h1>500</h1>"));
+  assert("Extends with variables in blocks - msg", r.includes("Internal Server Error"));
+}
+
 // ── Macros ──────────────────────────────────────────────────────
 console.log("\n--- Macros ---");
 
