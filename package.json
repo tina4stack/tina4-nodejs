@@ -1,12 +1,45 @@
 {
   "name": "tina4-nodejs",
-  "version": "3.0.0",
-  "private": true,
+  "version": "3.0.0-rc.2",
   "type": "module",
-  "description": "This is not a framework. Tina4 for Node.js/TypeScript.",
+  "description": "This is not a framework. Tina4 for Node.js/TypeScript — zero deps, 38 built-in features.",
+  "keywords": ["tina4", "framework", "web", "api", "orm", "graphql", "websocket", "typescript"],
+  "homepage": "https://tina4.com/nodejs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tina4stack/tina4-nodejs.git"
+  },
+  "license": "MIT",
+  "author": "Tina4 Team <info@tina4.com>",
   "workspaces": [
     "packages/*"
   ],
+  "main": "packages/core/src/index.ts",
+  "exports": {
+    ".": "./packages/core/src/index.ts",
+    "./orm": "./packages/orm/src/index.ts",
+    "./swagger": "./packages/swagger/src/index.ts",
+    "./frond": "./packages/frond/src/engine.ts"
+  },
+  "files": [
+    "packages/core/src/**/*",
+    "packages/core/public/**/*",
+    "packages/core/templates/**/*",
+    "packages/core/gallery/**/*",
+    "packages/orm/src/**/*",
+    "packages/swagger/src/**/*",
+    "packages/frond/src/**/*",
+    "packages/cli/src/**/*",
+    "skills/**/*",
+    "CLAUDE.md",
+    "COMPARISON.md",
+    "BENCHMARK_REPORT.md",
+    "CARBONAH.md",
+    "README.md"
+  ],
+  "bin": {
+    "tina4nodejs": "packages/cli/src/bin.ts"
+  },
   "scripts": {
     "build": "npm run build --workspaces",
     "clean": "rm -rf packages/*/dist",
@@ -14,6 +47,9 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
