@@ -1,4 +1,4 @@
-import type { RouteHandler, RouteDefinition, RouteMeta, Middleware, Tina4Request, Tina4Response } from "./types.js";
+import type { RouteHandler, RouteDefinition, RouteMeta, Middleware, Tina4Request, Tina4Response, WebSocketRouteHandler, WebSocketRouteDefinition } from "./types.js";
 
 interface MatchResult {
   handler: RouteHandler;
@@ -33,6 +33,7 @@ export interface RouteInfo {
 
 export class Router {
   private routes: Map<string, CompiledRoute[]> = new Map();
+  private wsRoutes: WebSocketRouteDefinition[] = [];
 
   /**
    * Add a raw route definition (used internally and by file-based routing).
@@ -188,8 +189,96 @@ export class Router {
     return info;
   }
 
+  /**
+   * Register a WebSocket route.
+   */
+  websocket(path: string, handler: WebSocketRouteHandler): void {
+    // Remove existing ws route with same pattern (for hot-reload)
+    this.wsRoutes = this.wsRoutes.filter((r) => r.pattern !== path);
+    this.wsRoutes.push({ pattern: path, handler });
+  }
+
+  /**
+   * Get all registered WebSocket route definitions.
+   */
+  getWebSocketRoutes(): WebSocketRouteDefinition[] {
+    return [...this.wsRoutes];
+  }
+
+  /**
+   * Match a WebSocket upgrade request path to a registered ws route.
+   */
+  matchWebSocket(pathname: string): WebSocketRouteDefinition | null {
+    for (const route of this.wsRoutes) {
+      if (route.pattern === pathname) return route;
+    }
+    return null;
+  }
+
   clear(): void {
     this.routes.clear();
+    this.wsRoutes = [];
+  }
+
+  // ── Static convenience methods ───────────────────────────────
+  // These delegate to the defaultRouter singleton so users can write
+  //   Router.get("/path", handler)
+  // as an alternative to importing the top-level get(), post(), etc.
+
+  /**
+   * Register a GET route on the default global router.
+   */
+  static get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    defaultRouter.get(path, handler, middlewares, meta);
+  }
+
+  /**
+   * Register a POST route on the default global router.
+   */
+  static post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    defaultRouter.post(path, handler, middlewares, meta);
+  }
+
+  /**
+   * Register a PUT route on the default global router.
+   */
+  static put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    defaultRouter.put(path, handler, middlewares, meta);
+  }
+
+  /**
+   * Register a PATCH route on the default global router.
+   */
+  static patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    defaultRouter.patch(path, handler, middlewares, meta);
+  }
+
+  /**
+   * Register a DELETE route on the default global router.
+   */
+  static delete(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    defaultRouter.delete(path, handler, middlewares, meta);
+  }
+
+  /**
+   * Register a route that matches ANY HTTP method on the default global router.
+   */
+  static any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+    defaultRouter.any(path, handler, middlewares, meta);
+  }
+
+  /**
+   * Register a WebSocket route on the default global router.
+   */
+  static websocket(path: string, handler: WebSocketRouteHandler): void {
+    defaultRouter.websocket(path, handler);
+  }
+
+  /**
+   * Create a route group on the default global router.
+   */
+  static group(prefix: string, callback: (group: RouteGroup) => void, middlewares?: Middleware[]): void {
+    defaultRouter.group(prefix, callback, middlewares);
   }
 
   private compilePattern(pattern: string): { regex: RegExp; paramNames: string[] } {
@@ -392,6 +481,10 @@ export function del(path: string, handler: RouteHandler, middlewares?: Middlewar
 
 export function any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
   defaultRouter.any(path, handler, middlewares, meta);
+}
+
+export function websocket(path: string, handler: WebSocketRouteHandler): void {
+  defaultRouter.websocket(path, handler);
 }
 
 // Re-export "del" as "delete" for developer convenience (use: import { delete as del } from "@tina4/core")

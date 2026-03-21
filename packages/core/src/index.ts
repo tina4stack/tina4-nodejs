@@ -8,11 +8,13 @@ export type {
   Middleware,
   UploadedFile,
   CookieOptions,
+  WebSocketRouteHandler,
+  WebSocketRouteDefinition,
 } from "./types.js";
 
 export { startServer, resolvePortAndHost } from "./server.js";
 export { Router, RouteGroup, defaultRouter, runRouteMiddlewares } from "./router.js";
-export { get, post, put, patch, del, any, del as delete } from "./router.js";
+export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";
 export { discoverRoutes } from "./routeDiscovery.js";
 export { MiddlewareChain, cors, requestLogger } from "./middleware.js";
@@ -86,3 +88,4 @@ export { ValkeySessionHandler } from "./sessionHandlers/valkeyHandler.js";
 export type { ValkeySessionConfig } from "./sessionHandlers/valkeyHandler.js";
 export { tests, assertEqual, assertThrows, assertTrue, assertFalse, runAllTests, resetTests } from "./testing.js";
 export { Container, container } from "./container.js";
+export type { WebSocketConnection } from "./websocketConnection.js";

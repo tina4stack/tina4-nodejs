@@ -36,7 +36,8 @@ export interface Tina4ResponseMethods {
   redirect(url: string, code?: number): Tina4Response;
   cookie(name: string, value: string, options?: CookieOptions): Tina4Response;
   clearCookie(name: string, options?: CookieOptions): Tina4Response;
-  render?(template: string, data?: Record<string, unknown>): void;
+  file(path: string, options?: { download?: boolean; contentType?: string }): Tina4Response;
+  render(template: string, data?: Record<string, unknown>): Promise<Tina4Response>;
   template(name: string, data?: Record<string, unknown>): Promise<Tina4Response>;
   /** The underlying ServerResponse for advanced use */
   raw: ServerResponse;
@@ -99,3 +100,18 @@ export type Middleware = (
   res: Tina4Response,
   next: () => void
 ) => void | Promise<void>;
+
+/**
+ * Handler for WebSocket routes.
+ * conn — a connection-like object with send/close methods.
+ * message — the incoming text or binary message.
+ */
+export type WebSocketRouteHandler = (
+  conn: { id: string; send: (data: string) => void; close: () => void },
+  message: string | Buffer,
+) => void | Promise<void>;
+
+export interface WebSocketRouteDefinition {
+  pattern: string;
+  handler: WebSocketRouteHandler;
+}

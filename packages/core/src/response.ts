@@ -1,4 +1,6 @@
 import type { ServerResponse } from "node:http";
+import fs from "node:fs";
+import nodePath from "node:path";
 import type { Tina4Response, CookieOptions } from "./types.js";
 
 /**
@@ -124,6 +126,50 @@ export function createResponse(res: ServerResponse): Tina4Response {
 
   response.clearCookie = function (name: string, options?: CookieOptions): Tina4Response {
     return response.cookie(name, "", { ...options, maxAge: 0, expires: new Date(0) });
+  };
+
+  response.file = function (filePath: string, options?: { download?: boolean; contentType?: string }): Tina4Response {
+    if (!fs.existsSync(filePath)) {
+      res.statusCode = 404;
+      res.end("File not found");
+      return response;
+    }
+
+    const content = fs.readFileSync(filePath);
+    const ext = nodePath.extname(filePath).toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      ".html": "text/html", ".css": "text/css", ".js": "application/javascript",
+      ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg", ".gif": "image/gif", ".svg": "image/svg+xml",
+      ".pdf": "application/pdf", ".zip": "application/zip", ".csv": "text/csv",
+      ".xml": "application/xml", ".webp": "image/webp", ".ico": "image/x-icon",
+      ".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf",
+      ".txt": "text/plain", ".mp4": "video/mp4", ".mp3": "audio/mpeg",
+    };
+
+    res.setHeader("Content-Type", options?.contentType || mimeTypes[ext] || "application/octet-stream");
+    res.setHeader("Content-Length", content.length);
+    if (options?.download) {
+      res.setHeader("Content-Disposition", `attachment; filename="${nodePath.basename(filePath)}"`);
+    }
+    res.end(content);
+    return response;
+  };
+
+  response.render = async function (templateName: string, data?: Record<string, unknown>): Promise<Tina4Response> {
+    try {
+      const twig = await import("@tina4/twig");
+      const html = await twig.renderTemplate(templateName, data);
+      response.html(html);
+    } catch (err) {
+      res.statusCode = 500;
+      response.json({
+        error: "Template rendering failed",
+        statusCode: 500,
+        message: String(err),
+      });
+    }
+    return response;
   };
 
   response.template = async function (name: string, data?: Record<string, unknown>): Promise<Tina4Response> {
