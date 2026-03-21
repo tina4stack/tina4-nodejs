@@ -144,7 +144,7 @@ web framework with zero third-party dependencies for core features.
 
 \`\`\`bash
 tina4nodejs init .          # Scaffold project
-tina4nodejs serve           # Start dev server on port 3000
+tina4nodejs serve           # Start dev server on port 7148
 tina4nodejs migrate         # Run database migrations
 tina4nodejs test            # Run test suite
 tina4nodejs routes          # List all registered routes

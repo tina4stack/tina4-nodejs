@@ -23,6 +23,20 @@ const BUILTIN_ERROR_TEMPLATES_DIR = resolve(__dirname, "..", "templates");
 
 const TINA4_VERSION = "3.0.0";
 
+/**
+ * Resolve port and host with priority: explicit config > ENV var > default.
+ * Exported for testability.
+ */
+export function resolvePortAndHost(config?: { port?: number; host?: string }): { port: number; host: string } {
+  const port = config?.port
+    ?? (process.env.PORT ? parseInt(process.env.PORT, 10) : undefined)
+    ?? 7148;
+  const host = config?.host
+    ?? process.env.HOST
+    ?? "0.0.0.0";
+  return { port, host };
+}
+
 function isDevMode(): boolean {
   return process.env.TINA4_ENV !== "production" && process.env.NODE_ENV !== "production";
 }
@@ -147,7 +161,7 @@ export async function startServer(config?: Tina4Config): Promise<{
   router: Router;
   port: number;
 }> {
-  const port = config?.port ?? 3000;
+  const { port, host } = resolvePortAndHost(config);
   const routesDir = resolve(config?.routesDir ?? "src/routes");
   const modelsDir = resolve(config?.modelsDir ?? "src/models");
   const staticDir = resolve(config?.staticDir ?? "public");
@@ -396,13 +410,14 @@ export async function startServer(config?: Tina4Config): Promise<{
   });
 
   return new Promise((resolvePromise) => {
-    server.listen(port, () => {
-      const devLine = DevAdmin.isEnabled() ? `\n  Dev dashboard at  \x1b[36mhttp://localhost:${port}/__dev\x1b[0m` : "";
+    server.listen(port, host, () => {
+      const displayHost = host === "0.0.0.0" ? "localhost" : host;
+      const devLine = DevAdmin.isEnabled() ? `\n  Dev dashboard at  \x1b[36mhttp://${displayHost}:${port}/__dev\x1b[0m` : "";
       console.log(`
   \x1b[1mtina4\x1b[0m — This is not a framework.
 
-  Server running at \x1b[36mhttp://localhost:${port}\x1b[0m
-  Swagger docs at  \x1b[36mhttp://localhost:${port}/swagger\x1b[0m${devLine}
+  Server running at \x1b[36mhttp://${displayHost}:${port}\x1b[0m  (bound to ${host})
+  Swagger docs at  \x1b[36mhttp://${displayHost}:${port}/swagger\x1b[0m${devLine}
 `);
       resolvePromise({
         close: () => {

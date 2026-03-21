@@ -186,7 +186,7 @@ export default async function (req: Tina4Request, res: Tina4Response): Promise<v
   Next steps:
 ${cdStep}    tina4nodejs serve
 
-  Your API will be running at http://localhost:3000
-  Swagger docs at http://localhost:3000/swagger
+  Your API will be running at http://localhost:7148
+  Swagger docs at http://localhost:7148/swagger
 `);
 }

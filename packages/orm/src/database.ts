@@ -44,7 +44,7 @@ export function closeDatabase(): void {
 }
 
 export interface DatabaseConfig {
-  type?: "sqlite" | "postgres" | "mysql";
+  type?: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird";
   path?: string;
   url?: string;
   host?: string;
@@ -58,7 +58,7 @@ export interface DatabaseConfig {
  * Parsed result from a DATABASE_URL connection string.
  */
 export interface ParsedDatabaseUrl {
-  type: "sqlite" | "postgres" | "mysql";
+  type: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird";
   path?: string;
   host?: string;
   port?: number;
@@ -95,6 +95,33 @@ export function parseDatabaseUrl(url: string): ParsedDatabaseUrl {
     return { type: "sqlite", path };
   }
 
+  // Handle mssql:// and firebird:// with custom parsing (URL class doesn't know these schemes)
+  if (url.startsWith("mssql://") || url.startsWith("sqlserver://")) {
+    const match = url.match(/(?:mssql|sqlserver):\/\/(?:([^:]+):([^@]+)@)?([^:/]+)(?::(\d+))?\/(.*)/);
+    if (!match) throw new Error(`Invalid MSSQL URL: ${url}`);
+    return {
+      type: "mssql",
+      user: match[1] ? decodeURIComponent(match[1]) : undefined,
+      password: match[2] ? decodeURIComponent(match[2]) : undefined,
+      host: match[3],
+      port: match[4] ? parseInt(match[4], 10) : undefined,
+      database: match[5],
+    };
+  }
+
+  if (url.startsWith("firebird://")) {
+    const match = url.match(/firebird:\/\/(?:([^:]+):([^@]+)@)?([^:/]+)(?::(\d+))?\/(.*)/);
+    if (!match) throw new Error(`Invalid Firebird URL: ${url}`);
+    return {
+      type: "firebird",
+      user: match[1] ? decodeURIComponent(match[1]) : undefined,
+      password: match[2] ? decodeURIComponent(match[2]) : undefined,
+      host: match[3],
+      port: match[4] ? parseInt(match[4], 10) : undefined,
+      database: "/" + match[5],
+    };
+  }
+
   // Normalize postgres:// to postgresql:// for URL parsing
   const normalizedUrl = url.startsWith("postgres://")
     ? url.replace(/^postgres:\/\//, "postgresql://")
@@ -108,7 +135,7 @@ export function parseDatabaseUrl(url: string): ParsedDatabaseUrl {
   }
 
   const scheme = parsed.protocol.replace(/:$/, "");
-  let type: "sqlite" | "postgres" | "mysql";
+  let type: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird";
 
   switch (scheme) {
     case "postgresql":
@@ -118,7 +145,7 @@ export function parseDatabaseUrl(url: string): ParsedDatabaseUrl {
       type = "mysql";
       break;
     default:
-      throw new Error(`Unsupported database URL scheme: "${scheme}". Supported: sqlite, postgres/postgresql, mysql.`);
+      throw new Error(`Unsupported database URL scheme: "${scheme}". Supported: sqlite, postgres/postgresql, mysql, mssql/sqlserver, firebird.`);
   }
 
   const database = parsed.pathname.startsWith("/")
@@ -157,10 +184,58 @@ export async function initDatabase(config?: DatabaseConfig): Promise<DatabaseAda
         setAdapter(adapter);
         return adapter;
       }
-      case "postgres":
-        throw new Error("PostgreSQL adapter not yet implemented. Coming soon.");
-      case "mysql":
-        throw new Error("MySQL adapter not yet implemented. Coming soon.");
+      case "postgres": {
+        const { PostgresAdapter } = await import("./adapters/postgres.js");
+        const adapter = new PostgresAdapter({
+          host: parsed.host,
+          port: parsed.port,
+          user: parsed.user,
+          password: parsed.password,
+          database: parsed.database,
+        });
+        await adapter.connect();
+        setAdapter(adapter);
+        return adapter;
+      }
+      case "mysql": {
+        const { MysqlAdapter } = await import("./adapters/mysql.js");
+        const adapter = new MysqlAdapter({
+          host: parsed.host,
+          port: parsed.port,
+          user: parsed.user,
+          password: parsed.password,
+          database: parsed.database,
+        });
+        await adapter.connect();
+        setAdapter(adapter);
+        return adapter;
+      }
+      case "mssql": {
+        const { MssqlAdapter } = await import("./adapters/mssql.js");
+        const adapter = new MssqlAdapter({
+          host: parsed.host,
+          port: parsed.port,
+          user: parsed.user,
+          password: parsed.password,
+          database: parsed.database,
+        });
+        await adapter.connect();
+        setAdapter(adapter);
+        return adapter;
+      }
+      case "firebird": {
+        const { FirebirdAdapter } = await import("./adapters/firebird.js");
+        const adapter = new FirebirdAdapter({
+          host: parsed.host,
+          port: parsed.port,
+          user: parsed.user,
+          password: parsed.password,
+          database: parsed.database,
+        });
+        await adapter.connect();
+        setAdapter(adapter);
+        return adapter;
+      }
     }
   }
 
@@ -174,10 +249,58 @@ export async function initDatabase(config?: DatabaseConfig): Promise<DatabaseAda
       setAdapter(adapter);
       return adapter;
     }
-    case "postgres":
-      throw new Error("PostgreSQL adapter not yet implemented. Coming soon.");
-    case "mysql":
-      throw new Error("MySQL adapter not yet implemented. Coming soon.");
+    case "postgres": {
+      const { PostgresAdapter } = await import("./adapters/postgres.js");
+      const adapter = new PostgresAdapter({
+        host: config?.host,
+        port: config?.port,
+        user: config?.user,
+        password: config?.password,
+        database: config?.database,
+      });
+      await adapter.connect();
+      setAdapter(adapter);
+      return adapter;
+    }
+    case "mysql": {
+      const { MysqlAdapter } = await import("./adapters/mysql.js");
+      const adapter = new MysqlAdapter({
+        host: config?.host,
+        port: config?.port,
+        user: config?.user,
+        password: config?.password,
+        database: config?.database,
+      });
+      await adapter.connect();
+      setAdapter(adapter);
+      return adapter;
+    }
+    case "mssql": {
+      const { MssqlAdapter } = await import("./adapters/mssql.js");
+      const adapter = new MssqlAdapter({
+        host: config?.host,
+        port: config?.port,
+        user: config?.user,
+        password: config?.password,
+        database: config?.database,
+      });
+      await adapter.connect();
+      setAdapter(adapter);
+      return adapter;
+    }
+    case "firebird": {
+      const { FirebirdAdapter } = await import("./adapters/firebird.js");
+      const adapter = new FirebirdAdapter({
+        host: config?.host,
+        port: config?.port,
+        user: config?.user,
+        password: config?.password,
+        database: config?.database,
+      });
+      await adapter.connect();
+      setAdapter(adapter);
+      return adapter;
+    }
     default:
       throw new Error(`Unknown database type: ${type}`);
   }

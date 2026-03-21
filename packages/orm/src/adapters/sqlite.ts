@@ -1,10 +1,11 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { DatabaseAdapter, FieldDefinition } from "../types.js";
+import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 
 export class SQLiteAdapter implements DatabaseAdapter {
   private db: Database.Database;
+  private _lastInsertId: number | bigint | null = null;
 
   constructor(dbPath: string) {
     // Create directory if needed
@@ -17,12 +18,123 @@ export class SQLiteAdapter implements DatabaseAdapter {
 
   execute(sql: string, params?: unknown[]): unknown {
     const stmt = this.db.prepare(sql);
-    return params ? stmt.run(...params) : stmt.run();
+    const result = params ? stmt.run(...params) : stmt.run();
+    if (result && typeof result === "object" && "lastInsertRowid" in result) {
+      this._lastInsertId = result.lastInsertRowid as number | bigint;
+    }
+    return result;
   }
 
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[] {
     const stmt = this.db.prepare(sql);
     return (params ? stmt.all(...params) : stmt.all()) as T[];
+  }
+
+  fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): T[] {
+    let effectiveSql = sql;
+    if (limit !== undefined) {
+      effectiveSql += ` LIMIT ${limit}`;
+      if (skip !== undefined && skip > 0) {
+        effectiveSql += ` OFFSET ${skip}`;
+      }
+    }
+    return this.query<T>(effectiveSql, params);
+  }
+
+  fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | null {
+    const stmt = this.db.prepare(sql);
+    const row = params ? stmt.get(...params) : stmt.get();
+    return (row as T) ?? null;
+  }
+
+  insert(table: string, data: Record<string, unknown>): DatabaseResult {
+    const keys = Object.keys(data);
+    const placeholders = keys.map(() => "?").join(", ");
+    const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
+    const values = Object.values(data);
+
+    try {
+      const result = this.db.prepare(sql).run(...values);
+      this._lastInsertId = result.lastInsertRowid;
+      return {
+        success: true,
+        rowsAffected: result.changes,
+        lastInsertId: result.lastInsertRowid,
+      };
+    } catch (e) {
+      return {
+        success: false,
+        rowsAffected: 0,
+        error: (e as Error).message,
+      };
+    }
+  }
+
+  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): DatabaseResult {
+    const setClauses = Object.keys(data).map((k) => `"${k}" = ?`).join(", ");
+    const whereClauses = Object.keys(filter).map((k) => `"${k}" = ?`).join(" AND ");
+    const sql = `UPDATE "${table}" SET ${setClauses} WHERE ${whereClauses}`;
+    const values = [...Object.values(data), ...Object.values(filter)];
+
+    try {
+      const result = this.db.prepare(sql).run(...values);
+      return { success: true, rowsAffected: result.changes };
+    } catch (e) {
+      return { success: false, rowsAffected: 0, error: (e as Error).message };
+    }
+  }
+
+  delete(table: string, filter: Record<string, unknown>): DatabaseResult {
+    const whereClauses = Object.keys(filter).map((k) => `"${k}" = ?`).join(" AND ");
+    const sql = `DELETE FROM "${table}" WHERE ${whereClauses}`;
+    const values = Object.values(filter);
+
+    try {
+      const result = this.db.prepare(sql).run(...values);
+      return { success: true, rowsAffected: result.changes };
+    } catch (e) {
+      return { success: false, rowsAffected: 0, error: (e as Error).message };
+    }
+  }
+
+  startTransaction(): void {
+    this.db.exec("BEGIN TRANSACTION");
+  }
+
+  commit(): void {
+    this.db.exec("COMMIT");
+  }
+
+  rollback(): void {
+    this.db.exec("ROLLBACK");
+  }
+
+  tables(): string[] {
+    const rows = this.query<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    );
+    return rows.map((r) => r.name);
+  }
+
+  columns(table: string): ColumnInfo[] {
+    const rows = this.db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: unknown;
+      pk: number;
+    }>;
+    return rows.map((r) => ({
+      name: r.name,
+      type: r.type,
+      nullable: r.notnull === 0,
+      default: r.dflt_value,
+      primaryKey: r.pk === 1,
+    }));
+  }
+
+  lastInsertId(): number | bigint | null {
+    return this._lastInsertId;
   }
 
   close(): void {

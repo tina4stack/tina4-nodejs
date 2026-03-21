@@ -10,7 +10,7 @@ export type {
   CookieOptions,
 } from "./types.js";
 
-export { startServer } from "./server.js";
+export { startServer, resolvePortAndHost } from "./server.js";
 export { Router, RouteGroup, defaultRouter, runRouteMiddlewares } from "./router.js";
 export { get, post, put, patch, del, any, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";

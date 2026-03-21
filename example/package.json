@@ -1,0 +1,19 @@
+{
+  "name": "tina4-example",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "npx tsx app.ts",
+    "start": "node --loader tsx app.ts"
+  },
+  "dependencies": {
+    "@tina4/core": "^3.0.0",
+    "@tina4/orm": "^3.0.0",
+    "@tina4/swagger": "^3.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

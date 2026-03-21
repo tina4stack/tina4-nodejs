@@ -6,7 +6,7 @@ export interface ServeOptions {
 }
 
 export async function serveProject(options: ServeOptions): Promise<void> {
-  const port = options.port ?? 3000;
+  const port = options.port ?? 7148;
   const cwd = process.cwd();
 
   const routesDir = resolve(cwd, "src/routes");

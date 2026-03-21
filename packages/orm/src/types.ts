@@ -28,12 +28,75 @@ export interface ModelDefinition {
   dbName?: string;
 }
 
+export interface ColumnInfo {
+  name: string;
+  type: string;
+  nullable?: boolean;
+  default?: unknown;
+  primaryKey?: boolean;
+}
+
+export interface DatabaseResult {
+  success: boolean;
+  rowsAffected: number;
+  lastInsertId?: number | bigint;
+  error?: string;
+}
+
 export interface DatabaseAdapter {
+  /** Execute a statement (INSERT, UPDATE, DELETE, DDL). */
   execute(sql: string, params?: unknown[]): unknown;
+
+  /** Query rows. */
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[];
+
+  /** Fetch rows with optional pagination (limit/skip). */
+  fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): T[];
+
+  /** Fetch a single row or null. */
+  fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | null;
+
+  /** Insert a row into a table, returns result with lastInsertId. */
+  insert(table: string, data: Record<string, unknown>): DatabaseResult;
+
+  /** Update rows in a table matching filter, returns affected row count. */
+  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): DatabaseResult;
+
+  /** Delete rows from a table matching filter, returns affected row count. */
+  delete(table: string, filter: Record<string, unknown>): DatabaseResult;
+
+  /** Start a transaction. */
+  startTransaction(): void;
+
+  /** Commit the current transaction. */
+  commit(): void;
+
+  /** Rollback the current transaction. */
+  rollback(): void;
+
+  /** List all tables in the database. */
+  tables(): string[];
+
+  /** List columns with types for a table. */
+  columns(table: string): ColumnInfo[];
+
+  /** Get the last auto-increment id. */
+  lastInsertId(): number | bigint | null;
+
+  /** Close the connection. */
   close(): void;
+
+  /** Check if a table exists. */
   tableExists(name: string): boolean;
+
+  /** Create a table from field definitions. */
   createTable(name: string, columns: Record<string, FieldDefinition>): void;
+
+  /** Get raw column info (legacy, used by migration). */
+  getTableColumns?(name: string): Array<{ name: string; type: string }>;
+
+  /** Add a column to an existing table (legacy, used by migration). */
+  addColumn?(table: string, colName: string, def: FieldDefinition): void;
 }
 
 export interface QueryOptions {

@@ -22,7 +22,7 @@ const HELP = `
     tina4nodejs help                  Show this help message
 
   Options:
-    --port <number>      Server port (default: 3000)
+    --port <number>      Server port (default: 7148)
     --all                Install AI context for all tools (with ai command)
     --force              Overwrite existing AI context files (with ai command)
     --help               Show this help message
@@ -37,7 +37,7 @@ async function main(): Promise<void> {
     }
     case "serve": {
       const portIndex = args.indexOf("--port");
-      const port = portIndex !== -1 ? parseInt(args[portIndex + 1], 10) : 3000;
+      const port = portIndex !== -1 ? parseInt(args[portIndex + 1], 10) : 7148;
       await serveProject({ port });
       break;
     }

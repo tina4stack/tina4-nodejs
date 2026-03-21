@@ -3,6 +3,8 @@ export type {
   FieldDefinition,
   ModelDefinition,
   DatabaseAdapter,
+  DatabaseResult,
+  ColumnInfo,
   QueryOptions,
   RelationshipDefinition,
 } from "./types.js";
@@ -31,3 +33,14 @@ export { BaseModel } from "./baseModel.js";
 export { SQLTranslator, QueryCache } from "./sqlTranslation.js";
 export { FakeData } from "./fakeData.js";
 export { seedTable, seedOrm } from "./seeder.js";
+
+// Database adapters
+export { SQLiteAdapter } from "./adapters/sqlite.js";
+export { PostgresAdapter } from "./adapters/postgres.js";
+export type { PostgresConfig } from "./adapters/postgres.js";
+export { MysqlAdapter } from "./adapters/mysql.js";
+export type { MysqlConfig } from "./adapters/mysql.js";
+export { MssqlAdapter } from "./adapters/mssql.js";
+export type { MssqlConfig } from "./adapters/mssql.js";
+export { FirebirdAdapter } from "./adapters/firebird.js";
+export type { FirebirdConfig } from "./adapters/firebird.js";

@@ -3,4 +3,4 @@ import { initDatabase } from "@tina4/orm";
 
 const db = initDatabase("sqlite:todos.db");
 
-createServer({ port: 7145 });
+createServer({ port: 7148 });

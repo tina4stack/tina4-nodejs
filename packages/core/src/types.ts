@@ -76,6 +76,7 @@ export interface RouteMeta {
 
 export interface Tina4Config {
   port?: number;
+  host?: string;
   routesDir?: string;
   modelsDir?: string;
   templatesDir?: string;
