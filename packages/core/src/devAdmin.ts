@@ -456,15 +456,18 @@ function handleStatus(router: Router): RouteHandler {
 }
 
 function handleRoutes(router: Router): RouteHandler {
+  const internalPrefixes = ["/__dev", "/health", "/swagger"];
   return (_req, res) => {
     const allRoutes = router.getRoutes();
-    const result = allRoutes.map((r) => ({
-      method: r.method,
-      path: r.pattern,
-      filePath: r.filePath ?? null,
-      hasMiddleware: (r.middlewares?.length ?? 0) > 0,
-      meta: r.meta ?? null,
-    }));
+    const result = allRoutes
+      .filter((r) => !internalPrefixes.some((prefix) => r.pattern.startsWith(prefix)))
+      .map((r) => ({
+        method: r.method,
+        path: r.pattern,
+        filePath: r.filePath ?? null,
+        hasMiddleware: (r.middlewares?.length ?? 0) > 0,
+        meta: r.meta ?? null,
+      }));
     res.json({ routes: result, count: result.length });
   };
 }
