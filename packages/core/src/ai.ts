@@ -9,8 +9,9 @@
  *   const tools = detectAi();          // [{ name: "claude-code", ... }]
  *   installAiContext();                 // Scaffold context for all detected tools
  */
-import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
-import { join, resolve, relative } from "node:path";
+import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, copyFileSync, cpSync, statSync } from "node:fs";
+import { join, resolve, relative, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -260,6 +261,57 @@ export function installAiContext(
     if (!existsSync(contextPath) || force) {
       writeFileSync(contextPath, context, "utf-8");
       created.push(relative(r, contextPath));
+    }
+
+    // Install Claude Code skills if it's Claude
+    if (toolName === "claude-code") {
+      const skillFiles = installClaudeSkills(r, force);
+      created.push(...skillFiles);
+    }
+  }
+
+  return created;
+}
+
+/**
+ * Copy Claude Code skill files from the framework's directories.
+ */
+function installClaudeSkills(root: string, force: boolean): string[] {
+  const created: string[] = [];
+
+  // Determine the framework root (where packages/core/src/ lives)
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const frameworkRoot = resolve(thisDir, "..", "..", "..");
+
+  // Copy .skill files from the framework's skills/ directory to project root
+  const skillsSource = join(frameworkRoot, "skills");
+  if (existsSync(skillsSource)) {
+    for (const entry of readdirSync(skillsSource)) {
+      if (entry.endsWith(".skill")) {
+        const srcFile = join(skillsSource, entry);
+        const target = join(root, entry);
+        if (!existsSync(target) || force) {
+          copyFileSync(srcFile, target);
+          created.push(entry);
+        }
+      }
+    }
+  }
+
+  // Copy skill directories from .claude/skills/ in the framework to the project
+  const frameworkSkillsDir = join(frameworkRoot, ".claude", "skills");
+  if (existsSync(frameworkSkillsDir)) {
+    const targetSkillsDir = join(root, ".claude", "skills");
+    mkdirSync(targetSkillsDir, { recursive: true });
+    for (const entry of readdirSync(frameworkSkillsDir)) {
+      const skillDir = join(frameworkSkillsDir, entry);
+      if (existsSync(skillDir) && statSync(skillDir).isDirectory()) {
+        const targetDir = join(targetSkillsDir, entry);
+        if (!existsSync(targetDir) || force) {
+          cpSync(skillDir, targetDir, { recursive: true, force: true });
+          created.push(relative(root, targetDir));
+        }
+      }
     }
   }
 

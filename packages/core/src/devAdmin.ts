@@ -10,6 +10,8 @@
  */
 
 import { cpus as osCpus } from "node:os";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import type { Router } from "./router.js";
 import type { RouteHandler } from "./types.js";
 import { DevMailbox } from "./devMailbox.js";
@@ -382,6 +384,10 @@ export class DevAdmin {
       { method: "POST", pattern: "/__dev/api/tool", handler: handleTool },
       // Chat
       { method: "POST", pattern: "/__dev/api/chat", handler: handleChat },
+      // Connections
+      { method: "GET", pattern: "/__dev/api/connections", handler: handleConnections },
+      { method: "POST", pattern: "/__dev/api/connections/test", handler: handleConnectionsTest },
+      { method: "POST", pattern: "/__dev/api/connections/save", handler: handleConnectionsSave },
       // JS asset
       { method: "GET", pattern: "/__dev/js/tina4-dev-admin.js", handler: handleDevAdminJs },
     ];
@@ -797,6 +803,123 @@ function formatUptime(seconds: number): string {
   parts.push(`${s}s`);
   return parts.join(" ");
 }
+
+// ---------------------------------------------------------------------------
+// Connection helpers
+// ---------------------------------------------------------------------------
+
+function parseEnvFile(): Record<string, string> {
+  const envPath = join(process.cwd(), ".env");
+  const result: Record<string, string> = {};
+  if (!existsSync(envPath)) return result;
+  const lines = readFileSync(envPath, "utf-8").split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+    const [key, ...rest] = trimmed.split("=");
+    result[key.trim()] = rest.join("=").trim().replace(/^["']|["']$/g, "");
+  }
+  return result;
+}
+
+const handleConnections: RouteHandler = (_req, res) => {
+  const env = parseEnvFile();
+  res.json({
+    url: env.DATABASE_URL ?? "",
+    username: env.DATABASE_USERNAME ?? "",
+    password: env.DATABASE_PASSWORD ? "***" : "",
+  });
+};
+
+const handleConnectionsTest: RouteHandler = async (req, res) => {
+  const body = req.body as Record<string, string> | undefined;
+  const url = body?.url ?? "";
+  const username = body?.username ?? "";
+  const password = body?.password ?? "";
+  if (!url) {
+    res.json({ success: false, error: "No connection URL provided" });
+    return;
+  }
+  try {
+    // Try to use the ORM's initDatabase if available
+    const { initDatabase } = await import("@tina4/orm").catch(() => ({ initDatabase: null }));
+    if (!initDatabase) {
+      res.json({ success: false, error: "Database module (@tina4/orm) not available" });
+      return;
+    }
+    const db = await initDatabase({ url, username, password });
+    let version = "Connected";
+    let tableCount = 0;
+    try {
+      if (db.tables) {
+        const tables = await db.tables();
+        tableCount = Array.isArray(tables) ? tables.length : 0;
+      }
+    } catch { tableCount = 0; }
+    try {
+      const urlLower = url.toLowerCase();
+      if (urlLower.includes("sqlite")) {
+        const row = await db.execute("SELECT sqlite_version() as v");
+        version = `SQLite ${row?.[0]?.v ?? ""}`;
+      } else if (urlLower.includes("postgres")) {
+        const row = await db.execute("SELECT version() as v");
+        version = (row?.[0]?.v ?? "PostgreSQL").toString().split(",")[0];
+      } else if (urlLower.includes("mysql")) {
+        const row = await db.execute("SELECT version() as v");
+        version = `MySQL ${row?.[0]?.v ?? ""}`;
+      } else if (urlLower.includes("mssql")) {
+        const row = await db.execute("SELECT @@VERSION as v");
+        version = (row?.[0]?.v ?? "MSSQL").toString().split("\n")[0];
+      } else if (urlLower.includes("firebird")) {
+        const row = await db.execute("SELECT rdb$get_context('SYSTEM', 'ENGINE_VERSION') as v FROM rdb$database");
+        version = `Firebird ${row?.[0]?.v ?? ""}`;
+      }
+    } catch { /* keep version as Connected */ }
+    if (db.close) await db.close();
+    res.json({ success: true, version, tables: tableCount });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.json({ success: false, error: msg });
+  }
+};
+
+const handleConnectionsSave: RouteHandler = (req, res) => {
+  const body = req.body as Record<string, string> | undefined;
+  const url = body?.url ?? "";
+  const username = body?.username ?? "";
+  const password = body?.password ?? "";
+  if (!url) {
+    res.json({ success: false, error: "No connection URL provided" });
+    return;
+  }
+  try {
+    const envPath = join(process.cwd(), ".env");
+    const lines = existsSync(envPath) ? readFileSync(envPath, "utf-8").split("\n") : [];
+    const keysFound: Record<string, boolean> = { DATABASE_URL: false, DATABASE_USERNAME: false, DATABASE_PASSWORD: false };
+    const newLines: string[] = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) {
+        newLines.push(line);
+        continue;
+      }
+      const key = trimmed.split("=", 1)[0].trim();
+      if (key === "DATABASE_URL") { newLines.push(`DATABASE_URL=${url}`); keysFound.DATABASE_URL = true; }
+      else if (key === "DATABASE_USERNAME") { newLines.push(`DATABASE_USERNAME=${username}`); keysFound.DATABASE_USERNAME = true; }
+      else if (key === "DATABASE_PASSWORD") { newLines.push(`DATABASE_PASSWORD=${password}`); keysFound.DATABASE_PASSWORD = true; }
+      else { newLines.push(line); }
+    }
+    const values: Record<string, string> = { DATABASE_URL: url, DATABASE_USERNAME: username, DATABASE_PASSWORD: password };
+    for (const [key, found] of Object.entries(keysFound)) {
+      if (!found) newLines.push(`${key}=${values[key]}`);
+    }
+    writeFileSync(envPath, newLines.join("\n") + "\n");
+    res.json({ success: true });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.json({ success: false, error: msg });
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Dev Admin JS handler — serves the shared JS file
@@ -1371,6 +1494,7 @@ code, .mono { font-family: var(--mono); font-size: 0.82rem; }
     <button class="dev-tab" onclick="showTab('websockets', event)">WS <span class="count" id="ws-count">0</span></button>
     <button class="dev-tab" onclick="showTab('system', event)">System</button>
     <button class="dev-tab" onclick="showTab('tools', event)">Tools</button>
+    <button class="dev-tab" onclick="showTab('connections', event)">Connections</button>
     <button class="dev-tab" onclick="showTab('chat', event)">Tina4</button>
 </div>
 
@@ -1565,6 +1689,149 @@ code, .mono { font-family: var(--mono); font-size: 0.82rem; }
         <pre id="tool-result" style="padding:1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);font-size:0.75rem;font-family:var(--mono);max-height:400px;overflow:auto;white-space:pre-wrap"></pre>
     </div>
 </div>
+
+<!-- Connections Panel -->
+<div id="panel-connections" class="dev-panel hidden">
+    <div class="dev-panel-header">
+        <h2>Connection Builder</h2>
+    </div>
+    <div class="p-md">
+        <div class="flex gap-md" style="flex-wrap:wrap">
+            <div style="flex:1;min-width:300px">
+                <div class="mb-sm">
+                    <label class="text-sm text-muted" style="display:block;margin-bottom:0.25rem">Driver</label>
+                    <select id="conn-driver" class="input" style="width:100%" onchange="connDriverChanged()">
+                        <option value="sqlite">SQLite</option>
+                        <option value="postgresql">PostgreSQL</option>
+                        <option value="mysql">MySQL</option>
+                        <option value="mssql">MSSQL</option>
+                        <option value="firebird">Firebird</option>
+                    </select>
+                </div>
+                <div class="mb-sm conn-server-field">
+                    <label class="text-sm text-muted" style="display:block;margin-bottom:0.25rem">Host</label>
+                    <input type="text" id="conn-host" class="input" style="width:100%" value="localhost" placeholder="localhost" oninput="updateConnectionUrl()">
+                </div>
+                <div class="mb-sm conn-server-field">
+                    <label class="text-sm text-muted" style="display:block;margin-bottom:0.25rem">Port</label>
+                    <input type="number" id="conn-port" class="input" style="width:100%" placeholder="5432" oninput="updateConnectionUrl()">
+                </div>
+                <div class="mb-sm">
+                    <label class="text-sm text-muted" style="display:block;margin-bottom:0.25rem">Database</label>
+                    <input type="text" id="conn-database" class="input" style="width:100%" placeholder="mydb" oninput="updateConnectionUrl()">
+                </div>
+                <div class="mb-sm conn-server-field">
+                    <label class="text-sm text-muted" style="display:block;margin-bottom:0.25rem">Username</label>
+                    <input type="text" id="conn-username" class="input" style="width:100%" placeholder="username">
+                </div>
+                <div class="mb-sm conn-server-field">
+                    <label class="text-sm text-muted" style="display:block;margin-bottom:0.25rem">Password</label>
+                    <input type="password" id="conn-password" class="input" style="width:100%" placeholder="password">
+                </div>
+                <div class="mb-sm">
+                    <label class="text-sm text-muted" style="display:block;margin-bottom:0.25rem">Connection URL</label>
+                    <input type="text" id="conn-url" class="input input-mono" style="width:100%" readonly>
+                </div>
+                <div class="flex gap-sm">
+                    <button class="btn btn-primary" onclick="testConnection()">Test Connection</button>
+                    <button class="btn btn-success" onclick="saveConnection()">Save to .env</button>
+                </div>
+            </div>
+            <div style="width:300px">
+                <div class="dev-panel" style="margin-bottom:1rem">
+                    <div class="dev-panel-header"><h2>Test Result</h2></div>
+                    <div id="conn-test-result" class="p-md text-sm text-muted">No test run yet</div>
+                </div>
+                <div class="dev-panel">
+                    <div class="dev-panel-header"><h2>Current .env Values</h2></div>
+                    <div id="conn-env-values" class="p-md text-sm text-muted">Loading...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function connDriverChanged() {
+    var driver = document.getElementById('conn-driver').value;
+    var ports = {postgresql: 5432, mysql: 3306, mssql: 1433, firebird: 3050};
+    var isSqlite = (driver === 'sqlite');
+    document.getElementById('conn-port').value = ports[driver] || '';
+    var fields = document.querySelectorAll('.conn-server-field');
+    for (var i = 0; i < fields.length; i++) {
+        fields[i].style.display = isSqlite ? 'none' : '';
+    }
+    updateConnectionUrl();
+}
+function updateConnectionUrl() {
+    var driver = document.getElementById('conn-driver').value;
+    var host = document.getElementById('conn-host').value || 'localhost';
+    var port = document.getElementById('conn-port').value;
+    var database = document.getElementById('conn-database').value;
+    if (driver === 'sqlite') {
+        document.getElementById('conn-url').value = 'sqlite:///' + database;
+    } else {
+        document.getElementById('conn-url').value = driver + '://' + host + ':' + port + '/' + database;
+    }
+}
+function testConnection() {
+    var url = document.getElementById('conn-url').value;
+    var username = document.getElementById('conn-username').value;
+    var password = document.getElementById('conn-password').value;
+    var el = document.getElementById('conn-test-result');
+    el.innerHTML = '<span class="text-muted">Testing...</span>';
+    fetch('/__dev/api/connections/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: url, username: username, password: password})
+    }).then(function(r){return r.json()}).then(function(data) {
+        if (data.success) {
+            el.innerHTML = '<div style="color:var(--success);font-weight:600;margin-bottom:0.5rem">&#10004; Connected</div>' +
+                '<div class="text-sm">Version: ' + (data.version || 'N/A') + '</div>' +
+                '<div class="text-sm">Tables: ' + (data.tables !== undefined ? data.tables : 'N/A') + '</div>';
+        } else {
+            el.innerHTML = '<div style="color:var(--danger);font-weight:600;margin-bottom:0.5rem">&#10008; Failed</div>' +
+                '<div class="text-sm" style="color:var(--danger)">' + (data.error || 'Unknown error') + '</div>';
+        }
+    }).catch(function(e) {
+        el.innerHTML = '<div style="color:var(--danger)">Error: ' + e.message + '</div>';
+    });
+}
+function saveConnection() {
+    var url = document.getElementById('conn-url').value;
+    var username = document.getElementById('conn-username').value;
+    var password = document.getElementById('conn-password').value;
+    if (!url) { alert('Please build a connection URL first'); return; }
+    fetch('/__dev/api/connections/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: url, username: username, password: password})
+    }).then(function(r){return r.json()}).then(function(data) {
+        if (data.success) {
+            alert('Connection saved to .env');
+            loadConnectionEnv();
+        } else {
+            alert('Save failed: ' + (data.error || 'Unknown error'));
+        }
+    }).catch(function(e) { alert('Error: ' + e.message); });
+}
+function loadConnectionEnv() {
+    fetch('/__dev/api/connections').then(function(r){return r.json()}).then(function(data) {
+        var el = document.getElementById('conn-env-values');
+        el.innerHTML = '<div class="mb-sm"><span class="text-muted">DATABASE_URL:</span> <code>' + (data.url || '<em>not set</em>') + '</code></div>' +
+            '<div class="mb-sm"><span class="text-muted">DATABASE_USERNAME:</span> <code>' + (data.username || '<em>not set</em>') + '</code></div>' +
+            '<div><span class="text-muted">DATABASE_PASSWORD:</span> <code>' + (data.password || '<em>not set</em>') + '</code></div>';
+    }).catch(function() {
+        document.getElementById('conn-env-values').innerHTML = '<span class="text-muted">Could not load .env values</span>';
+    });
+}
+document.addEventListener('DOMContentLoaded', function() {
+    var connTab = document.querySelector('[onclick*="connections"]');
+    if (connTab) {
+        connTab.addEventListener('click', function() { loadConnectionEnv(); }, {once: true});
+    }
+});
+</script>
 
 <!-- Chat Panel (Tina4) -->
 <div id="panel-chat" class="dev-panel hidden">

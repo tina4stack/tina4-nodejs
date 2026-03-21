@@ -486,3 +486,12 @@ When adding new features, add assertions to `test/integration.ts`.
 - **Don't break the 32 integration tests** — run `npm test` before committing
 - **Don't add unnecessary dependencies** — minimal footprint is a core principle
 - **Don't use `url.parse()`** — use the WHATWG `URL` constructor instead (deprecated in Node 20+)
+
+## Tina4 Maintainer Skill
+Always read and follow the instructions in .claude/skills/tina4-maintainer/SKILL.md when working on this codebase. Read its referenced files in .claude/skills/tina4-maintainer/references/ as needed for specific subsystems.
+
+## Tina4 Developer Skill
+Always read and follow the instructions in .claude/skills/tina4-developer/SKILL.md when building applications with this framework. Read its referenced files in .claude/skills/tina4-developer/references/ as needed.
+
+## Tina4-js Frontend Skill
+Always read and follow the instructions in .claude/skills/tina4-js-skill/SKILL.md when working with tina4-js frontend code. Read its referenced files in .claude/skills/tina4-js-skill/references/ as needed.

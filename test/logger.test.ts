@@ -70,7 +70,7 @@ Log.info("Request with ID");
 const logContent2 = readFileSync(logPath, "utf-8");
 const lastLine = logContent2.trim().split("\n").pop()!;
 const lastEntry = JSON.parse(lastLine);
-assert("Request ID included in log", lastEntry.requestId === "req-abc-123");
+assert("Request ID included in log", lastEntry.request_id === "req-abc-123");
 assert("getRequestId returns current ID", Log.getRequestId() === "req-abc-123");
 
 Log.setRequestId(undefined);
@@ -79,7 +79,7 @@ Log.info("No request ID");
 const logContent3 = readFileSync(logPath, "utf-8");
 const lastLine2 = logContent3.trim().split("\n").pop()!;
 const lastEntry2 = JSON.parse(lastLine2);
-assert("No requestId when cleared", lastEntry2.requestId === undefined);
+assert("No requestId when cleared", lastEntry2.request_id === undefined);
 
 // --- Data parameter ---
 console.log("\n--- Data Parameter ---");
@@ -88,8 +88,8 @@ Log.info("With data", { userId: 42, action: "login" });
 const logContent4 = readFileSync(logPath, "utf-8");
 const dataLine = logContent4.trim().split("\n").pop()!;
 const dataEntry = JSON.parse(dataLine);
-assert("Data included in log entry", dataEntry.data?.userId === 42);
-assert("Data preserves all fields", dataEntry.data?.action === "login");
+assert("Data included in log entry", dataEntry.context?.userId === 42);
+assert("Data preserves all fields", dataEntry.context?.action === "login");
 
 // --- Production mode ---
 console.log("\n--- Production Mode ---");

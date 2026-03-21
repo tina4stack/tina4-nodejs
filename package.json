@@ -10,7 +10,7 @@
   "scripts": {
     "build": "npm run build --workspaces",
     "clean": "rm -rf packages/*/dist",
-    "test": "tsx test/integration.ts"
+    "test": "tsx test/run-all.ts"
   },
   "engines": {
     "node": ">=20.0.0"

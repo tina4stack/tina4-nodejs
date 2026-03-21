@@ -44,12 +44,13 @@ export function closeDatabase(): void {
 }
 
 export interface DatabaseConfig {
-  type?: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird";
+  type?: "sqlite" | "postgres" | "mysql" | "mssql" | "sqlserver" | "firebird";
   path?: string;
   url?: string;
   host?: string;
   port?: number;
   user?: string;
+  username?: string;
   password?: string;
   database?: string;
 }
@@ -78,28 +79,28 @@ export interface ParsedDatabaseUrl {
  *   mysql://user:pass@host:port/dbname
  *
  * @param url - The connection URL string.
+ * @param username - Optional username to merge when the URL has no credentials.
+ * @param password - Optional password to merge when the URL has no credentials.
  * @returns Parsed database configuration.
  * @throws Error if the URL scheme is not supported.
  */
-export function parseDatabaseUrl(url: string): ParsedDatabaseUrl {
+export function parseDatabaseUrl(url: string, username?: string, password?: string): ParsedDatabaseUrl {
+  let result: ParsedDatabaseUrl;
+
   // Handle sqlite:// separately because URL class mangles the path
   if (url.startsWith("sqlite:///")) {
     // sqlite:///absolute/path — three slashes means absolute
     const path = url.slice("sqlite://".length);
-    return { type: "sqlite", path };
-  }
-
-  if (url.startsWith("sqlite://")) {
+    result = { type: "sqlite", path };
+  } else if (url.startsWith("sqlite://")) {
     // sqlite://./relative or sqlite://relative
     const path = url.slice("sqlite://".length);
-    return { type: "sqlite", path };
-  }
-
-  // Handle mssql:// and firebird:// with custom parsing (URL class doesn't know these schemes)
-  if (url.startsWith("mssql://") || url.startsWith("sqlserver://")) {
+    result = { type: "sqlite", path };
+  } else if (url.startsWith("mssql://") || url.startsWith("sqlserver://")) {
+    // Handle mssql:// and sqlserver:// with custom parsing (URL class doesn't know these schemes)
     const match = url.match(/(?:mssql|sqlserver):\/\/(?:([^:]+):([^@]+)@)?([^:/]+)(?::(\d+))?\/(.*)/);
     if (!match) throw new Error(`Invalid MSSQL URL: ${url}`);
-    return {
+    result = {
       type: "mssql",
       user: match[1] ? decodeURIComponent(match[1]) : undefined,
       password: match[2] ? decodeURIComponent(match[2]) : undefined,
@@ -107,12 +108,10 @@ export function parseDatabaseUrl(url: string): ParsedDatabaseUrl {
       port: match[4] ? parseInt(match[4], 10) : undefined,
       database: match[5],
     };
-  }
-
-  if (url.startsWith("firebird://")) {
+  } else if (url.startsWith("firebird://")) {
     const match = url.match(/firebird:\/\/(?:([^:]+):([^@]+)@)?([^:/]+)(?::(\d+))?\/(.*)/);
     if (!match) throw new Error(`Invalid Firebird URL: ${url}`);
-    return {
+    result = {
       type: "firebird",
       user: match[1] ? decodeURIComponent(match[1]) : undefined,
       password: match[2] ? decodeURIComponent(match[2]) : undefined,
@@ -120,46 +119,56 @@ export function parseDatabaseUrl(url: string): ParsedDatabaseUrl {
       port: match[4] ? parseInt(match[4], 10) : undefined,
       database: "/" + match[5],
     };
+  } else {
+    // Normalize postgres:// to postgresql:// for URL parsing
+    const normalizedUrl = url.startsWith("postgres://")
+      ? url.replace(/^postgres:\/\//, "postgresql://")
+      : url;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(normalizedUrl);
+    } catch {
+      throw new Error(`Invalid database URL: ${url}`);
+    }
+
+    const scheme = parsed.protocol.replace(/:$/, "");
+    let type: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird";
+
+    switch (scheme) {
+      case "postgresql":
+        type = "postgres";
+        break;
+      case "mysql":
+        type = "mysql";
+        break;
+      default:
+        throw new Error(`Unsupported database URL scheme: "${scheme}". Supported: sqlite, postgres/postgresql, mysql, mssql/sqlserver, firebird.`);
+    }
+
+    const database = parsed.pathname.startsWith("/")
+      ? parsed.pathname.slice(1)
+      : parsed.pathname;
+
+    result = {
+      type,
+      host: parsed.hostname || undefined,
+      port: parsed.port ? parseInt(parsed.port, 10) : undefined,
+      user: parsed.username ? decodeURIComponent(parsed.username) : undefined,
+      password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
+      database: database || undefined,
+    };
   }
 
-  // Normalize postgres:// to postgresql:// for URL parsing
-  const normalizedUrl = url.startsWith("postgres://")
-    ? url.replace(/^postgres:\/\//, "postgresql://")
-    : url;
-
-  let parsed: URL;
-  try {
-    parsed = new URL(normalizedUrl);
-  } catch {
-    throw new Error(`Invalid database URL: ${url}`);
+  // Merge separate username/password when the URL contained no credentials
+  if (!result.user && username) {
+    result.user = username;
+  }
+  if (!result.password && password) {
+    result.password = password;
   }
 
-  const scheme = parsed.protocol.replace(/:$/, "");
-  let type: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird";
-
-  switch (scheme) {
-    case "postgresql":
-      type = "postgres";
-      break;
-    case "mysql":
-      type = "mysql";
-      break;
-    default:
-      throw new Error(`Unsupported database URL scheme: "${scheme}". Supported: sqlite, postgres/postgresql, mysql, mssql/sqlserver, firebird.`);
-  }
-
-  const database = parsed.pathname.startsWith("/")
-    ? parsed.pathname.slice(1)
-    : parsed.pathname;
-
-  return {
-    type,
-    host: parsed.hostname || undefined,
-    port: parsed.port ? parseInt(parsed.port, 10) : undefined,
-    user: parsed.username ? decodeURIComponent(parsed.username) : undefined,
-    password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
-    database: database || undefined,
-  };
+  return result;
 }
 
 /**
@@ -171,11 +180,15 @@ export function parseDatabaseUrl(url: string): ParsedDatabaseUrl {
  *   3. config.type + config.path (legacy)
  */
 export async function initDatabase(config?: DatabaseConfig): Promise<DatabaseAdapter> {
+  // Resolve credentials: config.user > config.username > env DATABASE_USERNAME
+  const resolvedUser = config?.user ?? config?.username ?? process.env.DATABASE_USERNAME;
+  const resolvedPassword = config?.password ?? process.env.DATABASE_PASSWORD;
+
   // Resolve from URL if provided
   const url = config?.url ?? process.env.DATABASE_URL;
 
   if (url) {
-    const parsed = parseDatabaseUrl(url);
+    const parsed = parseDatabaseUrl(url, resolvedUser, resolvedPassword);
 
     switch (parsed.type) {
       case "sqlite": {
@@ -239,8 +252,9 @@ export async function initDatabase(config?: DatabaseConfig): Promise<DatabaseAda
     }
   }
 
-  // Legacy config path
-  const type = config?.type ?? "sqlite";
+  // Legacy config path — normalize "sqlserver" to "mssql"
+  const rawType = config?.type ?? "sqlite";
+  const type = rawType === "sqlserver" ? "mssql" : rawType;
 
   switch (type) {
     case "sqlite": {
@@ -254,8 +268,8 @@ export async function initDatabase(config?: DatabaseConfig): Promise<DatabaseAda
       const adapter = new PostgresAdapter({
         host: config?.host,
         port: config?.port,
-        user: config?.user,
-        password: config?.password,
+        user: resolvedUser,
+        password: resolvedPassword,
         database: config?.database,
       });
       await adapter.connect();
@@ -267,8 +281,8 @@ export async function initDatabase(config?: DatabaseConfig): Promise<DatabaseAda
       const adapter = new MysqlAdapter({
         host: config?.host,
         port: config?.port,
-        user: config?.user,
-        password: config?.password,
+        user: resolvedUser,
+        password: resolvedPassword,
         database: config?.database,
       });
       await adapter.connect();
@@ -280,8 +294,8 @@ export async function initDatabase(config?: DatabaseConfig): Promise<DatabaseAda
       const adapter = new MssqlAdapter({
         host: config?.host,
         port: config?.port,
-        user: config?.user,
-        password: config?.password,
+        user: resolvedUser,
+        password: resolvedPassword,
         database: config?.database,
       });
       await adapter.connect();
@@ -293,8 +307,8 @@ export async function initDatabase(config?: DatabaseConfig): Promise<DatabaseAda
       const adapter = new FirebirdAdapter({
         host: config?.host,
         port: config?.port,
-        user: config?.user,
-        password: config?.password,
+        user: resolvedUser,
+        password: resolvedPassword,
         database: config?.database,
       });
       await adapter.connect();
