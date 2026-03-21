@@ -556,6 +556,7 @@ export class GraphQL {
             gqlType = "Int";
             break;
           case "number":
+          case "numeric":
             gqlType = "Float";
             break;
           case "boolean":

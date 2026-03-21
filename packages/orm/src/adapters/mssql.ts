@@ -405,6 +405,7 @@ function fieldTypeToMssql(def: FieldDefinition): string {
     case "integer":
       return "INT";
     case "number":
+    case "numeric":
       return "FLOAT";
     case "boolean":
       return "BIT";

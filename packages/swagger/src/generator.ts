@@ -134,6 +134,7 @@ function fieldToSchemaProperty(def: FieldDefinition): Record<string, unknown> {
       if (def.max !== undefined) prop.maximum = def.max;
       break;
     case "number":
+    case "numeric":
       prop.type = "number";
       if (def.min !== undefined) prop.minimum = def.min;
       if (def.max !== undefined) prop.maximum = def.max;

@@ -98,7 +98,8 @@ export class FakeData extends CoreFakeData {
         return this.integer(min, max);
       }
 
-      case "number": {
+      case "number":
+      case "numeric": {
         const min = (fieldDef.min as number) ?? 0;
         const max = (fieldDef.max as number) ?? 10000;
         return this.numeric(min, max, 2);

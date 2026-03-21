@@ -56,7 +56,8 @@ export function validate(
         break;
 
       case "integer":
-      case "number": {
+      case "number":
+      case "numeric": {
         const num = typeof value === "string" ? Number(value) : value;
         if (typeof num !== "number" || isNaN(num)) {
           errors.push({ field: name, message: "must be a number" });

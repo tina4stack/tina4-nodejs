@@ -196,6 +196,7 @@ function fieldTypeToSQLite(type: string): string {
     case "integer":
       return "INTEGER";
     case "number":
+    case "numeric":
       return "REAL";
     case "boolean":
       return "INTEGER";

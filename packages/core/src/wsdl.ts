@@ -48,6 +48,7 @@ const TYPE_MAP: Record<string, string> = {
   float: "xsd:float",
   double: "xsd:double",
   number: "xsd:double",
+  numeric: "xsd:double",
   string: "xsd:string",
   bool: "xsd:boolean",
   boolean: "xsd:boolean",
@@ -213,6 +214,7 @@ export abstract class WSDLService {
       case "float":
       case "double":
       case "number":
+      case "numeric":
         return parseFloat(value);
       case "bool":
       case "boolean":

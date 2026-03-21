@@ -318,6 +318,7 @@ function fieldTypeToMysql(def: FieldDefinition): string {
     case "integer":
       return "INT";
     case "number":
+    case "numeric":
       return "DOUBLE";
     case "boolean":
       return "TINYINT(1)";

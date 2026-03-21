@@ -322,6 +322,7 @@ function fieldTypeToPostgres(def: FieldDefinition): string {
     case "integer":
       return "INTEGER";
     case "number":
+    case "numeric":
       return "DOUBLE PRECISION";
     case "boolean":
       return "BOOLEAN";

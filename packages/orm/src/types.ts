@@ -1,4 +1,4 @@
-export type FieldType = "string" | "integer" | "number" | "boolean" | "datetime" | "text";
+export type FieldType = "string" | "integer" | "number" | "numeric" | "boolean" | "datetime" | "text";
 
 export interface FieldDefinition {
   type: FieldType;

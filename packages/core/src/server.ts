@@ -504,17 +504,25 @@ export async function startServer(config?: Tina4Config): Promise<{
     } catch (err) {
       console.error("  Error:", err);
       if (!res.raw.writableEnded) {
-        const errorMessage = !isTruthy(process.env.TINA4_DEBUG) ? "Internal Server Error" : String(err);
-        const html500 = await renderErrorPage(500, {
-          error_message: errorMessage,
-          request_id: `${Date.now().toString(36)}`,
-          path: (req.url ?? "/").split("?")[0],
-        }, templatesDir);
-        if (html500) {
+        if (isDevMode() && err instanceof Error) {
+          // Rich error overlay with stack trace, source context, and line numbers
+          const { renderErrorOverlay } = await import("./errorOverlay.js");
+          const overlayHtml = renderErrorOverlay(err, req);
           res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
-          res.raw.end(html500);
+          res.raw.end(overlayHtml);
         } else {
-          res({ error: "Internal Server Error", statusCode: 500, message: errorMessage }, 500);
+          const errorMessage = !isTruthy(process.env.TINA4_DEBUG) ? "Internal Server Error" : String(err);
+          const html500 = await renderErrorPage(500, {
+            error_message: errorMessage,
+            request_id: `${Date.now().toString(36)}`,
+            path: (req.url ?? "/").split("?")[0],
+          }, templatesDir);
+          if (html500) {
+            res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+            res.raw.end(html500);
+          } else {
+            res({ error: "Internal Server Error", statusCode: 500, message: errorMessage }, 500);
+          }
         }
       }
     }
