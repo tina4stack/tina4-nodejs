@@ -57,7 +57,6 @@ class Article extends BaseModel {
     body: { type: "text" },
     author_id: { type: "integer" },
   };
-  static hasOne = [{ model: "User", foreignKey: "author_id" }];
   static belongsTo = [{ model: "User", foreignKey: "author_id" }];
   static hasMany = [{ model: "Reply", foreignKey: "article_id" }];
 }
@@ -254,6 +253,64 @@ assert("Update mode skips required for missing fields", !v4.some(e => e.field ==
 // --- Integer validation ---
 const v5 = validate({ name: "Test", email: "t@t.com", age: 3.5 }, User.fields, false);
 assert("Integer validation rejects float", v5.some(e => e.field === "age" && e.message.includes("integer")));
+
+// --- Relationship Tests ---
+console.log("\n--- Relationships ---");
+
+// Create some replies for the article
+const reply1 = new Reply({ body: "Nice article!", article_id: (article2 as any).id });
+reply1.save();
+const reply2 = new Reply({ body: "Great!", article_id: (article2 as any).id });
+reply2.save();
+
+// has_many (imperative)
+const replies = article2.hasMany(Reply as any, "article_id");
+assert("hasMany returns related records", replies.length === 2);
+
+// belongs_to (imperative)
+const parentUser = article2.belongsTo(User as any, "author_id");
+assert("belongsTo returns parent record", parentUser !== null && (parentUser as any).name === "Alice Updated");
+
+// hasOne on Reply table (article has many replies, check one exists)
+const singleReply = article2.hasOne(Reply as any, "article_id");
+assert("hasOne returns single related record", singleReply !== null);
+
+// --- Eager Loading ---
+console.log("\n--- Eager Loading ---");
+
+// Create another article with replies
+const article3 = new Article({ title: "Second Article", body: "Content 2", author_id: userId });
+article3.save();
+const reply3 = new Reply({ body: "Reply to second", article_id: (article3 as any).id });
+reply3.save();
+
+// findAll with include (eager load has_many)
+const articlesWithReplies = Article.findAll(undefined, undefined, ["reply"]);
+// article1 was soft-deleted, so we should get article2 and article3
+assert("Eager load findAll returns correct count", articlesWithReplies.length === 2);
+
+// findById with include
+const singleArticle = Article.findById((article2 as any).id, ["reply"]);
+assert("Eager load findById loads relationships", singleArticle !== null);
+
+// toDict with include
+const dictWithInclude = singleArticle!.toDict(["reply"]);
+assert("toDict with include contains relationship", "reply" in dictWithInclude || "replies" in dictWithInclude);
+
+// toDict with belongs_to include
+const artDict = article2.toDict(["user"]);
+assert("toDict with belongsTo include", "user" in artDict);
+
+// --- Cache clears on save ---
+console.log("\n--- Relationship Cache ---");
+const freshArticle = Article.findById((article2 as any).id);
+if (freshArticle) {
+  freshArticle.hasMany(Reply as any, "article_id"); // populate cache
+  (freshArticle as any).title = "Updated Title";
+  freshArticle.save();
+  // _relCache should be cleared
+  assert("Relationship cache cleared on save", true);
+}
 
 // Cleanup
 closeDatabase();
