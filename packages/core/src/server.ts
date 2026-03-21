@@ -90,114 +90,131 @@ function renderLandingPage(routes: Array<{ method: string; pattern: string; flag
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tina4</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;flex-direction:column;align-items:center;position:relative}
+.bg-watermark{position:fixed;bottom:-5%;right:-5%;width:45%;opacity:0.04;pointer-events:none;z-index:0}
+.hero{text-align:center;z-index:1;padding:3rem 2rem 2rem}
+.logo{width:120px;height:120px;margin-bottom:1.5rem}
+h1{font-size:3rem;font-weight:700;margin-bottom:0.25rem;letter-spacing:-1px}
+.tagline{color:#64748b;font-size:1.1rem;margin-bottom:2rem}
+.actions{display:flex;gap:0.75rem;justify-content:center;flex-wrap:wrap;margin-bottom:2.5rem}
+.btn{padding:0.6rem 1.5rem;border-radius:0.5rem;font-size:0.9rem;font-weight:600;cursor:pointer;text-decoration:none;transition:all 0.15s;border:1px solid #334155;color:#94a3b8;background:transparent;min-width:140px;text-align:center;display:inline-block}
+.btn:hover{border-color:#64748b;color:#e2e8f0}
+.status{display:flex;gap:2rem;justify-content:center;align-items:center;color:#64748b;font-size:0.85rem;margin-bottom:1.5rem}
+.status .dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;margin-right:0.4rem}
+.footer{color:#334155;font-size:0.8rem;letter-spacing:0.5px}
+.section{z-index:1;width:100%;max-width:800px;padding:0 2rem;margin-bottom:2.5rem}
+.card{background:#1e293b;border-radius:0.75rem;padding:2rem;border:1px solid #334155}
+.card h2{font-size:1.4rem;font-weight:600;margin-bottom:1.25rem;color:#e2e8f0}
+.code-block{background:#0f172a;border-radius:0.5rem;padding:1.25rem;overflow-x:auto;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:0.85rem;line-height:1.6;color:#4ade80;border:1px solid #1e293b}
+.gallery{z-index:1;width:100%;max-width:800px;padding:0 2rem;margin-bottom:3rem}
+.gallery h2{font-size:1.4rem;font-weight:600;margin-bottom:1.25rem;color:#e2e8f0;text-align:center}
+.gallery-grid{display:flex;gap:1rem;flex-wrap:wrap}
+.gallery-card{flex:1 1 220px;background:#1e293b;border:1px solid #334155;border-radius:0.75rem;padding:1.5rem;position:relative;overflow:hidden}
+.gallery-card .accent{position:absolute;top:0;left:0;right:0;height:3px}
+.gallery-card .accent-blue{background:#2e7d32}
+.gallery-card .accent-green{background:#22c55e}
+.gallery-card .accent-purple{background:#a78bfa}
+.gallery-card .icon{font-size:1.5rem;margin-bottom:0.75rem}
+.gallery-card h3{font-size:1rem;font-weight:600;margin-bottom:0.5rem;color:#e2e8f0}
+.gallery-card p{font-size:0.85rem;color:#94a3b8;line-height:1.5}
+</style>
 </head>
-<body style="margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;position:relative;overflow-x:hidden;">
+<body>
+<img src="/images/tina4-logo-icon.webp" class="bg-watermark" alt="">
+<div class="hero">
+    <img src="/images/tina4-logo-icon.webp" class="logo" alt="Tina4">
+    <h1>Tina4</h1>
+    <p class="tagline">This is not a framework</p>
+    <div class="actions">
+        <a href="https://tina4.com/nodejs" class="btn" target="_blank">Website</a>
+        <a href="/__dev/" class="btn">Dev Admin</a>
+        <a href="#gallery" class="btn">Gallery</a>
+        <a href="https://github.com/tina4stack/tina4-nodejs" class="btn" target="_blank">GitHub</a>
+        <a href="https://github.com/tina4stack/tina4-nodejs/stargazers" class="btn" target="_blank">&#11088; Star</a>
+    </div>
+    <div class="status">
+        <span><span class="dot"></span>Server running</span>
+        <span>Port ${port}</span>
+        <span>v${version}</span>
+    </div>
+    <p class="footer">Zero dependencies &middot; Convention over configuration</p>
+</div>
+<div class="section">
+    <div class="card">
+        <h2>Getting Started</h2>
+        <pre class="code-block"><code><span style="color:#64748b">// app.ts</span>
+<span style="color:#c084fc">import</span> { startServer, Router } <span style="color:#c084fc">from</span> <span style="color:#4ade80">"tina4-nodejs"</span>;
 
-<!-- Background watermark -->
-<img src="/images/logo.png" alt="" style="position:fixed;bottom:-40px;right:-40px;width:420px;height:420px;opacity:0.04;pointer-events:none;z-index:0;" />
-
-<div style="position:relative;z-index:1;max-width:860px;margin:0 auto;padding:3rem 1.5rem 2rem;">
-
-  <!-- Logo + Title -->
-  <div style="text-align:center;margin-bottom:2.5rem;">
-    <img src="/images/logo.png" alt="Tina4" style="width:120px;height:120px;margin-bottom:1rem;" />
-    <h1 style="font-size:2.8rem;font-weight:800;margin:0;letter-spacing:-1px;">Tina4</h1>
-    <p style="font-size:1.1rem;color:#94a3b8;margin-top:0.4rem;">This is not a framework</p>
-  </div>
-
-  <!-- Action Buttons -->
-  <div style="display:flex;justify-content:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:2.5rem;">
-    <a href="/dev-admin" style="display:inline-block;padding:0.6rem 1.4rem;border-radius:8px;background:#2e7d32;color:#fff;text-decoration:none;font-weight:600;font-size:0.95rem;transition:opacity 0.2s;">Dev Admin</a>
-    <a href="#gallery" style="display:inline-block;padding:0.6rem 1.4rem;border-radius:8px;background:transparent;color:#e2e8f0;text-decoration:none;font-weight:600;font-size:0.95rem;border:1px solid #334155;transition:background 0.2s;">Gallery</a>
-  </div>
-
-  <!-- Status Bar -->
-  <div style="display:flex;justify-content:center;align-items:center;gap:1.5rem;margin-bottom:2.5rem;font-size:0.85rem;color:#94a3b8;">
-    <span style="display:flex;align-items:center;gap:0.4rem;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ade80;"></span> Server running</span>
-    <span>Port ${port}</span>
-    <span>v${version}</span>
-  </div>
-
-  <!-- Getting Started -->
-  <div style="background:#1e293b;border-radius:12px;padding:1.5rem 1.75rem;margin-bottom:2rem;">
-    <h2 style="font-size:1.25rem;font-weight:700;margin:0 0 1rem 0;color:#e2e8f0;">Getting Started</h2>
-    <pre style="background:#0f172a;color:#4ade80;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:0.875rem;padding:1.25rem;border-radius:8px;overflow-x:auto;margin:0;line-height:1.6;"><code>// app.ts
-import { startServer, Router } from &quot;tina4-nodejs&quot;;
-
-Router.get(&quot;/hello&quot;, async (req, res) =&gt; {
-  return res.json({ message: &quot;Hello World!&quot; });
+Router.get(<span style="color:#4ade80">"/hello"</span>, <span style="color:#c084fc">async</span> (<span style="color:#38bdf8">req</span>, <span style="color:#38bdf8">res</span>) =&gt; {
+    <span style="color:#c084fc">return</span> res.json({ message: <span style="color:#4ade80">"Hello World!"</span> });
 });
 
-startServer({ port: 7148 });</code></pre>
-  </div>
-
-  <!-- Gallery: What You Can Build -->
-  <h2 id="gallery" style="font-size:1.25rem;font-weight:700;margin:0 0 1rem 0;color:#e2e8f0;">What You Can Build</h2>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-bottom:2.5rem;">
-    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
-      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#3b82f6;border-radius:12px 12px 0 0;"></div>
-      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128640;</div>
-      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">REST API</h3>
-      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">Define routes with one decorator</p>
-      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">Router.get(&quot;/api/users&quot;, async (req, res) =&gt; {
-  return res.json({ users: [] });
-});</pre>
+startServer({ port: 7148 });  <span style="color:#64748b">// starts on port 7148</span></code></pre>
     </div>
-    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
-      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#22c55e;border-radius:12px 12px 0 0;"></div>
-      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128451;</div>
-      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">ORM</h3>
-      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">Active record models, zero config</p>
-      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">class User extends ORM {
-  static fields = {
-    id: { type: &quot;integer&quot;, primaryKey: true },
-    name: { type: &quot;string&quot; }
-  };
+</div>
+<div class="gallery">
+    <h2 id="gallery">What You Can Build</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;">
+        <div class="gallery-card">
+            <div class="accent accent-blue"></div>
+            <div class="icon">&#128640;</div>
+            <h3>REST API</h3>
+            <p>Define routes with one decorator</p>
+            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">Router.get("/api/users", async (req, res) =&gt; {
+    return res.json({ users: [] });
+});</pre>
+        </div>
+        <div class="gallery-card">
+            <div class="accent accent-green"></div>
+            <div class="icon">&#128451;</div>
+            <h3>ORM</h3>
+            <p>Active record models, zero config</p>
+            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">class User extends ORM {
+    static fields = {
+        id: { type: "integer", primaryKey: true },
+        name: { type: "string" }
+    };
 }</pre>
-    </div>
-    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
-      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#a78bfa;border-radius:12px 12px 0 0;"></div>
-      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128274;</div>
-      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">Auth</h3>
-      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">JWT tokens built-in</p>
-      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">const token = Auth.createToken({ userId: 1 });
+        </div>
+        <div class="gallery-card">
+            <div class="accent accent-purple"></div>
+            <div class="icon">&#128274;</div>
+            <h3>Auth</h3>
+            <p>JWT tokens built-in</p>
+            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">const token = Auth.createToken({ userId: 1 });
 const valid = Auth.validateToken(token);</pre>
-    </div>
-    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
-      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#3b82f6;border-radius:12px 12px 0 0;"></div>
-      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#9889;</div>
-      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">Queue</h3>
-      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">Background jobs, no Redis needed</p>
-      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">const producer = new Producer(new Queue(&quot;emails&quot;));
-producer.produce({ to: &quot;a@b.com&quot; });</pre>
-    </div>
-    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
-      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#22c55e;border-radius:12px 12px 0 0;"></div>
-      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128196;</div>
-      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">Templates</h3>
-      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">Twig templates with auto-reload</p>
-      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">Router.get(&quot;/dashboard&quot;, async (req, res) =&gt; {
-  return res.render(&quot;dashboard.twig&quot;, data);
+        </div>
+        <div class="gallery-card">
+            <div class="accent accent-blue"></div>
+            <div class="icon">&#9889;</div>
+            <h3>Queue</h3>
+            <p>Background jobs, no Redis needed</p>
+            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">const producer = new Producer(new Queue("emails"));
+producer.produce({ to: "a@b.com" });</pre>
+        </div>
+        <div class="gallery-card">
+            <div class="accent accent-green"></div>
+            <div class="icon">&#128196;</div>
+            <h3>Templates</h3>
+            <p>Twig templates with auto-reload</p>
+            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">Router.get("/dashboard", async (req, res) =&gt; {
+    return res.render("dashboard.twig", data);
 });</pre>
+        </div>
+        <div class="gallery-card">
+            <div class="accent accent-purple"></div>
+            <div class="icon">&#128225;</div>
+            <h3>Database</h3>
+            <p>Multi-engine, one API</p>
+            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">const db = initDatabase("sqlite:///app.db");
+const result = await db.fetch("SELECT * FROM users");</pre>
+        </div>
     </div>
-    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
-      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#a78bfa;border-radius:12px 12px 0 0;"></div>
-      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128225;</div>
-      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">Database</h3>
-      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">Multi-engine, one API</p>
-      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">const db = initDatabase(&quot;sqlite:///app.db&quot;);
-const result = await db.fetch(&quot;SELECT * FROM users&quot;);</pre>
-    </div>
-  </div>
-
-  <!-- Footer -->
-  <div style="text-align:center;padding-top:1rem;border-top:1px solid #1e293b;">
-    <p style="font-size:0.8rem;color:#475569;margin:0;">Zero dependencies &middot; Convention over configuration</p>
-  </div>
-
 </div>
 </body>
 </html>`;
