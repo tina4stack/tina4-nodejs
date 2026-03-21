@@ -533,15 +533,69 @@ Set `TINA4_DEBUG_LEVEL=DEBUG` in `.env` to enable:
 ```bash
 npx tina4nodejs init [dir]             # Scaffold a new project
 npx tina4nodejs serve [--port 7148]    # Start dev server (default: 7148)
+npx tina4nodejs serve --production     # Auto-use cluster mode (multi-core)
 npx tina4nodejs migrate                # Run pending migrations
 npx tina4nodejs migrate:create <desc>  # Create a migration file
 npx tina4nodejs migrate:rollback       # Rollback last batch
+npx tina4nodejs generate model <name>  # Generate model scaffold
+npx tina4nodejs generate route <name>  # Generate route scaffold
+npx tina4nodejs generate migration <d> # Generate migration file
+npx tina4nodejs generate middleware <n># Generate middleware scaffold
 npx tina4nodejs seed                   # Run seeders from src/seeds/
 npx tina4nodejs routes                 # List all registered routes
 npx tina4nodejs test                   # Run test suite
 npx tina4nodejs build                  # Build distributable package
 npx tina4nodejs ai [--all]             # Detect AI tools and install context
 ```
+
+### Production Server Auto-Detection
+
+`tina4 serve` automatically detects and uses the best available production server:
+
+- **Node.js**: cluster mode with multiple workers, otherwise single http server
+- Use `npx tina4nodejs serve --production` to auto-use cluster mode
+
+### Scaffolding with `tina4 generate`
+
+Quickly scaffold new components:
+
+```bash
+npx tina4nodejs generate model User          # Creates src/models/User.ts
+npx tina4nodejs generate route users         # Creates src/routes/api/users/
+npx tina4nodejs generate migration "add age" # Creates migration SQL file
+npx tina4nodejs generate middleware AuthLog   # Creates middleware
+```
+
+### ORM Relationships & Eager Loading
+
+```typescript
+// Relationships defined in model
+static relationships = {
+  orders: { type: "hasMany", model: "Order", foreignKey: "userId" },
+  profile: { type: "hasOne", model: "Profile", foreignKey: "userId" },
+  customer: { type: "belongsTo", model: "Customer", foreignKey: "customerId" },
+};
+
+// Eager loading with include
+const users = await db.query("SELECT * FROM users", [], { include: ["orders", "profile"] });
+```
+
+### DB Query Caching
+
+Enable query caching for up to 4x speedup on read-heavy workloads:
+
+```bash
+# .env
+TINA4_DB_CACHE=true
+```
+
+### Frond Pre-Compilation
+
+Templates are pre-compiled for 2.8x faster rendering.
+
+### Gallery
+
+7 interactive examples with **Try It** deploy.
 
 ## Environment
 
@@ -577,7 +631,7 @@ Full guides, API reference, and examples at **[tina4.com](https://tina4.com)**.
 
 ## License
 
-MIT (c) 2007-2025 Tina4 Stack
+MIT (c) 2007-2026 Tina4 Stack
 https://opensource.org/licenses/MIT
 
 ---

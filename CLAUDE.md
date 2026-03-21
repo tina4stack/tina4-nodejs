@@ -579,13 +579,28 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 
 - Bun runtime compatibility
 
+## v3 Features Summary
+
+- **38 built-in features**, zero third-party dependencies
+- **1,669 tests** passing across all modules
+- **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
+- **`npx tina4nodejs generate`**: model, route, migration, middleware scaffolding
+- **Database**: 5 engines (SQLite, PostgreSQL, MySQL, MSSQL, Firebird), query caching (`TINA4_DB_CACHE=true`)
+- **Sessions**: file backend (default)
+- **Queue**: SQLite/RabbitMQ/Kafka backends, configured via env vars
+- **Cache**: memory/Redis/file backends
+- **Messenger**: .env driven SMTP/IMAP
+- **ORM relationships**: `hasMany`, `hasOne`, `belongsTo` with eager loading (`include`)
+- **Frond pre-compilation**: 2.8x template render improvement
+- **Gallery**: 7 interactive examples with Try It deploy at `/_dev/`
+
 ## Don'ts
 
 - **Don't add Express, Fastify, or any HTTP framework** — we use native `node:http`
 - **Don't use decorators** — convention-based models with static properties
 - **Don't add CommonJS** — everything is ESM (`"type": "module"`)
 - **Don't bundle `swagger-ui-dist`** — we load Swagger UI from CDN to stay under 8MB
-- **Don't break the 43 test files** — run `npm test` before committing
+- **Don't break the test files** — run `npm test` before committing
 - **Don't add unnecessary dependencies** — minimal footprint is a core principle
 - **Don't use `url.parse()`** — use the WHATWG `URL` constructor instead (deprecated in Node 20+)
 
