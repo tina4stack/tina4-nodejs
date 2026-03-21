@@ -14,7 +14,7 @@ src/routes/api/hello/get.ts  -->  GET /api/hello
 
 ```typescript
 // src/routes/api/hello/get.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export default async function (req: Tina4Request, res: Tina4Response): Promise<void> {
   res.json({ message: "Hello from Tina4!" });
@@ -41,7 +41,7 @@ src/routes/api/users/[id]/get.ts  -->  GET /api/users/:id
 
 ```typescript
 // src/routes/api/users/[id]/get.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export default async function (req: Tina4Request, res: Tina4Response): Promise<void> {
   const userId = req.params.id;
@@ -59,7 +59,7 @@ src/routes/docs/[...slug]/get.ts  -->  GET /docs/*
 
 ```typescript
 // src/routes/docs/[...slug]/get.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export default async function (req: Tina4Request, res: Tina4Response): Promise<void> {
   // For GET /docs/api/v2/users, slug = "api/v2/users"
@@ -74,7 +74,7 @@ Export a `meta` object alongside the handler to provide Swagger documentation.
 
 ```typescript
 // src/routes/api/products/get.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export const meta = {
   summary: "List all products",
@@ -95,7 +95,7 @@ export default async function (req: Tina4Request, res: Tina4Response): Promise<v
 For routes that don't fit the file-based convention, use the top-level functions. These are merged into the router on server startup.
 
 ```typescript
-import { get, post, put, del, patch, any } from "@tina4/core";
+import { get, post, put, del, patch, any } from "tina4-nodejs";
 
 // Simple GET route
 get("/hello", async (req, res) => {
@@ -133,8 +133,8 @@ get("/users/:id", handler);      // Express-style colon
 Group routes under a shared prefix with optional shared middleware.
 
 ```typescript
-import { Router } from "@tina4/core";
-import type { Middleware } from "@tina4/core";
+import { Router } from "tina4-nodejs";
+import type { Middleware } from "tina4-nodejs";
 
 const router = new Router();
 
@@ -169,8 +169,8 @@ router.group("/api/v2", (group) => {
 Attach middleware to individual routes. They run before the handler and can short-circuit the chain.
 
 ```typescript
-import { get } from "@tina4/core";
-import type { Middleware } from "@tina4/core";
+import { get } from "tina4-nodejs";
+import type { Middleware } from "tina4-nodejs";
 
 const requireAdmin: Middleware = (req, res, next) => {
   if ((req as any).auth?.role !== "admin") {

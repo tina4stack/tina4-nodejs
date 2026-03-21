@@ -31,8 +31,9 @@ export async function discoverRoutes(routesDir: string): Promise<RouteDefinition
       }
 
       const meta: RouteMeta | undefined = mod.meta;
+      const template: string | undefined = typeof mod.template === "string" ? mod.template : undefined;
 
-      definitions.push({ method, pattern, handler, filePath, meta });
+      definitions.push({ method, pattern, handler, filePath, meta, template });
     } catch (err) {
       console.error(`  Error loading route ${relativePath}:`, err);
     }

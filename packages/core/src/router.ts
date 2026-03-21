@@ -6,6 +6,7 @@ interface MatchResult {
   pattern: string;
   meta?: RouteMeta;
   middlewares?: Middleware[];
+  template?: string;
 }
 
 interface CompiledRoute {
@@ -19,6 +20,7 @@ interface CompiledRoute {
   cached?: boolean;
   cacheStore?: Map<string, { data: unknown; expires: number }>;
   cacheTtl?: number;
+  template?: string;
 }
 
 export interface RouteInfo {
@@ -59,6 +61,7 @@ export class Router {
       meta: definition.meta,
       filePath: definition.filePath,
       middlewares: definition.middlewares,
+      template: definition.template,
     });
   }
 
@@ -137,6 +140,7 @@ export class Router {
           pattern: route.pattern,
           meta: route.meta,
           middlewares: route.middlewares,
+          template: route.template,
         };
       }
     }
@@ -158,6 +162,7 @@ export class Router {
           meta: route.meta,
           filePath: route.filePath,
           middlewares: route.middlewares,
+          template: route.template,
         });
       }
     }

@@ -5,7 +5,7 @@ Tina4 provides file-backed session management with support for flash data, sessi
 ## Basic Usage
 
 ```typescript
-import { Session } from "@tina4/core";
+import { Session } from "tina4-nodejs";
 
 const session = new Session();
 
@@ -47,8 +47,8 @@ const sessionId = session.start("abc123def456...");
 ## Session in a Route Handler
 
 ```typescript
-import type { Tina4Request, Tina4Response } from "@tina4/core";
-import { Session } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
+import { Session } from "tina4-nodejs";
 
 export default async function (req: Tina4Request, res: Tina4Response): Promise<void> {
   const session = new Session();
@@ -113,8 +113,8 @@ const newSessionId = session.regenerate();
 ## Configuration
 
 ```typescript
-import { Session } from "@tina4/core";
-import type { SessionConfig } from "@tina4/core";
+import { Session } from "tina4-nodejs";
+import type { SessionConfig } from "tina4-nodejs";
 
 const session = new Session("file", {
   backend: "file",           // Currently only "file" is supported

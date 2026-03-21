@@ -5,8 +5,8 @@ Tina4 includes an in-memory response cache middleware for GET requests. It store
 ## Basic Usage
 
 ```typescript
-import { responseCache } from "@tina4/core";
-import { MiddlewareChain } from "@tina4/core";
+import { responseCache } from "tina4-nodejs";
+import { MiddlewareChain } from "tina4-nodejs";
 
 const middleware = new MiddlewareChain();
 
@@ -17,8 +17,8 @@ middleware.use(responseCache({ ttl: 60 }));
 ## Configuration
 
 ```typescript
-import { responseCache } from "@tina4/core";
-import type { ResponseCacheConfig } from "@tina4/core";
+import { responseCache } from "tina4-nodejs";
+import type { ResponseCacheConfig } from "tina4-nodejs";
 
 const cache = responseCache({
   ttl: 120,               // Cache lifetime in seconds (default: 60)
@@ -55,7 +55,7 @@ The middleware adds an `X-Cache` response header:
 ## Cache Management
 
 ```typescript
-import { clearCache, cacheStats } from "@tina4/core";
+import { clearCache, cacheStats } from "tina4-nodejs";
 
 // Clear all cached responses
 clearCache();

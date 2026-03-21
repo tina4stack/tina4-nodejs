@@ -72,10 +72,10 @@ TINA4_RATE_WINDOW=60
 
 ```typescript
 // src/server.ts
-import { startServer } from "@tina4/core";
+import { startServer } from "tina4-nodejs";
 
 await startServer({
-  port: parseInt(process.env.PORT ?? "3000", 10),
+  port: parseInt(process.env.PORT ?? "7148", 10),
   database: {
     type: "sqlite",
     path: process.env.DB_PATH ?? "./data/production.db",
@@ -131,9 +131,9 @@ COPY public/ ./public/
 RUN mkdir -p data logs
 
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=7148
 
-EXPOSE 3000
+EXPOSE 7148
 
 CMD ["node", "dist/server.js"]
 ```
@@ -146,7 +146,7 @@ server {
     server_name myapp.com;
 
     location / {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:7148;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

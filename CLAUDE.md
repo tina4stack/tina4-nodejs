@@ -1,10 +1,10 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs
+# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.0.0)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript — a convention-over-configuration structural paradigm. **Not a framework.** The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.0.0 — a convention-over-configuration structural paradigm. **Not a framework.** The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -17,20 +17,47 @@ tina4-nodejs/
     core/       # HTTP server, router, route discovery, middleware, events, AI, testing
       src/
         ai.ts            # AI coding tool detection and context scaffolding
+        auth.ts          # Authentication helpers
+        cache.ts         # In-memory caching
+        constants.ts     # HTTP status codes and content type constants
+        devAdmin.ts      # Dev toolbar + admin dashboard (replaces floating button)
+        devMailbox.ts    # Dev mailbox for local email testing
+        dotenv.ts        # .env file loading
         errorOverlay.ts  # Rich debug error overlay (Catppuccin Mocha theme)
         events.ts        # Observer-pattern event system
         fakeData.ts      # Core fake data generator (PRNG-based, zero deps)
+        graphql.ts       # GraphQL engine
+        health.ts        # Health check endpoint
         htmlElement.ts   # Programmatic HTML element builder
+        i18n.ts          # Internationalization / localization
+        logger.ts        # Structured logging
+        messenger.ts     # Messaging system
+        queue.ts         # Queue system
+        rateLimiter.ts   # Rate limiting middleware
+        scss.ts          # SCSS compilation
+        service.ts       # Service layer helpers
+        session.ts       # Session management
         testing.ts       # Inline testing framework (attach tests to functions)
+        websocket.ts     # WebSocket support
+        wsdl.ts          # WSDL / SOAP support
     orm/        # Database adapters, models, auto-CRUD, query builder, seeding
       src/
+        adapters/
+          sqlite.ts        # SQLite via better-sqlite3 (default)
+          postgres.ts      # PostgreSQL adapter
+          mysql.ts         # MySQL adapter
+          mssql.ts         # MSSQL / SQL Server adapter
+          firebird.ts      # Firebird adapter
+        baseModel.ts     # Base model class
         fakeData.ts      # ORM-aware fake data (extends core, field-type heuristics)
         seeder.ts        # Database seeding (seedTable, seedOrm)
         sqlTranslation.ts # Cross-engine SQL translator + query cache
     swagger/    # OpenAPI spec generator, Swagger UI
     twig/       # Optional Twig template engine
   test/
-    integration.ts   # Full integration test (32 assertions)
+    run-all.ts       # Test runner — executes all 43 test files
+    integration.ts   # Full integration test
+    *.test.ts        # 42 individual test files covering all subsystems
   plan/
     FEATURES.md      # Feature tracking and roadmap
 ```
@@ -42,16 +69,16 @@ This is an **npm workspaces monorepo**. All packages are in `packages/*`.
 - **Language:** TypeScript (strict mode, ES2022 target, Node16 module resolution)
 - **Runtime:** Node.js 20+ (ESM only, `"type": "module"` everywhere)
 - **HTTP:** Native `node:http` — no Express, no Fastify
-- **Database:** SQLite via `better-sqlite3` (default), adapter pattern for Postgres/MySQL
+- **Database:** SQLite via `better-sqlite3` (default), with adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird
 - **Templates:** Twig via `twig` npm package (optional)
 - **Dev tooling:** `tsx` for runtime TS execution, `esbuild` for builds
-- **Testing:** Custom integration test with `tsx test/integration.ts`
+- **Testing:** 43 test files via `tsx test/run-all.ts`
 
 ## Key Commands
 
 ```bash
 npm install          # Install all workspace dependencies
-npm test             # Run integration tests (32 assertions, expects all green)
+npm test             # Run all 43 test files via test/run-all.ts
 npm run build        # Build all packages to dist/
 npm run clean        # Remove all dist/ directories
 ```
@@ -75,8 +102,8 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 
 **Key files:**
 - `server.ts` — Server startup, integrates ORM + Swagger + Twig on boot
-- `router.ts` — Pattern matching with `[id]` dynamic params and `[...slug]` catch-all
-- `routeDiscovery.ts` — Scans `src/routes/` recursively, maps files to endpoints
+- `router.ts` — Pattern matching with `{id}` dynamic params and `{...slug}` catch-all
+- `routeDiscovery.ts` — Scans `src/routes/` recursively, maps files to endpoints (converts `[id]` dirs to `{id}` URL patterns)
 - `request.ts` — Wraps `IncomingMessage`, adds `.params`, `.query`, `.body`
 - `response.ts` — Wraps `ServerResponse`, adds `.json()`, `.html()`, `.status()`, `.send()`, `.redirect()`
 - `middleware.ts` — Chain runner, built-in CORS and request logger
@@ -89,6 +116,23 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `htmlElement.ts` — Programmatic HTML builder (`HtmlElement`, `htmlElement`, `addHtmlHelpers`)
 - `testing.ts` — Inline testing framework (`tests`, `assertEqual`, `assertThrows`, `runAllTests`)
 - `fakeData.ts` — Core fake data generator (names, emails, addresses, UUIDs, etc.)
+- `constants.ts` — HTTP status codes (`HTTP_OK`, `HTTP_NOT_FOUND`, etc.) and content types (`APPLICATION_JSON`, `TEXT_HTML`, etc.)
+- `devAdmin.ts` — Dev toolbar (fixed bottom bar injected into HTML pages) and admin dashboard at `/_dev/`
+- `auth.ts` — Authentication helpers
+- `cache.ts` — In-memory caching
+- `session.ts` — Session management with pluggable handlers
+- `websocket.ts` — WebSocket support
+- `queue.ts` — Queue system with pluggable backends
+- `graphql.ts` — GraphQL engine
+- `i18n.ts` — Internationalization / localization
+- `logger.ts` — Structured logging
+- `rateLimiter.ts` — Rate limiting middleware
+- `dotenv.ts` — `.env` file loading
+- `health.ts` — Health check endpoint
+- `scss.ts` — SCSS compilation
+- `messenger.ts` — Messaging system
+- `service.ts` — Service layer helpers
+- `wsdl.ts` — WSDL / SOAP support
 
 ### @tina4/orm (`packages/orm/`)
 Database layer with auto-CRUD generation, seeding, fake data, and SQL translation.
@@ -96,6 +140,10 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 **Key files:**
 - `database.ts` — Adapter manager, `initDatabase()` factory
 - `adapters/sqlite.ts` — `better-sqlite3` implementation of `DatabaseAdapter` interface
+- `adapters/postgres.ts` — PostgreSQL adapter
+- `adapters/mysql.ts` — MySQL adapter
+- `adapters/mssql.ts` — MSSQL / SQL Server adapter (`mssql` or `sqlserver` scheme)
+- `adapters/firebird.ts` — Firebird adapter
 - `model.ts` — Discovers models from `src/models/`, reads `static tableName` and `static fields`
 - `migration.ts` — Schema sync on startup (creates tables, adds columns, warns on destructive changes)
 - `autoCrud.ts` — Generates GET/POST/PUT/DELETE route handlers for each model
@@ -184,7 +232,7 @@ console.log(aiStatusReport("."));
 
 ## Module: Error Overlay (`packages/core/src/errorOverlay.ts`)
 
-Rich HTML error page for development mode. Uses Catppuccin Mocha colour palette, shows syntax-highlighted source context around the error line, stack trace with source preview, request details, and environment info. Controlled by `TINA4_DEBUG_LEVEL` env var.
+Rich HTML error page for development mode. Uses Catppuccin Mocha colour palette, shows syntax-highlighted source context around the error line, stack trace with source preview, request details, and environment info. Controlled by `TINA4_DEBUG` env var.
 
 ```typescript
 import { renderErrorOverlay, renderProductionError, isDebugMode } from "@tina4/core";
@@ -199,8 +247,7 @@ try {
   res.html(html, 500);
 }
 
-// isDebugMode() returns true when TINA4_DEBUG_LEVEL is ALL, DEBUG,
-// TINA4_LOG_ALL, or TINA4_LOG_DEBUG
+// isDebugMode() returns true when TINA4_DEBUG is "true"
 ```
 
 ## Module: HtmlElement (`packages/core/src/htmlElement.ts`)
@@ -371,8 +418,8 @@ const rows = cache.remember(key, 60, () => db.execute(sql, params));
 ### Route Files
 - Located in `src/routes/`
 - Filename = HTTP method: `get.ts`, `post.ts`, `put.ts`, `delete.ts`, `patch.ts`
-- Directory path = URL path: `src/routes/api/users/[id]/get.ts` → `GET /api/users/:id`
-- Dynamic params use bracket notation: `[id]`, `[...slug]`
+- Directory path = URL path: `src/routes/api/users/[id]/get.ts` → `GET /api/users/{id}`
+- Dynamic params use bracket notation in filenames: `[id]`, `[...slug]` (converted to `{id}`, `{...slug}` in URL patterns)
 - **Must export** a default async function:
   ```typescript
   export default async function (req: Tina4Request, res: Tina4Response) {}
@@ -381,6 +428,11 @@ const rows = cache.remember(key, 60, () => db.execute(sql, params));
   ```typescript
   export const meta = { summary: "...", tags: ["..."] };
   ```
+- **Optionally export** a `template` string to render a Twig template:
+  ```typescript
+  export const template = "page.twig";  // renders src/templates/page.twig
+  ```
+  The route handler provides data; the template renders the HTML. Use `res.template("name.twig", data)` for programmatic template rendering.
 
 ### Model Files
 - Located in `src/models/`
@@ -417,13 +469,73 @@ import { Router } from "./router.js";  // .js even though the file is .ts
 3. **Convention-based models** — `static fields = {}` over decorators. No special TypeScript config needed.
 4. **CDN for Swagger UI** — Keeps install under 8MB. Single HTML file loads from unpkg.com.
 5. **Process restart for hot-reload** — Simpler and more reliable than HMR with ESM.
-6. **SQLite default** — `better-sqlite3` is synchronous and fast. Adapter pattern for async databases.
+6. **SQLite default** — `better-sqlite3` is synchronous and fast. Full adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird.
 7. **CLI named `tina4nodejs`** (primary) with `tina4` as alias — So `npx tina4nodejs init` or `npx tina4 init` both work.
 8. **Event system** — Static `Events` class, synchronous dispatch, priority ordering, zero deps.
 9. **Inline testing** — Tests as decorators on functions, no external test runner for unit-level checks.
 10. **SQL translation** — Dialect differences handled at runtime via `SQLTranslator` static methods, not at query-build time.
-11. **Error overlay** — Dev-only rich HTML error page, controlled by `TINA4_DEBUG_LEVEL` env var.
+11. **Error overlay** — Dev-only rich HTML error page, controlled by `TINA4_DEBUG` env var.
 12. **AI context scaffolding** — Auto-detect and install context files for all major AI coding tools.
+13. **Dev toolbar** — Fixed bottom bar injected into HTML pages in dev mode, showing route info, request ID, version. Admin dashboard at `/_dev/`.
+14. **Default port 7148** — Config priority: explicit config > `PORT` env var > 7148. Default host: `0.0.0.0`.
+
+## Database Configuration
+
+### Connection string format
+Set `DATABASE_URL` in your `.env` file using `driver://host:port/database` format:
+
+```bash
+# SQLite (default if nothing configured)
+DATABASE_URL=sqlite:///path/to/db.sqlite
+DATABASE_URL=sqlite://./data/tina4.db
+
+# PostgreSQL
+DATABASE_URL=postgres://localhost:5432/mydb
+DATABASE_URL=postgresql://localhost:5432/mydb
+
+# MySQL
+DATABASE_URL=mysql://localhost:3306/mydb
+
+# MSSQL / SQL Server (both schemes work)
+DATABASE_URL=mssql://localhost:1433/mydb
+DATABASE_URL=sqlserver://localhost:1433/mydb
+
+# Firebird
+DATABASE_URL=firebird://localhost:3050/mydb
+```
+
+### Credentials
+Credentials can be embedded in the URL or provided separately:
+
+```bash
+# In the URL
+DATABASE_URL=postgres://user:pass@localhost:5432/mydb
+
+# Or as separate env vars (merged when URL has no credentials)
+DATABASE_URL=postgres://localhost:5432/mydb
+DATABASE_USERNAME=myuser
+DATABASE_PASSWORD=mypass
+```
+
+Credential priority: `config.user` > `config.username` > `DATABASE_USERNAME` env var.
+
+### Programmatic configuration
+```typescript
+import { initDatabase } from "@tina4/orm";
+
+await initDatabase({ url: "postgres://localhost:5432/mydb" });
+// or
+await initDatabase({ type: "postgres", host: "localhost", port: 5432, database: "mydb", username: "user", password: "pass" });
+```
+
+### Available adapters
+| Adapter | Scheme(s) | Package |
+|---------|-----------|---------|
+| SQLite | `sqlite://` | `better-sqlite3` |
+| PostgreSQL | `postgres://`, `postgresql://` | `pg` |
+| MySQL | `mysql://` | `mysql2` |
+| MSSQL | `mssql://`, `sqlserver://` | `tedious` |
+| Firebird | `firebird://` | `node-firebird` |
 
 ## Testing
 
@@ -432,16 +544,13 @@ Run tests with:
 npm test
 ```
 
-This executes `test/integration.ts` which:
-1. Creates a temporary project at `/tmp/tina4-integration-test`
-2. Writes route files, model files, templates, and static files
-3. Starts a real HTTP server on port 3399
-4. Runs 32 assertions covering all features
-5. Cleans up and exits with code 0 (pass) or 1 (fail)
+This executes `test/run-all.ts` which runs all 43 test files:
+- `test/integration.ts` — Full integration test (creates a temp project, starts a real server, runs assertions)
+- `test/*.test.ts` — 42 individual test files covering all subsystems (ORM, routing, middleware, database drivers, sessions, queues, WebSocket, GraphQL, i18n, etc.)
 
-**Always run tests after making changes.** All 32 must pass.
+**Always run tests after making changes.** All tests must pass.
 
-When adding new features, add assertions to `test/integration.ts`.
+When adding new features, add a corresponding `test/<feature>.test.ts` file.
 
 ## Common Tasks
 
@@ -469,13 +578,6 @@ When adding new features, add assertions to `test/integration.ts`.
 ## Roadmap (Not Yet Implemented)
 
 - Bun runtime compatibility
-- GraphQL engine
-- WebSocket support
-- Session management
-- JWT authentication
-- Queue system
-- Localization (i18n)
-- PostgreSQL and MySQL adapter implementations (stubs exist)
 
 ## Don'ts
 
@@ -483,7 +585,7 @@ When adding new features, add assertions to `test/integration.ts`.
 - **Don't use decorators** — convention-based models with static properties
 - **Don't add CommonJS** — everything is ESM (`"type": "module"`)
 - **Don't bundle `swagger-ui-dist`** — we load Swagger UI from CDN to stay under 8MB
-- **Don't break the 32 integration tests** — run `npm test` before committing
+- **Don't break the 43 test files** — run `npm test` before committing
 - **Don't add unnecessary dependencies** — minimal footprint is a core principle
 - **Don't use `url.parse()`** — use the WHATWG `URL` constructor instead (deprecated in Node 20+)
 

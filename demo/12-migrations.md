@@ -31,8 +31,8 @@ import {
   applyMigration,
   getNextBatch,
   isMigrationApplied,
-} from "@tina4/orm";
-import { getAdapter } from "@tina4/orm";
+} from "tina4-nodejs";
+import { getAdapter } from "tina4-nodejs";
 
 // Ensure the tracking table exists
 ensureMigrationTable();
@@ -57,7 +57,7 @@ applyMigration("002_add_users_phone", () => {
 Rollback undoes the last batch of migrations. You provide a map of migration names to their "down" functions:
 
 ```typescript
-import { rollback } from "@tina4/orm";
+import { rollback } from "tina4-nodejs";
 
 const downFunctions = new Map<string, () => void>();
 
@@ -82,7 +82,7 @@ import {
   getAppliedMigrations,
   getLastBatchMigrations,
   isMigrationApplied,
-} from "@tina4/orm";
+} from "tina4-nodejs";
 
 // List all applied migrations
 const all = getAppliedMigrations();

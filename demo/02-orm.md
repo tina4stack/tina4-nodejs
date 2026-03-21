@@ -128,7 +128,7 @@ export default class Author {
 For programmatic use beyond auto-CRUD, extend `BaseModel` to get `findById`, `findAll`, `save`, `delete`, and serialization methods.
 
 ```typescript
-import { BaseModel } from "@tina4/orm";
+import { BaseModel } from "tina4-nodejs";
 
 export default class Task extends BaseModel {
   static tableName = "tasks";
@@ -144,7 +144,7 @@ export default class Task extends BaseModel {
 ### Using BaseModel in a Route Handler
 
 ```typescript
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 import Task from "../models/Task.js";
 
 export default async function (req: Tina4Request, res: Tina4Response): Promise<void> {
@@ -192,13 +192,13 @@ export default class AnalyticsEvent extends BaseModel {
 Register named adapters at startup:
 
 ```typescript
-import { initDatabase, setNamedAdapter } from "@tina4/orm";
+import { initDatabase, setNamedAdapter } from "tina4-nodejs";
 
 // Default adapter
 await initDatabase({ type: "sqlite", path: "./data/main.db" });
 
 // Named adapter for analytics
-const { SQLiteAdapter } = await import("@tina4/orm/src/adapters/sqlite.js");
+const { SQLiteAdapter } = await import("tina4-nodejs");
 setNamedAdapter("analytics", new SQLiteAdapter("./data/analytics.db"));
 ```
 

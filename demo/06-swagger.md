@@ -6,8 +6,8 @@ Tina4 automatically generates OpenAPI 3.0 documentation from your routes and mod
 
 No configuration needed. When the server starts, Swagger routes are registered automatically.
 
-- **Swagger UI:** `http://localhost:3000/swagger`
-- **OpenAPI spec:** `http://localhost:3000/swagger/openapi.json`
+- **Swagger UI:** `http://localhost:7148/swagger`
+- **OpenAPI spec:** `http://localhost:7148/swagger/openapi.json`
 
 ## Route Documentation via Meta
 
@@ -15,7 +15,7 @@ Export a `meta` object from file-based route files to provide summary, descripti
 
 ```typescript
 // src/routes/api/users/get.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export const meta = {
   summary: "List all users",
@@ -79,7 +79,7 @@ When tags are not specified in `meta`, Tina4 infers them from the URL:
 When registering programmatic routes, pass `meta` as the last argument:
 
 ```typescript
-import { get } from "@tina4/core";
+import { get } from "tina4-nodejs";
 
 get("/api/status", async (req, res) => {
   res.json({ status: "ok" });

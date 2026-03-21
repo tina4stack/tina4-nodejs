@@ -5,7 +5,7 @@ Tina4 includes a zero-dependency SCSS-to-CSS compiler that supports a practical 
 ## Basic Usage
 
 ```typescript
-import { ScssCompiler } from "@tina4/core";
+import { ScssCompiler } from "tina4-nodejs";
 
 const scss = new ScssCompiler();
 
@@ -34,7 +34,7 @@ console.log(css);
 ## Compiling Files
 
 ```typescript
-import { ScssCompiler } from "@tina4/core";
+import { ScssCompiler } from "tina4-nodejs";
 
 const scss = new ScssCompiler();
 
@@ -126,8 +126,8 @@ Both `//` line comments and `/* */` block comments are supported. Line comments 
 ## Configuration
 
 ```typescript
-import { ScssCompiler } from "@tina4/core";
-import type { ScssConfig } from "@tina4/core";
+import { ScssCompiler } from "tina4-nodejs";
+import type { ScssConfig } from "tina4-nodejs";
 
 const scss = new ScssCompiler({
   importPaths: ["src/styles", "node_modules"],  // Directories to search for @import
@@ -150,8 +150,8 @@ Serve compiled CSS dynamically:
 
 ```typescript
 // src/routes/css/[...path]/get.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
-import { ScssCompiler } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
+import { ScssCompiler } from "tina4-nodejs";
 
 const scss = new ScssCompiler({ importPaths: ["src/styles"] });
 

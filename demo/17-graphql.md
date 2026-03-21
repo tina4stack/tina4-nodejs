@@ -5,7 +5,7 @@ Tina4 includes a zero-dependency GraphQL engine with a recursive-descent parser,
 ## Basic Usage
 
 ```typescript
-import { GraphQL } from "@tina4/core";
+import { GraphQL } from "tina4-nodejs";
 
 const gql = new GraphQL();
 
@@ -92,8 +92,8 @@ const result = gql.execute(`
 
 ```typescript
 // src/routes/graphql/post.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
-import { GraphQL } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
+import { GraphQL } from "tina4-nodejs";
 
 const gql = new GraphQL();
 // ... register types, queries, mutations ...

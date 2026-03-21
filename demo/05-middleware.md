@@ -15,7 +15,7 @@ The server automatically registers these middleware on startup:
 Each middleware receives `(req, res, next)`. Call `next()` to continue to the next middleware or the route handler. If you don't call `next()`, the chain stops.
 
 ```typescript
-import type { Middleware } from "@tina4/core";
+import type { Middleware } from "tina4-nodejs";
 
 const myMiddleware: Middleware = (req, res, next) => {
   console.log(`${req.method} ${req.url}`);
@@ -30,8 +30,8 @@ CORS is configured via code or environment variables.
 ### Via Code
 
 ```typescript
-import { cors } from "@tina4/core";
-import type { CorsConfig } from "@tina4/core";
+import { cors } from "tina4-nodejs";
+import type { CorsConfig } from "tina4-nodejs";
 
 const corsMiddleware = cors({
   origins: ["https://myapp.com", "https://staging.myapp.com"],
@@ -75,8 +75,8 @@ The built-in logger prints colorized output to the console:
 Use the `MiddlewareChain` class to build custom chains:
 
 ```typescript
-import { MiddlewareChain } from "@tina4/core";
-import type { Middleware } from "@tina4/core";
+import { MiddlewareChain } from "tina4-nodejs";
+import type { Middleware } from "tina4-nodejs";
 
 const chain = new MiddlewareChain();
 
@@ -97,8 +97,8 @@ chain.use(timing);
 Attach middleware to specific routes. They run after global middleware but before the handler.
 
 ```typescript
-import { get } from "@tina4/core";
-import type { Middleware } from "@tina4/core";
+import { get } from "tina4-nodejs";
+import type { Middleware } from "tina4-nodejs";
 
 const requireApiKey: Middleware = (req, res, next) => {
   if (req.headers["x-api-key"] !== "secret-key") {
@@ -118,8 +118,8 @@ get("/api/protected", async (req, res) => {
 Apply middleware to a group of routes sharing a prefix:
 
 ```typescript
-import { Router } from "@tina4/core";
-import { authMiddleware } from "@tina4/core";
+import { Router } from "tina4-nodejs";
+import { authMiddleware } from "tina4-nodejs";
 
 const router = new Router();
 

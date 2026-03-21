@@ -25,7 +25,7 @@ import {
   HTTP_SERVER_ERROR,    // 500
   HTTP_BAD_GATEWAY,     // 502
   HTTP_UNAVAILABLE,     // 503
-} from "@tina4/core";
+} from "tina4-nodejs";
 ```
 
 ## Content Types
@@ -40,14 +40,14 @@ import {
   TEXT_PLAIN,           // "text/plain; charset=utf-8"
   TEXT_CSV,             // "text/csv"
   TEXT_XML,             // "text/xml"
-} from "@tina4/core";
+} from "tina4-nodejs";
 ```
 
 ## Usage in Route Handlers
 
 ```typescript
-import type { Tina4Request, Tina4Response } from "@tina4/core";
-import { HTTP_OK, HTTP_CREATED, HTTP_NOT_FOUND, APPLICATION_JSON } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
+import { HTTP_OK, HTTP_CREATED, HTTP_NOT_FOUND, APPLICATION_JSON } from "tina4-nodejs";
 
 export default async function (req: Tina4Request, res: Tina4Response): Promise<void> {
   const userId = req.params.id;
@@ -65,7 +65,7 @@ export default async function (req: Tina4Request, res: Tina4Response): Promise<v
 ### With Response Methods
 
 ```typescript
-import { HTTP_CREATED, HTTP_UNPROCESSABLE } from "@tina4/core";
+import { HTTP_CREATED, HTTP_UNPROCESSABLE } from "tina4-nodejs";
 
 export default async function (req: Tina4Request, res: Tina4Response): Promise<void> {
   const body = req.body as Record<string, unknown>;

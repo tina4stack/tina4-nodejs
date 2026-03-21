@@ -5,7 +5,7 @@ Tina4 includes a zero-dependency RFC 6455 WebSocket server built on Node.js `nod
 ## Basic Server
 
 ```typescript
-import { WebSocketServer } from "@tina4/core";
+import { WebSocketServer } from "tina4-nodejs";
 
 const wss = new WebSocketServer({ port: 8080 });
 
@@ -66,7 +66,7 @@ The implementation handles the full RFC 6455 frame protocol:
 ## Close Codes
 
 ```typescript
-import { CLOSE_NORMAL, CLOSE_PROTOCOL_ERROR } from "@tina4/core";
+import { CLOSE_NORMAL, CLOSE_PROTOCOL_ERROR } from "tina4-nodejs";
 
 // Clean shutdown
 client.close(CLOSE_NORMAL, "Goodbye");
@@ -95,10 +95,10 @@ ws.onclose = () => {
 You can run the WebSocket server alongside the HTTP server:
 
 ```typescript
-import { startServer, WebSocketServer } from "@tina4/core";
+import { startServer, WebSocketServer } from "tina4-nodejs";
 
 // Start HTTP server
-const { port } = await startServer({ port: 3000 });
+const { port } = await startServer({ port: 7148 });
 
 // Start WebSocket server on a different port
 const wss = new WebSocketServer({ port: 3001 });

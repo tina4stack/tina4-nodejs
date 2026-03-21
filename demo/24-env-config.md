@@ -6,8 +6,10 @@ Tina4 loads environment variables from a `.env` file on server startup. The buil
 
 ```bash
 # .env
-PORT=3000
+PORT=7148
 DATABASE_URL=sqlite:///data/app.db
+DATABASE_USERNAME=admin
+DATABASE_PASSWORD=secret
 
 # Quoted values (escape sequences processed in double quotes)
 APP_NAME="My Tina4 App"
@@ -30,7 +32,7 @@ CACHE_TTL=300  # 5 minutes
 The `.env` file is loaded automatically when the server starts. You can also load it manually:
 
 ```typescript
-import { loadEnv } from "@tina4/core";
+import { loadEnv } from "tina4-nodejs";
 
 // Load from default .env in current directory
 const vars = loadEnv();
@@ -44,7 +46,7 @@ const vars = loadEnv(".env.production");
 ## Reading Environment Variables
 
 ```typescript
-import { getEnv, requireEnv } from "@tina4/core";
+import { getEnv, requireEnv } from "tina4-nodejs";
 
 // Get with optional default
 const port = getEnv("PORT", "3000");           // "3000" if not set
@@ -62,6 +64,8 @@ These are read by Tina4 internals:
 | Variable | Used By | Default |
 |----------|---------|---------|
 | `DATABASE_URL` | Database initialization | -- |
+| `DATABASE_USERNAME` | Database credentials (separate from URL) | -- |
+| `DATABASE_PASSWORD` | Database credentials (separate from URL) | -- |
 | `TINA4_CORS_ORIGINS` | CORS middleware | `*` |
 | `TINA4_CORS_METHODS` | CORS middleware | `GET, POST, PUT, DELETE, PATCH, OPTIONS` |
 | `TINA4_CORS_HEADERS` | CORS middleware | `Content-Type, Authorization` |

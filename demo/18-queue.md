@@ -5,7 +5,7 @@ Tina4 includes a file-backed job queue for background processing. No Redis, no R
 ## Basic Usage
 
 ```typescript
-import { Queue } from "@tina4/core";
+import { Queue } from "tina4-nodejs";
 
 const queue = new Queue();
 
@@ -68,7 +68,7 @@ queue.purge("emails");
 Process jobs continuously:
 
 ```typescript
-import { Queue } from "@tina4/core";
+import { Queue } from "tina4-nodejs";
 
 const queue = new Queue();
 

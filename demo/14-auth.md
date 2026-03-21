@@ -7,7 +7,7 @@ Tina4 provides zero-dependency JWT token generation/verification, password hashi
 ### Generate a Token
 
 ```typescript
-import { createToken } from "@tina4/core";
+import { createToken } from "tina4-nodejs";
 
 const token = createToken(
   { userId: 1, role: "admin" },  // Payload (claims)
@@ -21,7 +21,7 @@ const token = createToken(
 ### Verify a Token
 
 ```typescript
-import { validateToken } from "@tina4/core";
+import { validateToken } from "tina4-nodejs";
 
 const payload = validateToken(token, "my-secret-key");
 if (payload) {
@@ -37,7 +37,7 @@ if (payload) {
 ### Decode Without Verification
 
 ```typescript
-import { getPayload } from "@tina4/core";
+import { getPayload } from "tina4-nodejs";
 
 // Decode payload without checking signature or expiry
 const payload = getPayload(token);
@@ -55,7 +55,7 @@ const payload = getPayload(token);
 Uses PBKDF2-SHA256 with random salt. Constant-time comparison prevents timing attacks.
 
 ```typescript
-import { hashPassword, checkPassword } from "@tina4/core";
+import { hashPassword, checkPassword } from "tina4-nodejs";
 
 // Hash a password
 const hash = hashPassword("mypassword123");
@@ -79,8 +79,8 @@ Default: 100,000 iterations, 16-byte random salt, 32-byte derived key.
 Protect routes by requiring a valid Bearer JWT in the Authorization header.
 
 ```typescript
-import { get } from "@tina4/core";
-import { authMiddleware } from "@tina4/core";
+import { get } from "tina4-nodejs";
+import { authMiddleware } from "tina4-nodejs";
 
 // Protect a single route
 get("/api/profile", async (req, res) => {
@@ -106,9 +106,9 @@ get("/api/profile", async (req, res) => {
 
 ```typescript
 // src/routes/api/auth/login/post.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
-import { createToken, checkPassword } from "@tina4/core";
-import { getAdapter } from "@tina4/orm";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
+import { createToken, checkPassword } from "tina4-nodejs";
+import { getAdapter } from "tina4-nodejs";
 
 export default async function (req: Tina4Request, res: Tina4Response): Promise<void> {
   const { email, password } = req.body as { email: string; password: string };
@@ -137,7 +137,7 @@ export default async function (req: Tina4Request, res: Tina4Response): Promise<v
 ## Protecting Route Groups
 
 ```typescript
-import { Router, authMiddleware } from "@tina4/core";
+import { Router, authMiddleware } from "tina4-nodejs";
 
 const router = new Router();
 

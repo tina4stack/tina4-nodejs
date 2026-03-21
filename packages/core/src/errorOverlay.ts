@@ -15,7 +15,7 @@
  *     res.html(html, 500);
  *   }
  *
- * Only activate when TINA4_DEBUG_LEVEL is ALL or DEBUG.
+ * Only activate when TINA4_DEBUG is true.
  * In production, call renderProductionError() instead.
  */
 
@@ -194,7 +194,8 @@ export function renderErrorOverlay(error: Error, request?: any): string {
     ["Node.js", process.version],
     ["Platform", process.platform],
     ["Arch", process.arch],
-    ["Debug Level", process.env.TINA4_DEBUG_LEVEL ?? "not set"],
+    ["Debug", process.env.TINA4_DEBUG ?? "false"],
+    ["Log Level", process.env.TINA4_LOG_LEVEL ?? "ERROR"],
   ];
   const envSection = collapsible("Environment", table(envPairs));
   const stackSection = collapsible("Stack Trace", framesHtml, true);
@@ -224,7 +225,7 @@ body{background:${BG};color:${TEXT};font-family:-apple-system,BlinkMacSystemFont
   ${requestSection}
   ${envSection}
   <div style="margin-top:32px;padding-top:16px;border-top:1px solid ${OVERLAY};color:${SUBTEXT};font-size:12px;">
-    Tina4 Debug Overlay &mdash; This page is only shown in debug mode. Set TINA4_DEBUG_LEVEL to WARNING or ERROR in production.
+    Tina4 Debug Overlay &mdash; This page is only shown in debug mode. Set TINA4_DEBUG=false in production.
   </div>
 </div>
 </body>
@@ -258,9 +259,8 @@ display:flex;justify-content:center;align-items:center;min-height:100vh;text-ali
 }
 
 /**
- * Check if the current TINA4_DEBUG_LEVEL enables the error overlay.
+ * Check if TINA4_DEBUG is enabled.
  */
 export function isDebugMode(): boolean {
-  const level = (process.env.TINA4_DEBUG_LEVEL ?? "").toUpperCase();
-  return ["ALL", "DEBUG", "TINA4_LOG_ALL", "TINA4_LOG_DEBUG"].includes(level);
+  return process.env.TINA4_DEBUG === "true";
 }

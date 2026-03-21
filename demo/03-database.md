@@ -1,6 +1,6 @@
 # Database
 
-Tina4 uses an adapter pattern for database access. SQLite via `better-sqlite3` is the default and only currently implemented adapter. PostgreSQL and MySQL adapters are planned.
+Tina4 uses an adapter pattern for database access. SQLite via `better-sqlite3` is the default adapter. PostgreSQL, MySQL, MSSQL/SQL Server, and Firebird adapters are also available.
 
 ## Automatic Initialization
 
@@ -14,7 +14,7 @@ No manual setup is needed for most projects.
 ## Manual Initialization
 
 ```typescript
-import { initDatabase } from "@tina4/orm";
+import { initDatabase } from "tina4-nodejs";
 
 // SQLite with custom path
 await initDatabase({
@@ -25,19 +25,31 @@ await initDatabase({
 
 ## DATABASE_URL Support
 
-You can configure the database via a connection URL, either in code or via the `DATABASE_URL` environment variable.
+You can configure the database via a connection URL in the format `driver://host:port/database`, either in code or via the `DATABASE_URL` environment variable. Credentials are provided separately via `DATABASE_USERNAME` and `DATABASE_PASSWORD` environment variables or config properties.
 
 ```bash
 # .env
 DATABASE_URL=sqlite:///data/myapp.db
+
+# For networked databases, use driver://host:port/database with separate credentials
+DATABASE_URL=postgresql://db.host:5432/myapp
+DATABASE_USERNAME=admin
+DATABASE_PASSWORD=secret
 ```
 
 ```typescript
-import { initDatabase } from "@tina4/orm";
+import { initDatabase } from "tina4-nodejs";
 
 // URL takes priority over type+path
 await initDatabase({
   url: "sqlite://./data/myapp.db",
+});
+
+// Networked database with separate credentials
+await initDatabase({
+  url: "postgresql://db.host:5432/myapp",
+  username: "admin",
+  password: "secret",
 });
 ```
 
@@ -47,15 +59,20 @@ await initDatabase({
 |-----|-------------|
 | `sqlite:///absolute/path.db` | SQLite with absolute path |
 | `sqlite://./relative/path.db` | SQLite with relative path |
-| `postgresql://user:pass@host:port/db` | PostgreSQL (planned) |
-| `mysql://user:pass@host:port/db` | MySQL (planned) |
+| `postgresql://host:port/db` | PostgreSQL |
+| `mysql://host:port/db` | MySQL |
+| `mssql://host:port/db` | MSSQL (SQL Server) |
+| `sqlserver://host:port/db` | SQL Server (alias for mssql) |
+| `firebird://host:port/db` | Firebird |
+
+Credentials can be embedded in the URL (`postgresql://user:pass@host:port/db`) or provided separately via `DATABASE_USERNAME`/`DATABASE_PASSWORD` env vars. Separate credentials take effect when the URL has no embedded credentials.
 
 You can parse a URL without connecting:
 
 ```typescript
-import { parseDatabaseUrl } from "@tina4/orm";
+import { parseDatabaseUrl } from "tina4-nodejs";
 
-const config = parseDatabaseUrl("postgresql://admin:secret@db.host:5432/myapp");
+const config = parseDatabaseUrl("postgresql://db.host:5432/myapp", "admin", "secret");
 // { type: "postgres", host: "db.host", port: 5432, user: "admin", password: "secret", database: "myapp" }
 ```
 
@@ -76,7 +93,7 @@ interface DatabaseAdapter {
 ### Direct Queries
 
 ```typescript
-import { getAdapter } from "@tina4/orm";
+import { getAdapter } from "tina4-nodejs";
 
 const db = getAdapter();
 
@@ -103,10 +120,10 @@ if (db.tableExists("users")) {
 Pass database config through `startServer()`:
 
 ```typescript
-import { startServer } from "@tina4/core";
+import { startServer } from "tina4-nodejs";
 
 await startServer({
-  port: 3000,
+  port: 7148,
   database: {
     type: "sqlite",
     path: "./data/production.db",
@@ -119,7 +136,7 @@ await startServer({
 The database connection is opened on server start and closed on shutdown. The `closeDatabase()` function closes all adapters (default and named).
 
 ```typescript
-import { closeDatabase } from "@tina4/orm";
+import { closeDatabase } from "tina4-nodejs";
 
 // Close all database connections
 closeDatabase();

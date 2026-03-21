@@ -9,7 +9,7 @@ When a POST or PUT request hits an auto-CRUD endpoint, the request body is valid
 ### Example Invalid Request
 
 ```bash
-curl -X POST http://localhost:3000/api/users \
+curl -X POST http://localhost:7148/api/users \
   -H "Content-Type: application/json" \
   -d '{"name": "", "email": "not-an-email", "age": -5}'
 ```
@@ -57,9 +57,9 @@ Rules are derived from the field definition options:
 Use the `validate` function directly in custom route handlers:
 
 ```typescript
-import type { Tina4Request, Tina4Response } from "@tina4/core";
-import { validate } from "@tina4/orm";
-import type { FieldDefinition } from "@tina4/orm";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
+import { validate } from "tina4-nodejs";
+import type { FieldDefinition } from "tina4-nodejs";
 
 const productFields: Record<string, FieldDefinition> = {
   name:  { type: "string", required: true, minLength: 2, maxLength: 100 },

@@ -92,7 +92,7 @@ This returns the first 5 active products priced at $10 or more, sorted by price 
 The query builder can be used directly:
 
 ```typescript
-import { buildQuery, parseQueryString } from "@tina4/orm";
+import { buildQuery, parseQueryString } from "tina4-nodejs";
 
 // Parse URL query parameters into QueryOptions
 const options = parseQueryString({

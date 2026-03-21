@@ -284,21 +284,19 @@ export class DevMailbox {
  * Create a Messenger or DevMailbox based on the environment.
  *
  * Returns DevMailbox when:
- *   - TINA4_DEBUG is set to a truthy value ("true", "1", "yes", "on"), OR
- *   - NODE_ENV is not "production", OR
+ *   - TINA4_DEBUG is "true", OR
  *   - No SMTP_HOST is configured
  *
- * Returns a real Messenger otherwise (production + SMTP configured).
+ * Returns a real Messenger otherwise (SMTP configured + not debug mode).
  *
  * This follows the factory pattern from PHP's MessengerFactory.
  */
 export function createMessenger(): Messenger | DevMailbox {
   const debug = process.env.TINA4_DEBUG;
   const smtpHost = process.env.SMTP_HOST;
-  const isProd = process.env.NODE_ENV === "production";
 
-  // Force dev mode when TINA4_DEBUG is truthy
-  if (debug && ["true", "1", "yes", "on"].includes(debug.toLowerCase())) {
+  // Force dev mode when TINA4_DEBUG is true
+  if (debug === "true") {
     return new DevMailbox();
   }
 

@@ -5,7 +5,7 @@ Tina4 provides a `ServiceRunner` for in-process background services using Node.j
 ## Registering a Service
 
 ```typescript
-import { ServiceRunner } from "@tina4/core";
+import { ServiceRunner } from "tina4-nodejs";
 
 // Run every 5 minutes (cron syntax)
 ServiceRunner.register("cleanup", async (context) => {
@@ -84,7 +84,7 @@ interface ServiceContext {
 ## Managing Services
 
 ```typescript
-import { ServiceRunner } from "@tina4/core";
+import { ServiceRunner } from "tina4-nodejs";
 
 // Start all services
 ServiceRunner.startAll();

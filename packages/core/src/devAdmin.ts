@@ -331,12 +331,7 @@ export class DevAdmin {
    * Check whether dev mode is enabled.
    */
   static isEnabled(): boolean {
-    const debugLevel = process.env.TINA4_DEBUG_LEVEL ?? "";
-    const debug = process.env.TINA4_DEBUG ?? "";
-    if (debugLevel.toUpperCase() === "ALL" || debugLevel.toUpperCase() === "DEBUG") return true;
-    if (debug === "1" || debug.toLowerCase() === "true") return true;
-    // Also enable when not in production
-    return process.env.TINA4_ENV !== "production" && process.env.NODE_ENV !== "production";
+    return process.env.TINA4_DEBUG === "true";
   }
 
   /**
@@ -436,7 +431,8 @@ function handleStatus(router: Router): RouteHandler {
     res.json({
       nodeVersion: process.version,
       framework: `tina4-nodejs v${TINA4_VERSION}`,
-      debugLevel: process.env.TINA4_DEBUG_LEVEL ?? "",
+      debug: process.env.TINA4_DEBUG ?? "false",
+      logLevel: process.env.TINA4_LOG_LEVEL ?? "ERROR",
       routes: router.getRoutes().length,
       messages: msgCounts,
       message_counts: msgCounts,
@@ -546,7 +542,8 @@ const handleSystem: RouteHandler = (_req, res) => {
       version: TINA4_VERSION,
       route_count: "",
     },
-    debug_level: process.env.TINA4_DEBUG_LEVEL ?? "",
+    debug: process.env.TINA4_DEBUG ?? "false",
+    log_level: process.env.TINA4_LOG_LEVEL ?? "ERROR",
     // Node-specific extras
     node: {
       version: process.version,
@@ -560,9 +557,8 @@ const handleSystem: RouteHandler = (_req, res) => {
       formatted: formatUptime(process.uptime()),
     },
     env: {
-      NODE_ENV: process.env.NODE_ENV ?? "development",
-      TINA4_ENV: process.env.TINA4_ENV ?? "",
-      TINA4_DEBUG_LEVEL: process.env.TINA4_DEBUG_LEVEL ?? "",
+      TINA4_DEBUG: process.env.TINA4_DEBUG ?? "false",
+      TINA4_LOG_LEVEL: process.env.TINA4_LOG_LEVEL ?? "ERROR",
     },
     cpus: cpuCount,
   });
@@ -1233,7 +1229,7 @@ function renderDevAdminJs(): string {
     "        if (d.debug_level) html += '<div class=\"sys-card\"><div class=\"label\">Debug Level</div><div class=\"value text-sm\">' + d.debug_level + '</div></div>';",
     "        if (d.memory && d.memory.heapTotal) html += '<div class=\"sys-card\"><div class=\"label\">Heap Total</div><div class=\"value text-sm\">' + d.memory.heapTotal + '</div></div>';",
     "        if (d.memory && d.memory.external) html += '<div class=\"sys-card\"><div class=\"label\">External</div><div class=\"value text-sm\">' + d.memory.external + '</div></div>';",
-    "        if (d.env) html += '<div class=\"sys-card\"><div class=\"label\">NODE_ENV</div><div class=\"value text-sm\">' + (d.env.NODE_ENV || 'not set') + '</div></div>';",
+    "        if (d.env) html += '<div class=\"sys-card\"><div class=\"label\">TINA4_DEBUG</div><div class=\"value text-sm\">' + (d.env.TINA4_DEBUG || 'false') + '</div></div>';",
     "",
     "        document.getElementById('sys-cards').innerHTML = html;",
     "    });",

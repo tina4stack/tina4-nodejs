@@ -126,5 +126,21 @@ export function createResponse(res: ServerResponse): Tina4Response {
     return response.cookie(name, "", { ...options, maxAge: 0, expires: new Date(0) });
   };
 
+  response.template = async function (name: string, data?: Record<string, unknown>): Promise<Tina4Response> {
+    try {
+      const twig = await import("@tina4/twig");
+      const html = await twig.renderTemplate(name, data);
+      response.html(html);
+    } catch (err) {
+      res.statusCode = 500;
+      response.json({
+        error: "Template rendering failed",
+        statusCode: 500,
+        message: String(err),
+      });
+    }
+    return response;
+  };
+
   return response;
 }

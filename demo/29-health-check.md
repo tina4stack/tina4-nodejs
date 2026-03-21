@@ -46,14 +46,14 @@ The health endpoint is automatically documented in Swagger:
 livenessProbe:
   httpGet:
     path: /health
-    port: 3000
+    port: 7148
   initialDelaySeconds: 5
   periodSeconds: 10
 
 readinessProbe:
   httpGet:
     path: /health
-    port: 3000
+    port: 7148
   initialDelaySeconds: 3
   periodSeconds: 5
 ```

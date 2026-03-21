@@ -37,6 +37,7 @@ export interface Tina4ResponseMethods {
   cookie(name: string, value: string, options?: CookieOptions): Tina4Response;
   clearCookie(name: string, options?: CookieOptions): Tina4Response;
   render?(template: string, data?: Record<string, unknown>): void;
+  template(name: string, data?: Record<string, unknown>): Promise<Tina4Response>;
   /** The underlying ServerResponse for advanced use */
   raw: ServerResponse;
 }
@@ -65,6 +66,8 @@ export interface RouteDefinition {
   filePath?: string;
   meta?: RouteMeta;
   middlewares?: Middleware[];
+  /** Template file to render when handler returns a plain object */
+  template?: string;
 }
 
 export interface RouteMeta {

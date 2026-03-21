@@ -5,7 +5,7 @@ Tina4 includes a `Seeder` class for generating fake data during development and 
 ## Generating Fake Data
 
 ```typescript
-import { Seeder } from "@tina4/core";
+import { Seeder } from "tina4-nodejs";
 
 // Names
 Seeder.firstName();       // "Alice"
@@ -47,8 +47,8 @@ Seeder.pick(["red", "green", "blue"]);  // "green"
 ## Seeding a Database
 
 ```typescript
-import { Seeder } from "@tina4/core";
-import { getAdapter } from "@tina4/orm";
+import { Seeder } from "tina4-nodejs";
+import { getAdapter } from "tina4-nodejs";
 
 const db = getAdapter();
 
@@ -73,7 +73,7 @@ console.log("Seeded 50 users");
 The `Seeder` can also load seed data from JSON files:
 
 ```typescript
-import { Seeder } from "@tina4/core";
+import { Seeder } from "tina4-nodejs";
 
 // Load and process seed files from a directory
 // Place JSON files in a seeds/ directory with table name as filename
@@ -84,9 +84,9 @@ import { Seeder } from "@tina4/core";
 
 ```typescript
 // src/routes/api/seed/post.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
-import { Seeder } from "@tina4/core";
-import { getAdapter } from "@tina4/orm";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
+import { Seeder } from "tina4-nodejs";
+import { getAdapter } from "tina4-nodejs";
 
 export default async function (req: Tina4Request, res: Tina4Response): Promise<void> {
   if (process.env.NODE_ENV === "production") {

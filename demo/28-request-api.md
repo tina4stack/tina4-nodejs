@@ -52,7 +52,7 @@ The request body is automatically parsed based on `Content-Type`:
 ### JSON Body
 
 ```bash
-curl -X POST http://localhost:3000/api/users \
+curl -X POST http://localhost:7148/api/users \
   -H "Content-Type: application/json" \
   -d '{"name": "Alice", "email": "alice@test.com"}'
 ```
@@ -66,7 +66,7 @@ body.email;  // "alice@test.com"
 ### Form URL-Encoded Body
 
 ```bash
-curl -X POST http://localhost:3000/api/login \
+curl -X POST http://localhost:7148/api/login \
   -d "username=alice&password=secret"
 ```
 
@@ -79,7 +79,7 @@ body.password;  // "secret"
 ### Multipart Form Data (File Uploads)
 
 ```bash
-curl -X POST http://localhost:3000/api/upload \
+curl -X POST http://localhost:7148/api/upload \
   -F "avatar=@photo.jpg" \
   -F "name=Alice"
 ```

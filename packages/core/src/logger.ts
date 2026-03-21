@@ -40,8 +40,8 @@ const DEFAULT_LOG_FILE = "tina4.log";
 /**
  * Structured logger for Tina4.
  *
- * Production (TINA4_ENV=production): JSON lines to logs/tina4.log
- * Development: Colorized human-readable to stdout + file
+ * Production (TINA4_DEBUG not true): JSON lines to logs/tina4.log
+ * Development (TINA4_DEBUG=true): Colorized human-readable to stdout + file
  * Supports log rotation by date and size (10MB).
  */
 export class Log {
@@ -91,9 +91,9 @@ export class Log {
     Log.log("ERROR", message, data);
   }
 
-  /** Check if running in production mode. */
+  /** Check if running in production mode (TINA4_DEBUG is not true). */
   private static isProduction(): boolean {
-    return process.env.TINA4_ENV === "production" || process.env.NODE_ENV === "production";
+    return process.env.TINA4_DEBUG !== "true";
   }
 
   /** Get today's date string for rotation: YYYY-MM-DD */

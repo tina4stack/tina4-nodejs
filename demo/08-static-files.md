@@ -22,11 +22,11 @@ These are served as:
 
 | File | URL |
 |------|-----|
-| `public/index.html` | `http://localhost:3000/` or `http://localhost:3000/index.html` |
-| `public/css/style.css` | `http://localhost:3000/css/style.css` |
-| `public/js/app.js` | `http://localhost:3000/js/app.js` |
-| `public/images/logo.png` | `http://localhost:3000/images/logo.png` |
-| `public/favicon.ico` | `http://localhost:3000/favicon.ico` |
+| `public/index.html` | `http://localhost:7148/` or `http://localhost:7148/index.html` |
+| `public/css/style.css` | `http://localhost:7148/css/style.css` |
+| `public/js/app.js` | `http://localhost:7148/js/app.js` |
+| `public/images/logo.png` | `http://localhost:7148/images/logo.png` |
+| `public/favicon.ico` | `http://localhost:7148/favicon.ico` |
 
 ## MIME Type Detection
 
@@ -72,10 +72,10 @@ Directory traversal is prevented. Requests that attempt to escape the `public/` 
 Override the default `public/` directory when starting the server:
 
 ```typescript
-import { startServer } from "@tina4/core";
+import { startServer } from "tina4-nodejs";
 
 await startServer({
-  port: 3000,
+  port: 7148,
   staticDir: "assets",  // Serve from "assets/" instead of "public/"
 });
 ```

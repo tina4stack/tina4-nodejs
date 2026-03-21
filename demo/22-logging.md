@@ -5,9 +5,9 @@ Tina4 provides a structured `Log` class with file rotation, JSON output in produ
 ## Basic Usage
 
 ```typescript
-import { Log } from "@tina4/core";
+import { Log } from "tina4-nodejs";
 
-Log.info("Server started on port 3000");
+Log.info("Server started on port 7148");
 Log.debug("Processing request", { method: "GET", url: "/api/users" });
 Log.warning("Deprecated endpoint accessed", { endpoint: "/api/v1/users" });
 Log.error("Database connection failed", { error: "ECONNREFUSED" });
@@ -27,7 +27,7 @@ Log.error("Database connection failed", { error: "ECONNREFUSED" });
 In development mode, logs are colorized and human-readable:
 
 ```
-[INFO] 2024-03-15T10:30:00.000Z Server started on port 3000
+[INFO] 2024-03-15T10:30:00.000Z Server started on port 7148
 [DEBUG] 2024-03-15T10:30:01.123Z [req-abc123] Processing request {"method":"GET","url":"/api/users"}
 [WARNING] 2024-03-15T10:31:00.000Z Deprecated endpoint accessed {"endpoint":"/api/v1/users"}
 [ERROR] 2024-03-15T10:32:00.000Z Database connection failed {"error":"ECONNREFUSED"}
@@ -38,7 +38,7 @@ In development mode, logs are colorized and human-readable:
 When `TINA4_ENV=production` or `NODE_ENV=production`, logs are written as JSON lines to `logs/tina4.log` only (no console output):
 
 ```json
-{"timestamp":"2024-03-15T10:30:00.000Z","level":"INFO","message":"Server started on port 3000"}
+{"timestamp":"2024-03-15T10:30:00.000Z","level":"INFO","message":"Server started on port 7148"}
 {"timestamp":"2024-03-15T10:30:01.123Z","level":"DEBUG","message":"Processing request","requestId":"req-abc123","data":{"method":"GET","url":"/api/users"}}
 ```
 
@@ -47,7 +47,7 @@ When `TINA4_ENV=production` or `NODE_ENV=production`, logs are written as JSON l
 Attach a request ID for log correlation across a request lifecycle:
 
 ```typescript
-import { Log } from "@tina4/core";
+import { Log } from "tina4-nodejs";
 
 // In middleware or at request start
 Log.setRequestId("req-abc123");
@@ -62,7 +62,7 @@ Log.setRequestId(undefined);
 ## Configuration
 
 ```typescript
-import { Log } from "@tina4/core";
+import { Log } from "tina4-nodejs";
 
 Log.configure({
   logDir: "logs",          // Directory for log files (default: "logs")

@@ -1,10 +1,10 @@
 # Templates
 
-Tina4 uses Twig as its template engine via the `@tina4/twig` package. Templates live in `src/templates/` and are rendered using `res.render()` in route handlers.
+Tina4 uses Twig as its template engine. Templates live in `src/templates/` and are rendered using `res.render()` in route handlers.
 
 ## Setup
 
-The `@tina4/twig` package is optional. If installed, `res.render()` is automatically available on the response object. The templates directory defaults to `src/templates/`.
+The Twig template engine is built into `tina4-nodejs`. The `res.render()` method is automatically available on the response object. The templates directory defaults to `src/templates/`.
 
 ## Writing a Template
 
@@ -37,7 +37,7 @@ Templates use the Twig syntax with `.html.twig` extension.
 
 ```typescript
 // src/routes/welcome/get.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export default async function (req: Tina4Request, res: Tina4Response): Promise<void> {
   res.render!("welcome.html.twig", {
@@ -56,7 +56,7 @@ export default async function (req: Tina4Request, res: Tina4Response): Promise<v
 You can also render templates programmatically without the response helper:
 
 ```typescript
-import { renderTemplate, setTemplatesDir } from "@tina4/twig";
+import { renderTemplate, setTemplatesDir } from "tina4-nodejs";
 
 // Override the templates directory
 setTemplatesDir("src/templates");
@@ -73,10 +73,10 @@ const html = await renderTemplate("email.html.twig", {
 The templates directory can be configured when starting the server:
 
 ```typescript
-import { startServer } from "@tina4/core";
+import { startServer } from "tina4-nodejs";
 
 await startServer({
-  port: 3000,
+  port: 7148,
   templatesDir: "src/views",  // Override default "src/templates"
 });
 ```
@@ -89,4 +89,4 @@ If template rendering fails (missing file, syntax error), Tina4 returns a 500 JS
 
 - The Twig npm package is used under the hood -- full Twig syntax is supported.
 - Templates are resolved relative to the configured templates directory.
-- The `res.render()` method is only available when `@tina4/twig` is installed.
+- The `res.render()` method is built into the `tina4-nodejs` framework.

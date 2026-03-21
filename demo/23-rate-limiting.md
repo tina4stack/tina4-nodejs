@@ -36,8 +36,8 @@ When the limit is exceeded, a 429 response is returned:
 ### Via Code
 
 ```typescript
-import { rateLimiter } from "@tina4/core";
-import type { RateLimiterConfig } from "@tina4/core";
+import { rateLimiter } from "tina4-nodejs";
+import type { RateLimiterConfig } from "tina4-nodejs";
 
 const limiter = rateLimiter({
   limit: 50,               // Max requests per window (default: 100)
@@ -82,8 +82,8 @@ A background timer runs every `cleanupIntervalMs` to remove expired entries from
 For per-route rate limiting or different limits for different endpoints:
 
 ```typescript
-import { get } from "@tina4/core";
-import { rateLimiter } from "@tina4/core";
+import { get } from "tina4-nodejs";
+import { rateLimiter } from "tina4-nodejs";
 
 // Strict rate limit for login endpoint
 get("/api/login", async (req, res) => {

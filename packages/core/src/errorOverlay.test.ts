@@ -48,7 +48,7 @@ assertIncludes(html, "<details", "uses details element");
 assertIncludes(html, "open", "stack trace open by default");
 assertIncludes(html, "Environment", "contains environment section");
 assertIncludes(html, "Tina4 Node.js", "contains framework name");
-assertIncludes(html, "TINA4_DEBUG_LEVEL", "contains debug level reference");
+assertIncludes(html, "TINA4_DEBUG", "contains debug reference");
 
 // With request
 const htmlWithReq = renderErrorOverlay(err, {
@@ -84,26 +84,23 @@ assertIncludes(prod404, "Not Found", "production 404: contains message");
 
 // ── isDebugMode ──
 
-const origLevel = process.env.TINA4_DEBUG_LEVEL;
+const origDebug = process.env.TINA4_DEBUG;
 
-process.env.TINA4_DEBUG_LEVEL = "ALL";
-assert(isDebugMode() === true, "isDebugMode: ALL => true");
+process.env.TINA4_DEBUG = "true";
+assert(isDebugMode() === true, "isDebugMode: true => true");
 
-process.env.TINA4_DEBUG_LEVEL = "DEBUG";
-assert(isDebugMode() === true, "isDebugMode: DEBUG => true");
+process.env.TINA4_DEBUG = "false";
+assert(isDebugMode() === false, "isDebugMode: false => false");
 
-process.env.TINA4_DEBUG_LEVEL = "WARNING";
-assert(isDebugMode() === false, "isDebugMode: WARNING => false");
+process.env.TINA4_DEBUG = "TRUE";
+assert(isDebugMode() === false, "isDebugMode: TRUE (uppercase) => false (exact match)");
 
-process.env.TINA4_DEBUG_LEVEL = "ERROR";
-assert(isDebugMode() === false, "isDebugMode: ERROR => false");
-
-delete process.env.TINA4_DEBUG_LEVEL;
+delete process.env.TINA4_DEBUG;
 assert(isDebugMode() === false, "isDebugMode: unset => false");
 
 // Restore
-if (origLevel !== undefined) {
-  process.env.TINA4_DEBUG_LEVEL = origLevel;
+if (origDebug !== undefined) {
+  process.env.TINA4_DEBUG = origDebug;
 }
 
 // ── Summary ──

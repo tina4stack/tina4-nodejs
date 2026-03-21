@@ -41,7 +41,7 @@ const mod = await import(moduleUrl);
 Hot reload is enabled automatically when using `tina4nodejs serve`. The `watchForChanges` function is available for custom use:
 
 ```typescript
-import { watchForChanges } from "@tina4/core/src/watcher.js";
+import { watchForChanges } from "tina4-nodejs";
 
 const watcher = watchForChanges(
   ["src/routes", "src/models"],

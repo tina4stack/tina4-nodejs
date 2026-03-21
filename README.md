@@ -30,11 +30,11 @@
 ## Quickstart
 
 ```bash
-npm install tina4
-npx tina4 init my-app
+npm install tina4-nodejs
+npx tina4nodejs init my-app
 cd my-app
-npx tina4 serve
-# -> http://localhost:7145
+npx tina4nodejs serve
+# -> http://localhost:7148
 ```
 
 That's it. Zero configuration, zero classes, zero boilerplate.
@@ -50,7 +50,7 @@ Every feature is built from scratch -- no npm install, no node_modules bloat, no
 | **HTTP** | Native `node:http` server, file-based + programmatic routing, path params (`{id}`, `[...slug]`), middleware pipeline, CORS, rate limiting, graceful shutdown |
 | **Templates** | Frond engine (Twig-compatible), inheritance, partials, 53+ filters, macros, fragment caching, sandboxing |
 | **ORM** | Active Record, typed fields with validation, soft delete, relationships (`hasOne`/`hasMany`/`belongsTo`), scopes, result caching, auto-CRUD |
-| **Database** | SQLite, PostgreSQL, MySQL -- unified adapter interface |
+| **Database** | SQLite, PostgreSQL, MySQL, MSSQL/SQL Server, Firebird -- unified adapter interface, `driver://host:port/database` connection strings |
 | **Auth** | Zero-dep JWT (HS256 + RS256), sessions (file backend), PBKDF2 password hashing, form tokens |
 | **API** | Swagger/OpenAPI auto-generation, GraphQL with schema builder and GraphiQL IDE |
 | **Background** | File-backed queue with priority, delayed jobs, retry, batch processing |
@@ -69,13 +69,13 @@ For full documentation visit **[tina4.com](https://tina4.com)**.
 ## Install
 
 ```bash
-npm install tina4
+npm install tina4-nodejs
 ```
 
 Or scaffold a new project directly:
 
 ```bash
-npx tina4 init my-app
+npx tina4nodejs init my-app
 ```
 
 ---
@@ -85,7 +85,7 @@ npx tina4 init my-app
 ### 1. Create a project
 
 ```bash
-npx tina4 init my-app
+npx tina4nodejs init my-app
 cd my-app
 ```
 
@@ -118,7 +118,7 @@ src/routes/api/hello/get.ts  ->  GET /api/hello
 
 ```typescript
 // src/routes/api/hello/get.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export default async function (request: Tina4Request, response: Tina4Response) {
     response({message: "Hello from Tina4!"}, HTTP_OK);
@@ -129,14 +129,14 @@ export default async function (request: Tina4Request, response: Tina4Response) {
 
 ```typescript
 // src/routes/hello.ts
-import { get } from "@tina4/core";
+import { get } from "tina4-nodejs";
 
 get("/api/hello/{name}", async (request, response) => {
     response({message: `Hello, ${request.params.name}!`}, HTTP_OK);
 });
 ```
 
-Visit `http://localhost:7145/api/hello` -- routes are auto-discovered, no imports needed.
+Visit `http://localhost:7148/api/hello` -- routes are auto-discovered, no imports needed.
 
 ### 3. Add a database
 
@@ -149,7 +149,7 @@ DATABASE_URL=sqlite:///data/app.db
 Create and run a migration:
 
 ```bash
-npx tina4 migrate:create "create users table"
+npx tina4nodejs migrate:create "create users table"
 ```
 
 Edit the generated SQL:
@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS users (
 ```
 
 ```bash
-npx tina4 migrate
+npx tina4nodejs migrate
 ```
 
 ### 4. Create an ORM model
@@ -189,8 +189,8 @@ export default class User {
 **File-based** -- create `src/routes/api/users/get.ts`:
 
 ```typescript
-import type { Tina4Request, Tina4Response } from "@tina4/core";
-import { getAdapter } from "@tina4/orm";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
+import { getAdapter } from "tina4-nodejs";
 
 export default async function (request: Tina4Request, response: Tina4Response) {
     const db = getAdapter();
@@ -276,9 +276,9 @@ export default async function (request: Tina4Request, response: Tina4Response) {
 ### 7. Seed, test, deploy
 
 ```bash
-npx tina4 seed                          # Run seeders from src/seeds/
-npx tina4 test                          # Run test suite
-npx tina4 build                         # Build distributable
+npx tina4nodejs seed                          # Run seeders from src/seeds/
+npx tina4nodejs test                          # Run test suite
+npx tina4nodejs build                         # Build distributable
 ```
 
 For the complete step-by-step guide, visit **[tina4.com](https://tina4.com)**.
@@ -298,7 +298,7 @@ export default async function (request: Tina4Request, response: Tina4Response) {
 }
 
 // Programmatic: src/routes/webhooks.ts
-import { get, post, noauth, secured, middleware } from "@tina4/core";
+import { get, post, noauth, secured, middleware } from "tina4-nodejs";
 
 get("/api/items", async (request, response) => {
     response({items: []}, HTTP_OK);
@@ -346,7 +346,7 @@ export default class User {
 Unified interface across multiple engines:
 
 ```typescript
-import { getAdapter, initDatabase } from "@tina4/orm";
+import { getAdapter, initDatabase } from "tina4-nodejs";
 
 const db = initDatabase("sqlite:///data/app.db");
 
@@ -358,7 +358,7 @@ db.execute("INSERT INTO users (name, email) VALUES (?, ?)", ["Alice", "alice@tes
 ### Middleware
 
 ```typescript
-import { middleware } from "@tina4/core";
+import { middleware } from "tina4-nodejs";
 
 const authCheck = async (request: Tina4Request, response: Tina4Response, next: Function) => {
     if (!request.headers.authorization) {
@@ -377,7 +377,7 @@ middleware(authCheck,
 ### JWT Authentication
 
 ```typescript
-import { Auth } from "@tina4/core";
+import { Auth } from "tina4-nodejs";
 
 const auth = new Auth({secret: "your-secret"});
 const token = auth.createToken({userId: 42});
@@ -398,7 +398,7 @@ Backend: file (default). Set via `TINA4_SESSION_HANDLER` in `.env`.
 ### Queues
 
 ```typescript
-import { Queue, Producer, Consumer } from "@tina4/core";
+import { Queue, Producer, Consumer } from "tina4-nodejs";
 
 new Producer(new Queue({topic: "emails"})).produce({to: "alice@example.com"});
 
@@ -410,7 +410,7 @@ new Consumer(new Queue({topic: "emails"})).onMessage((msg) => {
 ### GraphQL
 
 ```typescript
-import { GraphQL } from "@tina4/core";
+import { GraphQL } from "tina4-nodejs";
 
 const gql = new GraphQL();
 gql.schema.fromModels();
@@ -420,7 +420,7 @@ gql.registerRoute("/graphql");   // GET = GraphiQL IDE, POST = queries
 ### WebSocket
 
 ```typescript
-import { WebSocketManager } from "@tina4/core";
+import { WebSocketManager } from "tina4-nodejs";
 
 const ws = new WebSocketManager();
 
@@ -449,7 +449,7 @@ export default async function (request: Tina4Request, response: Tina4Response) {
 ### Service Runner
 
 ```typescript
-import { ServiceRunner } from "@tina4/core";
+import { ServiceRunner } from "tina4-nodejs";
 
 const runner = new ServiceRunner();
 
@@ -480,7 +480,7 @@ Twig-compatible, 53+ filters, macros, inheritance, fragment caching, sandboxing:
 ### REST Client
 
 ```typescript
-import { Api } from "@tina4/core";
+import { Api } from "tina4-nodejs";
 
 const api = new Api("https://api.example.com", {authHeader: "Bearer xyz"});
 const result = await api.sendRequest("/users/42");
@@ -489,7 +489,7 @@ const result = await api.sendRequest("/users/42");
 ### Data Seeder
 
 ```typescript
-import { Fake, seedModel } from "@tina4/core";
+import { Fake, seedModel } from "tina4-nodejs";
 
 const fake = new Fake();
 fake.name();      // "Alice Johnson"
@@ -501,7 +501,7 @@ seedModel(User, {count: 50});
 ### Response Cache
 
 ```typescript
-import { cached } from "@tina4/core";
+import { cached } from "tina4-nodejs";
 
 cached(60,
     get("/api/stats", async (request, response) => {
@@ -531,16 +531,16 @@ Set `TINA4_DEBUG_LEVEL=DEBUG` in `.env` to enable:
 ## CLI Reference
 
 ```bash
-npx tina4 init [dir]             # Scaffold a new project
-npx tina4 serve [--port 7145]    # Start dev server (default: 7145)
-npx tina4 migrate                # Run pending migrations
-npx tina4 migrate:create <desc>  # Create a migration file
-npx tina4 migrate:rollback       # Rollback last batch
-npx tina4 seed                   # Run seeders from src/seeds/
-npx tina4 routes                 # List all registered routes
-npx tina4 test                   # Run test suite
-npx tina4 build                  # Build distributable package
-npx tina4 ai [--all]             # Detect AI tools and install context
+npx tina4nodejs init [dir]             # Scaffold a new project
+npx tina4nodejs serve [--port 7148]    # Start dev server (default: 7148)
+npx tina4nodejs migrate                # Run pending migrations
+npx tina4nodejs migrate:create <desc>  # Create a migration file
+npx tina4nodejs migrate:rollback       # Rollback last batch
+npx tina4nodejs seed                   # Run seeders from src/seeds/
+npx tina4nodejs routes                 # List all registered routes
+npx tina4nodejs test                   # Run test suite
+npx tina4nodejs build                  # Build distributable package
+npx tina4nodejs ai [--all]             # Detect AI tools and install context
 ```
 
 ## Environment
@@ -548,6 +548,8 @@ npx tina4 ai [--all]             # Detect AI tools and install context
 ```bash
 SECRET=your-jwt-secret
 DATABASE_URL=sqlite:///data/app.db
+DATABASE_USERNAME=admin              # Separate credentials for networked databases
+DATABASE_PASSWORD=secret
 TINA4_DEBUG_LEVEL=DEBUG              # DEBUG, INFO, WARNING, ERROR, ALL
 TINA4_LANGUAGE=en                    # en, fr, af, zh, ja, es
 TINA4_SESSION_HANDLER=SessionFileHandler
@@ -565,7 +567,7 @@ All benchmarks rated **A+** (South Africa grid, 1000 iterations each):
 | SCI score | 0.00552 gCO2eq |
 | Grade | A+ |
 
-Run locally: `npx tina4 benchmark`
+Run locally: `npx tina4nodejs benchmark`
 
 ---
 

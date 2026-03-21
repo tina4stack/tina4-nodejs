@@ -41,7 +41,7 @@ export function resolvePortAndHost(config?: { port?: number; host?: string }): {
 }
 
 function isDevMode(): boolean {
-  return process.env.TINA4_ENV !== "production" && process.env.NODE_ENV !== "production";
+  return process.env.TINA4_DEBUG === "true";
 }
 
 /**
@@ -454,7 +454,21 @@ export async function startServer(config?: Tina4Config): Promise<{
           if (!proceed || res.raw.writableEnded) return;
         }
 
-        await match.handler(req, res);
+        const result = await match.handler(req, res);
+
+        // If the route exports a template and the handler returned a plain object,
+        // render it through the template engine instead of sending as JSON.
+        if (
+          !res.raw.writableEnded &&
+          match.template &&
+          result !== null &&
+          result !== undefined &&
+          typeof result === "object" &&
+          !Buffer.isBuffer(result)
+        ) {
+          await res.template(match.template, result as Record<string, unknown>);
+        }
+
         if (!res.raw.writableEnded) {
           res.raw.end();
         }
@@ -489,7 +503,7 @@ export async function startServer(config?: Tina4Config): Promise<{
     } catch (err) {
       console.error("  Error:", err);
       if (!res.raw.writableEnded) {
-        const errorMessage = process.env.NODE_ENV === "production" ? "Internal Server Error" : String(err);
+        const errorMessage = process.env.TINA4_DEBUG !== "true" ? "Internal Server Error" : String(err);
         const html500 = await renderErrorPage(500, {
           error_message: errorMessage,
           request_id: `${Date.now().toString(36)}`,

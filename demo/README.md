@@ -18,7 +18,7 @@ cd demo
 npx tsx app.ts
 ```
 
-The demo server starts at **http://localhost:3000** with:
+The demo server starts at **http://localhost:7148** with:
 
 - **Landing page** at `/` listing all feature demos
 - **Swagger UI** at `/swagger` auto-documenting every endpoint
@@ -41,7 +41,7 @@ cd my-project
 tina4nodejs serve
 ```
 
-Your API runs at `http://localhost:3000` with Swagger docs at `http://localhost:3000/swagger`.
+Your API runs at `http://localhost:7148` with Swagger docs at `http://localhost:7148/swagger`.
 
 ---
 
@@ -51,8 +51,8 @@ Your API runs at `http://localhost:3000` with Swagger docs at `http://localhost:
 |---|---------|-------------|
 | 01 | [Routing](01-routing.md) | File-based routing, dynamic params, catch-all, programmatic routes, route groups |
 | 02 | [ORM & Models](02-orm.md) | Model definition, static fields, auto-CRUD, BaseModel instance methods |
-| 03 | [Database](03-database.md) | SQLite adapter, initDatabase(), adapter interface, DATABASE_URL support |
-| 04 | [Templates](04-templates.md) | Twig templates via `@tina4/twig`, `res.render()` |
+| 03 | [Database](03-database.md) | SQLite/PostgreSQL/MySQL/MSSQL/Firebird adapters, initDatabase(), DATABASE_URL with separate credentials |
+| 04 | [Templates](04-templates.md) | Twig templates via `tina4-nodejs`, `res.render()` |
 | 05 | [Middleware](05-middleware.md) | Middleware chain, built-in CORS, request logger, per-route middleware |
 | 06 | [Swagger](06-swagger.md) | Auto-generated OpenAPI 3.0 from routes and models, Swagger UI |
 | 07 | [CLI](07-cli.md) | `tina4nodejs init` and `tina4nodejs serve` commands |
@@ -87,7 +87,7 @@ Your API runs at `http://localhost:3000` with Swagger docs at `http://localhost:
 - **Language:** TypeScript (strict mode, ES2022, Node16 module resolution)
 - **Runtime:** Node.js 20+ (ESM only)
 - **HTTP:** Native `node:http` -- no Express, no Fastify
-- **Database:** SQLite via `better-sqlite3` (default), adapter pattern for others
+- **Database:** SQLite via `better-sqlite3` (default), PostgreSQL, MySQL, MSSQL/SQL Server, Firebird adapters
 - **Templates:** Twig via the `twig` npm package (optional)
 - **Dev tooling:** `tsx` for runtime TypeScript, `esbuild` for builds
 

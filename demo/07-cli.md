@@ -5,7 +5,7 @@ The Tina4 CLI (`tina4nodejs`, with `tina4` as alias) provides commands to scaffo
 ## Installation
 
 ```bash
-npm install -g tina4
+npm install -g tina4-nodejs
 # or use npx
 npx tina4nodejs init my-project
 ```
@@ -74,8 +74,8 @@ tina4nodejs serve --port 8080
 ```
   tina4 -- This is not a framework.
 
-  Server running at http://localhost:3000
-  Swagger docs at  http://localhost:3000/swagger
+  Server running at http://localhost:7148
+  Swagger docs at  http://localhost:7148/swagger
 
   Routes discovered:
     GET     /api/hello
@@ -103,7 +103,7 @@ Displays usage information.
     tina4nodejs serve         Start the dev server with hot-reload
 
   Options:
-    --port <number>      Server port (default: 3000)
+    --port <number>      Server port (default: 7148)
     --help               Show this help message
 ```
 
