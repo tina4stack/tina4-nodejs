@@ -20,6 +20,42 @@ function assert(name: string, condition: boolean, detail = "") {
   }
 }
 
+/**
+ * Parse a human-readable log line into structured parts.
+ * Format: {timestamp} [{LEVEL  }] [{requestId}] {message} {jsonData}
+ */
+function parseLogLine(line: string): {
+  timestamp: string;
+  level: string;
+  requestId?: string;
+  message: string;
+  data?: unknown;
+} {
+  // Match: timestamp [LEVEL  ] [optional-req-id] message optional-json
+  const match = line.match(
+    /^(\S+)\s+\[(\w+)\s*\](?:\s+\[([^\]]+)\])?\s+(.+)$/
+  );
+  if (!match) throw new Error(`Cannot parse log line: ${line}`);
+  const [, timestamp, level, requestId, rest] = match;
+
+  // Try to split message from trailing JSON data
+  let message = rest;
+  let data: unknown = undefined;
+
+  // Check if the line ends with a JSON object/array
+  const jsonStart = rest.lastIndexOf(" {");
+  if (jsonStart !== -1) {
+    try {
+      data = JSON.parse(rest.slice(jsonStart + 1));
+      message = rest.slice(0, jsonStart);
+    } catch {
+      // Not JSON, entire rest is the message
+    }
+  }
+
+  return { timestamp, level: level.trim(), requestId, message, data };
+}
+
 // Clean slate
 try { rmSync("/tmp/tina4-logger-test", { recursive: true }); } catch {}
 
@@ -28,7 +64,7 @@ console.log("=== Logger Tests ===\n");
 // Configure logger to use test directory
 Log.configure({ logDir: TEST_LOG_DIR, logFile: "test.log" });
 
-// --- Basic logging (dev mode) ---
+// --- Basic logging ---
 console.log("--- Development Mode Logging ---");
 
 // Ensure we're not in production
@@ -47,18 +83,18 @@ const logContent = readFileSync(logPath, "utf-8");
 const lines = logContent.trim().split("\n");
 assert("Four log entries written", lines.length === 4);
 
-const firstEntry = JSON.parse(lines[0]);
+const firstEntry = parseLogLine(lines[0]);
 assert("Log entry has timestamp", typeof firstEntry.timestamp === "string");
 assert("Log entry has level INFO", firstEntry.level === "INFO");
 assert("Log entry has message", firstEntry.message === "Test info message");
 
-const debugEntry = JSON.parse(lines[1]);
+const debugEntry = parseLogLine(lines[1]);
 assert("Debug entry level is DEBUG", debugEntry.level === "DEBUG");
 
-const warnEntry = JSON.parse(lines[2]);
+const warnEntry = parseLogLine(lines[2]);
 assert("Warning entry level is WARNING", warnEntry.level === "WARNING");
 
-const errorEntry = JSON.parse(lines[3]);
+const errorEntry = parseLogLine(lines[3]);
 assert("Error entry level is ERROR", errorEntry.level === "ERROR");
 
 // --- Request ID ---
@@ -69,8 +105,8 @@ Log.info("Request with ID");
 
 const logContent2 = readFileSync(logPath, "utf-8");
 const lastLine = logContent2.trim().split("\n").pop()!;
-const lastEntry = JSON.parse(lastLine);
-assert("Request ID included in log", lastEntry.request_id === "req-abc-123");
+const lastEntry = parseLogLine(lastLine);
+assert("Request ID included in log", lastEntry.requestId === "req-abc-123");
 assert("getRequestId returns current ID", Log.getRequestId() === "req-abc-123");
 
 Log.setRequestId(undefined);
@@ -78,8 +114,8 @@ Log.info("No request ID");
 
 const logContent3 = readFileSync(logPath, "utf-8");
 const lastLine2 = logContent3.trim().split("\n").pop()!;
-const lastEntry2 = JSON.parse(lastLine2);
-assert("No requestId when cleared", lastEntry2.request_id === undefined);
+const lastEntry2 = parseLogLine(lastLine2);
+assert("No requestId when cleared", lastEntry2.requestId === undefined);
 
 // --- Data parameter ---
 console.log("\n--- Data Parameter ---");
@@ -87,16 +123,18 @@ console.log("\n--- Data Parameter ---");
 Log.info("With data", { userId: 42, action: "login" });
 const logContent4 = readFileSync(logPath, "utf-8");
 const dataLine = logContent4.trim().split("\n").pop()!;
-const dataEntry = JSON.parse(dataLine);
-assert("Data included in log entry", dataEntry.context?.userId === 42);
-assert("Data preserves all fields", dataEntry.context?.action === "login");
+assert("Data included in log line", dataLine.includes('"userId":42'));
+assert("Data preserves all fields", dataLine.includes('"action":"login"'));
 
 // --- Production mode ---
 console.log("\n--- Production Mode ---");
 
 // Switch to production log file
 Log.configure({ logDir: TEST_LOG_DIR, logFile: "prod.log" });
-process.env.TINA4_ENV = "production";
+
+// Save and clear TINA4_DEBUG so isProduction() returns true
+const savedDebug = process.env.TINA4_DEBUG;
+delete process.env.TINA4_DEBUG;
 
 // Capture stdout to verify no console output in production
 const originalLog = console.log;
@@ -115,10 +153,15 @@ const prodLogPath = join(TEST_LOG_DIR, "prod.log");
 assert("Production log file created", existsSync(prodLogPath));
 
 const prodContent = readFileSync(prodLogPath, "utf-8");
-const prodEntry = JSON.parse(prodContent.trim());
-assert("Production log is valid JSON", prodEntry.level === "INFO");
+const prodEntry = parseLogLine(prodContent.trim());
+assert("Production log has level INFO", prodEntry.level === "INFO");
 
-// Reset
+// Restore
+if (savedDebug !== undefined) {
+  process.env.TINA4_DEBUG = savedDebug;
+} else {
+  delete process.env.TINA4_DEBUG;
+}
 delete process.env.TINA4_ENV;
 
 // Cleanup
