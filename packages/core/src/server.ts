@@ -3,6 +3,8 @@ import { resolve, dirname, join, relative } from "node:path";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { isatty } from "node:tty";
 import { fileURLToPath } from "node:url";
+import cluster from "node:cluster";
+import os from "node:os";
 import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
 import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
 import { discoverRoutes } from "./routeDiscovery.js";
@@ -280,15 +282,68 @@ export async function startServer(config?: Tina4Config): Promise<{
   router: Router;
   port: number;
 }> {
+  // Load .env early so TINA4_DEBUG is available for cluster decision
+  loadEnv();
+
   const { port, host } = resolvePortAndHost(config);
+
+  // Cluster mode for production: fork workers based on CPU count
+  // Only when not in dev mode and running as primary process
+  if (cluster.isPrimary && !isDevMode()) {
+    const numCPUs = os.cpus().length;
+    if (numCPUs > 1) {
+      const displayHost = host === "0.0.0.0" ? "localhost" : host;
+      const isTty = isatty(1);
+      const color = isTty ? "\x1b[32m" : "";
+      const reset = isTty ? "\x1b[0m" : "";
+      const logLevel = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
+
+      console.log(`${color}
+  ______ _             __ __
+ /_  __/(_)___  ____ _/ // /
+  / /  / / __ \\/ __ \`/ // /_
+ / /  / / / / / /_/ /__  __/
+/_/  /_/_/ /_/\\__,_/  /_/
+${reset}
+  Tina4 Node.js v${TINA4_VERSION} — This is not a framework
+
+  Server:    http://${displayHost}:${port} (cluster, ${numCPUs} workers)
+  Swagger:   http://localhost:${port}/swagger
+  Dashboard: http://localhost:${port}/__dev
+  Debug:     OFF (Log level: ${logLevel})
+`);
+
+      for (let i = 0; i < numCPUs; i++) {
+        cluster.fork();
+      }
+
+      cluster.on("exit", (worker, code, _signal) => {
+        if (code !== 0) {
+          console.log(`  Worker ${worker.process.pid} exited (code ${code}), restarting...`);
+          cluster.fork();
+        }
+      });
+
+      // Return a handle that kills all workers
+      return {
+        close: () => {
+          for (const id in cluster.workers) {
+            cluster.workers[id]?.kill();
+          }
+        },
+        router: new Router(),
+        port,
+      };
+    }
+  }
+
   const base = config?.basePath ? resolve(config.basePath) : process.cwd();
   const routesDir = resolve(base, config?.routesDir ?? "src/routes");
   const modelsDir = resolve(base, config?.modelsDir ?? "src/models");
   const staticDir = resolve(base, config?.staticDir ?? "public");
   const templatesDir = resolve(base, config?.templatesDir ?? "src/templates");
 
-  // Load .env file
-  loadEnv();
+  // .env already loaded above for cluster decision
 
   const router = new Router();
   const middleware = new MiddlewareChain();
@@ -582,6 +637,9 @@ export async function startServer(config?: Tina4Config): Promise<{
       const color = isTty ? "\x1b[32m" : "";
       const reset = isTty ? "\x1b[0m" : "";
 
+      // Determine server mode label
+      const serverMode = isDebug ? "single" : (cluster.isWorker ? "cluster-worker" : "single");
+
       // Banner goes to stdout via console.log — NOT through the framework logger
       console.log(`${color}
   ______ _             __ __
@@ -592,7 +650,7 @@ export async function startServer(config?: Tina4Config): Promise<{
 ${reset}
   Tina4 Node.js v${TINA4_VERSION} — This is not a framework
 
-  Server:    http://${displayHost}:${port}
+  Server:    http://${displayHost}:${port} (${serverMode})
   Swagger:   http://localhost:${port}/swagger
   Dashboard: http://localhost:${port}/__dev
   Debug:     ${isDebug ? "ON" : "OFF"} (Log level: ${logLevel})
