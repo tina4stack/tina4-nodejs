@@ -79,12 +79,21 @@ async function renderErrorPage(
   }
 }
 
-function injectDevOverlay(html: string): string {
-  const overlay = DevAdmin.renderOverlayScript();
+interface DevToolbarContext {
+  version: string;
+  method: string;
+  path: string;
+  matchedPattern: string;
+  requestId: string;
+  routeCount: number;
+}
+
+function injectDevToolbar(html: string, ctx: DevToolbarContext): string {
+  const toolbar = DevAdmin.renderToolbarHtml(ctx);
   if (html.includes("</body>")) {
-    return html.replace("</body>", overlay + "\n</body>");
+    return html.replace("</body>", toolbar + "\n</body>");
   }
-  return html + overlay;
+  return html + toolbar;
 }
 
 function renderLandingPage(routes: Array<{ method: string; pattern: string; flags?: string[] }>, port: number = 7148): string {
@@ -135,7 +144,7 @@ h1{font-size:3rem;font-weight:700;margin-bottom:0.25rem;letter-spacing:-1px}
     <p class="tagline">This is not a framework</p>
     <div class="actions">
         <a href="https://tina4.com/nodejs" class="btn" target="_blank">Website</a>
-        <a href="/__dev/" class="btn">Dev Admin</a>
+        <a href="/__dev" class="btn">Dev Admin</a>
         <a href="#gallery" class="btn">Gallery</a>
         <a href="https://github.com/tina4stack/tina4-nodejs" class="btn" target="_blank">GitHub</a>
         <a href="https://github.com/tina4stack/tina4-nodejs/stargazers" class="btn" target="_blank">&#11088; Star</a>
@@ -373,7 +382,11 @@ export async function startServer(config?: Tina4Config): Promise<{
       // Track request start time for dev inspector
       const reqStartTime = DevAdmin.isEnabled() ? Date.now() : 0;
 
-      // Wrap res.raw.end to inject dev overlay and capture requests
+      // Mutable ref so wrappedEnd can read the matched pattern after route matching
+      let matchedPattern = "";
+      const requestId = Date.now().toString(36);
+
+      // Wrap res.raw.end to inject dev toolbar and capture requests
       if (isDevMode() && !pathname.startsWith("/__dev")) {
         const originalEnd = res.raw.end.bind(res.raw);
 
@@ -391,13 +404,21 @@ export async function startServer(config?: Tina4Config): Promise<{
 
           const contentType = res.raw.getHeader("content-type");
           if (typeof contentType === "string" && contentType.includes("text/html")) {
+            const toolbarCtx: DevToolbarContext = {
+              version: TINA4_VERSION,
+              method: req.method ?? "GET",
+              path: pathname,
+              matchedPattern: matchedPattern || pathname,
+              requestId,
+              routeCount: router.getRoutes().length,
+            };
             if (typeof chunk === "string") {
-              chunk = injectDevOverlay(chunk);
+              chunk = injectDevToolbar(chunk, toolbarCtx);
             } else if (Buffer.isBuffer(chunk)) {
               const html = chunk.toString("utf-8");
-              chunk = injectDevOverlay(html);
+              chunk = injectDevToolbar(html, toolbarCtx);
             }
-            // Remove content-length since overlay injection changes body size
+            // Remove content-length since toolbar injection changes body size
             if (!res.raw.headersSent) {
               res.raw.removeHeader("content-length");
             }
@@ -425,6 +446,7 @@ export async function startServer(config?: Tina4Config): Promise<{
       const match = router.match(req.method ?? "GET", pathname);
       if (match) {
         req.params = match.params;
+        matchedPattern = match.pattern;
 
         // Run per-route middlewares if any
         if (match.middlewares && match.middlewares.length > 0) {

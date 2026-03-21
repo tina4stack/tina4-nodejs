@@ -3,6 +3,7 @@ import type { RouteHandler, RouteDefinition, RouteMeta, Middleware, Tina4Request
 interface MatchResult {
   handler: RouteHandler;
   params: Record<string, string>;
+  pattern: string;
   meta?: RouteMeta;
   middlewares?: Middleware[];
 }
@@ -133,6 +134,7 @@ export class Router {
         return {
           handler: route.handler,
           params,
+          pattern: route.pattern,
           meta: route.meta,
           middlewares: route.middlewares,
         };
