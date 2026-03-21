@@ -1,9 +1,11 @@
 /**
- * Unit tests for the response cache (cache.ts).
+ * Unit tests for the response cache (cache.ts) — multi-backend.
  * Run with: npx tsx test/cache.test.ts
  */
-import { responseCache, clearCache, cacheStats } from "../packages/core/src/index.ts";
+import { responseCache, clearCache, cacheStats, cacheGet, cacheSet, cacheDelete, cacheClear, cacheBackendStats, _resetBackend } from "../packages/core/src/index.ts";
 import type { Tina4Request, Tina4Response, Middleware } from "../packages/core/src/index.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 let pass = 0;
 let fail = 0;
@@ -25,6 +27,11 @@ console.log("--- Exports ---");
 assert("responseCache is a function", typeof responseCache === "function");
 assert("clearCache is a function", typeof clearCache === "function");
 assert("cacheStats is a function", typeof cacheStats === "function");
+assert("cacheGet is a function", typeof cacheGet === "function");
+assert("cacheSet is a function", typeof cacheSet === "function");
+assert("cacheDelete is a function", typeof cacheDelete === "function");
+assert("cacheClear is a function", typeof cacheClear === "function");
+assert("cacheBackendStats is a function", typeof cacheBackendStats === "function");
 
 // --- clearCache and cacheStats ---
 console.log("\n--- clearCache and cacheStats ---");
@@ -33,6 +40,7 @@ clearCache();
 const emptyStats = cacheStats();
 assert("Empty cache has size 0", emptyStats.size === 0);
 assert("Empty cache has no keys", emptyStats.keys.length === 0);
+assert("cacheStats has backend field", typeof emptyStats.backend === "string");
 
 // --- Creating middleware ---
 console.log("\n--- Middleware Creation ---");
@@ -124,6 +132,91 @@ clearCache();
 const afterClear = cacheStats();
 assert("After clearCache, size is 0", afterClear.size === 0);
 assert("After clearCache, keys array is empty", afterClear.keys.length === 0);
+
+// --- Backend selection ---
+console.log("\n--- Backend Selection ---");
+
+_resetBackend();
+const memStats = cacheBackendStats();
+assert("Default backend is memory", memStats.backend === "memory");
+
+// --- Direct cache API ---
+console.log("\n--- Direct Cache API (Memory Backend) ---");
+
+_resetBackend();
+cacheClear();
+
+cacheSet("test_key", { hello: "world" }, 60);
+const got = cacheGet("test_key") as any;
+assert("cacheSet and cacheGet work", got?.hello === "world");
+
+assert("cacheGet returns undefined for missing key", cacheGet("nonexistent_key_12345") === undefined);
+
+cacheSet("del_key", "value", 60);
+assert("cacheDelete returns true for existing key", cacheDelete("del_key") === true);
+assert("cacheGet returns undefined after delete", cacheGet("del_key") === undefined);
+
+cacheSet("a", 1, 60);
+cacheSet("b", 2, 60);
+cacheClear();
+const clearedStats = cacheBackendStats();
+assert("cacheClear empties the store", clearedStats.size === 0);
+
+// --- Stats tracking ---
+console.log("\n--- Stats Tracking ---");
+_resetBackend();
+cacheClear();
+cacheSet("x", "val", 60);
+cacheGet("x"); // hit
+cacheGet("missing"); // miss
+const statsTrack = cacheBackendStats();
+assert("Stats track hits", statsTrack.hits >= 1);
+assert("Stats track misses", statsTrack.misses >= 1);
+assert("Stats has backend field", statsTrack.backend === "memory");
+
+// --- File backend ---
+console.log("\n--- File Backend ---");
+
+const testDir = "/tmp/tina4_node_cache_test_" + Date.now();
+const originalBackend = process.env.TINA4_CACHE_BACKEND;
+process.env.TINA4_CACHE_BACKEND = "file";
+process.env.TINA4_CACHE_DIR = testDir;
+_resetBackend();
+
+cacheSet("file_key", { data: true }, 60);
+const fileGot = cacheGet("file_key") as any;
+assert("File backend set and get work", fileGot?.data === true);
+
+cacheDelete("file_key");
+assert("File backend delete works", cacheGet("file_key") === undefined);
+
+// Cleanup
+cacheClear();
+try { fs.rmSync(testDir, { recursive: true }); } catch {}
+
+if (originalBackend !== undefined) {
+  process.env.TINA4_CACHE_BACKEND = originalBackend;
+} else {
+  delete process.env.TINA4_CACHE_BACKEND;
+}
+delete process.env.TINA4_CACHE_DIR;
+_resetBackend();
+
+// --- Backend via config ---
+console.log("\n--- Backend Config Override ---");
+const origBackendEnv = process.env.TINA4_CACHE_BACKEND;
+process.env.TINA4_CACHE_BACKEND = "file";
+_resetBackend();
+// Default should use env
+const envBackendStats = cacheBackendStats();
+assert("Env selects file backend", envBackendStats.backend === "file");
+
+if (origBackendEnv !== undefined) {
+  process.env.TINA4_CACHE_BACKEND = origBackendEnv;
+} else {
+  delete process.env.TINA4_CACHE_BACKEND;
+}
+_resetBackend();
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

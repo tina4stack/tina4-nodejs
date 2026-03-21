@@ -60,7 +60,7 @@ export {
 export type { WebSocketClient } from "./websocket.js";
 export { ServiceRunner, matchCronField, matchesCron } from "./service.js";
 export type { ServiceOptions, ServiceContext, ServiceHandler, ServiceInfo } from "./service.js";
-export { responseCache, clearCache, cacheStats } from "./cache.js";
+export { responseCache, clearCache, cacheStats, cacheGet, cacheSet, cacheDelete, cacheClear, cacheBackendStats, _resetBackend } from "./cache.js";
 export type { ResponseCacheConfig } from "./cache.js";
 export { Api } from "./api.js";
 export type { ApiResult } from "./api.js";

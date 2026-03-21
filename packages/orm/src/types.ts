@@ -25,6 +25,7 @@ export interface ModelDefinition {
   tableFilter?: string;
   hasOne?: RelationshipDefinition[];
   hasMany?: RelationshipDefinition[];
+  belongsTo?: RelationshipDefinition[];
   dbName?: string;
 }
 

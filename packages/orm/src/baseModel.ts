@@ -24,10 +24,14 @@ export class BaseModel {
   static tableFilter?: string;
   static hasOne?: RelationshipDefinition[];
   static hasMany?: RelationshipDefinition[];
+  static belongsTo?: RelationshipDefinition[];
   static _db?: string;
 
   /** Instance data */
   [key: string]: unknown;
+
+  /** Relationship cache for lazy loading */
+  private _relCache: Record<string, unknown> = {};
 
   constructor(data?: Record<string, unknown>) {
     if (data) {
@@ -56,8 +60,10 @@ export class BaseModel {
 
   /**
    * Find a record by primary key.
+   * @param id Primary key value.
+   * @param include Optional array of relationship names to eager-load.
    */
-  static findById<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown): T | null {
+  static findById<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown, include?: string[]): T | null {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
@@ -72,16 +78,24 @@ export class BaseModel {
 
     const rows = db.query(sql, [id]);
     if (rows.length === 0) return null;
-    return new ModelClass(rows[0] as Record<string, unknown>) as T;
+    const instance = new ModelClass(rows[0] as Record<string, unknown>) as T;
+    if (include) {
+      ModelClass._eagerLoad([instance], include);
+    }
+    return instance;
   }
 
   /**
    * Find all records, optionally with a where clause.
+   * @param where Optional WHERE clause.
+   * @param params Optional query parameters.
+   * @param include Optional array of relationship names to eager-load.
    */
   static findAll<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     where?: string,
     params?: unknown[],
+    include?: string[],
   ): T[] {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
@@ -101,7 +115,11 @@ export class BaseModel {
     const sql = `SELECT * FROM "${ModelClass.tableName}"${whereClause}`;
 
     const rows = db.query(sql, params);
-    return rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
+    const instances = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
+    if (include) {
+      ModelClass._eagerLoad(instances, include);
+    }
+    return instances;
   }
 
   /**
@@ -112,6 +130,7 @@ export class BaseModel {
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
     const pkValue = this[pk];
+    this._relCache = {}; // Clear relationship cache on save
 
     if (pkValue !== undefined && pkValue !== null) {
       // Update
