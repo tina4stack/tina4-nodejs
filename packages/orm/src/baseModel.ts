@@ -193,8 +193,9 @@ export class BaseModel {
 
   /**
    * Convert to plain object (dictionary).
+   * @param include Optional array of relationship names to include (supports dot notation for nesting).
    */
-  toDict(): Record<string, unknown> {
+  toDict(include?: string[]): Record<string, unknown> {
     const ModelClass = this.constructor as typeof BaseModel;
     const result: Record<string, unknown> = {};
     for (const key of Object.keys(ModelClass.fields)) {
@@ -202,27 +203,66 @@ export class BaseModel {
         result[key] = this[key];
       }
     }
-    // Include relationship data
-    if (ModelClass.hasOne) {
-      for (const rel of ModelClass.hasOne) {
-        const relKey = rel.model.toLowerCase();
-        if (this[relKey] !== undefined) {
-          result[relKey] = this[relKey];
-        }
-      }
-    }
-    if (ModelClass.hasMany) {
-      for (const rel of ModelClass.hasMany) {
-        const relKey = rel.model.toLowerCase() + "s";
-        if (this[relKey] !== undefined) {
-          result[relKey] = this[relKey];
-        }
-      }
-    }
     // Include soft delete field
     if (ModelClass.softDelete && this.is_deleted !== undefined) {
       result.is_deleted = this.is_deleted;
     }
+
+    if (include) {
+      // Group includes: top-level and nested
+      const topLevel: Record<string, string[]> = {};
+      for (const inc of include) {
+        const parts = inc.split(".", 2);
+        const relName = parts[0];
+        if (!topLevel[relName]) {
+          topLevel[relName] = [];
+        }
+        if (parts.length > 1) {
+          topLevel[relName].push(parts[1]);
+        }
+      }
+
+      for (const [relName, nested] of Object.entries(topLevel)) {
+        const cached = this._relCache[relName];
+        if (cached === undefined) {
+          // Try lazy load via instance methods
+          const related = this._lazyLoadRelationship(relName);
+          if (related === undefined) continue;
+          this._relCache[relName] = related;
+        }
+        const data = this._relCache[relName];
+        if (data === null || data === undefined) {
+          result[relName] = null;
+        } else if (Array.isArray(data)) {
+          result[relName] = (data as BaseModel[]).map((r) =>
+            r.toDict(nested.length > 0 ? nested : undefined),
+          );
+        } else if (typeof (data as BaseModel).toDict === "function") {
+          result[relName] = (data as BaseModel).toDict(
+            nested.length > 0 ? nested : undefined,
+          );
+        }
+      }
+    } else {
+      // Legacy: include any relationship data already loaded on instance
+      if (ModelClass.hasOne) {
+        for (const rel of ModelClass.hasOne) {
+          const relKey = rel.model.toLowerCase();
+          if (this[relKey] !== undefined) {
+            result[relKey] = this[relKey];
+          }
+        }
+      }
+      if (ModelClass.hasMany) {
+        for (const rel of ModelClass.hasMany) {
+          const relKey = rel.model.toLowerCase() + "s";
+          if (this[relKey] !== undefined) {
+            result[relKey] = this[relKey];
+          }
+        }
+      }
+    }
+
     return result;
   }
 
@@ -551,5 +591,200 @@ export class BaseModel {
     const relKey = relatedClass.tableName.toLowerCase();
     this[relKey] = related;
     return related;
+  }
+
+  /**
+   * Register a model class for lookup by name (used by eager loading).
+   */
+  static _modelRegistry: Record<string, typeof BaseModel> = {};
+
+  static registerModel(name: string, modelClass: typeof BaseModel): void {
+    BaseModel._modelRegistry[name] = modelClass;
+  }
+
+  /**
+   * Resolve a model class by name from the registry.
+   */
+  private static _resolveModel(name: string): (typeof BaseModel) | null {
+    return BaseModel._modelRegistry[name] ?? null;
+  }
+
+  /**
+   * Lazy-load a single relationship by name (used by toDict with include).
+   */
+  private _lazyLoadRelationship(relName: string): unknown {
+    const ModelClass = this.constructor as typeof BaseModel;
+
+    // Check hasOne
+    if (ModelClass.hasOne) {
+      const rel = ModelClass.hasOne.find((r) => r.model.toLowerCase() === relName || r.model === relName);
+      if (rel) {
+        const relatedClass = BaseModel._modelRegistry[rel.model];
+        if (relatedClass) {
+          return this.hasOne(relatedClass as any, rel.foreignKey);
+        }
+      }
+    }
+
+    // Check hasMany
+    if (ModelClass.hasMany) {
+      const rel = ModelClass.hasMany.find((r) => {
+        const key = r.model.toLowerCase() + "s";
+        return key === relName || r.model.toLowerCase() === relName || r.model === relName;
+      });
+      if (rel) {
+        const relatedClass = BaseModel._modelRegistry[rel.model];
+        if (relatedClass) {
+          return this.hasMany(relatedClass as any, rel.foreignKey);
+        }
+      }
+    }
+
+    // Check belongsTo
+    if (ModelClass.belongsTo) {
+      const rel = ModelClass.belongsTo.find((r) => r.model.toLowerCase() === relName || r.model === relName);
+      if (rel) {
+        const relatedClass = BaseModel._modelRegistry[rel.model];
+        if (relatedClass) {
+          return this.belongsTo(relatedClass as any, rel.foreignKey);
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Eager load relationships for a collection of instances (prevents N+1).
+   * @param instances Array of model instances.
+   * @param include Array of relationship names (supports dot notation for nesting).
+   */
+  static _eagerLoad(instances: BaseModel[], include: string[]): void {
+    if (instances.length === 0) return;
+
+    const ModelClass = instances[0].constructor as typeof BaseModel;
+
+    // Group includes: top-level and nested
+    const topLevel: Record<string, string[]> = {};
+    for (const inc of include) {
+      const parts = inc.split(".", 2);
+      const relName = parts[0];
+      if (!topLevel[relName]) {
+        topLevel[relName] = [];
+      }
+      if (parts.length > 1) {
+        topLevel[relName].push(parts[1]);
+      }
+    }
+
+    for (const [relName, nested] of Object.entries(topLevel)) {
+      // Find the relationship definition
+      let relDef: RelationshipDefinition | undefined;
+      let relType: "hasOne" | "hasMany" | "belongsTo" | null = null;
+
+      if (ModelClass.hasOne) {
+        relDef = ModelClass.hasOne.find((r) => r.model.toLowerCase() === relName || r.model === relName);
+        if (relDef) relType = "hasOne";
+      }
+      if (!relDef && ModelClass.hasMany) {
+        relDef = ModelClass.hasMany.find((r) => {
+          const key = r.model.toLowerCase() + "s";
+          return key === relName || r.model.toLowerCase() === relName || r.model === relName;
+        });
+        if (relDef) relType = "hasMany";
+      }
+      if (!relDef && ModelClass.belongsTo) {
+        relDef = ModelClass.belongsTo.find((r) => r.model.toLowerCase() === relName || r.model === relName);
+        if (relDef) relType = "belongsTo";
+      }
+
+      if (!relDef || !relType) continue;
+
+      const relatedClass = BaseModel._modelRegistry[relDef.model];
+      if (!relatedClass) continue;
+
+      const db = relatedClass.getDb();
+      const fk = relDef.foreignKey;
+
+      if (relType === "hasOne" || relType === "hasMany") {
+        const pk = ModelClass.getPkField();
+        const pkValues = instances
+          .map((inst) => inst[pk])
+          .filter((v) => v !== undefined && v !== null);
+        if (pkValues.length === 0) continue;
+
+        const placeholders = pkValues.map(() => "?").join(",");
+        let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${fk}" IN (${placeholders})`;
+        if (relatedClass.softDelete) {
+          sql += ` AND is_deleted = 0`;
+        }
+
+        const rows = db.query(sql, pkValues);
+        const related = rows.map((row) => new relatedClass(row as Record<string, unknown>));
+
+        // Eager load nested
+        if (nested.length > 0 && related.length > 0) {
+          relatedClass._eagerLoad(related, nested);
+        }
+
+        // Group by FK
+        const grouped: Record<string, BaseModel[]> = {};
+        for (const record of related) {
+          const fkVal = String(record[fk]);
+          if (!grouped[fkVal]) grouped[fkVal] = [];
+          grouped[fkVal].push(record);
+        }
+
+        for (const inst of instances) {
+          const pkVal = String(inst[pk]);
+          const records = grouped[pkVal] || [];
+          if (relType === "hasOne") {
+            inst._relCache[relName] = records[0] ?? null;
+          } else {
+            inst._relCache[relName] = records;
+          }
+        }
+      } else if (relType === "belongsTo") {
+        const fkValues = [...new Set(
+          instances
+            .map((inst) => inst[fk])
+            .filter((v) => v !== undefined && v !== null),
+        )];
+        if (fkValues.length === 0) continue;
+
+        const relatedPk = relatedClass.getPkField();
+        const placeholders = fkValues.map(() => "?").join(",");
+        let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${relatedPk}" IN (${placeholders})`;
+        if (relatedClass.softDelete) {
+          sql += ` AND is_deleted = 0`;
+        }
+
+        const rows = db.query(sql, fkValues);
+        const related = rows.map((row) => new relatedClass(row as Record<string, unknown>));
+
+        if (nested.length > 0 && related.length > 0) {
+          relatedClass._eagerLoad(related, nested);
+        }
+
+        const lookup: Record<string, BaseModel> = {};
+        for (const record of related) {
+          lookup[String(record[relatedPk])] = record;
+        }
+
+        for (const inst of instances) {
+          const fkVal = inst[fk];
+          inst._relCache[relName] = fkVal !== undefined && fkVal !== null
+            ? lookup[String(fkVal)] ?? null
+            : null;
+        }
+      }
+    }
+  }
+
+  /**
+   * Clear the relationship cache.
+   */
+  clearRelCache(): void {
+    this._relCache = {};
   }
 }

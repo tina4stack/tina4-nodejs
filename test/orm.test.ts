@@ -58,6 +58,8 @@ class Article extends BaseModel {
     author_id: { type: "integer" },
   };
   static hasOne = [{ model: "User", foreignKey: "author_id" }];
+  static belongsTo = [{ model: "User", foreignKey: "author_id" }];
+  static hasMany = [{ model: "Reply", foreignKey: "article_id" }];
 }
 
 class Comment extends BaseModel {
@@ -70,6 +72,22 @@ class Comment extends BaseModel {
     approved: { type: "integer", default: 0 },
   };
 }
+
+class Reply extends BaseModel {
+  static tableName = "replies";
+  static fields: Record<string, FieldDefinition> = {
+    id: { type: "integer", primaryKey: true, autoIncrement: true },
+    body: { type: "string", required: true },
+    article_id: { type: "integer" },
+  };
+  static belongsTo = [{ model: "Article", foreignKey: "article_id" }];
+}
+
+// Register models for eager loading lookup
+BaseModel.registerModel("User", User);
+BaseModel.registerModel("Article", Article);
+BaseModel.registerModel("Reply", Reply);
+BaseModel.registerModel("Comment", Comment);
 
 // --- Sync models (creates tables) ---
 console.log("--- Table Creation ---");
@@ -103,7 +121,16 @@ const commentModel: DiscoveredModel = {
   modelClass: Comment,
 };
 
-syncModels([userModel, articleModel, commentModel]);
+const replyModel: DiscoveredModel = {
+  definition: {
+    tableName: "replies",
+    fields: Reply.fields,
+  },
+  filePath: "test",
+  modelClass: Reply,
+};
+
+syncModels([userModel, articleModel, commentModel, replyModel]);
 
 const adapter = getAdapter();
 assert("Users table created", (adapter as any).tableExists("users"));

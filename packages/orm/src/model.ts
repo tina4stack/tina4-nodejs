@@ -43,6 +43,7 @@ export async function discoverModels(modelsDir: string): Promise<DiscoveredModel
         tableFilter: ModelClass.tableFilter,
         hasOne: ModelClass.hasOne as RelationshipDefinition[] | undefined,
         hasMany: ModelClass.hasMany as RelationshipDefinition[] | undefined,
+        belongsTo: ModelClass.belongsTo as RelationshipDefinition[] | undefined,
         dbName: ModelClass._db,
       };
 
