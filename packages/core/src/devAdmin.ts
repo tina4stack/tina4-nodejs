@@ -10,8 +10,9 @@
  */
 
 import { cpus as osCpus } from "node:os";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, copyFileSync, statSync } from "node:fs";
+import { join, dirname, resolve, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Router } from "./router.js";
 import type { RouteHandler } from "./types.js";
 import { DevMailbox } from "./devMailbox.js";
@@ -384,6 +385,9 @@ export class DevAdmin {
       { method: "GET", pattern: "/__dev/api/connections", handler: handleConnections },
       { method: "POST", pattern: "/__dev/api/connections/test", handler: handleConnectionsTest },
       { method: "POST", pattern: "/__dev/api/connections/save", handler: handleConnectionsSave },
+      // Gallery
+      { method: "GET", pattern: "/__dev/api/gallery", handler: handleGalleryList },
+      { method: "POST", pattern: "/__dev/api/gallery/deploy", handler: handleGalleryDeploy(router) },
       // JS asset
       { method: "GET", pattern: "/__dev/js/tina4-dev-admin.min.js", handler: handleDevAdminJs },
     ];
@@ -927,6 +931,116 @@ const handleConnectionsSave: RouteHandler = (req, res) => {
     res.json({ success: false, error: msg });
   }
 };
+
+// ---------------------------------------------------------------------------
+// Gallery handlers — list and deploy gallery examples
+// ---------------------------------------------------------------------------
+
+const __devAdminFilename = fileURLToPath(import.meta.url);
+const __devAdminDirname = dirname(__devAdminFilename);
+
+function walkDirRecursive(dir: string): string[] {
+  const results: string[] = [];
+  if (!existsSync(dir)) return results;
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      results.push(...walkDirRecursive(full));
+    } else {
+      results.push(full);
+    }
+  }
+  return results;
+}
+
+const handleGalleryList: RouteHandler = (_req, res) => {
+  const galleryDir = resolve(__devAdminDirname, "..", "gallery");
+  const items: Array<Record<string, unknown>> = [];
+
+  if (existsSync(galleryDir)) {
+    const entries = readdirSync(galleryDir).sort();
+    for (const entry of entries) {
+      const entryPath = join(galleryDir, entry);
+      const metaFile = join(entryPath, "meta.json");
+      if (statSync(entryPath).isDirectory() && existsSync(metaFile)) {
+        try {
+          const meta = JSON.parse(readFileSync(metaFile, "utf-8"));
+          meta.id = entry;
+          // List the files that would be deployed
+          const srcDir = join(entryPath, "src");
+          if (existsSync(srcDir)) {
+            const allFiles = walkDirRecursive(srcDir);
+            meta.files = allFiles.map((f) => relative(srcDir, f));
+          }
+          // Check if already deployed
+          const projectSrc = resolve(process.cwd(), "src");
+          if (existsSync(srcDir) && meta.files) {
+            meta.deployed = (meta.files as string[]).every((f: string) =>
+              existsSync(join(projectSrc, f)),
+            );
+          } else {
+            meta.deployed = false;
+          }
+          items.push(meta);
+        } catch {
+          // Skip invalid meta.json
+        }
+      }
+    }
+  }
+
+  res.json({ gallery: items, count: items.length });
+};
+
+function handleGalleryDeploy(router: Router): RouteHandler {
+  return async (req, res): Promise<void> => {
+    const body = (req.body as Record<string, unknown>) ?? {};
+    const name = (body.name as string) ?? "";
+    if (!name) {
+      res.json({ error: "No gallery item specified" }, 400);
+      return;
+    }
+
+    const galleryDir = resolve(__devAdminDirname, "..", "gallery");
+    const gallerySrc = join(galleryDir, name, "src");
+    if (!existsSync(gallerySrc)) {
+      res.json({ error: `Gallery item '${name}' not found` }, 404);
+      return;
+    }
+
+    const projectSrc = resolve(process.cwd(), "src");
+    const copied: string[] = [];
+
+    const allFiles = walkDirRecursive(gallerySrc);
+    for (const srcFile of allFiles) {
+      const rel = relative(gallerySrc, srcFile);
+      const dest = join(projectSrc, rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      copyFileSync(srcFile, dest);
+      copied.push(rel);
+    }
+
+    // Re-discover routes so new files are immediately available
+    try {
+      const routesDir = resolve(process.cwd(), "src", "routes");
+      if (existsSync(routesDir)) {
+        const { discoverRoutes } = await import("./routeDiscovery.js");
+        const routes = await discoverRoutes(routesDir);
+        for (const route of routes) {
+          // Only add if not already registered
+          const existing = router.match(route.method, route.pattern.replace(/\{(\w+)\}/g, "test").replace(/\{\.\.\.\w+\}/g, "test"));
+          if (!existing) {
+            router.addRoute(route);
+          }
+        }
+      }
+    } catch {
+      // Non-fatal — routes will load on next restart
+    }
+
+    res.json({ deployed: name, files: copied });
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Dev Admin JS handler — serves the shared JS file

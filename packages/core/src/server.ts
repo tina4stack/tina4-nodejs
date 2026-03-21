@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
-import { resolve, dirname, join } from "node:path";
-import { existsSync } from "node:fs";
+import { resolve, dirname, join, relative } from "node:path";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { isatty } from "node:tty";
 import { fileURLToPath } from "node:url";
 import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
@@ -97,8 +97,75 @@ function injectDevToolbar(html: string, ctx: DevToolbarContext): string {
   return html + toolbar;
 }
 
+function walkGalleryFiles(dir: string): string[] {
+  const results: string[] = [];
+  if (!existsSync(dir)) return results;
+  for (const f of readdirSync(dir)) {
+    const full = join(dir, f);
+    if (statSync(full).isDirectory()) results.push(...walkGalleryFiles(full));
+    else results.push(full);
+  }
+  return results;
+}
+
+function getGalleryDeployedState(): Record<string, boolean> {
+  const galleryDir = resolve(__dirname, "..", "gallery");
+  const state: Record<string, boolean> = {};
+  if (!existsSync(galleryDir)) return state;
+  try {
+    const entries = readdirSync(galleryDir).sort();
+    for (const entry of entries) {
+      const entryPath = join(galleryDir, entry);
+      const metaFile = join(entryPath, "meta.json");
+      if (statSync(entryPath).isDirectory() && existsSync(metaFile)) {
+        const srcDir = join(entryPath, "src");
+        if (existsSync(srcDir)) {
+          const files = walkGalleryFiles(srcDir);
+          const projectSrc = resolve(process.cwd(), "src");
+          state[entry] = files.every((f) => existsSync(join(projectSrc, relative(srcDir, f))));
+        } else {
+          state[entry] = false;
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return state;
+}
+
 function renderLandingPage(routes: Array<{ method: string; pattern: string; flags?: string[] }>, port: number = 7148): string {
   const version = TINA4_VERSION;
+
+  const galleryItems = [
+    { id: "rest-api", icon: "&#128640;", name: "REST API", desc: "A simple JSON API with GET and POST endpoints", accent: "accent-blue", tryUrl: "/api/gallery/hello" },
+    { id: "orm", icon: "&#128451;", name: "ORM", desc: "Product model with CRUD endpoints", accent: "accent-green", tryUrl: "/api/gallery/products" },
+    { id: "auth", icon: "&#128274;", name: "Auth", desc: "JWT login form with token display", accent: "accent-purple", tryUrl: "/gallery/auth" },
+    { id: "queue", icon: "&#9889;", name: "Queue", desc: "Background job producer and consumer", accent: "accent-blue", tryUrl: "/api/gallery/queue/produce" },
+    { id: "templates", icon: "&#128196;", name: "Templates", desc: "Twig template with dynamic data", accent: "accent-green", tryUrl: "/gallery/page" },
+    { id: "database", icon: "&#128225;", name: "Database", desc: "Raw SQL queries with the Database class", accent: "accent-purple", tryUrl: "/api/gallery/db/tables" },
+    { id: "error-overlay", icon: "&#128165;", name: "Error Overlay", desc: "See the rich debug error page with stack trace", accent: "accent-blue", tryUrl: "/api/gallery/crash" },
+  ];
+
+  const deployed = getGalleryDeployedState();
+
+  const galleryCards = galleryItems.map((item) => {
+    const isDeployed = deployed[item.id] === true;
+    const tryBtn = isDeployed
+      ? `<a href="${item.tryUrl}" class="gbtn gbtn-try" target="_blank">Try It</a>`
+      : "";
+    const viewBtn = isDeployed
+      ? `<a href="${item.tryUrl}" class="gbtn gbtn-view" target="_blank">View</a>`
+      : "";
+    const deployBtn = isDeployed
+      ? `<span class="gbtn gbtn-deployed">Deployed</span>`
+      : `<button class="gbtn gbtn-deploy" onclick="deployGallery('${item.id}')">Deploy</button>`;
+    return `<div class="gallery-card">
+            <div class="accent ${item.accent}"></div>
+            <div class="icon">${item.icon}</div>
+            <h3>${item.name}</h3>
+            <p>${item.desc}</p>
+            <div class="gallery-actions">${tryBtn}${viewBtn}${deployBtn}</div>
+        </div>`;
+  }).join("\n        ");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -126,15 +193,23 @@ h1{font-size:3rem;font-weight:700;margin-bottom:0.25rem;letter-spacing:-1px}
 .code-block{background:#0f172a;border-radius:0.5rem;padding:1.25rem;overflow-x:auto;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:0.85rem;line-height:1.6;color:#4ade80;border:1px solid #1e293b}
 .gallery{z-index:1;width:100%;max-width:800px;padding:0 2rem;margin-bottom:3rem}
 .gallery h2{font-size:1.4rem;font-weight:600;margin-bottom:1.25rem;color:#e2e8f0;text-align:center}
-.gallery-grid{display:flex;gap:1rem;flex-wrap:wrap}
-.gallery-card{flex:1 1 220px;background:#1e293b;border:1px solid #334155;border-radius:0.75rem;padding:1.5rem;position:relative;overflow:hidden}
+.gallery-card{background:#1e293b;border:1px solid #334155;border-radius:0.75rem;padding:1.5rem;position:relative;overflow:hidden}
 .gallery-card .accent{position:absolute;top:0;left:0;right:0;height:3px}
 .gallery-card .accent-blue{background:#2e7d32}
 .gallery-card .accent-green{background:#22c55e}
 .gallery-card .accent-purple{background:#a78bfa}
 .gallery-card .icon{font-size:1.5rem;margin-bottom:0.75rem}
 .gallery-card h3{font-size:1rem;font-weight:600;margin-bottom:0.5rem;color:#e2e8f0}
-.gallery-card p{font-size:0.85rem;color:#94a3b8;line-height:1.5}
+.gallery-card p{font-size:0.85rem;color:#94a3b8;line-height:1.5;margin-bottom:0.75rem}
+.gallery-actions{display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem}
+.gbtn{padding:0.35rem 0.75rem;border-radius:0.375rem;font-size:0.75rem;font-weight:600;cursor:pointer;text-decoration:none;border:none;display:inline-block;text-align:center;transition:all 0.15s}
+.gbtn-try{background:#22c55e;color:#0f172a}
+.gbtn-try:hover{background:#16a34a}
+.gbtn-view{background:transparent;border:1px solid #334155;color:#94a3b8}
+.gbtn-view:hover{border-color:#64748b;color:#e2e8f0}
+.gbtn-deploy{background:#3b82f6;color:#fff}
+.gbtn-deploy:hover{background:#2563eb}
+.gbtn-deployed{background:transparent;border:1px solid #22c55e;color:#22c55e;cursor:default;font-size:0.7rem}
 </style>
 </head>
 <body>
@@ -173,62 +248,29 @@ startServer({ port: 7148 });  <span style="color:#64748b">// starts on port 7148
 <div class="gallery">
     <h2 id="gallery">What You Can Build</h2>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;">
-        <div class="gallery-card">
-            <div class="accent accent-blue"></div>
-            <div class="icon">&#128640;</div>
-            <h3>REST API</h3>
-            <p>Define routes with one decorator</p>
-            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">Router.get("/api/users", async (req, res) =&gt; {
-    return res.json({ users: [] });
-});</pre>
-        </div>
-        <div class="gallery-card">
-            <div class="accent accent-green"></div>
-            <div class="icon">&#128451;</div>
-            <h3>ORM</h3>
-            <p>Active record models, zero config</p>
-            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">class User extends ORM {
-    static fields = {
-        id: { type: "integer", primaryKey: true },
-        name: { type: "string" }
-    };
-}</pre>
-        </div>
-        <div class="gallery-card">
-            <div class="accent accent-purple"></div>
-            <div class="icon">&#128274;</div>
-            <h3>Auth</h3>
-            <p>JWT tokens built-in</p>
-            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">const token = Auth.createToken({ userId: 1 });
-const valid = Auth.validateToken(token);</pre>
-        </div>
-        <div class="gallery-card">
-            <div class="accent accent-blue"></div>
-            <div class="icon">&#9889;</div>
-            <h3>Queue</h3>
-            <p>Background jobs, no Redis needed</p>
-            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">const producer = new Producer(new Queue("emails"));
-producer.produce({ to: "a@b.com" });</pre>
-        </div>
-        <div class="gallery-card">
-            <div class="accent accent-green"></div>
-            <div class="icon">&#128196;</div>
-            <h3>Templates</h3>
-            <p>Twig templates with auto-reload</p>
-            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">Router.get("/dashboard", async (req, res) =&gt; {
-    return res.render("dashboard.twig", data);
-});</pre>
-        </div>
-        <div class="gallery-card">
-            <div class="accent accent-purple"></div>
-            <div class="icon">&#128225;</div>
-            <h3>Database</h3>
-            <p>Multi-engine, one API</p>
-            <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">const db = initDatabase("sqlite:///app.db");
-const result = await db.fetch("SELECT * FROM users");</pre>
-        </div>
+        ${galleryCards}
     </div>
 </div>
+<script>
+function deployGallery(name) {
+    if (!confirm('Deploy the "' + name + '" gallery example into your project? This will copy files into src/.')) return;
+    fetch('/__dev/api/gallery/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (d.error) {
+            alert('Deploy failed: ' + d.error);
+        } else {
+            alert('Deployed "' + d.deployed + '" (' + d.files.length + ' files). Reloading...');
+            window.location.reload();
+        }
+    })
+    .catch(function(e) { alert('Deploy error: ' + e.message); });
+}
+</script>
 </body>
 </html>`;
 }
