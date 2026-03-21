@@ -80,6 +80,9 @@ export interface RouteMeta {
 export interface Tina4Config {
   port?: number;
   host?: string;
+  /** Base directory for the project. When set, routesDir, modelsDir, templatesDir,
+   *  and staticDir are resolved relative to this path instead of process.cwd(). */
+  basePath?: string;
   routesDir?: string;
   modelsDir?: string;
   templatesDir?: string;

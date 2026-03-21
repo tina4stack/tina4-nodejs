@@ -281,10 +281,11 @@ export async function startServer(config?: Tina4Config): Promise<{
   port: number;
 }> {
   const { port, host } = resolvePortAndHost(config);
-  const routesDir = resolve(config?.routesDir ?? "src/routes");
-  const modelsDir = resolve(config?.modelsDir ?? "src/models");
-  const staticDir = resolve(config?.staticDir ?? "public");
-  const templatesDir = resolve(config?.templatesDir ?? "src/templates");
+  const base = config?.basePath ? resolve(config.basePath) : process.cwd();
+  const routesDir = resolve(base, config?.routesDir ?? "src/routes");
+  const modelsDir = resolve(base, config?.modelsDir ?? "src/models");
+  const staticDir = resolve(base, config?.staticDir ?? "public");
+  const templatesDir = resolve(base, config?.templatesDir ?? "src/templates");
 
   // Load .env file
   loadEnv();
