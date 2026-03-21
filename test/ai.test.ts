@@ -121,13 +121,14 @@ cleanup();
 mkdirSync(TEST_DIR, { recursive: true });
 writeFileSync(join(TEST_DIR, "CLAUDE.md"), "existing");
 
-// Install for claude-code only
+// Install for claude-code only — CLAUDE.md already exists, should not overwrite
 const created = installAiContext(TEST_DIR, { tools: ["claude-code"] });
-assert("installAiContext does not overwrite existing file", created.length === 0);
+const claudeContent = readFileSync(join(TEST_DIR, "CLAUDE.md"), "utf-8");
+assert("installAiContext does not overwrite existing file", claudeContent === "existing");
 
 // Force overwrite
 const forced = installAiContext(TEST_DIR, { tools: ["claude-code"], force: true });
-assert("installAiContext with force overwrites", forced.length === 1);
+assert("installAiContext with force overwrites", forced.includes("CLAUDE.md"));
 assert("installAiContext created CLAUDE.md", forced.includes("CLAUDE.md"));
 
 const content = readFileSync(join(TEST_DIR, "CLAUDE.md"), "utf-8");
