@@ -4,6 +4,7 @@ import { runMigrations } from "./commands/migrate.js";
 import { createMigration } from "./commands/migrateCreate.js";
 import { listRoutes } from "./commands/routes.js";
 import { runTests } from "./commands/test.js";
+import { generate } from "./commands/generate.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -18,6 +19,7 @@ const HELP = `
     tina4nodejs migrate:create <desc> Create a new migration file
     tina4nodejs routes                List all registered routes
     tina4nodejs test [file]           Run project tests
+    tina4nodejs generate <what> <name> Generate scaffolding (model, route, migration, middleware)
     tina4nodejs ai                    Detect AI coding tools and install context
     tina4nodejs help                  Show this help message
 
@@ -56,6 +58,12 @@ async function main(): Promise<void> {
     }
     case "test": {
       await runTests(args[1]);
+      break;
+    }
+    case "generate": {
+      const what = args[1];
+      const genName = args[2];
+      await generate(what, genName);
       break;
     }
     case "ai": {

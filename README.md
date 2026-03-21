@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-1247%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-1669%20passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/carbonah-A%2B%20rated-00cc44" alt="Carbonah A+">
   <img src="https://img.shields.io/badge/zero--dep-core-blue" alt="Zero Dependencies">
   <img src="https://img.shields.io/badge/node-20%2B-blue" alt="Node 20+">
@@ -50,17 +50,17 @@ Every feature is built from scratch -- no npm install, no node_modules bloat, no
 | **HTTP** | Native `node:http` server, file-based + programmatic routing, path params (`{id}`, `[...slug]`), middleware pipeline, CORS, rate limiting, graceful shutdown |
 | **Templates** | Frond engine (Twig-compatible), inheritance, partials, 53+ filters, macros, fragment caching, sandboxing |
 | **ORM** | Active Record, typed fields with validation, soft delete, relationships (`hasOne`/`hasMany`/`belongsTo`), scopes, result caching, auto-CRUD |
-| **Database** | SQLite, PostgreSQL, MySQL, MSSQL/SQL Server, Firebird -- unified adapter interface, `driver://host:port/database` connection strings |
+| **Database** | SQLite, PostgreSQL, MySQL, MSSQL/SQL Server, Firebird -- unified adapter interface, query caching (TINA4_DB_CACHE=true for 4x speedup) |
 | **Auth** | Zero-dep JWT (HS256 + RS256), sessions (file backend), PBKDF2 password hashing, form tokens |
 | **API** | Swagger/OpenAPI auto-generation, GraphQL with schema builder and GraphiQL IDE |
-| **Background** | File-backed queue with priority, delayed jobs, retry, batch processing |
+| **Background** | Queue (SQLite/RabbitMQ/Kafka) with priority, delayed jobs, retry, batch processing |
 | **Real-time** | Native WebSocket (RFC 6455), per-path routing, connection manager, broadcast |
 | **Frontend** | tina4-css (~24 KB), frond.js helper, SCSS compiler, live reload, CSS hot-reload |
 | **DX** | Dev admin dashboard, error overlay, request inspector, hot-reload, Carbonah green benchmarks |
 | **Data** | Migrations with rollback, 26+ fake data generators, ORM and table seeders |
-| **Other** | Service runner, localization (i18n), in-memory cache (TTL/tags/LRU), HTTP constants, health check, configurable error pages |
+| **Other** | Service runner, localization (i18n), cache (memory/Redis/file), messenger (.env driven), HTTP constants, health check, configurable error pages |
 
-**580 tests across all modules. All Carbonah benchmarks rated A+.**
+**1,669 tests across 38 built-in features. Zero dependencies. All Carbonah benchmarks rated A+.**
 
 For full documentation visit **[tina4.com](https://tina4.com)**.
 
