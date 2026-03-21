@@ -1,0 +1,17 @@
+{
+  "name": "/tmp/tina4-init-node",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tina4 serve",
+    "serve": "tina4 serve"
+  },
+  "dependencies": {
+    "tina4-nodejs": "^0.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0"
+  }
+}

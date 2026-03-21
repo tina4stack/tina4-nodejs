@@ -3,11 +3,11 @@ import { join, resolve, basename } from "node:path";
 import { execSync } from "node:child_process";
 
 export async function initProject(name: string): Promise<void> {
-  const targetDir = name === "." ? process.cwd() : join(process.cwd(), name);
-  const projectName = name === "." ? basename(process.cwd()) : name;
+  const targetDir = name === "." ? process.cwd() : resolve(name);
+  const projectName = name === "." ? basename(process.cwd()) : basename(name);
 
   if (name !== "." && existsSync(targetDir)) {
-    console.error(`Error: Directory "${name}" already exists.`);
+    console.error(`Error: Directory "${targetDir}" already exists.`);
     process.exit(1);
   }
 
@@ -44,10 +44,7 @@ export async function initProject(name: string): Promise<void> {
           serve: "tina4 serve",
         },
         dependencies: {
-          tina4: "^0.0.1",
-          "@tina4/core": "^0.0.1",
-          "@tina4/orm": "^0.0.1",
-          "@tina4/swagger": "^0.0.1",
+          "tina4-nodejs": "^0.0.1",
         },
         devDependencies: {
           typescript: "^5.7.0",
@@ -97,7 +94,7 @@ data/
   // Sample route: GET /api/hello
   writeFileSync(
     join(targetDir, "src/routes/api/hello/get.ts"),
-    `import type { Tina4Request, Tina4Response } from "@tina4/core";
+    `import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export const meta = {
   summary: "Hello World",
@@ -173,18 +170,23 @@ export default async function (req: Tina4Request, res: Tina4Response): Promise<v
 
   console.log("  Installing dependencies...\n");
 
+  let npmOk = true;
   try {
     execSync("npm install", { cwd: targetDir, stdio: "inherit" });
   } catch {
-    console.log("\n  Note: npm install failed. Run it manually after setting up the tina4 packages.");
+    npmOk = false;
+    console.log("\n  Note: npm install failed — the package may not be published yet.");
+    console.log("  Your project files have been created. You can install dependencies later.\n");
   }
 
-  const cdStep = name === "." ? "" : `    cd ${name}\n`;
+  const absPath = resolve(targetDir);
+  const cdStep = name === "." ? "" : `    cd ${absPath}\n`;
   console.log(`
   Done! Your Tina4 project is ready.
 
   Next steps:
-${cdStep}    tina4nodejs serve
+${cdStep}    npm install
+    npx tina4nodejs serve
 
   Your API will be running at http://localhost:7148
   Swagger docs at http://localhost:7148/swagger
