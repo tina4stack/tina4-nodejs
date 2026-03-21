@@ -34,6 +34,7 @@ export { validate } from "./validation.js";
 export type { ValidationError } from "./validation.js";
 export { BaseModel } from "./baseModel.js";
 export { SQLTranslator, QueryCache } from "./sqlTranslation.js";
+export { CachedDatabaseAdapter } from "./cachedDatabase.js";
 export { FakeData } from "./fakeData.js";
 export { seedTable, seedOrm } from "./seeder.js";
 
