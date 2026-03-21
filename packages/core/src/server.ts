@@ -84,73 +84,120 @@ function injectDevOverlay(html: string): string {
   return html + overlay;
 }
 
-function renderLandingPage(routes: Array<{ method: string; pattern: string; flags?: string[] }>): string {
-  const mode = process.env.NODE_ENV === "production" ? "Production" : "Development";
-  const routeRows = routes
-    .map(
-      (r) =>
-        `<tr><td><span class="method method-${r.method.toLowerCase()}">${r.method}</span></td><td>${r.pattern}</td><td>${(r.flags ?? []).join(", ") || "&mdash;"}</td></tr>`
-    )
-    .join("\n");
+function renderLandingPage(routes: Array<{ method: string; pattern: string; flags?: string[] }>, port: number = 7148): string {
+  const version = TINA4_VERSION;
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Tina4 Node.js</title>
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#333;background:#f5f5f5}
-  .hero{background:linear-gradient(135deg,#2e7d32,#388e3c);color:#fff;padding:3rem 2rem;text-align:center}
-  .hero h1{font-size:2.5rem;margin-bottom:.5rem}
-  .hero p{font-size:1.1rem;opacity:.9}
-  .container{max-width:900px;margin:2rem auto;padding:0 1rem}
-  .card{background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.08);padding:1.5rem;margin-bottom:1.5rem}
-  .card h2{font-size:1.3rem;margin-bottom:1rem;color:#2e7d32}
-  table{width:100%;border-collapse:collapse}
-  th,td{text-align:left;padding:.5rem .75rem;border-bottom:1px solid #eee}
-  th{font-weight:600;color:#555;font-size:.85rem;text-transform:uppercase;letter-spacing:.5px}
-  .method{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.8rem;font-weight:700;color:#fff}
-  .method-get{background:#2e7d32}.method-post{background:#1565c0}.method-put{background:#ef6c00}.method-delete{background:#c62828}.method-patch{background:#6a1b9a}
-  .get-started{background:#e8f5e9;border-left:4px solid #2e7d32}
-  .get-started h2{color:#2e7d32}
-  code,pre{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace}
-  pre{background:#e8f5e9;color:#2e7d32;padding:1rem;border-radius:6px;overflow-x:auto;font-size:.9rem;margin:.75rem 0}
-  a{color:#2e7d32;text-decoration:none}
-  a:hover{text-decoration:underline}
-  .links{display:flex;gap:1rem;flex-wrap:wrap}
-  .links a{display:inline-block;padding:.5rem 1rem;border:1px solid #2e7d32;border-radius:6px;transition:background .2s,color .2s}
-  .links a:hover{background:#2e7d32;color:#fff;text-decoration:none}
-</style>
+<title>Tina4</title>
 </head>
-<body>
-<div class="hero">
-  <h1>Tina4 Node.js</h1>
-  <p>This is not a 4ramework &mdash; v${TINA4_VERSION} &mdash; ${mode}</p>
-</div>
-<div class="container">
-  <div class="card">
-    <h2>Registered Routes</h2>
-    <table>
-      <thead><tr><th>Method</th><th>Path</th><th>Flags</th></tr></thead>
-      <tbody>${routeRows || "<tr><td colspan=\"3\">No routes registered yet.</td></tr>"}</tbody>
-    </table>
+<body style="margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;position:relative;overflow-x:hidden;">
+
+<!-- Background watermark -->
+<img src="/images/logo.png" alt="" style="position:fixed;bottom:-40px;right:-40px;width:420px;height:420px;opacity:0.04;pointer-events:none;z-index:0;" />
+
+<div style="position:relative;z-index:1;max-width:860px;margin:0 auto;padding:3rem 1.5rem 2rem;">
+
+  <!-- Logo + Title -->
+  <div style="text-align:center;margin-bottom:2.5rem;">
+    <img src="/images/logo.png" alt="Tina4" style="width:120px;height:120px;margin-bottom:1rem;" />
+    <h1 style="font-size:2.8rem;font-weight:800;margin:0;letter-spacing:-1px;">Tina4</h1>
+    <p style="font-size:1.1rem;color:#94a3b8;margin-top:0.4rem;">This is not a framework</p>
   </div>
-  <div class="card get-started">
-    <h2>Get Started</h2>
-    <p>Create a file-based route to get going:</p>
-    <pre><code>// src/routes/api/hello/get.ts
-export default (req, res) =&gt; res.json({ hello: &quot;world&quot; });</code></pre>
+
+  <!-- Action Buttons -->
+  <div style="display:flex;justify-content:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:2.5rem;">
+    <a href="/dev-admin" style="display:inline-block;padding:0.6rem 1.4rem;border-radius:8px;background:#2e7d32;color:#fff;text-decoration:none;font-weight:600;font-size:0.95rem;transition:opacity 0.2s;">Dev Admin</a>
+    <a href="#gallery" style="display:inline-block;padding:0.6rem 1.4rem;border-radius:8px;background:transparent;color:#e2e8f0;text-decoration:none;font-weight:600;font-size:0.95rem;border:1px solid #334155;transition:background 0.2s;">Gallery</a>
   </div>
-  <div class="card">
-    <h2>Quick Links</h2>
-    <div class="links">
-      <a href="/health">Health Check</a>
-      <a href="/swagger">Swagger Docs</a>
-      <a href="https://tina4.com" target="_blank" rel="noopener">tina4.com</a>
+
+  <!-- Status Bar -->
+  <div style="display:flex;justify-content:center;align-items:center;gap:1.5rem;margin-bottom:2.5rem;font-size:0.85rem;color:#94a3b8;">
+    <span style="display:flex;align-items:center;gap:0.4rem;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ade80;"></span> Server running</span>
+    <span>Port ${port}</span>
+    <span>v${version}</span>
+  </div>
+
+  <!-- Getting Started -->
+  <div style="background:#1e293b;border-radius:12px;padding:1.5rem 1.75rem;margin-bottom:2rem;">
+    <h2 style="font-size:1.25rem;font-weight:700;margin:0 0 1rem 0;color:#e2e8f0;">Getting Started</h2>
+    <pre style="background:#0f172a;color:#4ade80;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:0.875rem;padding:1.25rem;border-radius:8px;overflow-x:auto;margin:0;line-height:1.6;"><code>// app.ts
+import { startServer, Router } from &quot;tina4-nodejs&quot;;
+
+Router.get(&quot;/hello&quot;, async (req, res) =&gt; {
+  return res.json({ message: &quot;Hello World!&quot; });
+});
+
+startServer({ port: 7148 });</code></pre>
+  </div>
+
+  <!-- Gallery: What You Can Build -->
+  <h2 id="gallery" style="font-size:1.25rem;font-weight:700;margin:0 0 1rem 0;color:#e2e8f0;">What You Can Build</h2>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-bottom:2.5rem;">
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
+      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#3b82f6;border-radius:12px 12px 0 0;"></div>
+      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128640;</div>
+      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">REST API</h3>
+      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">Define routes with one decorator</p>
+      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">Router.get(&quot;/api/users&quot;, async (req, res) =&gt; {
+  return res.json({ users: [] });
+});</pre>
+    </div>
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
+      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#22c55e;border-radius:12px 12px 0 0;"></div>
+      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128451;</div>
+      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">ORM</h3>
+      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">Active record models, zero config</p>
+      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">class User extends ORM {
+  static fields = {
+    id: { type: &quot;integer&quot;, primaryKey: true },
+    name: { type: &quot;string&quot; }
+  };
+}</pre>
+    </div>
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
+      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#a78bfa;border-radius:12px 12px 0 0;"></div>
+      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128274;</div>
+      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">Auth</h3>
+      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">JWT tokens built-in</p>
+      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">const token = Auth.createToken({ userId: 1 });
+const valid = Auth.validateToken(token);</pre>
+    </div>
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
+      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#3b82f6;border-radius:12px 12px 0 0;"></div>
+      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#9889;</div>
+      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">Queue</h3>
+      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">Background jobs, no Redis needed</p>
+      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">const producer = new Producer(new Queue(&quot;emails&quot;));
+producer.produce({ to: &quot;a@b.com&quot; });</pre>
+    </div>
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
+      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#22c55e;border-radius:12px 12px 0 0;"></div>
+      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128196;</div>
+      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">Templates</h3>
+      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">Twig templates with auto-reload</p>
+      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">Router.get(&quot;/dashboard&quot;, async (req, res) =&gt; {
+  return res.render(&quot;dashboard.twig&quot;, data);
+});</pre>
+    </div>
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;position:relative;overflow:hidden;">
+      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:#a78bfa;border-radius:12px 12px 0 0;"></div>
+      <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128225;</div>
+      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.5rem;color:#e2e8f0;">Database</h3>
+      <p style="font-size:0.85rem;color:#94a3b8;margin:0;line-height:1.5;">Multi-engine, one API</p>
+      <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SFMono-Regular',Consolas,monospace;">const db = initDatabase(&quot;sqlite:///app.db&quot;);
+const result = await db.fetch(&quot;SELECT * FROM users&quot;);</pre>
     </div>
   </div>
+
+  <!-- Footer -->
+  <div style="text-align:center;padding-top:1rem;border-top:1px solid #1e293b;">
+    <p style="font-size:0.8rem;color:#475569;margin:0;">Zero dependencies &middot; Convention over configuration</p>
+  </div>
+
 </div>
 </body>
 </html>`;
@@ -330,6 +377,10 @@ export async function startServer(config?: Tina4Config): Promise<{
               const html = chunk.toString("utf-8");
               chunk = injectDevOverlay(html);
             }
+            // Remove content-length since overlay injection changes body size
+            if (!res.raw.headersSent) {
+              res.raw.removeHeader("content-length");
+            }
           }
           if (typeof encodingOrCb === "function") {
             return originalEnd(chunk, encodingOrCb);
@@ -375,7 +426,7 @@ export async function startServer(config?: Tina4Config): Promise<{
             pattern: r.pattern,
             flags: [] as string[],
           }));
-          const html = renderLandingPage(allRoutes);
+          const html = renderLandingPage(allRoutes, port);
           res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
           res.raw.end(html);
           return;
