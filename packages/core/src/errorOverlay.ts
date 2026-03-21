@@ -21,6 +21,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { isTruthy } from "./dotenv.js";
 
 // ── Colour palette (Catppuccin Mocha) ────────────────────────────────────
 const BG = "#1e1e2e";
@@ -262,5 +263,5 @@ display:flex;justify-content:center;align-items:center;min-height:100vh;text-ali
  * Check if TINA4_DEBUG is enabled.
  */
 export function isDebugMode(): boolean {
-  return process.env.TINA4_DEBUG === "true";
+  return isTruthy(process.env.TINA4_DEBUG);
 }

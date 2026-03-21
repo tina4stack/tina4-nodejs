@@ -4,11 +4,21 @@ import {
   mkdirSync,
   renameSync,
   statSync,
+  unlinkSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import { isTruthy } from "./dotenv.js";
 
 /** Log level severity */
 type LogLevel = "DEBUG" | "INFO" | "WARNING" | "ERROR";
+
+/** Log level priority for filtering */
+const LEVEL_PRIORITY: Record<LogLevel, number> = {
+  DEBUG: 0,
+  INFO: 1,
+  WARNING: 2,
+  ERROR: 3,
+};
 
 /** Structured log entry for JSON output */
 interface LogEntry {
@@ -28,8 +38,8 @@ const COLORS: Record<LogLevel, string> = {
 };
 const RESET = "\x1b[0m";
 
-/** Maximum log file size before rotation (10MB) */
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+/** Regex to strip ANSI escape codes */
+const ANSI_RE = /\033\[[0-9;]*m/g;
 
 /** Default log directory */
 const DEFAULT_LOG_DIR = "logs";
@@ -37,17 +47,28 @@ const DEFAULT_LOG_DIR = "logs";
 /** Default log filename */
 const DEFAULT_LOG_FILE = "tina4.log";
 
+/** Strip ANSI escape codes from a string */
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, "");
+}
+
 /**
  * Structured logger for Tina4.
  *
- * Production (TINA4_DEBUG not true): JSON lines to logs/tina4.log
+ * Production (TINA4_DEBUG not truthy): JSON lines to logs/tina4.log
  * Development (TINA4_DEBUG=true): Colorized human-readable to stdout + file
- * Supports log rotation by date and size (10MB).
+ *
+ * Log rotation: numbered scheme (tina4.log -> tina4.log.1 -> ... -> tina4.log.{keep})
+ * Raw log file always writes ALL levels (no filtering), plain text (no ANSI codes).
+ * Console output respects TINA4_LOG_LEVEL.
  */
 export class Log {
   private static requestId: string | undefined;
   private static logDir: string = DEFAULT_LOG_DIR;
   private static logFile: string = DEFAULT_LOG_FILE;
+  private static maxFileSize: number = 10 * 1024 * 1024;
+  private static keepFiles: number = 5;
+  private static minLevel: number = 0;
 
   /**
    * Set the current request ID for log correlation.
@@ -64,11 +85,21 @@ export class Log {
   }
 
   /**
-   * Configure the log directory and filename.
+   * Configure the log directory, filename, and rotation settings.
    */
   static configure(options: { logDir?: string; logFile?: string }): void {
     if (options.logDir) Log.logDir = options.logDir;
     if (options.logFile) Log.logFile = options.logFile;
+
+    // Read rotation config from env (with defaults)
+    const maxSizeMb = parseInt(process.env.TINA4_LOG_MAX_SIZE ?? "10", 10);
+    Log.maxFileSize = (isNaN(maxSizeMb) ? 10 : maxSizeMb) * 1024 * 1024;
+    const keep = parseInt(process.env.TINA4_LOG_KEEP ?? "5", 10);
+    Log.keepFiles = isNaN(keep) ? 5 : keep;
+
+    // Resolve minimum console log level
+    const levelEnv = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
+    Log.minLevel = LEVEL_PRIORITY[levelEnv as LogLevel] ?? 0;
   }
 
   /** Log an informational message. */
@@ -91,14 +122,9 @@ export class Log {
     Log.log("ERROR", message, data);
   }
 
-  /** Check if running in production mode (TINA4_DEBUG is not true). */
+  /** Check if running in production mode (TINA4_DEBUG is not truthy). */
   private static isProduction(): boolean {
-    return process.env.TINA4_DEBUG !== "true";
-  }
-
-  /** Get today's date string for rotation: YYYY-MM-DD */
-  private static dateString(): string {
-    return new Date().toISOString().slice(0, 10);
+    return !isTruthy(process.env.TINA4_DEBUG);
   }
 
   /** Get current ISO timestamp */
@@ -120,8 +146,7 @@ export class Log {
   }
 
   /**
-   * Rotate the log file if it exceeds MAX_FILE_SIZE.
-   * Renames the current file to tina4-YYYY-MM-DD-N.log
+   * Rotate using numbered scheme: tina4.log.{keep} is deleted, all others shift up by 1.
    */
   private static rotateIfNeeded(): void {
     const filePath = Log.logFilePath();
@@ -129,28 +154,38 @@ export class Log {
 
     try {
       const stats = statSync(filePath);
-      if (stats.size >= MAX_FILE_SIZE) {
-        const date = Log.dateString();
-        const baseName = Log.logFile.replace(/\.log$/, "");
-        let counter = 1;
-        let rotatedPath: string;
-        do {
-          rotatedPath = join(Log.logDir, `${baseName}-${date}-${counter}.log`);
-          counter++;
-        } while (existsSync(rotatedPath));
-        renameSync(filePath, rotatedPath);
-      }
+      if (stats.size < Log.maxFileSize) return;
     } catch {
-      // If we can't stat or rename, just continue writing
+      return;
     }
+
+    const keep = Log.keepFiles;
+
+    // Delete the oldest rotated file if it exists
+    const oldest = `${filePath}.${keep}`;
+    if (existsSync(oldest)) {
+      try { unlinkSync(oldest); } catch { /* ignore */ }
+    }
+
+    // Shift existing rotated files: .{n} -> .{n+1}
+    for (let n = keep - 1; n >= 1; n--) {
+      const src = `${filePath}.${n}`;
+      const dst = `${filePath}.${n + 1}`;
+      if (existsSync(src)) {
+        try { renameSync(src, dst); } catch { /* ignore */ }
+      }
+    }
+
+    // Rename current log to .1
+    try { renameSync(filePath, `${filePath}.1`); } catch { /* ignore */ }
   }
 
-  /** Write a line to the log file */
+  /** Write a line to the log file, stripping ANSI codes */
   private static writeToFile(line: string): void {
     try {
       Log.ensureLogDir();
       Log.rotateIfNeeded();
-      appendFileSync(Log.logFilePath(), line + "\n", "utf-8");
+      appendFileSync(Log.logFilePath(), stripAnsi(line) + "\n", "utf-8");
     } catch {
       // Silently fail — logging should never crash the app
     }
@@ -172,20 +207,20 @@ export class Log {
       entry.context = data;
     }
 
-    const jsonLine = JSON.stringify(entry);
+    // Build human-readable line for file/console
+    const paddedLevel = level.padEnd(7);
+    const reqPart = Log.requestId ? ` [${Log.requestId}]` : "";
+    const dataPart = data !== undefined ? ` ${JSON.stringify(data)}` : "";
+    const humanLine = `${entry.timestamp} [${paddedLevel}]${reqPart} ${message}${dataPart}`;
 
-    if (Log.isProduction()) {
-      // Production: JSON lines to file only
-      Log.writeToFile(jsonLine);
-    } else {
-      // Development: colorized stdout + file
+    // Console output respects TINA4_LOG_LEVEL
+    const shouldLog = (LEVEL_PRIORITY[level] ?? 0) >= Log.minLevel;
+    if (!Log.isProduction() && shouldLog) {
       const color = COLORS[level];
-      const paddedLevel = level.padEnd(7);
-      const reqPart = Log.requestId ? ` [${Log.requestId}]` : "";
-      const dataPart = data !== undefined ? ` ${JSON.stringify(data)}` : "";
-      const humanLine = `${color}${entry.timestamp} [${paddedLevel}]${reqPart} ${message}${dataPart}${RESET}`;
-      console.log(humanLine);
-      Log.writeToFile(jsonLine);
+      console.log(`${color}${humanLine}${RESET}`);
     }
+
+    // File always gets ALL levels (raw log, no filtering), plain text (no ANSI)
+    Log.writeToFile(humanLine);
   }
 }

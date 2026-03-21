@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { resolve, dirname, join } from "node:path";
 import { existsSync } from "node:fs";
+import { isatty } from "node:tty";
 import { fileURLToPath } from "node:url";
 import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
 import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
@@ -9,7 +10,7 @@ import { createRequest, parseBody } from "./request.js";
 import { createResponse } from "./response.js";
 import { MiddlewareChain, cors, requestLogger } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
-import { loadEnv } from "./dotenv.js";
+import { loadEnv, isTruthy } from "./dotenv.js";
 import { createHealthRoute } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
@@ -41,7 +42,7 @@ export function resolvePortAndHost(config?: { port?: number; host?: string }): {
 }
 
 function isDevMode(): boolean {
-  return process.env.TINA4_DEBUG === "true";
+  return isTruthy(process.env.TINA4_DEBUG);
 }
 
 /**
@@ -503,7 +504,7 @@ export async function startServer(config?: Tina4Config): Promise<{
     } catch (err) {
       console.error("  Error:", err);
       if (!res.raw.writableEnded) {
-        const errorMessage = process.env.TINA4_DEBUG !== "true" ? "Internal Server Error" : String(err);
+        const errorMessage = !isTruthy(process.env.TINA4_DEBUG) ? "Internal Server Error" : String(err);
         const html500 = await renderErrorPage(500, {
           error_message: errorMessage,
           request_id: `${Date.now().toString(36)}`,
@@ -522,12 +523,28 @@ export async function startServer(config?: Tina4Config): Promise<{
   return new Promise((resolvePromise) => {
     server.listen(port, host, () => {
       const displayHost = host === "0.0.0.0" ? "localhost" : host;
-      const devLine = DevAdmin.isEnabled() ? `\n  Dev dashboard at  \x1b[36mhttp://${displayHost}:${port}/__dev\x1b[0m` : "";
-      console.log(`
-  \x1b[1mtina4\x1b[0m — This is not a framework.
+      const isDebug = isTruthy(process.env.TINA4_DEBUG);
+      const logLevel = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
 
-  Server running at \x1b[36mhttp://${displayHost}:${port}\x1b[0m  (bound to ${host})
-  Swagger docs at  \x1b[36mhttp://${displayHost}:${port}/swagger\x1b[0m${devLine}
+      // Green color for Node.js, only when stdout is a TTY
+      const isTty = isatty(1);
+      const color = isTty ? "\x1b[32m" : "";
+      const reset = isTty ? "\x1b[0m" : "";
+
+      // Banner goes to stdout via console.log — NOT through the framework logger
+      console.log(`${color}
+  ______ _             __ __
+ /_  __/(_)___  ____ _/ // /
+  / /  / / __ \\/ __ \`/ // /_
+ / /  / / / / / /_/ /__  __/
+/_/  /_/_/ /_/\\__,_/  /_/
+${reset}
+  Tina4 Node.js v${TINA4_VERSION} — This is not a framework
+
+  Server:    http://${displayHost}:${port}
+  Swagger:   http://localhost:${port}/swagger
+  Dashboard: http://localhost:${port}/__dev
+  Debug:     ${isDebug ? "ON" : "OFF"} (Log level: ${logLevel})
 `);
       resolvePromise({
         close: () => {

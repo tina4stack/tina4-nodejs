@@ -93,7 +93,19 @@ process.env.TINA4_DEBUG = "false";
 assert(isDebugMode() === false, "isDebugMode: false => false");
 
 process.env.TINA4_DEBUG = "TRUE";
-assert(isDebugMode() === false, "isDebugMode: TRUE (uppercase) => false (exact match)");
+assert(isDebugMode() === true, "isDebugMode: TRUE (uppercase) => true (case insensitive)");
+
+process.env.TINA4_DEBUG = "1";
+assert(isDebugMode() === true, "isDebugMode: 1 => true");
+
+process.env.TINA4_DEBUG = "yes";
+assert(isDebugMode() === true, "isDebugMode: yes => true");
+
+process.env.TINA4_DEBUG = "on";
+assert(isDebugMode() === true, "isDebugMode: on => true");
+
+process.env.TINA4_DEBUG = "0";
+assert(isDebugMode() === false, "isDebugMode: 0 => false");
 
 delete process.env.TINA4_DEBUG;
 assert(isDebugMode() === false, "isDebugMode: unset => false");

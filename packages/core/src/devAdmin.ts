@@ -15,6 +15,7 @@ import { join } from "node:path";
 import type { Router } from "./router.js";
 import type { RouteHandler } from "./types.js";
 import { DevMailbox } from "./devMailbox.js";
+import { isTruthy } from "./dotenv.js";
 
 const cpuCount = osCpus().length;
 
@@ -331,7 +332,7 @@ export class DevAdmin {
    * Check whether dev mode is enabled.
    */
   static isEnabled(): boolean {
-    return process.env.TINA4_DEBUG === "true";
+    return isTruthy(process.env.TINA4_DEBUG);
   }
 
   /**

@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 
 import type { SendResult, EmailMessage } from "./messenger.js";
 import { Messenger } from "./messenger.js";
+import { isTruthy } from "./dotenv.js";
 
 // ── DevMailbox ───────────────────────────────────────────────
 
@@ -295,8 +296,8 @@ export function createMessenger(): Messenger | DevMailbox {
   const debug = process.env.TINA4_DEBUG;
   const smtpHost = process.env.SMTP_HOST;
 
-  // Force dev mode when TINA4_DEBUG is true
-  if (debug === "true") {
+  // Force dev mode when TINA4_DEBUG is truthy
+  if (isTruthy(debug)) {
     return new DevMailbox();
   }
 

@@ -96,37 +96,40 @@ assert("Custom status code 503", custom503.includes("503"));
 // --- isDebugMode ---
 console.log("\n--- isDebugMode ---");
 
-const originalDebug = process.env.TINA4_DEBUG_LEVEL;
+const originalDebug = process.env.TINA4_DEBUG;
 
-delete process.env.TINA4_DEBUG_LEVEL;
+delete process.env.TINA4_DEBUG;
 assert("No env var => not debug mode", isDebugMode() === false);
 
-process.env.TINA4_DEBUG_LEVEL = "ALL";
-assert("ALL => debug mode", isDebugMode() === true);
+process.env.TINA4_DEBUG = "true";
+assert("true => debug mode", isDebugMode() === true);
 
-process.env.TINA4_DEBUG_LEVEL = "DEBUG";
-assert("DEBUG => debug mode", isDebugMode() === true);
+process.env.TINA4_DEBUG = "TRUE";
+assert("TRUE => debug mode (case insensitive)", isDebugMode() === true);
 
-process.env.TINA4_DEBUG_LEVEL = "TINA4_LOG_ALL";
-assert("TINA4_LOG_ALL => debug mode", isDebugMode() === true);
+process.env.TINA4_DEBUG = "1";
+assert("1 => debug mode", isDebugMode() === true);
 
-process.env.TINA4_DEBUG_LEVEL = "TINA4_LOG_DEBUG";
-assert("TINA4_LOG_DEBUG => debug mode", isDebugMode() === true);
+process.env.TINA4_DEBUG = "yes";
+assert("yes => debug mode", isDebugMode() === true);
 
-process.env.TINA4_DEBUG_LEVEL = "WARNING";
-assert("WARNING => not debug mode", isDebugMode() === false);
+process.env.TINA4_DEBUG = "on";
+assert("on => debug mode", isDebugMode() === true);
 
-process.env.TINA4_DEBUG_LEVEL = "ERROR";
-assert("ERROR => not debug mode", isDebugMode() === false);
+process.env.TINA4_DEBUG = "false";
+assert("false => not debug mode", isDebugMode() === false);
 
-process.env.TINA4_DEBUG_LEVEL = "debug";
-assert("Lowercase 'debug' => debug mode (case insensitive)", isDebugMode() === true);
+process.env.TINA4_DEBUG = "0";
+assert("0 => not debug mode", isDebugMode() === false);
+
+process.env.TINA4_DEBUG = "";
+assert("empty string => not debug mode", isDebugMode() === false);
 
 // Restore
 if (originalDebug !== undefined) {
-  process.env.TINA4_DEBUG_LEVEL = originalDebug;
+  process.env.TINA4_DEBUG = originalDebug;
 } else {
-  delete process.env.TINA4_DEBUG_LEVEL;
+  delete process.env.TINA4_DEBUG;
 }
 
 // Summary

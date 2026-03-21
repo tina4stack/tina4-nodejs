@@ -144,6 +144,19 @@ export function allEnv(): Record<string, string | undefined> {
   return { ...process.env };
 }
 
+/**
+ * Check if a value is truthy for env boolean checks.
+ *
+ * Accepts: "true", "True", "TRUE", "1", "yes", "Yes", "YES", "on", "On", "ON".
+ * Everything else is falsy (including empty string, undefined, not set).
+ *
+ * Mirrors Python's `is_truthy()` in `tina4_python.dotenv`.
+ */
+export function isTruthy(val: string | undefined | null): boolean {
+  if (val == null) return false;
+  return ["true", "1", "yes", "on"].includes(val.trim().toLowerCase());
+}
+
 /** Keys loaded by loadEnv, tracked for resetEnv(). */
 const _loadedKeys: string[] = [];
 

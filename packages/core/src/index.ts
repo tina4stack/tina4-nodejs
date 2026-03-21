@@ -20,7 +20,7 @@ export type { CorsConfig } from "./middleware.js";
 export { createRequest, parseBody } from "./request.js";
 export { createResponse } from "./response.js";
 export { tryServeStatic } from "./static.js";
-export { loadEnv, getEnv, requireEnv, hasEnv, allEnv, resetEnv } from "./dotenv.js";
+export { loadEnv, getEnv, requireEnv, hasEnv, allEnv, resetEnv, isTruthy } from "./dotenv.js";
 export { Log } from "./logger.js";
 export { createHealthRoute } from "./health.js";
 export { rateLimiter } from "./rateLimiter.js";
