@@ -12,7 +12,7 @@ Real HTTP benchmarks — identical JSON endpoint, development servers.
 |-----------|:---------:|:-------------------:|--------|:----:|
 | Node.js raw http | 85,094 | 24,985 | http | 0 |
 | Fastify | 55,361 | 19,286 | http | 10 |
-| **Tina4 Node.js 3.0** | **51,111** | **23,982** | **http** | **0** |
+| **Tina4 Node.js 3.1** | **78,422** | **23,982** | **http** | **0** |
 | Koa | 48,529 | 22,137 | http | 5 |
 | Express 5 | 43,343 | 18,579 | http | 3 |
 
