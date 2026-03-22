@@ -27,17 +27,24 @@
 
 ---
 
-## Quickstart
+## Quick Start
 
 ```bash
-npm install tina4-nodejs
-npx tina4nodejs init my-app
-cd my-app
-npx tina4nodejs serve
-# -> http://localhost:7148
+# Install the Tina4 CLI
+# Download from https://github.com/tina4stack/tina4/releases
+# Download from https://github.com/tina4stack/tina4/releases
+cargo install tina4  # or download binary from GitHub releases  # or download binary from GitHub releases
+
+# Create a project
+tina4 init nodejs ./my-app
+
+# Run it
+cd my-app && tina4 serve
 ```
 
-That's it. Zero configuration, zero classes, zero boilerplate.
+Open http://localhost:7148 — your app is running.
+
+> **Alternative** (without Rust CLI): `npm install tina4-nodejs` then create `app.ts`
 
 ---
 
@@ -298,23 +305,24 @@ export default async function (request: Tina4Request, response: Tina4Response) {
 }
 
 // Programmatic: src/routes/webhooks.ts
-import { get, post, noauth, secured, middleware } from "tina4-nodejs";
+import { get, post } from "tina4-nodejs";
 
 get("/api/items", async (request, response) => {
     response({items: []}, HTTP_OK);
 });
 
-noauth(
-    post("/api/webhook", async (request, response) => {
-        response({ok: true}, HTTP_OK);
-    })
-);
+// POST routes require auth by default; GET routes are public by default.
+// Use JSDoc @noauth / @secured annotations to override:
 
-secured(
-    get("/api/admin/stats", async (request, response) => {
-        response({secret: true}, HTTP_OK);
-    })
-);
+/** @noauth */
+post("/api/webhook", async (request, response) => {
+    response({ok: true}, HTTP_OK);
+});
+
+/** @secured */
+get("/api/admin/stats", async (request, response) => {
+    response({secret: true}, HTTP_OK);
+});
 ```
 
 Path parameter types: `{id}` (string), `[id]` (file-based), `[...slug]` (catch-all).
@@ -358,7 +366,7 @@ db.execute("INSERT INTO users (name, email) VALUES (?, ?)", ["Alice", "alice@tes
 ### Middleware
 
 ```typescript
-import { middleware } from "tina4-nodejs";
+import { get } from "tina4-nodejs";
 
 const authCheck = async (request: Tina4Request, response: Tina4Response, next: Function) => {
     if (!request.headers.authorization) {
@@ -367,21 +375,18 @@ const authCheck = async (request: Tina4Request, response: Tina4Response, next: F
     return next();
 };
 
-middleware(authCheck,
-    get("/protected", async (request, response) => {
-        response({secret: true}, HTTP_OK);
-    })
-);
+get("/protected", async (request, response) => {
+    response({secret: true}, HTTP_OK);
+}, [authCheck]);
 ```
 
 ### JWT Authentication
 
 ```typescript
-import { Auth } from "tina4-nodejs";
+import { createToken, validateToken } from "tina4-nodejs";
 
-const auth = new Auth({secret: "your-secret"});
-const token = auth.createToken({userId: 42});
-const payload = auth.validateToken(token);
+const token = createToken({userId: 42}, "your-secret");
+const payload = validateToken(token, "your-secret");
 ```
 
 POST/PUT/PATCH/DELETE routes require `Authorization: Bearer <token>` by default. Use `noauth()` to make public, `secured()` to protect GET routes.
@@ -398,13 +403,16 @@ Backend: file (default). Set via `TINA4_SESSION_HANDLER` in `.env`.
 ### Queues
 
 ```typescript
-import { Queue, Producer, Consumer } from "tina4-nodejs";
+import { Queue } from "tina4-nodejs";
 
-new Producer(new Queue({topic: "emails"})).produce({to: "alice@example.com"});
+const queue = new Queue({ topic: "emails" });
+queue.push({ to: "alice@example.com" });
 
-new Consumer(new Queue({topic: "emails"})).onMessage((msg) => {
-    sendEmail(msg.data);
-});
+const job = queue.pop();
+if (job) {
+    sendEmail(job.data);
+    job.complete();
+}
 ```
 
 ### GraphQL
@@ -420,12 +428,14 @@ gql.registerRoute("/graphql");   // GET = GraphiQL IDE, POST = queries
 ### WebSocket
 
 ```typescript
-import { WebSocketManager } from "tina4-nodejs";
+import { WebSocketServer } from "tina4-nodejs";
 
-const ws = new WebSocketManager();
+const wss = new WebSocketServer({ port: 8080 });
 
-ws.route("/ws/chat", async (connection, message) => {
-    await ws.broadcast("/ws/chat", `User said: ${message}`);
+wss.on("connection", (client) => {
+    client.on("message", (msg) => {
+        wss.broadcast(`User said: ${msg}`);
+    });
 });
 ```
 
@@ -489,25 +499,26 @@ const result = await api.sendRequest("/users/42");
 ### Data Seeder
 
 ```typescript
-import { Fake, seedModel } from "tina4-nodejs";
+import { FakeData } from "tina4-nodejs";
 
-const fake = new Fake();
+const fake = new FakeData();
 fake.name();      // "Alice Johnson"
 fake.email();     // "alice.johnson@example.com"
 
-seedModel(User, {count: 50});
+// Seed via ORM package:
+// import { seedOrm } from "@tina4/orm";
+// await seedOrm(User, 50);
 ```
 
 ### Response Cache
 
 ```typescript
-import { cached } from "tina4-nodejs";
+import { get, responseCache } from "tina4-nodejs";
 
-cached(60,
-    get("/api/stats", async (request, response) => {
-        response(computeExpensiveStats(), HTTP_OK);
-    })
-);
+// Apply response cache as middleware with 60-second TTL
+get("/api/stats", async (request, response) => {
+    response(computeExpensiveStats(), HTTP_OK);
+}, [responseCache({ ttl: 60 })]);
 ```
 
 ### SCSS, Localization
