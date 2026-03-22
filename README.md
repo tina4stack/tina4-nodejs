@@ -42,7 +42,35 @@ cd my-app && tina4 serve
 
 Open http://localhost:7148 — your app is running.
 
-> **Alternative** (without Rust CLI): `npm install tina4-nodejs` then create `app.ts`
+<details>
+<summary><strong>Without the Tina4 CLI</strong></summary>
+
+```bash
+# 1. Create project
+mkdir my-app && cd my-app
+npm init -y
+npm install tina4-nodejs
+
+# 2. Create entry point
+cat > app.ts << 'EOF'
+import { startServer } from "tina4-nodejs";
+startServer({ port: 7148, host: "0.0.0.0" });
+EOF
+
+# 3. Create .env
+echo 'TINA4_DEBUG=true' > .env
+echo 'TINA4_LOG_LEVEL=ALL' >> .env
+
+# 4. Create route directory
+mkdir -p src/routes
+
+# 5. Run
+npx tsx app.ts
+```
+
+Open http://localhost:7148
+
+</details>
 
 ---
 
