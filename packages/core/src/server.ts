@@ -30,6 +30,38 @@ const BUILTIN_PUBLIC_DIR = resolve(__dirname, "..", "public");
 const TINA4_VERSION = "3.0.0";
 
 /**
+ * Test-bind each port in a subprocess to find one that is available.
+ * Falls back to `start` if none of the candidates work.
+ */
+function findAvailablePort(start: number, maxTries = 10): number {
+  const { execFileSync } = require("node:child_process");
+  for (let offset = 0; offset < maxTries; offset++) {
+    const port = start + offset;
+    try {
+      execFileSync(process.execPath, ["-e", `
+        const s = require("net").createServer();
+        s.listen(${port}, "127.0.0.1", () => { s.close(); process.exit(0); });
+        s.on("error", () => process.exit(1));
+      `], { timeout: 1000 });
+      return port;
+    } catch { continue; }
+  }
+  return start;
+}
+
+/**
+ * Open the user's default browser after a short delay so the server is ready.
+ */
+function openBrowser(url: string) {
+  const { exec } = require("node:child_process");
+  setTimeout(() => {
+    if (process.platform === "darwin") exec(`open ${url}`);
+    else if (process.platform === "win32") exec(`start "" "${url}"`);
+    else exec(`xdg-open ${url}`);
+  }, 2000);
+}
+
+/**
  * Resolve port and host with priority: explicit config > ENV var > default.
  * Exported for testability.
  */
@@ -285,7 +317,16 @@ export async function startServer(config?: Tina4Config): Promise<{
   // Load .env early so TINA4_DEBUG is available for cluster decision
   loadEnv();
 
-  const { port, host } = resolvePortAndHost(config);
+  const resolved = resolvePortAndHost(config);
+  const host = resolved.host;
+  let port = resolved.port;
+
+  // Auto-increment port if the requested one is already in use
+  const availablePort = findAvailablePort(port);
+  if (availablePort !== port) {
+    console.log(`  Port ${port} in use, using ${availablePort} instead`);
+    port = availablePort;
+  }
 
   // Cluster mode for production: fork workers based on CPU count
   // Only when not in dev mode and running as primary process
@@ -669,6 +710,7 @@ ${reset}
   Dashboard: http://localhost:${port}/__dev
   Debug:     ${isDebug ? "ON" : "OFF"} (Log level: ${logLevel})
 `);
+      openBrowser(`http://${displayHost}:${port}`);
       resolvePromise({
         close: () => {
           server.close();
