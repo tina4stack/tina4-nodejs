@@ -7,9 +7,10 @@
  *   - 'file'     — JSON files on disk (default)
  *   - 'rabbitmq' — RabbitMQ via raw TCP (AMQP 0-9-1)
  *   - 'kafka'    — Kafka via raw TCP
+ *   - 'mongodb'  — MongoDB via `mongodb` npm package (also 'mongo')
  *
  * Environment variables:
- *   TINA4_QUEUE_BACKEND — 'file', 'rabbitmq', or 'kafka'
+ *   TINA4_QUEUE_BACKEND — 'file', 'rabbitmq', 'kafka', or 'mongodb'
  *   TINA4_QUEUE_URL     — connection URL for rabbitmq/kafka
  *   TINA4_QUEUE_PATH    — file backend storage path (default: data/queue)
  *
@@ -107,6 +108,9 @@ export class Queue {
     } else if (this.backendName === "kafka") {
       const { KafkaBackend } = require("./queueBackends/kafkaBackend.js");
       this.externalBackend = new KafkaBackend();
+    } else if (this.backendName === "mongodb" || this.backendName === "mongo") {
+      const { MongoBackend } = require("./queueBackends/mongoBackend.js");
+      this.externalBackend = new MongoBackend();
     }
   }
 
