@@ -553,12 +553,21 @@ ${reset}
           if (!proceed || res.raw.writableEnded) return;
         }
 
-        // Support (request, response), (response), or () handler signatures
-        const result = match.handler.length === 0
-          ? await (match.handler as any)()
-          : match.handler.length === 1
-            ? await match.handler(res as any)
-            : await match.handler(req, res);
+        // Support (), (response), (request), or (request, response) handler signatures
+        // When 1 param: if named request/req, pass request; otherwise pass response
+        let result: unknown;
+        if (match.handler.length === 0) {
+          result = await (match.handler as any)();
+        } else if (match.handler.length === 1) {
+          const fnStr = match.handler.toString();
+          const paramMatch = fnStr.match(/^(?:async\s+)?(?:function\s*)?\(?\s*(\w+)/);
+          const paramName = paramMatch?.[1]?.toLowerCase() ?? "";
+          result = (paramName === "request" || paramName === "req")
+            ? await match.handler(req as any)
+            : await match.handler(res as any);
+        } else {
+          result = await match.handler(req, res);
+        }
 
         // If the route exports a template and the handler returned a plain object,
         // render it through the template engine instead of sending as JSON.
