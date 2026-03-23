@@ -1,32 +1,22 @@
 # Tina4 Node.js — Benchmark Report
 
-**Date:** 2026-03-22 | **Machine:** Apple Silicon (ARM64) | **Tool:** `hey` (5000 requests, 50 concurrent, 3 runs, median)
+**Date:** 2026-03-23 | **Machine:** Apple Silicon (ARM64), 8 cores | **Tool:** `hey` (5000 requests, 50 concurrent, 3 runs, median)
 
 ---
 
 ## 1. Performance
 
-Real HTTP benchmarks — identical JSON endpoint, development servers.
+Real HTTP benchmarks — identical JSON endpoint and 100-item list endpoint, development servers.
 
-| Framework | JSON req/s | 100-item list req/s | Server | Deps |
-|-----------|:---------:|:-------------------:|--------|:----:|
-| Node.js raw http | 85,094 | 24,985 | http | 0 |
-| Fastify | 55,361 | 19,286 | http | 10 |
-| **Tina4 Node.js 3.1** | **78,422** | **23,982** | **http** | **0** |
-| Koa | 48,529 | 22,137 | http | 5 |
-| Express 5 | 43,343 | 18,579 | http | 3 |
+| Framework | JSON req/s | 100-item list req/s | Deps |
+|-----------|:---------:|:-------------------:|:----:|
+| Hapi | 41,185 | 10,431 | 1 |
+| Express | 39,337 | 18,616 | 1 |
+| Fastify | 32,824 | 18,705 | 1 |
+| **Tina4 Node.js** | **23,968** | **29,076** | **0** |
+| Koa | 23,528 | 18,205 | 2 |
 
-**Key takeaway:** Tina4 is within 8% of Fastify on JSON and beats it on list payloads — while shipping 38 features with 0 dependencies. Express with only 4 features is 15% slower.
-
-### Warmup Time
-
-| Framework | Warmup (ms) |
-|-----------|:-----------:|
-| Node.js raw | 24 |
-| Koa | 37 |
-| Fastify | 39 |
-| **Tina4** | **46** |
-| Express | 128 |
+**Key takeaway:** While Hapi and Express lead on simple JSON, **Tina4 dominates complex workloads** — 29,076 req/s on list payloads is **1.56x faster than Fastify** (18,705) and **1.56x faster than Express** (18,616). Tina4 achieves this while shipping 38 features with 0 dependencies and running in cluster mode across all 8 cores.
 
 ---
 
@@ -34,63 +24,63 @@ Real HTTP benchmarks — identical JSON endpoint, development servers.
 
 Ships with core install, no extra packages needed.
 
-| Feature | Tina4 | Express | Fastify | Koa |
-|---------|:-----:|:-------:|:-------:|:---:|
-| **CORE WEB** | | | | |
-| Routing (decorators) | Y | Y | Y | - |
-| Typed path parameters | Y | Y | Y | - |
-| Middleware system | Y | Y | Y | Y |
-| Static file serving | Y | - | - | - |
-| CORS built-in | Y | - | Y | - |
-| Rate limiting | Y | - | - | - |
-| WebSocket | Y | - | Y | - |
-| **DATA** | | | | |
-| ORM | Y | - | - | - |
-| 5 database drivers | Y | - | - | - |
-| Migrations | Y | - | - | - |
-| Seeder / fake data | Y | - | - | - |
-| Sessions | Y | - | - | - |
-| Response caching | Y | - | - | - |
-| **AUTH** | | | | |
-| JWT built-in | Y | - | - | - |
-| Password hashing | Y | - | - | - |
-| CSRF protection | Y | - | - | - |
-| **FRONTEND** | | | | |
-| Template engine | Y | - | - | - |
-| CSS framework | Y | - | - | - |
-| SCSS compiler | Y | - | - | - |
-| Frontend JS helpers | Y | - | - | - |
-| **API** | | | | |
-| Swagger/OpenAPI | Y | - | Y | - |
-| GraphQL | Y | - | - | - |
-| SOAP/WSDL | Y | - | - | - |
-| HTTP client | Y | - | - | - |
-| Queue system | Y | - | - | - |
-| **DEV EXPERIENCE** | | | | |
-| CLI scaffolding | Y | - | - | - |
-| Dev admin dashboard | Y | - | - | - |
-| Error overlay | Y | - | - | - |
-| Live reload | Y | - | - | - |
-| Auto-CRUD generator | Y | - | - | - |
-| Gallery / examples | Y | - | - | - |
-| AI assistant context | Y | - | - | - |
-| Inline testing | Y | - | - | - |
-| **ARCHITECTURE** | | | | |
-| Zero dependencies | Y | - | - | - |
-| Dependency injection | Y | - | - | - |
-| Event system | Y | - | - | - |
-| i18n / translations | Y | - | - | - |
-| HTML builder | Y | - | - | - |
+| Feature | Tina4 | Express | Fastify | Koa | Hapi |
+|---------|:-----:|:-------:|:-------:|:---:|:----:|
+| **CORE WEB** | | | | | |
+| Routing (decorators) | Y | Y | Y | - | Y |
+| Typed path parameters | Y | Y | Y | - | Y |
+| Middleware system | Y | Y | Y | Y | Y |
+| Static file serving | Y | - | - | - | Y |
+| CORS built-in | Y | - | Y | - | Y |
+| Rate limiting | Y | - | - | - | - |
+| WebSocket | Y | - | Y | - | - |
+| **DATA** | | | | | |
+| ORM | Y | - | - | - | - |
+| 5 database drivers | Y | - | - | - | - |
+| Migrations | Y | - | - | - | - |
+| Seeder / fake data | Y | - | - | - | - |
+| Sessions | Y | - | - | - | Y |
+| Response caching | Y | - | - | - | Y |
+| **AUTH** | | | | | |
+| JWT built-in | Y | - | - | - | - |
+| Password hashing | Y | - | - | - | - |
+| CSRF protection | Y | - | - | - | Y |
+| **FRONTEND** | | | | | |
+| Template engine | Y | - | - | - | Y |
+| CSS framework | Y | - | - | - | - |
+| SCSS compiler | Y | - | - | - | - |
+| Frontend JS helpers | Y | - | - | - | - |
+| **API** | | | | | |
+| Swagger/OpenAPI | Y | - | Y | - | Y |
+| GraphQL | Y | - | - | - | - |
+| SOAP/WSDL | Y | - | - | - | - |
+| HTTP client | Y | - | - | - | Y |
+| Queue system | Y | - | - | - | - |
+| **DEV EXPERIENCE** | | | | | |
+| CLI scaffolding | Y | - | - | - | - |
+| Dev admin dashboard | Y | - | - | - | - |
+| Error overlay | Y | - | - | - | - |
+| Live reload | Y | - | - | - | - |
+| Auto-CRUD generator | Y | - | - | - | - |
+| Gallery / examples | Y | - | - | - | - |
+| AI assistant context | Y | - | - | - | - |
+| Inline testing | Y | - | - | - | - |
+| **ARCHITECTURE** | | | | | |
+| Zero dependencies | Y | - | - | - | - |
+| Dependency injection | Y | - | - | - | - |
+| Event system | Y | - | - | - | - |
+| i18n / translations | Y | - | - | - | - |
+| HTML builder | Y | - | - | - | - |
 
 ### Feature Count
 
-| Framework | Features | Deps | JSON req/s |
-|-----------|:-------:|:----:|:---------:|
-| **Tina4** | **38/38** | **0** | **51,111** |
-| Fastify | 5/38 | 10 | 55,361 |
-| Express | 4/38 | 3 | 43,343 |
-| Koa | 3/38 | 5 | 48,529 |
-| raw http | 1/38 | 0 | 85,094 |
+| Framework | Features | Deps | JSON req/s | List req/s |
+|-----------|:-------:|:----:|:---------:|:----------:|
+| **Tina4** | **38/38** | **0** | **23,968** | **29,076** |
+| Hapi | 12/38 | 1 | 41,185 | 10,431 |
+| Fastify | 5/38 | 1 | 32,824 | 18,705 |
+| Express | 4/38 | 1 | 39,337 | 18,616 |
+| Koa | 3/38 | 2 | 23,528 | 18,205 |
 
 ---
 
@@ -98,11 +88,11 @@ Ships with core install, no extra packages needed.
 
 | Framework | Install Size | Dependencies |
 |-----------|:----------:|:------------:|
-| **Tina4 Node.js** | **1.8 MB** | **0** |
-| Express | 2 MB | 3 |
-| Fastify | 2 MB | 10 |
-| Koa | 1.5 MB | 5 |
-| NestJS | 20+ MB | 20 |
+| **Tina4 Node.js** | **~1.8 MB** | **0** |
+| Koa | ~2 MB | 2 |
+| Express | ~2.5 MB | 1 (+57 transitive) |
+| Fastify | ~3 MB | 1 (+14 transitive) |
+| Hapi | ~3.5 MB | 1 (+12 transitive) |
 
 Zero dependencies means core size **is** deployment size. No `node_modules` bloat.
 
@@ -112,25 +102,31 @@ Zero dependencies means core size **is** deployment size. No `node_modules` bloa
 
 Estimated emissions per HTTP benchmark run (5000 requests on Apple Silicon, 15W TDP).
 
-| Framework | JSON req/s | Est. Energy (kWh) | Est. CO2 (g) |
-|-----------|:---------:|:-----------------:|:------------:|
-| raw http | 85,094 | 0.0000024 | 0.0012 |
-| Fastify | 55,361 | 0.0000038 | 0.0018 |
-| **Tina4** | 51,111 | 0.0000041 | 0.0019 |
-| Koa | 48,529 | 0.0000043 | 0.0020 |
-| Express | 43,343 | 0.0000048 | 0.0023 |
+Energy = TDP x time = 15W x (5000 / req_per_sec). CO2 at world average 475g CO2/kWh.
+
+### JSON Endpoint
+
+| Framework | JSON req/s | Time (s) | Est. Energy (kWh) | Est. CO2 (g) |
+|-----------|:---------:|:--------:|:-----------------:|:------------:|
+| Hapi | 41,185 | 0.121 | 0.0000005 | 0.00024 |
+| Express | 39,337 | 0.127 | 0.0000005 | 0.00025 |
+| Fastify | 32,824 | 0.152 | 0.0000006 | 0.00030 |
+| **Tina4** | **23,968** | **0.209** | **0.0000009** | **0.00041** |
+| Koa | 23,528 | 0.213 | 0.0000009 | 0.00042 |
+
+### List Endpoint (100-item payload)
+
+| Framework | List req/s | Time (s) | Est. Energy (kWh) | Est. CO2 (g) |
+|-----------|:---------:|:--------:|:-----------------:|:------------:|
+| **Tina4** | **29,076** | **0.172** | **0.0000007** | **0.00034** |
+| Fastify | 18,705 | 0.267 | 0.0000011 | 0.00053 |
+| Express | 18,616 | 0.269 | 0.0000011 | 0.00053 |
+| Koa | 18,205 | 0.275 | 0.0000011 | 0.00054 |
+| Hapi | 10,431 | 0.479 | 0.0000020 | 0.00095 |
+
+**Tina4 is the most energy-efficient framework on complex payloads** — 36% less CO2 than Fastify per list request.
 
 *CO2 calculated at world average 475g CO2/kWh. Lower req/s = longer to serve 5000 requests = more energy.*
-
-### Tina4 Test Suite Emissions
-
-| Metric | Value |
-|--------|-------|
-| Test Execution Time | 18.00s |
-| Tests | 1,669 |
-| CO2 per Run | 0.038g |
-| Tests per Second | 89.5 |
-| Annual CI (10 runs/day) | 0.139g CO2/year |
 
 **Carbonah Rating: A+**
 
@@ -138,7 +134,20 @@ Estimated emissions per HTTP benchmark run (5000 requests on Apple Silicon, 15W 
 
 ## 5. How to Run
 
-Benchmarks are maintained in the `tina4-python` repository's `benchmarks/` folder.
+Benchmarks use [hey](https://github.com/rakyll/hey) on macOS with Apple Silicon.
+
+```bash
+# Install hey
+brew install hey
+
+# Start each framework server, then:
+hey -n 5000 -c 50 http://localhost:<port>/json
+hey -n 5000 -c 50 http://localhost:<port>/list
+
+# Run 3 times, take the median req/s
+```
+
+Benchmark scripts are maintained in the `tina4-python` repository's `benchmarks/` folder:
 
 ```bash
 cd ../tina4-python/benchmarks
