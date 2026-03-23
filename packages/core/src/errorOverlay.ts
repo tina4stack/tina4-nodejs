@@ -166,22 +166,24 @@ export function renderErrorOverlay(error: Error, request?: any): string {
   // ── Request info ──
   const requestPairs: Array<[string, string]> = [];
   if (request != null) {
-    for (const attr of ["method", "url", "path"]) {
-      if (request[attr] != null) requestPairs.push([attr, String(request[attr])]);
+    for (const attr of ["method", "url", "path", "ip"]) {
+      requestPairs.push([attr, request[attr] != null ? String(request[attr]) : "(none)"]);
     }
-    if (request.headers && typeof request.headers === "object") {
-      for (const [hk, hv] of Object.entries(request.headers)) {
-        requestPairs.push([`headers.${hk}`, String(hv)]);
-      }
-    }
-    if (request.params && typeof request.params === "object") {
-      for (const [pk, pv] of Object.entries(request.params)) {
-        requestPairs.push([`params.${pk}`, String(pv)]);
-      }
-    }
-    if (request.query && typeof request.query === "object") {
-      for (const [qk, qv] of Object.entries(request.query)) {
-        requestPairs.push([`query.${qk}`, String(qv)]);
+    const dictFields: Array<[string, unknown]> = [
+      ["headers", request.headers],
+      ["params", request.params],
+      ["query", request.query],
+      ["body", request.body],
+    ];
+    for (const [label, val] of dictFields) {
+      if (val != null && typeof val === "object" && Object.keys(val as object).length > 0) {
+        for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+          requestPairs.push([`${label}.${k}`, String(v)]);
+        }
+      } else if (val != null && typeof val === "string" && val !== "") {
+        requestPairs.push([label, val]);
+      } else {
+        requestPairs.push([label, val == null ? "(none)" : "(empty)"]);
       }
     }
   }
