@@ -553,7 +553,10 @@ ${reset}
           if (!proceed || res.raw.writableEnded) return;
         }
 
-        const result = await match.handler(req, res);
+        // Support both (request, response) and (response) handler signatures
+        const result = match.handler.length === 1
+          ? await match.handler(res as any)
+          : await match.handler(req, res);
 
         // If the route exports a template and the handler returned a plain object,
         // render it through the template engine instead of sending as JSON.
