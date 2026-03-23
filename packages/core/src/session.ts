@@ -2,6 +2,7 @@
  * Tina4 Session — Pluggable session backends, zero core dependencies.
  *
  * File-based sessions by default. Redis backend available via raw TCP (no ioredis needed).
+ * Database (SQLite) backend available via better-sqlite3.
  *
  *   import { Session, RedisSessionHandler } from "@tina4/core";
  *
@@ -13,6 +14,10 @@
  *     redisHost: "127.0.0.1",
  *     redisPort: 6379,
  *   });
+ *
+ *   // Database backend (SQLite via better-sqlite3)
+ *   const session = new Session("database");
+ *   // or: new Session("db");
  *
  *   const id = session.start();
  *   session.set("user", { name: "Alice" });
@@ -27,7 +32,7 @@ import { execFileSync } from "node:child_process";
 // ── Types ─────────────────────────────────────────────────────────
 
 export interface SessionConfig {
-  /** Session backend type: "file" or "redis" */
+  /** Session backend type: "file", "redis", "valkey", "mongo", "database" (or "db") */
   backend?: string;
   /** File storage path (default: "data/sessions") */
   path?: string;
@@ -306,6 +311,12 @@ export class Session {
       case "mongodb": {
         const { MongoSessionHandler } = require("./sessionHandlers/mongoHandler.js");
         this.handler = new MongoSessionHandler(config);
+        break;
+      }
+      case "database":
+      case "db": {
+        const { DatabaseSessionHandler } = require("./sessionHandlers/databaseHandler.js");
+        this.handler = new DatabaseSessionHandler(config);
         break;
       }
       case "file":
