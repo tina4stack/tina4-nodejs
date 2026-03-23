@@ -14,6 +14,7 @@
  *   TINA4_MONGO_COLLECTION (default: "tina4_queue")
  */
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import type { QueueJob } from "../queue.js";
 
 // ── Types ────────────────────────────────────────────────────
@@ -77,8 +78,6 @@ export class MongoBackend implements QueueBackend {
    * Execute a MongoDB operation synchronously via a child process.
    */
   private execSync(operation: string, queue: string, data?: string): string {
-    const { execFileSync } = require("node:child_process");
-
     const script = `
       async function main() {
         let mongodb;

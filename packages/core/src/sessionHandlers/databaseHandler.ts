@@ -10,7 +10,10 @@
  * The handler dynamically imports `better-sqlite3` and throws a clear
  * error if the package is not installed.
  */
+import { createRequire } from "node:module";
 import type { SessionHandler } from "../session.js";
+
+const _require = createRequire(import.meta.url);
 
 interface SessionData {
   _created: number;
@@ -38,7 +41,7 @@ export class DatabaseSessionHandler implements SessionHandler {
 
     let Database: any;
     try {
-      Database = require("better-sqlite3");
+      Database = _require("better-sqlite3");
     } catch {
       throw new Error(
         "DatabaseSessionHandler requires 'better-sqlite3'. " +
