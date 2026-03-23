@@ -44,7 +44,8 @@ export async function discoverRoutes(routesDir: string): Promise<RouteDefinition
 
 function filePathToPattern(relativePath: string): string {
   // Remove the filename (get.ts, post.ts, etc.) to get the directory path
-  const parts = relativePath.split("/").slice(0, -1);
+  // Normalise backslashes for Windows compatibility
+  const parts = relativePath.replace(/\\/g, "/").split("/").slice(0, -1);
 
   // Convert directory segments to URL pattern
   // File system uses [id] notation, but URL patterns use {id} to match Python

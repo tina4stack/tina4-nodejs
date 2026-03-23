@@ -22,7 +22,8 @@ function assert(name: string, condition: boolean, detail = "") {
 console.log("=== basePath Route Discovery Tests ===\n");
 
 // Create a temporary directory structure simulating basePath usage
-const tmpBase = resolve("/tmp", `tina4-basepath-test-${Date.now()}`);
+import { tmpdir } from "node:os";
+const tmpBase = resolve(tmpdir(), `tina4-basepath-test-${Date.now()}`);
 const routesDir = join(tmpBase, "src", "routes");
 const apiUsersDir = join(routesDir, "api", "users");
 const apiUsersIdDir = join(routesDir, "api", "users", "[id]");
