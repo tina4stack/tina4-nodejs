@@ -1,8 +1,12 @@
 /**
  * CLI command: migrate — Run pending SQL migration files.
  *
- * Scans the migrations/ directory for .sql files, executes them in order,
- * and records each as applied via the ORM migration tracker.
+ * Scans the migrations/ directory for .sql files (excluding .down.sql),
+ * executes them in order, and records each as applied with a batch number.
+ *
+ * Supports both naming patterns:
+ *   - Sequential: 000001_name.sql
+ *   - Timestamp:  YYYYMMDDHHMMSS_name.sql
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -45,10 +49,20 @@ export async function runMigrations(migrationDir?: string): Promise<void> {
 
   ensureMigrationTable();
 
-  // Collect .sql files sorted alphabetically
+  // Collect .sql files, excluding .down.sql, sorted by numeric prefix
   const files = readdirSync(dir)
-    .filter((f) => f.endsWith(".sql"))
-    .sort();
+    .filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql"))
+    .sort((a, b) => {
+      const aMatch = a.match(/^(\d+)/);
+      const bMatch = b.match(/^(\d+)/);
+      if (aMatch && bMatch) {
+        const aNum = BigInt(aMatch[1]);
+        const bNum = BigInt(bMatch[1]);
+        if (aNum < bNum) return -1;
+        if (aNum > bNum) return 1;
+      }
+      return a.localeCompare(b);
+    });
 
   if (files.length === 0) {
     console.log("  No .sql migration files found.");

@@ -17,6 +17,7 @@ import {
   getLastBatchMigrations,
   migrate,
   createMigration,
+  status,
 } from "../packages/orm/src/index.ts";
 
 const TEST_DB = "/tmp/tina4-migration-test/test.db";
@@ -120,13 +121,11 @@ const lastBatch = getLastBatchMigrations();
 assert("Last batch has 1 migration", lastBatch.length === 1);
 assert("Last batch is batch 2", lastBatch[0].batch === 2);
 
-// --- Rollback ---
-console.log("\n--- Rollback ---");
+// --- Rollback (legacy Map API) ---
+console.log("\n--- Rollback (legacy Map API) ---");
 
 const downFunctions = new Map<string, () => void>();
 downFunctions.set("20250201120000_add_age_column", () => {
-  // SQLite doesn't support DROP COLUMN easily, but we can verify the rollback mechanism
-  // Just create a marker table to prove the down function ran
   adapter.execute(`CREATE TABLE IF NOT EXISTS "_rollback_marker" (id INTEGER)`);
 });
 
@@ -189,20 +188,30 @@ const MIGRATIONS_DIR = "/tmp/tina4-migration-test/migrations";
 // --- createMigration() ---
 console.log("--- createMigration ---");
 
-const path1 = await createMigration("create users table", { migrationsDir: MIGRATIONS_DIR });
-assert("createMigration returns a path", path1.includes("000001_create_users_table.sql"));
-assert("Migration file created on disk", existsSync(path1));
+const result1Create = await createMigration("create users table", { migrationsDir: MIGRATIONS_DIR });
+assert("createMigration returns upPath", result1Create.upPath.includes("_create_users_table.sql"));
+assert("createMigration returns downPath", result1Create.downPath.includes("_create_users_table.down.sql"));
+assert("Up migration file created on disk", existsSync(result1Create.upPath));
+assert("Down migration file created on disk", existsSync(result1Create.downPath));
 
-const path2 = await createMigration("add email column", { migrationsDir: MIGRATIONS_DIR });
-assert("Second migration has sequence 000002", path2.includes("000002_add_email_column.sql"));
+// Small delay to ensure different timestamp
+await new Promise((r) => setTimeout(r, 1100));
 
-// List files in dir
+const result2Create = await createMigration("add email column", { migrationsDir: MIGRATIONS_DIR });
+assert("Second up migration created", existsSync(result2Create.upPath));
+assert("Second down migration created", existsSync(result2Create.downPath));
+
+// List files in dir — should be 4 files (2 up + 2 down)
 const migFiles = readdirSync(MIGRATIONS_DIR).sort();
-assert("Two migration files exist", migFiles.length === 2);
-assert("Files are sorted correctly", migFiles[0].startsWith("000001") && migFiles[1].startsWith("000002"));
+assert("Four migration files exist (2 up + 2 down)", migFiles.length === 4);
+
+const upFiles = migFiles.filter(f => f.endsWith(".sql") && !f.endsWith(".down.sql"));
+const downFiles = migFiles.filter(f => f.endsWith(".down.sql"));
+assert("Two up migration files", upFiles.length === 2);
+assert("Two down migration files", downFiles.length === 2);
 
 // --- Write SQL content to migration files ---
-writeFileSync(path1, `
+writeFileSync(result1Create.upPath, `
 -- Migration: create users table
 CREATE TABLE test_sql_users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -210,7 +219,7 @@ CREATE TABLE test_sql_users (
 );
 `, "utf-8");
 
-writeFileSync(path2, `
+writeFileSync(result2Create.upPath, `
 -- Migration: add email column
 ALTER TABLE test_sql_users ADD COLUMN email TEXT;
 `, "utf-8");
@@ -218,10 +227,10 @@ ALTER TABLE test_sql_users ADD COLUMN email TEXT;
 // --- migrate() with no existing tracking table ---
 console.log("\n--- migrate() ---");
 
-const result1 = await migrate(adapter2, { migrationsDir: MIGRATIONS_DIR });
-assert("migrate() applied 2 files", result1.applied.length === 2);
-assert("migrate() skipped 0", result1.skipped.length === 0);
-assert("migrate() failed 0", result1.failed.length === 0);
+const result1Migrate = await migrate(adapter2, { migrationsDir: MIGRATIONS_DIR });
+assert("migrate() applied 2 files", result1Migrate.applied.length === 2);
+assert("migrate() skipped 0", result1Migrate.skipped.length === 0);
+assert("migrate() failed 0", result1Migrate.failed.length === 0);
 assert("test_sql_users table exists", adapter2.tableExists("test_sql_users"));
 
 // Verify data can be inserted (email column was added)
@@ -232,15 +241,15 @@ assert("Data inserted correctly", rows.length === 1 && rows[0].name === "Alice" 
 // --- Running migrate() again should skip all ---
 console.log("\n--- migrate() idempotent ---");
 
-const result2 = await migrate(adapter2, { migrationsDir: MIGRATIONS_DIR });
-assert("Second migrate() applied 0", result2.applied.length === 0);
-assert("Second migrate() skipped 2", result2.skipped.length === 2);
+const result2Migrate = await migrate(adapter2, { migrationsDir: MIGRATIONS_DIR });
+assert("Second migrate() applied 0", result2Migrate.applied.length === 0);
+assert("Second migrate() skipped 2", result2Migrate.skipped.length === 2);
 
 // --- Add a third migration ---
 console.log("\n--- Incremental migration ---");
 
-const path3 = await createMigration("create orders table", { migrationsDir: MIGRATIONS_DIR });
-writeFileSync(path3, `
+const result3Create = await createMigration("create orders table", { migrationsDir: MIGRATIONS_DIR });
+writeFileSync(result3Create.upPath, `
 CREATE TABLE test_sql_orders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER,
@@ -248,10 +257,36 @@ CREATE TABLE test_sql_orders (
 );
 `, "utf-8");
 
-const result3 = await migrate(adapter2, { migrationsDir: MIGRATIONS_DIR });
-assert("Third migrate() applied 1 new file", result3.applied.length === 1);
-assert("Third migrate() skipped 2 existing", result3.skipped.length === 2);
+const result3Migrate = await migrate(adapter2, { migrationsDir: MIGRATIONS_DIR });
+assert("Third migrate() applied 1 new file", result3Migrate.applied.length === 1);
+assert("Third migrate() skipped 2 existing", result3Migrate.skipped.length === 2);
 assert("test_sql_orders table exists", adapter2.tableExists("test_sql_orders"));
+
+// --- status() function ---
+console.log("\n--- status() ---");
+
+const statusResult = await status(adapter2, { migrationsDir: MIGRATIONS_DIR });
+assert("status() completed has 3", statusResult.completed.length === 3);
+assert("status() pending has 0", statusResult.pending.length === 0);
+
+// Add a new migration without running it
+const result4Create = await createMigration("pending migration", { migrationsDir: MIGRATIONS_DIR });
+writeFileSync(result4Create.upPath, `CREATE TABLE pending_table (id INTEGER PRIMARY KEY);`, "utf-8");
+
+const statusResult2 = await status(adapter2, { migrationsDir: MIGRATIONS_DIR });
+assert("status() with pending: completed has 3", statusResult2.completed.length === 3);
+assert("status() with pending: pending has 1", statusResult2.pending.length === 1);
+
+// --- .down.sql rollback ---
+console.log("\n--- .down.sql Rollback ---");
+
+// Write a down migration for the orders table
+writeFileSync(result3Create.downPath, `DROP TABLE IF EXISTS test_sql_orders;`, "utf-8");
+
+// Rollback using directory-based .down.sql files
+const rolledBackSql = rollback(MIGRATIONS_DIR);
+assert("SQL rollback rolled back migrations", rolledBackSql.length > 0);
+assert("test_sql_orders table dropped after rollback", !adapter2.tableExists("test_sql_orders"));
 
 // --- migrate() with empty directory ---
 console.log("\n--- migrate() edge cases ---");
@@ -282,6 +317,20 @@ assert("Migration after failure still runs", resultFail.applied.includes("000003
 assert("good_table exists", adapter2.tableExists("good_table"));
 assert("another_good exists", adapter2.tableExists("another_good"));
 
+// --- Both naming patterns supported ---
+console.log("\n--- Dual naming pattern support ---");
+
+const mixedDir = "/tmp/tina4-migration-test/mixed_migrations";
+mkdirSync(mixedDir, { recursive: true });
+writeFileSync(join(mixedDir, "000001_sequential.sql"), `CREATE TABLE seq_table (id INTEGER PRIMARY KEY);`, "utf-8");
+writeFileSync(join(mixedDir, "20250101120000_timestamp.sql"), `CREATE TABLE ts_table (id INTEGER PRIMARY KEY);`, "utf-8");
+
+const resultMixed = await migrate(adapter2, { migrationsDir: mixedDir });
+assert("Sequential migration applied", resultMixed.applied.includes("000001_sequential.sql"));
+assert("Timestamp migration applied", resultMixed.applied.includes("20250101120000_timestamp.sql"));
+assert("seq_table exists", adapter2.tableExists("seq_table"));
+assert("ts_table exists", adapter2.tableExists("ts_table"));
+
 // --- migrate() with multi-statement and comments ---
 console.log("\n--- Multi-statement + comments ---");
 
@@ -307,8 +356,9 @@ assert("multi_c exists", adapter2.tableExists("multi_c"));
 // --- createMigration() sanitises description ---
 console.log("\n--- createMigration description sanitisation ---");
 
-const pathSpecial = await createMigration("Add user's EMAIL & Phone!", { migrationsDir: MIGRATIONS_DIR });
-assert("Special chars sanitised", pathSpecial.includes("add_user_s_email_phone"));
+const resultSpecial = await createMigration("Add user's EMAIL & Phone!", { migrationsDir: MIGRATIONS_DIR });
+assert("Special chars sanitised", resultSpecial.upPath.includes("add_user_s_email_phone"));
+assert("Down file also sanitised", resultSpecial.downPath.includes("add_user_s_email_phone"));
 
 // Cleanup
 closeDatabase();

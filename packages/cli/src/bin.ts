@@ -2,6 +2,8 @@ import { initProject } from "./commands/init.js";
 import { serveProject } from "./commands/serve.js";
 import { runMigrations } from "./commands/migrate.js";
 import { createMigration } from "./commands/migrateCreate.js";
+import { migrateStatus } from "./commands/migrateStatus.js";
+import { migrateRollback } from "./commands/migrateRollback.js";
 import { listRoutes } from "./commands/routes.js";
 import { runTests } from "./commands/test.js";
 import { generate } from "./commands/generate.js";
@@ -16,7 +18,9 @@ const HELP = `
     tina4nodejs init [dir]            Create a new Tina4 project (default: current directory)
     tina4nodejs serve                 Start the dev server with hot-reload
     tina4nodejs migrate               Run pending SQL migrations
-    tina4nodejs migrate:create <desc> Create a new migration file
+    tina4nodejs migrate:create <desc> Create a new migration file pair (.sql + .down.sql)
+    tina4nodejs migrate:status        Show completed and pending migrations
+    tina4nodejs migrate:rollback      Roll back the last batch of migrations
     tina4nodejs routes                List all registered routes
     tina4nodejs test [file]           Run project tests
     tina4nodejs generate <what> <name> Generate scaffolding (model, route, migration, middleware)
@@ -50,6 +54,14 @@ async function main(): Promise<void> {
     case "migrate:create": {
       const description = args.slice(1).join(" ");
       await createMigration(description || undefined);
+      break;
+    }
+    case "migrate:status": {
+      await migrateStatus(args[1]);
+      break;
+    }
+    case "migrate:rollback": {
+      await migrateRollback(args[1]);
       break;
     }
     case "routes": {

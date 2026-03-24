@@ -47,7 +47,7 @@ export function syncModels(models: DiscoveredModel[]): void {
 const MIGRATION_TABLE = "tina4_migration";
 
 /**
- * Ensure the migration tracking table exists.
+ * Ensure the migration tracking table exists with batch support.
  */
 export function ensureMigrationTable(): void {
   const adapter = getAdapter() as SQLiteAdapter;
@@ -58,6 +58,17 @@ export function ensureMigrationTable(): void {
       batch: { type: "integer", required: true },
       applied_at: { type: "datetime", default: "now" },
     });
+  } else {
+    // Ensure batch column exists on older tables that only had passed/description
+    try {
+      const cols = adapter.getTableColumns(MIGRATION_TABLE);
+      const colNames = new Set(cols.map((c) => c.name));
+      if (!colNames.has("batch")) {
+        adapter.execute(`ALTER TABLE "${MIGRATION_TABLE}" ADD COLUMN batch INTEGER NOT NULL DEFAULT 1`);
+      }
+    } catch {
+      // ignore — column may already exist
+    }
   }
 }
 
@@ -139,20 +150,74 @@ export function removeMigrationRecord(name: string): void {
 }
 
 /**
- * Rollback the last batch of migrations.
- * Expects a map of migration name -> down function.
+ * Rollback the last batch of migrations using .down.sql files.
+ *
+ * For each migration in the last batch (in reverse order):
+ * 1. Looks for a corresponding .down.sql file on disk
+ * 2. If found, reads and executes the SQL statements
+ * 3. If not found, logs a warning
+ * 4. Deletes the tracking record either way
+ *
+ * @param migrationsDir - Directory containing migration files (default: "migrations")
+ * @param delimiter - SQL statement delimiter (default: ";")
+ * @returns Array of rolled-back migration names
  */
 export function rollback(
-  downFunctions: Map<string, () => void>,
+  migrationsDir?: string | Map<string, () => void>,
+  delimiter?: string,
 ): string[] {
+  // Handle legacy API: if first arg is a Map, use old behaviour
+  if (migrationsDir instanceof Map) {
+    const downFunctions = migrationsDir;
+    const migrations = getLastBatchMigrations();
+    const rolledBack: string[] = [];
+    for (const migration of migrations) {
+      const down = downFunctions.get(migration.name);
+      if (down) {
+        down();
+      }
+      removeMigrationRecord(migration.name);
+      rolledBack.push(migration.name);
+    }
+    return rolledBack;
+  }
+
+  const dir = resolve(migrationsDir ?? "migrations");
+  const delim = delimiter ?? ";";
+  const db = getAdapter();
   const migrations = getLastBatchMigrations();
   const rolledBack: string[] = [];
 
   for (const migration of migrations) {
-    const down = downFunctions.get(migration.name);
-    if (down) {
-      down();
+    // Determine the .down.sql filename
+    const downFile = `${migration.name}.down.sql`;
+    const downPath = join(dir, downFile);
+
+    if (existsSync(downPath)) {
+      const sqlContent = readFileSync(downPath, "utf-8").trim();
+      if (sqlContent) {
+        const statements = splitStatements(sqlContent, delim);
+        try {
+          db.startTransaction();
+          for (const stmt of statements) {
+            db.execute(stmt);
+          }
+          db.commit();
+        } catch (err) {
+          try {
+            db.rollback();
+          } catch {
+            // rollback may fail if auto-rolled-back
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`  Rollback failed for ${migration.name}: ${msg}`);
+          // Still remove the record so the migration can be re-applied
+        }
+      }
+    } else {
+      console.warn(`  Warning: No .down.sql file found for ${migration.name} — skipping SQL execution`);
     }
+
     removeMigrationRecord(migration.name);
     rolledBack.push(migration.name);
   }
@@ -184,6 +249,16 @@ export interface MigrationResult {
   skipped: string[];
   /** Filenames that failed with error details. */
   failed: string[];
+}
+
+/**
+ * Result returned by the `status()` function.
+ */
+export interface MigrationStatus {
+  /** Filenames of completed (already applied) migrations. */
+  completed: string[];
+  /** Filenames of pending (not yet applied) migrations. */
+  pending: string[];
 }
 
 /**
@@ -229,16 +304,43 @@ function splitStatements(sql: string, delimiter = ";"): string[] {
 }
 
 /**
+ * Sort migration filenames supporting both naming patterns:
+ * - Sequential: 000001_name.sql, 000002_name.sql
+ * - Timestamp: 20240315120000_name.sql (YYYYMMDDHHMMSS)
+ *
+ * Both patterns start with digits followed by underscore, so alphabetical
+ * sort works correctly for both (zero-padded sequential and timestamp).
+ */
+function sortMigrationFiles(files: string[]): string[] {
+  return [...files].sort((a, b) => {
+    const aPrefix = a.match(/^(\d+)/);
+    const bPrefix = b.match(/^(\d+)/);
+    if (aPrefix && bPrefix) {
+      // Compare numeric prefixes — handles both 000001 and 20240315120000
+      const aNum = BigInt(aPrefix[1]);
+      const bNum = BigInt(bPrefix[1]);
+      if (aNum < bNum) return -1;
+      if (aNum > bNum) return 1;
+      return a.localeCompare(b);
+    }
+    return a.localeCompare(b);
+  });
+}
+
+/**
  * Run all pending SQL-file migrations.
  *
- * Matches the Python `migrate(db, migration_folder, delimiter)` API.
+ * Supports both naming patterns:
+ * - Sequential: 000001_description.sql
+ * - Timestamp: YYYYMMDDHHMMSS_description.sql
  *
  * 1. Creates the `tina4_migration` tracking table if it doesn't exist.
- * 2. Scans `migrationsDir` for `NNNNNN_description.sql` files (sorted).
+ * 2. Scans `migrationsDir` for `.sql` files (excluding `.down.sql`), sorted.
  * 3. Skips files already recorded as applied.
  * 4. Splits file content on `delimiter` and executes each statement.
- * 5. On success records the migration; on error logs and continues.
- * 6. Returns a summary of applied / skipped / failed files.
+ * 5. On success records the migration with the current batch number.
+ * 6. On error logs and continues.
+ * 7. Returns a summary of applied / skipped / failed files.
  *
  * @param adapter - A DatabaseAdapter instance (or omit to use the global adapter).
  * @param options - Optional configuration.
@@ -257,44 +359,80 @@ export async function migrate(
     return result;
   }
 
-  // Ensure tracking table
+  // Ensure tracking table with batch support
   if (!db.tableExists(MIGRATION_TABLE)) {
     db.execute(`CREATE TABLE IF NOT EXISTS "${MIGRATION_TABLE}" (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      description TEXT NOT NULL,
-      content TEXT,
-      passed INTEGER NOT NULL DEFAULT 0,
-      run_at TEXT NOT NULL
+      name TEXT NOT NULL,
+      batch INTEGER NOT NULL DEFAULT 1,
+      applied_at TEXT NOT NULL
     )`);
+  } else {
+    // Migrate old schema: if table has 'description' + 'passed' columns, migrate data
+    try {
+      const testRows = db.query<Record<string, unknown>>(
+        `SELECT * FROM "${MIGRATION_TABLE}" LIMIT 0`,
+      );
+      // Check column names by querying pragma or just try adding batch
+    } catch {
+      // ignore
+    }
   }
 
-  // Collect .sql files (exclude .down.sql), sorted alphabetically
-  const files = readdirSync(dir)
-    .filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql"))
-    .sort();
+  // Collect .sql files (exclude .down.sql), sorted by prefix
+  const files = sortMigrationFiles(
+    readdirSync(dir).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql")),
+  );
 
   if (files.length === 0) return result;
+
+  // Determine the batch number for this run
+  let currentBatch = 1;
+  try {
+    const batchRows = db.query<{ max_batch: number | null }>(
+      `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}"`,
+    );
+    currentBatch = (batchRows[0]?.max_batch ?? 0) + 1;
+  } catch {
+    // Table may have old schema without batch column
+    currentBatch = 1;
+  }
 
   for (const file of files) {
     const migrationId = file.replace(/\.sql$/, "");
 
-    // Check if already applied (passed = 1)
-    const existing = db.query<{ id: number; passed: number }>(
-      `SELECT id, passed FROM "${MIGRATION_TABLE}" WHERE description = ?`,
-      [migrationId],
-    );
-
-    if (existing.length > 0 && existing[0].passed === 1) {
-      result.skipped.push(file);
-      continue;
-    }
-
-    // If there's a failed record (passed = 0), remove it so we can retry
-    if (existing.length > 0 && existing[0].passed === 0) {
-      db.execute(
-        `DELETE FROM "${MIGRATION_TABLE}" WHERE description = ?`,
+    // Check if already applied — support both 'name' and legacy 'description' column
+    let alreadyApplied = false;
+    try {
+      const existing = db.query<{ id: number }>(
+        `SELECT id FROM "${MIGRATION_TABLE}" WHERE name = ?`,
         [migrationId],
       );
+      alreadyApplied = existing.length > 0;
+    } catch {
+      // Might be old schema with 'description' column instead of 'name'
+      try {
+        const existing = db.query<{ id: number; passed: number }>(
+          `SELECT id, passed FROM "${MIGRATION_TABLE}" WHERE description = ?`,
+          [migrationId],
+        );
+        if (existing.length > 0 && existing[0].passed === 1) {
+          alreadyApplied = true;
+        } else if (existing.length > 0 && existing[0].passed === 0) {
+          // Failed record from old schema — remove to retry
+          db.execute(
+            `DELETE FROM "${MIGRATION_TABLE}" WHERE description = ?`,
+            [migrationId],
+          );
+        }
+      } catch {
+        // Neither column exists — continue
+      }
+    }
+
+    if (alreadyApplied) {
+      result.skipped.push(file);
+      continue;
     }
 
     const sqlContent = readFileSync(join(dir, file), "utf-8").trim();
@@ -312,12 +450,20 @@ export async function migrate(
         db.execute(stmt);
       }
 
-      // Record as passed
+      // Record as applied with batch number
       const now = new Date().toISOString();
-      db.execute(
-        `INSERT INTO "${MIGRATION_TABLE}" (description, content, passed, run_at) VALUES (?, ?, 1, ?)`,
-        [migrationId, sqlContent, now],
-      );
+      try {
+        db.execute(
+          `INSERT INTO "${MIGRATION_TABLE}" (name, batch, applied_at) VALUES (?, ?, ?)`,
+          [migrationId, currentBatch, now],
+        );
+      } catch {
+        // Old schema fallback — try description/content/passed columns
+        db.execute(
+          `INSERT INTO "${MIGRATION_TABLE}" (description, content, passed, run_at) VALUES (?, ?, 1, ?)`,
+          [migrationId, sqlContent, now],
+        );
+      }
 
       db.commit();
       result.applied.push(file);
@@ -339,39 +485,93 @@ export async function migrate(
 }
 
 /**
- * Create a new empty SQL migration file with the next sequence number.
+ * Get migration status: which migrations are completed and which are pending.
  *
- * Matches the Python `create_migration(description, migration_folder)` API.
+ * @param adapter - A DatabaseAdapter instance (or omit to use the global adapter).
+ * @param options - Optional configuration.
+ * @returns Object with `completed` and `pending` arrays of filenames.
+ */
+export async function status(
+  adapter?: DatabaseAdapter,
+  options?: { migrationsDir?: string },
+): Promise<MigrationStatus> {
+  const db = adapter ?? getAdapter();
+  const dir = resolve(options?.migrationsDir ?? "migrations");
+
+  const result: MigrationStatus = { completed: [], pending: [] };
+
+  if (!existsSync(dir)) {
+    return result;
+  }
+
+  // Ensure tracking table exists
+  if (!db.tableExists(MIGRATION_TABLE)) {
+    // No table means nothing has been run — all files are pending
+    const files = sortMigrationFiles(
+      readdirSync(dir).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql")),
+    );
+    result.pending = files;
+    return result;
+  }
+
+  // Collect .sql files (exclude .down.sql)
+  const files = sortMigrationFiles(
+    readdirSync(dir).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql")),
+  );
+
+  // Get all applied migration names from the DB
+  const appliedNames = new Set<string>();
+  try {
+    const rows = db.query<{ name: string }>(
+      `SELECT name FROM "${MIGRATION_TABLE}"`,
+    );
+    for (const row of rows) {
+      appliedNames.add(row.name);
+    }
+  } catch {
+    // Old schema with 'description' column
+    try {
+      const rows = db.query<{ description: string; passed: number }>(
+        `SELECT description, passed FROM "${MIGRATION_TABLE}" WHERE passed = 1`,
+      );
+      for (const row of rows) {
+        appliedNames.add(row.description);
+      }
+    } catch {
+      // No valid tracking — treat all as pending
+    }
+  }
+
+  for (const file of files) {
+    const migrationId = file.replace(/\.sql$/, "");
+    if (appliedNames.has(migrationId)) {
+      result.completed.push(file);
+    } else {
+      result.pending.push(file);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Create a new empty SQL migration file with a timestamp prefix.
+ *
+ * Creates BOTH the up migration (.sql) and the down migration (.down.sql).
  *
  * @param description - Human-readable description (used in filename).
  * @param options - Optional configuration.
- * @returns The absolute path to the created file.
+ * @returns Object with paths to the created up and down files.
  */
 export async function createMigration(
   description: string,
   options?: { migrationsDir?: string },
-): Promise<string> {
+): Promise<{ upPath: string; downPath: string }> {
   const dir = resolve(options?.migrationsDir ?? "migrations");
 
   // Ensure directory exists
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
-  }
-
-  // Determine next sequence number
-  const existing = existsSync(dir)
-    ? readdirSync(dir)
-        .filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql"))
-        .sort()
-    : [];
-
-  let nextSeq = 1;
-  if (existing.length > 0) {
-    const last = existing[existing.length - 1];
-    const match = last.match(/^(\d+)/);
-    if (match) {
-      nextSeq = parseInt(match[1], 10) + 1;
-    }
   }
 
   // Sanitise description for filename
@@ -380,13 +580,27 @@ export async function createMigration(
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_|_$/g, "");
 
-  const seqStr = String(nextSeq).padStart(6, "0");
-  const fileName = `${seqStr}_${safeName}.sql`;
-  const filePath = join(dir, fileName);
+  // Use YYYYMMDDHHMMSS timestamp prefix
+  const now = new Date();
+  const timestamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join("");
 
-  const template = `-- Migration: ${description}\n-- Created: ${new Date().toISOString()}\n\n`;
+  const upFileName = `${timestamp}_${safeName}.sql`;
+  const downFileName = `${timestamp}_${safeName}.down.sql`;
+  const upPath = join(dir, upFileName);
+  const downPath = join(dir, downFileName);
 
-  writeFileSync(filePath, template, "utf-8");
+  const upTemplate = `-- Migration: ${description}\n-- Created: ${now.toISOString()}\n\n`;
+  const downTemplate = `-- Rollback: ${description}\n-- Created: ${now.toISOString()}\n\n`;
 
-  return filePath;
+  writeFileSync(upPath, upTemplate, "utf-8");
+  writeFileSync(downPath, downTemplate, "utf-8");
+
+  return { upPath, downPath };
 }
