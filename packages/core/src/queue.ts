@@ -44,11 +44,37 @@ export interface QueueConfig {
 export interface QueueJob {
   id: string;
   payload: unknown;
-  status: "pending" | "reserved" | "failed" | "dead";
+  status: "pending" | "reserved" | "failed" | "dead" | "completed";
   createdAt: string;
   attempts: number;
   delayUntil: string | null;
   error?: string;
+  /** Mark this job as completed. */
+  complete(): void;
+  /** Mark this job as failed with a reason. */
+  fail(reason?: string): void;
+  /** Reject this job with a reason. Alias for fail(). */
+  reject(reason?: string): void;
+}
+
+/** Create a QueueJob with lifecycle methods bound to a Queue instance. */
+function createJob(data: Omit<QueueJob, "complete" | "fail" | "reject">, queue: Queue, topic: string): QueueJob {
+  const job: QueueJob = {
+    ...data,
+    complete() {
+      job.status = "completed";
+    },
+    fail(reason = "") {
+      job.status = "failed";
+      job.error = reason;
+      job.attempts = (job.attempts || 0) + 1;
+      queue._failJob(topic, job, reason, queue.getMaxRetries());
+    },
+    reject(reason = "") {
+      job.fail(reason);
+    },
+  };
+  return job;
 }
 
 export interface ProcessOptions {
@@ -70,7 +96,7 @@ export class Queue {
   private backendName: string;
   private basePath: string;
   private topic: string;
-  private maxRetries: number;
+  private _maxRetries: number;
   private seq: number = 0;
   private externalBackend: QueueBackendInterface | null = null;
 
@@ -99,7 +125,7 @@ export class Queue {
       ?? process.env.TINA4_QUEUE_PATH
       ?? "data/queue";
     this.topic = resolvedConfig.topic ?? "default";
-    this.maxRetries = resolvedConfig.maxRetries ?? 3;
+    this._maxRetries = resolvedConfig.maxRetries ?? 3;
 
     // Initialize external backends
     if (this.backendName === "rabbitmq") {
@@ -253,7 +279,7 @@ export class Queue {
     }
 
     const maxJobs = opts?.maxJobs ?? Infinity;
-    const maxRetries = opts?.maxRetries ?? this.maxRetries;
+    const maxRetries = opts?.maxRetries ?? this._maxRetries;
     let processed = 0;
 
     while (processed < maxJobs) {
@@ -399,7 +425,7 @@ export class Queue {
    */
   deadLetters(queue?: string, maxRetries?: number): QueueJob[] {
     const q = queue ?? this.topic;
-    const mr = maxRetries ?? this.maxRetries;
+    const mr = maxRetries ?? this._maxRetries;
     const failedDir = this.ensureFailedDir(q);
     const results: QueueJob[] = [];
 
@@ -435,12 +461,12 @@ export class Queue {
       // Legacy: purge("queueName", "status", maxRetries?)
       queue = statusOrQueue;
       status = statusOrMaxRetries;
-      mr = maxRetries ?? this.maxRetries;
+      mr = maxRetries ?? this._maxRetries;
     } else {
       // Unified: purge("status") or purge("status", maxRetries)
       queue = this.topic;
       status = statusOrQueue;
-      mr = typeof statusOrMaxRetries === "number" ? statusOrMaxRetries : (maxRetries ?? this.maxRetries);
+      mr = typeof statusOrMaxRetries === "number" ? statusOrMaxRetries : (maxRetries ?? this._maxRetries);
     }
 
     let count = 0;
@@ -509,7 +535,7 @@ export class Queue {
    */
   retryFailed(queue?: string, maxRetries?: number): number {
     const q = queue ?? this.topic;
-    const mr = maxRetries ?? this.maxRetries;
+    const mr = maxRetries ?? this._maxRetries;
     const failedDir = this.ensureFailedDir(q);
     const queueDir = this.ensureDir(q);
     let count = 0;
@@ -545,16 +571,88 @@ export class Queue {
   }
 
   /**
+   * Produce a message onto a topic. Convenience wrapper around push().
+   */
+  produce(topic: string, payload: unknown, delay?: number): string {
+    return this.push(topic, payload, delay);
+  }
+
+  /**
+   * Consume jobs from a topic using a generator (yield pattern).
+   *
+   * Usage:
+   *   for (const job of queue.consume("emails")) {
+   *       processEmail(job);
+   *   }
+   *
+   *   // Consume a specific job by ID:
+   *   for (const job of queue.consume("emails", "job-id-123")) {
+   *       processEmail(job);
+   *   }
+   */
+  *consume(topic?: string, id?: string): Generator<QueueJob> {
+    const q = topic ?? this.topic;
+
+    if (id !== undefined) {
+      const raw = this.popById(q, id);
+      if (raw) yield createJob(raw as any, this, q);
+      return;
+    }
+
+    let raw: any;
+    while ((raw = this.pop(q)) !== null) {
+      yield createJob(raw, this, q);
+    }
+  }
+
+  /**
+   * Pop a specific job by ID from the queue.
+   */
+  popById(queue: string, id: string): QueueJob | null {
+    const q = queue ?? this.topic;
+    const dir = this.ensureDir(q);
+
+    let files: string[];
+    try {
+      files = readdirSync(dir).filter(f => f.endsWith(".json"));
+    } catch {
+      return null;
+    }
+
+    for (const file of files) {
+      const filePath = join(dir, file);
+      let job: QueueJob;
+      try {
+        job = JSON.parse(readFileSync(filePath, "utf-8"));
+      } catch {
+        continue;
+      }
+
+      if (job.status !== "pending") continue;
+      if (job.id === id) {
+        try { unlinkSync(filePath); } catch { /* already consumed */ }
+        return job;
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Get the configured topic name.
    */
   getTopic(): string {
     return this.topic;
   }
 
+  getMaxRetries(): number {
+    return this._maxRetries;
+  }
+
   /**
    * Move a job to the failed directory.
    */
-  private _failJob(queue: string, job: QueueJob, error: string, maxRetries: number): void {
+  _failJob(queue: string, job: QueueJob, error: string, maxRetries: number): void {
     const failedDir = this.ensureFailedDir(queue);
     job.status = "failed";
     job.attempts = (job.attempts || 0) + 1;
