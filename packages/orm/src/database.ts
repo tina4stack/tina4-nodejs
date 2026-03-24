@@ -1,4 +1,5 @@
-import type { DatabaseAdapter, DatabaseResult } from "./types.js";
+import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult } from "./types.js";
+import { DatabaseResult } from "./databaseResult.js";
 
 let activeAdapter: DatabaseAdapter | null = null;
 const namedAdapters: Map<string, DatabaseAdapter> = new Map();
@@ -224,9 +225,10 @@ export class Database {
     return this.adapter;
   }
 
-  /** Query rows with optional pagination. */
-  fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, offset?: number): T[] {
-    return this.adapter.fetch<T>(sql, params, limit, offset);
+  /** Query rows with optional pagination. Returns a DatabaseResult wrapper. */
+  fetch(sql: string, params?: unknown[], limit?: number, offset?: number): DatabaseResult {
+    const rows = this.adapter.fetch<Record<string, unknown>>(sql, params, limit, offset);
+    return new DatabaseResult(rows, undefined, undefined, limit, offset);
   }
 
   /** Fetch a single row or null. */
@@ -240,17 +242,17 @@ export class Database {
   }
 
   /** Insert a row into a table. */
-  insert(table: string, data: Record<string, unknown>): DatabaseResult {
+  insert(table: string, data: Record<string, unknown>): DatabaseWriteResult {
     return this.adapter.insert(table, data);
   }
 
   /** Update rows in a table matching filter. */
-  update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown>): DatabaseResult {
+  update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown>): DatabaseWriteResult {
     return this.adapter.update(table, data, filter ?? {});
   }
 
   /** Delete rows from a table matching filter. */
-  delete(table: string, filter?: Record<string, unknown>): DatabaseResult {
+  delete(table: string, filter?: Record<string, unknown>): DatabaseWriteResult {
     return this.adapter.delete(table, filter ?? {});
   }
 
