@@ -1085,7 +1085,7 @@ function renderDevAdminJs(): string {
     "        document.getElementById('routes-body').innerHTML = d.routes.map(function(r) {",
     "            return '<tr>' +",
     "                '<td><span class=\"method method-' + r.method.toLowerCase() + '\">' + r.method + '</span></td>' +",
-    "                '<td class=\"path\">' + (r.path || r.pattern || '') + '</td>' +",
+    "                '<td class=\"path\"><a href=\"' + (r.path || r.pattern || '') + '\" target=\"_blank\" title=\"' + (r.method !== 'GET' ? r.method + ' route \\u2014 may not respond to browser GET' : 'Open in new tab') + '\" style=\"color:inherit;text-decoration:underline dotted;' + (r.method !== 'GET' ? 'opacity:0.7' : '') + '\">' + (r.path || r.pattern || '') + '</a></td>' +",
     "                '<td>' + (r.auth_required || r.secure ? '<span class=\"badge-pill bg-reserved\">auth</span>' : '<span class=\"badge-pill bg-success\">open</span>') + '</td>' +",
     "                '<td class=\"text-sm text-muted\">' + (r.handler || '') + (r.module ? ' <small>(' + r.module + ')</small>' : '') + '</td>' +",
     "            '</tr>';",
