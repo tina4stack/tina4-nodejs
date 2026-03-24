@@ -107,12 +107,14 @@ export type Middleware = (
 
 /**
  * Handler for WebSocket routes.
- * conn — a connection-like object with send/close methods.
- * message — the incoming text or binary message.
+ * connection — object with send/broadcast/close methods and route params.
+ * event — one of "open", "message", or "close".
+ * data — the incoming text message (only present for "message" events).
  */
 export type WebSocketRouteHandler = (
-  conn: { id: string; send: (data: string) => void; close: () => void },
-  message: string | Buffer,
+  connection: import("./websocketConnection.js").WebSocketConnection,
+  event: "open" | "message" | "close",
+  data: string,
 ) => void | Promise<void>;
 
 export interface WebSocketRouteDefinition {
