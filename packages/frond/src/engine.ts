@@ -1155,6 +1155,63 @@ export class Frond {
   }
 
   private evalVar(expr: string, context: Record<string, unknown>): unknown {
+    // Check for top-level ternary BEFORE splitting filters so that
+    // expressions like ``products|length != 1 ? "s" : ""`` work correctly.
+    const ternaryIdx = findTernary(expr);
+    if (ternaryIdx !== -1) {
+      const condPart = expr.slice(0, ternaryIdx).trim();
+      const rest = expr.slice(ternaryIdx + 1);
+      const colonIdx = findColon(rest);
+      if (colonIdx !== -1) {
+        const truePart = rest.slice(0, colonIdx).trim();
+        const falsePart = rest.slice(colonIdx + 1).trim();
+        const cond = this.evalVarRaw(condPart, context);
+        return cond ? this.evalVar(truePart, context) : this.evalVar(falsePart, context);
+      }
+    }
+
+    return this.evalVarInner(expr, context);
+  }
+
+  private evalVarRaw(expr: string, context: Record<string, unknown>): unknown {
+    const [varName, filters] = parseFilterChain(expr);
+    let value = evalExpr(varName, context);
+    for (const [fname, args] of filters) {
+      if (fname === "raw" || fname === "safe") continue;
+      const fn = this.filters[fname];
+      if (fn) {
+        value = fn(value, ...args);
+      } else {
+        // The filter name may include a trailing comparison operator,
+        // e.g. "length != 1".  Extract the real filter name and the
+        // comparison suffix, apply the filter, then evaluate the comparison.
+        const m = fname.match(/^(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)$/);
+        if (m) {
+          const realFilter = m[1];
+          const op = m[2];
+          const rightExpr = m[3].trim();
+          const fn2 = this.filters[realFilter];
+          if (fn2) {
+            value = fn2(value, ...args);
+          }
+          const right = evalExpr(rightExpr, context);
+          switch (op) {
+            case "!=": value = value !== right; break;
+            case "==": value = value === right; break;
+            case ">=": value = (value as number) >= (right as number); break;
+            case "<=": value = (value as number) <= (right as number); break;
+            case ">":  value = (value as number) > (right as number); break;
+            case "<":  value = (value as number) < (right as number); break;
+          }
+        } else {
+          value = evalExpr(fname, context);
+        }
+      }
+    }
+    return value;
+  }
+
+  private evalVarInner(expr: string, context: Record<string, unknown>): unknown {
     const [varName, filters] = parseFilterChain(expr);
 
     // Sandbox: check variable access
