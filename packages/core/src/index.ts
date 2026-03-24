@@ -38,7 +38,7 @@ export {
   APPLICATION_OCTET, TEXT_HTML, TEXT_PLAIN, TEXT_CSV, TEXT_XML,
 } from "./constants.js";
 export {
-  createToken, validateToken, getPayload,
+  getToken, validToken, createToken, validateToken, getPayload,
   hashPassword, checkPassword,
   authMiddleware,
   refreshToken, authenticateRequest, validateApiKey,

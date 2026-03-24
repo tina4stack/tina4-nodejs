@@ -3,10 +3,10 @@
  *
  * Uses only Node.js built-in `crypto` module. No external dependencies.
  *
- *   import { createToken, validateToken, hashPassword, checkPassword } from "./auth.js";
+ *   import { getToken, validToken, hashPassword, checkPassword } from "./auth.js";
  *
- *   const token = createToken({ userId: 1 }, "my-secret");
- *   const payload = validateToken(token, "my-secret");
+ *   const token = getToken({ userId: 1 }, "my-secret");
+ *   const payload = validToken(token, "my-secret");
  *
  *   const hash = hashPassword("secret123");
  *   checkPassword("secret123", hash);  // true
@@ -38,7 +38,7 @@ function base64urlDecode(str: string): Buffer {
  * @param algorithm - "HS256" or "RS256" (default "HS256")
  * @returns Signed JWT string: header.payload.signature
  */
-export function createToken(
+export function getToken(
   payload: Record<string, unknown>,
   secret: string,
   expiresIn: number = 3600,
@@ -63,7 +63,7 @@ export function createToken(
 /**
  * Validate a JWT token and return the decoded payload, or null if invalid/expired.
  */
-export function validateToken(
+export function validToken(
   token: string,
   secret: string,
   algorithm: string = "HS256",
@@ -199,7 +199,7 @@ export function authMiddleware(secret: string, algorithm: string = "HS256"): Mid
     }
 
     const token = authHeader.slice(7);
-    const payload = validateToken(token, secret, algorithm);
+    const payload = validToken(token, secret, algorithm);
 
     if (payload === null) {
       res({ error: "Unauthorized" }, 401);
@@ -229,12 +229,12 @@ export function refreshToken(
   expiresIn: number = 3600,
   algorithm: string = "HS256",
 ): string | null {
-  const payload = validateToken(token, secret, algorithm);
+  const payload = validToken(token, secret, algorithm);
   if (payload === null) return null;
 
-  // Strip standard timing claims so createToken sets fresh ones
+  // Strip standard timing claims so getToken sets fresh ones
   const { iat: _iat, exp: _exp, ...claims } = payload;
-  return createToken(claims, secret, expiresIn, algorithm);
+  return getToken(claims, secret, expiresIn, algorithm);
 }
 
 // ── Request Authentication ───────────────────────────────────────
@@ -258,8 +258,16 @@ export function authenticateRequest(
   if (!authHeader.startsWith("Bearer ")) return null;
 
   const token = authHeader.slice(7);
-  return validateToken(token, secret, algorithm);
+  return validToken(token, secret, algorithm);
 }
+
+// ── Backward-Compatible Aliases ──────────────────────────────────
+
+/** Alias for getToken() — kept for backward compatibility. */
+export const createToken = getToken;
+
+/** Alias for validToken() — kept for backward compatibility. */
+export const validateToken = validToken;
 
 // ── API Key Validation ───────────────────────────────────────────
 
