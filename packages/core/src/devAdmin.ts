@@ -862,31 +862,29 @@ const handleConnectionsTest: RouteHandler = async (req, res) => {
     let version = "Connected";
     let tableCount = 0;
     try {
-      if (db.tables) {
-        const tables = await db.tables();
-        tableCount = Array.isArray(tables) ? tables.length : 0;
-      }
+      const tables = db.getTables();
+      tableCount = Array.isArray(tables) ? tables.length : 0;
     } catch { tableCount = 0; }
     try {
       const urlLower = url.toLowerCase();
       if (urlLower.includes("sqlite")) {
-        const row = await db.execute("SELECT sqlite_version() as v");
-        version = `SQLite ${row?.[0]?.v ?? ""}`;
+        const row = db.execute("SELECT sqlite_version() as v") as Record<string, unknown>[] | undefined;
+        version = `SQLite ${(row as any)?.[0]?.v ?? ""}`;
       } else if (urlLower.includes("postgres")) {
-        const row = await db.execute("SELECT version() as v");
-        version = (row?.[0]?.v ?? "PostgreSQL").toString().split(",")[0];
+        const row = db.execute("SELECT version() as v") as Record<string, unknown>[] | undefined;
+        version = ((row as any)?.[0]?.v ?? "PostgreSQL").toString().split(",")[0];
       } else if (urlLower.includes("mysql")) {
-        const row = await db.execute("SELECT version() as v");
-        version = `MySQL ${row?.[0]?.v ?? ""}`;
+        const row = db.execute("SELECT version() as v") as Record<string, unknown>[] | undefined;
+        version = `MySQL ${(row as any)?.[0]?.v ?? ""}`;
       } else if (urlLower.includes("mssql")) {
-        const row = await db.execute("SELECT @@VERSION as v");
-        version = (row?.[0]?.v ?? "MSSQL").toString().split("\n")[0];
+        const row = db.execute("SELECT @@VERSION as v") as Record<string, unknown>[] | undefined;
+        version = ((row as any)?.[0]?.v ?? "MSSQL").toString().split("\n")[0];
       } else if (urlLower.includes("firebird")) {
-        const row = await db.execute("SELECT rdb$get_context('SYSTEM', 'ENGINE_VERSION') as v FROM rdb$database");
-        version = `Firebird ${row?.[0]?.v ?? ""}`;
+        const row = db.execute("SELECT rdb$get_context('SYSTEM', 'ENGINE_VERSION') as v FROM rdb$database") as Record<string, unknown>[] | undefined;
+        version = `Firebird ${(row as any)?.[0]?.v ?? ""}`;
       }
     } catch { /* keep version as Connected */ }
-    if (db.close) await db.close();
+    db.close();
     res.json({ success: true, version, tables: tableCount });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
