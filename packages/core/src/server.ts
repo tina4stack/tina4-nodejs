@@ -298,8 +298,10 @@ function deployGallery(name) {
         if (d.error) {
             alert('Deploy failed: ' + d.error);
         } else {
-            alert('Deployed "' + d.deployed + '" (' + d.files.length + ' files). Reloading...');
-            window.location.reload();
+            // Brief delay to allow newly deployed routes to register before reloading
+            setTimeout(function() {
+                window.location.reload();
+            }, 500);
         }
     })
     .catch(function(e) { alert('Deploy error: ' + e.message); });
