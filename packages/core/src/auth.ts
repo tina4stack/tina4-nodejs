@@ -293,3 +293,29 @@ export function validateApiKey(
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
+
+// ── Auth Class Wrapper ──────────────────────────────────────────
+
+/**
+ * Auth class that wraps the standalone auth functions so both patterns work:
+ *
+ *   import { Auth } from "tina4-nodejs";
+ *   const token = Auth.getToken(payload, secret);
+ *
+ *   import { getToken } from "tina4-nodejs";
+ *   const token = getToken(payload, secret);
+ */
+export class Auth {
+  static getToken = getToken;
+  static validToken = validToken;
+  static getPayload = getPayload;
+  static hashPassword = hashPassword;
+  static checkPassword = checkPassword;
+  static authMiddleware = authMiddleware;
+  static refreshToken = refreshToken;
+  static authenticateRequest = authenticateRequest;
+  static validateApiKey = validateApiKey;
+  // Legacy aliases
+  static createToken = getToken;
+  static validateToken = validToken;
+}

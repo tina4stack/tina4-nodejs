@@ -42,6 +42,7 @@ export {
   hashPassword, checkPassword,
   authMiddleware,
   refreshToken, authenticateRequest, validateApiKey,
+  Auth,
 } from "./auth.js";
 export { Session, FileSessionHandler, RedisSessionHandler } from "./session.js";
 export type { SessionConfig, SessionHandler } from "./session.js";
