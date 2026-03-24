@@ -61,6 +61,31 @@ export class Router {
   private routes: Map<string, CompiledRoute[]> = new Map();
   private wsRoutes: WebSocketRouteDefinition[] = [];
 
+  /** Class-based middleware registered via `use()` / `Router.use()`. */
+  private static _classMiddlewares: any[] = [];
+
+  /**
+   * Register a class-based middleware (beforeX / afterX convention).
+   * Classes are stored globally and executed by MiddlewareRunner.
+   */
+  static use(middlewareClass: any): void {
+    Router._classMiddlewares.push(middlewareClass);
+  }
+
+  /**
+   * Get all registered class-based middleware classes.
+   */
+  static getClassMiddlewares(): any[] {
+    return Router._classMiddlewares;
+  }
+
+  /**
+   * Clear all registered class-based middleware (useful for testing).
+   */
+  static clearClassMiddlewares(): void {
+    Router._classMiddlewares = [];
+  }
+
   /**
    * Add a raw route definition (used internally and by file-based routing).
    */

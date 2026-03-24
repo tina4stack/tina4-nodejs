@@ -17,7 +17,7 @@ export { Router, RouteGroup, RouteRef, defaultRouter, runRouteMiddlewares } from
 export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";
 export { discoverRoutes } from "./routeDiscovery.js";
-export { MiddlewareChain, cors, requestLogger } from "./middleware.js";
+export { MiddlewareChain, MiddlewareRunner, cors, requestLogger, CorsMiddleware, RateLimiterMiddleware, RequestLogger } from "./middleware.js";
 export type { CorsConfig } from "./middleware.js";
 export { createRequest, parseBody } from "./request.js";
 export { createResponse } from "./response.js";
