@@ -4,12 +4,8 @@ export interface UploadedFile {
   fieldName: string;
   filename: string;
   type: string;
-  content: string;  // base64-encoded
+  content: Buffer;
   size: number;
-  /** @deprecated Use `type` instead */
-  contentType?: string;
-  /** @deprecated Use `content` instead */
-  data?: Buffer;
 }
 
 export interface Tina4Request extends IncomingMessage {

@@ -129,18 +129,13 @@ function parseMultipart(
     const partContentType = parsePartContentType(headersStr);
 
     if (disposition.filename) {
-      // File upload — standardised format: filename, type, content (base64), size
-      const rawData = Buffer.from(content);
-      const fileType = partContentType ?? "application/octet-stream";
+      // File upload — standardised format: filename, type, content (raw bytes), size
       files.push({
         fieldName: disposition.name,
         filename: disposition.filename,
-        type: fileType,
-        content: rawData.toString("base64"),
+        type: partContentType ?? "application/octet-stream",
+        content: Buffer.from(content),
         size: content.length,
-        // Legacy aliases
-        contentType: fileType,
-        data: rawData,
       });
     } else if (disposition.name) {
       // Regular field

@@ -757,8 +757,16 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   slug: (v) => String(v).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
   md5: (v) => createHash("md5").update(String(v)).digest("hex"),
   sha256: (v) => createHash("sha256").update(String(v)).digest("hex"),
-  base64_encode: (v) => Buffer.from(String(v)).toString("base64"),
+  base64_encode: (v) => Buffer.isBuffer(v) ? v.toString("base64") : Buffer.from(String(v)).toString("base64"),
   base64_decode: (v) => Buffer.from(String(v), "base64").toString("utf-8"),
+  data_uri: (v) => {
+    if (v && typeof v === "object" && "content" in v) {
+      const ct = (v as any).type ?? "application/octet-stream";
+      const raw = Buffer.isBuffer((v as any).content) ? (v as any).content : Buffer.from(String((v as any).content));
+      return `data:${ct};base64,${raw.toString("base64")}`;
+    }
+    return String(v);
+  },
   url_encode: (v) => encodeURIComponent(String(v)),
   format: (v, ...args) => {
     let s = String(v);
