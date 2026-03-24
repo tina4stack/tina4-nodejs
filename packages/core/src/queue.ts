@@ -199,7 +199,7 @@ export class Queue {
     };
 
     const prefix = `${Date.now()}-${String(this.seq).padStart(6, "0")}`;
-    writeFileSync(join(dir, `${prefix}_${id}.json`), JSON.stringify(job, null, 2));
+    writeFileSync(join(dir, `${prefix}_${id}.queue-data`), JSON.stringify(job, null, 2));
     return id;
   }
 
@@ -220,7 +220,7 @@ export class Queue {
 
     let files: string[];
     try {
-      files = readdirSync(dir).filter(f => f.endsWith(".json")).sort();
+      files = readdirSync(dir).filter(f => f.endsWith(".queue-data")).sort();
     } catch {
       return null;
     }
@@ -313,7 +313,7 @@ export class Queue {
     const dir = this.ensureDir(q);
     let files: string[];
     try {
-      files = readdirSync(dir).filter(f => f.endsWith(".json"));
+      files = readdirSync(dir).filter(f => f.endsWith(".queue-data"));
     } catch {
       return 0;
     }
@@ -342,7 +342,7 @@ export class Queue {
     }
     const dir = this.ensureDir(q);
     try {
-      const files = readdirSync(dir).filter(f => f.endsWith(".json"));
+      const files = readdirSync(dir).filter(f => f.endsWith(".queue-data"));
       for (const file of files) {
         unlinkSync(join(dir, file));
       }
@@ -354,7 +354,7 @@ export class Queue {
     const failedDir = join(dir, "failed");
     try {
       if (existsSync(failedDir)) {
-        const files = readdirSync(failedDir).filter(f => f.endsWith(".json"));
+        const files = readdirSync(failedDir).filter(f => f.endsWith(".queue-data"));
         for (const file of files) {
           unlinkSync(join(failedDir, file));
         }
@@ -373,7 +373,7 @@ export class Queue {
     const results: QueueJob[] = [];
 
     try {
-      const files = readdirSync(failedDir).filter(f => f.endsWith(".json")).sort();
+      const files = readdirSync(failedDir).filter(f => f.endsWith(".queue-data")).sort();
       for (const file of files) {
         try {
           const job: QueueJob = JSON.parse(readFileSync(join(failedDir, file), "utf-8"));
@@ -397,7 +397,7 @@ export class Queue {
       const queues = readdirSync(this.basePath);
       for (const queue of queues) {
         const failedDir = join(this.basePath, queue, "failed");
-        const filePath = join(failedDir, `${jobId}.json`);
+        const filePath = join(failedDir, `${jobId}.queue-data`);
 
         if (existsSync(filePath)) {
           const job: QueueJob = JSON.parse(readFileSync(filePath, "utf-8"));
@@ -408,7 +408,7 @@ export class Queue {
           this.seq++;
           const prefix = `${Date.now()}-${String(this.seq).padStart(6, "0")}`;
           const queueDir = join(this.basePath, queue);
-          writeFileSync(join(queueDir, `${prefix}_${jobId}.json`), JSON.stringify(job, null, 2));
+          writeFileSync(join(queueDir, `${prefix}_${jobId}.queue-data`), JSON.stringify(job, null, 2));
           unlinkSync(filePath);
           return true;
         }
@@ -430,7 +430,7 @@ export class Queue {
     const results: QueueJob[] = [];
 
     try {
-      const files = readdirSync(failedDir).filter(f => f.endsWith(".json")).sort();
+      const files = readdirSync(failedDir).filter(f => f.endsWith(".queue-data")).sort();
       for (const file of files) {
         try {
           const job: QueueJob = JSON.parse(readFileSync(join(failedDir, file), "utf-8"));
@@ -474,7 +474,7 @@ export class Queue {
     if (status === "dead") {
       const failedDir = this.ensureFailedDir(queue);
       try {
-        const files = readdirSync(failedDir).filter(f => f.endsWith(".json"));
+        const files = readdirSync(failedDir).filter(f => f.endsWith(".queue-data"));
         for (const file of files) {
           try {
             const job: QueueJob = JSON.parse(readFileSync(join(failedDir, file), "utf-8"));
@@ -492,7 +492,7 @@ export class Queue {
     } else if (status === "failed") {
       const failedDir = this.ensureFailedDir(queue);
       try {
-        const files = readdirSync(failedDir).filter(f => f.endsWith(".json"));
+        const files = readdirSync(failedDir).filter(f => f.endsWith(".queue-data"));
         for (const file of files) {
           try {
             const job: QueueJob = JSON.parse(readFileSync(join(failedDir, file), "utf-8"));
@@ -510,7 +510,7 @@ export class Queue {
     } else {
       const dir = this.ensureDir(queue);
       try {
-        const files = readdirSync(dir).filter(f => f.endsWith(".json"));
+        const files = readdirSync(dir).filter(f => f.endsWith(".queue-data"));
         for (const file of files) {
           try {
             const job: QueueJob = JSON.parse(readFileSync(join(dir, file), "utf-8"));
@@ -541,7 +541,7 @@ export class Queue {
     let count = 0;
 
     try {
-      const files = readdirSync(failedDir).filter(f => f.endsWith(".json"));
+      const files = readdirSync(failedDir).filter(f => f.endsWith(".queue-data"));
       for (const file of files) {
         try {
           const filePath = join(failedDir, file);
@@ -556,7 +556,7 @@ export class Queue {
 
           this.seq++;
           const prefix = `${Date.now()}-${String(this.seq).padStart(6, "0")}`;
-          writeFileSync(join(queueDir, `${prefix}_${job.id}.json`), JSON.stringify(job, null, 2));
+          writeFileSync(join(queueDir, `${prefix}_${job.id}.queue-data`), JSON.stringify(job, null, 2));
           unlinkSync(filePath);
           count++;
         } catch {
@@ -614,7 +614,7 @@ export class Queue {
 
     let files: string[];
     try {
-      files = readdirSync(dir).filter(f => f.endsWith(".json"));
+      files = readdirSync(dir).filter(f => f.endsWith(".queue-data"));
     } catch {
       return null;
     }
@@ -658,6 +658,6 @@ export class Queue {
     job.attempts = (job.attempts || 0) + 1;
     job.error = error;
 
-    writeFileSync(join(failedDir, `${job.id}.json`), JSON.stringify(job, null, 2));
+    writeFileSync(join(failedDir, `${job.id}.queue-data`), JSON.stringify(job, null, 2));
   }
 }
