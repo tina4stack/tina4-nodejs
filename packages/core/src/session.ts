@@ -399,6 +399,18 @@ export class Session {
   }
 
   /**
+   * Clear all session data without destroying the session.
+   * The session ID and cookie remain — only the data is wiped.
+   */
+  clear(): void {
+    if (!this.data) return;
+    for (const key of Object.keys(this.data)) {
+      delete this.data[key];
+    }
+    this.save();
+  }
+
+  /**
    * Destroy the entire session.
    */
   destroy(): void {
