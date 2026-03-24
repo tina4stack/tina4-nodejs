@@ -371,7 +371,7 @@ export default class User {
     };
 }
 
-// Auto-generates: GET/POST /api/users, GET/PUT/DELETE /api/users/:id
+// Auto-generates: GET/POST /api/users, GET/PUT/DELETE /api/users/{id}
 // With filtering, sorting, pagination, and validation built in
 ```
 
@@ -409,10 +409,10 @@ get("/protected", async (request, response) => {
 ### JWT Authentication
 
 ```typescript
-import { createToken, validateToken } from "tina4-nodejs";
+import { getToken, validToken } from "tina4-nodejs";
 
-const token = createToken({userId: 42}, "your-secret");
-const payload = validateToken(token, "your-secret");
+const token = getToken({userId: 42}, "your-secret");
+const payload = validToken(token, "your-secret");
 ```
 
 POST/PUT/PATCH/DELETE routes require `Authorization: Bearer <token>` by default. Use `noauth()` to make public, `secured()` to protect GET routes.
@@ -643,7 +643,7 @@ DATABASE_USERNAME=admin              # Separate credentials for networked databa
 DATABASE_PASSWORD=secret
 TINA4_DEBUG=true                     # Enable dev toolbar, error overlay
 TINA4_LOG_LEVEL=ALL                  # ALL, DEBUG, INFO, WARNING, ERROR
-TINA4_LANGUAGE=en                    # en, fr, af, zh, ja, es
+TINA4_LOCALE=en                      # en, fr, af, zh, ja, es
 TINA4_SESSION_HANDLER=SessionFileHandler
 SWAGGER_TITLE=My API
 ```
