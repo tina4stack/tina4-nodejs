@@ -228,7 +228,7 @@ export class Database {
   /** Query rows with optional pagination. Returns a DatabaseResult wrapper. */
   fetch(sql: string, params?: unknown[], limit?: number, offset?: number): DatabaseResult {
     const rows = this.adapter.fetch<Record<string, unknown>>(sql, params, limit, offset);
-    return new DatabaseResult(rows, undefined, undefined, limit, offset);
+    return new DatabaseResult(rows, undefined, undefined, limit, offset, this.adapter, sql);
   }
 
   /** Fetch a single row or null. */

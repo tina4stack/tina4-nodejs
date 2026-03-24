@@ -1,3 +1,15 @@
+import type { DatabaseAdapter, ColumnInfo } from "./types.js";
+
+/** Column metadata returned by columnInfo(). */
+export interface ColumnInfoResult {
+  name: string;
+  type: string;
+  size: number | null;
+  decimals: number | null;
+  nullable: boolean;
+  primary_key: boolean;
+}
+
 /**
  * DatabaseResult — wraps fetched rows with convenience methods.
  *
@@ -10,6 +22,9 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
   readonly count: number;
   readonly limit: number;
   readonly offset: number;
+  private readonly _adapter?: DatabaseAdapter;
+  private readonly _sql?: string;
+  private _columnInfoCache?: ColumnInfoResult[];
 
   constructor(
     records?: Record<string, unknown>[],
@@ -17,6 +32,8 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
     count?: number,
     limit?: number,
     offset?: number,
+    adapter?: DatabaseAdapter,
+    sql?: string,
   ) {
     this.records = records ?? [];
     this.columns =
@@ -24,6 +41,8 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
     this.count = count ?? this.records.length;
     this.limit = limit ?? this.records.length;
     this.offset = offset ?? 0;
+    this._adapter = adapter;
+    this._sql = sql;
   }
 
   /** JSON string of records. */
@@ -90,5 +109,99 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
   /** JSON.stringify support — serialises as the records array. */
   toJSON(): Record<string, unknown>[] {
     return this.records;
+  }
+
+  /**
+   * Return column metadata for the query's table.
+   *
+   * Lazy — only queries the database when explicitly called. Caches the
+   * result so subsequent calls return immediately without re-querying.
+   */
+  columnInfo(): ColumnInfoResult[] {
+    if (this._columnInfoCache !== undefined) {
+      return this._columnInfoCache;
+    }
+
+    const table = this._extractTableFromSql();
+
+    if (this._adapter && table) {
+      try {
+        this._columnInfoCache = this._queryColumnMetadata(table);
+        return this._columnInfoCache;
+      } catch {
+        // Fall through to fallback
+      }
+    }
+
+    this._columnInfoCache = this._fallbackColumnInfo();
+    return this._columnInfoCache;
+  }
+
+  /** Extract table name from a SQL query using simple regex. */
+  private _extractTableFromSql(): string | null {
+    if (!this._sql) return null;
+
+    let m = this._sql.match(/\bFROM\s+["']?(\w+)["']?/i);
+    if (m) return m[1];
+
+    m = this._sql.match(/\bINSERT\s+INTO\s+["']?(\w+)["']?/i);
+    if (m) return m[1];
+
+    m = this._sql.match(/\bUPDATE\s+["']?(\w+)["']?/i);
+    if (m) return m[1];
+
+    return null;
+  }
+
+  /** Query the database adapter for column metadata. */
+  private _queryColumnMetadata(table: string): ColumnInfoResult[] {
+    if (!this._adapter) return this._fallbackColumnInfo();
+
+    try {
+      const rawCols: ColumnInfo[] = this._adapter.columns(table);
+      return this._normalizeColumns(rawCols);
+    } catch {
+      return this._fallbackColumnInfo();
+    }
+  }
+
+  /** Normalize adapter column info to standard format. */
+  private _normalizeColumns(rawCols: ColumnInfo[]): ColumnInfoResult[] {
+    return rawCols.map((col) => {
+      const colType = (col.type ?? "UNKNOWN").toUpperCase();
+      const [size, decimals] = this._parseTypeSize(colType);
+      return {
+        name: col.name,
+        type: colType.replace(/\(.*\)/, ""),
+        size,
+        decimals,
+        nullable: col.nullable ?? true,
+        primary_key: col.primaryKey ?? false,
+      };
+    });
+  }
+
+  /** Parse size and decimals from a type string like VARCHAR(255) or NUMERIC(10,2). */
+  private _parseTypeSize(typeStr: string): [number | null, number | null] {
+    const m = typeStr.match(/\((\d+)(?:\s*,\s*(\d+))?\)/);
+    if (m) {
+      const size = parseInt(m[1], 10);
+      const decimals = m[2] ? parseInt(m[2], 10) : null;
+      return [size, decimals];
+    }
+    return [null, null];
+  }
+
+  /** Derive basic column info from record keys when no adapter is available. */
+  private _fallbackColumnInfo(): ColumnInfoResult[] {
+    if (this.columns.length === 0) return [];
+    return this.columns.map((name) => ({
+      name,
+      type: "UNKNOWN",
+      size: null,
+      decimals: null,
+      nullable: true,
+      primary_key: false,
+    }));
   }
 }
