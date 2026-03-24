@@ -10,11 +10,12 @@ export async function serveProject(options: ServeOptions): Promise<void> {
   const cwd = process.cwd();
 
   const routesDir = resolve(cwd, "src/routes");
+  const ormDir = resolve(cwd, "src/orm");
   const modelsDir = resolve(cwd, "src/models");
   const templatesDir = resolve(cwd, "src/templates");
   const staticDir = resolve(cwd, "public");
 
-  if (!existsSync(routesDir) && !existsSync(modelsDir)) {
+  if (!existsSync(routesDir) && !existsSync(modelsDir) && !existsSync(ormDir)) {
     console.error("  Error: Not a Tina4 project. Run this from a project created with 'tina4 init'.");
     process.exit(1);
   }
@@ -31,7 +32,8 @@ export async function serveProject(options: ServeOptions): Promise<void> {
   });
 
   // Watch for file changes and reload routes
-  const watcher = watchForChanges([routesDir, modelsDir, templatesDir], async () => {
+  const watchDirs = [routesDir, ormDir, modelsDir, templatesDir].filter((d) => existsSync(d));
+  const watcher = watchForChanges(watchDirs, async () => {
     try {
       const { discoverRoutes } = await import("@tina4/core");
       const routes = await discoverRoutes(routesDir);

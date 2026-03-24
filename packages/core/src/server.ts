@@ -383,6 +383,7 @@ ${reset}
   const base = config?.basePath ? resolve(config.basePath) : process.cwd();
   const routesDir = resolve(base, config?.routesDir ?? "src/routes");
   const modelsDir = resolve(base, config?.modelsDir ?? "src/models");
+  const ormDir = resolve(base, "src/orm");
   const staticDir = resolve(base, config?.staticDir ?? "public");
   const templatesDir = resolve(base, config?.templatesDir ?? "src/templates");
 
@@ -429,8 +430,10 @@ ${reset}
     console.log(`\n  No routes directory found at ${routesDir}`);
   }
 
-  // Initialize ORM if models directory exists
-  if (existsSync(modelsDir)) {
+  // Initialize ORM if models directory exists (check src/orm/ first, then src/models/)
+  const hasOrmDir = existsSync(ormDir);
+  const hasModelsDir = existsSync(modelsDir);
+  if (hasOrmDir || hasModelsDir) {
     try {
       const orm = await import("@tina4/orm");
       const dbConfig = config?.database ?? {};
@@ -439,7 +442,18 @@ ${reset}
         path: dbConfig.path ?? "./data/tina4.db",
       });
 
-      const models = await orm.discoverModels(modelsDir);
+      // Discover from src/orm/ (primary) and src/models/ (fallback), merge results
+      let models = hasOrmDir ? await orm.discoverModels(ormDir) : [];
+      if (hasModelsDir) {
+        const extraModels = await orm.discoverModels(modelsDir);
+        // Only add models not already discovered (src/orm/ takes priority)
+        const existingTables = new Set(models.map((m: any) => m.definition.tableName));
+        for (const m of extraModels) {
+          if (!existingTables.has(m.definition.tableName)) {
+            models.push(m);
+          }
+        }
+      }
       if (models.length > 0) {
         console.log(`\n  Models discovered:`);
         orm.syncModels(models);
@@ -476,9 +490,16 @@ ${reset}
     let modelDefs: Array<{ tableName: string; fields: Record<string, unknown> }> = [];
     try {
       const orm = await import("@tina4/orm");
-      if (existsSync(modelsDir)) {
-        const models = await orm.discoverModels(modelsDir);
-        modelDefs = models.map((m) => m.definition);
+      const allModelDirs = [ormDir, modelsDir].filter((d) => existsSync(d));
+      const seenTables = new Set<string>();
+      for (const dir of allModelDirs) {
+        const discovered = await orm.discoverModels(dir);
+        for (const m of discovered) {
+          if (!seenTables.has(m.definition.tableName)) {
+            modelDefs.push(m.definition);
+            seenTables.add(m.definition.tableName);
+          }
+        }
       }
     } catch {
       // ORM not available, swagger will work without model schemas
