@@ -3,9 +3,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 export interface UploadedFile {
   fieldName: string;
   filename: string;
-  contentType: string;
-  data: Buffer;
+  type: string;
+  content: string;  // base64-encoded
   size: number;
+  /** @deprecated Use `type` instead */
+  contentType?: string;
+  /** @deprecated Use `content` instead */
+  data?: Buffer;
 }
 
 export interface Tina4Request extends IncomingMessage {
