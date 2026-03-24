@@ -21,6 +21,7 @@ export interface RelationshipDefinition {
 export interface ModelDefinition {
   tableName: string;
   fields: Record<string, FieldDefinition>;
+  fieldMapping?: Record<string, string>;
   softDelete?: boolean;
   tableFilter?: string;
   hasOne?: RelationshipDefinition[];

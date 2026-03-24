@@ -15,6 +15,7 @@ import type { DatabaseAdapter, FieldDefinition, RelationshipDefinition } from ".
  *     static hasOne = [{ model: "Profile", foreignKey: "user_id" }];
  *     static hasMany = [{ model: "Post", foreignKey: "author_id" }];
  *     static _db = "secondary";
+ *     static fieldMapping = { firstName: "first_name", lastName: "last_name" };
  *   }
  */
 export class BaseModel {
@@ -27,6 +28,14 @@ export class BaseModel {
   static belongsTo?: RelationshipDefinition[];
   static _db?: string;
 
+  /**
+   * Maps JS property names to database column names.
+   * Example: { firstName: "first_name" } means the JS property `firstName`
+   * corresponds to the database column `first_name`.
+   * Properties not listed here use the property name as-is.
+   */
+  static fieldMapping: Record<string, string> = {};
+
   /** Instance data */
   [key: string]: unknown;
 
@@ -35,10 +44,50 @@ export class BaseModel {
 
   constructor(data?: Record<string, unknown>) {
     if (data) {
+      const ModelClass = this.constructor as typeof BaseModel;
+      const reverseMapping = ModelClass.getReverseMapping();
       for (const [key, value] of Object.entries(data)) {
-        this[key] = value;
+        // If this DB column has a mapping, use the JS property name instead
+        const jsProp = reverseMapping[key] ?? key;
+        this[jsProp] = value;
       }
     }
+  }
+
+  /**
+   * Get the database column name for a JS property.
+   * Returns the mapped column name, or the property name if no mapping exists.
+   */
+  static getDbColumn(prop: string): string {
+    return this.fieldMapping[prop] ?? prop;
+  }
+
+  /**
+   * Get all instance data converted to database column names.
+   * Uses fieldMapping to translate JS property names to DB column names.
+   */
+  getDbData(): Record<string, unknown> {
+    const ModelClass = this.constructor as typeof BaseModel;
+    const result: Record<string, unknown> = {};
+    for (const key of Object.keys(ModelClass.fields)) {
+      if (this[key] !== undefined) {
+        const dbCol = ModelClass.getDbColumn(key);
+        result[dbCol] = this[key];
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Get the reverse mapping (DB column → JS property).
+   * Flips fieldMapping so that { firstName: "first_name" } becomes { first_name: "firstName" }.
+   */
+  static getReverseMapping(): Record<string, string> {
+    const reverse: Record<string, string> = {};
+    for (const [jsProp, dbCol] of Object.entries(this.fieldMapping)) {
+      reverse[dbCol] = jsProp;
+    }
+    return reverse;
   }
 
   /**
@@ -52,10 +101,17 @@ export class BaseModel {
   }
 
   /**
-   * Get the primary key field name.
+   * Get the primary key field name (JS property name).
    */
   protected static getPkField(): string {
     return Object.entries(this.fields).find(([, def]) => def.primaryKey)?.[0] ?? "id";
+  }
+
+  /**
+   * Get the primary key database column name (applies fieldMapping).
+   */
+  protected static getPkColumn(): string {
+    return this.getDbColumn(this.getPkField());
   }
 
   /**
@@ -67,7 +123,8 @@ export class BaseModel {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
-    let sql = `SELECT * FROM "${ModelClass.tableName}" WHERE "${pk}" = ?`;
+    const pkCol = ModelClass.getPkColumn();
+    let sql = `SELECT * FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`;
 
     if (ModelClass.softDelete) {
       sql += ` AND is_deleted = 0`;
@@ -129,6 +186,7 @@ export class BaseModel {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
+    const pkCol = ModelClass.getPkColumn();
     const pkValue = this[pk];
     this._relCache = {}; // Clear relationship cache on save
 
@@ -139,17 +197,17 @@ export class BaseModel {
       );
       if (updateFields.length === 0) return;
 
-      const setClause = updateFields.map(([k]) => `"${k}" = ?`).join(", ");
+      const setClause = updateFields.map(([k]) => `"${ModelClass.getDbColumn(k)}" = ?`).join(", ");
       const values = [...updateFields.map(([k]) => this[k]), pkValue];
 
-      db.execute(`UPDATE "${ModelClass.tableName}" SET ${setClause} WHERE "${pk}" = ?`, values);
+      db.execute(`UPDATE "${ModelClass.tableName}" SET ${setClause} WHERE "${pkCol}" = ?`, values);
     } else {
       // Insert
       const insertFields = Object.entries(ModelClass.fields).filter(
         ([name, def]) => !(def.primaryKey && def.autoIncrement) && this[name] !== undefined,
       );
 
-      const columns = insertFields.map(([k]) => `"${k}"`).join(", ");
+      const columns = insertFields.map(([k]) => `"${ModelClass.getDbColumn(k)}"`).join(", ");
       const placeholders = insertFields.map(() => "?").join(", ");
       const values = insertFields.map(([k]) => this[k]);
 
@@ -171,6 +229,7 @@ export class BaseModel {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
+    const pkCol = ModelClass.getPkColumn();
     const pkValue = this[pk];
 
     if (pkValue === undefined || pkValue === null) {
@@ -179,13 +238,13 @@ export class BaseModel {
 
     if (ModelClass.softDelete) {
       db.execute(
-        `UPDATE "${ModelClass.tableName}" SET is_deleted = 1 WHERE "${pk}" = ?`,
+        `UPDATE "${ModelClass.tableName}" SET is_deleted = 1 WHERE "${pkCol}" = ?`,
         [pkValue],
       );
       this.is_deleted = 1;
     } else {
       db.execute(
-        `DELETE FROM "${ModelClass.tableName}" WHERE "${pk}" = ?`,
+        `DELETE FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`,
         [pkValue],
       );
     }
@@ -317,7 +376,13 @@ export class BaseModel {
     if (db.tableExists(this.tableName)) return;
 
     if (typeof db.createTable === "function") {
-      db.createTable(this.tableName, this.fields);
+      // Remap field keys to DB column names if fieldMapping is defined
+      const mappedFields: Record<string, FieldDefinition> = {};
+      for (const [fieldName, def] of Object.entries(this.fields)) {
+        const dbCol = this.getDbColumn(fieldName);
+        mappedFields[dbCol] = def;
+      }
+      db.createTable(this.tableName, mappedFields);
     } else {
       // Fallback: build SQL manually
       const typeMap: Record<string, string> = {
@@ -331,9 +396,10 @@ export class BaseModel {
       };
 
       const colDefs: string[] = [];
-      for (const [colName, def] of Object.entries(this.fields)) {
+      for (const [fieldName, def] of Object.entries(this.fields)) {
+        const dbCol = this.getDbColumn(fieldName);
         const sqlType = typeMap[def.type] || "TEXT";
-        const parts = [`"${colName}" ${sqlType}`];
+        const parts = [`"${dbCol}" ${sqlType}`];
         if (def.primaryKey) parts.push("PRIMARY KEY");
         if (def.autoIncrement) parts.push("AUTOINCREMENT");
         if (def.required && !def.primaryKey) parts.push("NOT NULL");
@@ -382,6 +448,7 @@ export class BaseModel {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
+    const pkCol = ModelClass.getPkColumn();
     const pkValue = this[pk];
 
     if (pkValue === undefined || pkValue === null) {
@@ -389,7 +456,7 @@ export class BaseModel {
     }
 
     db.execute(
-      `DELETE FROM "${ModelClass.tableName}" WHERE "${pk}" = ?`,
+      `DELETE FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`,
       [pkValue],
     );
   }
@@ -405,6 +472,7 @@ export class BaseModel {
 
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
+    const pkCol = ModelClass.getPkColumn();
     const pkValue = this[pk];
 
     if (pkValue === undefined || pkValue === null) {
@@ -412,7 +480,7 @@ export class BaseModel {
     }
 
     db.execute(
-      `UPDATE "${ModelClass.tableName}" SET is_deleted = 0 WHERE "${pk}" = ?`,
+      `UPDATE "${ModelClass.tableName}" SET is_deleted = 0 WHERE "${pkCol}" = ?`,
       [pkValue],
     );
     this.is_deleted = 0;
@@ -570,15 +638,19 @@ export class BaseModel {
     relatedClass: typeof BaseModel & (new (data?: Record<string, unknown>) => R),
     foreignKey: string,
   ): R | null {
-    const fkValue = this[foreignKey];
+    // foreignKey is a DB column name — resolve to JS property name on this model
+    const ModelClass = this.constructor as typeof BaseModel;
+    const reverseMap = ModelClass.getReverseMapping();
+    const fkProp = reverseMap[foreignKey] ?? foreignKey;
+    const fkValue = this[fkProp];
 
     if (fkValue === undefined || fkValue === null) {
       return null;
     }
 
     const db = relatedClass.getDb();
-    const relatedPk = relatedClass.getPkField();
-    let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${relatedPk}" = ?`;
+    const relatedPkCol = relatedClass.getPkColumn();
+    let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${relatedPkCol}" = ?`;
     if (relatedClass.softDelete) {
       sql += ` AND is_deleted = 0`;
     }
@@ -727,10 +799,12 @@ export class BaseModel {
           relatedClass._eagerLoad(related, nested);
         }
 
-        // Group by FK
+        // Group by FK — fk is a DB column name, resolve to JS property name on the related model
+        const relatedReverseMap = relatedClass.getReverseMapping();
+        const fkProp = relatedReverseMap[fk] ?? fk;
         const grouped: Record<string, BaseModel[]> = {};
         for (const record of related) {
-          const fkVal = String(record[fk]);
+          const fkVal = String(record[fkProp]);
           if (!grouped[fkVal]) grouped[fkVal] = [];
           grouped[fkVal].push(record);
         }
@@ -745,16 +819,20 @@ export class BaseModel {
           }
         }
       } else if (relType === "belongsTo") {
+        // fk is a DB column name on the current model — resolve to JS property name
+        const ownerReverseMap = ModelClass.getReverseMapping();
+        const fkProp = ownerReverseMap[fk] ?? fk;
         const fkValues = [...new Set(
           instances
-            .map((inst) => inst[fk])
+            .map((inst) => inst[fkProp])
             .filter((v) => v !== undefined && v !== null),
         )];
         if (fkValues.length === 0) continue;
 
         const relatedPk = relatedClass.getPkField();
+        const relatedPkCol = relatedClass.getPkColumn();
         const placeholders = fkValues.map(() => "?").join(",");
-        let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${relatedPk}" IN (${placeholders})`;
+        let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${relatedPkCol}" IN (${placeholders})`;
         if (relatedClass.softDelete) {
           sql += ` AND is_deleted = 0`;
         }
@@ -772,7 +850,7 @@ export class BaseModel {
         }
 
         for (const inst of instances) {
-          const fkVal = inst[fk];
+          const fkVal = inst[fkProp];
           inst._relCache[relName] = fkVal !== undefined && fkVal !== null
             ? lookup[String(fkVal)] ?? null
             : null;

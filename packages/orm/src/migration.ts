@@ -12,7 +12,11 @@ export function syncModels(models: DiscoveredModel[]): void {
   const adapter = getAdapter() as SQLiteAdapter;
 
   for (const { definition } of models) {
-    const { tableName, fields, softDelete } = definition;
+    const { tableName, fields, softDelete, fieldMapping } = definition;
+    const mapping = fieldMapping ?? {};
+
+    // Helper to get DB column name for a JS property name
+    const getDbCol = (prop: string): string => mapping[prop] ?? prop;
 
     // If softDelete is enabled, ensure is_deleted field exists
     const allFields = { ...fields };
@@ -23,15 +27,22 @@ export function syncModels(models: DiscoveredModel[]): void {
       };
     }
 
+    // Remap field keys to DB column names for table creation/migration
+    const dbFields: Record<string, typeof allFields[string]> = {};
+    for (const [fieldName, def] of Object.entries(allFields)) {
+      const dbCol = getDbCol(fieldName);
+      dbFields[dbCol] = def;
+    }
+
     if (!adapter.tableExists(tableName)) {
-      adapter.createTable(tableName, allFields);
+      adapter.createTable(tableName, dbFields);
       console.log(`    Created table: ${tableName}`);
     } else {
       // Check for new columns
       const existing = adapter.getTableColumns(tableName);
       const existingNames = new Set(existing.map((c) => c.name));
 
-      for (const [colName, def] of Object.entries(allFields)) {
+      for (const [colName, def] of Object.entries(dbFields)) {
         if (!existingNames.has(colName)) {
           adapter.addColumn(tableName, colName, def);
           console.log(`    Added column: ${tableName}.${colName}`);

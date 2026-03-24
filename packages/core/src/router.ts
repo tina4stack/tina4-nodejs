@@ -7,6 +7,8 @@ interface MatchResult {
   meta?: RouteMeta;
   middlewares?: Middleware[];
   template?: string;
+  secure?: boolean;
+  cached?: boolean;
 }
 
 interface CompiledRoute {
@@ -17,10 +19,33 @@ interface CompiledRoute {
   meta?: RouteMeta;
   filePath?: string;
   middlewares?: Middleware[];
+  secure?: boolean;
   cached?: boolean;
   cacheStore?: Map<string, { data: unknown; expires: number }>;
   cacheTtl?: number;
   template?: string;
+}
+
+/**
+ * Thin reference to a registered route, enabling chained modifiers.
+ *
+ * Usage:
+ *   router.get("/api/data", handler).secure().cache();
+ */
+export class RouteRef {
+  constructor(private route: CompiledRoute) {}
+
+  /** Mark this route as requiring bearer-token authentication. */
+  secure(): this {
+    this.route.secure = true;
+    return this;
+  }
+
+  /** Mark this route's response as cacheable. */
+  cache(): this {
+    this.route.cached = true;
+    return this;
+  }
 }
 
 export interface RouteInfo {
@@ -29,6 +54,7 @@ export interface RouteInfo {
   handler: string;
   middlewareCount: number;
   cached: boolean;
+  secure: boolean;
 }
 
 export class Router {
@@ -38,7 +64,7 @@ export class Router {
   /**
    * Add a raw route definition (used internally and by file-based routing).
    */
-  addRoute(definition: RouteDefinition): void {
+  addRoute(definition: RouteDefinition): RouteRef {
     const method = definition.method.toUpperCase();
     const { regex, paramNames } = this.compilePattern(definition.pattern);
 
@@ -54,7 +80,7 @@ export class Router {
       routes.splice(existingIndex, 1);
     }
 
-    routes.push({
+    const compiled: CompiledRoute = {
       pattern: definition.pattern,
       regex,
       paramNames,
@@ -62,52 +88,58 @@ export class Router {
       meta: definition.meta,
       filePath: definition.filePath,
       middlewares: definition.middlewares,
+      secure: definition.secure,
+      cached: definition.cached,
       template: definition.template,
-    });
+    };
+    routes.push(compiled);
+    return new RouteRef(compiled);
   }
 
   /**
    * Register a GET route programmatically.
    */
-  get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    this.addRoute({ method: "GET", pattern: path, handler, middlewares, meta });
+  get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.addRoute({ method: "GET", pattern: path, handler, middlewares, meta });
   }
 
   /**
    * Register a POST route programmatically.
    */
-  post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    this.addRoute({ method: "POST", pattern: path, handler, middlewares, meta });
+  post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.addRoute({ method: "POST", pattern: path, handler, middlewares, meta });
   }
 
   /**
    * Register a PUT route programmatically.
    */
-  put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    this.addRoute({ method: "PUT", pattern: path, handler, middlewares, meta });
+  put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.addRoute({ method: "PUT", pattern: path, handler, middlewares, meta });
   }
 
   /**
    * Register a PATCH route programmatically.
    */
-  patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    this.addRoute({ method: "PATCH", pattern: path, handler, middlewares, meta });
+  patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.addRoute({ method: "PATCH", pattern: path, handler, middlewares, meta });
   }
 
   /**
    * Register a DELETE route programmatically.
    */
-  delete(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    this.addRoute({ method: "DELETE", pattern: path, handler, middlewares, meta });
+  delete(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.addRoute({ method: "DELETE", pattern: path, handler, middlewares, meta });
   }
 
   /**
    * Register a route that matches ANY HTTP method.
    */
-  any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+  any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    let lastRef!: RouteRef;
     for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]) {
-      this.addRoute({ method, pattern: path, handler, middlewares, meta });
+      lastRef = this.addRoute({ method, pattern: path, handler, middlewares, meta });
     }
+    return lastRef;
   }
 
   /**
@@ -142,6 +174,8 @@ export class Router {
           meta: route.meta,
           middlewares: route.middlewares,
           template: route.template,
+          secure: route.secure,
+          cached: route.cached,
         };
       }
     }
@@ -164,6 +198,8 @@ export class Router {
           filePath: route.filePath,
           middlewares: route.middlewares,
           template: route.template,
+          secure: route.secure,
+          cached: route.cached,
         });
       }
     }
@@ -183,6 +219,7 @@ export class Router {
           handler: route.filePath ?? (route.handler.name || "(anonymous)"),
           middlewareCount: route.middlewares?.length ?? 0,
           cached: route.cached ?? false,
+          secure: route.secure ?? false,
         });
       }
     }
@@ -228,43 +265,43 @@ export class Router {
   /**
    * Register a GET route on the default global router.
    */
-  static get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    defaultRouter.get(path, handler, middlewares, meta);
+  static get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return defaultRouter.get(path, handler, middlewares, meta);
   }
 
   /**
    * Register a POST route on the default global router.
    */
-  static post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    defaultRouter.post(path, handler, middlewares, meta);
+  static post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return defaultRouter.post(path, handler, middlewares, meta);
   }
 
   /**
    * Register a PUT route on the default global router.
    */
-  static put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    defaultRouter.put(path, handler, middlewares, meta);
+  static put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return defaultRouter.put(path, handler, middlewares, meta);
   }
 
   /**
    * Register a PATCH route on the default global router.
    */
-  static patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    defaultRouter.patch(path, handler, middlewares, meta);
+  static patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return defaultRouter.patch(path, handler, middlewares, meta);
   }
 
   /**
    * Register a DELETE route on the default global router.
    */
-  static delete(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    defaultRouter.delete(path, handler, middlewares, meta);
+  static delete(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return defaultRouter.delete(path, handler, middlewares, meta);
   }
 
   /**
    * Register a route that matches ANY HTTP method on the default global router.
    */
-  static any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    defaultRouter.any(path, handler, middlewares, meta);
+  static any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return defaultRouter.any(path, handler, middlewares, meta);
   }
 
   /**
@@ -343,8 +380,8 @@ export class RouteGroup {
     return merged.length > 0 ? merged : undefined;
   }
 
-  get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    this.router.addRoute({
+  get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.router.addRoute({
       method: "GET",
       pattern: this.prefix + path,
       handler,
@@ -353,8 +390,8 @@ export class RouteGroup {
     });
   }
 
-  post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    this.router.addRoute({
+  post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.router.addRoute({
       method: "POST",
       pattern: this.prefix + path,
       handler,
@@ -363,8 +400,8 @@ export class RouteGroup {
     });
   }
 
-  put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    this.router.addRoute({
+  put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.router.addRoute({
       method: "PUT",
       pattern: this.prefix + path,
       handler,
@@ -373,8 +410,8 @@ export class RouteGroup {
     });
   }
 
-  patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    this.router.addRoute({
+  patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.router.addRoute({
       method: "PATCH",
       pattern: this.prefix + path,
       handler,
@@ -383,8 +420,8 @@ export class RouteGroup {
     });
   }
 
-  delete(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-    this.router.addRoute({
+  delete(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.router.addRoute({
       method: "DELETE",
       pattern: this.prefix + path,
       handler,
@@ -393,9 +430,10 @@ export class RouteGroup {
     });
   }
 
-  any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
+  any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    let lastRef!: RouteRef;
     for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]) {
-      this.router.addRoute({
+      lastRef = this.router.addRoute({
         method,
         pattern: this.prefix + path,
         handler,
@@ -403,6 +441,7 @@ export class RouteGroup {
         meta,
       });
     }
+    return lastRef;
   }
 
   /**
@@ -458,29 +497,29 @@ export const defaultRouter = new Router();
  *     res.json({ id: req.params.id }, 201);
  *   });
  */
-export function get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-  defaultRouter.get(path, handler, middlewares, meta);
+export function get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+  return defaultRouter.get(path, handler, middlewares, meta);
 }
 
-export function post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-  defaultRouter.post(path, handler, middlewares, meta);
+export function post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+  return defaultRouter.post(path, handler, middlewares, meta);
 }
 
-export function put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-  defaultRouter.put(path, handler, middlewares, meta);
+export function put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+  return defaultRouter.put(path, handler, middlewares, meta);
 }
 
-export function patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-  defaultRouter.patch(path, handler, middlewares, meta);
+export function patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+  return defaultRouter.patch(path, handler, middlewares, meta);
 }
 
 // Named "del" to avoid conflict with the "delete" keyword; also exported as "delete" alias below.
-export function del(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-  defaultRouter.delete(path, handler, middlewares, meta);
+export function del(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+  return defaultRouter.delete(path, handler, middlewares, meta);
 }
 
-export function any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): void {
-  defaultRouter.any(path, handler, middlewares, meta);
+export function any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+  return defaultRouter.any(path, handler, middlewares, meta);
 }
 
 export function websocket(path: string, handler: WebSocketRouteHandler): void {

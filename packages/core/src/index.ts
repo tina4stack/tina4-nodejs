@@ -13,7 +13,7 @@ export type {
 } from "./types.js";
 
 export { startServer, resolvePortAndHost } from "./server.js";
-export { Router, RouteGroup, defaultRouter, runRouteMiddlewares } from "./router.js";
+export { Router, RouteGroup, RouteRef, defaultRouter, runRouteMiddlewares } from "./router.js";
 export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";
 export { discoverRoutes } from "./routeDiscovery.js";

@@ -69,6 +69,10 @@ export interface RouteDefinition {
   middlewares?: Middleware[];
   /** Template file to render when handler returns a plain object */
   template?: string;
+  /** Whether this route requires bearer-token authentication */
+  secure?: boolean;
+  /** Whether this route's response should be cached */
+  cached?: boolean;
 }
 
 export interface RouteMeta {

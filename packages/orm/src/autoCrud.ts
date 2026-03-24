@@ -8,11 +8,16 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
   const routes: RouteDefinition[] = [];
 
   for (const { definition } of models) {
-    const { tableName, fields, softDelete, tableFilter } = definition;
+    const { tableName, fields, softDelete, tableFilter, fieldMapping } = definition;
     const basePath = `/api/${tableName}`;
+    const mapping = fieldMapping ?? {};
 
-    // Find primary key field
+    // Helper to get DB column name for a JS property name
+    const getDbCol = (prop: string): string => mapping[prop] ?? prop;
+
+    // Find primary key field (JS property name) and its DB column name
     const pkField = Object.entries(fields).find(([, def]) => def.primaryKey)?.[0] ?? "id";
+    const pkColumn = getDbCol(pkField);
 
     // Build extra WHERE conditions for soft delete and table filter
     const extraConditions: string[] = [];
@@ -65,7 +70,7 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
         const adapter = getAdapter();
-        const conditions = [`"${pkField}" = ?`, ...extraConditions];
+        const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
         const items = adapter.query(
           `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
           [req.params.id],
@@ -112,7 +117,7 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
           insertFields.push(["is_deleted", 0]);
         }
 
-        const columns = insertFields.map(([k]) => `"${k}"`).join(", ");
+        const columns = insertFields.map(([k]) => `"${getDbCol(k)}"`).join(", ");
         const placeholders = insertFields.map(() => "?").join(", ");
         const values = insertFields.map(([, v]) => v);
 
@@ -123,7 +128,7 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
 
         const id = result.lastInsertRowid;
         const created = adapter.query(
-          `SELECT * FROM "${tableName}" WHERE "${pkField}" = ?`,
+          `SELECT * FROM "${tableName}" WHERE "${pkColumn}" = ?`,
           [id],
         );
 
@@ -155,7 +160,7 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
         const adapter = getAdapter();
 
         // Check exists (respect soft delete)
-        const conditions = [`"${pkField}" = ?`, ...extraConditions];
+        const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
         const existing = adapter.query(
           `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
           [req.params.id],
@@ -172,16 +177,16 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
           return;
         }
 
-        const setClause = updateFields.map(([k]) => `"${k}" = ?`).join(", ");
+        const setClause = updateFields.map(([k]) => `"${getDbCol(k)}" = ?`).join(", ");
         const values = [...updateFields.map(([, v]) => v), req.params.id];
 
         adapter.execute(
-          `UPDATE "${tableName}" SET ${setClause} WHERE "${pkField}" = ?`,
+          `UPDATE "${tableName}" SET ${setClause} WHERE "${pkColumn}" = ?`,
           values,
         );
 
         const updated = adapter.query(
-          `SELECT * FROM "${tableName}" WHERE "${pkField}" = ?`,
+          `SELECT * FROM "${tableName}" WHERE "${pkColumn}" = ?`,
           [req.params.id],
         );
 
@@ -200,7 +205,7 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
       handler: async (req: Tina4Request, res: Tina4Response) => {
         const adapter = getAdapter();
 
-        const conditions = [`"${pkField}" = ?`, ...extraConditions];
+        const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
         const existing = adapter.query(
           `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
           [req.params.id],
@@ -212,13 +217,13 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
 
         if (softDelete) {
           adapter.execute(
-            `UPDATE "${tableName}" SET is_deleted = 1 WHERE "${pkField}" = ?`,
+            `UPDATE "${tableName}" SET is_deleted = 1 WHERE "${pkColumn}" = ?`,
             [req.params.id],
           );
           res.json({ message: "Deleted (soft)", data: existing[0] });
         } else {
           adapter.execute(
-            `DELETE FROM "${tableName}" WHERE "${pkField}" = ?`,
+            `DELETE FROM "${tableName}" WHERE "${pkColumn}" = ?`,
             [req.params.id],
           );
           res.json({ message: "Deleted", data: existing[0] });

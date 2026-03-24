@@ -39,6 +39,7 @@ export async function discoverModels(modelsDir: string): Promise<DiscoveredModel
       const definition: ModelDefinition = {
         tableName: ModelClass.tableName,
         fields: ModelClass.fields as Record<string, FieldDefinition>,
+        fieldMapping: ModelClass.fieldMapping as Record<string, string> | undefined,
         softDelete: ModelClass.softDelete ?? false,
         tableFilter: ModelClass.tableFilter,
         hasOne: ModelClass.hasOne as RelationshipDefinition[] | undefined,
