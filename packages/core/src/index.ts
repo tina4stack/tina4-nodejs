@@ -91,6 +91,8 @@ export { MongoSessionHandler } from "./sessionHandlers/mongoHandler.js";
 export type { MongoSessionConfig } from "./sessionHandlers/mongoHandler.js";
 export { ValkeySessionHandler } from "./sessionHandlers/valkeyHandler.js";
 export type { ValkeySessionConfig } from "./sessionHandlers/valkeyHandler.js";
+export { RedisNpmSessionHandler } from "./sessionHandlers/redisHandler.js";
+export type { RedisNpmSessionConfig } from "./sessionHandlers/redisHandler.js";
 export { tests, assertEqual, assertThrows, assertTrue, assertFalse, runAllTests, resetTests } from "./testing.js";
 export { Container, container } from "./container.js";
 export type { WebSocketConnection } from "./websocketConnection.js";

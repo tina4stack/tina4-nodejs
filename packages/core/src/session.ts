@@ -302,6 +302,11 @@ export class Session {
       case "redis":
         this.handler = new RedisSessionHandler(config);
         break;
+      case "redis-npm": {
+        const { RedisNpmSessionHandler } = require("./sessionHandlers/redisHandler.js");
+        this.handler = new RedisNpmSessionHandler(config);
+        break;
+      }
       case "valkey": {
         const { ValkeySessionHandler } = require("./sessionHandlers/valkeyHandler.js");
         this.handler = new ValkeySessionHandler(config);

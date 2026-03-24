@@ -52,6 +52,8 @@ export interface WebSocketClient {
   ip: string;
   connectedAt: number;
   closed: boolean;
+  /** The URL path this client connected on (e.g. "/chat", "/notifications"). */
+  path: string;
 }
 
 type EventHandler = (...args: unknown[]) => void;
@@ -185,14 +187,20 @@ export class WebSocketServer {
 
   /**
    * Broadcast a message to all connected clients.
+   *
+   * When `path` is provided, only clients connected on that specific path
+   * receive the message (matching PHP's WebSocket::broadcast behaviour).
+   * When `path` is omitted/undefined, all clients receive the message
+   * (backward compatible).
    */
-  broadcast(message: string, excludeIds?: string[]): void {
+  broadcast(message: string, excludeIds?: string[], path?: string): void {
     const frame = buildFrame(OP_TEXT, Buffer.from(message, "utf-8"));
     const exclude = new Set(excludeIds ?? []);
 
     for (const [id, client] of this.clients) {
       if (exclude.has(id)) continue;
       if (client.closed) continue;
+      if (path !== undefined && client.path !== path) continue;
       try {
         client.socket.write(frame);
       } catch {
@@ -310,7 +318,7 @@ export class WebSocketServer {
 
     socket.write(response);
 
-    // Create client
+    // Create client — track the URL path for path-scoped broadcast
     const clientId = randomUUID().slice(0, 8);
     const client: WebSocketClient = {
       id: clientId,
@@ -318,6 +326,7 @@ export class WebSocketServer {
       ip: (socket.remoteAddress ?? "unknown"),
       connectedAt: Date.now(),
       closed: false,
+      path: req.url ?? "/",
     };
 
     this.clients.set(clientId, client);
