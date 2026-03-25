@@ -6,3 +6,6 @@ dist/
 .DS_Store
 data/
 .claude/
+*.tsbuildinfo
+demo/.env
+example/.env
