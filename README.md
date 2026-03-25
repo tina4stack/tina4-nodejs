@@ -10,6 +10,14 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/tina4-nodejs"><img src="https://img.shields.io/npm/v/tina4-nodejs?color=7b1fa2&label=npm" alt="npm"></a>
+  <img src="https://img.shields.io/badge/tests-1%2C812%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/features-38-blue" alt="Features">
+  <img src="https://img.shields.io/badge/dependencies-0-brightgreen" alt="Zero Deps">
+  <a href="https://tina4.com"><img src="https://img.shields.io/badge/docs-tina4.com-7b1fa2" alt="Docs"></a>
+</p>
+
+<p align="center">
   <a href="https://tina4.com">Documentation</a> &bull;
   <a href="#getting-started">Getting Started</a> &bull;
   <a href="#features">Features</a> &bull;
