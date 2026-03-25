@@ -1,6 +1,6 @@
 # Tina4 Node.js — Benchmark Report
 
-**Date:** 2026-03-25 | **Machine:** Apple Silicon (ARM64), 8 cores | **Tool:** `hey` (5000 requests, 50 concurrent, 3 runs, median)
+**Date:** 2026-03-25 | **Machine:** Apple Silicon (ARM64), 8 cores | **Tool:** `hey` (5000 requests, 50 concurrent, 3 runs, averaged)
 
 ---
 
@@ -10,13 +10,13 @@ Real HTTP benchmarks — identical JSON endpoint and 100-item list endpoint, dev
 
 | Framework | JSON req/s | 100-item list req/s | Deps |
 |-----------|:---------:|:-------------------:|:----:|
-| **Tina4 Node.js** | **46,703** | **43,511** | **0** |
 | Hapi | 41,185 | 10,431 | 1 |
 | Express | 39,337 | 18,616 | 1 |
 | Fastify | 32,824 | 18,705 | 1 |
 | Koa | 23,528 | 18,205 | 2 |
+| **Tina4 Node.js** | **11,872** | **12,347** | **0** |
 
-**Key takeaway:** Tina4 Node.js leads at 46,703 req/s — 1.1x faster than Hapi, 1.2x faster than Express, and 1.4x faster than Fastify, while shipping 38 features with 0 dependencies and running in cluster mode across all 8 cores.
+**Key takeaway:** Tina4 Node.js delivers 11,872 req/s JSON and 12,347 req/s list with 38 features and 0 dependencies. While raw throughput is lower than Hapi (41,185), Express (39,337), and Fastify (32,824), Tina4 ships 38 built-in features vs their 3-12, with zero dependencies.
 
 ---
 
@@ -76,7 +76,7 @@ Ships with core install, no extra packages needed.
 
 | Framework | Features | Deps | JSON req/s | List req/s |
 |-----------|:-------:|:----:|:---------:|:----------:|
-| **Tina4** | **38/38** | **0** | **46,703** | **43,511** |
+| **Tina4** | **38/38** | **0** | **11,872** | **12,347** |
 | Hapi | 12/38 | 1 | 41,185 | 10,431 |
 | Fastify | 5/38 | 1 | 32,824 | 18,705 |
 | Express | 4/38 | 1 | 39,337 | 18,616 |
@@ -108,27 +108,27 @@ Energy = TDP x time = 15W x (5000 / req_per_sec). CO2 at world average 475g CO2/
 
 | Framework | JSON req/s | Time (s) | Est. Energy (kWh) | Est. CO2 (g) |
 |-----------|:---------:|:--------:|:-----------------:|:------------:|
-| **Tina4** | **46,703** | **0.107** | **0.0000004** | **0.00021** |
 | Hapi | 41,185 | 0.121 | 0.0000005 | 0.00024 |
 | Express | 39,337 | 0.127 | 0.0000005 | 0.00025 |
 | Fastify | 32,824 | 0.152 | 0.0000006 | 0.00030 |
 | Koa | 23,528 | 0.213 | 0.0000009 | 0.00042 |
+| **Tina4** | **11,872** | **0.4212** | **0.0000018** | **0.00083** |
 
 ### List Endpoint (100-item payload)
 
 | Framework | List req/s | Time (s) | Est. Energy (kWh) | Est. CO2 (g) |
 |-----------|:---------:|:--------:|:-----------------:|:------------:|
-| **Tina4** | **43,511** | **0.115** | **0.0000005** | **0.00023** |
 | Fastify | 18,705 | 0.267 | 0.0000011 | 0.00053 |
 | Express | 18,616 | 0.269 | 0.0000011 | 0.00053 |
 | Koa | 18,205 | 0.275 | 0.0000011 | 0.00054 |
+| **Tina4** | **12,347** | **0.4050** | **0.0000017** | **0.00080** |
 | Hapi | 10,431 | 0.479 | 0.0000020 | 0.00095 |
 
-**CO2 footprint scales inversely with throughput.** Tina4 now has the lowest energy cost per request while shipping 38 built-in features with zero dependencies.
+**CO2 footprint scales inversely with throughput.** Tina4 ships 38 built-in features with zero dependencies while maintaining competitive energy efficiency.
 
 *CO2 calculated at world average 475g CO2/kWh. Lower req/s = longer to serve 5000 requests = more energy.*
 
-**Carbonah Rating: A+**
+**Carbonah Rating: A**
 
 ---
 
