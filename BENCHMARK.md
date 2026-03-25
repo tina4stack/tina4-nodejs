@@ -10,10 +10,10 @@ Real HTTP benchmarks — identical JSON endpoint and 100-item list endpoint, dev
 
 | Framework | JSON req/s | 100-item list req/s | Deps |
 |-----------|:---------:|:-------------------:|:----:|
-| Hapi | 42,959 | 15,646 | 1 |
-| Express | 43,662 | 28,161 | 1 |
 | Fastify | 55,329 | 33,496 | 1 |
 | Koa | 52,708 | 29,909 | 2 |
+| Express | 43,662 | 28,161 | 1 |
+| Hapi | 42,959 | 15,646 | 1 |
 | **Tina4 Node.js** | **11,872** | **12,347** | **0** |
 
 **Key takeaway:** Tina4 Node.js delivers 11,872 req/s JSON and 12,347 req/s list with 38 features and 0 dependencies. While raw throughput is lower than Hapi (41,185), Express (39,337), and Fastify (32,824), Tina4 ships 38 built-in features vs their 3-12, with zero dependencies.
