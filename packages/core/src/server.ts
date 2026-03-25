@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { resolve, dirname, join, relative } from "node:path";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isatty } from "node:tty";
 import { fileURLToPath } from "node:url";
 import cluster from "node:cluster";
@@ -652,11 +652,21 @@ ${reset}
         return;
       }
 
-      // Show landing page on "/" if no route matched and no index template exists
+      // Show landing page or index template on "/"
       if (pathname === "/" && (req.method ?? "GET") === "GET") {
-        const hasIndexHtml = existsSync(resolve(templatesDir, "index.html"));
-        const hasIndexTwig = existsSync(resolve(templatesDir, "index.twig"));
-        if (!hasIndexHtml && !hasIndexTwig) {
+        const indexHtmlPath = resolve(templatesDir, "index.html");
+        const indexTwigPath = resolve(templatesDir, "index.twig");
+        if (existsSync(indexHtmlPath)) {
+          const html = readFileSync(indexHtmlPath, "utf-8");
+          res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.raw.end(html);
+          return;
+        } else if (existsSync(indexTwigPath)) {
+          const html = res.render ? res.render("index.twig", {}) : readFileSync(indexTwigPath, "utf-8");
+          res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.raw.end(html);
+          return;
+        } else {
           const allRoutes = router.getRoutes().map((r) => ({
             method: r.method,
             pattern: r.pattern,
