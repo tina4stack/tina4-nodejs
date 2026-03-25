@@ -1,6 +1,6 @@
 {
   "name": "tina4-nodejs",
-  "version": "3.8.4",
+  "version": "3.8.5",
   "type": "module",
   "description": "This is not a framework. Tina4 for Node.js/TypeScript — zero deps, 38 built-in features.",
   "keywords": ["tina4", "framework", "web", "api", "orm", "graphql", "websocket", "typescript"],
@@ -49,9 +49,7 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "dependencies": {
-    "better-sqlite3": "^11.0.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "typescript": "^5.7.0",
     "tsx": "^4.19.0",

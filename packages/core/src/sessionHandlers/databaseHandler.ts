@@ -39,18 +39,9 @@ export class DatabaseSessionHandler implements SessionHandler {
   constructor(config?: DatabaseSessionConfig) {
     const dbPath = config?.dbPath ?? this.resolveDbPath();
 
-    let Database: any;
-    try {
-      Database = _require("better-sqlite3");
-    } catch {
-      throw new Error(
-        "DatabaseSessionHandler requires 'better-sqlite3'. " +
-        "Install it with: npm install better-sqlite3"
-      );
-    }
-
-    this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
+    const { DatabaseSync } = require("node:sqlite");
+    this.db = new DatabaseSync(dbPath);
+    this.db.exec("PRAGMA journal_mode = WAL");
   }
 
   /**
