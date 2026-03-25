@@ -95,4 +95,6 @@ export { RedisNpmSessionHandler } from "./sessionHandlers/redisHandler.js";
 export type { RedisNpmSessionConfig } from "./sessionHandlers/redisHandler.js";
 export { tests, assertEqual, assertThrows, assertTrue, assertFalse, runAllTests, resetTests } from "./testing.js";
 export { Container, container } from "./container.js";
+export { Validator } from "./validator.js";
+export type { ValidationError } from "./validator.js";
 export type { WebSocketConnection } from "./websocketConnection.js";

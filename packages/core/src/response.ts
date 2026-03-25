@@ -128,6 +128,11 @@ export function createResponse(res: ServerResponse): Tina4Response {
     return response.cookie(name, "", { ...options, maxAge: 0, expires: new Date(0) });
   };
 
+  response.error = function (code: string, message: string, status?: number): Tina4Response {
+    const statusCode = status ?? 400;
+    return response.json({ error: true, code, message, status: statusCode }, statusCode);
+  };
+
   response.file = function (filePath: string, options?: { download?: boolean; contentType?: string }): Tina4Response {
     if (!fs.existsSync(filePath)) {
       res.statusCode = 404;
@@ -189,4 +194,14 @@ export function createResponse(res: ServerResponse): Tina4Response {
   };
 
   return response;
+}
+
+/**
+ * Build a standard error response envelope (standalone helper).
+ *
+ * Usage:
+ *   return response(errorResponse("VALIDATION_FAILED", "Email is required", 400), 400);
+ */
+export function errorResponse(code: string, message: string, status: number = 400): Record<string, unknown> {
+  return { error: true, code, message, status };
 }
