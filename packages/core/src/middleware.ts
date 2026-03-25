@@ -349,6 +349,59 @@ export class RequestLogger {
   }
 }
 
+/**
+ * Class-based security headers middleware using the before/after convention.
+ * Auto-injects security headers on every response.
+ *
+ * Configuration via env vars:
+ *   TINA4_FRAME_OPTIONS       — X-Frame-Options (default: "SAMEORIGIN")
+ *   TINA4_HSTS                — Strict-Transport-Security max-age value
+ *                                (default: "" = off; set to "31536000" to enable)
+ *   TINA4_CSP                 — Content-Security-Policy (default: "default-src 'self'")
+ *   TINA4_REFERRER_POLICY     — Referrer-Policy (default: "strict-origin-when-cross-origin")
+ *   TINA4_PERMISSIONS_POLICY  — Permissions-Policy (default: "camera=(), microphone=(), geolocation=()")
+ *
+ * Usage:
+ *   Router.use(SecurityHeadersMiddleware);
+ */
+export class SecurityHeadersMiddleware {
+  static beforeSecurity(req: Tina4Request, res: Tina4Response): [Tina4Request, Tina4Response] {
+    res.header(
+      "X-Frame-Options",
+      process.env.TINA4_FRAME_OPTIONS ?? "SAMEORIGIN",
+    );
+
+    res.header("X-Content-Type-Options", "nosniff");
+
+    const hsts = process.env.TINA4_HSTS ?? "";
+    if (hsts) {
+      res.header(
+        "Strict-Transport-Security",
+        `max-age=${hsts}; includeSubDomains`,
+      );
+    }
+
+    res.header(
+      "Content-Security-Policy",
+      process.env.TINA4_CSP ?? "default-src 'self'",
+    );
+
+    res.header(
+      "Referrer-Policy",
+      process.env.TINA4_REFERRER_POLICY ?? "strict-origin-when-cross-origin",
+    );
+
+    res.header("X-XSS-Protection", "0");
+
+    res.header(
+      "Permissions-Policy",
+      process.env.TINA4_PERMISSIONS_POLICY ?? "camera=(), microphone=(), geolocation=()",
+    );
+
+    return [req, res];
+  }
+}
+
 // Built-in request logger middleware (function form — kept for backwards compat)
 export function requestLogger(): Middleware {
   return (req, res, next) => {

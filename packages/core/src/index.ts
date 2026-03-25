@@ -17,10 +17,10 @@ export { Router, RouteGroup, RouteRef, defaultRouter, runRouteMiddlewares } from
 export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";
 export { discoverRoutes } from "./routeDiscovery.js";
-export { MiddlewareChain, MiddlewareRunner, cors, requestLogger, CorsMiddleware, RateLimiterMiddleware, RequestLogger } from "./middleware.js";
+export { MiddlewareChain, MiddlewareRunner, cors, requestLogger, CorsMiddleware, RateLimiterMiddleware, RequestLogger, SecurityHeadersMiddleware } from "./middleware.js";
 export type { CorsConfig } from "./middleware.js";
 export { createRequest, parseBody } from "./request.js";
-export { createResponse } from "./response.js";
+export { createResponse, errorResponse } from "./response.js";
 export { tryServeStatic } from "./static.js";
 export { loadEnv, getEnv, requireEnv, hasEnv, allEnv, resetEnv, isTruthy } from "./dotenv.js";
 export { Log } from "./logger.js";
