@@ -359,11 +359,26 @@ export class Router {
           paramNames.push(name);
           return "(.+)";
         }
-        // Dynamic param: {id} (primary syntax, matching Python)
+        // Dynamic param: {id}, {id:int}, {id:float}, {id:path} (matching Python/Ruby)
         if (segment.startsWith("{") && segment.endsWith("}")) {
-          const name = segment.slice(1, -1);
+          const inner = segment.slice(1, -1);
+          const colonIdx = inner.indexOf(":");
+          const name = colonIdx >= 0 ? inner.slice(0, colonIdx) : inner;
+          const type = colonIdx >= 0 ? inner.slice(colonIdx + 1) : "string";
           paramNames.push(name);
-          return "([^/]+)";
+          switch (type) {
+            case "int":
+            case "integer":
+              return "(\\d+)";
+            case "float":
+            case "number":
+              return "([\\d.]+)";
+            case "path":
+            case ".*":
+              return "(.+)";
+            default:
+              return "([^/]+)";
+          }
         }
         // Dynamic param: [id] (file-based routing internal syntax)
         if (segment.startsWith("[") && segment.endsWith("]")) {
