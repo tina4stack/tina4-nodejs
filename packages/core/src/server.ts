@@ -166,6 +166,51 @@ function getGalleryDeployedState(): Record<string, boolean> {
   return state;
 }
 
+/** Template cache: url_path -> template_file. Null until first production lookup. */
+let templateCache: Map<string, string> | null = null;
+
+/**
+ * Resolve a URL path to a template file in src/templates/.
+ * Dev mode: checks filesystem every time for live changes.
+ * Production: uses a cached lookup built once at startup.
+ */
+function resolveTemplate(pathname: string, templatesDir: string): string | null {
+  const cleanPath = pathname.replace(/^\//, "") || "index";
+  const isDev = (process.env.TINA4_DEBUG ?? "false").toLowerCase() === "true";
+
+  if (isDev) {
+    for (const ext of [".twig", ".html"]) {
+      const candidate = cleanPath + ext;
+      if (existsSync(resolve(templatesDir, candidate))) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  // Production: cached lookup
+  if (!templateCache) {
+    templateCache = new Map();
+    if (existsSync(templatesDir)) {
+      const scan = (dir: string, prefix: string) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) {
+            scan(resolve(dir, entry.name), rel);
+          } else if (entry.name.endsWith(".twig") || entry.name.endsWith(".html")) {
+            const urlPath = rel.replace(/\.(twig|html)$/, "");
+            if (!templateCache!.has(urlPath)) {
+              templateCache!.set(urlPath, rel);
+            }
+          }
+        }
+      };
+      scan(templatesDir, "");
+    }
+  }
+  return templateCache.get(cleanPath) ?? null;
+}
+
 function renderLandingPage(routes: Array<{ method: string; pattern: string; flags?: string[] }>, port: number = 7148): string {
   const version = TINA4_VERSION;
 
@@ -654,15 +699,12 @@ ${reset}
 
       // Try serving a template file (e.g. /hello -> src/templates/hello.twig or hello.html)
       if ((req.method ?? "GET") === "GET") {
-        const cleanPath = pathname.replace(/^\//, "") || "index";
-        for (const ext of [".twig", ".html"]) {
-          const tplPath = resolve(templatesDir, cleanPath + ext);
-          if (existsSync(tplPath)) {
-            const html = readFileSync(tplPath, "utf-8");
-            res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-            res.raw.end(html);
-            return;
-          }
+        const tplFile = resolveTemplate(pathname, templatesDir);
+        if (tplFile) {
+          const html = readFileSync(resolve(templatesDir, tplFile), "utf-8");
+          res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.raw.end(html);
+          return;
         }
 
         // Show landing page for "/" when no template exists
