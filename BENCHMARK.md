@@ -10,7 +10,7 @@ Real HTTP benchmarks — identical JSON endpoint and 100-item list endpoint, dev
 
 | Framework | JSON req/s | 100-item list req/s | Deps |
 |-----------|:---------:|:-------------------:|:----:|
-| Hapi | — | — | 1 |
+| Hapi | 42,959 | 15,646 | 1 |
 | Express | 43,662 | 28,161 | 1 |
 | Fastify | 55,329 | 33,496 | 1 |
 | Koa | 52,708 | 29,909 | 2 |
