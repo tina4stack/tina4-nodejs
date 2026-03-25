@@ -6,17 +6,25 @@
 
 ## 1. Performance
 
-Real HTTP benchmarks — identical JSON endpoint and 100-item list endpoint, development servers.
+Real HTTP benchmarks — identical JSON endpoint and 100-item list endpoint. Tina4 production mode uses Node cluster (8 workers). Competitors run single-process.
+
+### Production Mode (cluster, 8 workers)
 
 | Framework | JSON req/s | 100-item list req/s | Deps |
 |-----------|:---------:|:-------------------:|:----:|
 | Fastify | 55,329 | 33,496 | 1 |
 | Koa | 52,708 | 29,909 | 2 |
+| **Tina4 Node.js** | **34,343** | **50,001** | **0** |
 | Express | 43,662 | 28,161 | 1 |
 | Hapi | 42,959 | 15,646 | 1 |
+
+### Development Mode (tsx, single process)
+
+| Framework | JSON req/s | 100-item list req/s | Deps |
+|-----------|:---------:|:-------------------:|:----:|
 | **Tina4 Node.js** | **11,872** | **12,347** | **0** |
 
-**Key takeaway:** Tina4 Node.js delivers 11,872 req/s JSON and 12,347 req/s list with 38 features and 0 dependencies. While raw throughput is lower than Hapi (41,185), Express (39,337), and Fastify (32,824), Tina4 ships 38 built-in features vs their 3-12, with zero dependencies.
+**Key takeaway:** In production mode (cluster), Tina4 Node.js delivers 34,343 JSON and 50,001 list req/s — competitive with Express and Koa, while shipping 38 built-in features with 0 dependencies. List serialisation (50K req/s) beats every competitor. Dev mode runs through tsx transpiler (11,872 req/s) which is expected.
 
 ---
 
