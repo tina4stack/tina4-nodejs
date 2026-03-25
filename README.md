@@ -84,8 +84,8 @@ Every feature is built from scratch -- no npm install, no node_modules bloat, no
 | **Templates** | Frond engine (Twig-compatible), inheritance, partials, 53+ filters, macros, fragment caching, sandboxing |
 | **ORM** | Active Record, typed fields with validation, soft delete, relationships (`hasOne`/`hasMany`/`belongsTo`), scopes, result caching, auto-CRUD |
 | **Database** | SQLite, PostgreSQL, MySQL, MSSQL/SQL Server, Firebird -- unified adapter interface, query caching (TINA4_DB_CACHE=true for 4x speedup) |
-| **Auth** | Zero-dep JWT (HS256 + RS256), sessions (file backend), PBKDF2 password hashing, form tokens |
-| **API** | Swagger/OpenAPI auto-generation, GraphQL with schema builder and GraphiQL IDE |
+| **Auth** | Zero-dep JWT (HS256/RS256), sessions (file/Redis/Valkey/MongoDB/database), password hashing, form tokens |
+| **API** | Swagger/OpenAPI auto-generation, GraphQL with ORM auto-schema and GraphiQL IDE, WSDL/SOAP with auto WSDL |
 | **Background** | Queue (SQLite/RabbitMQ/Kafka/MongoDB) with priority, delayed jobs, retry, batch processing |
 | **Real-time** | Native WebSocket (RFC 6455), per-path routing, connection manager, broadcast |
 | **Frontend** | tina4-css (~24 KB), frond.js helper, SCSS compiler, live reload, CSS hot-reload |
