@@ -5,6 +5,72 @@ import type { SQLiteAdapter } from "./adapters/sqlite.js";
 import type { DiscoveredModel } from "./model.js";
 import { getAdapter } from "./database.js";
 
+// ---------------------------------------------------------------------------
+// Firebird ALTER TABLE ADD idempotency check
+// ---------------------------------------------------------------------------
+// Firebird does not support IF NOT EXISTS for ALTER TABLE ADD. When a migration
+// adds a column that already exists, Firebird throws an error and blocks the
+// entire migration. These helpers detect ALTER TABLE ... ADD statements and
+// query RDB$RELATION_FIELDS to see if the column is already present. If so,
+// the statement is silently skipped rather than executed.
+
+/**
+ * Regex to match ALTER TABLE <table> ADD <column> ...
+ * Captures table name and column name (quoted or unquoted).
+ */
+const ALTER_ADD_RE =
+  /^\s*ALTER\s+TABLE\s+(?:"([^"]+)"|(\S+))\s+ADD\s+(?:"([^"]+)"|(\S+))/i;
+
+/**
+ * Check if the adapter is a Firebird adapter (duck-type check).
+ * We look for the `queryAsync` method and `translateSql` which are
+ * unique to the Firebird adapter.
+ */
+function isFirebirdAdapter(db: DatabaseAdapter): boolean {
+  return (
+    typeof (db as any).queryAsync === "function" &&
+    typeof (db as any).translateSql === "function"
+  );
+}
+
+/**
+ * Check if a column already exists in a Firebird table.
+ */
+async function firebirdColumnExists(
+  db: DatabaseAdapter,
+  table: string,
+  column: string,
+): Promise<boolean> {
+  const rows = await (db as any).queryAsync<Record<string, unknown>>(
+    "SELECT 1 FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = ? AND TRIM(RDB$FIELD_NAME) = ?",
+    [table.toUpperCase(), column.toUpperCase()],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * If stmt is an ALTER TABLE ... ADD on Firebird and the column already exists,
+ * returns a skip reason string. Returns null if the statement should execute normally.
+ */
+async function shouldSkipForFirebird(
+  db: DatabaseAdapter,
+  stmt: string,
+): Promise<string | null> {
+  if (!isFirebirdAdapter(db)) return null;
+
+  const m = stmt.match(ALTER_ADD_RE);
+  if (!m) return null;
+
+  const table = m[1] ?? m[2];
+  const column = m[3] ?? m[4];
+
+  if (await firebirdColumnExists(db, table, column)) {
+    return `Column ${column} already exists in ${table}, skipping`;
+  }
+
+  return null;
+}
+
 /**
  * Sync model definitions to the database (create tables, add columns).
  */
@@ -458,6 +524,14 @@ export async function migrate(
       db.startTransaction();
 
       for (const stmt of statements) {
+        // Firebird lacks IF NOT EXISTS for ALTER TABLE ADD.
+        // Pre-check the system catalogue so duplicate columns are
+        // silently skipped instead of raising an error.
+        const skipReason = await shouldSkipForFirebird(db, stmt);
+        if (skipReason) {
+          console.log(`  Migration ${file}: ${skipReason}`);
+          continue;
+        }
         db.execute(stmt);
       }
 
