@@ -185,9 +185,25 @@ export function parseDatabaseUrl(url: string, username?: string, password?: stri
  *   db.update("users", { name: "Bob" }, { id: 1 });
  *   db.delete("users", { id: 1 });
  *   db.close();
+ *
+ * Connection pooling:
+ *   const db = await Database.create("sqlite:///data/app.db", undefined, undefined, 4);
+ *   // 4 connections, round-robin rotation
  */
 export class Database {
-  private adapter: DatabaseAdapter;
+  private adapter: DatabaseAdapter | null;
+
+  /** Connection pool — array of adapters with lazy creation */
+  private pool: (DatabaseAdapter | null)[] = [];
+
+  /** Pool size (0 = single connection) */
+  private poolSize: number = 0;
+
+  /** Round-robin index */
+  private poolIndex: number = 0;
+
+  /** Factory for creating new adapters (used by pool) */
+  private adapterFactory: (() => Promise<DatabaseAdapter>) | null = null;
 
   /**
    * Create a Database wrapping an existing adapter.
@@ -201,8 +217,33 @@ export class Database {
   /**
    * Async factory: creates a Database from a connection URL.
    * Works with all adapter types (sqlite, postgres, mysql, mssql, firebird).
+   *
+   * @param url - Connection URL
+   * @param username - Optional username
+   * @param password - Optional password
+   * @param pool - Number of pooled connections (0 = single, N>0 = round-robin)
    */
-  static async create(url: string, username?: string, password?: string): Promise<Database> {
+  static async create(url: string, username?: string, password?: string, pool: number = 0): Promise<Database> {
+    if (pool > 0) {
+      // Pooled mode — create all adapters eagerly
+      const adapters: DatabaseAdapter[] = [];
+      for (let i = 0; i < pool; i++) {
+        adapters.push(await createAdapterFromUrl(url, username, password));
+      }
+
+      // Set the first adapter as the global default
+      setAdapter(adapters[0]);
+
+      const db = new Database(adapters[0]);
+      db.poolSize = pool;
+      db.pool = adapters;
+      db.poolIndex = 0;
+      db.adapter = null;  // Don't use single-adapter path
+      db.adapterFactory = () => createAdapterFromUrl(url, username, password);
+      return db;
+    }
+
+    // Single-connection mode — current behavior
     const adapter = await createAdapterFromUrl(url, username, password);
     setAdapter(adapter);
     return new Database(adapter);
@@ -211,84 +252,119 @@ export class Database {
   /**
    * Create a Database from an environment variable.
    * @param envKey - Name of the env var holding the connection URL. Defaults to "DATABASE_URL".
+   * @param pool - Number of pooled connections (0 = single, N>0 = round-robin)
    */
-  static async fromEnv(envKey = "DATABASE_URL"): Promise<Database> {
+  static async fromEnv(envKey = "DATABASE_URL", pool: number = 0): Promise<Database> {
     const url = process.env[envKey];
     if (!url) {
       throw new Error(`Environment variable "${envKey}" is not set.`);
     }
-    return Database.create(url);
+    return Database.create(url, undefined, undefined, pool);
+  }
+
+  /**
+   * Get the next adapter — from pool (round-robin) or single connection.
+   */
+  private getNextAdapter(): DatabaseAdapter {
+    if (this.poolSize > 0) {
+      const idx = this.poolIndex;
+      this.poolIndex = (this.poolIndex + 1) % this.poolSize;
+      return this.pool[idx] as DatabaseAdapter;
+    }
+
+    return this.adapter!;
   }
 
   /** Get the underlying adapter (for advanced / escape-hatch usage). */
   getAdapter(): DatabaseAdapter {
-    return this.adapter;
+    return this.getNextAdapter();
+  }
+
+  /** Get the pool size (0 = single connection mode). */
+  getPoolSize(): number {
+    return this.poolSize;
+  }
+
+  /** Get the number of active (created) connections in the pool. */
+  getActivePoolCount(): number {
+    if (this.poolSize === 0) return this.adapter ? 1 : 0;
+    return this.pool.filter(a => a !== null).length;
   }
 
   /** Query rows with optional pagination. Returns a DatabaseResult wrapper. */
   fetch(sql: string, params?: unknown[], limit?: number, offset?: number): DatabaseResult {
-    const rows = this.adapter.fetch<Record<string, unknown>>(sql, params, limit, offset);
-    return new DatabaseResult(rows, undefined, undefined, limit, offset, this.adapter, sql);
+    const adapter = this.getNextAdapter();
+    const rows = adapter.fetch<Record<string, unknown>>(sql, params, limit, offset);
+    return new DatabaseResult(rows, undefined, undefined, limit, offset, adapter, sql);
   }
 
   /** Fetch a single row or null. */
   fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | null {
-    return this.adapter.fetchOne<T>(sql, params);
+    return this.getNextAdapter().fetchOne<T>(sql, params);
   }
 
   /** Execute a statement (INSERT, UPDATE, DELETE, DDL). */
   execute(sql: string, params?: unknown[]): unknown {
-    return this.adapter.execute(sql, params);
+    return this.getNextAdapter().execute(sql, params);
   }
 
   /** Insert a row into a table. */
   insert(table: string, data: Record<string, unknown>): DatabaseWriteResult {
-    return this.adapter.insert(table, data);
+    return this.getNextAdapter().insert(table, data);
   }
 
   /** Update rows in a table matching filter. */
   update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown>): DatabaseWriteResult {
-    return this.adapter.update(table, data, filter ?? {});
+    return this.getNextAdapter().update(table, data, filter ?? {});
   }
 
   /** Delete rows from a table matching filter. */
   delete(table: string, filter?: Record<string, unknown>): DatabaseWriteResult {
-    return this.adapter.delete(table, filter ?? {});
+    return this.getNextAdapter().delete(table, filter ?? {});
   }
 
-  /** Close the database connection. */
+  /** Close all database connections (pool or single). */
   close(): void {
-    this.adapter.close();
+    if (this.poolSize > 0) {
+      for (let i = 0; i < this.pool.length; i++) {
+        if (this.pool[i] !== null) {
+          this.pool[i]!.close();
+          this.pool[i] = null;
+        }
+      }
+    } else if (this.adapter) {
+      this.adapter.close();
+    }
   }
 
   /** Start a transaction. */
   startTransaction(): void {
-    this.adapter.startTransaction();
+    this.getNextAdapter().startTransaction();
   }
 
   /** Commit the current transaction. */
   commit(): void {
-    this.adapter.commit();
+    this.getNextAdapter().commit();
   }
 
   /** Rollback the current transaction. */
   rollback(): void {
-    this.adapter.rollback();
+    this.getNextAdapter().rollback();
   }
 
   /** Check if a table exists. */
   tableExists(name: string): boolean {
-    return this.adapter.tableExists(name);
+    return this.getNextAdapter().tableExists(name);
   }
 
   /** List all tables in the database. */
   getTables(): string[] {
-    return this.adapter.tables();
+    return this.getNextAdapter().tables();
   }
 
   /** Get the last auto-increment id. */
   getLastId(): string | number {
-    const id = this.adapter.lastInsertId();
+    const id = this.getNextAdapter().lastInsertId();
     if (id === null) return 0;
     return typeof id === "bigint" ? id.toString() : id;
   }
