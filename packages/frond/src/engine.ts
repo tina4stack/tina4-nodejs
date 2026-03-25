@@ -848,6 +848,8 @@ export class Frond {
   /** Token pre-compilation cache for string templates */
   private compiledStrings = new Map<string, Token[]>();
 
+  getTemplateDir(): string { return this.templateDir; }
+
   constructor(templateDir: string = "src/templates") {
     this.templateDir = resolve(templateDir);
     this.filters = { ...BUILTIN_FILTERS };

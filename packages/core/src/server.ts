@@ -446,14 +446,13 @@ ${reset}
   const healthRoute = createHealthRoute(TINA4_VERSION);
   router.addRoute(healthRoute);
 
-  // Initialize Twig if available
-  let twigAvailable = false;
+  // Initialize Frond template engine
+  let frondEngine: any = null;
   try {
-    const twig = await import("@tina4/twig");
-    twig.setTemplatesDir(templatesDir);
-    twigAvailable = true;
+    const { Frond } = await import("@tina4/frond");
+    frondEngine = new Frond(templatesDir);
   } catch {
-    // Twig not installed, res.render() won't be available
+    // Frond not available
   }
 
   // Built-in middleware
@@ -569,12 +568,12 @@ ${reset}
     const req = createRequest(rawReq);
     const res = createResponse(rawRes);
 
-    // Add res.render() if Twig is available
-    if (twigAvailable) {
-      try {
-        const twig = await import("@tina4/twig");
-        twig.addRenderMethod(res);
-      } catch { /* ignore */ }
+    // Add res.render() if Frond is available
+    if (frondEngine) {
+      res.render = (template: string, data?: Record<string, unknown>, statusCode?: number) => {
+        const html = frondEngine.render(template, data);
+        return res.html(html, statusCode ?? 200);
+      };
     }
 
     try {

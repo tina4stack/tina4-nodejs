@@ -161,34 +161,19 @@ export function createResponse(res: ServerResponse): Tina4Response {
     return response;
   };
 
-  response.render = async function (templateName: string, data?: Record<string, unknown>): Promise<Tina4Response> {
-    try {
-      const twig = await import("@tina4/twig");
-      const html = await twig.renderTemplate(templateName, data);
-      response.html(html);
-    } catch (err) {
-      res.statusCode = 500;
-      response.json({
-        error: "Template rendering failed",
-        statusCode: 500,
-        message: String(err),
-      });
-    }
+  // Default render/template stubs — overwritten by server.ts when Frond is available
+  response.render = async function (templateName: string, _data?: Record<string, unknown>): Promise<Tina4Response> {
+    res.statusCode = 500;
+    response.json({
+      error: "Template engine not available",
+      statusCode: 500,
+      message: "Frond template engine is not initialized. Ensure @tina4/frond is installed.",
+    });
     return response;
   };
 
   response.template = async function (name: string, data?: Record<string, unknown>): Promise<Tina4Response> {
-    try {
-      const twig = await import("@tina4/twig");
-      const html = await twig.renderTemplate(name, data);
-      response.html(html);
-    } catch (err) {
-      res.statusCode = 500;
-      response.json({
-        error: "Template rendering failed",
-        statusCode: 500,
-        message: String(err),
-      });
+    return response.render(name, data);
     }
     return response;
   };

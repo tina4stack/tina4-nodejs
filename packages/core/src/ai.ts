@@ -170,7 +170,7 @@ test/             — Test files
 | Routing | router | \`import { get, post, put, del } from "@tina4/core"\` |
 | ORM | orm | \`import { BaseModel } from "@tina4/orm"\` |
 | Database | database | \`import { initDatabase } from "@tina4/orm"\` |
-| Templates | twig | \`import { renderTemplate } from "@tina4/twig"\` |
+| Templates | twig | \`import { renderTemplate } from "@tina4/frond"\` |
 | JWT Auth | auth | \`import { createToken, validateToken } from "@tina4/core"\` |
 | REST API Client | api | \`import { Api } from "@tina4/core"\` |
 | GraphQL | graphql | \`import { GraphQL } from "@tina4/core"\` |
