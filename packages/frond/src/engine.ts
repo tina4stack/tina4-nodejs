@@ -758,7 +758,9 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   md5: (v) => createHash("md5").update(String(v)).digest("hex"),
   sha256: (v) => createHash("sha256").update(String(v)).digest("hex"),
   base64_encode: (v) => Buffer.isBuffer(v) ? v.toString("base64") : Buffer.from(String(v)).toString("base64"),
+  base64encode: (v) => Buffer.isBuffer(v) ? v.toString("base64") : Buffer.from(String(v)).toString("base64"),
   base64_decode: (v) => Buffer.from(String(v), "base64").toString("utf-8"),
+  base64decode: (v) => Buffer.from(String(v), "base64").toString("utf-8"),
   data_uri: (v) => {
     if (v && typeof v === "object" && "content" in v) {
       const ct = (v as any).type ?? "application/octet-stream";
