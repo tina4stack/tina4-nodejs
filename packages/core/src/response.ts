@@ -174,8 +174,6 @@ export function createResponse(res: ServerResponse): Tina4Response {
 
   response.template = async function (name: string, data?: Record<string, unknown>): Promise<Tina4Response> {
     return response.render(name, data);
-    }
-    return response;
   };
 
   return response;
