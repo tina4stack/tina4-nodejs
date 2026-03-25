@@ -652,21 +652,21 @@ ${reset}
         return;
       }
 
-      // Show landing page or index template on "/"
-      if (pathname === "/" && (req.method ?? "GET") === "GET") {
-        const indexHtmlPath = resolve(templatesDir, "index.html");
-        const indexTwigPath = resolve(templatesDir, "index.twig");
-        if (existsSync(indexHtmlPath)) {
-          const html = readFileSync(indexHtmlPath, "utf-8");
-          res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          res.raw.end(html);
-          return;
-        } else if (existsSync(indexTwigPath)) {
-          const html = res.render ? res.render("index.twig", {}) : readFileSync(indexTwigPath, "utf-8");
-          res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          res.raw.end(html);
-          return;
-        } else {
+      // Try serving a template file (e.g. /hello -> src/templates/hello.twig or hello.html)
+      if ((req.method ?? "GET") === "GET") {
+        const cleanPath = pathname.replace(/^\//, "") || "index";
+        for (const ext of [".twig", ".html"]) {
+          const tplPath = resolve(templatesDir, cleanPath + ext);
+          if (existsSync(tplPath)) {
+            const html = readFileSync(tplPath, "utf-8");
+            res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            res.raw.end(html);
+            return;
+          }
+        }
+
+        // Show landing page for "/" when no template exists
+        if (pathname === "/") {
           const allRoutes = router.getRoutes().map((r) => ({
             method: r.method,
             pattern: r.pattern,
