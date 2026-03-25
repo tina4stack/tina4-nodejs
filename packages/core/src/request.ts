@@ -27,9 +27,26 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   return tReq;
 }
 
+/** Maximum upload size in bytes (default 10 MB). Override via TINA4_MAX_UPLOAD_SIZE env var. */
+const TINA4_MAX_UPLOAD_SIZE = parseInt(process.env.TINA4_MAX_UPLOAD_SIZE ?? "10485760", 10);
+
+export class PayloadTooLargeError extends Error {
+  public statusCode = 413;
+  constructor(actual: number, limit: number) {
+    super(`Request body (${actual} bytes) exceeds TINA4_MAX_UPLOAD_SIZE (${limit} bytes)`);
+    this.name = "PayloadTooLargeError";
+  }
+}
+
 export async function parseBody(req: Tina4Request): Promise<void> {
   const method = req.method?.toUpperCase();
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
+
+  // Check content-length header against upload size limit before reading body
+  const declaredLength = parseInt(req.headers["content-length"] ?? "0", 10);
+  if (declaredLength > TINA4_MAX_UPLOAD_SIZE) {
+    throw new PayloadTooLargeError(declaredLength, TINA4_MAX_UPLOAD_SIZE);
+  }
 
   const contentType = req.headers["content-type"] ?? "";
   const chunks: Buffer[] = [];
@@ -42,6 +59,11 @@ export async function parseBody(req: Tina4Request): Promise<void> {
 
   const raw = Buffer.concat(chunks);
   if (raw.length === 0) return;
+
+  // Check actual body size against upload size limit
+  if (raw.length > TINA4_MAX_UPLOAD_SIZE) {
+    throw new PayloadTooLargeError(raw.length, TINA4_MAX_UPLOAD_SIZE);
+  }
 
   if (contentType.includes("multipart/form-data")) {
     const boundary = extractBoundary(contentType);
