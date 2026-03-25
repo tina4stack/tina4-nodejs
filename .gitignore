@@ -5,7 +5,10 @@ dist/
 .env
 .DS_Store
 data/
-.claude/
+.claude/*
+!.claude/skills/
 *.tsbuildinfo
 demo/.env
 example/.env
+.claude/settings.local.json
+.claude/worktrees/
