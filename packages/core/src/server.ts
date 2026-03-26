@@ -683,20 +683,23 @@ ${reset}
           if (!proceed || res.raw.writableEnded) return;
         }
 
-        // Support (), (response), (request), or (request, response) handler signatures
-        // When 1 param: if named request/req, pass request; otherwise pass response
+        // Inject path params by name into handler arguments, then request/response
         let result: unknown;
-        if (match.handler.length === 0) {
+        const routeParams = req.params || {};
+        const fnStr = match.handler.toString();
+        const argMatch = fnStr.match(/^(?:async\s+)?(?:function\s*\w*)?\s*\(([^)]*)\)/);
+        const argNames = argMatch?.[1]?.split(",").map((s: string) => s.trim().replace(/[:=].*/,"")) ?? [];
+        const filteredArgs = argNames.filter((n: string) => n.length > 0);
+
+        if (filteredArgs.length === 0) {
           result = await (match.handler as any)();
-        } else if (match.handler.length === 1) {
-          const fnStr = match.handler.toString();
-          const paramMatch = fnStr.match(/^(?:async\s+)?(?:function\s*)?\(?\s*(\w+)/);
-          const paramName = paramMatch?.[1]?.toLowerCase() ?? "";
-          result = (paramName === "request" || paramName === "req")
-            ? await match.handler(req as any)
-            : await match.handler(res as any);
         } else {
-          result = await match.handler(req, res);
+          const args = filteredArgs.map((name: string) => {
+            if (name in routeParams) return routeParams[name];
+            if (name === "request" || name === "req") return req;
+            return res;
+          });
+          result = await (match.handler as any)(...args);
         }
 
         // If the route exports a template and the handler returned a plain object,
