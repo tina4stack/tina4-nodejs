@@ -8,12 +8,22 @@ export interface UploadedFile {
   size: number;
 }
 
+export interface Tina4Session {
+  get(key: string, defaultValue?: unknown): unknown;
+  set(key: string, value: unknown): void;
+  delete(key: string): void;
+  clear(): void;
+  save(): void;
+  readonly id: string;
+}
+
 export interface Tina4Request extends IncomingMessage {
   params: Record<string, string>;
   query: Record<string, string>;
   body: unknown;
   ip: string;
   files: UploadedFile[];
+  session: Tina4Session;
 }
 
 export interface CookieOptions {

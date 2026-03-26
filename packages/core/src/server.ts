@@ -568,6 +568,28 @@ ${reset}
     const req = createRequest(rawReq);
     const res = createResponse(rawRes);
 
+    // Auto-start session — read cookie, create session, save + set cookie on response end
+    {
+      const { Session } = await import("./session.js");
+      const cookieHeader = rawReq.headers.cookie ?? "";
+      const sidMatch = cookieHeader.match(/tina4_session=([^;]+)/);
+      const existingSid = sidMatch ? sidMatch[1] : undefined;
+      const sess = new Session();
+      sess.start(existingSid);
+      (req as any).session = sess;
+
+      const origEnd = rawRes.end.bind(rawRes);
+      rawRes.end = function (...args: any[]) {
+        sess.save();
+        const newSid = (sess as any).sessionId ?? (sess as any).getSessionId?.();
+        if (newSid && newSid !== existingSid && !rawRes.headersSent) {
+          const ttl = parseInt(process.env.TINA4_SESSION_TTL ?? "3600", 10);
+          rawRes.setHeader("Set-Cookie", `tina4_session=${newSid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${ttl}`);
+        }
+        return origEnd(...args);
+      } as typeof rawRes.end;
+    }
+
     // Add res.render() if Frond is available
     if (frondEngine) {
       res.render = (template: string, data?: Record<string, unknown>, statusCode?: number) => {
