@@ -1,5 +1,6 @@
 import { getAdapter, getNamedAdapter } from "./database.js";
 import { validate as validateFields } from "./validation.js";
+import { QueryBuilder } from "./queryBuilder.js";
 import type { DatabaseAdapter, FieldDefinition, RelationshipDefinition } from "./types.js";
 
 /**
@@ -88,6 +89,18 @@ export class BaseModel {
       reverse[dbCol] = jsProp;
     }
     return reverse;
+  }
+
+  /**
+   * Create a fluent QueryBuilder pre-configured for this model's table and database.
+   *
+   * Usage:
+   *   const results = User.query().where("active = ?", [1]).orderBy("name").get();
+   *
+   * @returns A QueryBuilder instance bound to this model's table and database.
+   */
+  static query(): QueryBuilder {
+    return QueryBuilder.from(this.tableName, this.getDb());
   }
 
   /**
