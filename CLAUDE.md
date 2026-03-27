@@ -43,7 +43,7 @@ tina4-nodejs/
     orm/        # Database adapters, models, auto-CRUD, query builder, seeding
       src/
         adapters/
-          sqlite.ts        # SQLite via better-sqlite3 (default)
+          sqlite.ts        # SQLite via node:sqlite (default)
           postgres.ts      # PostgreSQL adapter
           mysql.ts         # MySQL adapter
           mssql.ts         # MSSQL / SQL Server adapter
@@ -69,7 +69,7 @@ This is an **npm workspaces monorepo**. All packages are in `packages/*`.
 - **Language:** TypeScript (strict mode, ES2022 target, Node16 module resolution)
 - **Runtime:** Node.js 20+ (ESM only, `"type": "module"` everywhere)
 - **HTTP:** Native `node:http` — no Express, no Fastify
-- **Database:** SQLite via `better-sqlite3` (default), with adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird
+- **Database:** SQLite via `node:sqlite` (default), with adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird
 - **Templates:** Twig via `twig` npm package (optional)
 - **Dev tooling:** `tsx` for runtime TS execution, `esbuild` for builds
 - **Testing:** 43 test files via `tsx test/run-all.ts`
@@ -139,7 +139,7 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 
 **Key files:**
 - `database.ts` — Adapter manager, `initDatabase()` factory
-- `adapters/sqlite.ts` — `better-sqlite3` implementation of `DatabaseAdapter` interface
+- `adapters/sqlite.ts` — `node:sqlite` implementation of `DatabaseAdapter` interface
 - `adapters/postgres.ts` — PostgreSQL adapter
 - `adapters/mysql.ts` — MySQL adapter
 - `adapters/mssql.ts` — MSSQL / SQL Server adapter (`mssql` or `sqlserver` scheme)
@@ -470,7 +470,7 @@ import { Router } from "./router.js";  // .js even though the file is .ts
 3. **Convention-based models** — `static fields = {}` over decorators. No special TypeScript config needed.
 4. **CDN for Swagger UI** — Keeps install under 8MB. Single HTML file loads from unpkg.com.
 5. **Process restart for hot-reload** — Simpler and more reliable than HMR with ESM.
-6. **SQLite default** — `better-sqlite3` is synchronous and fast. Full adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird.
+6. **SQLite default** — `node:sqlite` is synchronous and fast. Full adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird.
 7. **CLI named `tina4nodejs`** (primary) with `tina4` as alias — So `npx tina4nodejs init` or `npx tina4 init` both work.
 8. **Event system** — Static `Events` class, synchronous dispatch, priority ordering, zero deps.
 9. **Inline testing** — Tests as decorators on functions, no external test runner for unit-level checks.
@@ -532,7 +532,7 @@ await initDatabase({ type: "postgres", host: "localhost", port: 5432, database: 
 ### Available adapters
 | Adapter | Scheme(s) | Package |
 |---------|-----------|---------|
-| SQLite | `sqlite://` | `better-sqlite3` |
+| SQLite | `sqlite://` | `node:sqlite` |
 | PostgreSQL | `postgres://`, `postgresql://` | `pg` |
 | MySQL | `mysql://` | `mysql2` |
 | MSSQL | `mssql://`, `sqlserver://` | `tedious` |
