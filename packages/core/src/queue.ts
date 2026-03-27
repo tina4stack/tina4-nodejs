@@ -48,6 +48,8 @@ export interface QueueJob {
   createdAt: string;
   attempts: number;
   delayUntil: string | null;
+  priority: number;
+  topic: string;
   error?: string;
   /** Mark this job as completed. */
   complete(): void;
@@ -55,12 +57,15 @@ export interface QueueJob {
   fail(reason?: string): void;
   /** Reject this job with a reason. Alias for fail(). */
   reject(reason?: string): void;
+  /** Re-queue this job with incremented attempts and optional delay. */
+  retry(delaySeconds?: number): void;
 }
 
 /** Create a QueueJob with lifecycle methods bound to a Queue instance. */
-function createJob(data: Omit<QueueJob, "complete" | "fail" | "reject">, queue: Queue, topic: string): QueueJob {
+function createJob(data: Omit<QueueJob, "complete" | "fail" | "reject" | "retry">, queue: Queue, topic: string): QueueJob {
   const job: QueueJob = {
     ...data,
+    topic,
     complete() {
       job.status = "completed";
     },
@@ -72,6 +77,9 @@ function createJob(data: Omit<QueueJob, "complete" | "fail" | "reject">, queue: 
     },
     reject(reason = "") {
       job.fail(reason);
+    },
+    retry(delaySeconds?: number) {
+      queue._retryJob(topic, job, delaySeconds);
     },
   };
   return job;
@@ -160,25 +168,32 @@ export class Queue {
    * Add a job to the queue. Returns job ID.
    *
    * Can be called as:
-   *   queue.push(payload)                 — uses constructor topic
-   *   queue.push(payload, delay)          — uses constructor topic with delay
-   *   queue.push("queueName", payload)    — legacy: explicit queue name
+   *   queue.push(payload)                          — uses constructor topic
+   *   queue.push(payload, delay)                   — uses constructor topic with delay
+   *   queue.push(payload, delay, priority)         — uses constructor topic with delay and priority
+   *   queue.push("queueName", payload)             — legacy: explicit queue name
+   *   queue.push("queueName", payload, delay)      — legacy with delay
+   *
+   * @param priority — Higher value = higher priority. Default 0.
    */
-  push(queueOrPayload: string | unknown, payloadOrDelay?: unknown, delay?: number): string {
+  push(queueOrPayload: string | unknown, payloadOrDelay?: unknown, delay?: number, priority?: number): string {
     let queue: string;
     let payload: unknown;
     let actualDelay: number | undefined;
+    let actualPriority: number;
 
     if (typeof queueOrPayload === "string" && payloadOrDelay !== undefined && typeof payloadOrDelay !== "number") {
-      // Legacy: push("queueName", payload, delay?)
+      // Legacy: push("queueName", payload, delay?, priority?)
       queue = queueOrPayload;
       payload = payloadOrDelay;
       actualDelay = delay;
+      actualPriority = priority ?? 0;
     } else {
-      // Unified: push(payload) or push(payload, delay)
+      // Unified: push(payload) or push(payload, delay) or push(payload, delay, priority)
       queue = this.topic;
       payload = queueOrPayload;
       actualDelay = typeof payloadOrDelay === "number" ? payloadOrDelay : delay;
+      actualPriority = typeof payloadOrDelay === "number" ? (delay ?? 0) : (priority ?? 0);
     }
 
     if (this.externalBackend) {
@@ -189,13 +204,14 @@ export class Queue {
     const now = new Date().toISOString();
     this.seq++;
 
-    const job: QueueJob = {
+    const job = {
       id,
       payload,
-      status: "pending",
+      status: "pending" as const,
       createdAt: now,
       attempts: 0,
       delayUntil: actualDelay ? new Date(Date.now() + actualDelay * 1000).toISOString() : null,
+      priority: actualPriority,
     };
 
     const prefix = `${Date.now()}-${String(this.seq).padStart(6, "0")}`;
@@ -240,6 +256,8 @@ export class Queue {
       if (job.delayUntil && job.delayUntil > now) continue;
 
       job.status = "reserved";
+      job.topic = q;
+      job.priority = job.priority ?? 0;
       writeFileSync(filePath, JSON.stringify(job, null, 2));
 
       try {
@@ -248,7 +266,7 @@ export class Queue {
         // Already consumed by another worker
       }
 
-      return job;
+      return createJob(job as any, this, q);
     }
 
     return null;
@@ -302,14 +320,29 @@ export class Queue {
   }
 
   /**
-   * Count pending jobs in a queue.
+   * Count jobs in a queue filtered by status.
+   *
+   * @param queue  — Queue/topic name (defaults to constructor topic)
+   * @param status — Job status to count: "pending" (default) or "failed"
    */
-  size(queue?: string): number {
+  size(queue?: string, status: string = "pending"): number {
     const q = queue ?? this.topic;
 
     if (this.externalBackend) {
       return this.externalBackend.size(q);
     }
+
+    if (status === "failed") {
+      const failedDir = this.ensureFailedDir(q);
+      let files: string[];
+      try {
+        files = readdirSync(failedDir).filter(f => f.endsWith(".queue-data"));
+      } catch {
+        return 0;
+      }
+      return files.length;
+    }
+
     const dir = this.ensureDir(q);
     let files: string[];
     try {
@@ -321,8 +354,8 @@ export class Queue {
     let count = 0;
     for (const file of files) {
       try {
-        const job: QueueJob = JSON.parse(readFileSync(join(dir, file), "utf-8"));
-        if (job.status === "pending") count++;
+        const job = JSON.parse(readFileSync(join(dir, file), "utf-8"));
+        if (job.status === status) count++;
       } catch {
         // skip corrupt files
       }
@@ -659,5 +692,20 @@ export class Queue {
     job.error = error;
 
     writeFileSync(join(failedDir, `${job.id}.queue-data`), JSON.stringify(job, null, 2));
+  }
+
+  /**
+   * Re-queue a job back to the main queue directory with incremented attempts.
+   */
+  _retryJob(queue: string, job: QueueJob, delaySeconds?: number): void {
+    const dir = this.ensureDir(queue);
+    job.status = "pending";
+    job.attempts = (job.attempts || 0) + 1;
+    job.error = undefined;
+    job.delayUntil = delaySeconds ? new Date(Date.now() + delaySeconds * 1000).toISOString() : null;
+
+    this.seq++;
+    const prefix = `${Date.now()}-${String(this.seq).padStart(6, "0")}`;
+    writeFileSync(join(dir, `${prefix}_${job.id}.queue-data`), JSON.stringify(job, null, 2));
   }
 }
