@@ -3,6 +3,7 @@ import { resolve, dirname, join, relative } from "node:path";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isatty } from "node:tty";
 import { fileURLToPath } from "node:url";
+import { execFileSync, exec } from "node:child_process";
 import cluster from "node:cluster";
 import os from "node:os";
 import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
@@ -35,7 +36,7 @@ const TINA4_VERSION = "3.0.0";
  * Falls back to `start` if none of the candidates work.
  */
 function findAvailablePort(start: number, maxTries = 10): number {
-  const { execFileSync } = require("node:child_process");
+  // execFileSync imported at top of file (ESM)
   for (let offset = 0; offset < maxTries; offset++) {
     const port = start + offset;
     try {
@@ -54,7 +55,7 @@ function findAvailablePort(start: number, maxTries = 10): number {
  * Open the user's default browser after a short delay so the server is ready.
  */
 function openBrowser(url: string) {
-  const { exec } = require("node:child_process");
+  // exec imported at top of file (ESM)
   setTimeout(() => {
     if (process.platform === "darwin") exec(`open ${url}`);
     else if (process.platform === "win32") exec(`start "" "${url}"`);

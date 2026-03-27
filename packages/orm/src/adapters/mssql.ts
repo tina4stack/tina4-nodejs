@@ -6,13 +6,13 @@
  */
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslation.js";
+import { createRequire } from "node:module";
 
 let tedious: any = null;
 
 function requireTedious(): any {
   if (tedious) return tedious;
   try {
-    const { createRequire } = require("node:module") as typeof import("node:module");
     const req = createRequire(import.meta.url);
     tedious = req("tedious");
     return tedious;

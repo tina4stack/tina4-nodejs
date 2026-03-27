@@ -31,6 +31,9 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { RabbitMQBackend } from "./queueBackends/rabbitmqBackend.js";
+import { KafkaBackend } from "./queueBackends/kafkaBackend.js";
+import { MongoBackend } from "./queueBackends/mongoBackend.js";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -137,13 +140,10 @@ export class Queue {
 
     // Initialize external backends
     if (this.backendName === "rabbitmq") {
-      const { RabbitMQBackend } = require("./queueBackends/rabbitmqBackend.js");
       this.externalBackend = new RabbitMQBackend();
     } else if (this.backendName === "kafka") {
-      const { KafkaBackend } = require("./queueBackends/kafkaBackend.js");
       this.externalBackend = new KafkaBackend();
     } else if (this.backendName === "mongodb" || this.backendName === "mongo") {
-      const { MongoBackend } = require("./queueBackends/mongoBackend.js");
       this.externalBackend = new MongoBackend();
     }
   }

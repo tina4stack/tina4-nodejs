@@ -53,25 +53,26 @@ export class RedisBackplane implements WebSocketBackplane {
   constructor(url?: string) {
     this.url = url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "redis://localhost:6379";
 
-    let redis: any;
-    try {
-      redis = require("redis");
-    } catch {
-      throw new Error(
-        "The 'redis' package is required for RedisBackplane. " +
-        "Install it with: npm install redis"
-      );
-    }
+    this.ready = (async () => {
+      let redis: any;
+      try {
+        redis = await import("redis");
+      } catch {
+        throw new Error(
+          "The 'redis' package is required for RedisBackplane. " +
+          "Install it with: npm install redis"
+        );
+      }
 
-    this.publisher = redis.createClient({ url: this.url });
-    this.subscriber = this.publisher.duplicate();
+      this.publisher = redis.createClient({ url: this.url });
+      this.subscriber = this.publisher.duplicate();
 
-    this.ready = Promise.all([
-      this.publisher.connect(),
-      this.subscriber.connect(),
-    ]).then(() => {
+      await Promise.all([
+        this.publisher.connect(),
+        this.subscriber.connect(),
+      ]);
       console.log(`[Tina4] RedisBackplane connected to ${this.url}`);
-    });
+    })();
   }
 
   async publish(channel: string, message: string): Promise<void> {

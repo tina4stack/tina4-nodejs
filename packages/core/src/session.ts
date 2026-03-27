@@ -28,6 +28,10 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { RedisNpmSessionHandler } from "./sessionHandlers/redisHandler.js";
+import { ValkeySessionHandler } from "./sessionHandlers/valkeyHandler.js";
+import { MongoSessionHandler } from "./sessionHandlers/mongoHandler.js";
+import { DatabaseSessionHandler } from "./sessionHandlers/databaseHandler.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -303,24 +307,20 @@ export class Session {
         this.handler = new RedisSessionHandler(config);
         break;
       case "redis-npm": {
-        const { RedisNpmSessionHandler } = require("./sessionHandlers/redisHandler.js");
         this.handler = new RedisNpmSessionHandler(config);
         break;
       }
       case "valkey": {
-        const { ValkeySessionHandler } = require("./sessionHandlers/valkeyHandler.js");
         this.handler = new ValkeySessionHandler(config);
         break;
       }
       case "mongo":
       case "mongodb": {
-        const { MongoSessionHandler } = require("./sessionHandlers/mongoHandler.js");
         this.handler = new MongoSessionHandler(config);
         break;
       }
       case "database":
       case "db": {
-        const { DatabaseSessionHandler } = require("./sessionHandlers/databaseHandler.js");
         this.handler = new DatabaseSessionHandler(config);
         break;
       }

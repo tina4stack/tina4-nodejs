@@ -12,6 +12,7 @@
  *   TINA4_RABBITMQ_VHOST    (default: "/")
  */
 import net from "node:net";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { QueueJob } from "../queue.js";
 
@@ -144,7 +145,7 @@ export class RabbitMQBackend implements QueueBackend {
    * Execute an AMQP operation synchronously via a child process.
    */
   private execSync(operation: string, queue: string, data?: string): string {
-    const { execFileSync } = require("node:child_process");
+    // execFileSync imported at top level
 
     const script = `
       const net = require("node:net");

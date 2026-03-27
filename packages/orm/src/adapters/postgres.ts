@@ -7,28 +7,21 @@
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslation.js";
 
+import { createRequire } from "node:module";
+
 let pg: typeof import("pg") | null = null;
 
 function requirePg(): typeof import("pg") {
   if (pg) return pg;
   try {
-    // Dynamic require via createRequire for ESM compatibility
-    const { createRequire } = await_import_module();
-    const require = createRequire(import.meta.url);
-    pg = require("pg");
+    const req = createRequire(import.meta.url);
+    pg = req("pg");
     return pg!;
   } catch {
     throw new Error(
       'PostgreSQL adapter requires the "pg" package. Install it with: npm install pg',
     );
   }
-}
-
-/** Synchronous helper to get createRequire — we call this at connection time. */
-function await_import_module() {
-  // node:module is always available
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require("node:module") as typeof import("node:module");
 }
 
 export interface PostgresConfig {

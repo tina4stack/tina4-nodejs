@@ -9,6 +9,7 @@
  *   TINA4_KAFKA_GROUP_ID  (default: "tina4_consumer_group")
  */
 import net from "node:net";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { QueueJob } from "../queue.js";
 
@@ -72,7 +73,7 @@ export class KafkaBackend implements QueueBackend {
    * Execute a Kafka operation synchronously via a child process.
    */
   private execSync(operation: string, topic: string, data?: string): string {
-    const { execFileSync } = require("node:child_process");
+    // execFileSync imported at top level
     const broker = this.parseBroker();
 
     const script = `

@@ -10,10 +10,8 @@
  * The handler dynamically imports `better-sqlite3` and throws a clear
  * error if the package is not installed.
  */
-import { createRequire } from "node:module";
+import { DatabaseSync } from "node:sqlite";
 import type { SessionHandler } from "../session.js";
-
-const _require = createRequire(import.meta.url);
 
 interface SessionData {
   _created: number;
@@ -39,7 +37,6 @@ export class DatabaseSessionHandler implements SessionHandler {
   constructor(config?: DatabaseSessionConfig) {
     const dbPath = config?.dbPath ?? this.resolveDbPath();
 
-    const { DatabaseSync } = require("node:sqlite");
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA journal_mode = WAL");
   }

@@ -6,13 +6,13 @@
  */
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslation.js";
+import { createRequire } from "node:module";
 
 let mysql2: any = null;
 
 function requireMysql2(): any {
   if (mysql2) return mysql2;
   try {
-    const { createRequire } = require("node:module") as typeof import("node:module");
     const req = createRequire(import.meta.url);
     mysql2 = req("mysql2");
     return mysql2;

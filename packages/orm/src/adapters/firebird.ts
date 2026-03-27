@@ -6,13 +6,13 @@
  */
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslation.js";
+import { createRequire } from "node:module";
 
 let firebird: any = null;
 
 function requireFirebird(): any {
   if (firebird) return firebird;
   try {
-    const { createRequire } = require("node:module") as typeof import("node:module");
     const req = createRequire(import.meta.url);
     firebird = req("node-firebird");
     return firebird;
