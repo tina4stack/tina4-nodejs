@@ -585,7 +585,8 @@ ${reset}
         const newSid = (sess as any).sessionId ?? (sess as any).getSessionId?.();
         if (newSid && newSid !== existingSid && !rawRes.headersSent) {
           const ttl = parseInt(process.env.TINA4_SESSION_TTL ?? "3600", 10);
-          rawRes.setHeader("Set-Cookie", `tina4_session=${newSid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${ttl}`);
+          const sameSite = process.env.TINA4_SESSION_SAMESITE ?? "Lax";
+          rawRes.setHeader("Set-Cookie", `tina4_session=${newSid}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${ttl}`);
         }
         return origEnd(...args);
       } as typeof rawRes.end;
