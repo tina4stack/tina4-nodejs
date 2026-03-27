@@ -9,6 +9,7 @@ interface MatchResult {
   template?: string;
   secure?: boolean;
   cached?: boolean;
+  noAuth?: boolean;
 }
 
 interface CompiledRoute {
@@ -21,6 +22,7 @@ interface CompiledRoute {
   middlewares?: Middleware[];
   secure?: boolean;
   cached?: boolean;
+  noAuth?: boolean;
   cacheStore?: Map<string, { data: unknown; expires: number }>;
   cacheTtl?: number;
   template?: string;
@@ -38,6 +40,12 @@ export class RouteRef {
   /** Mark this route as requiring bearer-token authentication. */
   secure(): this {
     this.route.secure = true;
+    return this;
+  }
+
+  /** Opt out of secure-by-default auth (for public write routes). */
+  noAuth(): this {
+    this.route.noAuth = true;
     return this;
   }
 
@@ -105,6 +113,11 @@ export class Router {
       routes.splice(existingIndex, 1);
     }
 
+    // Write methods (POST/PUT/PATCH/DELETE) are secure by default
+    const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+    const isWrite = WRITE_METHODS.has(method);
+    const secureDefault = isWrite ? (definition.secure ?? true) : definition.secure;
+
     const compiled: CompiledRoute = {
       pattern: definition.pattern,
       regex,
@@ -113,8 +126,9 @@ export class Router {
       meta: definition.meta,
       filePath: definition.filePath,
       middlewares: definition.middlewares,
-      secure: definition.secure,
+      secure: secureDefault,
       cached: definition.cached,
+      noAuth: definition.noAuth,
       template: definition.template,
     };
     routes.push(compiled);
@@ -201,6 +215,7 @@ export class Router {
           template: route.template,
           secure: route.secure,
           cached: route.cached,
+          noAuth: route.noAuth,
         };
       }
     }
@@ -225,6 +240,7 @@ export class Router {
           template: route.template,
           secure: route.secure,
           cached: route.cached,
+          noAuth: route.noAuth,
         });
       }
     }

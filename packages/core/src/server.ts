@@ -7,6 +7,7 @@ import cluster from "node:cluster";
 import os from "node:os";
 import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
 import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
+import { validToken } from "./auth.js";
 import { discoverRoutes } from "./routeDiscovery.js";
 import { createRequest, parseBody } from "./request.js";
 import { createResponse } from "./response.js";
@@ -681,6 +682,21 @@ ${reset}
         if (match.middlewares && match.middlewares.length > 0) {
           const proceed = await runRouteMiddlewares(match.middlewares, req, res);
           if (!proceed || res.raw.writableEnded) return;
+        }
+
+        // Auth enforcement: secure routes require a valid Bearer token
+        if (match.secure === true && match.noAuth !== true) {
+          const authHeader = req.headers.authorization ?? "";
+          const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+          const secret = process.env.SECRET || "";
+          const payload = token ? validToken(token, secret) : null;
+
+          if (!payload) {
+            res.raw.writeHead(401, { "Content-Type": "application/json" });
+            res.raw.end(JSON.stringify({ error: "Unauthorized" }));
+            return;
+          }
+          req.user = payload;
         }
 
         // Inject path params by name into handler arguments, then request/response

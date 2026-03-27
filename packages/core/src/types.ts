@@ -24,6 +24,7 @@ export interface Tina4Request extends IncomingMessage {
   ip: string;
   files: UploadedFile[];
   session: Tina4Session;
+  user?: Record<string, unknown>;
 }
 
 export interface CookieOptions {
@@ -84,6 +85,8 @@ export interface RouteDefinition {
   secure?: boolean;
   /** Whether this route's response should be cached */
   cached?: boolean;
+  /** Opt out of secure-by-default auth on write routes */
+  noAuth?: boolean;
 }
 
 export interface RouteMeta {
