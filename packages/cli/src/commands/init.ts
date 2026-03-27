@@ -91,6 +91,45 @@ data/
 `
   );
 
+  // Dockerfile
+  if (!existsSync(join(targetDir, "Dockerfile"))) {
+    writeFileSync(
+      join(targetDir, "Dockerfile"),
+      `# Build stage
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --production
+COPY . .
+
+# Runtime stage
+FROM node:22-alpine
+WORKDIR /app
+COPY --from=build /app .
+ENV HOST=0.0.0.0
+ENV PORT=7148
+EXPOSE 7148
+CMD ["npx", "tsx", "app.ts"]
+`
+    );
+  }
+
+  // .dockerignore
+  if (!existsSync(join(targetDir, ".dockerignore"))) {
+    writeFileSync(
+      join(targetDir, ".dockerignore"),
+      `node_modules
+dist
+.git
+.claude
+.env
+*.log
+test
+tmp
+`
+    );
+  }
+
   // Sample route: GET /api/hello
   writeFileSync(
     join(targetDir, "src/routes/api/hello/get.ts"),
