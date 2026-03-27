@@ -205,6 +205,9 @@ export class Database {
   /** Factory for creating new adapters (used by pool) */
   private adapterFactory: (() => Promise<DatabaseAdapter>) | null = null;
 
+  /** Whether to automatically commit after each write operation */
+  private autoCommit: boolean = process.env.TINA4_AUTOCOMMIT === "true";
+
   /**
    * Create a Database wrapping an existing adapter.
    * For creating a Database from a URL, use the async static factories:
@@ -305,22 +308,42 @@ export class Database {
 
   /** Execute a statement (INSERT, UPDATE, DELETE, DDL). */
   execute(sql: string, params?: unknown[]): unknown {
-    return this.getNextAdapter().execute(sql, params);
+    const adapter = this.getNextAdapter();
+    const result = adapter.execute(sql, params);
+    if (this.autoCommit) {
+      try { adapter.commit(); } catch { /* no active transaction */ }
+    }
+    return result;
   }
 
   /** Insert a row into a table. */
   insert(table: string, data: Record<string, unknown>): DatabaseWriteResult {
-    return this.getNextAdapter().insert(table, data);
+    const adapter = this.getNextAdapter();
+    const result = adapter.insert(table, data);
+    if (this.autoCommit) {
+      try { adapter.commit(); } catch { /* no active transaction */ }
+    }
+    return result;
   }
 
   /** Update rows in a table matching filter. */
   update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown>): DatabaseWriteResult {
-    return this.getNextAdapter().update(table, data, filter ?? {});
+    const adapter = this.getNextAdapter();
+    const result = adapter.update(table, data, filter ?? {});
+    if (this.autoCommit) {
+      try { adapter.commit(); } catch { /* no active transaction */ }
+    }
+    return result;
   }
 
   /** Delete rows from a table matching filter. */
   delete(table: string, filter?: Record<string, unknown>): DatabaseWriteResult {
-    return this.getNextAdapter().delete(table, filter ?? {});
+    const adapter = this.getNextAdapter();
+    const result = adapter.delete(table, filter ?? {});
+    if (this.autoCommit) {
+      try { adapter.commit(); } catch { /* no active transaction */ }
+    }
+    return result;
   }
 
   /** Close all database connections (pool or single). */

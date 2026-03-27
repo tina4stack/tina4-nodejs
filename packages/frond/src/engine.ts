@@ -817,7 +817,7 @@ export function setFormTokenSessionId(sessionId: string): void {
 
 function _generateFormToken(descriptor: string = ""): SafeString {
   const secret = process.env.SECRET || "tina4-default-secret";
-  const ttlMinutes = parseInt(process.env.TINA4_TOKEN_LIMIT || "30", 10);
+  const ttlMinutes = parseInt(process.env.TINA4_TOKEN_LIMIT || "60", 10);
 
   const header = { alg: "HS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);

@@ -1,12 +1,9 @@
 node_modules
 dist
 .git
-.gitignore
-*.md
+.claude
 .env
-.env.*
-test
-coverage
-.vscode
-.idea
 *.log
+test
+benchmarks
+tmp

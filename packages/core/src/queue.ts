@@ -120,7 +120,7 @@ export class Queue {
 
     this.backendName = resolvedConfig.backend
       ?? process.env.TINA4_QUEUE_BACKEND
-      ?? "file";
+      ?? "sqlite";
     this.basePath = resolvedConfig.path
       ?? process.env.TINA4_QUEUE_PATH
       ?? "data/queue";

@@ -147,7 +147,7 @@ export function cors(config?: CorsConfig): Middleware {
 
   const headersRaw = config?.headers
     ?? process.env.TINA4_CORS_HEADERS
-    ?? "Content-Type, Authorization";
+    ?? "Content-Type,Authorization,X-Request-ID";
   const allowedHeaders = Array.isArray(headersRaw)
     ? headersRaw.join(", ")
     : headersRaw;
@@ -206,7 +206,9 @@ export class CorsMiddleware {
       ?? "GET, POST, PUT, DELETE, PATCH, OPTIONS";
 
     const allowedHeaders = process.env.TINA4_CORS_HEADERS
-      ?? "Content-Type, Authorization";
+      ?? "Content-Type,Authorization,X-Request-ID";
+
+    const credentials = process.env.TINA4_CORS_CREDENTIALS ?? "true";
 
     const maxAge = process.env.TINA4_CORS_MAX_AGE
       ? parseInt(process.env.TINA4_CORS_MAX_AGE, 10)
@@ -226,6 +228,11 @@ export class CorsMiddleware {
       res.header("Access-Control-Allow-Origin", originHeader);
       res.header("Access-Control-Allow-Methods", allowedMethods);
       res.header("Access-Control-Allow-Headers", allowedHeaders);
+
+      // Add credentials header when enabled and origin is not wildcard
+      if (credentials === "true" && originHeader !== "*") {
+        res.header("Access-Control-Allow-Credentials", "true");
+      }
 
       if (req.method === "OPTIONS") {
         res.header("Access-Control-Max-Age", String(maxAge));
@@ -425,6 +432,12 @@ export class SecurityHeadersMiddleware {
  */
 export class CsrfMiddleware {
   static beforeCsrf(req: Tina4Request, res: Tina4Response): [Tina4Request, Tina4Response] {
+    // Skip CSRF validation entirely if disabled via env
+    const csrfEnv = process.env.TINA4_CSRF;
+    if (csrfEnv === "false" || csrfEnv === "0" || csrfEnv === "no") {
+      return [req, res];
+    }
+
     // Skip safe HTTP methods
     const method = (req.method ?? "GET").toUpperCase();
     if (method === "GET" || method === "HEAD" || method === "OPTIONS") {

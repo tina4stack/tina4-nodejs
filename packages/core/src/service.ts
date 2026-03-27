@@ -128,10 +128,11 @@ async function executeHandler(svc: RegisteredService): Promise<void> {
 }
 
 function startCronService(svc: RegisteredService): void {
-  const checkIntervalMs = parseInt(
-    process.env.TINA4_SERVICE_INTERVAL ?? "1000",
+  const sleepSeconds = parseInt(
+    process.env.TINA4_SERVICE_SLEEP ?? "5",
     10,
   );
+  const checkIntervalMs = sleepSeconds * 1000;
   let lastMinuteRun = -1;
 
   svc.timerId = setInterval(() => {
