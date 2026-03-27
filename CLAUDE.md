@@ -1,10 +1,10 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.9.1)
+# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.9.2)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.9.1 — a convention-over-configuration structural paradigm. **Not a framework.** The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.9.2 — a convention-over-configuration structural paradigm. **Not a framework.** The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -38,7 +38,7 @@ tina4-nodejs/
         service.ts       # Service layer helpers
         session.ts       # Session management
         testing.ts       # Inline testing framework (attach tests to functions)
-        websocket.ts     # WebSocket support
+        websocket.ts     # WebSocket support (with backplane)
         wsdl.ts          # WSDL / SOAP support
     orm/        # Database adapters, models, auto-CRUD, query builder, seeding
       src/
@@ -120,8 +120,8 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `devAdmin.ts` — Dev toolbar (fixed bottom bar injected into HTML pages) and admin dashboard at `/_dev/`
 - `auth.ts` — Authentication helpers
 - `cache.ts` — In-memory caching
-- `session.ts` — Session management with pluggable handlers
-- `websocket.ts` — WebSocket support
+- `session.ts` — Session management with pluggable handlers. `TINA4_SESSION_SAMESITE` env var (default: Lax)
+- `websocket.ts` — WebSocket support with backplane for scaling via Redis pub/sub (`TINA4_WS_BACKPLANE`, `TINA4_WS_BACKPLANE_URL`)
 - `queue.ts` — Queue system with pluggable backends
 - `graphql.ts` — GraphQL engine
 - `i18n.ts` — Internationalization / localization
@@ -153,6 +153,7 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 - `fakeData.ts` — ORM-aware fake data extending core (adds `forField()` with column-name heuristics)
 - `seeder.ts` — Database seeding (`seedTable` for raw SQL, `seedOrm` for model-based)
 - `sqlTranslation.ts` — Cross-engine SQL translator (`SQLTranslator`) and TTL query cache (`QueryCache`)
+- QueryBuilder supports `toMongo()` for generating MongoDB query documents from the same fluent API
 
 ### @tina4/swagger (`packages/swagger/`)
 Auto-generates OpenAPI 3.0 docs.
@@ -173,7 +174,7 @@ Developer-facing CLI commands.
 
 **Key files:**
 - `bin.ts` — Entry point, command dispatch (`init`, `serve`, `--help`)
-- `commands/init.ts` — Scaffolds a new project directory with sample files
+- `commands/init.ts` — Scaffolds a new project directory with sample files, Dockerfile, and .dockerignore
 - `commands/serve.ts` — Starts dev server with hot-reload via `@tina4/core`
 
 ## Module: Events (`packages/core/src/events.ts`)
@@ -586,12 +587,16 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
 - **`npx tina4nodejs generate`**: model, route, migration, middleware scaffolding
 - **Database**: 5 engines (SQLite, PostgreSQL, MySQL, MSSQL, Firebird), query caching (`TINA4_DB_CACHE=true`)
-- **Sessions**: file backend (default)
+- **Sessions**: file backend (default). `TINA4_SESSION_SAMESITE` env var (default: Lax)
 - **Queue**: file/RabbitMQ/Kafka/MongoDB backends, configured via env vars
 - **Cache**: memory/Redis/file backends
 - **Messenger**: .env driven SMTP/IMAP
 - **ORM relationships**: `hasMany`, `hasOne`, `belongsTo` with eager loading (`include`)
 - **Frond pre-compilation**: 2.8x template render improvement
+- **QueryBuilder** with NoSQL/MongoDB support (`toMongo()`)
+- **WebSocket backplane** (Redis pub/sub) for horizontal scaling
+- **SameSite=Lax** default on session cookies (`TINA4_SESSION_SAMESITE`)
+- **`tina4 init`** generates Dockerfile and .dockerignore
 - **Gallery**: 7 interactive examples with Try It deploy at `/_dev/`
 
 ## Don'ts
