@@ -802,6 +802,19 @@ function _b64url(data: Buffer): string {
  *
  * @returns `<input type="hidden" name="formToken" value="TOKEN">`
  */
+/**
+ * Module-level session ID holder — set by the server before rendering
+ * templates so that form_token() can bind tokens to the current session.
+ */
+let _formTokenSessionId: string = "";
+
+/**
+ * Set the session ID used by formToken() / form_token() for CSRF session binding.
+ */
+export function setFormTokenSessionId(sessionId: string): void {
+  _formTokenSessionId = sessionId || "";
+}
+
 function _generateFormToken(descriptor: string = ""): SafeString {
   const secret = process.env.SECRET || "tina4-default-secret";
   const ttlMinutes = parseInt(process.env.TINA4_TOKEN_LIMIT || "30", 10);
@@ -818,6 +831,11 @@ function _generateFormToken(descriptor: string = ""): SafeString {
     } else {
       payload.context = descriptor;
     }
+  }
+
+  // Include session_id for CSRF session binding
+  if (_formTokenSessionId) {
+    payload.session_id = _formTokenSessionId;
   }
 
   const h = _b64url(Buffer.from(JSON.stringify(header)));

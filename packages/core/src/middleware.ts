@@ -1,4 +1,5 @@
 import type { Tina4Request, Tina4Response, Middleware } from "./types.js";
+import { validToken } from "./auth.js";
 
 export class MiddlewareChain {
   private middlewares: Middleware[] = [];
@@ -397,6 +398,120 @@ export class SecurityHeadersMiddleware {
       "Permissions-Policy",
       process.env.TINA4_PERMISSIONS_POLICY ?? "camera=(), microphone=(), geolocation=()",
     );
+
+    return [req, res];
+  }
+}
+
+/**
+ * Class-based CSRF middleware using the before/after convention.
+ * Validates form tokens on state-changing requests (POST, PUT, PATCH, DELETE).
+ *
+ * Off by default — only active when TINA4_CSRF=true in .env or when
+ * registered explicitly via Router.use(CsrfMiddleware).
+ *
+ * Behaviour:
+ *   - Skips GET, HEAD, OPTIONS requests.
+ *   - Skips routes marked .noAuth().
+ *   - Skips requests with a valid Authorization: Bearer header (API clients).
+ *   - Checks request body formToken then X-Form-Token header.
+ *   - Rejects if token found in query string formToken (log warning, 403).
+ *   - Validates token with validToken using SECRET env var.
+ *   - If token payload has session_id, verifies it matches request session.
+ *   - Returns 403 on failure.
+ *
+ * Usage:
+ *   Router.use(CsrfMiddleware);
+ */
+export class CsrfMiddleware {
+  static beforeCsrf(req: Tina4Request, res: Tina4Response): [Tina4Request, Tina4Response] {
+    // Skip safe HTTP methods
+    const method = (req.method ?? "GET").toUpperCase();
+    if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+      return [req, res];
+    }
+
+    // Skip routes marked noAuth
+    const route = (req as any)._route ?? (req as any).route;
+    if (route?.noAuth) {
+      return [req, res];
+    }
+
+    // Skip requests with valid Bearer token (API clients)
+    const authHeader = req.headers.authorization ?? "";
+    if (authHeader.startsWith("Bearer ")) {
+      const bearerToken = authHeader.slice(7).trim();
+      if (bearerToken) {
+        const secret = process.env.SECRET || "tina4-default-secret";
+        const payload = validToken(bearerToken, secret);
+        if (payload !== null) {
+          return [req, res];
+        }
+      }
+    }
+
+    // Reject if token is in query string (security risk)
+    const query = (req as any).query ?? {};
+    if (query.formToken) {
+      console.warn("[Tina4 CSRF] Token found in query string — rejected for security");
+      res({
+        error: "CSRF_INVALID",
+        message: "Form token must not be sent in the URL query string",
+      }, 403);
+      return [req, res];
+    }
+
+    // Extract token: body first, then header
+    let token: string | undefined;
+    const body = (req as any).body;
+    if (body && typeof body === "object" && body.formToken) {
+      token = String(body.formToken);
+    }
+
+    if (!token) {
+      token = (req.headers["x-form-token"] as string) ?? "";
+    }
+
+    if (!token) {
+      res({
+        error: "CSRF_INVALID",
+        message: "Invalid or missing form token",
+      }, 403);
+      return [req, res];
+    }
+
+    // Validate the token
+    const secret = process.env.SECRET || "tina4-default-secret";
+    const payload = validToken(token, secret);
+
+    if (payload === null) {
+      res({
+        error: "CSRF_INVALID",
+        message: "Invalid or missing form token",
+      }, 403);
+      return [req, res];
+    }
+
+    // Session binding — if token has session_id, verify it matches
+    const tokenSessionId = payload.session_id as string | undefined;
+    if (tokenSessionId) {
+      const session = (req as any).session;
+      let currentSessionId: string | undefined;
+      if (session) {
+        currentSessionId = session.session_id ?? session.sessionId ?? session.id;
+        if (typeof currentSessionId === "function") {
+          currentSessionId = undefined;
+        }
+      }
+
+      if (currentSessionId && tokenSessionId !== currentSessionId) {
+        res({
+          error: "CSRF_INVALID",
+          message: "Invalid or missing form token",
+        }, 403);
+        return [req, res];
+      }
+    }
 
     return [req, res];
   }
