@@ -136,7 +136,9 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
   }
 
   // Dotted path with bracket access — split on . and [...] but not . inside parentheses
+  // Track which parts came from bracket access (need variable resolution)
   const parts: string[] = [];
+  const fromBracket: boolean[] = [];
   {
     let current = "";
     let depth = 0;
@@ -152,27 +154,30 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
       if (ch === '(') { depth++; current += ch; continue; }
       if (ch === ')') { depth--; current += ch; continue; }
       if (ch === '.' && depth === 0) {
-        if (current) parts.push(current);
+        if (current) { parts.push(current); fromBracket.push(false); }
         current = "";
         continue;
       }
       if (ch === '[' && depth === 0) {
-        if (current) parts.push(current);
+        if (current) { parts.push(current); fromBracket.push(false); }
         current = "";
         const end = expr.indexOf(']', i + 1);
         if (end !== -1) {
           parts.push(expr.slice(i + 1, end));
+          fromBracket.push(true);
           i = end;
         }
         continue;
       }
       current += ch;
     }
-    if (current) parts.push(current);
+    if (current) { parts.push(current); fromBracket.push(false); }
   }
 
   let value: unknown = context;
-  for (const part of parts) {
+  for (let pi = 0; pi < parts.length; pi++) {
+    const part = parts[pi];
+    const isBracket = fromBracket[pi];
     if (value === null || value === undefined) return null;
 
     // Check for method call: name(args)
@@ -206,10 +211,13 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
       const asNum = parseInt(part, 10);
       if (!isNaN(asNum) && String(asNum) === part) {
         key = asNum;
-      } else {
-        // Try to resolve as a variable from context
+      } else if (isBracket) {
+        // Only resolve as a variable from context for bracket-derived parts
         const resolved = context[part];
         key = resolved !== undefined ? String(resolved) : part;
+      } else {
+        // Dot-derived parts or root — use the part name directly as the key
+        key = part;
       }
     }
 
@@ -666,45 +674,14 @@ function parseFilterChain(expr: string): [string, [string, string[]][]] {
   return [variable, filters];
 }
 
-function processEscapes(s: string): string {
-  let out = "";
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === "\\" && i + 1 < s.length) {
-      const nxt = s[i + 1];
-      switch (nxt) {
-        case "n":  out += "\n"; i++; break;
-        case "t":  out += "\t"; i++; break;
-        case "\\": out += "\\"; i++; break;
-        case "'":  out += "'";  i++; break;
-        case '"':  out += '"';  i++; break;
-        default:   out += "\\"; break;
-      }
-    } else {
-      out += s[i];
-    }
-  }
-  return out;
-}
-
 function parseArgs(raw: string): string[] {
   const args: string[] = [];
   let current = "";
   let inQuote: string | null = null;
   let wasQuoted = false;
   let depth = 0;
-  let escaped = false;
 
   for (const ch of raw) {
-    if (escaped) {
-      current += ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\" && inQuote) {
-      current += ch;
-      escaped = true;
-      continue;
-    }
     if (inQuote) {
       if (ch === inQuote) {
         inQuote = null;
@@ -723,7 +700,7 @@ function parseArgs(raw: string): string[] {
     if (ch === "(") { depth++; current += ch; continue; }
     if (ch === ")") { depth--; current += ch; continue; }
     if (ch === "," && depth === 0) {
-      args.push(wasQuoted ? processEscapes(current) : current.trim());
+      args.push(wasQuoted ? current : current.trim());
       current = "";
       wasQuoted = false;
       continue;
@@ -731,7 +708,7 @@ function parseArgs(raw: string): string[] {
     current += ch;
   }
 
-  const final = wasQuoted ? processEscapes(current) : current.trim();
+  const final = wasQuoted ? current : current.trim();
   if (final !== "" || wasQuoted) {
     args.push(final);
   }
@@ -967,9 +944,9 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   dump: (v) => JSON.stringify(v),
   formToken: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
   form_token: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
-  to_json: (v) => JSON.stringify(v).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026"),
-  tojson: (v) => JSON.stringify(v).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026"),
-  js_escape: (v) => String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r"),
+  tojson: (v, indent) => indent !== undefined ? JSON.stringify(v, null, parseInt(String(indent), 10)) : JSON.stringify(v),
+  to_json: (v, indent) => indent !== undefined ? JSON.stringify(v, null, parseInt(String(indent), 10)) : JSON.stringify(v),
+  js_escape: (v) => String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t"),
 };
 
 // ── Form Token ────────────────────────────────────────────────
