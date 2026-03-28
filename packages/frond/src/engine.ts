@@ -196,10 +196,21 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
       return null;
     }
 
-    let key: string | number = part.replace(/^['"]|['"]$/g, "");
-    const asNum = parseInt(key, 10);
-    if (!isNaN(asNum) && String(asNum) === key) {
-      key = asNum;
+    let key: string | number;
+    // Check if this part came from bracket access and needs variable resolution
+    if ((part.startsWith('"') && part.endsWith('"')) ||
+        (part.startsWith("'") && part.endsWith("'"))) {
+      // Quoted string literal — strip quotes
+      key = part.slice(1, -1);
+    } else {
+      const asNum = parseInt(part, 10);
+      if (!isNaN(asNum) && String(asNum) === part) {
+        key = asNum;
+      } else {
+        // Try to resolve as a variable from context
+        const resolved = context[part];
+        key = resolved !== undefined ? String(resolved) : part;
+      }
     }
 
     if (typeof value === "object" && value !== null) {
