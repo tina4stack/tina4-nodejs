@@ -127,18 +127,34 @@ const MIGRATION_TABLE = "tina4_migration";
  * Ensure the migration tracking table exists with batch support.
  */
 export function ensureMigrationTable(): void {
-  const adapter = getAdapter() as SQLiteAdapter;
+  const adapter = getAdapter();
   if (!adapter.tableExists(MIGRATION_TABLE)) {
-    adapter.createTable(MIGRATION_TABLE, {
-      id: { type: "integer", primaryKey: true, autoIncrement: true },
-      name: { type: "string", required: true },
-      batch: { type: "integer", required: true },
-      applied_at: { type: "datetime", default: "now" },
-    });
+    if (isFirebirdAdapter(adapter)) {
+      // Firebird: no AUTOINCREMENT, no TEXT type, use generator for IDs
+      try {
+        adapter.execute("CREATE GENERATOR GEN_TINA4_MIGRATION_ID");
+        try { adapter.execute("COMMIT"); } catch { /* ignore */ }
+      } catch {
+        // Generator may already exist
+      }
+      adapter.execute(`CREATE TABLE "${MIGRATION_TABLE}" (
+        id INTEGER NOT NULL PRIMARY KEY,
+        name VARCHAR(500) NOT NULL,
+        batch INTEGER NOT NULL DEFAULT 1,
+        applied_at VARCHAR(50) NOT NULL
+      )`);
+    } else {
+      (adapter as SQLiteAdapter).createTable(MIGRATION_TABLE, {
+        id: { type: "integer", primaryKey: true, autoIncrement: true },
+        name: { type: "string", required: true },
+        batch: { type: "integer", required: true },
+        applied_at: { type: "datetime", default: "now" },
+      });
+    }
   } else {
     // Ensure batch column exists on older tables that only had passed/description
     try {
-      const cols = adapter.getTableColumns(MIGRATION_TABLE);
+      const cols = (adapter as SQLiteAdapter).getTableColumns(MIGRATION_TABLE);
       const colNames = new Set(cols.map((c) => c.name));
       if (!colNames.has("batch")) {
         adapter.execute(`ALTER TABLE "${MIGRATION_TABLE}" ADD COLUMN batch INTEGER NOT NULL DEFAULT 1`);
@@ -177,10 +193,22 @@ export function isMigrationApplied(name: string): boolean {
  */
 export function recordMigration(name: string, batch: number): void {
   const adapter = getAdapter();
-  adapter.execute(
-    `INSERT INTO "${MIGRATION_TABLE}" (name, batch) VALUES (?, ?)`,
-    [name, batch],
-  );
+  if (isFirebirdAdapter(adapter)) {
+    // Firebird: generate ID from sequence
+    const rows = adapter.query<{ NEXT_ID: number }>(
+      "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB$DATABASE",
+    );
+    const nextId = rows[0]?.NEXT_ID ?? 1;
+    adapter.execute(
+      `INSERT INTO "${MIGRATION_TABLE}" (id, name, batch) VALUES (?, ?, ?)`,
+      [nextId, name, batch],
+    );
+  } else {
+    adapter.execute(
+      `INSERT INTO "${MIGRATION_TABLE}" (name, batch) VALUES (?, ?)`,
+      [name, batch],
+    );
+  }
 }
 
 /**
@@ -438,12 +466,28 @@ export async function migrate(
 
   // Ensure tracking table with batch support
   if (!db.tableExists(MIGRATION_TABLE)) {
-    db.execute(`CREATE TABLE IF NOT EXISTS "${MIGRATION_TABLE}" (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      batch INTEGER NOT NULL DEFAULT 1,
-      applied_at TEXT NOT NULL
-    )`);
+    if (isFirebirdAdapter(db)) {
+      // Firebird: no AUTOINCREMENT, no TEXT type, use generator for IDs
+      try {
+        db.execute("CREATE GENERATOR GEN_TINA4_MIGRATION_ID");
+        try { db.execute("COMMIT"); } catch { /* ignore */ }
+      } catch {
+        // Generator may already exist
+      }
+      db.execute(`CREATE TABLE "${MIGRATION_TABLE}" (
+        id INTEGER NOT NULL PRIMARY KEY,
+        name VARCHAR(500) NOT NULL,
+        batch INTEGER NOT NULL DEFAULT 1,
+        applied_at VARCHAR(50) NOT NULL
+      )`);
+    } else {
+      db.execute(`CREATE TABLE IF NOT EXISTS "${MIGRATION_TABLE}" (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        batch INTEGER NOT NULL DEFAULT 1,
+        applied_at TEXT NOT NULL
+      )`);
+    }
   } else {
     // Migrate old schema: if table has 'description' + 'passed' columns, migrate data
     try {
@@ -538,10 +582,22 @@ export async function migrate(
       // Record as applied with batch number
       const now = new Date().toISOString();
       try {
-        db.execute(
-          `INSERT INTO "${MIGRATION_TABLE}" (name, batch, applied_at) VALUES (?, ?, ?)`,
-          [migrationId, currentBatch, now],
-        );
+        if (isFirebirdAdapter(db)) {
+          // Firebird: generate ID from sequence
+          const idRows = db.query<{ NEXT_ID: number }>(
+            "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB$DATABASE",
+          );
+          const nextId = idRows[0]?.NEXT_ID ?? 1;
+          db.execute(
+            `INSERT INTO "${MIGRATION_TABLE}" (id, name, batch, applied_at) VALUES (?, ?, ?, ?)`,
+            [nextId, migrationId, currentBatch, now],
+          );
+        } else {
+          db.execute(
+            `INSERT INTO "${MIGRATION_TABLE}" (name, batch, applied_at) VALUES (?, ?, ?)`,
+            [migrationId, currentBatch, now],
+          );
+        }
       } catch {
         // Old schema fallback — try description/content/passed columns
         db.execute(
