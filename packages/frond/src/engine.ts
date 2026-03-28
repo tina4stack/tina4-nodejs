@@ -944,9 +944,9 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   dump: (v) => JSON.stringify(v),
   formToken: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
   form_token: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
-  tojson: (v, indent) => indent !== undefined ? JSON.stringify(v, null, parseInt(String(indent), 10)) : JSON.stringify(v),
-  to_json: (v, indent) => indent !== undefined ? JSON.stringify(v, null, parseInt(String(indent), 10)) : JSON.stringify(v),
-  js_escape: (v) => String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t"),
+  tojson: (v, indent) => new SafeString(indent !== undefined ? JSON.stringify(v, null, parseInt(String(indent), 10)) : JSON.stringify(v)),
+  to_json: (v, indent) => new SafeString(indent !== undefined ? JSON.stringify(v, null, parseInt(String(indent), 10)) : JSON.stringify(v)),
+  js_escape: (v) => new SafeString(String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")),
 };
 
 // ── Form Token ────────────────────────────────────────────────
