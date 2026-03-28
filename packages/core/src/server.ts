@@ -31,6 +31,9 @@ const BUILTIN_PUBLIC_DIR = resolve(__dirname, "..", "public");
 
 const TINA4_VERSION = "3.0.0";
 
+/** Cache Frond instances by template directory to avoid repeated instantiation. */
+const frondCache = new Map<string, InstanceType<any>>();
+
 /**
  * Test-bind each port in a subprocess to find one that is available.
  * Falls back to `start` if none of the candidates work.
@@ -94,18 +97,26 @@ async function renderErrorPage(
     const { Frond } = await import("@tina4/frond");
     const templateFile = `errors/${code}.twig`;
 
+    // Helper: get-or-create a cached Frond instance for a directory
+    const getCachedFrond = (dir: string) => {
+      let instance = frondCache.get(dir);
+      if (!instance) {
+        instance = new Frond(dir);
+        frondCache.set(dir, instance);
+      }
+      return instance;
+    };
+
     // 1. Try user override in the project's templates directory
     const userTemplatePath = join(templatesDir, templateFile);
     if (existsSync(userTemplatePath)) {
-      const frond = new Frond(templatesDir);
-      return frond.render(templateFile, data);
+      return getCachedFrond(templatesDir).render(templateFile, data);
     }
 
     // 2. Try built-in framework default
     const builtinTemplatePath = join(BUILTIN_ERROR_TEMPLATES_DIR, templateFile);
     if (existsSync(builtinTemplatePath)) {
-      const frond = new Frond(BUILTIN_ERROR_TEMPLATES_DIR);
-      return frond.render(templateFile, data);
+      return getCachedFrond(BUILTIN_ERROR_TEMPLATES_DIR).render(templateFile, data);
     }
 
     // 3. No template found
