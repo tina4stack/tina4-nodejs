@@ -99,6 +99,84 @@ export class RedisBackplane implements WebSocketBackplane {
 }
 
 /**
+ * NATS pub/sub backplane.
+ *
+ * Requires the `nats` package (`npm install nats`). The import is deferred
+ * so the rest of Tina4 works fine without it installed — an error is thrown
+ * only when this class is actually instantiated.
+ *
+ * NATS is async-native. The subscription listener runs via the NATS client's
+ * built-in async iteration.
+ */
+export class NATSBackplane implements WebSocketBackplane {
+  private nc: any;
+  private url: string;
+  private subs: Map<string, any> = new Map();
+  private ready: Promise<void>;
+
+  constructor(url?: string) {
+    this.url = url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "nats://localhost:4222";
+
+    this.ready = (async () => {
+      let nats: any;
+      try {
+        nats = await import("nats");
+      } catch {
+        throw new Error(
+          "The 'nats' package is required for NATSBackplane. " +
+          "Install it with: npm install nats"
+        );
+      }
+
+      this.nc = await nats.connect({ servers: this.url });
+      console.log(`[Tina4] NATSBackplane connected to ${this.url}`);
+    })();
+  }
+
+  async publish(channel: string, message: string): Promise<void> {
+    await this.ready;
+    const { StringCodec } = await import("nats");
+    const sc = StringCodec();
+    this.nc.publish(channel, sc.encode(message));
+  }
+
+  async subscribe(channel: string, callback: (message: string) => void): Promise<void> {
+    await this.ready;
+    const { StringCodec } = await import("nats");
+    const sc = StringCodec();
+    const sub = this.nc.subscribe(channel);
+    this.subs.set(channel, sub);
+
+    // Process messages in the background via async iteration
+    (async () => {
+      for await (const msg of sub) {
+        try {
+          callback(sc.decode(msg.data));
+        } catch { /* ignore callback errors */ }
+      }
+    })();
+  }
+
+  async unsubscribe(channel: string): Promise<void> {
+    const sub = this.subs.get(channel);
+    if (sub) {
+      sub.unsubscribe();
+      this.subs.delete(channel);
+    }
+  }
+
+  async close(): Promise<void> {
+    for (const sub of this.subs.values()) {
+      sub.unsubscribe();
+    }
+    this.subs.clear();
+    if (this.nc) {
+      await this.nc.close();
+    }
+  }
+}
+
+/**
  * Factory that reads TINA4_WS_BACKPLANE and returns the appropriate
  * backplane instance, or `null` if no backplane is configured.
  *
@@ -112,7 +190,7 @@ export function createBackplane(url?: string): WebSocketBackplane | null {
     case "redis":
       return new RedisBackplane(url);
     case "nats":
-      throw new Error("NATS backplane is on the roadmap but not yet implemented.");
+      return new NATSBackplane(url);
     case "":
       return null;
     default:

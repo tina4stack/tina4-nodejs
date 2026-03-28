@@ -25,7 +25,7 @@
  *   session.destroy();
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { RedisNpmSessionHandler } from "./sessionHandlers/redisHandler.js";
@@ -70,6 +70,8 @@ export interface SessionHandler {
   read(sessionId: string): SessionData | null;
   write(sessionId: string, data: SessionData, ttl: number): void;
   destroy(sessionId: string): void;
+  /** Garbage-collect expired sessions. Optional — Redis/Valkey/Mongo handle TTL natively. */
+  gc?(maxLifetime: number): void;
 }
 
 // ── File Session Handler ──────────────────────────────────────────
@@ -113,6 +115,28 @@ export class FileSessionHandler implements SessionHandler {
     const filePath = this.filePath(sessionId);
     try {
       if (existsSync(filePath)) unlinkSync(filePath);
+    } catch { /* ignore */ }
+  }
+
+  gc(maxLifetime: number): void {
+    if (!existsSync(this.storagePath)) return;
+    const now = Math.floor(Date.now() / 1000);
+    try {
+      const files = readdirSync(this.storagePath);
+      for (const file of files) {
+        if (!file.endsWith(".json")) continue;
+        const fullPath = join(this.storagePath, file);
+        try {
+          const raw = readFileSync(fullPath, "utf-8");
+          const data = JSON.parse(raw) as SessionData;
+          if (data._accessed && (now - data._accessed) > maxLifetime) {
+            unlinkSync(fullPath);
+          }
+        } catch {
+          // Corrupt file — remove it
+          try { unlinkSync(fullPath); } catch { /* ignore */ }
+        }
+      }
     } catch { /* ignore */ }
   }
 }
@@ -497,6 +521,16 @@ export class Session {
    */
   getId(): string | null {
     return this.sessionId;
+  }
+
+  /**
+   * Run garbage collection on the session backend.
+   * Removes expired file/database sessions. Redis/Valkey/Mongo handle TTL natively.
+   */
+  gc(): void {
+    if (this.handler.gc) {
+      this.handler.gc(this.ttl);
+    }
   }
 
   // ── Private ───────────────────────────────────────────────────

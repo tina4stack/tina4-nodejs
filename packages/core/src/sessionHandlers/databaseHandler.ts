@@ -119,4 +119,12 @@ export class DatabaseSessionHandler implements SessionHandler {
       .prepare("DELETE FROM tina4_session WHERE session_id = ?")
       .run(sessionId);
   }
+
+  gc(_maxLifetime: number): void {
+    this.ensureTable();
+    const now = Date.now() / 1000;
+    this.db
+      .prepare("DELETE FROM tina4_session WHERE expires_at > 0 AND expires_at < ?")
+      .run(now);
+  }
 }

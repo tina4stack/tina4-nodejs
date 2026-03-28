@@ -594,6 +594,12 @@ ${reset}
       const origEnd = rawRes.end.bind(rawRes);
       rawRes.end = function (...args: any[]) {
         sess.save();
+
+        // Probabilistic garbage collection (~1% of requests)
+        if (Math.floor(Math.random() * 100) === 0) {
+          try { sess.gc(); } catch { /* GC failure is non-critical */ }
+        }
+
         const newSid = (sess as any).sessionId ?? (sess as any).getSessionId?.();
         if (newSid && newSid !== existingSid && !rawRes.headersSent) {
           const ttl = parseInt(process.env.TINA4_SESSION_TTL ?? "3600", 10);

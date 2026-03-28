@@ -98,3 +98,5 @@ export { Container, container } from "./container.js";
 export { Validator } from "./validator.js";
 export type { ValidationError } from "./validator.js";
 export type { WebSocketConnection } from "./websocketConnection.js";
+export { RedisBackplane, NATSBackplane, createBackplane } from "./websocketBackplane.js";
+export type { WebSocketBackplane } from "./websocketBackplane.js";
