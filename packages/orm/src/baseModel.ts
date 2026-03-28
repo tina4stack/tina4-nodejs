@@ -4,6 +4,20 @@ import { QueryBuilder } from "./queryBuilder.js";
 import type { DatabaseAdapter, FieldDefinition, RelationshipDefinition } from "./types.js";
 
 /**
+ * Convert a snake_case name to camelCase.
+ */
+export function snakeToCamel(name: string): string {
+  return name.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+/**
+ * Convert a camelCase name to snake_case.
+ */
+export function camelToSnake(name: string): string {
+  return name.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+}
+
+/**
  * BaseModel provides instance methods for ORM models.
  * Models extend this class and define static properties.
  *
@@ -17,6 +31,7 @@ import type { DatabaseAdapter, FieldDefinition, RelationshipDefinition } from ".
  *     static hasMany = [{ model: "Post", foreignKey: "author_id" }];
  *     static _db = "secondary";
  *     static fieldMapping = { firstName: "first_name", lastName: "last_name" };
+ *     static autoMap = true; // auto-generate fieldMapping from camelCase → snake_case
  *   }
  */
 export class BaseModel {
@@ -28,6 +43,12 @@ export class BaseModel {
   static hasMany?: RelationshipDefinition[];
   static belongsTo?: RelationshipDefinition[];
   static _db?: string;
+
+  /**
+   * When true, auto-generates fieldMapping entries from camelCase field names
+   * to snake_case DB column names. Explicit fieldMapping entries always win.
+   */
+  static autoMap: boolean = false;
 
   /**
    * Maps JS property names to database column names.
@@ -46,6 +67,18 @@ export class BaseModel {
   constructor(data?: Record<string, unknown>) {
     if (data) {
       const ModelClass = this.constructor as typeof BaseModel;
+      // If autoMap is on, auto-generate fieldMapping from camelCase fields
+      if (ModelClass.autoMap) {
+        const fields = ModelClass.fields || {};
+        for (const key of Object.keys(fields)) {
+          if (!ModelClass.fieldMapping[key]) {
+            const snaked = camelToSnake(key);
+            if (snaked !== key) {
+              ModelClass.fieldMapping[key] = snaked;
+            }
+          }
+        }
+      }
       const reverseMapping = ModelClass.getReverseMapping();
       for (const [key, value] of Object.entries(data)) {
         // If this DB column has a mapping, use the JS property name instead

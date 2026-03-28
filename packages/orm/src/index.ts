@@ -38,7 +38,7 @@ export { generateCrudRoutes } from "./autoCrud.js";
 export { buildQuery, parseQueryString } from "./query.js";
 export { validate } from "./validation.js";
 export type { ValidationError } from "./validation.js";
-export { BaseModel } from "./baseModel.js";
+export { BaseModel, snakeToCamel, camelToSnake } from "./baseModel.js";
 export { QueryBuilder } from "./queryBuilder.js";
 export { SQLTranslator, QueryCache } from "./sqlTranslation.js";
 export { CachedDatabaseAdapter } from "./cachedDatabase.js";
