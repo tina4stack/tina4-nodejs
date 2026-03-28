@@ -666,14 +666,45 @@ function parseFilterChain(expr: string): [string, [string, string[]][]] {
   return [variable, filters];
 }
 
+function processEscapes(s: string): string {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "\\" && i + 1 < s.length) {
+      const nxt = s[i + 1];
+      switch (nxt) {
+        case "n":  out += "\n"; i++; break;
+        case "t":  out += "\t"; i++; break;
+        case "\\": out += "\\"; i++; break;
+        case "'":  out += "'";  i++; break;
+        case '"':  out += '"';  i++; break;
+        default:   out += "\\"; break;
+      }
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
 function parseArgs(raw: string): string[] {
   const args: string[] = [];
   let current = "";
   let inQuote: string | null = null;
   let wasQuoted = false;
   let depth = 0;
+  let escaped = false;
 
   for (const ch of raw) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && inQuote) {
+      current += ch;
+      escaped = true;
+      continue;
+    }
     if (inQuote) {
       if (ch === inQuote) {
         inQuote = null;
@@ -692,7 +723,7 @@ function parseArgs(raw: string): string[] {
     if (ch === "(") { depth++; current += ch; continue; }
     if (ch === ")") { depth--; current += ch; continue; }
     if (ch === "," && depth === 0) {
-      args.push(wasQuoted ? current : current.trim());
+      args.push(wasQuoted ? processEscapes(current) : current.trim());
       current = "";
       wasQuoted = false;
       continue;
@@ -700,7 +731,7 @@ function parseArgs(raw: string): string[] {
     current += ch;
   }
 
-  const final = wasQuoted ? current : current.trim();
+  const final = wasQuoted ? processEscapes(current) : current.trim();
   if (final !== "" || wasQuoted) {
     args.push(final);
   }
@@ -936,6 +967,9 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   dump: (v) => JSON.stringify(v),
   formToken: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
   form_token: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
+  to_json: (v) => JSON.stringify(v).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026"),
+  tojson: (v) => JSON.stringify(v).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026"),
+  js_escape: (v) => String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r"),
 };
 
 // ── Form Token ────────────────────────────────────────────────
