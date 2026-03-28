@@ -266,6 +266,7 @@ export class BaseModel {
         this[pk] = result.lastInsertRowid;
       }
     }
+    db.commit();
   }
 
   /**
@@ -294,6 +295,7 @@ export class BaseModel {
         [pkValue],
       );
     }
+    db.commit();
   }
 
   /**
@@ -459,6 +461,7 @@ export class BaseModel {
       const sql = `CREATE TABLE IF NOT EXISTS "${this.tableName}" (${colDefs.join(", ")})`;
       db.execute(sql);
     }
+    db.commit();
   }
 
   /**
@@ -505,6 +508,7 @@ export class BaseModel {
       `DELETE FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`,
       [pkValue],
     );
+    db.commit();
   }
 
   /**
@@ -529,6 +533,7 @@ export class BaseModel {
       `UPDATE "${ModelClass.tableName}" SET is_deleted = 0 WHERE "${pkCol}" = ?`,
       [pkValue],
     );
+    db.commit();
     this.is_deleted = 0;
   }
 
