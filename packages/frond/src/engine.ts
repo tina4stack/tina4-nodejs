@@ -135,12 +135,66 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
     return items.map(item => evalExpr(item.trim(), context));
   }
 
-  // Dotted path with bracket access
-  const parts = expr.split(/\.|\[([^\]]+)\]/g).filter(p => p !== undefined && p !== "");
+  // Dotted path with bracket access — split on . and [...] but not . inside parentheses
+  const parts: string[] = [];
+  {
+    let current = "";
+    let depth = 0;
+    let inQuote: string | null = null;
+    for (let i = 0; i < expr.length; i++) {
+      const ch = expr[i];
+      if (inQuote) {
+        current += ch;
+        if (ch === inQuote) inQuote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'") { inQuote = ch; current += ch; continue; }
+      if (ch === '(') { depth++; current += ch; continue; }
+      if (ch === ')') { depth--; current += ch; continue; }
+      if (ch === '.' && depth === 0) {
+        if (current) parts.push(current);
+        current = "";
+        continue;
+      }
+      if (ch === '[' && depth === 0) {
+        if (current) parts.push(current);
+        current = "";
+        const end = expr.indexOf(']', i + 1);
+        if (end !== -1) {
+          parts.push(expr.slice(i + 1, end));
+          i = end;
+        }
+        continue;
+      }
+      current += ch;
+    }
+    if (current) parts.push(current);
+  }
 
   let value: unknown = context;
   for (const part of parts) {
     if (value === null || value === undefined) return null;
+
+    // Check for method call: name(args)
+    const methodMatch = part.match(/^(\w+)\s*\(([\s\S]*)?\)$/);
+    if (methodMatch) {
+      const methodName = methodMatch[1];
+      const rawArgs = methodMatch[2] || "";
+      if (typeof value === "object" && value !== null && methodName in (value as Record<string, unknown>)) {
+        const fn = (value as Record<string, unknown>)[methodName];
+        if (typeof fn === "function") {
+          if (rawArgs.trim()) {
+            const argParts = splitArgs(rawArgs);
+            const evalArgs = argParts.map(a => evalExpr(a.trim(), context));
+            value = fn.apply(value, evalArgs);
+          } else {
+            value = fn.call(value);
+          }
+          continue;
+        }
+      }
+      return null;
+    }
 
     let key: string | number = part.replace(/^['"]|['"]$/g, "");
     const asNum = parseInt(key, 10);
