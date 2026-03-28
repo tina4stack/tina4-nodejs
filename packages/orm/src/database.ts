@@ -208,6 +208,9 @@ export class Database {
   /** Whether to automatically commit after each write operation */
   private autoCommit: boolean = process.env.TINA4_AUTOCOMMIT === "true";
 
+  /** Database engine type (sqlite, postgres, mysql, mssql, firebird) */
+  private dbType: string = "sqlite";
+
   /**
    * Create a Database wrapping an existing adapter.
    * For creating a Database from a URL, use the async static factories:
@@ -227,6 +230,8 @@ export class Database {
    * @param pool - Number of pooled connections (0 = single, N>0 = round-robin)
    */
   static async create(url: string, username?: string, password?: string, pool: number = 0): Promise<Database> {
+    const parsed = parseDatabaseUrl(url, username, password);
+
     if (pool > 0) {
       // Pooled mode — create all adapters eagerly
       const adapters: DatabaseAdapter[] = [];
@@ -243,13 +248,16 @@ export class Database {
       db.poolIndex = 0;
       db.adapter = null;  // Don't use single-adapter path
       db.adapterFactory = () => createAdapterFromUrl(url, username, password);
+      db.dbType = parsed.type;
       return db;
     }
 
     // Single-connection mode — current behavior
     const adapter = await createAdapterFromUrl(url, username, password);
     setAdapter(adapter);
-    return new Database(adapter);
+    const db = new Database(adapter);
+    db.dbType = parsed.type;
+    return db;
   }
 
   /**
@@ -390,6 +398,55 @@ export class Database {
     const id = this.getNextAdapter().lastInsertId();
     if (id === null) return 0;
     return typeof id === "bigint" ? id.toString() : id;
+  }
+
+  /**
+   * Pre-generate the next available primary key ID using engine-aware strategies.
+   *
+   * - Firebird: auto-creates a generator if missing, then increments via GEN_ID.
+   * - PostgreSQL: tries nextval() on the standard sequence, falls through to MAX+1.
+   * - SQLite/MySQL/MSSQL: uses MAX(pk) + 1.
+   * - Returns 1 if the table is empty or does not exist.
+   */
+  getNextId(table: string, pkColumn = "id", generatorName?: string): number {
+    const adapter = this.getNextAdapter();
+
+    // Firebird — use generators
+    if (this.dbType === "firebird") {
+      const genName = generatorName ?? `GEN_${table.toUpperCase()}_ID`;
+
+      // Auto-create the generator if it does not exist
+      try {
+        adapter.execute(`CREATE GENERATOR ${genName}`);
+      } catch {
+        // Generator already exists — ignore
+      }
+
+      const row = adapter.fetchOne<Record<string, unknown>>(`SELECT GEN_ID(${genName}, 1) AS NEXT_ID FROM RDB$DATABASE`);
+      return Number(row?.NEXT_ID ?? row?.next_id ?? 1);
+    }
+
+    // PostgreSQL — try sequence first, fall through to MAX
+    if (this.dbType === "postgres") {
+      const seqName = `${table.toLowerCase()}_${pkColumn.toLowerCase()}_seq`;
+      try {
+        const row = adapter.fetchOne<Record<string, unknown>>(`SELECT nextval('${seqName}') AS next_id`);
+        if (row?.next_id != null) {
+          return Number(row.next_id);
+        }
+      } catch {
+        // No sequence — fall through to MAX
+      }
+    }
+
+    // SQLite / MySQL / MSSQL / PostgreSQL fallback — MAX + 1
+    try {
+      const row = adapter.fetchOne<Record<string, unknown>>(`SELECT MAX(${pkColumn}) + 1 AS next_id FROM ${table}`);
+      const nextId = row?.next_id;
+      return nextId != null ? Number(nextId) : 1;
+    } catch {
+      return 1;
+    }
   }
 }
 
