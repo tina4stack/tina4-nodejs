@@ -161,6 +161,23 @@ export abstract class WSDLService {
 
   protected namespace: string = "http://tina4.com/wsdl";
 
+  /**
+   * Lifecycle hook: called before operation invocation.
+   * Override to validate, log, or modify the incoming request.
+   */
+  protected onRequest(_request: unknown): void {
+    // no-op — override in subclass
+  }
+
+  /**
+   * Lifecycle hook: called after operation returns.
+   * Override to transform, audit, or enrich the result.
+   * Must return the (possibly modified) result.
+   */
+  protected onResult(result: Record<string, unknown>): Record<string, unknown> {
+    return result;
+  }
+
   /** Discovered operations (populated on first use). */
   private _operations: Map<string, WSDLOperation> | null = null;
 
@@ -376,10 +393,15 @@ export abstract class WSDLService {
       }
     }
 
+    // Lifecycle hook: before invocation
+    this.onRequest(soapXml);
+
     // Invoke the method
     try {
-      const result = await (method as (...args: unknown[]) => Promise<unknown>).call(this, ...params);
-      return this.soapResponse(opName, result as Record<string, unknown>);
+      const rawResult = await (method as (...args: unknown[]) => Promise<unknown>).call(this, ...params);
+      // Lifecycle hook: after invocation — allow result transformation
+      const result = this.onResult(rawResult as Record<string, unknown>);
+      return this.soapResponse(opName, result);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       return this.soapFault("Server", errMsg);

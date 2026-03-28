@@ -341,19 +341,39 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
     }
   }
 
-  // Function call: name("arg1", "arg2")
-  const fnMatch = expr.match(/^(\w+)\s*\(([\s\S]*)?\)$/);
+  // Function call: name("arg1", "arg2") — supports dotted names like user.t("key")
+  const fnMatch = expr.match(/^([\w.]+)\s*\(([\s\S]*)?\)$/);
   if (fnMatch) {
     const fnName = fnMatch[1];
     const rawArgs = fnMatch[2] || "";
-    const fn = context[fnName] ?? resolveVar(fnName, context);
-    if (typeof fn === "function") {
-      if (rawArgs.trim()) {
-        const parts = splitArgs(rawArgs);
-        const evalArgs = parts.map(a => evalExpr(a.trim(), context));
-        return fn(...evalArgs);
+
+    // Dotted function name: resolve object, then call method
+    if (fnName.includes(".")) {
+      const lastDot = fnName.lastIndexOf(".");
+      const objPath = fnName.slice(0, lastDot);
+      const methodName = fnName.slice(lastDot + 1);
+      const obj = resolveVar(objPath, context);
+      if (obj && typeof obj === "object" && methodName in (obj as Record<string, unknown>)) {
+        const method = (obj as Record<string, unknown>)[methodName];
+        if (typeof method === "function") {
+          if (rawArgs.trim()) {
+            const parts = splitArgs(rawArgs);
+            const evalArgs = parts.map(a => evalExpr(a.trim(), context));
+            return method.apply(obj, evalArgs);
+          }
+          return method.call(obj);
+        }
       }
-      return fn();
+    } else {
+      const fn = context[fnName] ?? resolveVar(fnName, context);
+      if (typeof fn === "function") {
+        if (rawArgs.trim()) {
+          const parts = splitArgs(rawArgs);
+          const evalArgs = parts.map(a => evalExpr(a.trim(), context));
+          return fn(...evalArgs);
+        }
+        return fn();
+      }
     }
   }
 
