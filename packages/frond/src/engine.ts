@@ -219,8 +219,75 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
   return value;
 }
 
+function findOutsideQuotes(expr: string, needle: string): number {
+  let inQuote: string | null = null;
+  let depth = 0;
+  let i = 0;
+  while (i <= expr.length - needle.length) {
+    const ch = expr[i];
+    if ((ch === '"' || ch === "'") && depth === 0) {
+      if (inQuote === null) {
+        inQuote = ch;
+      } else if (ch === inQuote) {
+        inQuote = null;
+      }
+      i++;
+      continue;
+    }
+    if (inQuote) { i++; continue; }
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    if (depth === 0 && expr.slice(i, i + needle.length) === needle) {
+      return i;
+    }
+    i++;
+  }
+  return -1;
+}
+
+function splitOutsideQuotes(expr: string, sep: string): string[] {
+  const parts: string[] = [];
+  let currentStart = 0;
+  let inQuote: string | null = null;
+  let depth = 0;
+  let i = 0;
+  while (i <= expr.length - sep.length) {
+    const ch = expr[i];
+    if ((ch === '"' || ch === "'") && depth === 0) {
+      if (inQuote === null) {
+        inQuote = ch;
+      } else if (ch === inQuote) {
+        inQuote = null;
+      }
+      i++;
+      continue;
+    }
+    if (inQuote) { i++; continue; }
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    if (depth === 0 && expr.slice(i, i + sep.length) === sep) {
+      parts.push(expr.slice(currentStart, i));
+      i += sep.length;
+      currentStart = i;
+      continue;
+    }
+    i++;
+  }
+  parts.push(expr.slice(currentStart));
+  return parts;
+}
+
 function evalExpr(expr: string, context: Record<string, unknown>): unknown {
   expr = expr.trim();
+
+  // String literal early-return: if the entire expression is a single quoted
+  // string with no unescaped matching quotes inside, return its content.
+  if (expr.length >= 2) {
+    const q = expr[0];
+    if ((q === '"' || q === "'") && expr.endsWith(q) && !expr.slice(1, -1).includes(q)) {
+      return expr.slice(1, -1);
+    }
+  }
 
   // Ternary: condition ? true_val : false_val
   // Match carefully to handle nested ternaries
@@ -245,7 +312,7 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
   }
 
   // Null coalescing: value ?? "default"
-  const qqIdx = expr.indexOf("??");
+  const qqIdx = findOutsideQuotes(expr, "??");
   if (qqIdx !== -1) {
     const left = expr.slice(0, qqIdx).trim();
     const right = expr.slice(qqIdx + 2).trim();
@@ -257,8 +324,8 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
   }
 
   // String concatenation with ~
-  if (expr.includes("~")) {
-    const parts = splitOnTilde(expr);
+  if (findOutsideQuotes(expr, "~") >= 0) {
+    const parts = splitOutsideQuotes(expr, "~");
     if (parts.length > 1) {
       return parts.map(p => {
         const v = evalExpr(p.trim(), context);
@@ -269,7 +336,7 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
 
   // Check for comparison/logical operators
   for (const op of [" not in ", " in ", " is not ", " is ", "!=", "==", ">=", "<=", ">", "<", " and ", " or ", " not "]) {
-    if (expr.includes(op)) {
+    if (findOutsideQuotes(expr, op) >= 0) {
       return evalComparison(expr, context);
     }
   }
