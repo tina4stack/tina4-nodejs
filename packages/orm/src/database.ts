@@ -401,17 +401,99 @@ export class Database {
   }
 
   /**
+   * Create the tina4_sequences table if it doesn't exist.
+   * Used by sequenceNext() for race-safe ID generation on
+   * SQLite, MySQL, MSSQL, and as a PostgreSQL fallback.
+   */
+  private ensureSequenceTable(): void {
+    const adapter = this.getNextAdapter();
+
+    if (!adapter.tableExists("tina4_sequences")) {
+      if (this.dbType === "mssql") {
+        adapter.execute(
+          "CREATE TABLE tina4_sequences (" +
+          "seq_name VARCHAR(200) NOT NULL PRIMARY KEY, " +
+          "current_value INTEGER NOT NULL DEFAULT 0)"
+        );
+      } else {
+        adapter.execute(
+          "CREATE TABLE IF NOT EXISTS tina4_sequences (" +
+          "seq_name VARCHAR(200) NOT NULL PRIMARY KEY, " +
+          "current_value INTEGER NOT NULL DEFAULT 0)"
+        );
+      }
+      try { adapter.commit(); } catch { /* no active transaction */ }
+    }
+  }
+
+  /**
+   * Atomically increment and return the next value from the sequence table.
+   *
+   * If the sequence row doesn't exist yet, seeds it from MAX(pkColumn)
+   * of the given table (or 0 if the table is empty/missing).
+   */
+  private sequenceNext(seqName: string, table?: string, pkColumn = "id"): number {
+    this.ensureSequenceTable();
+    const adapter = this.getNextAdapter();
+
+    // Check if the sequence row exists
+    const existing = adapter.fetchOne<Record<string, unknown>>(
+      "SELECT current_value FROM tina4_sequences WHERE seq_name = ?",
+      [seqName]
+    );
+
+    if (existing == null) {
+      // Seed from current MAX
+      let seedValue = 0;
+      if (table) {
+        try {
+          const maxRow = adapter.fetchOne<Record<string, unknown>>(
+            `SELECT MAX(${pkColumn}) AS max_id FROM ${table}`
+          );
+          if (maxRow?.max_id != null) {
+            seedValue = Number(maxRow.max_id);
+          }
+        } catch {
+          // Table doesn't exist — start at 0
+        }
+      }
+
+      adapter.execute(
+        "INSERT INTO tina4_sequences (seq_name, current_value) VALUES (?, ?)",
+        [seqName, seedValue]
+      );
+      try { adapter.commit(); } catch { /* no active transaction */ }
+    }
+
+    // Atomic increment
+    adapter.execute(
+      "UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ?",
+      [seqName]
+    );
+    try { adapter.commit(); } catch { /* no active transaction */ }
+
+    // Read the new value
+    const row = adapter.fetchOne<Record<string, unknown>>(
+      "SELECT current_value FROM tina4_sequences WHERE seq_name = ?",
+      [seqName]
+    );
+    return row?.current_value != null ? Number(row.current_value) : 1;
+  }
+
+  /**
    * Pre-generate the next available primary key ID using engine-aware strategies.
    *
-   * - Firebird: auto-creates a generator if missing, then increments via GEN_ID.
-   * - PostgreSQL: tries nextval() on the standard sequence, falls through to MAX+1.
-   * - SQLite/MySQL/MSSQL: uses MAX(pk) + 1.
+   * - Firebird: auto-creates a generator if missing, then increments via GEN_ID (atomic).
+   * - PostgreSQL: tries nextval() first; if sequence missing, auto-creates it
+   *   seeded from MAX; falls through to sequence table on failure.
+   * - SQLite/MySQL/MSSQL: uses tina4_sequences table with atomic UPDATE + SELECT
+   *   (race-safe, replaces old MAX+1).
    * - Returns 1 if the table is empty or does not exist.
    */
   getNextId(table: string, pkColumn = "id", generatorName?: string): number {
     const adapter = this.getNextAdapter();
 
-    // Firebird — use generators
+    // Firebird — use generators (atomic)
     if (this.dbType === "firebird") {
       const genName = generatorName ?? `GEN_${table.toUpperCase()}_ID`;
 
@@ -426,27 +508,38 @@ export class Database {
       return Number(row?.NEXT_ID ?? row?.next_id ?? 1);
     }
 
-    // PostgreSQL — try sequence first, fall through to MAX
+    // PostgreSQL — try sequence first, auto-create if missing, fall through to sequence table
     if (this.dbType === "postgres") {
-      const seqName = `${table.toLowerCase()}_${pkColumn.toLowerCase()}_seq`;
+      const seqName = generatorName ?? `${table.toLowerCase()}_${pkColumn.toLowerCase()}_seq`;
       try {
         const row = adapter.fetchOne<Record<string, unknown>>(`SELECT nextval('${seqName}') AS next_id`);
         if (row?.next_id != null) {
           return Number(row.next_id);
         }
       } catch {
-        // No sequence — fall through to MAX
+        // Sequence doesn't exist — try to auto-create it
+      }
+
+      // Auto-create sequence seeded from MAX
+      try {
+        const maxRow = adapter.fetchOne<Record<string, unknown>>(
+          `SELECT COALESCE(MAX(${pkColumn}), 0) AS max_id FROM ${table}`
+        );
+        const start = maxRow?.max_id != null ? Number(maxRow.max_id) + 1 : 1;
+        adapter.execute(`CREATE SEQUENCE ${seqName} START WITH ${start}`);
+        try { adapter.commit(); } catch { /* no active transaction */ }
+        const row = adapter.fetchOne<Record<string, unknown>>(`SELECT nextval('${seqName}') AS next_id`);
+        if (row?.next_id != null) {
+          return Number(row.next_id);
+        }
+      } catch {
+        // Fall through to sequence table
       }
     }
 
-    // SQLite / MySQL / MSSQL / PostgreSQL fallback — MAX + 1
-    try {
-      const row = adapter.fetchOne<Record<string, unknown>>(`SELECT MAX(${pkColumn}) + 1 AS next_id FROM ${table}`);
-      const nextId = row?.next_id;
-      return nextId != null ? Number(nextId) : 1;
-    } catch {
-      return 1;
-    }
+    // SQLite / MySQL / MSSQL / PostgreSQL fallback — atomic sequence table
+    const seqKey = generatorName ?? `${table}.${pkColumn}`;
+    return this.sequenceNext(seqKey, table, pkColumn);
   }
 }
 

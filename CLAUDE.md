@@ -1,10 +1,10 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.10.19)
+# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.10.20)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.10.19 — a convention-over-configuration structural paradigm. **Not a framework.** The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.10.20 — a convention-over-configuration structural paradigm. **Not a framework.** The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -154,6 +154,9 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 - `seeder.ts` — Database seeding (`seedTable` for raw SQL, `seedOrm` for model-based)
 - `sqlTranslation.ts` — Cross-engine SQL translator (`SQLTranslator`) and TTL query cache (`QueryCache`)
 - QueryBuilder supports `toMongo()` for generating MongoDB query documents from the same fluent API
+- `getNextId(table: string, pkColumn?: string, generatorName?: string): Promise<number>` — Race-safe ID generation using atomic sequence table (`tina4_sequences`). SQLite/MySQL/MSSQL use `tina4_sequences` with atomic UPDATE+SELECT. PostgreSQL auto-creates sequences if missing. Firebird uses existing generators (unchanged).
+
+**`tina4_sequences` table** — Auto-created by `getNextId()` on first use for SQLite, MySQL, and MSSQL. Stores the current sequence value per table. Do not modify this table manually.
 
 ### @tina4/swagger (`packages/swagger/`)
 Auto-generates OpenAPI 3.0 docs.
@@ -584,6 +587,8 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 
 - **38 built-in features**, zero third-party dependencies
 - **1,812 tests** passing across all modules
+- **Race-safe `getNextId()`** with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
+- **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
 - **`npx tina4nodejs generate`**: model, route, migration, middleware scaffolding
 - **Database**: 5 engines (SQLite, PostgreSQL, MySQL, MSSQL, Firebird), query caching (`TINA4_DB_CACHE=true`)
@@ -607,6 +612,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 - **Don't bundle `swagger-ui-dist`** — we load Swagger UI from CDN to stay under 8MB
 - **Don't break the test files** — run `npm test` before committing
 - **Don't add unnecessary dependencies** — minimal footprint is a core principle
+- **Parity across all frameworks** — Every new feature, fix, or optimization must be implemented with equivalent logic AND tests in all 4 Tina4 frameworks (Python, PHP, Ruby, Node.js). Never ship to one without shipping to all.
 - **Don't use `url.parse()`** — use the WHATWG `URL` constructor instead (deprecated in Node 20+)
 
 ## Tina4 Maintainer Skill

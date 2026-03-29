@@ -22,6 +22,33 @@ class SafeString {
 type TokenType = "TEXT" | "VAR" | "BLOCK" | "COMMENT";
 type Token = [TokenType, string];
 
+// ── Pre-compiled Regexes (module level) ────────────────────────
+
+const NUMERIC_RE = /^-?\d+(\.\d+)?$/;
+const METHOD_CALL_RE = /^(\w+)\s*\(([\s\S]*)?\)$/;
+const FN_CALL_RE = /^([\w.]+)\s*\(([\s\S]*)?\)$/;
+const IS_NOT_RE = /^(.+?)\s+is\s+not\s+(\w+)(.*)$/;
+const IS_RE = /^(.+?)\s+is\s+(\w+)(.*)$/;
+const NOT_IN_RE = /^(.+?)\s+not\s+in\s+(.+)$/;
+const IN_RE = /^(.+?)\s+in\s+(.+)$/;
+const DIVISIBLE_BY_RE = /\s*by\s*\(\s*(\d+)\s*\)/;
+const FILTER_WITH_ARGS_RE = /^(\w+)\s*\(([\s\S]*)\)$/;
+const FILTER_COMPARISON_RE = /^(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)$/;
+const TITLE_WORD_RE = /\b\w/g;
+const STRIP_TAGS_RE = /<[^>]+>/g;
+const FORMAT_RE = /%[sd]/g;
+const LEADING_WS_RE = /^\s+/;
+const TRAILING_WS_RE = /\s+$/;
+const THOUSANDS_RE = /\B(?=(\d{3})+(?!\d))/g;
+
+// ── Caches (module level) ─────────────────────────────────────
+
+/** Cache for parsed filter chains: expr string -> [variable, filters] */
+const filterChainCache = new Map<string, [string, [string, string[]][]]>();
+
+/** Cache for parsed dotted/bracket paths: expr string -> [parts, fromBracket] */
+const pathParseCache = new Map<string, [string[], boolean[]]>();
+
 // ── Lexer ──────────────────────────────────────────────────────
 
 const TOKEN_RE = /(\{%-?\s*[\s\S]*?\s*-?%\})|(\{\{-?\s*[\s\S]*?\s*-?\}\})|(\{#[\s\S]*?#\})/g;
@@ -118,7 +145,7 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
   }
 
   // Numeric literal
-  if (/^-?\d+(\.\d+)?$/.test(expr)) {
+  if (NUMERIC_RE.test(expr)) {
     return expr.includes(".") ? parseFloat(expr) : parseInt(expr, 10);
   }
 
@@ -137,41 +164,50 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
 
   // Dotted path with bracket access — split on . and [...] but not . inside parentheses
   // Track which parts came from bracket access (need variable resolution)
-  const parts: string[] = [];
-  const fromBracket: boolean[] = [];
-  {
-    let current = "";
-    let depth = 0;
-    let inQuote: string | null = null;
-    for (let i = 0; i < expr.length; i++) {
-      const ch = expr[i];
-      if (inQuote) {
-        current += ch;
-        if (ch === inQuote) inQuote = null;
-        continue;
-      }
-      if (ch === '"' || ch === "'") { inQuote = ch; current += ch; continue; }
-      if (ch === '(') { depth++; current += ch; continue; }
-      if (ch === ')') { depth--; current += ch; continue; }
-      if (ch === '.' && depth === 0) {
-        if (current) { parts.push(current); fromBracket.push(false); }
-        current = "";
-        continue;
-      }
-      if (ch === '[' && depth === 0) {
-        if (current) { parts.push(current); fromBracket.push(false); }
-        current = "";
-        const end = expr.indexOf(']', i + 1);
-        if (end !== -1) {
-          parts.push(expr.slice(i + 1, end));
-          fromBracket.push(true);
-          i = end;
+  let parts: string[];
+  let fromBracket: boolean[];
+
+  const cachedPath = pathParseCache.get(expr);
+  if (cachedPath) {
+    [parts, fromBracket] = cachedPath;
+  } else {
+    parts = [];
+    fromBracket = [];
+    {
+      let current = "";
+      let depth = 0;
+      let inQuote: string | null = null;
+      for (let i = 0; i < expr.length; i++) {
+        const ch = expr[i];
+        if (inQuote) {
+          current += ch;
+          if (ch === inQuote) inQuote = null;
+          continue;
         }
-        continue;
+        if (ch === '"' || ch === "'") { inQuote = ch; current += ch; continue; }
+        if (ch === '(') { depth++; current += ch; continue; }
+        if (ch === ')') { depth--; current += ch; continue; }
+        if (ch === '.' && depth === 0) {
+          if (current) { parts.push(current); fromBracket.push(false); }
+          current = "";
+          continue;
+        }
+        if (ch === '[' && depth === 0) {
+          if (current) { parts.push(current); fromBracket.push(false); }
+          current = "";
+          const end = expr.indexOf(']', i + 1);
+          if (end !== -1) {
+            parts.push(expr.slice(i + 1, end));
+            fromBracket.push(true);
+            i = end;
+          }
+          continue;
+        }
+        current += ch;
       }
-      current += ch;
+      if (current) { parts.push(current); fromBracket.push(false); }
     }
-    if (current) { parts.push(current); fromBracket.push(false); }
+    pathParseCache.set(expr, [parts, fromBracket]);
   }
 
   let value: unknown = context;
@@ -181,7 +217,7 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
     if (value === null || value === undefined) return null;
 
     // Check for method call: name(args)
-    const methodMatch = part.match(/^(\w+)\s*\(([\s\S]*)?\)$/);
+    const methodMatch = part.match(METHOD_CALL_RE);
     if (methodMatch) {
       const methodName = methodMatch[1];
       const rawArgs = methodMatch[2] || "";
@@ -384,7 +420,7 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
   }
 
   // Function call: name("arg1", "arg2") — supports dotted names like user.t("key")
-  const fnMatch = expr.match(/^([\w.]+)\s*\(([\s\S]*)?\)$/);
+  const fnMatch = expr.match(FN_CALL_RE);
   if (fnMatch) {
     const fnName = fnMatch[1];
     const rawArgs = fnMatch[2] || "";
@@ -504,19 +540,19 @@ function evalComparison(expr: string, context: Record<string, unknown>): boolean
   }
 
   // 'is not' test
-  let m = expr.match(/^(.+?)\s+is\s+not\s+(\w+)(.*)$/);
+  let m = expr.match(IS_NOT_RE);
   if (m) {
     return !evalTest(m[1].trim(), m[2], m[3].trim(), context);
   }
 
   // 'is' test
-  m = expr.match(/^(.+?)\s+is\s+(\w+)(.*)$/);
+  m = expr.match(IS_RE);
   if (m) {
     return evalTest(m[1].trim(), m[2], m[3].trim(), context);
   }
 
   // 'not in'
-  m = expr.match(/^(.+?)\s+not\s+in\s+(.+)$/);
+  m = expr.match(NOT_IN_RE);
   if (m) {
     const val = evalExpr(m[1].trim(), context);
     const collection = evalExpr(m[2].trim(), context);
@@ -526,7 +562,7 @@ function evalComparison(expr: string, context: Record<string, unknown>): boolean
   }
 
   // 'in'
-  m = expr.match(/^(.+?)\s+in\s+(.+)$/);
+  m = expr.match(IN_RE);
   if (m) {
     const val = evalExpr(m[1].trim(), context);
     const collection = evalExpr(m[2].trim(), context);
@@ -631,7 +667,7 @@ function evalTest(
 
   // 'divisible by(n)'
   if (testName === "divisible") {
-    const dm = args.match(/\s*by\s*\(\s*(\d+)\s*\)/);
+    const dm = args.match(DIVISIBLE_BY_RE);
     if (dm) {
       const n = parseInt(dm[1], 10);
       return typeof val === "number" && Number.isInteger(val) && val % n === 0;
@@ -649,6 +685,10 @@ function evalTest(
 // ── Filters ────────────────────────────────────────────────────
 
 function parseFilterChain(expr: string): [string, [string, string[]][]] {
+  // Check cache first
+  const cached = filterChainCache.get(expr);
+  if (cached) return cached;
+
   // Split on | but not inside strings or parentheses
   const parts: string[] = [];
   let current = "";
@@ -683,7 +723,7 @@ function parseFilterChain(expr: string): [string, [string, string[]][]] {
 
   for (let i = 1; i < parts.length; i++) {
     const f = parts[i].trim();
-    const fm = f.match(/^(\w+)\s*\(([\s\S]*)\)$/);
+    const fm = f.match(FILTER_WITH_ARGS_RE);
     if (fm) {
       const name = fm[1];
       const rawArgs = fm[2].trim();
@@ -694,7 +734,9 @@ function parseFilterChain(expr: string): [string, [string, string[]][]] {
     }
   }
 
-  return [variable, filters];
+  const result: [string, [string, string[]][]] = [variable, filters];
+  filterChainCache.set(expr, result);
+  return result;
 }
 
 function parseArgs(raw: string): string[] {
@@ -827,7 +869,7 @@ function numberFormat(value: unknown, decimals: number): string {
   const num = parseFloat(String(value));
   const fixed = num.toFixed(decimals);
   const [intPart, decPart] = fixed.split(".");
-  const formatted = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const formatted = intPart.replace(THOUSANDS_RE, ",");
   return decPart ? `${formatted}.${decPart}` : formatted;
 }
 
@@ -835,10 +877,10 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   upper: (v) => String(v).toUpperCase(),
   lower: (v) => String(v).toLowerCase(),
   capitalize: (v) => { const s = String(v); return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase(); },
-  title: (v) => String(v).replace(/\b\w/g, c => c.toUpperCase()),
+  title: (v) => String(v).replace(TITLE_WORD_RE, c => c.toUpperCase()),
   trim: (v) => String(v).trim(),
-  ltrim: (v) => String(v).replace(/^\s+/, ""),
-  rtrim: (v) => String(v).replace(/\s+$/, ""),
+  ltrim: (v) => String(v).replace(LEADING_WS_RE, ""),
+  rtrim: (v) => String(v).replace(TRAILING_WS_RE, ""),
   length: (v) => {
     if (Array.isArray(v)) return v.length;
     if (typeof v === "string") return v.length;
@@ -866,7 +908,7 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   safe: (v) => v,
   escape: (v) => htmlEscape(String(v)),
   e: (v) => htmlEscape(String(v)),
-  striptags: (v) => String(v).replace(/<[^>]+>/g, ""),
+  striptags: (v) => String(v).replace(STRIP_TAGS_RE, ""),
   nl2br: (v) => String(v).replace(/\n/g, "<br>\n"),
   abs: (v) => typeof v === "number" ? Math.abs(v) : v,
   round: (v, decimals) => {
@@ -957,7 +999,7 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
     let s = String(v);
     // Simple %s / %d replacement like Python's % operator
     let idx = 0;
-    s = s.replace(/%[sd]/g, () => {
+    s = s.replace(FORMAT_RE, () => {
       const val = idx < args.length ? String(args[idx]) : "";
       idx++;
       return val;
@@ -1259,20 +1301,20 @@ export class Frond {
       } else if (ttype === "VAR") {
         const [content, stripB, stripA] = stripTag(raw);
         if (stripB && output.length > 0) {
-          output[output.length - 1] = output[output.length - 1].replace(/\s+$/, "");
+          output[output.length - 1] = output[output.length - 1].replace(TRAILING_WS_RE, "");
         }
 
         const result = this.evalVar(content, context);
         output.push(result !== null && result !== undefined ? String(result) : "");
 
         if (stripA && i + 1 < tokens.length && tokens[i + 1][0] === "TEXT") {
-          tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(/^\s+/, "")];
+          tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(LEADING_WS_RE, "")];
         }
         i++;
       } else if (ttype === "BLOCK") {
         const [content, stripB, stripA] = stripTag(raw);
         if (stripB && output.length > 0) {
-          output[output.length - 1] = output[output.length - 1].replace(/\s+$/, "");
+          output[output.length - 1] = output[output.length - 1].replace(TRAILING_WS_RE, "");
         }
 
         const parts = content.split(/\s+/);
@@ -1280,7 +1322,7 @@ export class Frond {
 
         // Apply stripA before handlers consume body tokens
         if (stripA && i + 1 < tokens.length && tokens[i + 1][0] === "TEXT") {
-          tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(/^\s+/, "")];
+          tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(LEADING_WS_RE, "")];
         }
 
         if (tag === "if") {
@@ -1342,7 +1384,7 @@ export class Frond {
         }
 
         if (stripA && i < tokens.length && tokens[i][0] === "TEXT") {
-          tokens[i] = ["TEXT", tokens[i][1].replace(/^\s+/, "")];
+          tokens[i] = ["TEXT", tokens[i][1].replace(LEADING_WS_RE, "")];
         }
       } else {
         i++;
@@ -1401,7 +1443,7 @@ export class Frond {
         // The filter name may include a trailing comparison operator,
         // e.g. "length != 1".  Extract the real filter name and the
         // comparison suffix, apply the filter, then evaluate the comparison.
-        const m = fname.match(/^(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)$/);
+        const m = fname.match(FILTER_COMPARISON_RE);
         if (m) {
           const realFilter = m[1];
           const op = m[2];
@@ -1458,6 +1500,40 @@ export class Frond {
         }
       }
 
+      // Inline fast-path for common no-arg filters — avoids generic dispatch
+      if (args.length === 0) {
+        switch (fname) {
+          case "upper":      value = String(value).toUpperCase(); continue;
+          case "lower":      value = String(value).toLowerCase(); continue;
+          case "trim":       value = String(value).trim(); continue;
+          case "length":
+            if (Array.isArray(value)) { value = value.length; }
+            else if (typeof value === "string") { value = value.length; }
+            else if (typeof value === "object" && value !== null) { value = Object.keys(value).length; }
+            else { value = 0; }
+            continue;
+          case "capitalize": { const s = String(value); value = s.charAt(0).toUpperCase() + s.slice(1).toLowerCase(); continue; }
+          case "title":      value = String(value).replace(TITLE_WORD_RE, c => c.toUpperCase()); continue;
+          case "string":     value = String(value); continue;
+          case "int":        value = value ? parseInt(String(value), 10) || 0 : 0; continue;
+          case "float":      value = value ? parseFloat(String(value)) || 0.0 : 0.0; continue;
+          case "abs":        value = typeof value === "number" ? Math.abs(value) : value; continue;
+          case "striptags":  value = String(value).replace(STRIP_TAGS_RE, ""); continue;
+          case "first":      value = Array.isArray(value) ? value[0] ?? null : null; continue;
+          case "last":       value = Array.isArray(value) ? value[value.length - 1] ?? null : null; continue;
+          case "keys":       value = (typeof value === "object" && value !== null && !Array.isArray(value)) ? Object.keys(value) : []; continue;
+          case "values":     value = (typeof value === "object" && value !== null && !Array.isArray(value)) ? Object.values(value) : []; continue;
+          case "json_encode": value = JSON.stringify(value); continue;
+          case "dump":       value = JSON.stringify(value); continue;
+          case "nl2br":      value = String(value).replace(/\n/g, "<br>\n"); continue;
+          case "unique":     value = Array.isArray(value) ? [...new Set(value)] : value; continue;
+          case "sort":       value = Array.isArray(value) ? [...value].sort() : value; continue;
+          case "reverse":    value = Array.isArray(value) ? [...value].reverse() : String(value).split("").reverse().join(""); continue;
+          case "filter":     value = Array.isArray(value) ? value.filter(Boolean) : value; continue;
+          // Not a fast-path filter — fall through to generic dispatch
+        }
+      }
+
       const fn = this.filters[fname];
       if (fn) {
         value = fn(value, ...args);
@@ -1503,25 +1579,25 @@ export class Frond {
         } else if (tag === "endif" && depth === 0) {
           // Strip trailing whitespace from last body token if endif has strip_before
           if (tagStripB && currentTokens.length > 0 && currentTokens[currentTokens.length - 1][0] === "TEXT") {
-            currentTokens[currentTokens.length - 1] = ["TEXT", currentTokens[currentTokens.length - 1][1].replace(/\s+$/, "")];
+            currentTokens[currentTokens.length - 1] = ["TEXT", currentTokens[currentTokens.length - 1][1].replace(TRAILING_WS_RE, "")];
           }
           branches.push([currentCond, currentTokens]);
           // Apply stripA on token after endif
           if (tagStripA && i + 1 < tokens.length && tokens[i + 1][0] === "TEXT") {
-            tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(/^\s+/, "")];
+            tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(LEADING_WS_RE, "")];
           }
           i++;
           break;
         } else if ((tag === "elseif" || tag === "elif") && depth === 0) {
           if (tagStripB && currentTokens.length > 0 && currentTokens[currentTokens.length - 1][0] === "TEXT") {
-            currentTokens[currentTokens.length - 1] = ["TEXT", currentTokens[currentTokens.length - 1][1].replace(/\s+$/, "")];
+            currentTokens[currentTokens.length - 1] = ["TEXT", currentTokens[currentTokens.length - 1][1].replace(TRAILING_WS_RE, "")];
           }
           branches.push([currentCond, currentTokens]);
           currentCond = tagContent.slice(tag.length).trim();
           currentTokens = [];
         } else if (tag === "else" && depth === 0) {
           if (tagStripB && currentTokens.length > 0 && currentTokens[currentTokens.length - 1][0] === "TEXT") {
-            currentTokens[currentTokens.length - 1] = ["TEXT", currentTokens[currentTokens.length - 1][1].replace(/\s+$/, "")];
+            currentTokens[currentTokens.length - 1] = ["TEXT", currentTokens[currentTokens.length - 1][1].replace(TRAILING_WS_RE, "")];
           }
           branches.push([currentCond, currentTokens]);
           currentCond = null; // else branch
@@ -1613,37 +1689,69 @@ export class Frond {
       : Array.isArray(iterable) ? iterable : [];
     const total = items.length;
 
+    // Reusable loop object — mutated each iteration to avoid allocation
+    const loopObj = {
+      index: 0,
+      index0: 0,
+      first: false,
+      last: false,
+      length: total,
+      revindex: 0,
+      revindex0: 0,
+      even: false,
+      odd: false,
+    };
+
     for (let idx = 0; idx < total; idx++) {
       const item = items[idx];
-      const loopCtx: Record<string, unknown> = { ...context };
-      loopCtx.loop = {
-        index: idx + 1,
-        index0: idx,
-        first: idx === 0,
-        last: idx === total - 1,
-        length: total,
-        revindex: total - idx,
-        revindex0: total - idx - 1,
-        even: (idx + 1) % 2 === 0,
-        odd: (idx + 1) % 2 !== 0,
-      };
+
+      // Update loop object in-place
+      loopObj.index = idx + 1;
+      loopObj.index0 = idx;
+      loopObj.first = idx === 0;
+      loopObj.last = idx === total - 1;
+      loopObj.revindex = total - idx;
+      loopObj.revindex0 = total - idx - 1;
+      loopObj.even = (idx + 1) % 2 === 0;
+      loopObj.odd = (idx + 1) % 2 !== 0;
+
+      // Lazy overlay context: reads from local overrides first, then parent
+      const locals: Record<string, unknown> = { loop: loopObj };
 
       if (isDict) {
         const [key, value] = item as [string, unknown];
-        if (var2) {
-          loopCtx[var1] = key;
-          loopCtx[var2] = value;
-        } else {
-          loopCtx[var1] = key;
-        }
+        locals[var1] = key;
+        if (var2) locals[var2] = value;
       } else {
         if (var2) {
-          loopCtx[var1] = idx;
-          loopCtx[var2] = item;
+          locals[var1] = idx;
+          locals[var2] = item;
         } else {
-          loopCtx[var1] = item;
+          locals[var1] = item;
         }
       }
+
+      const loopCtx = new Proxy(locals, {
+        get(target, prop: string) {
+          if (prop in target) return target[prop];
+          return (context as Record<string, unknown>)[prop];
+        },
+        set(target, prop: string, value) {
+          target[prop] = value;
+          return true;
+        },
+        has(target, prop: string) {
+          return prop in target || prop in context;
+        },
+        ownKeys() {
+          return [...new Set([...Object.keys(locals), ...Object.keys(context)])];
+        },
+        getOwnPropertyDescriptor(target, prop: string) {
+          if (prop in target) return { configurable: true, enumerable: true, value: target[prop] };
+          if (prop in context) return { configurable: true, enumerable: true, value: (context as Record<string, unknown>)[prop] };
+          return undefined;
+        },
+      }) as Record<string, unknown>;
 
       output.push(this.renderTokens([...bodyTokens], loopCtx));
     }
