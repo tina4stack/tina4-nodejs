@@ -519,43 +519,48 @@ function splitOnTilde(expr: string): string[] {
   return parts;
 }
 
-function evalComparison(expr: string, context: Record<string, unknown>): boolean {
+function evalComparison(
+  expr: string,
+  context: Record<string, unknown>,
+  evalFn?: (expr: string, context: Record<string, unknown>) => unknown,
+): boolean {
+  const ev = evalFn ?? evalExpr;
   expr = expr.trim();
 
   // Handle 'not' prefix
   if (expr.startsWith("not ")) {
-    return !evalComparison(expr.slice(4), context);
+    return !evalComparison(expr.slice(4), context, evalFn);
   }
 
   // 'or' (lowest precedence)
   const orParts = splitOnKeyword(expr, " or ");
   if (orParts.length > 1) {
-    return orParts.some(p => evalComparison(p, context));
+    return orParts.some(p => evalComparison(p, context, evalFn));
   }
 
   // 'and'
   const andParts = splitOnKeyword(expr, " and ");
   if (andParts.length > 1) {
-    return andParts.every(p => evalComparison(p, context));
+    return andParts.every(p => evalComparison(p, context, evalFn));
   }
 
   // 'is not' test
   let m = expr.match(IS_NOT_RE);
   if (m) {
-    return !evalTest(m[1].trim(), m[2], m[3].trim(), context);
+    return !evalTest(m[1].trim(), m[2], m[3].trim(), context, evalFn);
   }
 
   // 'is' test
   m = expr.match(IS_RE);
   if (m) {
-    return evalTest(m[1].trim(), m[2], m[3].trim(), context);
+    return evalTest(m[1].trim(), m[2], m[3].trim(), context, evalFn);
   }
 
   // 'not in'
   m = expr.match(NOT_IN_RE);
   if (m) {
-    const val = evalExpr(m[1].trim(), context);
-    const collection = evalExpr(m[2].trim(), context);
+    const val = ev(m[1].trim(), context);
+    const collection = ev(m[2].trim(), context);
     if (Array.isArray(collection)) return !collection.includes(val);
     if (typeof collection === "string") return !collection.includes(val as string);
     return true;
@@ -564,8 +569,8 @@ function evalComparison(expr: string, context: Record<string, unknown>): boolean
   // 'in'
   m = expr.match(IN_RE);
   if (m) {
-    const val = evalExpr(m[1].trim(), context);
-    const collection = evalExpr(m[2].trim(), context);
+    const val = ev(m[1].trim(), context);
+    const collection = ev(m[2].trim(), context);
     if (Array.isArray(collection)) return collection.includes(val);
     if (typeof collection === "string") return collection.includes(val as string);
     return false;
@@ -586,8 +591,8 @@ function evalComparison(expr: string, context: Record<string, unknown>): boolean
     if (opIdx !== -1) {
       const left = expr.slice(0, opIdx).trim();
       const right = expr.slice(opIdx + op.length).trim();
-      const l = evalExpr(left, context);
-      const r = evalExpr(right, context);
+      const l = ev(left, context);
+      const r = ev(right, context);
       try {
         return fn(l, r);
       } catch {
@@ -597,7 +602,7 @@ function evalComparison(expr: string, context: Record<string, unknown>): boolean
   }
 
   // Fall through to simple eval
-  const val = evalExpr(expr, context);
+  const val = ev(expr, context);
   return val !== null && val !== undefined && val !== false && val !== 0 && val !== "";
 }
 
@@ -643,8 +648,10 @@ function evalTest(
   testName: string,
   args: string,
   context: Record<string, unknown>,
+  evalFn?: (expr: string, context: Record<string, unknown>) => unknown,
 ): boolean {
-  const val = evalExpr(valueExpr, context);
+  const ev = evalFn ?? evalExpr;
+  const val = ev(valueExpr, context);
 
   // Check custom tests first
   const customTests = (context as { __frond_tests__?: Record<string, TestFn> }).__frond_tests__;
@@ -1613,7 +1620,7 @@ export class Frond {
 
     // Evaluate branches
     for (const [cond, branchTokens] of branches) {
-      if (cond === null || evalComparison(cond, context)) {
+      if (cond === null || evalComparison(cond, context, this.evalVarRaw.bind(this))) {
         return [this.renderTokens([...branchTokens], context), i];
       }
     }

@@ -505,6 +505,33 @@ assert("cache invalidation on file change (dev mode)",
     }
   })());
 
+// ── Filters in if conditions ────────────────────────────────────
+console.log("\n--- Filters in if conditions ---");
+
+assert("if items|length > 0 (non-empty)",
+  engine.renderString("{% if items|length > 0 %}yes{% else %}no{% endif %}", { items: [1, 2, 3] }) === "yes");
+
+assert("if items|length > 0 (empty)",
+  engine.renderString("{% if items|length > 0 %}yes{% else %}no{% endif %}", { items: [] }) === "no");
+
+assert("if items|length == 3",
+  engine.renderString("{% if items|length == 3 %}match{% else %}nope{% endif %}", { items: ["a", "b", "c"] }) === "match");
+
+assert("if name|upper == 'ALICE'",
+  engine.renderString('{% if name|upper == "ALICE" %}hi alice{% else %}who{% endif %}', { name: "alice" }) === "hi alice");
+
+assert("compound: items|length >= 2 and name|upper == 'ALICE'",
+  engine.renderString(
+    '{% if items|length >= 2 and name|upper == "ALICE" %}both{% else %}nope{% endif %}',
+    { items: [1, 2, 3], name: "alice" },
+  ) === "both");
+
+assert("non-filter condition still works: x > 5",
+  engine.renderString("{% if x > 5 %}big{% else %}small{% endif %}", { x: 10 }) === "big");
+
+assert("non-filter condition still works: x > 5 (false)",
+  engine.renderString("{% if x > 5 %}big{% else %}small{% endif %}", { x: 3 }) === "small");
+
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 
