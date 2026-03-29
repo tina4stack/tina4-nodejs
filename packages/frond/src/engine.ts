@@ -4,7 +4,7 @@
  * Supports: variables, filters, if/elseif/else/endif, for/else/endfor,
  * extends/block, include, macro, set, comments, whitespace control, tests.
  */
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -1056,7 +1056,7 @@ function _generateFormToken(descriptor: string = ""): SafeString {
 
   const header = { alg: "HS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
-  const payload: Record<string, unknown> = { type: "form", iat: now, exp: now + ttlMinutes * 60 };
+  const payload: Record<string, unknown> = { type: "form", nonce: randomBytes(8).toString("hex"), iat: now, exp: now + ttlMinutes * 60 };
 
   if (descriptor) {
     if (descriptor.includes("|")) {

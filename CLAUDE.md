@@ -1,10 +1,10 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.10.21)
+# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.10.22)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.10.21 — a convention-over-configuration structural paradigm. **Not a framework.** The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.10.22 — a convention-over-configuration structural paradigm. **Not a framework.** The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
