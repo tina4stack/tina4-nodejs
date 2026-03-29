@@ -1016,6 +1016,8 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   dump: (v) => JSON.stringify(v),
   formToken: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
   form_token: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
+  formTokenValue: (v?: unknown) => _generateFormTokenValue(v != null ? String(v) : ""),
+  form_token_value: (v?: unknown) => _generateFormTokenValue(v != null ? String(v) : ""),
   tojson: (v, indent) => new SafeString(indent !== undefined ? JSON.stringify(v, null, parseInt(String(indent), 10)) : JSON.stringify(v)),
   to_json: (v, indent) => new SafeString(indent !== undefined ? JSON.stringify(v, null, parseInt(String(indent), 10)) : JSON.stringify(v)),
   js_escape: (v) => new SafeString(String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")),
@@ -1050,7 +1052,7 @@ export function setFormTokenSessionId(sessionId: string): void {
   _formTokenSessionId = sessionId || "";
 }
 
-function _generateFormToken(descriptor: string = ""): SafeString {
+function _buildFormTokenJwt(descriptor: string = ""): string {
   const secret = process.env.SECRET || "tina4-default-secret";
   const ttlMinutes = parseInt(process.env.TINA4_TOKEN_LIMIT || "60", 10);
 
@@ -1078,9 +1080,20 @@ function _generateFormToken(descriptor: string = ""): SafeString {
   const sigInput = `${h}.${p}`;
   const sig = _b64url(createHmac("sha256", secret).update(sigInput).digest());
 
-  const token = `${h}.${p}.${sig}`;
+  return `${h}.${p}.${sig}`;
+}
+
+function _generateFormToken(descriptor: string = ""): SafeString {
+  const token = _buildFormTokenJwt(descriptor);
   const escaped = token.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return new SafeString(`<input type="hidden" name="formToken" value="${escaped}">`);
+}
+
+/**
+ * Generate a JWT form token and return just the raw JWT string (no HTML wrapper).
+ */
+function _generateFormTokenValue(descriptor: string = ""): SafeString {
+  return new SafeString(_buildFormTokenJwt(descriptor));
 }
 
 // ── Frond Engine ───────────────────────────────────────────────
@@ -1118,6 +1131,8 @@ export class Frond {
     // Built-in global functions
     this.globals.formToken = (descriptor?: string) => _generateFormToken(descriptor || "");
     this.globals.form_token = (descriptor?: string) => _generateFormToken(descriptor || "");
+    this.globals.formTokenValue = (descriptor?: string) => _generateFormTokenValue(descriptor || "");
+    this.globals.form_token_value = (descriptor?: string) => _generateFormTokenValue(descriptor || "");
   }
 
   sandbox(filters?: string[], tags?: string[], vars?: string[]): Frond {
