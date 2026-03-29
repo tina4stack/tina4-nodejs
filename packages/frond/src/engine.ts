@@ -308,6 +308,23 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
     }
   }
 
+  // Parenthesized sub-expression: (expr) — strip parens and evaluate inner
+  if (expr.length >= 2 && expr[0] === "(" && expr.endsWith(")")) {
+    let depth = 0;
+    let matched = true;
+    for (let pi = 0; pi < expr.length; pi++) {
+      if (expr[pi] === "(") depth++;
+      else if (expr[pi] === ")") depth--;
+      if (depth === 0 && pi < expr.length - 1) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) {
+      return evalExpr(expr.slice(1, -1), context);
+    }
+  }
+
   // Ternary: condition ? true_val : false_val
   // Match carefully to handle nested ternaries
   const ternaryIdx = findTernary(expr);
@@ -323,11 +340,17 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
     }
   }
 
-  // Jinja2-style inline if: value if condition else other_value
-  const inlineIfMatch = expr.match(/^(.+?)\s+if\s+(.+?)\s+else\s+(.+)$/);
-  if (inlineIfMatch) {
-    const cond = evalExpr(inlineIfMatch[2], context);
-    return cond ? evalExpr(inlineIfMatch[1], context) : evalExpr(inlineIfMatch[3], context);
+  // Jinja2-style inline if: value if condition else other_value — quote-aware
+  const ifIdx = findOutsideQuotes(expr, " if ");
+  if (ifIdx >= 0) {
+    const elseIdx = findOutsideQuotes(expr, " else ");
+    if (elseIdx >= 0 && elseIdx > ifIdx) {
+      const valuePart = expr.slice(0, ifIdx).trim();
+      const condPart = expr.slice(ifIdx + 4, elseIdx).trim();
+      const elsePart = expr.slice(elseIdx + 6).trim();
+      const cond = evalExpr(condPart, context);
+      return cond ? evalExpr(valuePart, context) : evalExpr(elsePart, context);
+    }
   }
 
   // Null coalescing: value ?? "default"
