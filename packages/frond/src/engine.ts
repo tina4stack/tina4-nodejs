@@ -1172,20 +1172,16 @@ export class Frond {
     }
 
     const debugMode = (process.env.TINA4_DEBUG || "").toLowerCase() === "true";
-    const cached = this.compiled.get(template);
 
-    if (cached) {
-      if (debugMode) {
-        // Dev mode: check if file changed
-        const mtime = statSync(filePath).mtimeMs;
-        if (cached.mtime === mtime) {
-          return this.executeCached(cached.tokens, context);
-        }
-      } else {
-        // Production: skip mtime check, cache is permanent
+    if (!debugMode) {
+      // Production: use permanent cache (no filesystem checks)
+      const cached = this.compiled.get(template);
+      if (cached) {
         return this.executeCached(cached.tokens, context);
       }
     }
+    // Dev mode: skip cache entirely — always re-read and re-tokenize
+    // so edits to partials and extended base templates are detected
 
     // Cache miss — load, tokenize, cache
     const source = readFileSync(filePath, "utf-8");
