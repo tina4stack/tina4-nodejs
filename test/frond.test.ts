@@ -532,6 +532,30 @@ assert("non-filter condition still works: x > 5",
 assert("non-filter condition still works: x > 5 (false)",
   engine.renderString("{% if x > 5 %}big{% else %}small{% endif %}", { x: 3 }) === "small");
 
+// ── Arithmetic in expressions and {% set %} ──────────────────────────
+console.log("\n── Arithmetic in expressions and {% set %} ──");
+
+assert("set addition: {% set x = 5 + 3 %}",
+  engine.renderString("{% set x = 5 + 3 %}{{ x }}", {}) === "8");
+
+assert("set subtraction: {% set x = 10 - 4 %}",
+  engine.renderString("{% set x = 10 - 4 %}{{ x }}", {}) === "6");
+
+assert("set with context variables: {% set x = a * b %}",
+  engine.renderString("{% set x = a * b %}{{ x }}", { a: 3, b: 7 }) === "21");
+
+assert("expression addition: {{ 2 + 3 }}",
+  engine.renderString("{{ 2 + 3 }}", {}) === "5");
+
+assert("expression floor division: {{ 7 // 2 }}",
+  engine.renderString("{{ 7 // 2 }}", {}) === "3");
+
+assert("expression power: {{ 2 ** 3 }}",
+  engine.renderString("{{ 2 ** 3 }}", {}) === "8");
+
+assert("set with filter pipe: {% set x = name|upper %}",
+  engine.renderString("{% set x = name|upper %}{{ x }}", { name: "alice" }) === "ALICE");
+
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 

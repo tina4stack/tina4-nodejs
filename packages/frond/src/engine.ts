@@ -419,6 +419,40 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
     }
   }
 
+  // Arithmetic operators: +, -, *, //, /, %, ** (lowest to highest precedence)
+  for (const op of [" + ", " - ", " * ", " // ", " / ", " % ", " ** "]) {
+    const pos = findOutsideQuotes(expr, op);
+    if (pos >= 0) {
+      const left = expr.slice(0, pos).trim();
+      const right = expr.slice(pos + op.length).trim();
+      const lVal = evalExpr(left, context);
+      const rVal = evalExpr(right, context);
+      try {
+        let lNum = lVal != null ? Number(lVal) : 0;
+        let rNum = rVal != null ? Number(rVal) : 0;
+        if (isNaN(lNum)) lNum = 0;
+        if (isNaN(rNum)) rNum = 0;
+        const opS = op.trim();
+        // Preserve int type when both operands are int-like (except for / which returns float)
+        const bothInt = Number.isInteger(lNum) && Number.isInteger(rNum) && opS !== "/";
+        let result: number;
+        switch (opS) {
+          case "+": result = lNum + rNum; break;
+          case "-": result = lNum - rNum; break;
+          case "*": result = lNum * rNum; break;
+          case "//": result = rNum !== 0 ? Math.floor(lNum / rNum) : 0; break;
+          case "/": result = rNum !== 0 ? lNum / rNum : 0; break;
+          case "%": result = rNum !== 0 ? lNum % rNum : 0; break;
+          case "**": result = lNum ** rNum; break;
+          default: result = 0;
+        }
+        return bothInt && Number.isInteger(result) ? result : result;
+      } catch {
+        return null;
+      }
+    }
+  }
+
   // Function call: name("arg1", "arg2") — supports dotted names like user.t("key")
   const fnMatch = expr.match(FN_CALL_RE);
   if (fnMatch) {
@@ -1782,7 +1816,7 @@ export class Frond {
     if (m) {
       const name = m[1];
       const expr = m[2].trim();
-      context[name] = evalExpr(expr, context);
+      context[name] = this.evalVarRaw(expr, context);
     }
   }
 
