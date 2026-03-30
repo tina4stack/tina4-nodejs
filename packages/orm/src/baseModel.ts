@@ -236,37 +236,43 @@ export class BaseModel {
     const pkValue = this[pk];
     this._relCache = {}; // Clear relationship cache on save
 
-    if (pkValue !== undefined && pkValue !== null) {
-      // Update
-      const updateFields = Object.entries(ModelClass.fields).filter(
-        ([name, def]) => !def.primaryKey && this[name] !== undefined,
-      );
-      if (updateFields.length === 0) return;
+    db.startTransaction();
+    try {
+      if (pkValue !== undefined && pkValue !== null) {
+        // Update
+        const updateFields = Object.entries(ModelClass.fields).filter(
+          ([name, def]) => !def.primaryKey && this[name] !== undefined,
+        );
+        if (updateFields.length === 0) { db.commit(); return; }
 
-      const setClause = updateFields.map(([k]) => `"${ModelClass.getDbColumn(k)}" = ?`).join(", ");
-      const values = [...updateFields.map(([k]) => this[k]), pkValue];
+        const setClause = updateFields.map(([k]) => `"${ModelClass.getDbColumn(k)}" = ?`).join(", ");
+        const values = [...updateFields.map(([k]) => this[k]), pkValue];
 
-      db.execute(`UPDATE "${ModelClass.tableName}" SET ${setClause} WHERE "${pkCol}" = ?`, values);
-    } else {
-      // Insert
-      const insertFields = Object.entries(ModelClass.fields).filter(
-        ([name, def]) => !(def.primaryKey && def.autoIncrement) && this[name] !== undefined,
-      );
+        db.execute(`UPDATE "${ModelClass.tableName}" SET ${setClause} WHERE "${pkCol}" = ?`, values);
+      } else {
+        // Insert
+        const insertFields = Object.entries(ModelClass.fields).filter(
+          ([name, def]) => !(def.primaryKey && def.autoIncrement) && this[name] !== undefined,
+        );
 
-      const columns = insertFields.map(([k]) => `"${ModelClass.getDbColumn(k)}"`).join(", ");
-      const placeholders = insertFields.map(() => "?").join(", ");
-      const values = insertFields.map(([k]) => this[k]);
+        const columns = insertFields.map(([k]) => `"${ModelClass.getDbColumn(k)}"`).join(", ");
+        const placeholders = insertFields.map(() => "?").join(", ");
+        const values = insertFields.map(([k]) => this[k]);
 
-      const result = db.execute(
-        `INSERT INTO "${ModelClass.tableName}" (${columns}) VALUES (${placeholders})`,
-        values,
-      ) as { lastInsertRowid?: number };
+        const result = db.execute(
+          `INSERT INTO "${ModelClass.tableName}" (${columns}) VALUES (${placeholders})`,
+          values,
+        ) as { lastInsertRowid?: number };
 
-      if (result.lastInsertRowid) {
-        this[pk] = result.lastInsertRowid;
+        if (result.lastInsertRowid) {
+          this[pk] = result.lastInsertRowid;
+        }
       }
+      db.commit();
+    } catch (e) {
+      db.rollback();
+      throw e;
     }
-    db.commit();
   }
 
   /**
@@ -283,19 +289,25 @@ export class BaseModel {
       throw new Error("Cannot delete a model without a primary key value");
     }
 
-    if (ModelClass.softDelete) {
-      db.execute(
-        `UPDATE "${ModelClass.tableName}" SET is_deleted = 1 WHERE "${pkCol}" = ?`,
-        [pkValue],
-      );
-      this.is_deleted = 1;
-    } else {
-      db.execute(
-        `DELETE FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`,
-        [pkValue],
-      );
+    db.startTransaction();
+    try {
+      if (ModelClass.softDelete) {
+        db.execute(
+          `UPDATE "${ModelClass.tableName}" SET is_deleted = 1 WHERE "${pkCol}" = ?`,
+          [pkValue],
+        );
+        this.is_deleted = 1;
+      } else {
+        db.execute(
+          `DELETE FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`,
+          [pkValue],
+        );
+      }
+      db.commit();
+    } catch (e) {
+      db.rollback();
+      throw e;
     }
-    db.commit();
   }
 
   /**
@@ -459,9 +471,15 @@ export class BaseModel {
       }
 
       const sql = `CREATE TABLE IF NOT EXISTS "${this.tableName}" (${colDefs.join(", ")})`;
-      db.execute(sql);
+      db.startTransaction();
+      try {
+        db.execute(sql);
+        db.commit();
+      } catch (e) {
+        db.rollback();
+        throw e;
+      }
     }
-    db.commit();
   }
 
   /**
@@ -504,11 +522,17 @@ export class BaseModel {
       throw new Error("Cannot delete a model without a primary key value");
     }
 
-    db.execute(
-      `DELETE FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`,
-      [pkValue],
-    );
-    db.commit();
+    db.startTransaction();
+    try {
+      db.execute(
+        `DELETE FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`,
+        [pkValue],
+      );
+      db.commit();
+    } catch (e) {
+      db.rollback();
+      throw e;
+    }
   }
 
   /**
@@ -529,11 +553,17 @@ export class BaseModel {
       throw new Error("Cannot restore a model without a primary key value");
     }
 
-    db.execute(
-      `UPDATE "${ModelClass.tableName}" SET is_deleted = 0 WHERE "${pkCol}" = ?`,
-      [pkValue],
-    );
-    db.commit();
+    db.startTransaction();
+    try {
+      db.execute(
+        `UPDATE "${ModelClass.tableName}" SET is_deleted = 0 WHERE "${pkCol}" = ?`,
+        [pkValue],
+      );
+      db.commit();
+    } catch (e) {
+      db.rollback();
+      throw e;
+    }
     this.is_deleted = 0;
   }
 
