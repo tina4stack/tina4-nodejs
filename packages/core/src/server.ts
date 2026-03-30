@@ -29,7 +29,7 @@ const BUILTIN_ERROR_TEMPLATES_DIR = resolve(__dirname, "..", "templates");
 /** Built-in public directory for framework-bundled static assets. */
 const BUILTIN_PUBLIC_DIR = resolve(__dirname, "..", "public");
 
-const TINA4_VERSION = "3.0.0";
+const TINA4_VERSION = "3.10.30";
 
 /** Cache Frond instances by template directory to avoid repeated instantiation. */
 const frondCache = new Map<string, InstanceType<any>>();

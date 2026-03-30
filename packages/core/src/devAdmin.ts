@@ -20,7 +20,7 @@ import { isTruthy } from "./dotenv.js";
 
 const cpuCount = osCpus().length;
 
-const TINA4_VERSION = "3.0.0";
+const TINA4_VERSION = "3.10.30";
 
 // ---------------------------------------------------------------------------
 // Types
