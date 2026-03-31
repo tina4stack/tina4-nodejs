@@ -1329,10 +1329,24 @@ export class Frond {
     childBlocks: Record<string, string>,
   ): string {
     const pattern = /\{%[-\s]*block\s+(\w+)\s*[-]?%\}([\s\S]*?)\{%[-\s]*endblock\s*[-]?%\}/g;
+    const engine = this;
 
-    const result = parentSource.replace(pattern, (_match, name: string, defaultContent: string) => {
-      const blockSource = childBlocks[name] ?? defaultContent;
-      return this.renderTokens(tokenize(blockSource), context);
+    const result = parentSource.replace(pattern, (_match, name: string, parentContent: string) => {
+      const blockSource = childBlocks[name] ?? parentContent;
+
+      // Make parent() and super() available inside child blocks
+      let renderedParent: SafeString | null = null;
+      const getParent = (): SafeString => {
+        if (renderedParent === null) {
+          renderedParent = new SafeString(
+            engine.renderTokens(tokenize(parentContent), context),
+          );
+        }
+        return renderedParent;
+      };
+
+      const blockCtx = { ...context, parent: getParent, super: getParent };
+      return this.renderTokens(tokenize(blockSource), blockCtx);
     });
 
     return this.renderTokens(tokenize(result), context);

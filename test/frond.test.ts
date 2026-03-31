@@ -245,6 +245,46 @@ writeFileSync(join(tmpDir, "error.html"), '\n{% extends "base-full.html" %}\n{% 
   assert("Extends with variables in blocks - msg", r.includes("Internal Server Error"));
 }
 
+// ── parent() / super() in block inheritance ────────────────────
+console.log("\n--- parent() / super() ---");
+
+writeFileSync(join(tmpDir, "base-parent.html"), "{% block content %}Parent Content{% endblock %}");
+writeFileSync(join(tmpDir, "child-parent.html"), '{% extends "base-parent.html" %}{% block content %}{{ parent() }} + Child Content{% endblock %}');
+{
+  const r = engine.render("child-parent.html", {});
+  assert("parent() includes parent block content", r.includes("Parent Content") && r.includes("+ Child Content"));
+}
+
+writeFileSync(join(tmpDir, "child-super.html"), '{% extends "base-parent.html" %}{% block content %}{{ super() }} + Child Content{% endblock %}');
+{
+  const r = engine.render("child-super.html", {});
+  assert("super() is an alias for parent()", r.includes("Parent Content") && r.includes("+ Child Content"));
+}
+
+writeFileSync(join(tmpDir, "child-nop.html"), '{% extends "base-parent.html" %}{% block content %}Child Only{% endblock %}');
+assert("No parent() = full replacement", engine.render("child-nop.html", {}) === "Child Only");
+
+writeFileSync(join(tmpDir, "base-pvar.html"), "{% block content %}Hello {{ name }}{% endblock %}");
+writeFileSync(join(tmpDir, "child-pvar.html"), '{% extends "base-pvar.html" %}{% block content %}{{ parent() }} and Goodbye {{ name }}{% endblock %}');
+{
+  const r = engine.render("child-pvar.html", { name: "World" });
+  assert("parent() with template variables", r.includes("Hello World") && r.includes("and Goodbye World"));
+}
+
+writeFileSync(join(tmpDir, "base-multi.html"), "{% block title %}Default Title{% endblock %} - {% block content %}Default Content{% endblock %}");
+writeFileSync(join(tmpDir, "child-multi.html"), '{% extends "base-multi.html" %}{% block content %}Custom Content{% endblock %}');
+{
+  const r = engine.render("child-multi.html", {});
+  assert("Unreplaced blocks keep parent default", r.includes("Default Title") && r.includes("Custom Content") && !r.includes("Default Content"));
+}
+
+writeFileSync(join(tmpDir, "base-mp.html"), "{% block header %}Base Header{% endblock %}|{% block footer %}Base Footer{% endblock %}");
+writeFileSync(join(tmpDir, "child-mp.html"), '{% extends "base-mp.html" %}{% block header %}{{ parent() }} + Extra Header{% endblock %}{% block footer %}{{ parent() }} + Extra Footer{% endblock %}');
+{
+  const r = engine.render("child-mp.html", {});
+  assert("Multiple blocks with parent()", r.includes("Base Header") && r.includes("+ Extra Header") && r.includes("Base Footer") && r.includes("+ Extra Footer"));
+}
+
 // ── Macros ──────────────────────────────────────────────────────
 console.log("\n--- Macros ---");
 
