@@ -388,6 +388,8 @@ export class DevAdmin {
       // Gallery
       { method: "GET", pattern: "/__dev/api/gallery", handler: handleGalleryList },
       { method: "POST", pattern: "/__dev/api/gallery/deploy", handler: handleGalleryDeploy(router) },
+      // Version check (proxy to avoid CORS)
+      { method: "GET", pattern: "/__dev/api/version-check", handler: handleVersionCheck },
       // JS asset
       { method: "GET", pattern: "/__dev/js/tina4-dev-admin.min.js", handler: handleDevAdminJs },
     ];
@@ -1039,6 +1041,30 @@ function handleGalleryDeploy(router: Router): RouteHandler {
     res.json({ deployed: name, files: copied });
   };
 }
+
+// ---------------------------------------------------------------------------
+// Version check — proxy to npm registry to avoid browser CORS errors
+// ---------------------------------------------------------------------------
+
+const handleVersionCheck: RouteHandler = async (_req, res) => {
+  const current = TINA4_VERSION;
+  let latest = current;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch("https://registry.npmjs.org/tina4-nodejs/latest", {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (resp.ok) {
+      const data = (await resp.json()) as Record<string, unknown>;
+      if (typeof data.version === "string") latest = data.version;
+    }
+  } catch {
+    // Offline or timeout — return current as latest
+  }
+  res.json({ current, latest });
+};
 
 // ---------------------------------------------------------------------------
 // Dev Admin JS handler — serves the shared JS file
@@ -2037,11 +2063,11 @@ function tina4VersionModal(){
     var el=document.getElementById('tina4-ver-latest');
     el.innerHTML='Checking for updates...';
     el.style.color='#888';
-    fetch('https://registry.npmjs.org/tina4-nodejs/latest')
+    fetch('/__dev/api/version-check')
     .then(function(r){return r.json()})
     .then(function(d){
-        var latest=d.version;
-        var current='${ctx.version}';
+        var latest=d.latest;
+        var current=d.current;
         if(latest===current){
             el.innerHTML='Latest: <strong style="color:#a6e3a1;">v'+latest+'</strong> &mdash; You are up to date!';
             el.style.color='#a6e3a1';
