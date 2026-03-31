@@ -20,7 +20,7 @@ export { discoverRoutes } from "./routeDiscovery.js";
 export { MiddlewareChain, MiddlewareRunner, cors, requestLogger, CorsMiddleware, RateLimiterMiddleware, RequestLogger, SecurityHeadersMiddleware, CsrfMiddleware } from "./middleware.js";
 export type { CorsConfig } from "./middleware.js";
 export { createRequest, parseBody } from "./request.js";
-export { createResponse, errorResponse } from "./response.js";
+export { createResponse, errorResponse, setDefaultTemplatesDir } from "./response.js";
 export { tryServeStatic } from "./static.js";
 export { loadEnv, getEnv, requireEnv, hasEnv, allEnv, resetEnv, isTruthy } from "./dotenv.js";
 export { Log } from "./logger.js";

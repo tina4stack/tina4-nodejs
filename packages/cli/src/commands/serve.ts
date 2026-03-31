@@ -36,8 +36,9 @@ export async function serveProject(options: ServeOptions): Promise<void> {
   const watcher = watchForChanges(watchDirs, async () => {
     try {
       const { discoverRoutes } = await import("@tina4/core");
-      const routes = await discoverRoutes(routesDir);
+      // Clear routes BEFORE re-discovery to avoid stale duplicates
       server.router.clear();
+      const routes = await discoverRoutes(routesDir);
       for (const route of routes) {
         server.router.addRoute(route);
       }

@@ -11,7 +11,7 @@ import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
 import { validToken } from "./auth.js";
 import { discoverRoutes } from "./routeDiscovery.js";
 import { createRequest, parseBody } from "./request.js";
-import { createResponse } from "./response.js";
+import { createResponse, setDefaultTemplatesDir } from "./response.js";
 import { MiddlewareChain, cors, requestLogger } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
 import { loadEnv, isTruthy } from "./dotenv.js";
@@ -461,6 +461,7 @@ ${reset}
 
   // Initialize Frond template engine
   let frondEngine: any = null;
+  setDefaultTemplatesDir(templatesDir);
   try {
     const { Frond } = await import("@tina4/frond");
     frondEngine = new Frond(templatesDir);
@@ -610,13 +611,7 @@ ${reset}
       } as typeof rawRes.end;
     }
 
-    // Add res.render() if Frond is available
-    if (frondEngine) {
-      res.render = (template: string, data?: Record<string, unknown>, statusCode?: number) => {
-        const html = frondEngine.render(template, data);
-        return res.html(html, statusCode ?? 200);
-      };
-    }
+    // res.render() / res.template() are handled natively by response.ts via Frond
 
     try {
       // Run middleware chain

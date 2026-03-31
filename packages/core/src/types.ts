@@ -49,8 +49,8 @@ export interface Tina4ResponseMethods {
   clearCookie(name: string, options?: CookieOptions): Tina4Response;
   file(path: string, options?: { download?: boolean; contentType?: string }): Tina4Response;
   error(code: string, message: string, status?: number): Tina4Response;
-  render(template: string, data?: Record<string, unknown>): Promise<Tina4Response>;
-  template(name: string, data?: Record<string, unknown>): Promise<Tina4Response>;
+  render(template: string, data?: Record<string, unknown>, status?: number, templateDir?: string): Promise<Tina4Response>;
+  template(name: string, data?: Record<string, unknown>, status?: number, templateDir?: string): Promise<Tina4Response>;
   /** The underlying ServerResponse for advanced use */
   raw: ServerResponse;
 }

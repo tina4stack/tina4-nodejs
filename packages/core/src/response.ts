@@ -3,6 +3,20 @@ import fs from "node:fs";
 import nodePath from "node:path";
 import type { Tina4Response, CookieOptions } from "./types.js";
 
+/** Cache Frond instances by template directory to avoid repeated instantiation. */
+const _frondCache = new Map<string, InstanceType<any>>();
+
+/** Default templates directory — set via setDefaultTemplatesDir(). */
+let _defaultTemplatesDir: string | null = null;
+
+/**
+ * Set the default templates directory for render()/template().
+ * Called by server.ts during startup.
+ */
+export function setDefaultTemplatesDir(dir: string): void {
+  _defaultTemplatesDir = dir;
+}
+
 /**
  * Creates a callable response object.
  *
@@ -161,19 +175,46 @@ export function createResponse(res: ServerResponse): Tina4Response {
     return response;
   };
 
-  // Default render/template stubs — overwritten by server.ts when Frond is available
-  response.render = async function (templateName: string, _data?: Record<string, unknown>): Promise<Tina4Response> {
-    res.statusCode = 500;
-    response.json({
-      error: "Template engine not available",
-      statusCode: 500,
-      message: "Frond template engine is not initialized. Ensure @tina4/frond is installed.",
-    });
-    return response;
+  // ── Template rendering via Frond ──
+
+  response.render = async function (
+    templateName: string,
+    data?: Record<string, unknown>,
+    status?: number,
+    templateDir?: string,
+  ): Promise<Tina4Response> {
+    try {
+      const { Frond } = await import("@tina4/frond");
+      const dir = templateDir ?? _defaultTemplatesDir ?? nodePath.resolve(process.cwd(), "src/templates");
+      let engine = _frondCache.get(dir);
+      if (!engine) {
+        engine = new Frond(dir);
+        _frondCache.set(dir, engine);
+      }
+      const html = engine.render(templateName, data ?? {});
+      if (status !== undefined) res.statusCode = status;
+      else res.statusCode = 200;
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      if (!res.headersSent) res.end(html);
+      return response;
+    } catch (err) {
+      res.statusCode = 500;
+      response.json({
+        error: "Template engine error",
+        statusCode: 500,
+        message: err instanceof Error ? err.message : "Frond template engine is not available. Ensure @tina4/frond is installed.",
+      });
+      return response;
+    }
   };
 
-  response.template = async function (name: string, data?: Record<string, unknown>): Promise<Tina4Response> {
-    return response.render(name, data);
+  response.template = async function (
+    name: string,
+    data?: Record<string, unknown>,
+    status?: number,
+    templateDir?: string,
+  ): Promise<Tina4Response> {
+    return response.render(name, data, status, templateDir);
   };
 
   return response;
