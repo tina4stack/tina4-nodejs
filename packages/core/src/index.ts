@@ -100,3 +100,10 @@ export type { ValidationError } from "./validator.js";
 export type { WebSocketConnection } from "./websocketConnection.js";
 export { RedisBackplane, NATSBackplane, createBackplane } from "./websocketBackplane.js";
 export type { WebSocketBackplane } from "./websocketBackplane.js";
+export {
+  McpServer, mcpTool, mcpResource, registerDevTools,
+  encodeResponse, encodeError, encodeNotification, decodeRequest,
+  schemaFromParams, isLocalhost,
+  PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR,
+} from "./mcp.js";
+export type { JsonRpcMessage, McpToolDefinition, McpResourceDefinition, JsonSchema, McpToolParam } from "./mcp.js";
