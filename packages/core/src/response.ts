@@ -30,42 +30,52 @@ export function setDefaultTemplatesDir(dir: string): void {
  */
 export function createResponse(res: ServerResponse): Tina4Response {
 
+  // ── Guard: prevent writing after headers are sent ──
+  const safeEnd = (...args: Parameters<typeof res.end>) => {
+    if (!res.headersSent) (res.end as Function)(...args);
+  };
+  const safeSetHeader = (name: string, value: string | number | readonly string[]) => {
+    if (!res.headersSent) res.setHeader(name, value);
+  };
+
   // ── The callable: response(data, status, contentType) ──
   const response = function (data?: unknown, statusCode?: number, contentType?: string): Tina4Response {
+    if (res.headersSent) return response;
+
     if (statusCode !== undefined) {
       res.statusCode = statusCode;
     }
 
     if (contentType) {
       // Explicit content type
-      res.setHeader("Content-Type", contentType);
+      safeSetHeader("Content-Type", contentType);
       if (typeof data === "object" && data !== null && !Buffer.isBuffer(data)) {
-        res.end(JSON.stringify(data));
+        safeEnd(JSON.stringify(data));
       } else {
-        res.end(data == null ? "" : String(data));
+        safeEnd(data == null ? "" : String(data));
       }
     } else if (typeof data === "object" && data !== null && !Buffer.isBuffer(data)) {
       // dict/array → auto JSON
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify(data));
+      safeSetHeader("Content-Type", "application/json");
+      safeEnd(JSON.stringify(data));
     } else if (typeof data === "string") {
       const trimmed = data.trim();
       if (trimmed.startsWith("<") && trimmed.endsWith(">")) {
-        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        safeSetHeader("Content-Type", "text/html; charset=utf-8");
       } else {
-        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        safeSetHeader("Content-Type", "text/plain; charset=utf-8");
       }
-      res.end(data);
+      safeEnd(data);
     } else if (Buffer.isBuffer(data)) {
       if (!res.getHeader("Content-Type")) {
-        res.setHeader("Content-Type", "application/octet-stream");
+        safeSetHeader("Content-Type", "application/octet-stream");
       }
-      res.end(data);
+      safeEnd(data);
     } else if (data == null) {
-      res.end("");
+      safeEnd("");
     } else {
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end(String(data));
+      safeSetHeader("Content-Type", "text/plain; charset=utf-8");
+      safeEnd(String(data));
     }
 
     return response;
@@ -77,23 +87,26 @@ export function createResponse(res: ServerResponse): Tina4Response {
   // ── Explicit methods ──
 
   response.json = function (data: unknown, status?: number): Tina4Response {
+    if (res.headersSent) return response;
     if (status !== undefined) res.statusCode = status;
-    res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify(data));
+    safeSetHeader("Content-Type", "application/json");
+    safeEnd(JSON.stringify(data));
     return response;
   };
 
   response.html = function (content: string, status?: number): Tina4Response {
+    if (res.headersSent) return response;
     if (status !== undefined) res.statusCode = status;
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.end(content);
+    safeSetHeader("Content-Type", "text/html; charset=utf-8");
+    safeEnd(content);
     return response;
   };
 
   response.text = function (content: string, status?: number): Tina4Response {
+    if (res.headersSent) return response;
     if (status !== undefined) res.statusCode = status;
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.end(content);
+    safeSetHeader("Content-Type", "text/plain; charset=utf-8");
+    safeEnd(content);
     return response;
   };
 
@@ -102,19 +115,20 @@ export function createResponse(res: ServerResponse): Tina4Response {
   };
 
   response.status = function (code: number): Tina4Response {
-    res.statusCode = code;
+    if (!res.headersSent) res.statusCode = code;
     return response;
   };
 
   response.header = function (name: string, value: string | number | readonly string[]): Tina4Response {
-    res.setHeader(name, value);
+    safeSetHeader(name, value);
     return response;
   };
 
   response.redirect = function (url: string, code?: number): Tina4Response {
+    if (res.headersSent) return response;
     res.statusCode = code ?? 302;
-    res.setHeader("Location", url);
-    res.end();
+    safeSetHeader("Location", url);
+    safeEnd();
     return response;
   };
 
@@ -133,7 +147,7 @@ export function createResponse(res: ServerResponse): Tina4Response {
     if (Array.isArray(existing)) cookies.push(...(existing as string[]));
     else if (typeof existing === "string") cookies.push(existing);
     cookies.push(parts.join("; "));
-    res.setHeader("Set-Cookie", cookies);
+    safeSetHeader("Set-Cookie", cookies);
 
     return response;
   };
@@ -148,9 +162,11 @@ export function createResponse(res: ServerResponse): Tina4Response {
   };
 
   response.file = function (filePath: string, options?: { download?: boolean; contentType?: string }): Tina4Response {
+    if (res.headersSent) return response;
+
     if (!fs.existsSync(filePath)) {
       res.statusCode = 404;
-      res.end("File not found");
+      safeEnd("File not found");
       return response;
     }
 
@@ -166,12 +182,12 @@ export function createResponse(res: ServerResponse): Tina4Response {
       ".txt": "text/plain", ".mp4": "video/mp4", ".mp3": "audio/mpeg",
     };
 
-    res.setHeader("Content-Type", options?.contentType || mimeTypes[ext] || "application/octet-stream");
-    res.setHeader("Content-Length", content.length);
+    safeSetHeader("Content-Type", options?.contentType || mimeTypes[ext] || "application/octet-stream");
+    safeSetHeader("Content-Length", content.length);
     if (options?.download) {
-      res.setHeader("Content-Disposition", `attachment; filename="${nodePath.basename(filePath)}"`);
+      safeSetHeader("Content-Disposition", `attachment; filename="${nodePath.basename(filePath)}"`);
     }
-    res.end(content);
+    safeEnd(content);
     return response;
   };
 
@@ -192,10 +208,11 @@ export function createResponse(res: ServerResponse): Tina4Response {
         _frondCache.set(dir, engine);
       }
       const html = engine.render(templateName, data ?? {});
+      if (res.headersSent) return response;
       if (status !== undefined) res.statusCode = status;
       else res.statusCode = 200;
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      if (!res.headersSent) res.end(html);
+      safeSetHeader("Content-Type", "text/html; charset=utf-8");
+      safeEnd(html);
       return response;
     } catch (err) {
       res.statusCode = 500;
