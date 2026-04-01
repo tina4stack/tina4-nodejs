@@ -1,0 +1,52 @@
+{
+  "date": "2026-04-01T09:04:12Z",
+  "machine": "arm64 Darwin",
+  "config": {
+    "runs": 3,
+    "requests": 5000,
+    "concurrency": 50,
+    "warmup": 500
+  },
+  "results": [
+    {
+      "framework": "Tina4 Node.js",
+      "language": "nodejs",
+      "json_runs": [
+        69962.2379,
+        84770.6077,
+        89645.0276
+      ],
+      "list_runs": [
+        25459.1504,
+        25453.6962,
+        25655.1524
+      ],
+      "json_median": 84770.6077,
+      "list_median": 25459.1504,
+      "warmup_time_ms": 35.81516700796783,
+      "deps": 0,
+      "features": 38,
+      "server": "built-in"
+    },
+    {
+      "framework": "Node.js raw",
+      "language": "nodejs",
+      "json_runs": [
+        78381.5256,
+        91109.7394,
+        92824.5819
+      ],
+      "list_runs": [
+        26005.5985,
+        25990.9538,
+        26030.3406
+      ],
+      "json_median": 91109.7394,
+      "list_median": 26005.5985,
+      "warmup_time_ms": 51.726291014347225,
+      "deps": 0,
+      "features": 1,
+      "server": "built-in http"
+    }
+  ]
+}
