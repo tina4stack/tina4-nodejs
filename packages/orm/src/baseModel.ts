@@ -18,6 +18,15 @@ export function camelToSnake(name: string): string {
 }
 
 /**
+ * Check whether ORM_PLURAL_TABLE_NAMES is enabled in .env.
+ * When true, hasMany relationship keys get an "s" suffix (e.g. "posts" instead of "post").
+ */
+function _pluralRelKeys(): boolean {
+  const v = process.env.ORM_PLURAL_TABLE_NAMES ?? "";
+  return /^(true|1|yes)$/i.test(v);
+}
+
+/**
  * BaseModel provides instance methods for ORM models.
  * Models extend this class and define static properties.
  *
@@ -395,7 +404,8 @@ export class BaseModel {
       }
       if (ModelClass.hasMany) {
         for (const rel of ModelClass.hasMany) {
-          const relKey = rel.model.toLowerCase() + "s";
+          const base = rel.model.toLowerCase();
+          const relKey = _pluralRelKeys() ? base + "s" : base;
           if (this[relKey] !== undefined) {
             result[relKey] = this[relKey];
           }
@@ -818,8 +828,9 @@ export class BaseModel {
     // Check hasMany
     if (ModelClass.hasMany) {
       const rel = ModelClass.hasMany.find((r) => {
-        const key = r.model.toLowerCase() + "s";
-        return key === relName || r.model.toLowerCase() === relName || r.model === relName;
+        const base = r.model.toLowerCase();
+        const key = _pluralRelKeys() ? base + "s" : base;
+        return key === relName || base === relName || r.model === relName;
       });
       if (rel) {
         const relatedClass = BaseModel._modelRegistry[rel.model];
@@ -877,8 +888,9 @@ export class BaseModel {
       }
       if (!relDef && ModelClass.hasMany) {
         relDef = ModelClass.hasMany.find((r) => {
-          const key = r.model.toLowerCase() + "s";
-          return key === relName || r.model.toLowerCase() === relName || r.model === relName;
+          const base = r.model.toLowerCase();
+          const key = _pluralRelKeys() ? base + "s" : base;
+          return key === relName || base === relName || r.model === relName;
         });
         if (relDef) relType = "hasMany";
       }
