@@ -1085,8 +1085,7 @@ const handleDevAdminJs: RouteHandler = (_req, res) => {
 // Shared Dev Admin JS — cross-language, vanilla JS, zero dependencies
 // ---------------------------------------------------------------------------
 
-function renderDevAdminJs(): string {
-  // Use single-quoted strings and concatenation to avoid template literal escaping issues
+function renderAppShell(): string[] {
   return [
     "let currentTab = 'routes';",
     "let queueFilter = '';",
@@ -1107,7 +1106,11 @@ function renderDevAdminJs(): string {
     "    if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }",
     "    return fetch(path, opts).then(function(r) { return r.json(); });",
     "}",
-    "",
+  ];
+}
+
+function renderRoutesTab(): string[] {
+  return [
     "// -- Routes --",
     "function loadRoutes() {",
     "    api('/__dev/api/routes').then(function(d) {",
@@ -1122,7 +1125,11 @@ function renderDevAdminJs(): string {
     "        }).join('');",
     "    });",
     "}",
-    "",
+  ];
+}
+
+function renderQueueTab(): string[] {
+  return [
     "// -- Queue --",
     "function loadQueue() {",
     "    var qs = queueFilter ? '?status=' + queueFilter : '';",
@@ -1158,7 +1165,11 @@ function renderDevAdminJs(): string {
     "function retryQueue() { api('/__dev/api/queue/retry', 'POST', {}).then(function() { loadQueue(); }); }",
     "function purgeQueue() { api('/__dev/api/queue/purge', 'POST', {}).then(function() { loadQueue(); }); }",
     "function replayJob(id, topic) { api('/__dev/api/queue/replay', 'POST', {job_id: id, topic: topic}).then(function() { loadQueue(); }); }",
-    "",
+  ];
+}
+
+function renderMailboxTab(): string[] {
+  return [
     "// -- Mailbox --",
     "function loadMailbox() {",
     "    var qs = mailboxFolder ? '?folder=' + mailboxFolder : '';",
@@ -1194,7 +1205,11 @@ function renderDevAdminJs(): string {
     "}",
     "function seedMailbox() { api('/__dev/api/mailbox/seed', 'POST', {count:5}).then(function() { loadMailbox(); }); }",
     "function clearMailbox() { api('/__dev/api/mailbox/clear', 'POST', {}).then(function() { loadMailbox(); }); }",
-    "",
+  ];
+}
+
+function renderMessagesTab(): string[] {
+  return [
     "// -- Messages --",
     "function loadMessages() {",
     "    api('/__dev/api/messages').then(function(d) {",
@@ -1223,7 +1238,11 @@ function renderDevAdminJs(): string {
     "    }).join('');",
     "}",
     "function clearMessages() { api('/__dev/api/messages/clear', 'POST', {}).then(function() { loadMessages(); }); }",
-    "",
+  ];
+}
+
+function renderDatabaseTab(): string[] {
+  return [
     "// -- Database --",
     "function loadTables() {",
     "    api('/__dev/api/tables').then(function(d) {",
@@ -1269,7 +1288,11 @@ function renderDevAdminJs(): string {
     "        }",
     "    }).catch(function(e) { errorEl.textContent = e.message; errorEl.classList.remove('hidden'); });",
     "}",
-    "",
+  ];
+}
+
+function renderRequestsTab(): string[] {
+  return [
     "// -- Requests --",
     "function loadRequests() {",
     "    api('/__dev/api/requests').then(function(d) {",
@@ -1294,7 +1317,11 @@ function renderDevAdminJs(): string {
     "    });",
     "}",
     "function clearRequests() { api('/__dev/api/requests/clear', 'POST', {}).then(function() { loadRequests(); }); }",
-    "",
+  ];
+}
+
+function renderErrorsTab(): string[] {
+  return [
     "// -- Errors --",
     "function loadErrors() {",
     "    api('/__dev/api/broken').then(function(d) {",
@@ -1320,7 +1347,11 @@ function renderDevAdminJs(): string {
     "}",
     "function resolveError(id) { api('/__dev/api/broken/resolve', 'POST', {id:id}).then(function() { loadErrors(); }); }",
     "function clearResolvedErrors() { api('/__dev/api/broken/clear', 'POST', {}).then(function() { loadErrors(); }); }",
-    "",
+  ];
+}
+
+function renderWebSocketTab(): string[] {
+  return [
     "// -- WebSockets --",
     "function loadWebSockets() {",
     "    api('/__dev/api/websockets').then(function(d) {",
@@ -1342,7 +1373,11 @@ function renderDevAdminJs(): string {
     "    });",
     "}",
     "function wsDisconnect(id) { api('/__dev/api/websockets/disconnect', 'POST', {id:id}).then(function() { loadWebSockets(); }); }",
-    "",
+  ];
+}
+
+function renderSystemTab(): string[] {
+  return [
     "// -- System --",
     "function loadSystem() {",
     "    api('/__dev/api/system').then(function(d) {",
@@ -1379,7 +1414,11 @@ function renderDevAdminJs(): string {
     "        document.getElementById('sys-cards').innerHTML = html;",
     "    });",
     "}",
-    "",
+  ];
+}
+
+function renderChatTab(): string[] {
+  return [
     "// -- Chat (Tina4) --",
     "var _aiKey = '';",
     "var _aiProvider = 'anthropic';",
@@ -1428,7 +1467,11 @@ function renderDevAdminJs(): string {
     "    document.getElementById('chat-input').value = msg;",
     "    sendChat();",
     "}",
-    "",
+  ];
+}
+
+function renderToolsTab(): string[] {
+  return [
     "// -- Tools --",
     "function runTool(tool) {",
     "    var titles = {carbon:'Carbon Benchmark',test:'Test Suite',routes:'Routes',migrate:'Migrations',seed:'Seeders',ai:'AI Detection'};",
@@ -1441,7 +1484,11 @@ function renderDevAdminJs(): string {
     "        document.getElementById('tool-result').textContent = 'Error: ' + e.message;",
     "    });",
     "}",
-    "",
+  ];
+}
+
+function renderUtilitiesAndInit(): string[] {
+  return [
     "// -- Exit Dev Admin --",
     "function exitDevAdmin() {",
     "    if (document.referrer && !document.referrer.includes('/__dev')) { window.location.href = document.referrer; }",
@@ -1470,6 +1517,36 @@ function renderDevAdminJs(): string {
     "    if (d.requests) document.getElementById('req-count').textContent = d.requests.total || 0;",
     "    if (d.request_stats) document.getElementById('req-count').textContent = d.request_stats.total || 0;",
     "});",
+  ];
+}
+
+function renderDevAdminJs(): string {
+  return [
+    ...renderAppShell(),
+    "",
+    ...renderRoutesTab(),
+    "",
+    ...renderQueueTab(),
+    "",
+    ...renderMailboxTab(),
+    "",
+    ...renderMessagesTab(),
+    "",
+    ...renderDatabaseTab(),
+    "",
+    ...renderRequestsTab(),
+    "",
+    ...renderErrorsTab(),
+    "",
+    ...renderWebSocketTab(),
+    "",
+    ...renderSystemTab(),
+    "",
+    ...renderChatTab(),
+    "",
+    ...renderToolsTab(),
+    "",
+    ...renderUtilitiesAndInit(),
   ].join("\n");
 }
 
