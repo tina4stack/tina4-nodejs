@@ -393,6 +393,44 @@ export class Database {
     return this.getNextAdapter().tables();
   }
 
+  /**
+   * Get column metadata for a table.
+   * Uses the adapter's columns() method which handles engine-specific introspection
+   * (PRAGMA table_info for SQLite, information_schema.columns for others).
+   *
+   * @param tableName - Name of the table to inspect.
+   * @returns Array of column info objects: { name, type, nullable, default, primaryKey }.
+   */
+  getColumns(tableName: string): { name: string; type: string; nullable?: boolean; default?: unknown; primaryKey?: boolean }[] {
+    return this.getNextAdapter().columns(tableName);
+  }
+
+  /**
+   * Execute a SQL statement with multiple parameter sets (batch insert/update).
+   * Wraps all executions in a single transaction for atomicity and performance.
+   *
+   * @param sql - The SQL statement with parameter placeholders.
+   * @param paramSets - Array of parameter arrays, one per execution.
+   * @returns Array of results from each execution.
+   */
+  executeMany(sql: string, paramSets: unknown[][]): unknown[] {
+    const adapter = this.getNextAdapter();
+    const results: unknown[] = [];
+
+    adapter.startTransaction();
+    try {
+      for (const params of paramSets) {
+        results.push(adapter.execute(sql, params));
+      }
+      adapter.commit();
+    } catch (e) {
+      adapter.rollback();
+      throw e;
+    }
+
+    return results;
+  }
+
   /** Get the last auto-increment id. */
   getLastId(): string | number {
     const id = this.getNextAdapter().lastInsertId();

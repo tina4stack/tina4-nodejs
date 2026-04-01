@@ -189,6 +189,31 @@ export class BaseModel {
   }
 
   /**
+   * Create a new instance from data, save it, and return the saved instance.
+   *
+   * Usage:
+   *   const user = User.create({ name: "Alice", email: "alice@example.com" });
+   */
+  static create<T extends BaseModel>(
+    this: new (data?: Record<string, unknown>) => T,
+    data: Record<string, unknown>,
+  ): T {
+    const instance = new this(data) as T;
+    instance.save();
+    return instance;
+  }
+
+  /** Alias for findById(). */
+  static find<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown, include?: string[]): T | null {
+    return (this as unknown as typeof BaseModel).findById.call(this, id, include) as T | null;
+  }
+
+  /** Alias for findById(). */
+  static load<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown, include?: string[]): T | null {
+    return (this as unknown as typeof BaseModel).findById.call(this, id, include) as T | null;
+  }
+
+  /**
    * Find all records, optionally with a where clause.
    * @param where Optional WHERE clause.
    * @param params Optional query parameters.

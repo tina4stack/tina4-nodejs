@@ -7,6 +7,7 @@ import { migrateRollback } from "./commands/migrateRollback.js";
 import { listRoutes } from "./commands/routes.js";
 import { runTests } from "./commands/test.js";
 import { generate } from "./commands/generate.js";
+import { runSeeds } from "./commands/seed.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -24,6 +25,7 @@ const HELP = `
     tina4nodejs routes                List all registered routes
     tina4nodejs test [file]           Run project tests
     tina4nodejs generate <what> <name> Generate scaffolding (model, route, migration, middleware)
+    tina4nodejs seed [file]           Run database seed files from src/seeds/
     tina4nodejs ai                    Install AI coding assistant context files
     tina4nodejs help                  Show this help message
 
@@ -76,6 +78,10 @@ async function main(): Promise<void> {
       const what = args[1];
       const genName = args[2];
       await generate(what, genName);
+      break;
+    }
+    case "seed": {
+      await runSeeds(args[1]);
       break;
     }
     case "ai": {

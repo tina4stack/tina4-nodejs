@@ -247,6 +247,11 @@ export class Router {
     return all;
   }
 
+  /** Alias for getRoutes(). */
+  allRoutes(): RouteDefinition[] {
+    return this.getRoutes();
+  }
+
   /**
    * List all routes in a debug-friendly format for CLI output.
    */
