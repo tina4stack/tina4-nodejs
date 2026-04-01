@@ -40,6 +40,20 @@ const YELLOW = "\x1b[33m";
 const RESET = "\x1b[0m";
 
 /**
+ * Read the Tina4 version from the root package.json.
+ */
+function readVersion(): string {
+  try {
+    const thisDir = dirname(fileURLToPath(import.meta.url));
+    const rootPkg = resolve(thisDir, "..", "..", "..", "package.json");
+    const pkg = JSON.parse(readFileSync(rootPkg, "utf-8"));
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+/**
  * Check if a tool's context file already exists.
  */
 export function isInstalled(root: string, tool: AiTool): boolean {
@@ -114,10 +128,9 @@ export function installSelected(root: string, selection: string): string[] {
     }
   }
 
-  const context = generateContext();
-
   for (const idx of indices) {
     const tool = AI_TOOLS[idx];
+    const context = generateContext(tool.name);
     const files = installForTool(rootPath, tool, context);
     created.push(...files);
   }
@@ -222,132 +235,499 @@ function installClaudeSkills(root: string): string[] {
   return created;
 }
 
-/**
- * Generate the universal Tina4 context document for any AI assistant.
- */
-export function generateContext(): string {
-  return `# Tina4 Node.js — AI Context
+// ── Shared content fragments ────────────────────────────────
 
-This project uses **Tina4 for Node.js/TypeScript**, a lightweight, batteries-included
-web framework with zero third-party dependencies for core features.
+const VERSION = readVersion();
 
-**Documentation:** https://tina4.com
+const FEATURES_COMPACT = "Router, ORM, Database (SQLite/PostgreSQL/MySQL/MSSQL/Firebird), Frond templates (Twig-compatible), JWT auth, Sessions (File/Redis/Valkey/MongoDB/DB), GraphQL + GraphiQL, WebSocket + Redis backplane, WSDL/SOAP, Queue (File/RabbitMQ/Kafka/MongoDB), HTTP client, Messenger (SMTP/IMAP), FakeData/Seeder, Migrations, SCSS compiler, Swagger/OpenAPI, i18n, Events, Container/DI, HtmlElement, Inline testing, Error overlay, Dev dashboard, Rate limiter, Response cache, Logging, MCP server";
 
-## Quick Start
+const PROJECT_STRUCTURE = `src/routes/    \u2014 File-based route handlers (auto-discovered)
+src/models/    \u2014 ORM models
+src/templates/ \u2014 Twig templates
+src/app/       \u2014 Service classes
+src/scss/      \u2014 SCSS (auto-compiled)
+src/public/    \u2014 Static assets
+src/seeds/     \u2014 Database seeders
+migrations/    \u2014 SQL migration files`;
 
-\`\`\`bash
-npx tina4nodejs init .          # Scaffold project
-npx tina4nodejs serve           # Start dev server on port 7148
-npx tina4nodejs migrate         # Run database migrations
-npx tina4nodejs test            # Run test suite
-npx tina4nodejs routes          # List all registered routes
-\`\`\`
+const CONVENTIONS = `1. File-based routing \u2014 src/routes/api/users/get.ts handles GET /api/users
+2. Export default async function for route handlers
+3. GET routes are public, POST/PUT/PATCH/DELETE require auth by default
+4. ESM only (import/export, no require)
+5. Every template extends base.twig
+6. All schema changes via migrations \u2014 never create tables in route code
+7. Use built-in features \u2014 never install npm packages for things Tina4 already provides`;
 
-## Project Structure
-
-\`\`\`
-packages/core/src/    — Framework core (server, router, middleware, events)
-src/routes/           — Route handlers (auto-discovered, file-based routing)
-src/models/           — ORM models (one per file, convention-based)
-src/templates/        — Twig templates
-src/public/           — Static assets served at /
-src/scss/             — SCSS files (auto-compiled to public/css/)
-migrations/           — SQL migration files (sequential numbered)
-test/                 — Test files
-\`\`\`
-
-## Built-in Features (No External Packages Needed)
-
-| Feature | Module | Import |
-|---------|--------|--------|
-| Routing | router | \`import { get, post, put, del } from "@tina4/core"\` |
-| ORM | orm | \`import { BaseModel } from "@tina4/orm"\` |
-| Database | database | \`import { initDatabase } from "@tina4/orm"\` |
-| Templates | twig | \`import { renderTemplate } from "@tina4/twig"\` |
-| JWT Auth | auth | \`import { createToken, validateToken, hashPassword, checkPassword } from "@tina4/core"\` |
-| REST API Client | api | \`import { Api } from "@tina4/core"\` |
-| GraphQL | graphql | \`import { GraphQL } from "@tina4/core"\` |
-| WebSocket | websocket | \`import { WebSocketServer } from "@tina4/core"\` |
-| SOAP/WSDL | wsdl | \`import { WSDLService } from "@tina4/core"\` |
-| Email (SMTP+IMAP) | messenger | \`import { Messenger } from "@tina4/core"\` |
-| Background Queue | queue | \`import { Queue } from "@tina4/core"\` |
-| SCSS Compilation | scss | Auto-compiled from src/scss/ |
-| Migrations | migration | \`npx tina4nodejs migrate\` CLI command |
-| Seeder | seeder | \`import { FakeData, seedTable } from "@tina4/orm"\` |
-| i18n | i18n | \`import { I18n } from "@tina4/core"\` |
-| Swagger/OpenAPI | swagger | Auto-generated at /swagger |
-| Sessions | session | \`import { Session } from "@tina4/core"\` |
-| Middleware | middleware | \`import { MiddlewareChain } from "@tina4/core"\` |
-| Cache | cache | \`import { responseCache, cacheStats, clearCache } from "@tina4/core"\` |
-| Events | events | \`import { Events } from "@tina4/core"\` |
-| HTML Builder | htmlElement | \`import { HtmlElement, htmlElement, addHtmlHelpers } from "@tina4/core"\` |
-| Error Overlay | errorOverlay | \`import { renderErrorOverlay, isDebugMode } from "@tina4/core"\` |
-| Inline Testing | testing | \`import { tests, assertEqual, runAllTests } from "@tina4/core"\` |
-| DI Container | container | \`import { Container } from "@tina4/core"\` |
-
-## Key Conventions
-
-1. **Route files export a default async function** — \`export default async function(req, res) {}\`
-2. **File-based routing** — directory structure mirrors URL paths
-3. **Dynamic params use brackets** — \`[id]\` for params, \`[...slug]\` for catch-all
-4. **GET routes are public**, POST/PUT/PATCH/DELETE require auth by default
-5. **ESM everywhere** — use \`.js\` extensions in imports
-6. **No inline styles** — use SCSS in \`src/scss/\`
-7. **All schema changes via migrations** — never create tables in route code
-8. **Use built-in features** — never install packages for things Tina4 already provides
-
-## AI Workflow — Available Skills
-
-When using an AI coding assistant with Tina4, these skills are available:
-
-| Skill | Description |
-|-------|-------------|
-| \`/tina4-route\` | Create a new route with proper decorators and auth |
-| \`/tina4-orm\` | Create an ORM model with migration |
-| \`/tina4-crud\` | Generate complete CRUD (migration, ORM, routes, template, tests) |
-| \`/tina4-auth\` | Set up JWT authentication with login/register |
-| \`/tina4-api\` | Create an external API integration |
-| \`/tina4-queue\` | Set up background job processing |
-| \`/tina4-template\` | Create a server-rendered template page |
-| \`/tina4-graphql\` | Set up a GraphQL endpoint |
-| \`/tina4-websocket\` | Set up WebSocket communication |
-| \`/tina4-wsdl\` | Create a SOAP/WSDL service |
-| \`/tina4-messenger\` | Set up email send/receive |
-| \`/tina4-test\` | Write tests for a feature |
-| \`/tina4-migration\` | Create a database migration |
-| \`/tina4-seed\` | Generate fake data for development |
-| \`/tina4-i18n\` | Set up internationalization |
-| \`/tina4-scss\` | Set up SCSS stylesheets |
-| \`/tina4-frontend\` | Set up a frontend framework |
-
-## Common Patterns
-
-### Route
-\`\`\`typescript
-// src/routes/api/users/post.ts
-import type { Tina4Request, Tina4Response } from "@tina4/core";
-
-export const meta = { summary: "Create a user", tags: ["users"] };
-
-export default async function (req: Tina4Request, res: Tina4Response) {
-  const data = req.body;
-  return res.json({ created: true }, 201);
+const ROUTE_EXAMPLE = `// src/routes/api/users/get.ts
+export default async function(req: Tina4Request, res: Tina4Response) {
+  res.json({ users: [] });
 }
-\`\`\`
 
-### Model
-\`\`\`typescript
-// src/models/User.ts
+// src/routes/api/users/post.ts
+export default async function(req: Tina4Request, res: Tina4Response) {
+  res.json({ created: req.body.name }, 201);
+}`;
+
+const MODEL_EXAMPLE = `// src/models/User.ts
 export default class User {
   static tableName = "users";
   static fields = {
     id: { type: "integer" as const, primaryKey: true, autoIncrement: true },
     name: { type: "string" as const, required: true },
-    email: { type: "string" as const, required: true },
+    email: { type: "string" as const },
   };
-}
+}`;
+
+// ── Per-tool generators ─────────────────────────────────────
+
+function generateCursorContext(): string {
+  return `# Tina4 Node.js v${VERSION} — Cursor Rules
+
+You are working on a **Tina4 for Node.js/TypeScript** project.
+Documentation: https://tina4.com
+
+## Project Structure
+
 \`\`\`
+${PROJECT_STRUCTURE}
+\`\`\`
+
+## Built-in Features (Do NOT Install Packages For These)
+
+${FEATURES_COMPACT}
+
+## Conventions
+
+${CONVENTIONS}
+
+## Route Example
+
+\`\`\`typescript
+${ROUTE_EXAMPLE}
+\`\`\`
+
+## Model Example
+
+\`\`\`typescript
+${MODEL_EXAMPLE}
+\`\`\`
+
+## Quick Commands
+
+\`\`\`bash
+npx tina4nodejs serve     # Dev server on port 7148
+npx tina4nodejs migrate   # Run migrations
+npx tina4nodejs test      # Run tests
+npx tina4nodejs routes    # List routes
+\`\`\`
+
+## Key Rules
+
+- TypeScript strict mode, ESM only, Node.js 20+
+- Native \`node:http\` — no Express/Fastify
+- Convention-based models with \`static fields\` — no decorators
+- Dynamic route params use brackets: \`[id]\`, \`[...slug]\`
+- Use \`.js\` extensions in import paths
+- All schema changes via migrations
 `;
+}
+
+function generateCopilotContext(): string {
+  return `# Tina4 Node.js v${VERSION} — Copilot Instructions
+
+This is a **Tina4 for Node.js/TypeScript** project (https://tina4.com).
+
+## Structure
+
+\`\`\`
+${PROJECT_STRUCTURE}
+\`\`\`
+
+## Built-in Features
+
+${FEATURES_COMPACT}
+
+## Conventions
+
+${CONVENTIONS}
+
+## Route Pattern
+
+\`\`\`typescript
+${ROUTE_EXAMPLE}
+\`\`\`
+
+## Model Pattern
+
+\`\`\`typescript
+${MODEL_EXAMPLE}
+\`\`\`
+
+## Rules
+
+- TypeScript strict, ESM only, Node.js 20+, native \`node:http\`
+- Never install npm packages for built-in features
+- All schema changes via migrations
+`;
+}
+
+function generateWindsurfContext(): string {
+  return `# Tina4 Node.js v${VERSION} — Windsurf Rules
+
+You are working on a **Tina4 for Node.js/TypeScript** project.
+Documentation: https://tina4.com
+
+## Project Structure
+
+\`\`\`
+${PROJECT_STRUCTURE}
+\`\`\`
+
+## Built-in Features (Do NOT Install Packages For These)
+
+${FEATURES_COMPACT}
+
+## Conventions
+
+${CONVENTIONS}
+
+## Route Example
+
+\`\`\`typescript
+${ROUTE_EXAMPLE}
+\`\`\`
+
+## Model Example
+
+\`\`\`typescript
+${MODEL_EXAMPLE}
+\`\`\`
+
+## Quick Commands
+
+\`\`\`bash
+npx tina4nodejs serve     # Dev server on port 7148
+npx tina4nodejs migrate   # Run migrations
+npx tina4nodejs test      # Run tests
+npx tina4nodejs routes    # List routes
+\`\`\`
+
+## Key Rules
+
+- TypeScript strict mode, ESM only, Node.js 20+
+- Native \`node:http\` — no Express/Fastify
+- Convention-based models with \`static fields\` — no decorators
+- Dynamic route params use brackets: \`[id]\`, \`[...slug]\`
+- Use \`.js\` extensions in import paths
+- All schema changes via migrations
+
+## Database
+
+Default: SQLite via \`node:sqlite\`. Adapters for PostgreSQL, MySQL, MSSQL, Firebird.
+Set \`DATABASE_URL\` in \`.env\` (e.g. \`postgres://localhost:5432/mydb\`).
+
+## Auth
+
+JWT auth built in. \`import { createToken, validateToken, hashPassword, checkPassword } from "@tina4/core"\`.
+GET routes are public. POST/PUT/PATCH/DELETE require auth by default.
+`;
+}
+
+function generateAiderContext(): string {
+  return `# Tina4 Node.js v${VERSION} — Conventions
+
+This is a **Tina4 for Node.js/TypeScript** project (https://tina4.com).
+
+## Project Structure
+
+\`\`\`
+${PROJECT_STRUCTURE}
+\`\`\`
+
+## Built-in Features (Do NOT Install Packages For These)
+
+${FEATURES_COMPACT}
+
+## Conventions
+
+${CONVENTIONS}
+
+## Route Example
+
+\`\`\`typescript
+${ROUTE_EXAMPLE}
+\`\`\`
+
+## Model Example
+
+\`\`\`typescript
+${MODEL_EXAMPLE}
+\`\`\`
+
+## Quick Commands
+
+\`\`\`bash
+npx tina4nodejs serve     # Dev server on port 7148
+npx tina4nodejs migrate   # Run migrations
+npx tina4nodejs test      # Run tests
+npx tina4nodejs routes    # List routes
+\`\`\`
+
+## Key Rules
+
+- TypeScript strict mode, ESM only, Node.js 20+
+- Native \`node:http\` — no Express/Fastify
+- Convention-based models with \`static fields\` — no decorators
+- Dynamic route params use brackets: \`[id]\`, \`[...slug]\`
+- Use \`.js\` extensions in import paths
+- All schema changes via migrations
+
+## Database
+
+Default: SQLite via \`node:sqlite\`. Adapters for PostgreSQL, MySQL, MSSQL, Firebird.
+Set \`DATABASE_URL\` in \`.env\`.
+`;
+}
+
+function generateClineContext(): string {
+  return `# Tina4 Node.js v${VERSION} — Cline Rules
+
+You are working on a **Tina4 for Node.js/TypeScript** project.
+Documentation: https://tina4.com
+
+## Project Structure
+
+\`\`\`
+${PROJECT_STRUCTURE}
+\`\`\`
+
+## Built-in Features (Do NOT Install Packages For These)
+
+${FEATURES_COMPACT}
+
+## Conventions
+
+${CONVENTIONS}
+
+## Route Example
+
+\`\`\`typescript
+${ROUTE_EXAMPLE}
+\`\`\`
+
+## Model Example
+
+\`\`\`typescript
+${MODEL_EXAMPLE}
+\`\`\`
+
+## Quick Commands
+
+\`\`\`bash
+npx tina4nodejs serve     # Dev server on port 7148
+npx tina4nodejs migrate   # Run migrations
+npx tina4nodejs test      # Run tests
+npx tina4nodejs routes    # List routes
+\`\`\`
+
+## Key Rules
+
+- TypeScript strict mode, ESM only, Node.js 20+
+- Native \`node:http\` — no Express/Fastify
+- Never install npm packages for built-in features
+- All schema changes via migrations
+`;
+}
+
+function generateCodexContext(): string {
+  return `# Tina4 Node.js v${VERSION} — Agent Instructions
+
+You are working on a **Tina4 for Node.js/TypeScript** project.
+Documentation: https://tina4.com
+
+## Project Structure
+
+\`\`\`
+${PROJECT_STRUCTURE}
+\`\`\`
+
+## Built-in Features (Do NOT Install Packages For These)
+
+${FEATURES_COMPACT}
+
+## Conventions
+
+${CONVENTIONS}
+
+## Route Example
+
+\`\`\`typescript
+${ROUTE_EXAMPLE}
+\`\`\`
+
+## Model Example
+
+\`\`\`typescript
+${MODEL_EXAMPLE}
+\`\`\`
+
+## Quick Commands
+
+\`\`\`bash
+npx tina4nodejs init .          # Scaffold project
+npx tina4nodejs serve           # Dev server on port 7148
+npx tina4nodejs migrate         # Run migrations
+npx tina4nodejs test            # Run tests
+npx tina4nodejs routes          # List routes
+\`\`\`
+
+## Key Rules
+
+- TypeScript strict mode, ESM only, Node.js 20+
+- Native \`node:http\` — no Express/Fastify
+- Convention-based models with \`static fields\` — no decorators
+- Dynamic route params use brackets: \`[id]\`, \`[...slug]\`
+- Use \`.js\` extensions in import paths
+- All schema changes via migrations
+
+## Database
+
+Default: SQLite via \`node:sqlite\`. Adapters for PostgreSQL, MySQL, MSSQL, Firebird.
+Set \`DATABASE_URL\` in \`.env\` (e.g. \`sqlite:///path/to/db.sqlite\`, \`postgres://localhost:5432/mydb\`).
+
+## Auth
+
+JWT auth built in. \`import { createToken, validateToken, hashPassword, checkPassword } from "@tina4/core"\`.
+GET routes are public. POST/PUT/PATCH/DELETE require auth by default.
+
+## Testing
+
+\`\`\`bash
+npx tina4nodejs test      # Run all tests
+\`\`\`
+
+Add test files in \`test/\` directory. Use built-in inline testing:
+\`\`\`typescript
+import { tests, assertEqual, runAllTests } from "@tina4/core";
+\`\`\`
+
+## Important
+
+- Never add Express, Fastify, or any HTTP framework
+- Never use CommonJS — everything is ESM
+- Never use decorators — use convention-based models
+- Run tests before committing
+`;
+}
+
+function generateClaudeCodeContext(): string {
+  // Try to read the existing CLAUDE.md from the repo root
+  try {
+    const thisDir = dirname(fileURLToPath(import.meta.url));
+    const repoRoot = resolve(thisDir, "..", "..", "..");
+    const claudeMdPath = join(repoRoot, "CLAUDE.md");
+    if (existsSync(claudeMdPath)) {
+      return readFileSync(claudeMdPath, "utf-8");
+    }
+  } catch {
+    // fall through to generated version
+  }
+
+  // Fallback: generate a CLAUDE.md
+  return `# CLAUDE.md — Tina4 Node.js v${VERSION}
+
+> AI Developer Guide for Tina4 Node.js/TypeScript projects.
+
+## What This Project Is
+
+Tina4 for Node.js/TypeScript v${VERSION} — a convention-over-configuration structural paradigm.
+Zero ceremony, batteries included, file system as source of truth.
+
+Documentation: https://tina4.com
+
+## Project Structure
+
+\`\`\`
+${PROJECT_STRUCTURE}
+\`\`\`
+
+## Built-in Features (Do NOT Install Packages For These)
+
+${FEATURES_COMPACT}
+
+## Conventions
+
+${CONVENTIONS}
+
+## Route Example
+
+\`\`\`typescript
+${ROUTE_EXAMPLE}
+\`\`\`
+
+## Model Example
+
+\`\`\`typescript
+${MODEL_EXAMPLE}
+\`\`\`
+
+## Quick Commands
+
+\`\`\`bash
+npx tina4nodejs init .          # Scaffold project
+npx tina4nodejs serve           # Dev server on port 7148
+npx tina4nodejs migrate         # Run migrations
+npx tina4nodejs test            # Run tests
+npx tina4nodejs routes          # List routes
+\`\`\`
+
+## Key Rules
+
+- TypeScript strict mode, ESM only, Node.js 20+
+- Native \`node:http\` — no Express/Fastify
+- Convention-based models with \`static fields\` — no decorators
+- Dynamic route params use brackets: \`[id]\`, \`[...slug]\`
+- Use \`.js\` extensions in import paths
+- All schema changes via migrations
+
+## Database
+
+Default: SQLite via \`node:sqlite\`. Adapters for PostgreSQL, MySQL, MSSQL, Firebird.
+Set \`DATABASE_URL\` in \`.env\`.
+
+## Auth
+
+JWT auth built in. GET routes are public. POST/PUT/PATCH/DELETE require auth by default.
+
+## Testing
+
+Run \`npx tina4nodejs test\`. All tests must pass before committing.
+
+## Don'ts
+
+- Don't add Express, Fastify, or any HTTP framework
+- Don't use decorators — convention-based models
+- Don't use CommonJS — ESM only
+- Don't install packages for built-in features
+`;
+}
+
+// ── Main generator ──────────────────────────────────────────
+
+/**
+ * Generate the Tina4 context document for a specific AI tool.
+ */
+export function generateContext(toolName: string = "claude-code"): string {
+  switch (toolName) {
+    case "claude-code": return generateClaudeCodeContext();
+    case "cursor":      return generateCursorContext();
+    case "copilot":     return generateCopilotContext();
+    case "windsurf":    return generateWindsurfContext();
+    case "aider":       return generateAiderContext();
+    case "cline":       return generateClineContext();
+    case "codex":       return generateCodexContext();
+    default:            return generateClaudeCodeContext();
+  }
 }
 
 export { AiTool as AiToolType };
