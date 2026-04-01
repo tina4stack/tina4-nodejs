@@ -54,6 +54,18 @@ function relativePath(filePath: string): string {
   return path.relative(".", filePath);
 }
 
+// ── Test file detection ─────────────────────────────────────
+
+function hasMatchingTest(relPath: string): boolean {
+  const name = relPath.split('/').pop()?.replace('.ts', '').replace('.js', '') || '';
+  const patterns = [
+    `test/${name}.test.ts`,
+    `${relPath.replace('.ts', '.test.ts').replace('.js', '.test.js')}`,
+    `tests/${name}.test.ts`,
+  ];
+  return patterns.some(p => fs.existsSync(p));
+}
+
 // ── Line counting ────────────────────────────────────────────
 
 interface LineCounts {
@@ -730,6 +742,8 @@ export function fullAnalysis(root: string = "src"): Record<string, any> {
       coupling_afferent: ca,
       coupling_efferent: ce,
       instability: Math.round(instability * 1000) / 1000,
+      has_tests: hasMatchingTest(relPath),
+      dep_count: ce,
     });
   }
 
