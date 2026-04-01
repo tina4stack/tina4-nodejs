@@ -529,9 +529,27 @@ function detectViolations(
   return violations;
 }
 
+// ── Root Resolution ──────────────────────────────────────────
+
+/**
+ * Pick the right directory to scan.
+ *
+ * If the root dir has .ts files, scan the user's project code.
+ * Otherwise, scan the framework itself — so the bubble chart is never empty.
+ */
+function resolveRoot(root: string = "src"): string {
+  const rootPath = path.resolve(root);
+  if (fs.existsSync(rootPath) && walkFiles(rootPath, [".ts", ".js"]).length > 0) {
+    return root;
+  }
+  // Fallback: scan the framework package itself
+  return path.resolve(path.dirname(new URL(import.meta.url).pathname));
+}
+
 // ── Quick Metrics ────────────────────────────────────────────
 
 export function quickMetrics(root: string = "src"): Record<string, any> {
+  root = resolveRoot(root);
   const rootPath = path.resolve(root);
   if (!fs.existsSync(rootPath)) {
     return { error: `Directory not found: ${root}` };
@@ -656,6 +674,7 @@ function filesHash(root: string = "src"): string {
 }
 
 export function fullAnalysis(root: string = "src"): Record<string, any> {
+  root = resolveRoot(root);
   const currentHash = filesHash(root);
   const now = Date.now() / 1000;
 
@@ -760,6 +779,10 @@ export function fullAnalysis(root: string = "src"): Record<string, any> {
   const totalMI = fileMetrics.reduce((sum, f) => sum + f.maintainability, 0);
   const avgMI = fileMetrics.length > 0 ? totalMI / fileMetrics.length : 0;
 
+  // Detect if we're scanning framework or project
+  const frameworkDir = path.resolve(path.dirname(new URL(import.meta.url).pathname));
+  const scanningFramework = rootPath === frameworkDir || rootPath.startsWith(frameworkDir + path.sep);
+
   const result: Record<string, any> = {
     files_analyzed: fileMetrics.length,
     total_functions: allFunctions.length,
@@ -769,6 +792,8 @@ export function fullAnalysis(root: string = "src"): Record<string, any> {
     file_metrics: fileMetrics,
     violations,
     dependency_graph: importGraph,
+    scan_mode: scanningFramework ? "framework" : "project",
+    scan_root: rootPath,
   };
 
   _fullCache = { hash: currentHash, data: result, time: now };
