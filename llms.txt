@@ -1,0 +1,223 @@
+# tina4-nodejs — LLM Context
+
+Tina4 Node.js/TypeScript v3.10.40. 54 built-in features, zero dependencies. Web framework for Node.js 20+.
+Routes, ORM, templates, auth, queue, websocket, graphql, WSDL — all built in. ESM only.
+
+Install: npm install tina4-nodejs
+Version: 3.10.40
+Default port: 7148 (config priority: explicit > PORT env var > 7148)
+
+---
+
+## Router (File-Based)
+
+Route files go in src/routes/. Filename = HTTP method. Directory path = URL path.
+
+```
+src/routes/
+  api/
+    users/
+      get.ts          → GET /api/users
+      post.ts         → POST /api/users
+      [id]/
+        get.ts        → GET /api/users/{id}
+        put.ts        → PUT /api/users/{id}
+        delete.ts     → DELETE /api/users/{id}
+```
+
+Each route file exports a default async function:
+
+```typescript
+import type { Tina4Request, Tina4Response } from "@tina4/core";
+
+export default async function (req: Tina4Request, res: Tina4Response) {
+  return res.json({ users: [] });
+}
+
+// Optional Swagger metadata
+export const meta = { summary: "List all users", tags: ["Users"] };
+
+// Optional template rendering
+export const template = "page.twig";
+```
+
+### Explicit Route Registration
+
+```typescript
+import { Router } from "@tina4/core";
+
+Router.get("/api/users", async (req, res) => {
+  return res.json({ users: [] });
+});
+
+Router.post("/api/users", async (req, res) => {
+  const body = req.body;
+  return res.json({ created: body.name }, 201);
+});
+
+Router.get("/api/users/{id}", async (req, res) => {
+  const id = req.params.id;
+  return res.json({ id });
+});
+
+// Auth control via JSDoc comments
+/** @noauth */
+Router.post("/api/public", async (req, res) => {
+  return res.json({ open: true });
+});
+
+/** @secure */
+Router.get("/api/private", async (req, res) => {
+  return res.json({ secret: true });
+});
+```
+
+---
+
+## Database
+
+```typescript
+import { initDatabase } from "@tina4/orm";
+
+const db = await initDatabase("sqlite:///app.db"); // or postgres://, mysql://, mssql://, firebird://
+
+const result = await db.fetch("SELECT * FROM users WHERE active = ?", [true], 10, 0);
+const row = await db.fetchOne("SELECT * FROM users WHERE id = ?", [1]);
+await db.execute("INSERT INTO users (name) VALUES (?)", ["Alice"]);
+await db.insert("users", { name: "Alice" });
+await db.update("users", { id: 1, name: "Bob" });
+await db.delete("users", { id: 1 });
+const nextId = await db.getNextId("users"); // race-safe atomic ID generation
+```
+
+---
+
+## ORM (Convention-Based Models)
+
+Models go in src/models/. Export a default class with static tableName and fields:
+
+```typescript
+export default class User {
+  static tableName = "users";
+  static fields = {
+    id:    { type: "integer" as const, primaryKey: true, autoIncrement: true },
+    name:  { type: "string" as const,  required: true },
+    email: { type: "string" as const,  required: true },
+    active: { type: "boolean" as const, default: true },
+  };
+}
+```
+
+Field types: "string", "text", "integer", "number", "boolean", "datetime"
+Field options: primaryKey, autoIncrement, required, default, minLength, maxLength, min, max, pattern
+
+Auto-CRUD is generated from models: GET/POST/PUT/DELETE at /api/{tableName}.
+File-based routes override auto-CRUD when both match.
+
+---
+
+## Frond (Templates)
+
+```typescript
+// In a route file
+export const template = "page.twig";
+
+// Or programmatically
+res.template("page.twig", { title: "Home", items });
+```
+
+Templates use Twig syntax. Located in src/templates/.
+
+---
+
+## Auth
+
+```typescript
+import { Auth } from "@tina4/core";
+
+const token = Auth.getToken({ userId: 1, role: "admin" });
+const payload = Auth.validToken(token); // returns object or null
+const hashed = Auth.hashPassword("secret");
+const valid = Auth.checkPassword("secret", hashed);
+```
+
+---
+
+## Queue
+
+```typescript
+import { Queue } from "@tina4/core";
+
+const queue = new Queue("emails", 3); // topic, maxRetries
+await queue.push({ to: "alice@example.com", subject: "Hello" });
+
+for await (const job of queue.consume("emails")) {
+  process(job.payload);
+  job.complete(); // or job.fail("reason")
+}
+
+await queue.produce("other_topic", { data: "value" });
+const dead = await queue.deadLetters();
+```
+
+Backends: file (default), RabbitMQ, Kafka, MongoDB — configured via TINA4_QUEUE_BACKEND env var.
+
+---
+
+## Events
+
+```typescript
+import { Events } from "@tina4/core";
+
+Events.on("user.created", (user) => {
+  console.log(`Welcome ${(user as any).name}`);
+});
+
+Events.emit("user.created", { name: "Alice" });
+Events.once("app.ready", () => console.log("Started!"));
+```
+
+---
+
+## Project Structure
+
+```
+src/
+  routes/       # File-based routes (auto-discovered)
+  models/       # ORM model definitions (auto-registered)
+  templates/    # Frond/Twig templates
+  public/       # Static files served at /
+migrations/     # SQL migration files
+test/           # Test files
+app.ts          # Entry point
+package.json    # Dependencies
+tsconfig.json   # TypeScript config
+.env            # Environment variables
+```
+
+---
+
+## Entry Point (app.ts)
+
+```typescript
+import { startServer } from "@tina4/core";
+
+const port = parseInt(process.env.PORT || "7149", 10);
+const host = process.env.HOST || "0.0.0.0";
+startServer({ port, host });
+```
+
+---
+
+## Known Gotchas
+
+1. ESM only — use .js extensions in imports: `import { Router } from "./router.js"`
+2. No Express/Fastify — uses native node:http
+3. No decorators — convention-based models with static properties
+4. Route dynamic params use {id} in URLs, [id] in directory names
+5. POST/PUT/DELETE require auth by default. Use `/** @noauth */` JSDoc to make public
+6. GET is public by default. Use `/** @secure */` JSDoc to protect
+7. Queue job payload accessed via job.payload not job.data
+8. All packages use barrel exports — import from "@tina4/core", "@tina4/orm", not internal paths
+9. Default port: 7148 (NOT 7145)
+10. TypeScript strict mode, ES2022 target, Node16 module resolution
