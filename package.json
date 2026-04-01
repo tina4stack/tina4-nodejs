@@ -2,7 +2,7 @@
   "name": "tina4-nodejs",
   "version": "3.10.40",
   "type": "module",
-  "description": "This is not a framework. Tina4 for Node.js/TypeScript — zero deps, 38 built-in features.",
+  "description": "Tina4 for Node.js/TypeScript — 54 built-in features, zero dependencies",
   "keywords": ["tina4", "framework", "web", "api", "orm", "graphql", "websocket", "typescript"],
   "homepage": "https://tina4.com/nodejs",
   "repository": {

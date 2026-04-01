@@ -1,10 +1,10 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.10.24)
+# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.10.40)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.10.24 — a convention-over-configuration structural paradigm. **Not a framework.** The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.10.40 — 54 built-in features, zero dependencies. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -585,8 +585,8 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 
 ## v3 Features Summary
 
-- **38 built-in features**, zero third-party dependencies
-- **1,812 tests** passing across all modules
+- **54 built-in features**, zero third-party dependencies
+- **1,950 tests** passing across all modules
 - **Race-safe `getNextId()`** with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
