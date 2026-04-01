@@ -52,9 +52,10 @@ export default async function(req: any, res: any) {
 }
 `);
 
-// Set a very low rate limit for testing
+// Set a very low rate limit for testing and prevent cluster mode
 process.env.TINA4_RATE_LIMIT = "5";
 process.env.TINA4_RATE_WINDOW = "60";
+process.env.TINA4_DEBUG = "true";
 
 console.log("=== Rate Limiter Tests ===\n");
 
@@ -90,6 +91,7 @@ assert("X-RateLimit-Remaining is 0", limited.headers["x-ratelimit-remaining"] ==
 server.close();
 delete process.env.TINA4_RATE_LIMIT;
 delete process.env.TINA4_RATE_WINDOW;
+delete process.env.TINA4_DEBUG;
 rmSync(TEST_DIR, { recursive: true });
 
 // Summary

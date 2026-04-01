@@ -315,6 +315,232 @@ const emptyResult = await seedTable(mockDb, "test_users", 10);
 assert("seedTable with no fieldMap returns 0",
   emptyResult === 0);
 
+// --- Core FakeData direct usage ---
+console.log("\n--- Core FakeData Direct ---");
+
+const coreFake = new CoreFakeData();
+
+const coreFirst = coreFake.firstName();
+assert("CoreFakeData.firstName returns string", typeof coreFirst === "string" && coreFirst.length > 0);
+
+const coreLast = coreFake.lastName();
+assert("CoreFakeData.lastName returns string", typeof coreLast === "string" && coreLast.length > 0);
+
+const coreEmail = coreFake.email();
+assert("CoreFakeData.email contains @", coreEmail.includes("@"));
+
+const corePhone = coreFake.phone();
+assert("CoreFakeData.phone starts with +1", corePhone.startsWith("+1"));
+
+// --- Uniqueness ---
+console.log("\n--- Uniqueness ---");
+
+{
+  const emails = new Set<string>();
+  const f = new FakeData();
+  for (let i = 0; i < 100; i++) {
+    emails.add(f.email());
+  }
+  assert("100 generated emails are mostly unique", emails.size > 50);
+}
+
+{
+  const uuids = new Set<string>();
+  const f = new FakeData();
+  for (let i = 0; i < 100; i++) {
+    uuids.add(f.uuid());
+  }
+  assert("100 generated UUIDs are all unique", uuids.size === 100);
+}
+
+// --- Range boundaries ---
+console.log("\n--- Range Boundaries ---");
+
+{
+  const f = new FakeData();
+  for (let i = 0; i < 50; i++) {
+    const v = f.integer(0, 0);
+    if (v !== 0) {
+      assert("integer(0, 0) always returns 0", false, `got ${v}`);
+      break;
+    }
+  }
+  assert("integer(0, 0) always returns 0", true);
+}
+
+{
+  const f = new FakeData();
+  for (let i = 0; i < 50; i++) {
+    const v = f.integer(5, 5);
+    if (v !== 5) {
+      assert("integer(5, 5) always returns 5", false, `got ${v}`);
+      break;
+    }
+  }
+  assert("integer(5, 5) always returns 5", true);
+}
+
+{
+  const f = new FakeData();
+  const v = f.float(0, 0, 0);
+  assert("float(0, 0, 0) returns 0", v === 0);
+}
+
+// --- Date edge cases ---
+console.log("\n--- Date Edge Cases ---");
+
+{
+  const f = new FakeData();
+  const d = f.date("2024-06-15", "2024-06-15");
+  assert("same start and end date", d === "2024-06-15");
+}
+
+// --- Paragraph with different counts ---
+console.log("\n--- Paragraph Variations ---");
+
+{
+  const f = new FakeData();
+  const p1 = f.paragraph(1);
+  assert("paragraph(1) contains at least 1 sentence", p1.includes("."));
+
+  const p5 = f.paragraph(5);
+  const sentences5 = p5.split(".").filter(s => s.trim().length > 0);
+  assert("paragraph(5) has multiple sentences", sentences5.length >= 3);
+}
+
+// --- Word bank ---
+console.log("\n--- Word Returns ---");
+
+{
+  const f = new FakeData();
+  const words = new Set<string>();
+  for (let i = 0; i < 50; i++) {
+    words.add(f.word());
+  }
+  assert("word() returns variety", words.size > 5);
+}
+
+// --- Sentence structure ---
+console.log("\n--- Sentence Structure ---");
+
+{
+  const f = new FakeData();
+  for (let i = 0; i < 10; i++) {
+    const s = f.sentence();
+    assert(`sentence ${i + 1} starts uppercase`, s[0] === s[0].toUpperCase());
+    assert(`sentence ${i + 1} ends with period`, s.endsWith("."));
+  }
+}
+
+// --- Color variety ---
+console.log("\n--- Color Variety ---");
+
+{
+  const f = new FakeData();
+  const colors = new Set<string>();
+  for (let i = 0; i < 20; i++) {
+    colors.add(f.color());
+  }
+  assert("color() returns variety", colors.size > 3);
+}
+
+// --- Company structure ---
+console.log("\n--- Company Structure ---");
+
+{
+  const f = new FakeData();
+  for (let i = 0; i < 5; i++) {
+    const c = f.company();
+    assert(`company ${i + 1} has suffix`, c.includes(" "));
+  }
+}
+
+// --- Job title ---
+console.log("\n--- Job Title ---");
+
+{
+  const f = new FakeData();
+  const jobs = new Set<string>();
+  for (let i = 0; i < 20; i++) {
+    jobs.add(f.jobTitle());
+  }
+  assert("jobTitle() returns variety", jobs.size > 3);
+}
+
+// --- forField string with maxLength ---
+console.log("\n--- forField maxLength ---");
+
+{
+  const f = new FakeData();
+  const maxLenField: FieldDefinition = { type: "string", maxLength: 5 };
+  for (let i = 0; i < 10; i++) {
+    const val = f.forField(maxLenField, "code") as string;
+    if (val && val.length > 5) {
+      assert("forField respects maxLength", false, `got length ${val.length}`);
+      break;
+    }
+  }
+  assert("forField string values within maxLength", true);
+}
+
+// --- forField with URL column ---
+console.log("\n--- forField URL Heuristic ---");
+
+{
+  const f = new FakeData();
+  const urlField: FieldDefinition = { type: "string" };
+  const urlVal = f.forField(urlField, "website_url") as string;
+  assert("forField url column generates URL", typeof urlVal === "string" && urlVal.startsWith("https://"));
+}
+
+// --- forField with UUID column ---
+{
+  const f = new FakeData();
+  const uuidField: FieldDefinition = { type: "string" };
+  const uuidVal = f.forField(uuidField, "uuid") as string;
+  assert("forField uuid column generates UUID", /^[0-9a-f-]{36}$/.test(uuidVal));
+}
+
+// --- forField with IP column ---
+{
+  const f = new FakeData();
+  const ipField: FieldDefinition = { type: "string" };
+  const ipVal = f.forField(ipField, "ip") as string;
+  assert("forField ip column generates IP", typeof ipVal === "string" && ipVal.split(".").length === 4);
+}
+
+// --- forField with address column ---
+{
+  const f = new FakeData();
+  const addrField: FieldDefinition = { type: "string" };
+  const addrVal = f.forField(addrField, "address") as string;
+  assert("forField address column generates address", typeof addrVal === "string" && addrVal.includes(","));
+}
+
+// --- forField with city column ---
+{
+  const f = new FakeData();
+  const cityField: FieldDefinition = { type: "string" };
+  const cityVal = f.forField(cityField, "city") as string;
+  assert("forField city column generates city", typeof cityVal === "string" && cityVal.length > 0);
+}
+
+// --- forField with country column ---
+{
+  const f = new FakeData();
+  const countryField: FieldDefinition = { type: "string" };
+  const countryVal = f.forField(countryField, "country") as string;
+  assert("forField country column generates country", typeof countryVal === "string" && countryVal.length > 0);
+}
+
+// --- forField with company column ---
+{
+  const f = new FakeData();
+  const companyField: FieldDefinition = { type: "string" };
+  const companyVal = f.forField(companyField, "company_name") as string;
+  assert("forField company column generates company", typeof companyVal === "string" && companyVal.length > 0);
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

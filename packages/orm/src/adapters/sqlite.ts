@@ -57,9 +57,13 @@ export class SQLiteAdapter implements DatabaseAdapter {
   fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): T[] {
     let effectiveSql = sql;
     if (limit !== undefined) {
-      effectiveSql += ` LIMIT ${limit}`;
-      if (skip !== undefined && skip > 0) {
-        effectiveSql += ` OFFSET ${skip}`;
+      // Skip appending LIMIT when the SQL already contains one (dedup)
+      const sqlBeforeComment = sql.toUpperCase().split("--")[0];
+      if (!sqlBeforeComment.includes("LIMIT")) {
+        effectiveSql += ` LIMIT ${limit}`;
+        if (skip !== undefined && skip > 0) {
+          effectiveSql += ` OFFSET ${skip}`;
+        }
       }
     }
     return this.query<T>(effectiveSql, params);

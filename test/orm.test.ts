@@ -335,6 +335,172 @@ console.log("\n--- selectOne ---");
   assert("selectOne returns null when not found", notFound === null);
 }
 
+// --- select() ---
+console.log("\n--- select() ---");
+
+{
+  const allUsers = User.select<User>("SELECT * FROM users");
+  assert("select returns array", Array.isArray(allUsers));
+  assert("select returns all non-deleted users", allUsers.length >= 2);
+
+  const filtered = User.select<User>("SELECT * FROM users WHERE age > ?", [28]);
+  assert("select with params filters correctly", filtered.length >= 1);
+
+  const empty = User.select<User>("SELECT * FROM users WHERE age > ?", [9999]);
+  assert("select with no matches returns empty array", empty.length === 0);
+}
+
+// --- findAll with various args ---
+console.log("\n--- findAll Variations ---");
+
+{
+  const allUsersNow = User.findAll();
+  assert("findAll without args returns all", allUsersNow.length >= 2);
+
+  const withWhere = User.findAll("age > ?", [0]);
+  assert("findAll with WHERE clause returns filtered", withWhere.length >= 1);
+
+  const withEmpty = User.findAll("age > ?", [99999]);
+  assert("findAll with no matches returns empty", withEmpty.length === 0);
+}
+
+// --- Validation Edge Cases ---
+console.log("\n--- Validation Edge Cases ---");
+
+{
+  // Test number type validation
+  const numFields: Record<string, FieldDefinition> = {
+    score: { type: "number", min: 0, max: 100 },
+  };
+
+  const v1 = validate({ score: 50.5 }, numFields, false);
+  assert("valid float passes", v1.length === 0);
+
+  const v2 = validate({ score: -1 }, numFields, false);
+  assert("below min fails", v2.some(e => e.field === "score"));
+
+  const v3 = validate({ score: 101 }, numFields, false);
+  assert("above max fails", v3.some(e => e.field === "score"));
+}
+
+{
+  // Test string length validation
+  const strFields: Record<string, FieldDefinition> = {
+    code: { type: "string", minLength: 3, maxLength: 10 },
+  };
+
+  const v1 = validate({ code: "AB" }, strFields, false);
+  assert("string too short fails", v1.some(e => e.field === "code"));
+
+  const v2 = validate({ code: "ABCDEFGHIJK" }, strFields, false);
+  assert("string too long fails", v2.some(e => e.field === "code"));
+
+  const v3 = validate({ code: "ABCDE" }, strFields, false);
+  assert("string in range passes", v3.length === 0);
+}
+
+{
+  // Test boolean type validation
+  const boolFields: Record<string, FieldDefinition> = {
+    active: { type: "boolean" },
+  };
+
+  const v1 = validate({ active: true }, boolFields, false);
+  assert("boolean true passes", v1.length === 0);
+
+  const v2 = validate({ active: false }, boolFields, false);
+  assert("boolean false passes", v2.length === 0);
+}
+
+{
+  // Test datetime type validation
+  const dtFields: Record<string, FieldDefinition> = {
+    created_at: { type: "datetime" },
+  };
+
+  const v1 = validate({ created_at: "2024-01-15T10:30:00Z" }, dtFields, false);
+  assert("valid ISO datetime passes", v1.length === 0);
+}
+
+{
+  // Test default value
+  const defFields: Record<string, FieldDefinition> = {
+    status: { type: "string", default: "active" },
+    name: { type: "string", required: true },
+  };
+
+  const v1 = validate({ name: "Test" }, defFields, false);
+  assert("field with default is not required", v1.length === 0);
+}
+
+// --- BaseModel toArray ---
+console.log("\n--- toArray/toDict Edge Cases ---");
+
+{
+  const user = User.findAll()[0];
+  if (user) {
+    const dict = user.toDict();
+    assert("toDict has id field", "id" in dict);
+    assert("toDict has name field", "name" in dict);
+    assert("toDict has email field", "email" in dict);
+
+    const arr = user.toArray();
+    assert("toArray returns non-empty array", arr.length > 0);
+
+    const json = user.toJson();
+    assert("toJson is valid JSON string", typeof json === "string");
+    const parsed = JSON.parse(json);
+    assert("toJson round-trips correctly", parsed.name === dict.name);
+  }
+}
+
+// --- Model Registry ---
+console.log("\n--- Model Registry ---");
+
+{
+  // registerModel was called earlier — verify it doesn't throw on re-registration
+  BaseModel.registerModel("User", User);
+  assert("re-registering User does not throw", true);
+  BaseModel.registerModel("Article", Article);
+  assert("re-registering Article does not throw", true);
+}
+
+// --- Multiple saves (update idempotency) ---
+console.log("\n--- Update Idempotency ---");
+
+{
+  const user = User.findAll()[0];
+  if (user) {
+    const origName = (user as any).name;
+    (user as any).name = "Idempotent Test";
+    user.save();
+    const after1 = User.findById((user as any).id);
+    assert("first save updates name", (after1 as any)?.name === "Idempotent Test");
+
+    user.save(); // save again without changes
+    const after2 = User.findById((user as any).id);
+    assert("second save is idempotent", (after2 as any)?.name === "Idempotent Test");
+
+    // Restore
+    (user as any).name = origName;
+    user.save();
+  }
+}
+
+// --- New record without ID ---
+console.log("\n--- Create Without ID ---");
+
+{
+  const newUser = new User({ name: "NoIdUser", email: "noid@test.com", age: 20 });
+  assert("new user has no ID before save", (newUser as any).id === undefined);
+  newUser.save();
+  assert("new user gets ID after save", (newUser as any).id !== undefined);
+  assert("new user ID is positive integer", typeof (newUser as any).id === "number" && (newUser as any).id > 0);
+
+  // Clean up
+  newUser.delete();
+}
+
 // Cleanup
 closeDatabase();
 try { rmSync("/tmp/tina4-orm-test", { recursive: true }); } catch {}

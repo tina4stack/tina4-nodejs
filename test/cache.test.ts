@@ -218,6 +218,139 @@ if (origBackendEnv !== undefined) {
 }
 _resetBackend();
 
+// --- Value Types ---
+console.log("\n--- Value Types ---");
+
+_resetBackend();
+cacheClear();
+
+cacheSet("str_val", "hello", 60);
+assert("String value stored and retrieved", cacheGet("str_val") === "hello");
+
+cacheSet("num_val", 42, 60);
+assert("Number value stored and retrieved", cacheGet("num_val") === 42);
+
+cacheSet("bool_val", true, 60);
+assert("Boolean value stored and retrieved", cacheGet("bool_val") === true);
+
+cacheSet("null_val", null, 60);
+assert("Null value stored and retrieved", cacheGet("null_val") === null);
+
+cacheSet("arr_val", [1, 2, 3], 60);
+const arrResult = cacheGet("arr_val") as any;
+assert("Array value stored and retrieved", Array.isArray(arrResult) && arrResult.length === 3);
+
+cacheSet("obj_val", { a: 1, b: { c: 2 } }, 60);
+const objResult = cacheGet("obj_val") as any;
+assert("Nested object stored and retrieved", objResult?.b?.c === 2);
+
+// --- Overwrite ---
+console.log("\n--- Overwrite ---");
+
+cacheSet("overwrite_key", "first", 60);
+assert("initial value set", cacheGet("overwrite_key") === "first");
+
+cacheSet("overwrite_key", "second", 60);
+assert("overwrite replaces value", cacheGet("overwrite_key") === "second");
+
+// --- Delete non-existent ---
+console.log("\n--- Delete Edge Cases ---");
+
+const delNonExistent = cacheDelete("this_key_does_not_exist_xyz");
+assert("delete non-existent returns false", delNonExistent === false);
+
+// --- Multiple keys ---
+console.log("\n--- Multiple Keys ---");
+
+cacheClear();
+for (let i = 0; i < 10; i++) {
+  cacheSet(`multi_${i}`, i, 60);
+}
+
+const multiStats = cacheBackendStats();
+assert("10 keys stored", multiStats.size === 10);
+
+assert("first key retrievable", cacheGet("multi_0") === 0);
+assert("last key retrievable", cacheGet("multi_9") === 9);
+
+cacheDelete("multi_5");
+assert("deleted key returns undefined", cacheGet("multi_5") === undefined);
+assert("other keys unaffected", cacheGet("multi_4") === 4);
+
+const afterDeleteStats = cacheBackendStats();
+assert("size decremented after delete", afterDeleteStats.size === 9);
+
+// --- CacheBackendStats after set ---
+console.log("\n--- CacheBackendStats After Set ---");
+
+_resetBackend();
+cacheClear();
+cacheSet("alpha", "a", 60);
+cacheSet("beta", "b", 60);
+
+const backendStatsAfterSet = cacheBackendStats();
+assert("backend has 2 entries after 2 sets", backendStatsAfterSet.size === 2);
+assert("backend backend field is string", typeof backendStatsAfterSet.backend === "string");
+
+// --- TTL expiry via short TTL ---
+console.log("\n--- TTL Expiry ---");
+
+cacheClear();
+cacheSet("short_ttl", "ephemeral", 0); // 0 second TTL — should expire immediately or be unset
+// Note: with 0 TTL, behavior depends on implementation - some treat 0 as "no expiry"
+// We just verify the API doesn't throw
+assert("zero TTL does not throw", true);
+
+// --- File backend edge cases ---
+console.log("\n--- File Backend Edge Cases ---");
+
+const testDir2 = "/tmp/tina4_node_cache_test2_" + Date.now();
+const origBe = process.env.TINA4_CACHE_BACKEND;
+process.env.TINA4_CACHE_BACKEND = "file";
+process.env.TINA4_CACHE_DIR = testDir2;
+_resetBackend();
+
+// Store multiple items
+cacheSet("fa", { x: 1 }, 60);
+cacheSet("fb", { x: 2 }, 60);
+cacheSet("fc", { x: 3 }, 60);
+
+const fileStats = cacheBackendStats();
+assert("File backend stores 3 items", fileStats.size === 3);
+
+// Overwrite in file backend
+cacheSet("fa", { x: 99 }, 60);
+const faVal = cacheGet("fa") as any;
+assert("File backend overwrite works", faVal?.x === 99);
+
+// Clear file backend
+cacheClear();
+const clearedFileStats = cacheBackendStats();
+assert("File backend clear empties store", clearedFileStats.size === 0);
+
+// Cleanup file backend
+try { fs.rmSync(testDir2, { recursive: true }); } catch {}
+if (origBe !== undefined) {
+  process.env.TINA4_CACHE_BACKEND = origBe;
+} else {
+  delete process.env.TINA4_CACHE_BACKEND;
+}
+delete process.env.TINA4_CACHE_DIR;
+_resetBackend();
+
+// --- Middleware with custom options ---
+console.log("\n--- Middleware Custom Options ---");
+
+{
+  const customMw2 = responseCache({ ttl: 30, statusCodes: [200] });
+  assert("Custom middleware with statusCodes", typeof customMw2 === "function");
+}
+
+{
+  const noArgMw = responseCache({ ttl: 60 });
+  assert("Middleware with ttl-only option", typeof noArgMw === "function");
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

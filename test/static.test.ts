@@ -1,19 +1,28 @@
 /**
  * Unit tests for static file serving (packages/core/src/static.ts).
- * Run with: npx vitest run test/static.test.ts
+ * Run with: npx tsx test/static.test.ts
  */
-import { describe, it, expect } from "vitest";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tryServeStatic } from "../packages/core/src/static.ts";
 import type { Tina4Request, Tina4Response } from "../packages/core/src/types.ts";
 
-// ── Helpers ──────────────────────────────────────────────────
+let pass = 0;
+let fail = 0;
 
-const corePublicDir = resolve(
-  import.meta.dirname ?? ".",
-  "../packages/core/public"
-);
+function assert(name: string, condition: boolean, detail = "") {
+  if (condition) {
+    console.log(`  \x1b[32mPASS\x1b[0m ${name}`);
+    pass++;
+  } else {
+    console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
+    fail++;
+  }
+}
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const corePublicDir = resolve(__dirname, "../packages/core/public");
 
 /** Build a minimal mock Tina4Request with the given URL. */
 function mockReq(url: string): Tina4Request {
@@ -21,11 +30,7 @@ function mockReq(url: string): Tina4Request {
 }
 
 /** Build a minimal mock Tina4Response that captures headers and body. */
-function mockRes(): Tina4Response & {
-  headers: Record<string, string | number>;
-  body: Buffer | string | null;
-  ended: boolean;
-} {
+function mockRes(): any {
   const headers: Record<string, string | number> = {};
   const state = { body: null as Buffer | string | null, ended: false, headers };
   return {
@@ -42,152 +47,251 @@ function mockRes(): Tina4Response & {
         state.ended = true;
       },
     },
-    get headersRef() {
-      return state.headers;
-    },
-    get bodyRef() {
-      return state.body;
-    },
-    get endedRef() {
-      return state.ended;
-    },
-  } as any;
+    get headersRef() { return state.headers; },
+    get bodyRef() { return state.body; },
+    get endedRef() { return state.ended; },
+  };
 }
 
-// ── MIME Type Detection ──────────────────────────────────────
+console.log("=== Static File Serving Tests ===\n");
 
-describe("Static file serving — MIME types", () => {
-  it("serves .css with text/css content type", () => {
+// --- MIME Type Detection ---
+console.log("--- MIME types ---");
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/css/tina4.min.css"), res);
+  assert("serves .css with text/css", served === true);
+  assert("CSS content-type header", String(res.headersRef["Content-Type"]).includes("text/css"));
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/js/tina4.min.js"), res);
+  assert("serves .js with application/javascript", served === true);
+  assert("JS content-type header", String(res.headersRef["Content-Type"]).includes("application/javascript"));
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/nonexistent.html"), res);
+  assert("returns false for missing .html", served === false);
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/nonexistent.json"), res);
+  assert("returns false for missing .json", served === false);
+}
+
+{
+  for (const ext of [".png", ".jpg", ".svg"]) {
     const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/css/tina4.min.css"), res);
-    expect(served).toBe(true);
-    expect(res.raw.setHeader).toBeDefined();
-    // Check the header was set by inspecting our captured state
-    expect((res as any).headersRef["Content-Type"]).toContain("text/css");
-  });
+    const served = tryServeStatic(corePublicDir, mockReq(`/img/test${ext}`), res);
+    assert(`returns false for missing ${ext}`, served === false);
+  }
+}
 
-  it("serves .js with application/javascript content type", () => {
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/js/tina4.min.js"), res);
-    expect(served).toBe(true);
-    expect((res as any).headersRef["Content-Type"]).toContain("application/javascript");
-  });
+{
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/fonts/test.woff2"), res);
+  assert("returns false for missing .woff2", served === false);
+}
 
-  it("returns correct MIME for .html", () => {
-    // Create a temp HTML file scenario — we test against known MIME map
-    // by checking the exported MIME_TYPES indirectly via a real file
-    const res = mockRes();
-    // Use the existing public dir; if no .html exists, tryServeStatic returns false
-    const served = tryServeStatic(corePublicDir, mockReq("/nonexistent.html"), res);
-    expect(served).toBe(false);
-  });
+// --- Framework Public Files ---
+console.log("\n--- Framework public files ---");
 
-  it("returns correct MIME for .json requests", () => {
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/nonexistent.json"), res);
-    expect(served).toBe(false);
-  });
+{
+  assert("tina4.min.css exists", existsSync(join(corePublicDir, "css/tina4.min.css")));
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/css/tina4.min.css"), res);
+  assert("tina4.min.css is servable", served === true);
+  assert("tina4.min.css has Content-Length", res.headersRef["Content-Length"] > 0);
+}
 
-  it("returns correct MIME for image extensions (.png, .jpg, .svg)", () => {
-    // Verify the function does not crash on image requests and returns false for missing files
-    for (const ext of [".png", ".jpg", ".svg"]) {
-      const res = mockRes();
-      const served = tryServeStatic(corePublicDir, mockReq(`/img/test${ext}`), res);
-      expect(served).toBe(false);
-    }
-  });
+{
+  assert("tina4.min.js exists", existsSync(join(corePublicDir, "js/tina4.min.js")));
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/js/tina4.min.js"), res);
+  assert("tina4.min.js is servable", served === true);
+}
 
-  it("returns correct MIME for .woff2 font files", () => {
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/fonts/test.woff2"), res);
-    expect(served).toBe(false); // file doesn't exist, but no crash
-  });
-});
+{
+  assert("frond.min.js exists", existsSync(join(corePublicDir, "js/frond.min.js")));
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/js/frond.min.js"), res);
+  assert("frond.min.js is servable", served === true);
+}
 
-// ── Framework Public Files ───────────────────────────────────
+{
+  assert("tina4js.min.js exists", existsSync(join(corePublicDir, "js/tina4js.min.js")));
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/js/tina4js.min.js"), res);
+  assert("tina4js.min.js is servable", served === true);
+}
 
-describe("Static file serving — framework public files", () => {
-  it("tina4.min.css exists and is servable", () => {
-    expect(existsSync(join(corePublicDir, "css/tina4.min.css"))).toBe(true);
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/css/tina4.min.css"), res);
-    expect(served).toBe(true);
-    expect((res as any).headersRef["Content-Length"]).toBeGreaterThan(0);
-  });
+// --- Security ---
+console.log("\n--- Directory traversal prevention ---");
 
-  it("tina4.min.js exists and is servable", () => {
-    expect(existsSync(join(corePublicDir, "js/tina4.min.js"))).toBe(true);
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/js/tina4.min.js"), res);
-    expect(served).toBe(true);
-  });
+{
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/../package.json"), res);
+  assert("rejects path traversal with ..", served === false);
+}
 
-  it("frond.min.js exists and is servable", () => {
-    expect(existsSync(join(corePublicDir, "js/frond.min.js"))).toBe(true);
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/js/frond.min.js"), res);
-    expect(served).toBe(true);
-  });
+{
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/%2e%2e/package.json"), res);
+  assert("rejects encoded traversal %2e%2e", served === false);
+}
 
-  it("tina4js.min.js exists and is servable", () => {
-    expect(existsSync(join(corePublicDir, "js/tina4js.min.js"))).toBe(true);
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/js/tina4js.min.js"), res);
-    expect(served).toBe(true);
-  });
-});
+// --- 404 Handling ---
+console.log("\n--- 404 for missing files ---");
 
-// ── Security ─────────────────────────────────────────────────
+{
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/does-not-exist.txt"), res);
+  assert("returns false for non-existent file", served === false);
+}
 
-describe("Static file serving — directory traversal prevention", () => {
-  it("rejects path traversal with ..", () => {
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/../package.json"), res);
-    expect(served).toBe(false);
-  });
+{
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/a/b/c/d/e.js"), res);
+  assert("returns false for non-existent nested path", served === false);
+}
 
-  it("rejects encoded traversal %2e%2e", () => {
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/%2e%2e/package.json"), res);
-    expect(served).toBe(false);
-  });
-});
+// --- Response Headers ---
+console.log("\n--- Response headers ---");
 
-// ── 404 Handling ─────────────────────────────────────────────
+{
+  const res = mockRes();
+  tryServeStatic(corePublicDir, mockReq("/css/tina4.min.css"), res);
+  assert("sets Content-Length header", res.headersRef["Content-Length"] !== undefined);
+  assert("Content-Length is number", typeof res.headersRef["Content-Length"] === "number");
+}
 
-describe("Static file serving — 404 for missing files", () => {
-  it("returns false for a non-existent file", () => {
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/does-not-exist.txt"), res);
-    expect(served).toBe(false);
-  });
+{
+  const res = mockRes();
+  tryServeStatic(corePublicDir, mockReq("/js/tina4.min.js"), res);
+  assert("sets Content-Type header", res.headersRef["Content-Type"] !== undefined);
+}
 
-  it("returns false for a non-existent deeply nested path", () => {
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/a/b/c/d/e.js"), res);
-    expect(served).toBe(false);
-  });
-});
+{
+  const res = mockRes();
+  const served = tryServeStatic(corePublicDir, mockReq("/css/tina4.min.css?v=123"), res);
+  assert("strips query strings", served === true);
+}
 
-// ── Response Headers ─────────────────────────────────────────
+// --- Custom static directory ---
+console.log("\n--- Custom static directory ---");
 
-describe("Static file serving — response headers", () => {
-  it("sets Content-Length header on successful serve", () => {
-    const res = mockRes();
-    tryServeStatic(corePublicDir, mockReq("/css/tina4.min.css"), res);
-    expect((res as any).headersRef["Content-Length"]).toBeDefined();
-    expect(typeof (res as any).headersRef["Content-Length"]).toBe("number");
-  });
+import { mkdirSync, writeFileSync, rmSync as rmSyncFs } from "node:fs";
+const customDir = "/tmp/tina4-static-test-" + Date.now();
+mkdirSync(join(customDir, "images"), { recursive: true });
+mkdirSync(join(customDir, "data"), { recursive: true });
 
-  it("sets Content-Type header on successful serve", () => {
-    const res = mockRes();
-    tryServeStatic(corePublicDir, mockReq("/js/tina4.min.js"), res);
-    expect((res as any).headersRef["Content-Type"]).toBeDefined();
-  });
+writeFileSync(join(customDir, "index.html"), "<h1>Hello</h1>");
+writeFileSync(join(customDir, "data/config.json"), '{"key":"value"}');
+writeFileSync(join(customDir, "images/logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47])); // PNG header
+writeFileSync(join(customDir, "style.css"), "body { color: red; }");
+writeFileSync(join(customDir, "app.js"), "console.log('hello');");
+writeFileSync(join(customDir, "readme.txt"), "Hello world");
 
-  it("strips query strings before resolving file path", () => {
-    const res = mockRes();
-    const served = tryServeStatic(corePublicDir, mockReq("/css/tina4.min.css?v=123"), res);
-    expect(served).toBe(true);
-  });
-});
+{
+  const res = mockRes();
+  const served = tryServeStatic(customDir, mockReq("/index.html"), res);
+  assert("serves custom index.html", served === true);
+  assert("HTML content-type", String(res.headersRef["Content-Type"]).includes("text/html"));
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(customDir, mockReq("/data/config.json"), res);
+  assert("serves nested JSON file", served === true);
+  assert("JSON content-type", String(res.headersRef["Content-Type"]).includes("application/json"));
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(customDir, mockReq("/images/logo.png"), res);
+  assert("serves PNG image", served === true);
+  assert("PNG content-type", String(res.headersRef["Content-Type"]).includes("image/png"));
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(customDir, mockReq("/style.css"), res);
+  assert("serves CSS file", served === true);
+  assert("CSS content-type", String(res.headersRef["Content-Type"]).includes("text/css"));
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(customDir, mockReq("/app.js"), res);
+  assert("serves JS file", served === true);
+  assert("JS content-type", String(res.headersRef["Content-Type"]).includes("application/javascript"));
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(customDir, mockReq("/readme.txt"), res);
+  assert("serves TXT file", served === true);
+  assert("TXT content-type", String(res.headersRef["Content-Type"]).includes("text/plain"));
+}
+
+// --- Directory index.html ---
+console.log("\n--- Directory index.html ---");
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(customDir, mockReq("/"), res);
+  assert("serves index.html for root /", served === true);
+}
+
+// --- More security tests ---
+console.log("\n--- Security Edge Cases ---");
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(customDir, mockReq("/../../etc/passwd"), res);
+  assert("blocks deep traversal", served === false);
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(customDir, mockReq("/.hidden"), res);
+  assert("returns false for nonexistent hidden file", served === false);
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(customDir, mockReq("/"), res);
+  assert("root serves index.html", served === true);
+  assert("root Content-Type is HTML", String(res.headersRef["Content-Type"]).includes("text/html"));
+}
+
+// --- Content-Length accuracy ---
+console.log("\n--- Content-Length Accuracy ---");
+
+{
+  const res = mockRes();
+  tryServeStatic(customDir, mockReq("/readme.txt"), res);
+  assert("Content-Length matches file size", res.headersRef["Content-Length"] === 11); // "Hello world" = 11 bytes
+}
+
+{
+  const res = mockRes();
+  tryServeStatic(customDir, mockReq("/style.css"), res);
+  // "body { color: red; }" is 20 bytes
+  assert("CSS Content-Length is correct", res.headersRef["Content-Length"] === 20);
+}
+
+// Cleanup
+try { rmSyncFs(customDir, { recursive: true, force: true }); } catch {}
+
+// Summary
+console.log(`\n${"=".repeat(50)}`);
+console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
+console.log(`${"=".repeat(50)}\n`);
+
+process.exit(fail > 0 ? 1 : 0);

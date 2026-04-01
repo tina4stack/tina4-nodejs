@@ -302,6 +302,8 @@ h1{font-size:3rem;font-weight:700;margin-bottom:0.25rem;letter-spacing:-1px}
 .gbtn-deploy{background:#3b82f6;color:#fff}
 .gbtn-deploy:hover{background:#2563eb}
 .gbtn-deployed{background:transparent;border:1px solid #22c55e;color:#22c55e;cursor:default;font-size:0.7rem}
+@keyframes wiggle{0%{transform:rotate(0deg)}15%{transform:rotate(14deg)}30%{transform:rotate(-10deg)}45%{transform:rotate(8deg)}60%{transform:rotate(-4deg)}75%{transform:rotate(2deg)}100%{transform:rotate(0deg)}}
+.star-wiggle{display:inline-block;transform-origin:center}
 </style>
 </head>
 <body>
@@ -315,7 +317,7 @@ h1{font-size:3rem;font-weight:700;margin-bottom:0.25rem;letter-spacing:-1px}
         <a href="/__dev" class="btn">Dev Admin</a>
         <a href="#gallery" class="btn">Gallery</a>
         <a href="https://github.com/tina4stack/tina4-nodejs" class="btn" target="_blank">GitHub</a>
-        <a href="https://github.com/tina4stack/tina4-nodejs/stargazers" class="btn" target="_blank">&#11088; Star</a>
+        <a href="https://github.com/tina4stack/tina4-nodejs/stargazers" class="btn" target="_blank"><span class="star-wiggle">&#9734;</span> Star</a>
     </div>
     <div class="status">
         <span><span class="dot"></span>Server running</span>
@@ -364,6 +366,20 @@ function deployGallery(name) {
     })
     .catch(function(e) { alert('Deploy error: ' + e.message); });
 }
+(function(){
+    var star=document.querySelector('.star-wiggle');
+    if(!star)return;
+    function doWiggle(){
+        star.style.animation='wiggle 1.2s ease-in-out';
+        star.addEventListener('animationend',function onEnd(){
+            star.removeEventListener('animationend',onEnd);
+            star.style.animation='none';
+            var delay=3000+Math.random()*15000;
+            setTimeout(doWiggle,delay);
+        });
+    }
+    setTimeout(doWiggle,3000);
+})();
 </script>
 </body>
 </html>`;
@@ -731,7 +747,7 @@ ${reset}
         let result: unknown;
         const routeParams = req.params || {};
         const fnStr = match.handler.toString();
-        const argMatch = fnStr.match(/^(?:async\s+)?(?:function\s*\w*)?\s*\(([^)]*)\)/);
+        const argMatch = fnStr.match(/^(?:async\s*)?(?:function\s*\w*)?\s*\(([^)]*)\)/);
         const argNames = argMatch?.[1]?.split(",").map((s: string) => s.trim().replace(/[:=].*/,"")) ?? [];
         const filteredArgs = argNames.filter((n: string) => n.length > 0);
 

@@ -50,8 +50,9 @@ export default async function(req: any, res: any) {
 }
 `);
 
-// Set high rate limit so tests don't get throttled
+// Set high rate limit so tests don't get throttled and prevent cluster mode
 process.env.TINA4_RATE_LIMIT = "10000";
+process.env.TINA4_DEBUG = "true";
 
 console.log("=== Template Route Tests ===\n");
 
@@ -140,6 +141,7 @@ console.log(`${"=".repeat(50)}\n`);
 // Cleanup
 server.close();
 delete process.env.TINA4_RATE_LIMIT;
+delete process.env.TINA4_DEBUG;
 rmSync(TEST_DIR, { recursive: true });
 
 process.exit(fail > 0 ? 1 : 0);

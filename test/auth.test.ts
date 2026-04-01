@@ -212,6 +212,216 @@ function mockResponse(): { response: Tina4Response; lastCall: { data: unknown; s
   assert("Invalid token sends 401", mock.lastCall?.status === 401);
 }
 
+// ── Token Refresh ────────────────────────────────────────────────
+
+console.log("\n-- Token Refresh --");
+
+{
+  const original = createToken({ userId: 42, role: "admin" }, SECRET, 3600);
+  const refreshed = refreshToken(original, SECRET, 7200);
+  assert("refreshToken returns a string", typeof refreshed === "string");
+  assert("refreshed token is different from original", refreshed !== original);
+
+  const refreshedPayload = validateToken(refreshed!, SECRET);
+  assert("refreshed token is valid", refreshedPayload !== null);
+  assert("refreshed token preserves userId", refreshedPayload?.userId === 42);
+  assert("refreshed token preserves role", refreshedPayload?.role === "admin");
+  assert("refreshed token has new iat", refreshedPayload?.iat !== undefined);
+}
+
+{
+  const expired = createToken({ userId: 1 }, SECRET, -1);
+  const refreshed = refreshToken(expired, SECRET);
+  assert("refreshToken returns null for expired token", refreshed === null);
+}
+
+{
+  const refreshed = refreshToken("invalid.token.here", SECRET);
+  assert("refreshToken returns null for invalid token", refreshed === null);
+}
+
+{
+  const refreshed = refreshToken("", SECRET);
+  assert("refreshToken returns null for empty string", refreshed === null);
+}
+
+// ── authenticateRequest ──────────────────────────────────────────
+
+console.log("\n-- authenticateRequest --");
+
+{
+  const token = createToken({ userId: 99, scope: "read" }, SECRET);
+  const payload = authenticateRequest(
+    { authorization: `Bearer ${token}` },
+    SECRET,
+  );
+  assert("authenticateRequest returns payload", payload !== null);
+  assert("authenticateRequest preserves userId", payload?.userId === 99);
+  assert("authenticateRequest preserves scope", payload?.scope === "read");
+}
+
+{
+  const payload = authenticateRequest({}, SECRET);
+  assert("authenticateRequest returns null without header", payload === null);
+}
+
+{
+  const payload = authenticateRequest({ authorization: "Basic abc123" }, SECRET);
+  assert("authenticateRequest returns null for non-Bearer", payload === null);
+}
+
+{
+  const expired = createToken({ userId: 1 }, SECRET, -1);
+  const payload = authenticateRequest(
+    { authorization: `Bearer ${expired}` },
+    SECRET,
+  );
+  assert("authenticateRequest returns null for expired", payload === null);
+}
+
+{
+  // Test case-insensitive Authorization header
+  const token = createToken({ userId: 50 }, SECRET);
+  const payload = authenticateRequest(
+    { Authorization: `Bearer ${token}` },
+    SECRET,
+  );
+  assert("authenticateRequest works with capital Authorization", payload !== null);
+  assert("capital Authorization preserves userId", payload?.userId === 50);
+}
+
+// ── validateApiKey ───────────────────────────────────────────────
+
+console.log("\n-- validateApiKey --");
+
+{
+  assert("matching keys return true", validateApiKey("my-api-key-123", "my-api-key-123") === true);
+  assert("mismatched keys return false", validateApiKey("wrong-key", "correct-key") === false);
+  assert("empty provided returns false", validateApiKey("", "correct-key") === false);
+  assert("empty expected returns false", validateApiKey("some-key", "") === false);
+  assert("both empty returns false", validateApiKey("", "") === false);
+}
+
+{
+  // Test with env var
+  const origKey = process.env.TINA4_API_KEY;
+  process.env.TINA4_API_KEY = "env-secret-key";
+  assert("validateApiKey uses env var when expected not provided", validateApiKey("env-secret-key") === true);
+  assert("validateApiKey fails with wrong key vs env", validateApiKey("wrong") === false);
+  if (origKey !== undefined) {
+    process.env.TINA4_API_KEY = origKey;
+  } else {
+    delete process.env.TINA4_API_KEY;
+  }
+}
+
+{
+  delete process.env.TINA4_API_KEY;
+  assert("validateApiKey returns false when no env and no expected", validateApiKey("some-key") === false);
+}
+
+// ── Auth Class Wrapper ───────────────────────────────────────────
+
+console.log("\n-- Auth Class Wrapper --");
+
+{
+  const { Auth } = await import("../packages/core/src/auth.ts");
+
+  assert("Auth.getToken is a function", typeof Auth.getToken === "function");
+  assert("Auth.validToken is a function", typeof Auth.validToken === "function");
+  assert("Auth.getPayload is a function", typeof Auth.getPayload === "function");
+  assert("Auth.hashPassword is a function", typeof Auth.hashPassword === "function");
+  assert("Auth.checkPassword is a function", typeof Auth.checkPassword === "function");
+  assert("Auth.authMiddleware is a function", typeof Auth.authMiddleware === "function");
+  assert("Auth.refreshToken is a function", typeof Auth.refreshToken === "function");
+  assert("Auth.authenticateRequest is a function", typeof Auth.authenticateRequest === "function");
+  assert("Auth.validateApiKey is a function", typeof Auth.validateApiKey === "function");
+  assert("Auth.createToken is alias for getToken", Auth.createToken === Auth.getToken);
+  assert("Auth.validateToken is alias for validToken", Auth.validateToken === Auth.validToken);
+
+  // Verify Auth class methods produce same results as standalone functions
+  const classToken = Auth.getToken({ userId: 77 }, SECRET);
+  const classPayload = Auth.validToken(classToken, SECRET);
+  assert("Auth class getToken works", classPayload?.userId === 77);
+
+  const classHash = Auth.hashPassword("test123");
+  assert("Auth class hashPassword works", Auth.checkPassword("test123", classHash) === true);
+}
+
+// ── JWT Edge Cases ───────────────────────────────────────────────
+
+console.log("\n-- JWT Edge Cases --");
+
+{
+  // Large payload
+  const largePayload: Record<string, unknown> = {};
+  for (let i = 0; i < 50; i++) {
+    largePayload[`key_${i}`] = `value_${i}_${"x".repeat(100)}`;
+  }
+  const largeToken = createToken(largePayload, SECRET);
+  const largeParsed = validateToken(largeToken, SECRET);
+  assert("large payload round-trips", largeParsed?.key_0 === largePayload.key_0);
+}
+
+{
+  // Special characters in payload
+  const specialPayload = {
+    name: "O'Brien & Co.",
+    emoji: "test",
+    unicode: "\u00e9\u00e8\u00ea",
+    newline: "line1\nline2",
+  };
+  const specialToken = createToken(specialPayload, SECRET);
+  const specialParsed = validateToken(specialToken, SECRET);
+  assert("special characters preserved", specialParsed?.name === "O'Brien & Co.");
+  assert("unicode preserved", specialParsed?.unicode === "\u00e9\u00e8\u00ea");
+}
+
+{
+  // Numeric payload values
+  const numPayload = { count: 0, negative: -5, float: 3.14 };
+  const numToken = createToken(numPayload, SECRET);
+  const numParsed = validateToken(numToken, SECRET);
+  assert("zero preserved", numParsed?.count === 0);
+  assert("negative preserved", numParsed?.negative === -5);
+  assert("float preserved", numParsed?.float === 3.14);
+}
+
+{
+  // Boolean payload
+  const boolPayload = { active: true, deleted: false };
+  const boolToken = createToken(boolPayload, SECRET);
+  const boolParsed = validateToken(boolToken, SECRET);
+  assert("true preserved", boolParsed?.active === true);
+  assert("false preserved", boolParsed?.deleted === false);
+}
+
+// ── Password Edge Cases ──────────────────────────────────────────
+
+console.log("\n-- Password Edge Cases --");
+
+{
+  assert("empty password hashes and verifies", checkPassword("", hashPassword("")) === true);
+  assert("unicode password", checkPassword("\u00fc\u00f6\u00e4", hashPassword("\u00fc\u00f6\u00e4")) === true);
+  assert("long password", checkPassword("a".repeat(1000), hashPassword("a".repeat(1000))) === true);
+  assert("password with special chars", checkPassword("p@$$w0rd!#%^&*()", hashPassword("p@$$w0rd!#%^&*()")) === true);
+}
+
+// ── Auth Middleware with RS256 ───────────────────────────────────
+
+console.log("\n-- Auth Middleware RS256 --");
+
+{
+  const mwRsa = authMiddleware(publicKey, "RS256");
+  const rsaToken = createToken({ userId: 88 }, privateKey, 3600, "RS256");
+  const req = mockRequest(`Bearer ${rsaToken}`);
+  const mock = mockResponse();
+  let nextCalled = false;
+  mwRsa(req, mock.response, () => { nextCalled = true; });
+  assert("RS256 middleware calls next() for valid token", nextCalled === true);
+  assert("RS256 middleware attaches auth", (req as any).auth?.userId === 88);
+}
+
 // ── Summary ───────────────────────────────────────────────────────
 
 console.log(`\n${"=".repeat(50)}`);

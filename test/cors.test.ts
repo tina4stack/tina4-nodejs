@@ -58,8 +58,9 @@ export default async function(req: any, res: any) {
 }
 `);
 
-// Disable rate limiter for CORS testing
+// Disable rate limiter for CORS testing and prevent cluster mode
 process.env.TINA4_RATE_LIMIT = "10000";
+process.env.TINA4_DEBUG = "true";
 
 console.log("=== CORS Tests ===\n");
 
@@ -85,6 +86,7 @@ server.close();
 
 // Cleanup
 delete process.env.TINA4_RATE_LIMIT;
+delete process.env.TINA4_DEBUG;
 rmSync(TEST_DIR, { recursive: true });
 
 // Summary

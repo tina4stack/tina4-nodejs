@@ -1,14 +1,24 @@
 /**
  * Unit tests for the file watcher / live reload (packages/core/src/watcher.ts).
- * Run with: npx vitest run test/liveReload.test.ts
+ * Run with: npx tsx test/liveReload.test.ts
  */
-import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { watchForChanges } from "../packages/core/src/watcher.ts";
 
-// ── Helpers ──────────────────────────────────────────────────
+let pass = 0;
+let fail = 0;
+
+function assert(name: string, condition: boolean, detail = "") {
+  if (condition) {
+    console.log(`  \x1b[32mPASS\x1b[0m ${name}`);
+    pass++;
+  } else {
+    console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
+    fail++;
+  }
+}
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "tina4-watcher-test-"));
@@ -16,172 +26,146 @@ function makeTempDir(): string {
 
 const cleanups: (() => void)[] = [];
 
-afterEach(() => {
+function runCleanups() {
   for (const fn of cleanups) {
-    try {
-      fn();
-    } catch {
-      // ignore cleanup errors
-    }
+    try { fn(); } catch {}
   }
   cleanups.length = 0;
-});
+}
 
-// ── Existence & Shape ────────────────────────────────────────
+console.log("=== Watcher / Live Reload Tests ===\n");
 
-describe("Watcher — exports and shape", () => {
-  it("watchForChanges is a function", () => {
-    expect(typeof watchForChanges).toBe("function");
-  });
+// --- Existence & Shape ---
+console.log("--- Exports and shape ---");
 
-  it("returns an object with a close method", () => {
-    const dir = makeTempDir();
-    const watcher = watchForChanges([dir], () => {});
-    cleanups.push(() => {
-      watcher.close();
-      rmSync(dir, { recursive: true, force: true });
-    });
-    expect(watcher).toBeDefined();
-    expect(typeof watcher.close).toBe("function");
-  });
+assert("watchForChanges is a function", typeof watchForChanges === "function");
 
-  it("accepts an array of directories", () => {
-    const dir1 = makeTempDir();
-    const dir2 = makeTempDir();
-    const watcher = watchForChanges([dir1, dir2], () => {});
-    cleanups.push(() => {
-      watcher.close();
-      rmSync(dir1, { recursive: true, force: true });
-      rmSync(dir2, { recursive: true, force: true });
-    });
-    expect(watcher).toBeDefined();
-  });
+{
+  const dir = makeTempDir();
+  const watcher = watchForChanges([dir], () => {});
+  assert("returns object with close method", watcher !== undefined && typeof watcher.close === "function");
+  watcher.close();
+  rmSync(dir, { recursive: true, force: true });
+}
 
-  it("handles non-existent directories gracefully", () => {
-    const watcher = watchForChanges(["/tmp/does-not-exist-tina4-test"], () => {});
-    cleanups.push(() => watcher.close());
-    expect(watcher).toBeDefined();
-  });
-});
+{
+  const dir1 = makeTempDir();
+  const dir2 = makeTempDir();
+  const watcher = watchForChanges([dir1, dir2], () => {});
+  assert("accepts array of directories", watcher !== undefined);
+  watcher.close();
+  rmSync(dir1, { recursive: true, force: true });
+  rmSync(dir2, { recursive: true, force: true });
+}
 
-// ── File Change Detection ────────────────────────────────────
+{
+  const watcher = watchForChanges(["/tmp/does-not-exist-tina4-test"], () => {});
+  assert("handles non-existent directories gracefully", watcher !== undefined);
+  watcher.close();
+}
 
-describe("Watcher — file change detection", () => {
-  it("triggers callback when a file is created", async () => {
-    const dir = makeTempDir();
-    let called = false;
-    const watcher = watchForChanges([dir], () => {
-      called = true;
-    });
-    cleanups.push(() => {
-      watcher.close();
-      rmSync(dir, { recursive: true, force: true });
-    });
+// --- File Change Detection ---
+console.log("\n--- File change detection ---");
 
-    // Write a file to trigger the watcher
-    writeFileSync(join(dir, "test.ts"), "export default 1;");
+{
+  const dir = makeTempDir();
+  let called = false;
+  const watcher = watchForChanges([dir], () => { called = true; });
 
-    // Wait for debounce (watcher uses 200ms debounce)
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    expect(called).toBe(true);
-  });
+  writeFileSync(join(dir, "test.ts"), "export default 1;");
+  await new Promise((r) => setTimeout(r, 400));
+  assert("triggers callback on file create", called);
 
-  it("triggers callback when a file is modified", async () => {
-    const dir = makeTempDir();
-    const filePath = join(dir, "existing.ts");
-    writeFileSync(filePath, "const a = 1;");
+  watcher.close();
+  rmSync(dir, { recursive: true, force: true });
+}
 
-    // Small delay to ensure the watcher starts after file creation
-    await new Promise((resolve) => setTimeout(resolve, 100));
+{
+  const dir = makeTempDir();
+  const filePath = join(dir, "existing.ts");
+  writeFileSync(filePath, "const a = 1;");
+  await new Promise((r) => setTimeout(r, 100));
 
-    let callCount = 0;
-    const watcher = watchForChanges([dir], () => {
-      callCount++;
-    });
-    cleanups.push(() => {
-      watcher.close();
-      rmSync(dir, { recursive: true, force: true });
-    });
+  let callCount = 0;
+  const watcher = watchForChanges([dir], () => { callCount++; });
 
-    // Modify the file
-    writeFileSync(filePath, "const a = 2;");
+  writeFileSync(filePath, "const a = 2;");
+  await new Promise((r) => setTimeout(r, 400));
+  assert("triggers callback on file modify", callCount >= 1);
 
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    expect(callCount).toBeGreaterThanOrEqual(1);
-  });
+  watcher.close();
+  rmSync(dir, { recursive: true, force: true });
+}
 
-  it("debounces rapid changes into a single callback", async () => {
-    const dir = makeTempDir();
-    let callCount = 0;
-    const watcher = watchForChanges([dir], () => {
-      callCount++;
-    });
-    cleanups.push(() => {
-      watcher.close();
-      rmSync(dir, { recursive: true, force: true });
-    });
+{
+  const dir = makeTempDir();
+  let callCount = 0;
+  const watcher = watchForChanges([dir], () => { callCount++; });
 
-    // Write multiple files rapidly (within debounce window of 200ms)
-    writeFileSync(join(dir, "a.ts"), "1");
-    writeFileSync(join(dir, "b.ts"), "2");
-    writeFileSync(join(dir, "c.ts"), "3");
+  writeFileSync(join(dir, "a.ts"), "1");
+  writeFileSync(join(dir, "b.ts"), "2");
+  writeFileSync(join(dir, "c.ts"), "3");
 
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    // Should have been debounced — callCount should be small (1-2, not 3)
-    expect(callCount).toBeLessThanOrEqual(2);
-  });
+  await new Promise((r) => setTimeout(r, 400));
+  assert("debounces rapid changes", callCount <= 2);
 
-  it("watches subdirectories recursively", async () => {
-    const dir = makeTempDir();
-    const subDir = join(dir, "sub");
-    mkdirSync(subDir, { recursive: true });
+  watcher.close();
+  rmSync(dir, { recursive: true, force: true });
+}
 
-    let called = false;
-    const watcher = watchForChanges([dir], () => {
-      called = true;
-    });
-    cleanups.push(() => {
-      watcher.close();
-      rmSync(dir, { recursive: true, force: true });
-    });
+{
+  const dir = makeTempDir();
+  const subDir = join(dir, "sub");
+  mkdirSync(subDir, { recursive: true });
 
-    writeFileSync(join(subDir, "nested.ts"), "nested");
+  let called = false;
+  const watcher = watchForChanges([dir], () => { called = true; });
 
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    expect(called).toBe(true);
-  });
-});
+  writeFileSync(join(subDir, "nested.ts"), "nested");
+  await new Promise((r) => setTimeout(r, 400));
+  assert("watches subdirectories recursively", called);
 
-// ── Cleanup ──────────────────────────────────────────────────
+  watcher.close();
+  rmSync(dir, { recursive: true, force: true });
+}
 
-describe("Watcher — cleanup", () => {
-  it("close() stops the watcher without errors", () => {
-    const dir = makeTempDir();
-    const watcher = watchForChanges([dir], () => {});
-    expect(() => watcher.close()).not.toThrow();
-    rmSync(dir, { recursive: true, force: true });
-  });
+// --- Cleanup ---
+console.log("\n--- Cleanup ---");
 
-  it("close() can be called multiple times safely", () => {
-    const dir = makeTempDir();
-    const watcher = watchForChanges([dir], () => {});
-    watcher.close();
-    expect(() => watcher.close()).not.toThrow();
-    rmSync(dir, { recursive: true, force: true });
-  });
+{
+  const dir = makeTempDir();
+  const watcher = watchForChanges([dir], () => {});
+  let threw = false;
+  try { watcher.close(); } catch { threw = true; }
+  assert("close() stops without errors", !threw);
+  rmSync(dir, { recursive: true, force: true });
+}
 
-  it("does not trigger callback after close()", async () => {
-    const dir = makeTempDir();
-    let called = false;
-    const watcher = watchForChanges([dir], () => {
-      called = true;
-    });
-    watcher.close();
+{
+  const dir = makeTempDir();
+  const watcher = watchForChanges([dir], () => {});
+  watcher.close();
+  let threw = false;
+  try { watcher.close(); } catch { threw = true; }
+  assert("close() can be called multiple times", !threw);
+  rmSync(dir, { recursive: true, force: true });
+}
 
-    writeFileSync(join(dir, "after-close.ts"), "should not trigger");
-    await new Promise((resolve) => setTimeout(resolve, 400));
+{
+  const dir = makeTempDir();
+  let called = false;
+  const watcher = watchForChanges([dir], () => { called = true; });
+  watcher.close();
 
-    expect(called).toBe(false);
-    rmSync(dir, { recursive: true, force: true });
-  });
-});
+  writeFileSync(join(dir, "after-close.ts"), "should not trigger");
+  await new Promise((r) => setTimeout(r, 400));
+  assert("does not trigger callback after close", !called);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// Summary
+console.log(`\n${"=".repeat(50)}`);
+console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
+console.log(`${"=".repeat(50)}\n`);
+
+process.exit(fail > 0 ? 1 : 0);

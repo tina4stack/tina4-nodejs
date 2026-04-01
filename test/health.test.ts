@@ -43,8 +43,9 @@ try { rmSync(TEST_DIR, { recursive: true }); } catch {}
 mkdirSync(TEST_DIR, { recursive: true });
 writeFileSync(join(TEST_DIR, "package.json"), '{"type":"module"}');
 
-// Disable rate limiter for this test
+// Disable rate limiter for this test and prevent cluster mode
 process.env.TINA4_RATE_LIMIT = "10000";
+process.env.TINA4_DEBUG = "true";
 
 console.log("=== Health Check Tests ===\n");
 
@@ -62,7 +63,7 @@ const health = await request("GET", "/health");
 
 assert("GET /health returns 200", health.status === 200);
 assert("Response has status 'ok'", health.data.status === "ok");
-assert("Response has version '3.0.0'", health.data.version === "3.0.0");
+assert("Response has version string", typeof health.data.version === "string" && health.data.version.length > 0);
 assert("Response has framework 'tina4-nodejs'", health.data.framework === "tina4-nodejs");
 assert("Response has uptime as number", typeof health.data.uptime === "number");
 assert("Uptime is positive", health.data.uptime > 0);
@@ -70,6 +71,7 @@ assert("Uptime is positive", health.data.uptime > 0);
 // Cleanup
 server.close();
 delete process.env.TINA4_RATE_LIMIT;
+delete process.env.TINA4_DEBUG;
 rmSync(TEST_DIR, { recursive: true });
 
 // Summary

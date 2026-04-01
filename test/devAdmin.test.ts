@@ -3,8 +3,9 @@
  * Run with: npx tsx test/devAdmin.test.ts
  */
 import {
-  MessageLog, RequestInspector, ErrorTracker,
+  MessageLog, RequestInspector, ErrorTracker, renderDashboard,
 } from "../packages/core/src/index.ts";
+import { SQLiteAdapter } from "../packages/orm/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -172,6 +173,117 @@ ErrorTracker.clearResolved();
 const afterClearResolved = ErrorTracker.get();
 assert("clearResolved removes resolved errors", afterClearResolved.length === 2);
 assert("unresolved errors remain", afterClearResolved.every((e) => e.resolved === false));
+
+// ── Status API includes db_tables ───────────────────────────
+
+console.log("\n--- Status API: db_tables field ---");
+
+// The handleStatus handler returns db_tables in its response.
+// We verify the dashboard references the db-count element ID that
+// displays the table count from the status API's db_tables field.
+const dashHtml = renderDashboard();
+assert("dashboard HTML has db-count element for db_tables display", dashHtml.includes("db-count"));
+assert("dashboard shows Database tab with db count badge", dashHtml.includes('id="db-count"'));
+
+// ── Multi-statement SQL execution ──────────────────────────
+
+console.log("\n--- Multi-statement SQL execution ---");
+
+const multiDb = new SQLiteAdapter(":memory:");
+
+// Execute multi-statement batch: CREATE TABLE + INSERTs (mirrors handleQuery logic)
+multiDb.startTransaction();
+multiDb.execute("CREATE TABLE test_multi (id INTEGER PRIMARY KEY, name TEXT)");
+multiDb.execute("INSERT INTO test_multi (id, name) VALUES (1, 'Alice')");
+multiDb.execute("INSERT INTO test_multi (id, name) VALUES (2, 'Bob')");
+multiDb.commit();
+
+const multiRows = multiDb.fetch<{ id: number; name: string }>("SELECT * FROM test_multi");
+assert("multi-statement: table created and rows inserted", multiRows.length === 2);
+assert("multi-statement: first row is Alice", multiRows[0].name === "Alice");
+assert("multi-statement: second row is Bob", multiRows[1].name === "Bob");
+multiDb.close();
+
+// ── Multi-statement rollback ───────────────────────────────
+
+console.log("\n--- Multi-statement rollback ---");
+
+const rbDb = new SQLiteAdapter(":memory:");
+// CREATE TABLE runs outside a transaction (auto-commit)
+rbDb.execute("CREATE TABLE test_rb (id INTEGER PRIMARY KEY, name TEXT)");
+
+// Start transaction, insert a row, then try bad statement
+rbDb.startTransaction();
+rbDb.execute("INSERT INTO test_rb (id, name) VALUES (1, 'Alice')");
+let rollbackError = false;
+try {
+  rbDb.execute("INSERT INTO nonexistent_table (x) VALUES (1)");
+} catch {
+  rollbackError = true;
+  rbDb.rollback();
+}
+assert("multi-statement rollback: bad statement throws error", rollbackError === true);
+
+// After rollback, the valid INSERT should also be rolled back
+const rbRows = rbDb.fetch<{ id: number }>("SELECT * FROM test_rb");
+assert("multi-statement rollback: no rows after rollback", rbRows.length === 0);
+rbDb.close();
+
+// ── Database tab HTML ──────────────────────────────────────
+
+console.log("\n--- Database tab HTML ---");
+
+const html = renderDashboard();
+
+// Split-screen layout elements
+assert("dashboard has table-list element", html.includes("table-list"));
+assert("dashboard has query-results element", html.includes("query-results"));
+assert("dashboard has query-input element", html.includes("query-input"));
+
+// Copy/Paste buttons
+assert("dashboard has Copy CSV button", html.includes("Copy CSV"));
+assert("dashboard has Copy JSON button", html.includes("Copy JSON"));
+assert("dashboard has Paste button", html.includes("Paste"));
+
+// Copy/paste function references
+assert("dashboard has copyResults function call", html.includes("copyResults"));
+assert("dashboard has pasteData function call", html.includes("pasteData"));
+
+// Limit dropdown
+assert("dashboard has query-limit dropdown", html.includes("query-limit"));
+assert("dashboard has limit option 20", html.includes('value="20"'));
+assert("dashboard has limit option All (0)", html.includes('value="0"'));
+
+// Seed controls
+assert("dashboard has seed-table element", html.includes("seed-table"));
+assert("dashboard has seed-count element", html.includes("seed-count"));
+assert("dashboard has seedTable function call", html.includes("seedTable()"));
+
+// ── SQLite LIMIT dedup ─────────────────────────────────────
+
+console.log("\n--- SQLite LIMIT dedup ---");
+
+const limDb = new SQLiteAdapter(":memory:");
+limDb.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)");
+limDb.startTransaction();
+for (let i = 0; i < 10; i++) {
+  limDb.execute(`INSERT INTO items (id, name) VALUES (${i}, 'item${i}')`);
+}
+limDb.commit();
+
+// SQL already has LIMIT — should NOT double it
+const withLimit = limDb.fetch<{ id: number }>("SELECT * FROM items LIMIT 3", undefined, 20);
+assert("fetch with existing LIMIT: returns 3 rows (not 20)", withLimit.length === 3);
+
+// SQL without LIMIT — adapter adds the requested limit
+const withoutLimit = limDb.fetch<{ id: number }>("SELECT * FROM items", undefined, 5);
+assert("fetch without LIMIT: adapter adds limit, returns 5 rows", withoutLimit.length === 5);
+
+// SQL without LIMIT and no limit param — returns all rows
+const noLimitParam = limDb.fetch<{ id: number }>("SELECT * FROM items");
+assert("fetch with no limit param: returns all 10 rows", noLimitParam.length === 10);
+
+limDb.close();
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

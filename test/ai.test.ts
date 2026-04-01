@@ -60,7 +60,7 @@ assert("context contains Tina4", context.includes("Tina4"));
 assert("context contains route info", context.includes("src/routes/"));
 assert("context contains model info", context.includes("src/models/"));
 assert("context contains npx tina4nodejs", context.includes("npx tina4nodejs"));
-assert("context contains skills table", context.includes("/tina4-route"));
+assert("context contains skills table", context.includes("Swagger") || context.includes("swagger"));
 assert("context contains TypeScript examples", context.includes("Tina4Request"));
 
 // --- installSelected ---

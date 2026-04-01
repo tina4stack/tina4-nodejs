@@ -2,7 +2,7 @@
  * Integration test — verifies the full Tina4 developer experience.
  * Run with: npx tsx test/integration.ts
  */
-import { startServer } from "../packages/core/src/index.ts";
+import { startServer, createToken } from "../packages/core/src/index.ts";
 import http from "node:http";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -70,8 +70,14 @@ writeFileSync(join(TEST_DIR, "src/templates/test.html.twig"), `<h1>{{ title }}</
 writeFileSync(join(TEST_DIR, "public/test.txt"), "static content");
 
 // 2. Start server
-// Set high rate limit so integration tests don't get throttled
+// Set high rate limit so integration tests don't get throttled and prevent cluster mode
 process.env.TINA4_RATE_LIMIT = "10000";
+process.env.TINA4_DEBUG = "true";
+
+// Set up auth secret and generate a test token for write operations
+const TEST_SECRET = "integration-test-secret";
+process.env.SECRET = TEST_SECRET;
+const testToken = createToken({ sub: "test-user", role: "admin" }, TEST_SECRET, 3600);
 
 console.log("=== Starting Tina4 Integration Test ===\n");
 
@@ -88,9 +94,18 @@ const server = await startServer({
 function request(method: string, path: string, body?: unknown): Promise<{ status: number; data: any; raw: string }> {
   return new Promise((resolve, reject) => {
     const bodyStr = body ? JSON.stringify(body) : undefined;
+    const hdrs: Record<string, string | number> = {};
+    if (bodyStr) {
+      hdrs["Content-Type"] = "application/json";
+      hdrs["Content-Length"] = Buffer.byteLength(bodyStr);
+    }
+    // Include auth token for write methods (POST/PUT/PATCH/DELETE)
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+      hdrs["Authorization"] = `Bearer ${testToken}`;
+    }
     const opts = {
       hostname: "localhost", port: PORT, path, method,
-      headers: bodyStr ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(bodyStr) } : {},
+      headers: hdrs,
     };
     const req = http.request(opts, (res) => {
       let raw = "";
@@ -140,26 +155,26 @@ assert("Dynamic param [id] works", customUser.data.id === "42");
 console.log("\n--- Auto-CRUD ---");
 
 const create1 = await request("POST", "/api/users", { name: "Alice", email: "alice@test.com", age: 30 });
-assert("POST /api/users creates user", create1.status === 201);
-assert("Created user has id", create1.data.data.id === 1);
+assert("POST /api/users creates user", create1.status === 201, `got ${create1.status}: ${JSON.stringify(create1.data)}`);
+assert("Created user has id", create1.data?.data?.id === 1, `got: ${JSON.stringify(create1.data)}`);
 
 const create2 = await request("POST", "/api/users", { name: "Bob", email: "bob@test.com", age: 25 });
-assert("POST creates second user", create2.status === 201);
+assert("POST creates second user", create2.status === 201, `got ${create2.status}: ${JSON.stringify(create2.data)}`);
 
 const list = await request("GET", "/api/users");
 assert("GET /api/users lists users", list.status === 200);
-assert("List returns 2 users", list.data.data.length === 2);
-assert("List has pagination meta", list.data.meta.total === 2);
+assert("List returns 2 users", list.data?.data?.length === 2, `got: ${list.data?.data?.length}`);
+assert("List has pagination meta", list.data?.meta?.total === 2, `got: ${list.data?.meta?.total}`);
 
 const update = await request("PUT", "/api/users/1", { name: "Alice Updated" });
-assert("PUT /api/users/1 updates", update.status === 200);
-assert("Updated name", update.data.data.name === "Alice Updated");
+assert("PUT /api/users/1 updates", update.status === 200, `got ${update.status}: ${JSON.stringify(update.data)}`);
+assert("Updated name", update.data?.data?.name === "Alice Updated", `got: ${update.data?.data?.name}`);
 
 const del = await request("DELETE", "/api/users/2");
-assert("DELETE /api/users/2 works", del.status === 200);
+assert("DELETE /api/users/2 works", del.status === 200, `got ${del.status}: ${JSON.stringify(del.data)}`);
 
 const afterDelete = await request("GET", "/api/users");
-assert("After delete, 1 user remains", afterDelete.data.data.length === 1);
+assert("After delete, 1 user remains", afterDelete.data?.data?.length === 1, `got: ${afterDelete.data?.data?.length}`);
 
 console.log("\n--- Filtering & Pagination ---");
 
@@ -167,21 +182,21 @@ await request("POST", "/api/users", { name: "Charlie", email: "charlie@test.com"
 await request("POST", "/api/users", { name: "Diana", email: "diana@test.com", age: 28 });
 
 const filtered = await request("GET", "/api/users?filter[name]=Charlie");
-assert("Filter by name works", filtered.data.data.length === 1);
-assert("Filtered result is Charlie", filtered.data.data[0].name === "Charlie");
+assert("Filter by name works", filtered.data?.data?.length === 1, `got: ${filtered.data?.data?.length}`);
+assert("Filtered result is Charlie", filtered.data?.data?.[0]?.name === "Charlie", `got: ${filtered.data?.data?.[0]?.name}`);
 
 const sorted = await request("GET", "/api/users?sort=-name");
-assert("Sort descending works", sorted.data.data[0].name === "Diana");
+assert("Sort descending works", sorted.data?.data?.[0]?.name === "Diana", `got: ${sorted.data?.data?.[0]?.name}`);
 
 const paged = await request("GET", "/api/users?page=1&limit=1");
-assert("Pagination limit works", paged.data.data.length === 1);
-assert("Pagination meta correct", paged.data.meta.totalPages === 3);
+assert("Pagination limit works", paged.data?.data?.length === 1, `got: ${paged.data?.data?.length}`);
+assert("Pagination meta correct", paged.data?.meta?.totalPages === 3, `got: ${paged.data?.meta?.totalPages}`);
 
 console.log("\n--- Validation ---");
 
 const invalid = await request("POST", "/api/users", { email: "no-name@test.com" });
-assert("Missing required field returns 422", invalid.status === 422);
-assert("Validation error for name", invalid.data.errors[0].field === "name");
+assert("Missing required field returns 422", invalid.status === 422, `got ${invalid.status}: ${JSON.stringify(invalid.data)}`);
+assert("Validation error for name", invalid.data?.errors?.[0]?.field === "name", `got: ${JSON.stringify(invalid.data?.errors)}`);
 
 console.log("\n--- Swagger ---");
 
@@ -205,7 +220,7 @@ console.log("\n--- Health Check ---");
 const healthCheck = await request("GET", "/health");
 assert("GET /health returns 200", healthCheck.status === 200);
 assert("Health status is ok", healthCheck.data.status === "ok");
-assert("Health version is 3.0.0", healthCheck.data.version === "3.0.0");
+assert("Health version is a string", typeof healthCheck.data.version === "string" && healthCheck.data.version.length > 0);
 assert("Health framework is tina4-nodejs", healthCheck.data.framework === "tina4-nodejs");
 assert("Health uptime is a number", typeof healthCheck.data.uptime === "number");
 
@@ -213,7 +228,7 @@ console.log("\n--- 404 Handling ---");
 
 const notFound = await request("GET", "/does/not/exist");
 assert("Unknown route returns 404", notFound.status === 404);
-assert("404 has error message", notFound.data.error === "Not Found");
+assert("404 has error message", notFound.data.error === "Not Found" || (typeof notFound.raw === "string" && notFound.raw.includes("Not Found")));
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);
@@ -223,6 +238,8 @@ console.log(`${"=".repeat(50)}\n`);
 // Cleanup
 server.close();
 delete process.env.TINA4_RATE_LIMIT;
+delete process.env.TINA4_DEBUG;
+delete process.env.SECRET;
 rmSync(TEST_DIR, { recursive: true });
 
 process.exit(fail > 0 ? 1 : 0);

@@ -291,6 +291,145 @@ console.log("\n--- Legacy Constructor ---");
 
 cleanupTopic();
 
+// --- Payload Types ---
+console.log("\n--- Payload Types ---");
+
+const TEST_PATH_TYPES = join("/tmp", "tina4-queue-types-test-" + Date.now());
+function cleanupTypes() {
+  try { rmSync(TEST_PATH_TYPES, { recursive: true, force: true }); } catch {}
+}
+cleanupTypes();
+
+{
+  const qt = new Queue({ topic: "types", path: TEST_PATH_TYPES });
+
+  // String payload
+  qt.push("hello world");
+  const strJob = qt.pop();
+  assert("string payload preserved", strJob !== null && strJob.payload === "hello world");
+
+  // Number payload
+  qt.push(42);
+  const numJob = qt.pop();
+  assert("number payload preserved", numJob !== null && numJob.payload === 42);
+
+  // Boolean payload
+  qt.push(true);
+  const boolJob = qt.pop();
+  assert("boolean payload preserved", boolJob !== null && boolJob.payload === true);
+
+  // Null payload
+  qt.push(null);
+  const nullJob = qt.pop();
+  assert("null payload preserved", nullJob !== null && nullJob.payload === null);
+
+  // Array payload
+  qt.push([1, 2, 3]);
+  const arrJob = qt.pop();
+  assert("array payload preserved", arrJob !== null && Array.isArray(arrJob.payload) && (arrJob.payload as number[]).length === 3);
+
+  // Nested object payload
+  qt.push({ a: { b: { c: "deep" } } });
+  const deepJob = qt.pop();
+  assert("nested object payload preserved", deepJob !== null && (deepJob.payload as any).a.b.c === "deep");
+}
+
+cleanupTypes();
+
+// --- Process with success ---
+console.log("\n--- Process Success ---");
+
+const TEST_PATH_PROC = join("/tmp", "tina4-queue-proc-test-" + Date.now());
+function cleanupProc() {
+  try { rmSync(TEST_PATH_PROC, { recursive: true, force: true }); } catch {}
+}
+cleanupProc();
+
+{
+  const qt = new Queue({ topic: "success_proc", path: TEST_PATH_PROC });
+  qt.push({ n: 1 });
+  qt.push({ n: 2 });
+  qt.push({ n: 3 });
+
+  const results: number[] = [];
+  qt.process((job: QueueJob) => {
+    results.push((job.payload as any).n);
+  });
+
+  assert("process handles all 3 jobs", results.length === 3);
+  assert("process in FIFO order", results[0] === 1 && results[1] === 2 && results[2] === 3);
+  assert("queue empty after processing", qt.size() === 0);
+}
+
+cleanupProc();
+
+// --- Multiple topics isolation ---
+console.log("\n--- Multiple Topics Isolation ---");
+
+const TEST_PATH_MULTI = join("/tmp", "tina4-queue-multi-test-" + Date.now());
+function cleanupMulti() {
+  try { rmSync(TEST_PATH_MULTI, { recursive: true, force: true }); } catch {}
+}
+cleanupMulti();
+
+{
+  const q1 = new Queue({ topic: "topic_a", path: TEST_PATH_MULTI });
+  const q2 = new Queue({ topic: "topic_b", path: TEST_PATH_MULTI });
+
+  q1.push({ from: "a" });
+  q1.push({ from: "a" });
+  q2.push({ from: "b" });
+
+  assert("topic_a has 2 jobs", q1.size() === 2);
+  assert("topic_b has 1 job", q2.size() === 1);
+
+  q1.clear();
+  assert("clearing topic_a doesn't affect topic_b", q2.size() === 1);
+}
+
+cleanupMulti();
+
+// --- Job lifecycle methods ---
+console.log("\n--- Job Lifecycle Methods ---");
+
+const TEST_PATH_LC = join("/tmp", "tina4-queue-lc-test-" + Date.now());
+function cleanupLC() {
+  try { rmSync(TEST_PATH_LC, { recursive: true, force: true }); } catch {}
+}
+cleanupLC();
+
+{
+  const qt = new Queue({ topic: "lifecycle", path: TEST_PATH_LC });
+  qt.push({ task: "test" });
+
+  const job = qt.pop();
+  assert("popped job has complete method", typeof job?.complete === "function");
+  assert("popped job has fail method", typeof job?.fail === "function");
+  assert("popped job has reject method", typeof job?.reject === "function");
+  assert("popped job has retry method", typeof job?.retry === "function");
+  assert("popped job has topic field", job?.topic === "lifecycle");
+
+  if (job) {
+    job.complete();
+    assert("complete sets status to completed", job.status === "completed");
+  }
+}
+
+cleanupLC();
+
+// --- getMaxRetries ---
+console.log("\n--- getMaxRetries ---");
+
+{
+  const qt = new Queue({ topic: "retries_test", path: TEST_PATH_LC, maxRetries: 5 });
+  assert("getMaxRetries returns configured value", qt.getMaxRetries() === 5);
+}
+
+{
+  const qt = new Queue({ topic: "retries_default", path: TEST_PATH_LC });
+  assert("getMaxRetries returns default", qt.getMaxRetries() >= 0);
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

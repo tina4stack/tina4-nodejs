@@ -596,6 +596,260 @@ assert("expression power: {{ 2 ** 3 }}",
 assert("set with filter pipe: {% set x = name|upper %}",
   engine.renderString("{% set x = name|upper %}{{ x }}", { name: "alice" }) === "ALICE");
 
+// ── Empty Templates ──────────────────────────────────────────
+console.log("\n--- Empty Templates ---");
+
+assert("empty string returns empty", engine.renderString("", {}) === "");
+assert("whitespace only returns whitespace", engine.renderString("   ", {}).trim() === "");
+assert("no variables returns literal", engine.renderString("Hello World", {}) === "Hello World");
+
+// ── Nested Loops ──────────────────────────────────────────────
+console.log("\n--- Nested Loops ---");
+
+assert("nested for loops",
+  engine.renderString(
+    "{% for group in groups %}{% for item in group %}{{ item }}{% endfor %},{% endfor %}",
+    { groups: [[1, 2], [3, 4]] }
+  ) === "12,34,");
+
+assert("for loop with if inside",
+  engine.renderString(
+    "{% for n in nums %}{% if n > 2 %}{{ n }}{% endif %}{% endfor %}",
+    { nums: [1, 2, 3, 4, 5] }
+  ) === "345");
+
+// ── Filter Chaining ──────────────────────────────────────────
+console.log("\n--- Filter Chaining ---");
+
+assert("multiple filters chained",
+  engine.renderString("{{ name | upper | trim }}", { name: "  alice  " }) === "ALICE");
+
+assert("lower then capitalize",
+  engine.renderString("{{ name | lower | capitalize }}", { name: "ALICE" }) === "Alice");
+
+// ── Ternary / Default ────────────────────────────────────────
+console.log("\n--- Default Filter ---");
+
+assert("default filter with undefined",
+  engine.renderString("{{ missing | default('N/A') }}", {}) === "N/A");
+
+assert("default filter with null",
+  engine.renderString("{{ val | default('fallback') }}", { val: null }) === "fallback");
+
+assert("default filter not applied when value exists",
+  engine.renderString("{{ val | default('fallback') }}", { val: "real" }) === "real");
+
+// ── Numeric Filters ──────────────────────────────────────────
+console.log("\n--- Numeric Filters ---");
+
+assert("abs filter positive",
+  engine.renderString("{{ n | abs }}", { n: 5 }) === "5");
+
+assert("abs filter negative",
+  engine.renderString("{{ n | abs }}", { n: -5 }) === "5");
+
+assert("round filter",
+  engine.renderString("{{ n | round }}", { n: 3.7 }) === "4");
+
+// ── String Filters ──────────────────────────────────────────
+console.log("\n--- String Filters ---");
+
+assert("title filter",
+  engine.renderString("{{ s | title }}", { s: "hello world" }) === "Hello World");
+
+assert("replace filter",
+  engine.renderString("{{ s | replace('world', 'earth') }}", { s: "hello world" }) === "hello earth");
+
+assert("trim filter",
+  engine.renderString("{{ s | trim }}", { s: "  hello  " }) === "hello");
+
+assert("length filter on string",
+  engine.renderString("{{ s | length }}", { s: "hello" }) === "5");
+
+assert("length filter on array",
+  engine.renderString("{{ arr | length }}", { arr: [1, 2, 3] }) === "3");
+
+// ── Conditional edge cases ──────────────────────────────────
+console.log("\n--- Conditional Edge Cases ---");
+
+assert("if with false boolean",
+  engine.renderString("{% if show %}yes{% else %}no{% endif %}", { show: false }) === "no");
+
+assert("if with 0 is falsy",
+  engine.renderString("{% if count %}yes{% else %}no{% endif %}", { count: 0 }) === "no");
+
+assert("if with empty string is falsy",
+  engine.renderString("{% if val %}yes{% else %}no{% endif %}", { val: "" }) === "no");
+
+// Note: empty arrays are truthy in JavaScript (and in this engine)
+assert("if with empty array is truthy (JS semantics)",
+  engine.renderString("{% if items %}yes{% else %}no{% endif %}", { items: [] }) === "yes");
+
+assert("if with non-empty array is truthy",
+  engine.renderString("{% if items %}yes{% else %}no{% endif %}", { items: [1] }) === "yes");
+
+assert("if with number is truthy",
+  engine.renderString("{% if n %}yes{% else %}no{% endif %}", { n: 1 }) === "yes");
+
+// ── Loop Variables ──────────────────────────────────────────
+console.log("\n--- Loop Variables ---");
+
+assert("loop.index starts at 1",
+  engine.renderString(
+    "{% for x in items %}{{ loop.index }}{% endfor %}",
+    { items: ["a", "b", "c"] }
+  ) === "123");
+
+assert("loop.index0 starts at 0",
+  engine.renderString(
+    "{% for x in items %}{{ loop.index0 }}{% endfor %}",
+    { items: ["a", "b", "c"] }
+  ) === "012");
+
+assert("loop.first",
+  engine.renderString(
+    "{% for x in items %}{% if loop.first %}F{% endif %}{{ x }}{% endfor %}",
+    { items: ["a", "b", "c"] }
+  ) === "Fabc");
+
+assert("loop.last",
+  engine.renderString(
+    "{% for x in items %}{{ x }}{% if loop.last %}L{% endif %}{% endfor %}",
+    { items: ["a", "b", "c"] }
+  ) === "abcL");
+
+assert("loop.length",
+  engine.renderString(
+    "{% for x in items %}{{ loop.length }}{% endfor %}",
+    { items: ["a", "b", "c"] }
+  ) === "333");
+
+// ── Comments ──────────────────────────────────────────────────
+console.log("\n--- Comments ---");
+
+assert("comments are stripped",
+  engine.renderString("Hello{# this is a comment #} World", {}) === "Hello World");
+
+assert("multiline comment stripped",
+  engine.renderString("A{# comment\nspanning\nlines #}B", {}) === "AB");
+
+// ── Whitespace Control ──────────────────────────────────────
+console.log("\n--- Whitespace Control ---");
+
+assert("trim left on block tag",
+  engine.renderString("Hello \n{%- if true %} World{% endif %}", {}) === "Hello World");
+
+assert("trim right on block tag",
+  engine.renderString("{% if true -%}  \nWorld{% endif %}", {}) === "World");
+
+// ── Set Tag ──────────────────────────────────────────────────
+console.log("\n--- Set Tag ---");
+
+assert("set string variable",
+  engine.renderString("{% set name = 'Bob' %}{{ name }}", {}) === "Bob");
+
+assert("set number variable",
+  engine.renderString("{% set x = 42 %}{{ x }}", {}) === "42");
+
+assert("set overrides context",
+  engine.renderString("{% set name = 'Override' %}{{ name }}", { name: "Original" }) === "Override");
+
+// ── For-Else ──────────────────────────────────────────────────
+console.log("\n--- For-Else ---");
+
+assert("for-else shows else when empty",
+  engine.renderString(
+    "{% for x in items %}{{ x }}{% else %}No items{% endfor %}",
+    { items: [] }
+  ) === "No items");
+
+assert("for-else shows items when non-empty",
+  engine.renderString(
+    "{% for x in items %}{{ x }}{% else %}No items{% endfor %}",
+    { items: [1, 2] }
+  ) === "12");
+
+// ── Object Iteration ──────────────────────────────────────────
+console.log("\n--- Object Iteration ---");
+
+assert("iterate object keys",
+  engine.renderString(
+    "{% for key, val in obj %}{{ key }}={{ val }} {% endfor %}",
+    { obj: { a: 1, b: 2 } }
+  ).trim() === "a=1 b=2");
+
+// ── Comparison Operators ──────────────────────────────────────
+console.log("\n--- Comparison Operators ---");
+
+assert("greater than",
+  engine.renderString("{% if a > b %}yes{% else %}no{% endif %}", { a: 5, b: 3 }) === "yes");
+
+assert("less than",
+  engine.renderString("{% if a < b %}yes{% else %}no{% endif %}", { a: 3, b: 5 }) === "yes");
+
+assert("equals",
+  engine.renderString("{% if a == b %}yes{% else %}no{% endif %}", { a: 5, b: 5 }) === "yes");
+
+assert("not equals",
+  engine.renderString("{% if a != b %}yes{% else %}no{% endif %}", { a: 5, b: 3 }) === "yes");
+
+assert("greater or equal",
+  engine.renderString("{% if a >= b %}yes{% else %}no{% endif %}", { a: 5, b: 5 }) === "yes");
+
+assert("less or equal",
+  engine.renderString("{% if a <= b %}yes{% else %}no{% endif %}", { a: 3, b: 5 }) === "yes");
+
+// ── Logical Operators ────────────────────────────────────────
+console.log("\n--- Logical Operators ---");
+
+assert("and operator true",
+  engine.renderString("{% if a and b %}yes{% else %}no{% endif %}", { a: true, b: true }) === "yes");
+
+assert("and operator false",
+  engine.renderString("{% if a and b %}yes{% else %}no{% endif %}", { a: true, b: false }) === "no");
+
+assert("or operator true",
+  engine.renderString("{% if a or b %}yes{% else %}no{% endif %}", { a: false, b: true }) === "yes");
+
+assert("or operator false",
+  engine.renderString("{% if a or b %}yes{% else %}no{% endif %}", { a: false, b: false }) === "no");
+
+assert("not operator",
+  engine.renderString("{% if not val %}yes{% else %}no{% endif %}", { val: false }) === "yes");
+
+// ── In Operator ──────────────────────────────────────────────
+console.log("\n--- In Operator ---");
+
+assert("in operator with array (found)",
+  engine.renderString("{% if 'b' in items %}yes{% else %}no{% endif %}", { items: ["a", "b", "c"] }) === "yes");
+
+assert("in operator with array (not found)",
+  engine.renderString("{% if 'z' in items %}yes{% else %}no{% endif %}", { items: ["a", "b", "c"] }) === "no");
+
+// ── Concatenation ────────────────────────────────────────────
+console.log("\n--- String Concatenation ---");
+
+assert("tilde concatenation",
+  engine.renderString("{{ 'Hello' ~ ' ' ~ 'World' }}", {}) === "Hello World");
+
+assert("tilde with variable",
+  engine.renderString("{{ greeting ~ ' ' ~ name }}", { greeting: "Hi", name: "Bob" }) === "Hi Bob");
+
+// ── Math in expressions ──────────────────────────────────────
+console.log("\n--- Math in Expressions ---");
+
+assert("subtraction: {{ 10 - 3 }}",
+  engine.renderString("{{ 10 - 3 }}", {}) === "7");
+
+assert("multiplication: {{ 4 * 5 }}",
+  engine.renderString("{{ 4 * 5 }}", {}) === "20");
+
+assert("division: {{ 10 / 2 }}",
+  engine.renderString("{{ 10 / 2 }}", {}) === "5");
+
+assert("modulo: {{ 10 % 3 }}",
+  engine.renderString("{{ 10 % 3 }}", {}) === "1");
+
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 

@@ -434,19 +434,26 @@ const handleDashboard: RouteHandler = (_req, res) => {
 };
 
 function handleStatus(router: Router): RouteHandler {
-  return (_req, res) => {
+  return async (_req, res) => {
     const mem = process.memoryUsage();
     const reqStats = RequestInspector.stats();
     const msgCounts = MessageLog.count();
     const errors = ErrorTracker.get();
     const unresolved = errors.filter((e) => !e.resolved).length;
     const mailboxCounts = DevMailboxStore.count();
+    let dbTableCount = 0;
+    try {
+      const { getAdapter } = await import("@tina4/orm");
+      const db = getAdapter();
+      dbTableCount = db.tables().length;
+    } catch { /* no database connected */ }
     res.json({
       nodeVersion: process.version,
       framework: `tina4-nodejs v${TINA4_VERSION}`,
       debug: process.env.TINA4_DEBUG ?? "false",
       logLevel: process.env.TINA4_LOG_LEVEL ?? "ERROR",
       routes: router.getRoutes().length,
+      db_tables: dbTableCount,
       messages: msgCounts,
       message_counts: msgCounts,
       requests: reqStats,
@@ -528,10 +535,18 @@ const handleRequestsClear: RouteHandler = (_req, res) => {
   res.json({ cleared: true });
 };
 
-const handleSystem: RouteHandler = (_req, res) => {
+const handleSystem: RouteHandler = async (_req, res) => {
   const mem = process.memoryUsage();
   const heapUsedMb = Math.round(mem.heapUsed / 1048576);
   const rssMb = Math.round(mem.rss / 1048576);
+  let dbTableCount: number | undefined;
+  let dbConnected = false;
+  try {
+    const { getAdapter } = await import("@tina4/orm");
+    const db = getAdapter();
+    dbTableCount = db.tables().length;
+    dbConnected = true;
+  } catch { /* no database connected */ }
   // Respond in both the shared-JS format and the Node-specific format
   res.json({
     // Shared JS fields
@@ -541,6 +556,8 @@ const handleSystem: RouteHandler = (_req, res) => {
     os: `${process.platform} ${process.arch}`,
     pid: process.pid,
     memory_mb: heapUsedMb,
+    db_tables: dbTableCount !== undefined ? dbTableCount : "N/A",
+    db_connected: dbConnected,
     memory: {
       current_mb: heapUsedMb,
       peak_mb: rssMb,
@@ -694,30 +711,129 @@ const handleTable: RouteHandler = (req, res) => {
   res.json({ table: name, columns: [], rows: [], message: "Database not connected or table not found" });
 };
 
-const handleTables: RouteHandler = (_req, res) => {
-  // Stub response — actual implementation will use ORM adapter
-  res.json({ tables: [], message: "Database not connected" });
+const handleTables: RouteHandler = async (_req, res) => {
+  try {
+    const { getAdapter } = await import("@tina4/orm");
+    const db = getAdapter();
+    const tables = db.tables();
+    res.json({ tables });
+  } catch {
+    res.json({ tables: [], message: "Database not connected" });
+  }
 };
 
-const handleSeed: RouteHandler = (req, res) => {
+const handleSeed: RouteHandler = async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const table = url.searchParams.get("table") ?? (req as any).body?.table ?? "";
+  const count = parseInt(String(url.searchParams.get("count") ?? (req as any).body?.count ?? "10"), 10) || 10;
   if (!table) {
     res.json({ error: "Missing table parameter" });
     return;
   }
-  // Stub response — actual implementation will use ORM adapter
-  res.json({ seeded: false, table, message: "Database not connected" });
+  try {
+    const orm = await import("@tina4/orm");
+    const db = orm.getAdapter();
+    const { seedTable } = orm;
+    const fake = new orm.FakeData();
+    const columns = db.columns(table);
+    if (!columns.length) {
+      res.json({ error: `Table '${table}' not found or has no columns` });
+      return;
+    }
+    // Build a field map based on column info
+    const fieldMap: Record<string, () => unknown> = {};
+    for (const col of columns) {
+      const name = col.name.toLowerCase();
+      const type = col.type.toLowerCase();
+      if (name === "id") continue; // skip primary key
+      if (name.includes("email")) { fieldMap[col.name] = () => fake.email(); }
+      else if (name.includes("name")) { fieldMap[col.name] = () => fake.name(); }
+      else if (name.includes("phone")) { fieldMap[col.name] = () => fake.phone(); }
+      else if (name.includes("address") || name.includes("city") || name.includes("country")) { fieldMap[col.name] = () => fake.address(); }
+      else if (name.includes("url") || name.includes("website")) { fieldMap[col.name] = () => fake.url(); }
+      else if (type.includes("int")) { fieldMap[col.name] = () => fake.integer(1, 1000); }
+      else if (type.includes("real") || type.includes("float") || type.includes("double") || type.includes("numeric") || type.includes("decimal")) { fieldMap[col.name] = () => fake.decimal(0, 1000, 2); }
+      else if (type.includes("bool")) { fieldMap[col.name] = () => fake.boolean(); }
+      else if (type.includes("date") || type.includes("time")) { fieldMap[col.name] = () => fake.date(); }
+      else { fieldMap[col.name] = () => fake.sentence(3); }
+    }
+    let inserted = 0;
+    for (let i = 0; i < count; i++) {
+      const row: Record<string, unknown> = {};
+      for (const [col, gen] of Object.entries(fieldMap)) {
+        row[col] = gen();
+      }
+      try {
+        db.insert(table, row);
+        inserted++;
+      } catch { /* skip failed rows */ }
+    }
+    res.json({ inserted, table });
+  } catch {
+    res.json({ error: "Database not connected" });
+  }
 };
 
-const handleQuery: RouteHandler = (req, res) => {
-  const query = (req as any).body?.query ?? "";
+const handleQuery: RouteHandler = async (req, res) => {
+  const query = ((req as any).body?.query ?? "").trim();
+  const queryType = (req as any).body?.type ?? "sql";
   if (!query) {
     res.json({ error: "Missing query parameter" });
     return;
   }
-  // Stub response — actual implementation will use ORM adapter
-  res.json({ query, rows: [], message: "Database not connected" });
+
+  if (queryType === "graphql") {
+    // GraphQL stub — can be extended when GraphQL module is available
+    res.json({ error: "GraphQL not yet supported in dev admin" });
+    return;
+  }
+
+  try {
+    const { getAdapter } = await import("@tina4/orm");
+    const db = getAdapter();
+
+    // Split multiple statements on semicolons
+    const statements = query.split(";").map((s: string) => s.trim()).filter((s: string) => s.length > 0);
+
+    if (statements.length === 1) {
+      const upper = statements[0].toUpperCase().trimStart();
+      const isRead = upper.startsWith("SELECT") || upper.startsWith("PRAGMA") || upper.startsWith("SHOW") || upper.startsWith("DESCRIBE");
+
+      if (isRead) {
+        const rows = db.fetch(statements[0]);
+        MessageLog.log("query", "info", `SQL: ${statements[0].substring(0, 80)}`, { rows: rows.length });
+        res.json({ rows, count: rows.length });
+        return;
+      }
+    }
+
+    // Execute all statements (single write or multi-statement batch)
+    let totalAffected = 0;
+    db.startTransaction();
+    try {
+      for (const stmt of statements) {
+        const result = db.execute(stmt);
+        // execute may return an object with affected count or a number
+        if (typeof result === "number") {
+          totalAffected += result;
+        } else if (result && typeof result === "object" && "changes" in (result as Record<string, unknown>)) {
+          totalAffected += Number((result as Record<string, unknown>).changes) || 0;
+        }
+      }
+      db.commit();
+    } catch (e: unknown) {
+      db.rollback();
+      const msg = e instanceof Error ? e.message : String(e);
+      res.json({ error: msg });
+      return;
+    }
+
+    MessageLog.log("query", "warn", `SQL batch: ${statements.length} statement(s)`, { affected: totalAffected });
+    res.json({ affected: totalAffected, success: true });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.json({ error: msg });
+  }
 };
 
 // -- Broken (errors) handlers --
@@ -1244,18 +1360,162 @@ function renderMessagesTab(): string[] {
 function renderDatabaseTab(): string[] {
   return [
     "// -- Database --",
+    "var _currentTable = '';",
+    "",
+    "function _clipCopy(text, btn) {",
+    "    var orig = btn.textContent;",
+    "    var ta = document.createElement('textarea');",
+    "    ta.value = text;",
+    "    ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px';",
+    "    document.body.appendChild(ta);",
+    "    ta.focus();",
+    "    ta.select();",
+    "    try { document.execCommand('copy'); btn.textContent = 'Copied!'; btn.style.color = 'var(--success)'; }",
+    "    catch(e) { btn.textContent = 'Failed'; btn.style.color = 'var(--danger)'; }",
+    "    document.body.removeChild(ta);",
+    "    setTimeout(function() { btn.textContent = orig; btn.style.color = ''; }, 1500);",
+    "}",
+    "",
+    "function copyResults(fmt, btn) {",
+    "    var el = document.getElementById('query-results');",
+    "    var tbl = el ? el.querySelector('table') : null;",
+    "    if (!tbl) { btn.textContent = 'No data'; btn.style.color = 'var(--danger)'; setTimeout(function() { btn.textContent = fmt === 'json' ? 'Copy JSON' : 'Copy CSV'; btn.style.color = ''; }, 1500); return; }",
+    "    var headerCells = tbl.querySelectorAll('thead th');",
+    "    var headers = []; headerCells.forEach(function(h) { headers.push(h.textContent); });",
+    "    var bodyRows = tbl.querySelectorAll('tbody tr');",
+    "    var data = [];",
+    "    bodyRows.forEach(function(row) {",
+    "        var cells = row.querySelectorAll('td');",
+    "        var obj = {};",
+    "        cells.forEach(function(c, i) { obj[headers[i] || ('col' + i)] = c.textContent === 'null' ? null : c.textContent; });",
+    "        data.push(obj);",
+    "    });",
+    "    var text = '';",
+    "    if (fmt === 'json') {",
+    "        text = JSON.stringify(data, null, 2);",
+    "    } else {",
+    "        var lines = [headers.join(',')];",
+    "        data.forEach(function(r) {",
+    "            lines.push(headers.map(function(h) { var v = (r[h] !== null ? r[h] : ''); return v.indexOf(',') >= 0 || v.indexOf('\"') >= 0 ? '\"' + v.replace(/\"/g, '\"\"') + '\"' : v; }).join(','));",
+    "        });",
+    "        text = lines.join(String.fromCharCode(10));",
+    "    }",
+    "    _clipCopy(text, btn);",
+    "}",
+    "",
+    "function pasteData() {",
+    "    var NL = String.fromCharCode(10);",
+    "    var TAB = String.fromCharCode(9);",
+    "    var overlay = document.createElement('div');",
+    "    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center';",
+    "    var box = document.createElement('div');",
+    "    box.style.cssText = 'background:var(--bg,#1e293b);border:1px solid var(--border,#334155);border-radius:0.5rem;padding:1rem;width:500px;max-width:90vw';",
+    "    box.innerHTML = '<div style=\"font-weight:600;margin-bottom:0.5rem;color:var(--text,#e2e8f0)\">Paste Data</div><div style=\"font-size:0.75rem;color:var(--muted,#94a3b8);margin-bottom:0.5rem\">Paste JSON array or CSV/tab-separated data below</div>';",
+    "    var ta = document.createElement('textarea');",
+    "    ta.style.cssText = 'width:100%;height:150px;font-family:monospace;font-size:0.75rem;background:var(--bg-alt,#0f172a);color:var(--text,#e2e8f0);border:1px solid var(--border,#334155);border-radius:0.25rem;padding:0.5rem;resize:vertical';",
+    "    ta.placeholder = 'Paste here (Ctrl+V)...';",
+    "    var btns = document.createElement('div');",
+    "    btns.style.cssText = 'display:flex;gap:0.5rem;margin-top:0.5rem;justify-content:flex-end';",
+    "    var cancelBtn = document.createElement('button');",
+    "    cancelBtn.className = 'btn btn-sm'; cancelBtn.textContent = 'Cancel';",
+    "    cancelBtn.onclick = function() { document.body.removeChild(overlay); };",
+    "    var goBtn = document.createElement('button');",
+    "    goBtn.className = 'btn btn-sm btn-primary'; goBtn.textContent = 'Generate SQL';",
+    "    goBtn.onclick = function() {",
+    "        var text = ta.value.trim();",
+    "        if (!text) { alert('Paste some data first'); return; }",
+    "        var upper = text.substring(0, 50).toUpperCase();",
+    "        if (upper.indexOf('INSERT ') >= 0 || upper.indexOf('CREATE ') >= 0 || upper.indexOf('SELECT ') >= 0) {",
+    "            document.getElementById('query-input').value = text;",
+    "            document.body.removeChild(overlay);",
+    "            return;",
+    "        }",
+    "        var rows = [];",
+    "        var parsed = null;",
+    "        try { parsed = JSON.parse(text); } catch(e) {}",
+    "        if (parsed && Array.isArray(parsed) && parsed.length > 0) {",
+    "            rows = parsed;",
+    "        } else {",
+    "            var lines = text.split(NL);",
+    "            if (lines.length < 2) { alert('Need a header row + at least one data row'); return; }",
+    "            var sep = lines[0].indexOf(TAB) >= 0 ? TAB : ',';",
+    "            var hdrs = lines[0].split(sep);",
+    "            for (var i = 1; i < lines.length; i++) {",
+    "                var vals = lines[i].split(sep);",
+    "                if (!vals.length || vals.join('').trim() === '') continue;",
+    "                var row = {};",
+    "                hdrs.forEach(function(h, idx) { row[h.trim()] = vals[idx] !== undefined ? vals[idx].trim() : ''; });",
+    "                rows.push(row);",
+    "            }",
+    "        }",
+    "        if (!rows.length) { alert('No data rows found'); return; }",
+    "        var allCols = Object.keys(rows[0]);",
+    "        var table = _currentTable || '';",
+    "        var isNew = false;",
+    "        if (!table) {",
+    "            table = prompt('No table selected. Enter table name (creates if new):');",
+    "            if (!table) { return; }",
+    "            isNew = true;",
+    "        }",
+    "        var sql = '';",
+    "        if (isNew) {",
+    "            var hasId = allCols.some(function(c) { return c.toLowerCase() === 'id'; });",
+    "            var colDefs = allCols.map(function(h) {",
+    "                if (h.toLowerCase() === 'id') return h + ' INTEGER PRIMARY KEY AUTOINCREMENT';",
+    "                return h + ' TEXT';",
+    "            }).join(', ');",
+    "            if (!hasId) colDefs = 'id INTEGER PRIMARY KEY AUTOINCREMENT, ' + colDefs;",
+    "            sql = 'CREATE TABLE IF NOT EXISTS ' + table + ' (' + colDefs + ');' + NL;",
+    "        }",
+    "        sql += rows.map(function(r) {",
+    "            var keys = Object.keys(r);",
+    "            if (isNew) { keys = keys.filter(function(k) { return k.toLowerCase() !== 'id'; }); }",
+    "            var cols = keys.join(', ');",
+    "            var vs = keys.map(function(k) { var v = r[k]; return v === null ? 'NULL' : \"'\" + String(v).replace(/'/g, \"''\") + \"'\"; }).join(', ');",
+    "            return 'INSERT INTO ' + table + ' (' + cols + ') VALUES (' + vs + ')';",
+    "        }).join(';' + NL);",
+    "        document.getElementById('query-input').value = sql;",
+    "        document.body.removeChild(overlay);",
+    "    };",
+    "    btns.appendChild(cancelBtn); btns.appendChild(goBtn);",
+    "    box.appendChild(ta); box.appendChild(btns);",
+    "    overlay.appendChild(box); document.body.appendChild(overlay);",
+    "    ta.focus();",
+    "}",
+    "",
     "function loadTables() {",
     "    api('/__dev/api/tables').then(function(d) {",
+    "        if (d.error) { document.getElementById('table-list').innerHTML = '<div style=\"color:var(--danger)\">' + d.error + '</div>'; return; }",
     "        var tables = d.tables || [];",
     "        document.getElementById('db-count').textContent = tables.length;",
-    "        document.getElementById('table-list').innerHTML = tables.map(function(t) {",
-    "            return '<div style=\"padding:0.2rem 0.4rem;cursor:pointer;border-radius:0.25rem\" onclick=\"browseTable(\\'' + t + '\\')\" onmouseover=\"this.style.background=\\'rgba(46,125,50,0.1)\\'\" onmouseout=\"this.style.background=\\'\\'\">' + t + '</div>';",
-    "        }).join('');",
+    "        var list = document.getElementById('table-list');",
+    "        if (!tables.length) { list.innerHTML = '<div class=\"text-muted\">No tables</div>'; return; }",
+    "        list.innerHTML = '';",
+    "        tables.forEach(function(t) {",
+    "            var div = document.createElement('div');",
+    "            div.style.cssText = 'cursor:pointer;padding:4px 6px;color:var(--primary);border-radius:4px;margin-bottom:1px';",
+    "            div.textContent = t;",
+    "            div.addEventListener('mouseenter', function() { if (t !== _currentTable) div.style.background = 'var(--bg-alt,rgba(255,255,255,0.05))'; });",
+    "            div.addEventListener('mouseleave', function() { if (t !== _currentTable) div.style.background = ''; });",
+    "            div.addEventListener('click', function() {",
+    "                list.querySelectorAll('div').forEach(function(d) { d.style.background = ''; d.style.fontWeight = ''; });",
+    "                div.style.background = 'var(--primary-bg,rgba(53,114,165,0.2))'; div.style.fontWeight = '600';",
+    "                browseTable(t);",
+    "            });",
+    "            list.appendChild(div);",
+    "        });",
     "        var sel = document.getElementById('seed-table');",
     "        sel.innerHTML = '<option value=\"\">Pick table...</option>' + tables.map(function(t) { return '<option value=\"' + t + '\">' + t + '</option>'; }).join('');",
-    "    });",
+    "    }).catch(function(e) { document.getElementById('table-list').innerHTML = '<div style=\"color:var(--danger)\">' + e.message + '</div>'; });",
     "}",
-    "function browseTable(name) { document.getElementById('query-input').value = 'SELECT * FROM ' + name + ' LIMIT 20'; runQuery(); }",
+    "",
+    "function browseTable(name) {",
+    "    _currentTable = name;",
+    "    var lim = document.getElementById('query-limit').value;",
+    "    document.getElementById('query-input').value = 'SELECT * FROM ' + name + (lim !== '0' ? ' LIMIT ' + lim : '');",
+    "    runQuery();",
+    "}",
+    "",
     "function seedTable() {",
     "    var table = document.getElementById('seed-table').value;",
     "    var count = parseInt(document.getElementById('seed-count').value) || 10;",
@@ -1265,26 +1525,30 @@ function renderDatabaseTab(): string[] {
     "        browseTable(table);",
     "    });",
     "}",
+    "",
     "function runQuery() {",
     "    var query = document.getElementById('query-input').value.trim();",
     "    var type = document.getElementById('query-type').value;",
     "    var errorEl = document.getElementById('query-error');",
+    "    var resultEl = document.getElementById('query-results');",
+    "    if (!query) { errorEl.textContent = 'Enter a query'; errorEl.classList.remove('hidden'); return; }",
     "    errorEl.classList.add('hidden');",
-    "    if (!query) return;",
+    "    resultEl.innerHTML = '<p class=\"text-muted\">Running...</p>';",
     "    api('/__dev/api/query', 'POST', {query:query, type:type}).then(function(d) {",
-    "        if (d.error) { errorEl.textContent = d.error; errorEl.classList.remove('hidden'); return; }",
-    "        var results = document.getElementById('query-results');",
-    "        if (d.rows && d.rows.length) {",
+    "        if (d.error) { errorEl.textContent = d.error; errorEl.classList.remove('hidden'); resultEl.innerHTML = ''; return; }",
+    "        if (d.rows) {",
+    "            if (!d.rows.length) { resultEl.innerHTML = '<p class=\"text-muted\">No results</p>'; return; }",
     "            var cols = d.columns || Object.keys(d.rows[0]);",
-    "            results.innerHTML = '<div class=\"text-sm text-muted p-sm\">' + (d.count||d.rows.length) + ' rows</div>' +",
-    "                '<table><thead><tr>' + cols.map(function(c){return '<th>'+c+'</th>';}).join('') + '</tr></thead>' +",
-    "                '<tbody>' + d.rows.map(function(r){ return '<tr>' + cols.map(function(c){ return '<td class=\"text-mono text-sm\">' + (r[c]===null?'<span class=\"text-muted\">NULL</span>':esc(String(r[c]))) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table>';",
+    "            var html = '<div class=\"text-muted\" style=\"margin-bottom:0.25rem\">' + d.rows.length + ' row(s)</div><table class=\"table\"><thead><tr>' + cols.map(function(c) { return '<th>' + c + '</th>'; }).join('') + '</tr></thead><tbody>';",
+    "            d.rows.forEach(function(row) { html += '<tr>' + cols.map(function(c) { return '<td>' + (row[c] !== null ? row[c] : '<em>null</em>') + '</td>'; }).join('') + '</tr>'; });",
+    "            html += '</tbody></table>'; resultEl.innerHTML = html;",
     "        } else if (d.data) {",
-    "            results.innerHTML = '<pre class=\"p-md text-mono text-sm\">' + JSON.stringify(d.data, null, 2) + '</pre>';",
+    "            resultEl.innerHTML = '<pre class=\"p-md text-mono text-sm\">' + JSON.stringify(d.data, null, 2) + '</pre>';",
     "        } else if (d.success) {",
-    "            results.innerHTML = '<div class=\"empty\">Query executed. ' + (d.affected||0) + ' rows affected.</div>';",
+    "            resultEl.innerHTML = '<p style=\"color:var(--success)\">' + (d.affected || 0) + ' row(s) affected</p>';",
+    "            loadTables();",
     "        } else {",
-    "            results.innerHTML = '<div class=\"empty\">No results</div>';",
+    "            resultEl.innerHTML = '<div class=\"empty\">No results</div>';",
     "        }",
     "    }).catch(function(e) { errorEl.textContent = e.message; errorEl.classList.remove('hidden'); });",
     "}",
@@ -1402,6 +1666,9 @@ function renderSystemTab(): string[] {
     "        if (fwVersion) html += '<div class=\"sys-card\"><div class=\"label\">Version</div><div class=\"value text-sm\">' + fwVersion + '</div></div>';",
     "        if (routeCount !== '') html += '<div class=\"sys-card\"><div class=\"label\">Routes</div><div class=\"value\">' + routeCount + '</div></div>';",
     "",
+    "        html += '<div class=\"sys-card\"><div class=\"label\">DB Tables</div><div class=\"value\">' + (d.db_tables !== undefined ? d.db_tables : 'N/A') + '</div></div>';",
+    "        html += '<div class=\"sys-card\"><div class=\"label\">DB Connected</div><div class=\"value\">' + (d.db_connected ? '<span style=\"color:var(--success)\">Yes</span>' : '<span style=\"color:var(--danger)\">No</span>') + '</div></div>';",
+    "",
     "        if (d.node && d.node.v8) html += '<div class=\"sys-card\"><div class=\"label\">V8 Engine</div><div class=\"value text-sm\">' + d.node.v8 + '</div></div>';",
     "        if (d.pid) html += '<div class=\"sys-card\"><div class=\"label\">PID</div><div class=\"value text-sm\">' + d.pid + '</div></div>';",
     "        if (d.cpus) html += '<div class=\"sys-card\"><div class=\"label\">CPU Cores</div><div class=\"value\">' + d.cpus + '</div></div>';",
@@ -1516,6 +1783,7 @@ function renderUtilitiesAndInit(): string[] {
     "    if (d.health) document.getElementById('err-count').textContent = d.health.unresolved || 0;",
     "    if (d.requests) document.getElementById('req-count').textContent = d.requests.total || 0;",
     "    if (d.request_stats) document.getElementById('req-count').textContent = d.request_stats.total || 0;",
+    "    if (d.db_tables !== undefined) document.getElementById('db-count').textContent = d.db_tables;",
     "});",
   ];
 }
@@ -1554,7 +1822,7 @@ function renderDevAdminJs(): string {
 // Dashboard HTML — Single-page app
 // ---------------------------------------------------------------------------
 
-function renderDashboard(): string {
+export function renderDashboard(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1807,33 +2075,46 @@ code, .mono { font-family: var(--mono); font-size: 0.82rem; }
         <h2>Database</h2>
         <button class="btn btn-sm" onclick="loadTables()">Refresh</button>
     </div>
-    <div class="flex gap-md p-md">
-        <div class="flex-1">
-            <div class="flex gap-sm items-center mb-sm">
-                <select id="query-type" class="input">
-                    <option value="sql">SQL</option>
-                    <option value="graphql">GraphQL</option>
-                </select>
-                <button class="btn btn-sm btn-primary" onclick="runQuery()">Run</button>
-                <span class="text-sm text-muted">Ctrl+Enter</span>
-            </div>
-            <textarea id="query-input" rows="4" placeholder="SELECT * FROM users LIMIT 20" class="input input-mono" style="width:100%"></textarea>
-            <div id="query-error" class="hidden" style="color:var(--danger);font-size:0.75rem;margin-top:0.25rem"></div>
-        </div>
-        <div style="width:180px">
-            <div class="text-sm text-muted" style="font-weight:600;margin-bottom:0.5rem">Tables</div>
+    <div style="display:flex;height:calc(100vh - 140px);overflow:hidden">
+        <!-- Left: Tables navigation -->
+        <div style="width:200px;min-width:200px;border-right:1px solid var(--border);padding:0.5rem;overflow-y:auto;display:flex;flex-direction:column;gap:0.5rem">
+            <div class="text-sm text-muted" style="font-weight:600">Tables</div>
             <div id="table-list" class="text-sm"></div>
-            <div style="margin-top:0.75rem;border-top:1px solid var(--border);padding-top:0.75rem">
-                <div class="text-sm text-muted" style="font-weight:600;margin-bottom:0.5rem">Seed Data</div>
-                <select id="seed-table" class="input" style="width:100%;margin-bottom:0.25rem"><option value="">Pick table...</option></select>
+            <div style="border-top:1px solid var(--border);padding-top:0.5rem;margin-top:auto">
+                <div class="text-sm text-muted" style="font-weight:600;margin-bottom:0.25rem">Seed Data</div>
+                <select id="seed-table" class="input" style="width:100%;margin-bottom:0.25rem;font-size:0.75rem"><option value="">Pick table...</option></select>
                 <div class="flex gap-sm items-center">
-                    <input type="number" id="seed-count" class="input" value="10" min="1" max="1000" style="width:60px">
+                    <input type="number" id="seed-count" class="input" value="10" min="1" max="1000" style="width:60px;font-size:0.75rem">
                     <button class="btn btn-sm btn-success" onclick="seedTable()">Seed</button>
                 </div>
             </div>
         </div>
+        <!-- Right: Query + Results -->
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;padding:0.5rem">
+            <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.25rem">
+                <select id="query-type" class="input" style="width:auto;font-size:0.75rem">
+                    <option value="sql">SQL</option>
+                    <option value="graphql">GraphQL</option>
+                </select>
+                <span class="text-sm text-muted">Limit</span>
+                <select id="query-limit" class="input" style="width:70px;font-size:0.75rem">
+                    <option value="20">20</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="500">500</option>
+                    <option value="0">All</option>
+                </select>
+                <button class="btn btn-sm btn-primary" onclick="runQuery()">Run</button>
+                <button class="btn btn-sm" id="btn-csv" onclick="copyResults('csv',this)" title="Copy results as CSV">Copy CSV</button>
+                <button class="btn btn-sm" id="btn-json" onclick="copyResults('json',this)" title="Copy results as JSON">Copy JSON</button>
+                <button class="btn btn-sm" onclick="pasteData()" title="Paste tab-separated data as INSERTs">Paste</button>
+                <span class="text-sm text-muted">Ctrl+Enter</span>
+            </div>
+            <textarea id="query-input" rows="3" placeholder="SELECT * FROM users LIMIT 20" class="input input-mono" style="width:100%;font-size:0.75rem;resize:vertical"></textarea>
+            <div id="query-error" class="hidden" style="color:var(--danger);font-size:0.75rem;margin-top:0.25rem"></div>
+            <div id="query-results" style="flex:1;overflow:auto;margin-top:0.25rem;font-size:0.75rem"></div>
+        </div>
     </div>
-    <div id="query-results" style="overflow-x:auto"></div>
 </div>
 
 <!-- Requests Panel -->
