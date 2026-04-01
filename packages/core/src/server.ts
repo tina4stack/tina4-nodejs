@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { resolve, dirname, join, relative } from "node:path";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isatty } from "node:tty";
@@ -369,6 +369,20 @@ function deployGallery(name) {
 </html>`;
 }
 
+// Module-level dispatch function — assigned when startServer() is called.
+// Allows handle() to route requests without requiring a reference to the server.
+let _dispatchFn: ((rawReq: IncomingMessage, rawRes: ServerResponse) => Promise<void>) | null = null;
+
+/**
+ * Dispatch a raw Node.js request through the Tina4 router and write the response.
+ * Requires startServer() to have been called first.
+ * Useful for testing and embedding.
+ */
+export async function handle(rawReq: IncomingMessage, rawRes: ServerResponse): Promise<void> {
+  if (!_dispatchFn) throw new Error("Tina4 server not started — call startServer() first");
+  return _dispatchFn(rawReq, rawRes);
+}
+
 export async function startServer(config?: Tina4Config): Promise<{
   close: () => void;
   router: Router;
@@ -578,7 +592,7 @@ ${reset}
     console.log(`  Dev dashboard at  \x1b[36mhttp://localhost:${port}/__dev\x1b[0m`);
   }
 
-  const server = createServer(async (rawReq, rawRes) => {
+  async function dispatch(rawReq: IncomingMessage, rawRes: ServerResponse): Promise<void> {
     const req = createRequest(rawReq);
     const res = createResponse(rawRes);
 
@@ -808,7 +822,12 @@ ${reset}
         }
       }
     }
-  });
+  }
+
+  // Assign to module-level so handle() can dispatch without a server reference
+  _dispatchFn = dispatch;
+
+  const server = createServer(dispatch);
 
   return new Promise((resolvePromise) => {
     server.listen(port, host, () => {

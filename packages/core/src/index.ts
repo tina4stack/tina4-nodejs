@@ -12,7 +12,7 @@ export type {
   WebSocketRouteDefinition,
 } from "./types.js";
 
-export { startServer, resolvePortAndHost } from "./server.js";
+export { startServer, resolvePortAndHost, handle } from "./server.js";
 export { Router, RouteGroup, RouteRef, defaultRouter, runRouteMiddlewares } from "./router.js";
 export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";
@@ -94,6 +94,7 @@ export type { ValkeySessionConfig } from "./sessionHandlers/valkeyHandler.js";
 export { RedisNpmSessionHandler } from "./sessionHandlers/redisHandler.js";
 export type { RedisNpmSessionConfig } from "./sessionHandlers/redisHandler.js";
 export { tests, assertEqual, assertThrows, assertTrue, assertFalse, runAllTests, resetTests } from "./testing.js";
+export { TestClient, TestResponse } from "./testClient.js";
 export { Container, container } from "./container.js";
 export { Validator } from "./validator.js";
 export type { ValidationError } from "./validator.js";
