@@ -1,10 +1,10 @@
 /**
- * Unit tests for the AI module (detection and context scaffolding).
+ * Unit tests for the AI module (menu-driven installer).
  * Run with: npx tsx test/ai.test.ts
  */
 import {
-  detectAi, detectAiNames, generateContext,
-  installAiContext, installAllAiContext, aiStatusReport,
+  AI_TOOLS, isInstalled, generateContext,
+  installSelected, installAll,
 } from "../packages/core/src/index.ts";
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -32,78 +32,24 @@ cleanup();
 
 console.log("=== AI Tests ===\n");
 
-// --- detectAi returns results for all known tools ---
-console.log("--- detectAi basics ---");
+// --- AI_TOOLS is an ordered array ---
+console.log("--- AI_TOOLS basics ---");
+
+assert("AI_TOOLS is an array", Array.isArray(AI_TOOLS));
+assert("AI_TOOLS has 7 entries", AI_TOOLS.length === 7);
+assert("first tool is claude-code", AI_TOOLS[0].name === "claude-code");
+assert("all tools have name", AI_TOOLS.every((t) => typeof t.name === "string" && t.name.length > 0));
+assert("all tools have contextFile", AI_TOOLS.every((t) => typeof t.contextFile === "string"));
+
+// --- isInstalled ---
+console.log("\n--- isInstalled ---");
 
 mkdirSync(TEST_DIR, { recursive: true });
 
-const results = detectAi(TEST_DIR);
-assert("detectAi returns an array", Array.isArray(results));
-assert("detectAi returns entries for all known tools", results.length >= 7);
-assert("all entries have name", results.every((r) => typeof r.name === "string" && r.name.length > 0));
-assert("all entries have status", results.every((r) => r.status === "detected" || r.status === "not-detected"));
-
-// Empty dir — nothing detected
-const detected = results.filter((r) => r.status === "detected");
-assert("empty dir detects no AI tools", detected.length === 0);
-
-const names = detectAiNames(TEST_DIR);
-assert("detectAiNames returns empty array for empty dir", names.length === 0);
-
-// --- detectAi finds Claude Code when CLAUDE.md exists ---
-console.log("\n--- Claude Code detection ---");
+assert("isInstalled returns false for empty dir", !isInstalled(TEST_DIR, AI_TOOLS[0]));
 
 writeFileSync(join(TEST_DIR, "CLAUDE.md"), "# Claude Code context");
-
-const withClaude = detectAi(TEST_DIR);
-const claudeEntry = withClaude.find((t) => t.name === "claude-code");
-assert("claude-code entry exists", claudeEntry !== undefined);
-assert("claude-code detected when CLAUDE.md exists", claudeEntry?.status === "detected");
-
-const namesWithClaude = detectAiNames(TEST_DIR);
-assert("detectAiNames includes claude-code", namesWithClaude.includes("claude-code"));
-
-// --- detectAi finds Cursor when .cursorules exists ---
-console.log("\n--- Cursor detection ---");
-
-writeFileSync(join(TEST_DIR, ".cursorules"), "cursor rules");
-
-const withCursor = detectAi(TEST_DIR);
-const cursorEntry = withCursor.find((t) => t.name === "cursor");
-assert("cursor detected when .cursorules exists", cursorEntry?.status === "detected");
-
-// --- detectAi finds Cursor via .cursor directory ---
-console.log("\n--- Cursor dir detection ---");
-
-cleanup();
-mkdirSync(TEST_DIR, { recursive: true });
-mkdirSync(join(TEST_DIR, ".cursor"), { recursive: true });
-
-const withCursorDir = detectAi(TEST_DIR);
-const cursorDirEntry = withCursorDir.find((t) => t.name === "cursor");
-assert("cursor detected when .cursor/ dir exists", cursorDirEntry?.status === "detected");
-
-// --- detectAi finds Copilot when .github exists ---
-console.log("\n--- Copilot detection ---");
-
-cleanup();
-mkdirSync(TEST_DIR, { recursive: true });
-mkdirSync(join(TEST_DIR, ".github"), { recursive: true });
-
-const withCopilot = detectAi(TEST_DIR);
-const copilotEntry = withCopilot.find((t) => t.name === "copilot");
-assert("copilot detected when .github/ exists", copilotEntry?.status === "detected");
-
-// --- detectAi finds Windsurf ---
-console.log("\n--- Windsurf detection ---");
-
-cleanup();
-mkdirSync(TEST_DIR, { recursive: true });
-writeFileSync(join(TEST_DIR, ".windsurfrules"), "windsurf rules");
-
-const withWindsurf = detectAi(TEST_DIR);
-const windsurfEntry = withWindsurf.find((t) => t.name === "windsurf");
-assert("windsurf detected when .windsurfrules exists", windsurfEntry?.status === "detected");
+assert("isInstalled returns true when context file exists", isInstalled(TEST_DIR, AI_TOOLS[0]));
 
 // --- generateContext ---
 console.log("\n--- generateContext ---");
@@ -113,61 +59,75 @@ assert("generateContext returns a string", typeof context === "string");
 assert("context contains Tina4", context.includes("Tina4"));
 assert("context contains route info", context.includes("src/routes/"));
 assert("context contains model info", context.includes("src/models/"));
+assert("context contains npx tina4nodejs", context.includes("npx tina4nodejs"));
+assert("context contains skills table", context.includes("/tina4-route"));
+assert("context contains TypeScript examples", context.includes("Tina4Request"));
 
-// --- installAiContext ---
-console.log("\n--- installAiContext ---");
-
-cleanup();
-mkdirSync(TEST_DIR, { recursive: true });
-writeFileSync(join(TEST_DIR, "CLAUDE.md"), "existing");
-
-// Install for claude-code only — CLAUDE.md already exists, should not overwrite
-const created = installAiContext(TEST_DIR, { tools: ["claude-code"] });
-const claudeContent = readFileSync(join(TEST_DIR, "CLAUDE.md"), "utf-8");
-assert("installAiContext does not overwrite existing file", claudeContent === "existing");
-
-// Force overwrite
-const forced = installAiContext(TEST_DIR, { tools: ["claude-code"], force: true });
-assert("installAiContext with force overwrites", forced.includes("CLAUDE.md"));
-assert("installAiContext created CLAUDE.md", forced.includes("CLAUDE.md"));
-
-const content = readFileSync(join(TEST_DIR, "CLAUDE.md"), "utf-8");
-assert("installed context contains Tina4", content.includes("Tina4"));
-
-// --- installAiContext creates new files ---
-console.log("\n--- installAiContext new files ---");
+// --- installSelected ---
+console.log("\n--- installSelected ---");
 
 cleanup();
 mkdirSync(TEST_DIR, { recursive: true });
 
-const newFiles = installAiContext(TEST_DIR, { tools: ["cursor", "windsurf"] });
-assert("installAiContext creates files for specified tools", newFiles.length === 2);
+// Install claude-code and cursor (items 1,2)
+const created = installSelected(TEST_DIR, "1,2");
+assert("installSelected creates files", created.length >= 2);
+assert("CLAUDE.md created", existsSync(join(TEST_DIR, "CLAUDE.md")));
 assert(".cursorules created", existsSync(join(TEST_DIR, ".cursorules")));
-assert(".windsurfrules created", existsSync(join(TEST_DIR, ".windsurfrules")));
 
-// --- installAllAiContext ---
-console.log("\n--- installAllAiContext ---");
+const claudeContent = readFileSync(join(TEST_DIR, "CLAUDE.md"), "utf-8");
+assert("CLAUDE.md contains Tina4", claudeContent.includes("Tina4"));
+
+// --- installSelected overwrites existing ---
+console.log("\n--- installSelected overwrites ---");
+
+writeFileSync(join(TEST_DIR, "CLAUDE.md"), "old content");
+const updated = installSelected(TEST_DIR, "1");
+const newContent = readFileSync(join(TEST_DIR, "CLAUDE.md"), "utf-8");
+assert("installSelected overwrites existing", newContent.includes("Tina4"));
+assert("installSelected returns created files", updated.includes("CLAUDE.md"));
+
+// --- installSelected with copilot creates subdirectory ---
+console.log("\n--- installSelected copilot subdir ---");
 
 cleanup();
 mkdirSync(TEST_DIR, { recursive: true });
 
-const allFiles = installAllAiContext(TEST_DIR);
-assert("installAllAiContext creates files for all tools", allFiles.length >= 5);
+const copilotFiles = installSelected(TEST_DIR, "3");
+assert(".github dir created", existsSync(join(TEST_DIR, ".github")));
+assert("copilot-instructions.md created", existsSync(join(TEST_DIR, ".github", "copilot-instructions.md")));
+
+// --- installSelected ignores invalid numbers ---
+console.log("\n--- installSelected edge cases ---");
+
+cleanup();
+mkdirSync(TEST_DIR, { recursive: true });
+
+const noFiles = installSelected(TEST_DIR, "99,0,-1,abc");
+assert("invalid numbers produce no files", noFiles.length === 0);
+
+// --- installAll ---
+console.log("\n--- installAll ---");
+
+cleanup();
+mkdirSync(TEST_DIR, { recursive: true });
+
+const allFiles = installAll(TEST_DIR);
+assert("installAll creates files for all tools", allFiles.length >= 7);
 assert("CLAUDE.md exists after installAll", existsSync(join(TEST_DIR, "CLAUDE.md")));
 assert(".cursorules exists after installAll", existsSync(join(TEST_DIR, ".cursorules")));
+assert(".windsurfrules exists after installAll", existsSync(join(TEST_DIR, ".windsurfrules")));
+assert("CONVENTIONS.md exists after installAll", existsSync(join(TEST_DIR, "CONVENTIONS.md")));
+assert("AGENTS.md exists after installAll", existsSync(join(TEST_DIR, "AGENTS.md")));
 
-// --- aiStatusReport ---
-console.log("\n--- aiStatusReport ---");
+// --- installSelected with "all" string ---
+console.log("\n--- installSelected all string ---");
 
-const report = aiStatusReport(TEST_DIR);
-assert("aiStatusReport returns a string", typeof report === "string");
-assert("report mentions detected tools", report.includes("Detected AI tools"));
+cleanup();
+mkdirSync(TEST_DIR, { recursive: true });
 
-// --- Invalid tool name ---
-console.log("\n--- Edge cases ---");
-
-const noTools = installAiContext(TEST_DIR, { tools: ["nonexistent-tool"] });
-assert("unknown tool name returns no files", noTools.length === 0);
+const allViaString = installSelected(TEST_DIR, "all");
+assert("'all' string installs for all tools", allViaString.length >= 7);
 
 // Cleanup
 cleanup();

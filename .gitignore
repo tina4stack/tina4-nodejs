@@ -9,7 +9,6 @@ data/
 .claude/*
 !.claude/skills/
 *.tsbuildinfo
-demo/.env
 example/.env
 .claude/settings.local.json
 .claude/worktrees/

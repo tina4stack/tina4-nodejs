@@ -24,7 +24,7 @@ const HELP = `
     tina4nodejs routes                List all registered routes
     tina4nodejs test [file]           Run project tests
     tina4nodejs generate <what> <name> Generate scaffolding (model, route, migration, middleware)
-    tina4nodejs ai                    Detect AI coding tools and install context
+    tina4nodejs ai                    Install AI coding assistant context files
     tina4nodejs help                  Show this help message
 
   Options:
@@ -79,34 +79,15 @@ async function main(): Promise<void> {
       break;
     }
     case "ai": {
-      const { detectAi, installAiContext, installAllAiContext, aiStatusReport } = await import("../../core/src/ai.js");
+      const { showMenu, installSelected, installAll } = await import("../../core/src/ai.js");
       const root = args[1] || ".";
-      const installAll = args.includes("--all");
-      const force = args.includes("--force");
 
-      // Show status
-      console.log(aiStatusReport(root));
-
-      // Install context
-      if (installAll) {
-        const created = installAllAiContext(root, force);
-        if (created.length > 0) {
-          console.log("Installed AI context files:");
-          for (const f of created) {
-            console.log(`  + ${f}`);
-          }
-        } else {
-          console.log("All AI context files already exist (use --force to overwrite).");
-        }
+      if (args.includes("--all")) {
+        installAll(root);
       } else {
-        const created = installAiContext(root, { force });
-        if (created.length > 0) {
-          console.log("Installed AI context files:");
-          for (const f of created) {
-            console.log(`  + ${f}`);
-          }
-        } else {
-          console.log("No new AI context files needed.");
+        const selection = await showMenu(root);
+        if (selection) {
+          installSelected(root, selection);
         }
       }
       break;

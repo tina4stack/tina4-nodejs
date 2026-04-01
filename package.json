@@ -1,6 +1,6 @@
 {
   "name": "tina4-nodejs",
-  "version": "3.10.37",
+  "version": "3.10.38",
   "type": "module",
   "description": "This is not a framework. Tina4 for Node.js/TypeScript — zero deps, 38 built-in features.",
   "keywords": ["tina4", "framework", "web", "api", "orm", "graphql", "websocket", "typescript"],

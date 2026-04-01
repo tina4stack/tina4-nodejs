@@ -25,7 +25,7 @@ import {
   Api,
   DevMailbox,
   WSDLService, WSDLOp,
-  detectAi,
+  AI_TOOLS, isInstalled, generateContext, installSelected,
 } from "../packages/core/src/index.ts";
 import type { Tina4Request, Tina4Response, Middleware } from "../packages/core/src/index.ts";
 
@@ -416,12 +416,13 @@ assert(
 
 console.log("\n=== 17. AI Detection ===\n");
 
+assert("AI_TOOLS is an array", Array.isArray(AI_TOOLS));
+assert("AI_TOOLS has 7 entries", AI_TOOLS.length === 7);
 const aiDir = join(TMP, "ai-test-empty");
 mkdirSync(aiDir, { recursive: true });
-const aiResults = detectAi(aiDir);
-assert("detectAi returns array", Array.isArray(aiResults));
-const aiDetected = aiResults.filter((r) => r.status === "detected");
-assert("empty dir detects no AI tools", aiDetected.length === 0);
+assert("isInstalled false for empty dir", !isInstalled(aiDir, AI_TOOLS[0]));
+const aiContext = generateContext();
+assert("generateContext returns string", typeof aiContext === "string" && aiContext.includes("Tina4"));
 
 // ═══════════════════════════════════════════════════════════════════
 // 18. DevMailbox
