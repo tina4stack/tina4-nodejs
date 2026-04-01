@@ -789,6 +789,18 @@ export function fileDetail(filePath: string): Record<string, any> {
   // Remove file field from function info for single-file detail
   const cleanFunctions = functions.map(({ file, ...rest }) => rest);
 
+  // Detect empty methods/functions (loc <= 1 means only a brace or pass-through)
+  const warnings: { type: string; message: string; line: number }[] = [];
+  for (const fn of cleanFunctions) {
+    if (fn.loc <= 1) {
+      warnings.push({
+        type: "empty_method",
+        message: `Method '${fn.name}' appears to be empty`,
+        line: fn.line,
+      });
+    }
+  }
+
   return {
     path: filePath,
     loc,
@@ -796,5 +808,6 @@ export function fileDetail(filePath: string): Record<string, any> {
     classes,
     functions: cleanFunctions,
     imports,
+    warnings,
   };
 }
