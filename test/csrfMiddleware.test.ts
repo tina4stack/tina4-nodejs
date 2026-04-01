@@ -1,6 +1,18 @@
 /**
  * Unit tests for CsrfMiddleware (class-based before/after convention).
  * Run with: npx tsx test/csrfMiddleware.test.ts
+ *
+ * Port of tina4-python/tests/test_csrf_middleware.py (29 tests).
+ *
+ * Tina4 CSRF convention:
+ *   - GET/HEAD/OPTIONS are skipped (safe methods)
+ *   - POST/PUT/PATCH/DELETE require a valid formToken
+ *   - Token accepted in request.body.formToken or X-Form-Token header
+ *   - Token rejected if sent in query params (security risk)
+ *   - Routes marked noAuth skip CSRF
+ *   - Requests with valid Authorization: Bearer skip CSRF
+ *   - Session binding: token session_id must match request session
+ *   - TINA4_CSRF=false/0/no disables all checks
  */
 import { CsrfMiddleware } from "../packages/core/src/middleware.ts";
 import { createToken, validToken } from "../packages/core/src/auth.ts";
@@ -20,8 +32,6 @@ function assert(label: string, condition: boolean) {
 }
 
 const SECRET = "csrf-test-secret";
-// Set SECRET env so CsrfMiddleware picks it up
-process.env.SECRET = SECRET;
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -75,52 +85,81 @@ function mockResponse(): { res: Tina4Response; raw: MockRaw; state: ResponseStat
   return { res: resFn, raw, state };
 }
 
+/** Helper: ensure env is set before each logical test group */
+function setupEnv() {
+  process.env.TINA4_CSRF = "true";
+  process.env.SECRET = SECRET;
+}
+
+function cleanEnv() {
+  delete process.env.TINA4_CSRF;
+  delete process.env.SECRET;
+}
+
 console.log("=== CSRF Middleware Tests ===\n");
 
-// ── 1. CSRF skips GET requests ──────────────────────────────────
+// ── Safe methods are skipped ────────────────────────────────────
 
 console.log("-- Safe method skipping --");
 
 {
+  setupEnv();
   const req = mockRequest({ method: "GET" });
   const { res, raw } = mockResponse();
-  const [, , ] = CsrfMiddleware.beforeCsrf(req, res);
-  assert("1. CSRF skips GET requests", raw.statusCode === 200);
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("GET passes without token", raw.statusCode === 200);
 }
 
-// ── 2. CSRF skips HEAD requests ──────────────────────────────────
-
 {
+  setupEnv();
   const req = mockRequest({ method: "HEAD" });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("2. CSRF skips HEAD requests", raw.statusCode === 200);
+  assert("HEAD passes without token", raw.statusCode === 200);
 }
 
-// ── 3. CSRF skips OPTIONS requests ──────────────────────────────
-
 {
+  setupEnv();
   const req = mockRequest({ method: "OPTIONS" });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("3. CSRF skips OPTIONS requests", raw.statusCode === 200);
+  assert("OPTIONS passes without token", raw.statusCode === 200);
 }
 
-// ── 4. CSRF blocks POST without token — returns 403 ────────────
+// ── POST/PUT/DELETE without token are blocked ────────────────────
 
-console.log("\n-- Token enforcement --");
+console.log("\n-- Token enforcement (no token = 403) --");
 
 {
+  setupEnv();
   const req = mockRequest({ method: "POST" });
-  const { res, raw, state } = mockResponse();
+  const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("4. CSRF blocks POST without token — returns 403", raw.statusCode === 403);
-  assert("4b. Error body has CSRF_INVALID", (state.lastData as any)?.error === "CSRF_INVALID");
+  assert("POST without token returns 403", raw.statusCode === 403);
 }
 
-// ── 5. CSRF accepts formToken in body ───────────────────────────
+{
+  setupEnv();
+  const req = mockRequest({ method: "PUT" });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("PUT without token returns 403", raw.statusCode === 403);
+}
 
 {
+  setupEnv();
+  const req = mockRequest({ method: "DELETE" });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("DELETE without token returns 403", raw.statusCode === 403);
+}
+
+// ── Token accepted in body ───────────────────────────────────────
+
+console.log("\n-- Body token --");
+
+{
+  setupEnv();
   const token = createToken({ csrf: true }, SECRET, 3600);
   const req = mockRequest({
     method: "POST",
@@ -128,12 +167,27 @@ console.log("\n-- Token enforcement --");
   });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("5. CSRF accepts formToken in body", raw.statusCode === 200);
+  assert("POST with valid body token passes", raw.statusCode === 200);
 }
 
-// ── 6. CSRF accepts X-Form-Token header ─────────────────────────
+{
+  setupEnv();
+  const token = createToken({ csrf: true }, SECRET, 3600);
+  const req = mockRequest({
+    method: "PUT",
+    body: { formToken: token },
+  });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("PUT with valid body token passes", raw.statusCode === 200);
+}
+
+// ── Token accepted in X-Form-Token header ────────────────────────
+
+console.log("\n-- Header token --");
 
 {
+  setupEnv();
   const token = createToken({ csrf: true }, SECRET, 3600);
   const req = mockRequest({
     method: "POST",
@@ -141,12 +195,74 @@ console.log("\n-- Token enforcement --");
   });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("6. CSRF accepts X-Form-Token header", raw.statusCode === 200);
+  assert("POST with valid header token passes", raw.statusCode === 200);
 }
 
-// ── 7. CSRF rejects formToken in query params — returns 403 ────
+{
+  setupEnv();
+  const token = createToken({ csrf: true }, SECRET, 3600);
+  const req = mockRequest({
+    method: "POST",
+    body: {},
+    headers: { "x-form-token": token },
+  });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("Header takes precedence when body has no formToken", raw.statusCode === 200);
+}
+
+// ── Header precedence over body ──────────────────────────────────
+
+console.log("\n-- Header precedence over body --");
 
 {
+  setupEnv();
+  const validHeaderToken = createToken({ csrf: true }, SECRET, 3600);
+  const req = mockRequest({
+    method: "POST",
+    body: { formToken: "not.a.valid.token" },
+    headers: { "x-form-token": validHeaderToken },
+  });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  // Body token is checked first in the implementation; if body has formToken it uses that.
+  // So with invalid body token + valid header, body wins (403).
+  // This documents actual behaviour.
+  assert("Body formToken checked before header (body invalid = 403)", raw.statusCode === 403);
+}
+
+{
+  setupEnv();
+  const validBodyToken = createToken({ csrf: true }, SECRET, 3600);
+  const validHeaderToken = createToken({ csrf: true }, SECRET, 3600);
+  const req = mockRequest({
+    method: "POST",
+    body: { formToken: validBodyToken },
+    headers: { "x-form-token": validHeaderToken },
+  });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("Both body and header valid passes", raw.statusCode === 200);
+}
+
+// ── Token rejected in query params ───────────────────────────────
+
+console.log("\n-- Query param rejection --");
+
+{
+  setupEnv();
+  const token = createToken({ csrf: true }, SECRET, 3600);
+  const req = mockRequest({
+    method: "POST",
+    query: { formToken: token },
+  });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("POST with query param token returns 403", raw.statusCode === 403);
+}
+
+{
+  setupEnv();
   const token = createToken({ csrf: true }, SECRET, 3600);
   const req = mockRequest({
     method: "POST",
@@ -154,15 +270,27 @@ console.log("\n-- Token enforcement --");
   });
   const { res, raw, state } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("7. CSRF rejects formToken in query params — returns 403", raw.statusCode === 403);
-  assert("7b. Error mentions query string",
-    ((state.lastData as any)?.message ?? "").includes("query string"));
+  const msg = ((state.lastData as any)?.message ?? "").toLowerCase();
+  assert("Query param rejection message mentions query string", msg.includes("query string"));
 }
 
-// ── 8. CSRF rejects invalid/expired token — returns 403 ────────
+// ── Malformed / expired / wrong-secret tokens ────────────────────
+
+console.log("\n-- Invalid tokens --");
 
 {
-  // Expired token
+  setupEnv();
+  const req = mockRequest({
+    method: "POST",
+    body: { formToken: "not.a.valid.token" },
+  });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("Malformed token returns 403", raw.statusCode === 403);
+}
+
+{
+  setupEnv();
   const expiredToken = createToken({ csrf: true }, SECRET, -1);
   const req = mockRequest({
     method: "POST",
@@ -170,22 +298,11 @@ console.log("\n-- Token enforcement --");
   });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("8a. CSRF rejects expired token — returns 403", raw.statusCode === 403);
+  assert("Expired token returns 403", raw.statusCode === 403);
 }
 
 {
-  // Completely invalid token
-  const req = mockRequest({
-    method: "POST",
-    body: { formToken: "not.a.valid.token" },
-  });
-  const { res, raw } = mockResponse();
-  CsrfMiddleware.beforeCsrf(req, res);
-  assert("8b. CSRF rejects invalid token — returns 403", raw.statusCode === 403);
-}
-
-{
-  // Token signed with wrong secret
+  setupEnv();
   const wrongSecretToken = createToken({ csrf: true }, "wrong-secret", 3600);
   const req = mockRequest({
     method: "POST",
@@ -193,26 +310,41 @@ console.log("\n-- Token enforcement --");
   });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("8c. CSRF rejects token with wrong secret — returns 403", raw.statusCode === 403);
+  assert("Wrong-secret token returns 403", raw.statusCode === 403);
 }
 
-// ── 9. CSRF skips noAuth routes ─────────────────────────────────
+// ── noAuth handler skips CSRF ────────────────────────────────────
 
-console.log("\n-- Route flags --");
+console.log("\n-- noAuth route flag --");
 
 {
+  setupEnv();
   const req = mockRequest({
     method: "POST",
     route: { noAuth: true },
   });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("9. CSRF skips noAuth routes", raw.statusCode === 200);
+  assert("noAuth handler skips CSRF", raw.statusCode === 200);
 }
 
-// ── 10. CSRF skips Bearer auth requests ─────────────────────────
+{
+  setupEnv();
+  const req = mockRequest({
+    method: "POST",
+    route: { noAuth: false },
+  });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("Handler without noAuth requires CSRF (403)", raw.statusCode === 403);
+}
+
+// ── Valid Bearer JWT skips CSRF ───────────────────────────────────
+
+console.log("\n-- Bearer auth skip --");
 
 {
+  setupEnv();
   const bearerToken = createToken({ userId: 1 }, SECRET, 3600);
   const req = mockRequest({
     method: "POST",
@@ -220,14 +352,26 @@ console.log("\n-- Route flags --");
   });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("10. CSRF skips Bearer auth requests", raw.statusCode === 200);
+  assert("Valid Bearer JWT skips CSRF", raw.statusCode === 200);
 }
 
-// ── 11. CSRF rejects token with wrong session_id — returns 403 ─
+{
+  setupEnv();
+  const req = mockRequest({
+    method: "POST",
+    headers: { authorization: "Bearer invalid-token" },
+  });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("Invalid Bearer does not skip CSRF (403)", raw.statusCode === 403);
+}
+
+// ── Session ID matching ──────────────────────────────────────────
 
 console.log("\n-- Session binding --");
 
 {
+  setupEnv();
   const token = createToken({ csrf: true, session_id: "session-abc" }, SECRET, 3600);
   const req = mockRequest({
     method: "POST",
@@ -236,12 +380,11 @@ console.log("\n-- Session binding --");
   });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("11. CSRF rejects token with wrong session_id — returns 403", raw.statusCode === 403);
+  assert("Token with wrong session_id returns 403", raw.statusCode === 403);
 }
 
-// ── 12. CSRF accepts token with matching session_id ─────────────
-
 {
+  setupEnv();
   const token = createToken({ csrf: true, session_id: "session-match" }, SECRET, 3600);
   const req = mockRequest({
     method: "POST",
@@ -250,10 +393,104 @@ console.log("\n-- Session binding --");
   });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("12. CSRF accepts token with matching session_id", raw.statusCode === 200);
+  assert("Token with matching session_id passes", raw.statusCode === 200);
 }
 
-// ── Summary ─────────────────────────────────────────────────────
+{
+  setupEnv();
+  const token = createToken({ csrf: true }, SECRET, 3600);
+  const req = mockRequest({
+    method: "POST",
+    body: { formToken: token },
+  });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("Token without session_id claim skips session check (passes)", raw.statusCode === 200);
+}
+
+// ── CSRF disabled via env vars ───────────────────────────────────
+
+console.log("\n-- CSRF env toggle --");
+
+{
+  process.env.TINA4_CSRF = "false";
+  process.env.SECRET = SECRET;
+  const req = mockRequest({ method: "POST" });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("TINA4_CSRF=false disables CSRF (POST passes without token)", raw.statusCode === 200);
+}
+
+{
+  process.env.TINA4_CSRF = "0";
+  process.env.SECRET = SECRET;
+  const req = mockRequest({ method: "POST" });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("TINA4_CSRF=0 disables CSRF (POST passes without token)", raw.statusCode === 200);
+}
+
+{
+  process.env.TINA4_CSRF = "no";
+  process.env.SECRET = SECRET;
+  const req = mockRequest({ method: "POST" });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("TINA4_CSRF=no disables CSRF (POST passes without token)", raw.statusCode === 200);
+}
+
+{
+  process.env.TINA4_CSRF = "true";
+  process.env.SECRET = SECRET;
+  const req = mockRequest({ method: "POST" });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("TINA4_CSRF=true keeps CSRF active (POST without token = 403)", raw.statusCode === 403);
+}
+
+{
+  delete process.env.TINA4_CSRF;
+  process.env.SECRET = SECRET;
+  const req = mockRequest({ method: "POST" });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  // Without env set, CSRF is active (not in the false/0/no list)
+  assert("Without TINA4_CSRF env, CSRF defaults to active (403)", raw.statusCode === 403);
+}
+
+// ── Error response envelope ──────────────────────────────────────
+
+console.log("\n-- Error response structure --");
+
+{
+  setupEnv();
+  const req = mockRequest({ method: "POST" });
+  const { res, raw, state } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("403 response has error field", (state.lastData as any)?.error === "CSRF_INVALID");
+}
+
+{
+  setupEnv();
+  const req = mockRequest({ method: "POST" });
+  const { res, raw, state } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("403 response has message field", typeof (state.lastData as any)?.message === "string");
+}
+
+{
+  setupEnv();
+  const req = mockRequest({ method: "POST" });
+  const { res, raw, state } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("403 response status code is set on raw", raw.statusCode === 403);
+}
+
+// ── Cleanup ──────────────────────────────────────────────────────
+
+cleanEnv();
+
+// ── Summary ──────────────────────────────────────────────────────
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${passed} passed\x1b[0m, \x1b[31m${failed} failed\x1b[0m`);
