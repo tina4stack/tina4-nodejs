@@ -167,8 +167,6 @@ export class BaseModel {
    */
   static findById<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown, include?: string[]): T | null {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
-    const db = ModelClass.getDb();
-    const pk = ModelClass.getPkField();
     const pkCol = ModelClass.getPkColumn();
     let sql = `SELECT * FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`;
 
@@ -179,10 +177,8 @@ export class BaseModel {
       sql += ` AND ${ModelClass.tableFilter}`;
     }
 
-    const rows = db.query(sql, [id]);
-    if (rows.length === 0) return null;
-    const instance = new ModelClass(rows[0] as Record<string, unknown>) as T;
-    if (include) {
+    const instance = ModelClass.selectOne<T>(sql, [id]);
+    if (instance && include) {
       ModelClass._eagerLoad([instance], include);
     }
     return instance;
@@ -531,6 +527,21 @@ export class BaseModel {
     const db = ModelClass.getDb();
     const rows = db.query(sql, params);
     return rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
+  }
+
+  static selectOne<T extends BaseModel>(
+    this: new (data?: Record<string, unknown>) => T,
+    sql: string,
+    params?: unknown[],
+    include?: string[],
+  ): T | null {
+    const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
+    const results = ModelClass.select<T>(sql, params);
+    const instance = results[0] ?? null;
+    if (instance && include) {
+      ModelClass._eagerLoad([instance], include);
+    }
+    return instance;
   }
 
   /**

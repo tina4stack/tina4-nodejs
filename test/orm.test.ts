@@ -312,6 +312,29 @@ if (freshArticle) {
   assert("Relationship cache cleared on save", true);
 }
 
+// --- selectOne ---
+console.log("\n--- selectOne ---");
+{
+  const db = getAdapter()!;
+  db.execute("CREATE TABLE IF NOT EXISTS so_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)");
+  db.execute("INSERT INTO so_users (name) VALUES (?)", ["Alice"]);
+  db.execute("INSERT INTO so_users (name) VALUES (?)", ["Bob"]);
+
+  class SoUser extends BaseModel {
+    static tableName = "so_users";
+    static fields: Record<string, FieldDefinition> = {
+      id: { type: "integer", primaryKey: true, autoIncrement: true },
+      name: { type: "string", required: true },
+    };
+  }
+
+  const found = SoUser.selectOne<SoUser>("SELECT * FROM so_users WHERE name = ?", ["Alice"]);
+  assert("selectOne returns an instance", found !== null && (found as any).name === "Alice");
+
+  const notFound = SoUser.selectOne<SoUser>("SELECT * FROM so_users WHERE name = ?", ["Nonexistent"]);
+  assert("selectOne returns null when not found", notFound === null);
+}
+
 // Cleanup
 closeDatabase();
 try { rmSync("/tmp/tina4-orm-test", { recursive: true }); } catch {}
