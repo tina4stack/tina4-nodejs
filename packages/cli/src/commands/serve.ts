@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 
 export interface ServeOptions {
   port?: number;
+  noBrowser?: boolean;
 }
 
 export async function serveProject(options: ServeOptions): Promise<void> {
