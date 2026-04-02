@@ -46,23 +46,62 @@ const TINA4_VERSION = readPackageVersion();
 const frondCache = new Map<string, InstanceType<any>>();
 
 /**
- * Test-bind each port in a subprocess to find one that is available.
- * Falls back to `start` if none of the candidates work.
+ * Kill whatever process is listening on *port*.
+ * Uses lsof on macOS/Linux and netstat + taskkill on Windows.
+ * Throws if the port cannot be freed.
  */
-function findAvailablePort(start: number, maxTries = 10): number {
-  // execFileSync imported at top of file (ESM)
-  for (let offset = 0; offset < maxTries; offset++) {
-    const port = start + offset;
-    try {
-      execFileSync(process.execPath, ["-e", `
-        const s = require("net").createServer();
-        s.listen(${port}, "0.0.0.0", () => { s.close(); process.exit(0); });
-        s.on("error", () => process.exit(1));
-      `], { timeout: 1000 });
-      return port;
-    } catch { continue; }
+function killPort(port: number): void {
+  // execFileSync is imported at the top of the file
+  console.log(`  Port ${port} in use — killing existing process...`);
+  try {
+    if (process.platform === "win32") {
+      const out = execFileSync("netstat", ["-ano"], { encoding: "utf-8", timeout: 5000 });
+      for (const line of out.split("\n")) {
+        if (line.includes(`:${port}`) && (line.includes("LISTENING") || line.includes("ESTABLISHED"))) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parts[parts.length - 1];
+          if (/^\d+$/.test(pid)) {
+            execFileSync("taskkill", ["/PID", pid, "/F"], { timeout: 5000 });
+            break;
+          }
+        }
+      }
+    } else {
+      const pids = execFileSync("lsof", ["-ti", `:${port}`], { encoding: "utf-8", timeout: 5000 })
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      for (const pid of pids) {
+        if (/^\d+$/.test(pid.trim())) {
+          process.kill(parseInt(pid.trim(), 10), "SIGTERM");
+        }
+      }
+    }
+    // Brief pause for the OS to reclaim the port
+    execFileSync(process.execPath, ["-e", "setTimeout(() => {}, 500)"], { timeout: 2000 });
+    console.log(`  Port ${port} freed`);
+  } catch (err) {
+    throw new Error(`Could not free port ${port}: ${err}`);
   }
-  return start;
+}
+
+/**
+ * Check if *port* is available; if not, kill the process on it and return *port*.
+ * The auto-increment behaviour is intentionally removed — the server always
+ * claims the requested port.
+ */
+function findAvailablePort(start: number): number {
+  try {
+    execFileSync(process.execPath, ["-e", `
+      const s = require("net").createServer();
+      s.listen(${start}, "0.0.0.0", () => { s.close(); process.exit(0); });
+      s.on("error", () => process.exit(1));
+    `], { timeout: 1000 });
+    return start;
+  } catch {
+    killPort(start);
+    return start;
+  }
 }
 
 /**
@@ -422,12 +461,8 @@ export async function startServer(config?: Tina4Config): Promise<{
   const host = resolved.host;
   let port = resolved.port;
 
-  // Auto-increment port if the requested one is already in use
-  const availablePort = findAvailablePort(port);
-  if (availablePort !== port) {
-    console.log(`  Port ${port} in use, using ${availablePort} instead`);
-    port = availablePort;
-  }
+  // Claim the requested port — kill whatever is on it if needed
+  port = findAvailablePort(port);
 
   // Cluster mode for production: fork workers based on CPU count
   // Only when --production is explicitly set (via TINA4_PRODUCTION env var)
