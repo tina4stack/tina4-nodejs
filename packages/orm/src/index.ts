@@ -57,3 +57,5 @@ export { FirebirdAdapter } from "./adapters/firebird.js";
 export type { FirebirdConfig } from "./adapters/firebird.js";
 export { MongodbAdapter } from "./adapters/mongodb.js";
 export type { MongoConfig } from "./adapters/mongodb.js";
+export { OdbcAdapter } from "./adapters/odbc.js";
+export type { OdbcConfig } from "./adapters/odbc.js";

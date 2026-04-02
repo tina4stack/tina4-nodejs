@@ -45,7 +45,7 @@ export function closeDatabase(): void {
 }
 
 export interface DatabaseConfig {
-  type?: "sqlite" | "postgres" | "mysql" | "mssql" | "sqlserver" | "firebird" | "mongodb";
+  type?: "sqlite" | "postgres" | "mysql" | "mssql" | "sqlserver" | "firebird" | "mongodb" | "odbc";
   path?: string;
   url?: string;
   host?: string;
@@ -54,19 +54,23 @@ export interface DatabaseConfig {
   username?: string;
   password?: string;
   database?: string;
+  /** ODBC-specific: full connection string, e.g. "DSN=MyDSN" or "DRIVER={SQL Server};SERVER=host;DATABASE=db" */
+  connectionString?: string;
 }
 
 /**
  * Parsed result from a DATABASE_URL connection string.
  */
 export interface ParsedDatabaseUrl {
-  type: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird" | "mongodb";
+  type: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird" | "mongodb" | "odbc";
   path?: string;
   host?: string;
   port?: number;
   user?: string;
   password?: string;
   database?: string;
+  /** ODBC-specific: raw connection string passed to odbc.connect() */
+  connectionString?: string;
 }
 
 /**
@@ -120,6 +124,11 @@ export function parseDatabaseUrl(url: string, username?: string, password?: stri
       port: match[4] ? parseInt(match[4], 10) : undefined,
       database: "/" + match[5],
     };
+  } else if (url.startsWith("odbc:///")) {
+    // odbc:///DSN=MyDSN  or  odbc:///DRIVER={driver};SERVER=host;DATABASE=db
+    // Strip the "odbc:///" prefix and pass the rest directly as the connection string
+    const connectionString = url.slice("odbc:///".length);
+    result = { type: "odbc", connectionString };
   } else if (url.startsWith("mongodb://") || url.startsWith("mongodb+srv://")) {
     // Pass through as-is; MongodbAdapter handles the full connection string
     let parsed: URL;
@@ -675,6 +684,12 @@ async function createAdapterFromUrl(url: string, username?: string, password?: s
       await adapter.connect();
       return adapter;
     }
+    case "odbc": {
+      const { OdbcAdapter } = await import("./adapters/odbc.js");
+      const adapter = new OdbcAdapter({ connectionString: parsed.connectionString ?? "" });
+      await adapter.connect();
+      return adapter;
+    }
   }
 }
 
@@ -774,6 +789,14 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
       const database = config?.database ?? "tina4";
       const connectionString = `mongodb://${creds}${host}:${port}/${database}`;
       const adapter = new MongodbAdapter(connectionString);
+      await adapter.connect();
+      setAdapter(adapter);
+      return new Database(adapter);
+    }
+    case "odbc": {
+      const { OdbcAdapter } = await import("./adapters/odbc.js");
+      const connStr = config?.connectionString ?? config?.url?.replace(/^odbc:\/\/\//, "") ?? "";
+      const adapter = new OdbcAdapter({ connectionString: connStr });
       await adapter.connect();
       setAdapter(adapter);
       return new Database(adapter);
