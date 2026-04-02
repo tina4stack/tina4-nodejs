@@ -413,6 +413,11 @@ export class Router {
           paramNames.push(name);
           return "([^/]+)";
         }
+        // Wildcard: * (catch-all, param key is "*")
+        if (segment === "*") {
+          paramNames.push("*");
+          return "(.+)";
+        }
         return segment;
       })
       .join("/");

@@ -122,10 +122,10 @@ const resumedId = s5b.start(id5);
 assert("Resume returns same ID", resumedId === id5);
 assert("Resumed session has persisted data", s5b.get("persistent") === "data");
 
-// Verify actual file content
+// Verify actual file content (wrapped in {_data, _expires})
 const rawFile = readFileSync(join(TEST_PATH, `${id5}.json`), "utf-8");
 const parsed = JSON.parse(rawFile);
-assert("File contains data as JSON", parsed.persistent === "data");
+assert("File contains data as JSON", (parsed._data ?? parsed).persistent === "data");
 
 // ── TTL Expiration ───────────────────────────────────────────────
 
@@ -135,10 +135,10 @@ const s6 = new Session("file", { path: TEST_PATH, ttl: 1 });
 const id6 = s6.start();
 s6.set("temp", "value");
 
-// Manually backdate the _accessed timestamp to simulate expiration
+// Manually backdate the _expires timestamp to simulate expiration
 const filePath6 = join(TEST_PATH, `${id6}.json`);
 const data6 = JSON.parse(readFileSync(filePath6, "utf-8"));
-data6._accessed = Math.floor(Date.now() / 1000) - 10; // 10 seconds ago, TTL is 1
+data6._expires = Math.floor(Date.now() / 1000) - 10; // expired 10 seconds ago
 const { writeFileSync: wfs } = await import("node:fs");
 wfs(filePath6, JSON.stringify(data6), "utf-8");
 

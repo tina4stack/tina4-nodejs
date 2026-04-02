@@ -45,7 +45,7 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
         const items = adapter.query(sql, params);
         const [{ total }] = adapter.query<{ total: number }>(countSql, countParams);
 
-        const limit = options.limit ?? 20;
+        const limit = options.limit ?? 100;
         const page = options.page ?? 1;
 
         res.json({

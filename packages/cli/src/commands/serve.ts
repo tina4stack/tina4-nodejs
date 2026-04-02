@@ -21,8 +21,8 @@ export async function serveProject(options: ServeOptions): Promise<void> {
     process.exit(1);
   }
 
-  const { startServer } = await import("@tina4/core");
-  const { watchForChanges } = await import("@tina4/core/src/watcher.js");
+  const { startServer } = await import("../../../core/src/index.js");
+  const { watchForChanges } = await import("../../../core/src/watcher.js");
 
   const server = await startServer({
     port,
@@ -36,7 +36,7 @@ export async function serveProject(options: ServeOptions): Promise<void> {
   const watchDirs = [routesDir, ormDir, modelsDir, templatesDir].filter((d) => existsSync(d));
   const watcher = watchForChanges(watchDirs, async () => {
     try {
-      const { discoverRoutes } = await import("@tina4/core");
+      const { discoverRoutes } = await import("../../../core/src/index.js");
       // Clear routes BEFORE re-discovery to avoid stale duplicates
       server.router.clear();
       const routes = await discoverRoutes(routesDir);

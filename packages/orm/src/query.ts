@@ -58,7 +58,7 @@ export function buildQuery(
   }
 
   // Pagination
-  const limit = options.limit ?? 20;
+  const limit = options.limit ?? 100;
   const page = options.page ?? 1;
   const offset = (page - 1) * limit;
 

@@ -73,18 +73,27 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
     return this.records;
   }
 
-  /** Pagination envelope. */
-  toPaginate(): {
-    records: Record<string, unknown>[];
-    count: number;
-    limit: number;
-    offset: number;
+  /** Pagination envelope with slicing. */
+  toPaginate(page = 1, perPage = 10): {
+    data: Record<string, unknown>[];
+    page: number;
+    per_page: number;
+    total: number;
+    total_pages: number;
+    has_next: boolean;
+    has_prev: boolean;
   } {
+    const totalPages = Math.max(1, Math.ceil(this.count / perPage));
+    const start = (page - 1) * perPage;
+    const end = start + perPage;
     return {
-      records: this.records,
-      count: this.count,
-      limit: this.limit,
-      offset: this.offset,
+      data: this.records.slice(start, end),
+      page,
+      per_page: perPage,
+      total: this.count,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
     };
   }
 

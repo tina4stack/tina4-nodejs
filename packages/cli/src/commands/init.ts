@@ -1,5 +1,6 @@
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
-import { join, resolve, basename } from "node:path";
+import { mkdirSync, writeFileSync, existsSync, copyFileSync } from "node:fs";
+import { join, resolve, basename, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 
 export async function initProject(name: string): Promise<void> {
@@ -28,6 +29,28 @@ export async function initProject(name: string): Promise<void> {
 
   for (const dir of dirs) {
     mkdirSync(join(targetDir, dir), { recursive: true });
+  }
+
+  // Copy framework public assets into the project so they're visible
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const frameworkPublic = resolve(__dirname, "..", "..", "..", "core", "public");
+  const projectPublic = join(targetDir, "public");
+  const assetsToCopy = [
+    "css/tina4.css",
+    "css/tina4.min.css",
+    "js/tina4.min.js",
+    "js/frond.min.js",
+    "images/tina4-logo-icon.webp",
+  ];
+  for (const asset of assetsToCopy) {
+    const src = join(frameworkPublic, ...asset.split("/"));
+    const dst = join(projectPublic, ...asset.split("/"));
+    mkdirSync(dirname(dst), { recursive: true });
+    if (existsSync(src) && !existsSync(dst)) {
+      copyFileSync(src, dst);
+      console.log(`  Copied ${asset}`);
+    }
   }
 
   // package.json

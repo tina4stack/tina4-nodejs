@@ -100,15 +100,23 @@ export class FileSessionHandler implements SessionHandler {
     try {
       if (!existsSync(filePath)) return null;
       const raw = readFileSync(filePath, "utf-8");
-      return JSON.parse(raw) as SessionData;
+      const wrapper = JSON.parse(raw);
+      // Check expiry
+      if (wrapper._expires && wrapper._expires > 0 && Date.now() / 1000 > wrapper._expires) {
+        try { unlinkSync(filePath); } catch { /* ignore */ }
+        return null;
+      }
+      return (wrapper._data ?? wrapper) as SessionData;
     } catch {
       return null;
     }
   }
 
-  write(sessionId: string, data: SessionData, _ttl: number): void {
+  write(sessionId: string, data: SessionData, ttl: number): void {
     this.ensureDir();
-    writeFileSync(this.filePath(sessionId), JSON.stringify(data), "utf-8");
+    const expires = ttl > 0 ? Math.floor(Date.now() / 1000) + ttl : 0;
+    const wrapper = { _data: data, _expires: expires };
+    writeFileSync(this.filePath(sessionId), JSON.stringify(wrapper), "utf-8");
   }
 
   destroy(sessionId: string): void {
@@ -118,7 +126,7 @@ export class FileSessionHandler implements SessionHandler {
     } catch { /* ignore */ }
   }
 
-  gc(maxLifetime: number): void {
+  gc(_maxLifetime: number): void {
     if (!existsSync(this.storagePath)) return;
     const now = Math.floor(Date.now() / 1000);
     try {
@@ -128,8 +136,8 @@ export class FileSessionHandler implements SessionHandler {
         const fullPath = join(this.storagePath, file);
         try {
           const raw = readFileSync(fullPath, "utf-8");
-          const data = JSON.parse(raw) as SessionData;
-          if (data._accessed && (now - data._accessed) > maxLifetime) {
+          const wrapper = JSON.parse(raw);
+          if (wrapper._expires && wrapper._expires > 0 && now > wrapper._expires) {
             unlinkSync(fullPath);
           }
         } catch {

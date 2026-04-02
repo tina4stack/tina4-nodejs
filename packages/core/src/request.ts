@@ -106,7 +106,7 @@ function extractBoundary(contentType: string): string | null {
  * Parse multipart/form-data body into fields and files.
  * Zero-dependency implementation.
  */
-function parseMultipart(
+export function parseMultipart(
   body: Buffer,
   boundary: string,
 ): { fields: Record<string, string>; files: UploadedFile[] } {

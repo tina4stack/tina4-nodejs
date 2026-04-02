@@ -29,7 +29,18 @@ const BUILTIN_ERROR_TEMPLATES_DIR = resolve(__dirname, "..", "templates");
 /** Built-in public directory for framework-bundled static assets. */
 const BUILTIN_PUBLIC_DIR = resolve(__dirname, "..", "public");
 
-const TINA4_VERSION = "3.10.30";
+/** Read version from root package.json so the banner always matches the published version. */
+function readPackageVersion(): string {
+  try {
+    const pkgPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+const TINA4_VERSION = readPackageVersion();
 
 /** Cache Frond instances by template directory to avoid repeated instantiation. */
 const frondCache = new Map<string, InstanceType<any>>();
@@ -94,7 +105,7 @@ async function renderErrorPage(
   templatesDir: string,
 ): Promise<string | null> {
   try {
-    const { Frond } = await import("@tina4/frond");
+    const { Frond } = await import("../../frond/src/engine.js");
     const templateFile = `errors/${code}.twig`;
 
     // Helper: get-or-create a cached Frond instance for a directory
@@ -494,7 +505,7 @@ ${reset}
   let frondEngine: any = null;
   setDefaultTemplatesDir(templatesDir);
   try {
-    const { Frond } = await import("@tina4/frond");
+    const { Frond } = await import("../../frond/src/engine.js");
     frondEngine = new Frond(templatesDir);
   } catch {
     // Frond not available
@@ -524,7 +535,7 @@ ${reset}
   const hasModelsDir = existsSync(modelsDir);
   if (hasOrmDir || hasModelsDir) {
     try {
-      const orm = await import("@tina4/orm");
+      const orm = await import("../../orm/src/index.js");
       const dbConfig = config?.database ?? {};
       await orm.initDatabase({
         type: dbConfig.type ?? "sqlite",
@@ -572,13 +583,13 @@ ${reset}
 
   // Initialize Swagger
   try {
-    const swagger = await import("@tina4/swagger");
+    const swagger = await import("../../swagger/src/index.js");
     const allRoutes = router.getRoutes();
 
     // Collect model definitions for schema generation
     let modelDefs: Array<{ tableName: string; fields: Record<string, unknown> }> = [];
     try {
-      const orm = await import("@tina4/orm");
+      const orm = await import("../../orm/src/index.js");
       const allModelDirs = [ormDir, modelsDir].filter((d) => existsSync(d));
       const seenTables = new Set<string>();
       for (const dir of allModelDirs) {
@@ -730,7 +741,9 @@ ${reset}
         }
 
         // Auth enforcement: secure routes require a valid Bearer token
-        if (match.secure === true && match.noAuth !== true) {
+        // Dev admin routes (/__dev) are always public
+        const isDevAdmin = pathname.startsWith("/__dev");
+        if (match.secure === true && match.noAuth !== true && !isDevAdmin) {
           const authHeader = req.headers.authorization ?? "";
           const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
           const secret = process.env.SECRET || "";
@@ -875,12 +888,15 @@ ${reset}
   Dashboard: http://localhost:${port}/__dev
   Debug:     ${isDebug ? "ON" : "OFF"} (Log level: ${logLevel})
 `);
-      openBrowser(`http://${displayHost}:${port}`);
+      const noBrowser = isTruthy(process.env.TINA4_NO_BROWSER);
+      if (!noBrowser) {
+        openBrowser(`http://${displayHost}:${port}`);
+      }
       resolvePromise({
         close: () => {
           server.close();
           // Close database if ORM was initialized
-          import("@tina4/orm").then((orm) => orm.closeDatabase()).catch(() => {});
+          import("../../orm/src/index.js").then((orm) => orm.closeDatabase()).catch(() => {});
         },
         router,
         port,
