@@ -46,6 +46,7 @@ const HELP = `
   Options:
     --port <number>      Server port (default: 7148)
     --no-browser         Don't open the browser on serve
+    --no-reload          Disable file watcher / live-reload on serve
     --all                Install AI context for all tools (with ai command)
     --force              Overwrite existing AI context files (with ai command)
     --help               Show this help message
@@ -85,11 +86,12 @@ async function main(): Promise<void> {
       const portIndex = args.indexOf("--port");
       const port = portIndex !== -1 ? parseInt(args[portIndex + 1], 10) : 7148;
       const noBrowser = args.includes("--no-browser");
+      const noReload = args.includes("--no-reload");
 
       // Kill any existing process on the port
       killProcessOnPort(port);
 
-      await serveProject({ port, noBrowser });
+      await serveProject({ port, noBrowser, noReload });
       break;
     }
     case "migrate": {
