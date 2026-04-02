@@ -56,7 +56,7 @@ function findAvailablePort(start: number, maxTries = 10): number {
     try {
       execFileSync(process.execPath, ["-e", `
         const s = require("net").createServer();
-        s.listen(${port}, "127.0.0.1", () => { s.close(); process.exit(0); });
+        s.listen(${port}, "0.0.0.0", () => { s.close(); process.exit(0); });
         s.on("error", () => process.exit(1));
       `], { timeout: 1000 });
       return port;
