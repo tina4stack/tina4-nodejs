@@ -2467,7 +2467,7 @@ function renderBubbleChart(files,depGraph,scanMode){
         bubbles.forEach(function(b,i){if(b.f.path===src)srcIdx=i;});
         if(srcIdx===null)return;
         (depGraph[src]||[]).forEach(function(tgt){
-            var tgtName=tgt.split('.').pop().toLowerCase();
+            var tgtName=basename(tgt);
             var tgtIdx=nameIdx[tgtName];
             if(tgtIdx!==undefined&&srcIdx!==tgtIdx)edges.push([srcIdx,tgtIdx]);
         });
