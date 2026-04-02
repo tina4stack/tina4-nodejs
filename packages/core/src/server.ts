@@ -419,8 +419,9 @@ export async function startServer(config?: Tina4Config): Promise<{
   }
 
   // Cluster mode for production: fork workers based on CPU count
-  // Only when not in dev mode and running as primary process
-  if (cluster.isPrimary && !isDevMode()) {
+  // Only when --production is explicitly set (via TINA4_PRODUCTION env var)
+  const isProduction = (process.env.TINA4_PRODUCTION ?? "").toLowerCase() === "true";
+  if (cluster.isPrimary && isProduction) {
     const numCPUs = os.cpus().length;
     if (numCPUs > 1) {
       const displayHost = host === "0.0.0.0" ? "localhost" : host;
