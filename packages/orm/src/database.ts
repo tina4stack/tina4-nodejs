@@ -45,7 +45,7 @@ export function closeDatabase(): void {
 }
 
 export interface DatabaseConfig {
-  type?: "sqlite" | "postgres" | "mysql" | "mssql" | "sqlserver" | "firebird";
+  type?: "sqlite" | "postgres" | "mysql" | "mssql" | "sqlserver" | "firebird" | "mongodb";
   path?: string;
   url?: string;
   host?: string;
@@ -60,7 +60,7 @@ export interface DatabaseConfig {
  * Parsed result from a DATABASE_URL connection string.
  */
 export interface ParsedDatabaseUrl {
-  type: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird";
+  type: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird" | "mongodb";
   path?: string;
   host?: string;
   port?: number;
@@ -119,6 +119,23 @@ export function parseDatabaseUrl(url: string, username?: string, password?: stri
       host: match[3],
       port: match[4] ? parseInt(match[4], 10) : undefined,
       database: "/" + match[5],
+    };
+  } else if (url.startsWith("mongodb://") || url.startsWith("mongodb+srv://")) {
+    // Pass through as-is; MongodbAdapter handles the full connection string
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(`Invalid MongoDB URL: ${url}`);
+    }
+    const database = parsed.pathname.replace(/^\//, "") || "tina4";
+    result = {
+      type: "mongodb",
+      host: parsed.hostname || undefined,
+      port: parsed.port ? parseInt(parsed.port, 10) : undefined,
+      user: parsed.username ? decodeURIComponent(parsed.username) : undefined,
+      password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
+      database,
     };
   } else {
     // Normalize postgres:// to postgresql:// for URL parsing
@@ -531,6 +548,17 @@ export class Database {
   getNextId(table: string, pkColumn = "id", generatorName?: string): number {
     const adapter = this.getNextAdapter();
 
+    // MongoDB — getNextId() is not supported synchronously.
+    // MongoDB uses ObjectId for primary keys by default.
+    // For integer sequences, use getNextIdAsync() instead.
+    if (this.dbType === "mongodb") {
+      throw new Error(
+        "getNextId() is not supported for MongoDB (async adapter). " +
+        "MongoDB uses ObjectId for _id by default. " +
+        "For integer sequences, use getNextIdAsync() or let MongoDB generate _id automatically.",
+      );
+    }
+
     // Firebird — use generators (atomic)
     if (this.dbType === "firebird") {
       const genName = generatorName ?? `GEN_${table.toUpperCase()}_ID`;
@@ -641,6 +669,12 @@ async function createAdapterFromUrl(url: string, username?: string, password?: s
       await adapter.connect();
       return adapter;
     }
+    case "mongodb": {
+      const { MongodbAdapter } = await import("./adapters/mongodb.js");
+      const adapter = new MongodbAdapter(url);
+      await adapter.connect();
+      return adapter;
+    }
   }
 }
 
@@ -726,6 +760,20 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         password: resolvedPassword,
         database: config?.database,
       });
+      await adapter.connect();
+      setAdapter(adapter);
+      return new Database(adapter);
+    }
+    case "mongodb": {
+      const { MongodbAdapter } = await import("./adapters/mongodb.js");
+      const creds = resolvedUser && resolvedPassword
+        ? `${encodeURIComponent(resolvedUser)}:${encodeURIComponent(resolvedPassword)}@`
+        : "";
+      const host = config?.host ?? "localhost";
+      const port = config?.port ?? 27017;
+      const database = config?.database ?? "tina4";
+      const connectionString = `mongodb://${creds}${host}:${port}/${database}`;
+      const adapter = new MongodbAdapter(connectionString);
       await adapter.connect();
       setAdapter(adapter);
       return new Database(adapter);
