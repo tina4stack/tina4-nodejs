@@ -673,7 +673,17 @@ ${reset}
       const requestId = Date.now().toString(36);
 
       // Wrap res.raw.end to inject dev toolbar and capture requests
-      if (isDevMode() && !pathname.startsWith("/__dev")) {
+      // Skip toolbar injection on the AI port (no-reload behaviour)
+      const isAiPortRequest = !!(rawReq as any)._tina4AiPort;
+
+      // AI port: block /__dev_reload so AI tools never trigger a browser reload
+      if (isAiPortRequest && pathname === "/__dev_reload") {
+        res.raw.writeHead(404, { "Content-Type": "application/json" });
+        res.raw.end(JSON.stringify({ error: "Not available on AI port" }));
+        return;
+      }
+
+      if (isDevMode() && !pathname.startsWith("/__dev") && !isAiPortRequest) {
         const originalEnd = res.raw.end.bind(res.raw);
 
         const wrappedEnd: typeof res.raw.end = function (
@@ -873,7 +883,35 @@ ${reset}
       // Determine server mode label
       const serverMode = isDebug ? "single" : (cluster.isWorker ? "cluster-worker" : "single");
 
+      // AI dual-port: start a second HTTP server on port+1 when in debug mode
+      // and TINA4_NO_AI_PORT is not set. This port serves requests without
+      // dev-reload or toolbar injection so AI coding tools get stable responses.
+      const noAiPort = isTruthy(process.env.TINA4_NO_AI_PORT ?? "");
+      let aiServer: ReturnType<typeof createServer> | null = null;
+      let aiPort = port + 1;
+
+      if (isDebug && !noAiPort) {
+        aiServer = createServer(async (req, res) => {
+          // Tag the request so dispatch knows it came from the AI port
+          (req as any)._tina4AiPort = true;
+          await dispatch(req, res);
+        });
+
+        aiServer.on("error", (err: any) => {
+          if (err.code === "EADDRINUSE") {
+            Log.warn(`AI port ${aiPort} in use — skipping`);
+            aiServer = null;
+          }
+        });
+
+        aiServer.listen(aiPort, host);
+      }
+
       // Banner goes to stdout via console.log — NOT through the framework logger
+      const aiPortLine = (isDebug && !noAiPort)
+        ? `\n  AI Port:   http://localhost:${aiPort} (no-reload)`
+        : "";
+
       console.log(`${color}
   ______ _             __ __
  /_  __/(_)___  ____ _/ // /
@@ -886,7 +924,7 @@ ${reset}
   Server:    http://${displayHost}:${port} (${serverMode})
   Swagger:   http://localhost:${port}/swagger
   Dashboard: http://localhost:${port}/__dev
-  Debug:     ${isDebug ? "ON" : "OFF"} (Log level: ${logLevel})
+  Debug:     ${isDebug ? "ON" : "OFF"} (Log level: ${logLevel})${aiPortLine}
 `);
       const noBrowser = isTruthy(process.env.TINA4_NO_BROWSER);
       if (!noBrowser) {
@@ -894,6 +932,7 @@ ${reset}
       }
       resolvePromise({
         close: () => {
+          if (aiServer) aiServer.close();
           server.close();
           // Close database if ORM was initialized
           import("../../orm/src/index.js").then((orm) => orm.closeDatabase()).catch(() => {});
