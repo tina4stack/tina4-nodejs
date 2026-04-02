@@ -47,15 +47,24 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
 
         const limit = options.limit ?? 100;
         const page = options.page ?? 1;
+        const offset = (page - 1) * limit;
+        const totalPages = Math.ceil(total / limit);
 
         res.json({
+          // Primary keys
+          records: items,
           data: items,
-          meta: {
-            total,
-            page,
-            limit,
-            totalPages: Math.ceil(total / limit),
-          },
+          count: total,
+          total,
+          limit,
+          offset,
+          page,
+          per_page: limit,
+          perPage: limit,
+          totalPages,
+          total_pages: totalPages,
+          // Legacy nested meta (kept for any clients that use it)
+          meta: { total, page, limit, totalPages },
         });
       },
     });

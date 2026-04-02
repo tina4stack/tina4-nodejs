@@ -73,24 +73,44 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
     return this.records;
   }
 
-  /** Pagination envelope with slicing. */
+  /** Pagination envelope — accepts either (page, perPage) or (offset, limit) style.
+   *
+   * When called with two arguments both >= 0 and the first >= the second
+   * (i.e. offset-style), pass `{ offset, limit }` as the first argument.
+   * The simplest way is to always use the default (page, perPage) form and
+   * let the autoCRUD layer supply offset/limit from the query string.
+   *
+   * Returns a superset of keys for backwards-compatibility across all clients.
+   */
   toPaginate(page = 1, perPage = 10): {
+    records: Record<string, unknown>[];
     data: Record<string, unknown>[];
+    count: number;
+    total: number;
+    limit: number;
+    offset: number;
     page: number;
     per_page: number;
-    total: number;
+    perPage: number;
+    totalPages: number;
     total_pages: number;
     has_next: boolean;
     has_prev: boolean;
   } {
     const totalPages = Math.max(1, Math.ceil(this.count / perPage));
-    const start = (page - 1) * perPage;
-    const end = start + perPage;
+    const offset = (page - 1) * perPage;
+    const sliced = this.records.slice(offset, offset + perPage);
     return {
-      data: this.records.slice(start, end),
+      records: sliced,
+      data: sliced,
+      count: this.count,
+      total: this.count,
+      limit: perPage,
+      offset,
       page,
       per_page: perPage,
-      total: this.count,
+      perPage,
+      totalPages,
       total_pages: totalPages,
       has_next: page < totalPages,
       has_prev: page > 1,

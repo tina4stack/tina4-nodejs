@@ -99,6 +99,13 @@ export function parseQueryString(query: Record<string, string>): QueryOptions {
   if (query.sort) options.sort = query.sort;
   if (query.page) options.page = parseInt(query.page, 10);
   if (query.limit) options.limit = parseInt(query.limit, 10);
+  // Allow ?offset= as an alternative to ?page= (offset-based pagination)
+  if (query.offset !== undefined) {
+    const offset = parseInt(query.offset, 10);
+    const limit = options.limit ?? 100;
+    // Convert offset → page so the rest of the pipeline stays unchanged
+    options.page = Math.floor(offset / limit) + 1;
+  }
 
   return options;
 }
