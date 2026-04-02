@@ -21,7 +21,21 @@ import { quickMetrics, fullAnalysis, fileDetail } from "./metrics.js";
 
 const cpuCount = osCpus().length;
 
-const TINA4_VERSION = "3.10.34";
+// Read version from root package.json dynamically
+const TINA4_VERSION = (() => {
+  try {
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    // Try root package.json first, then core package.json
+    for (const rel of ["../../../package.json", "../../package.json"]) {
+      const p = resolve(__dirname, rel);
+      if (existsSync(p)) {
+        const pkg = JSON.parse(readFileSync(p, "utf-8"));
+        if (pkg.version) return pkg.version;
+      }
+    }
+  } catch {}
+  return "0.0.0";
+})();
 
 // ---------------------------------------------------------------------------
 // Types
