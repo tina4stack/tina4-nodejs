@@ -1,13 +1,15 @@
-import { getAdapter, getNamedAdapter } from "./database.js";
+import { getAdapter, getNamedAdapter, setAdapter, parseDatabaseUrl } from "./database.js";
 import { validate as validateFields } from "./validation.js";
 import { QueryBuilder } from "./queryBuilder.js";
+import { SQLiteAdapter } from "./adapters/sqlite.js";
 import type { DatabaseAdapter, FieldDefinition, RelationshipDefinition } from "./types.js";
 
 /**
  * Convert a snake_case name to camelCase.
+ * Lowercases the input first so UPPERCASE DB column names (Firebird/Oracle) map correctly.
  */
 export function snakeToCamel(name: string): string {
-  return name.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+  return name.toLowerCase().replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 }
 
 /**
@@ -90,8 +92,8 @@ export class BaseModel {
       }
       const reverseMapping = ModelClass.getReverseMapping();
       for (const [key, value] of Object.entries(data)) {
-        // If this DB column has a mapping, use the JS property name instead
-        const jsProp = reverseMapping[key] ?? key;
+        // Lowercase the DB column key so UPPERCASE columns (Firebird/Oracle) match the mapping
+        const jsProp = reverseMapping[key] ?? reverseMapping[key.toLowerCase()] ?? key;
         this[jsProp] = value;
       }
     }
@@ -147,12 +149,37 @@ export class BaseModel {
 
   /**
    * Get the database adapter for this model.
+   * If no adapter is registered, attempts auto-discovery from DATABASE_URL.
+   * SQLite URLs are initialised synchronously. Other engines require initDatabase()
+   * to be called before first use.
    */
   protected static getDb(): DatabaseAdapter {
     if (this._db) {
       return getNamedAdapter(this._db);
     }
-    return getAdapter();
+    try {
+      return getAdapter();
+    } catch {
+      // No adapter registered — try DATABASE_URL auto-discovery
+      const url = process.env.DATABASE_URL;
+      if (url) {
+        const parsed = parseDatabaseUrl(url);
+        if (parsed.type === "sqlite") {
+          // SQLite adapter is synchronous — create it inline and register as default
+          const dbPath = parsed.path ?? "./data/tina4.db";
+          const adapter = new SQLiteAdapter(dbPath);
+          setAdapter(adapter);
+          return adapter;
+        }
+        throw new Error(
+          `DATABASE_URL is set to a non-SQLite engine ("${parsed.type}"). ` +
+          `Call await initDatabase() at startup before using ORM models.`,
+        );
+      }
+      throw new Error(
+        "No database adapter configured. Call initDatabase() or set DATABASE_URL in .env.",
+      );
+    }
   }
 
   /**
