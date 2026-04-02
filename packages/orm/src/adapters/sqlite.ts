@@ -146,9 +146,29 @@ export class SQLiteAdapter implements DatabaseAdapter {
     }
   }
 
-  startTransaction(): void { this.db.exec("BEGIN TRANSACTION"); }
-  commit(): void { this.db.exec("COMMIT"); }
-  rollback(): void { this.db.exec("ROLLBACK"); }
+  private _inTransaction = false;
+
+  startTransaction(): void {
+    if (this._inTransaction) return;
+    this.db.exec("BEGIN TRANSACTION");
+    this._inTransaction = true;
+  }
+
+  commit(): void {
+    if (!this._inTransaction) return;
+    this.db.exec("COMMIT");
+    this._inTransaction = false;
+  }
+
+  rollback(): void {
+    if (!this._inTransaction) return;
+    try {
+      this.db.exec("ROLLBACK");
+    } catch {
+      // Rollback may fail if transaction already ended
+    }
+    this._inTransaction = false;
+  }
 
   tables(): string[] {
     const rows = this.query<{ name: string }>(
