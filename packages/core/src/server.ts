@@ -867,7 +867,17 @@ ${reset}
   // Assign to module-level so handle() can dispatch without a server reference
   _dispatchFn = dispatch;
 
-  const server = createServer(dispatch);
+  // When dual-port is active (debug mode + no TINA4_NO_AI_PORT), tag main port requests
+  // as AI port to suppress reload/toolbar injection. Test port (port+1000) gets full reload.
+  const _dualPortActive = isTruthy(process.env.TINA4_DEBUG ?? "") &&
+    !isTruthy(process.env.TINA4_NO_AI_PORT ?? "");
+  const mainPortDispatch = _dualPortActive
+    ? async (req: IncomingMessage, res: ServerResponse) => {
+        (req as any)._tina4AiPort = true;
+        await dispatch(req, res);
+      }
+    : dispatch;
+  const server = createServer(mainPortDispatch);
 
   return new Promise((resolvePromise) => {
     server.listen(port, host, () => {
@@ -883,33 +893,32 @@ ${reset}
       // Determine server mode label
       const serverMode = isDebug ? "single" : (cluster.isWorker ? "cluster-worker" : "single");
 
-      // AI dual-port: start a second HTTP server on port+1 when in debug mode
-      // and TINA4_NO_AI_PORT is not set. This port serves requests without
-      // dev-reload or toolbar injection so AI coding tools get stable responses.
+      // AI dual-port: main port = AI dev port (no reload), port+1000 = user testing port (hot-reload)
+      // When TINA4_DEBUG=true and TINA4_NO_AI_PORT is not set, main server suppresses reload/toolbar
+      // and a second server on port+1000 provides the normal hot-reload experience.
       const noAiPort = isTruthy(process.env.TINA4_NO_AI_PORT ?? "");
       let aiServer: ReturnType<typeof createServer> | null = null;
-      let aiPort = port + 1;
+      let testPort = port + 1000;
 
       if (isDebug && !noAiPort) {
+        // Test port (port+1000): normal dispatch with full hot-reload
         aiServer = createServer(async (req, res) => {
-          // Tag the request so dispatch knows it came from the AI port
-          (req as any)._tina4AiPort = true;
           await dispatch(req, res);
         });
 
         aiServer.on("error", (err: any) => {
           if (err.code === "EADDRINUSE") {
-            Log.warn(`AI port ${aiPort} in use — skipping`);
+            Log.warn(`Test port ${testPort} in use — skipping`);
             aiServer = null;
           }
         });
 
-        aiServer.listen(aiPort, host);
+        aiServer.listen(testPort, host);
       }
 
       // Banner goes to stdout via console.log — NOT through the framework logger
-      const aiPortLine = (isDebug && !noAiPort)
-        ? `\n  AI Port:   http://localhost:${aiPort} (no-reload)`
+      const dualPortLines = (isDebug && !noAiPort)
+        ? `\n  Test Port: http://localhost:${testPort} (stable — no hot-reload)`
         : "";
 
       console.log(`${color}
@@ -924,11 +933,15 @@ ${reset}
   Server:    http://${displayHost}:${port} (${serverMode})
   Swagger:   http://localhost:${port}/swagger
   Dashboard: http://localhost:${port}/__dev
-  Debug:     ${isDebug ? "ON" : "OFF"} (Log level: ${logLevel})${aiPortLine}
+  Debug:     ${isDebug ? "ON" : "OFF"} (Log level: ${logLevel})${dualPortLines}
 `);
       const noBrowser = isTruthy(process.env.TINA4_NO_BROWSER);
       if (!noBrowser) {
-        openBrowser(`http://${displayHost}:${port}`);
+        // Open browser on test port (hot-reload) if available, otherwise main port
+        const browserTarget = (isDebug && !noAiPort && aiServer)
+          ? `http://${displayHost}:${testPort}`
+          : `http://${displayHost}:${port}`;
+        openBrowser(browserTarget);
       }
       resolvePromise({
         close: () => {
