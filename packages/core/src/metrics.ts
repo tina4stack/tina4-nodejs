@@ -60,8 +60,10 @@ function hasMatchingTest(relPath: string): boolean {
   const name = relPath.split('/').pop()?.replace('.ts', '').replace('.js', '') || '';
   const patterns = [
     `test/${name}.test.ts`,
+    `test/${name}.test.js`,
     `${relPath.replace('.ts', '.test.ts').replace('.js', '.test.js')}`,
     `tests/${name}.test.ts`,
+    `spec/${name}.spec.ts`,
   ];
   return patterns.some(p => fs.existsSync(p));
 }
