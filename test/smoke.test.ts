@@ -128,8 +128,8 @@ assert("BaseModel.save assigns id", (u as any).id !== undefined);
 const found = SmokeUser.findById((u as any).id);
 assert("BaseModel.findById retrieves record", found !== null && (found as any).name === "Alice");
 
-const all = SmokeUser.findAll();
-assert("BaseModel.findAll returns array", Array.isArray(all) && all.length === 1);
+const all = SmokeUser.all();
+assert("BaseModel.all returns array", Array.isArray(all) && all.length === 1);
 
 const dict = found!.toDict();
 assert("toDict returns plain object", typeof dict === "object" && dict.name === "Alice");

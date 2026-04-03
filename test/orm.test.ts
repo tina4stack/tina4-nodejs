@@ -163,11 +163,11 @@ bob.save();
 const charlie = new User({ name: "Charlie", email: "charlie@test.com", age: 35 });
 charlie.save();
 
-const allUsers = User.findAll();
-assert("findAll returns all users", allUsers.length === 3);
+const allUsers = User.all();
+assert("all returns all users", allUsers.length === 3);
 
-const filtered = User.findAll("age > ?", [28]);
-assert("findAll with WHERE clause", filtered.length === 2);
+const filtered = User.all("age > ?", [28]);
+assert("all with WHERE clause", filtered.length === 2);
 
 // --- Soft Delete ---
 console.log("\n--- Soft Delete ---");
@@ -187,9 +187,9 @@ assert("Soft delete sets is_deleted", (article1 as any).is_deleted === 1);
 const deletedArticle = Article.findById(articleId);
 assert("findById excludes soft-deleted records", deletedArticle === null);
 
-// findAll should not include soft-deleted
-const allArticles = Article.findAll();
-assert("findAll excludes soft-deleted records", allArticles.length === 1);
+// all should not include soft-deleted
+const allArticles = Article.all();
+assert("all excludes soft-deleted records", allArticles.length === 1);
 
 // Verify data still in DB
 const rawRows = adapter.query(`SELECT * FROM "articles" WHERE id = ?`, [articleId]);
@@ -213,7 +213,7 @@ adapter.execute(`INSERT INTO "comments" (text, article_id, approved) VALUES (?, 
 adapter.execute(`INSERT INTO "comments" (text, article_id, approved) VALUES (?, ?, ?)`, ["Spam!", 1, 0]);
 adapter.execute(`INSERT INTO "comments" (text, article_id, approved) VALUES (?, ?, ?)`, ["Great!", 1, 1]);
 
-const approvedComments = Comment.findAll();
+const approvedComments = Comment.all();
 assert("tableFilter filters to approved=1 only", approvedComments.length === 2);
 
 const allCommentsRaw = adapter.query(`SELECT * FROM "comments"`);
@@ -284,10 +284,10 @@ article3.save();
 const reply3 = new Reply({ body: "Reply to second", article_id: (article3 as any).id });
 reply3.save();
 
-// findAll with include (eager load has_many)
-const articlesWithReplies = Article.findAll(undefined, undefined, ["reply"]);
+// all with include (eager load has_many)
+const articlesWithReplies = Article.all(undefined, undefined, ["reply"]);
 // article1 was soft-deleted, so we should get article2 and article3
-assert("Eager load findAll returns correct count", articlesWithReplies.length === 2);
+assert("Eager load all returns correct count", articlesWithReplies.length === 2);
 
 // findById with include
 const singleArticle = Article.findById((article2 as any).id, ["reply"]);
@@ -350,18 +350,18 @@ console.log("\n--- select() ---");
   assert("select with no matches returns empty array", empty.length === 0);
 }
 
-// --- findAll with various args ---
-console.log("\n--- findAll Variations ---");
+// --- all with various args ---
+console.log("\n--- all Variations ---");
 
 {
-  const allUsersNow = User.findAll();
-  assert("findAll without args returns all", allUsersNow.length >= 2);
+  const allUsersNow = User.all();
+  assert("all without args returns all", allUsersNow.length >= 2);
 
-  const withWhere = User.findAll("age > ?", [0]);
-  assert("findAll with WHERE clause returns filtered", withWhere.length >= 1);
+  const withWhere = User.all("age > ?", [0]);
+  assert("all with WHERE clause returns filtered", withWhere.length >= 1);
 
-  const withEmpty = User.findAll("age > ?", [99999]);
-  assert("findAll with no matches returns empty", withEmpty.length === 0);
+  const withEmpty = User.all("age > ?", [99999]);
+  assert("all with no matches returns empty", withEmpty.length === 0);
 }
 
 // --- Validation Edge Cases ---
@@ -437,7 +437,7 @@ console.log("\n--- Validation Edge Cases ---");
 console.log("\n--- toArray/toDict Edge Cases ---");
 
 {
-  const user = User.findAll()[0];
+  const user = User.all()[0];
   if (user) {
     const dict = user.toDict();
     assert("toDict has id field", "id" in dict);
@@ -469,7 +469,7 @@ console.log("\n--- Model Registry ---");
 console.log("\n--- Update Idempotency ---");
 
 {
-  const user = User.findAll()[0];
+  const user = User.all()[0];
   if (user) {
     const origName = (user as any).name;
     (user as any).name = "Idempotent Test";

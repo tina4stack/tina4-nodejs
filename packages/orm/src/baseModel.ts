@@ -258,11 +258,12 @@ export class BaseModel {
 
   /**
    * Find all records, optionally with a where clause.
+   * Alias: all()
    * @param where Optional WHERE clause.
    * @param params Optional query parameters.
    * @param include Optional array of relationship names to eager-load.
    */
-  static findAll<T extends BaseModel>(
+  static all<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     where?: string,
     params?: unknown[],
