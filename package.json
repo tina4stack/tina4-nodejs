@@ -1,6 +1,6 @@
 {
   "name": "tina4-nodejs",
-  "version": "3.10.61",
+  "version": "3.10.62",
   "type": "module",
   "description": "Tina4 for Node.js/TypeScript — 54 built-in features, zero dependencies",
   "keywords": ["tina4", "framework", "web", "api", "orm", "graphql", "websocket", "typescript"],
@@ -39,7 +39,7 @@
     "README.md"
   ],
   "bin": {
-    "tina4nodejs": "packages/cli/src/bin.ts"
+    "tina4nodejs": "packages/cli/bin/tina4nodejs"
   },
   "scripts": {
     "build": "npm run build --workspaces",
