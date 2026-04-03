@@ -336,8 +336,9 @@ export class BaseModel {
 
   /**
    * Save this instance (insert or update).
+   * Returns this on success (fluent), null on failure.
    */
-  save(): void {
+  save(): this | null {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
@@ -380,8 +381,10 @@ export class BaseModel {
       db.commit();
     } catch (e) {
       db.rollback();
-      throw e;
+      return null;
     }
+    (this as any)._exists = true;
+    return this;
   }
 
   /**
