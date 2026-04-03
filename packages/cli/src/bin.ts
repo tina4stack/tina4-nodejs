@@ -26,6 +26,7 @@ const HELP = `
     tina4nodejs routes                List all registered routes
     tina4nodejs test [file]           Run project tests
     tina4nodejs seed [file]           Run database seed files from src/seeds/
+    tina4nodejs console               Open an interactive REPL with the framework loaded
     tina4nodejs ai                    Install AI coding assistant context files
     tina4nodejs help                  Show this help message
 
@@ -128,6 +129,40 @@ async function main(): Promise<void> {
     }
     case "seed": {
       await runSeeds(args[1]);
+      break;
+    }
+    case "console": {
+      const repl = await import("node:repl");
+      const { loadEnv } = await import("@tina4/core");
+      const { Router } = await import("@tina4/core");
+      const { initDatabase, Database } = await import("@tina4/orm");
+      const { Log } = await import("@tina4/core");
+
+      loadEnv();
+
+      const dbUrl = process.env.DATABASE_URL;
+      let db: unknown = null;
+      if (dbUrl) {
+        try {
+          db = await initDatabase({ url: dbUrl });
+        } catch {
+          console.warn("  Warning: could not connect to database — db will be null");
+        }
+      }
+
+      console.log("\n  Tina4 Node.js Console");
+      console.log("  Type JavaScript. Framework is loaded.");
+      console.log("  Available: db, Router, Database, Log");
+      console.log("  Exit: Ctrl+D or .exit\n");
+
+      const r = repl.start({ prompt: "tina4> " });
+
+      r.context.Router = Router;
+      r.context.Database = Database;
+      r.context.Log = Log;
+      r.context.db = db;
+
+      await new Promise<void>((resolve) => r.on("exit", resolve));
       break;
     }
     case "ai": {
