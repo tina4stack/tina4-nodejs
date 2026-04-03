@@ -340,14 +340,26 @@ export class Database {
     return this.getNextAdapter().fetchOne<T>(sql, params);
   }
 
-  /** Execute a statement (INSERT, UPDATE, DELETE, DDL). */
-  execute(sql: string, params?: unknown[]): unknown {
-    const adapter = this.getNextAdapter();
-    const result = adapter.execute(sql, params);
-    if (this.autoCommit) {
-      try { adapter.commit(); } catch { /* no active transaction */ }
+  /**
+   * Execute a write statement. Returns true/false for simple writes.
+   * If SQL contains RETURNING, CALL, EXEC, or SELECT, returns the result set.
+   */
+  execute(sql: string, params?: unknown[]): boolean | unknown {
+    try {
+      const adapter = this.getNextAdapter();
+      const result = adapter.execute(sql, params);
+      if (this.autoCommit) {
+        try { adapter.commit(); } catch { /* no active transaction */ }
+      }
+      const upper = sql.trim().toUpperCase();
+      if (upper.includes("RETURNING") || upper.startsWith("CALL ") ||
+          upper.startsWith("EXEC ") || upper.startsWith("SELECT ")) {
+        return result;
+      }
+      return true;
+    } catch {
+      return false;
     }
-    return result;
   }
 
   /** Insert a row into a table. */
