@@ -133,10 +133,8 @@ async function main(): Promise<void> {
     }
     case "console": {
       const repl = await import("node:repl");
-      const { loadEnv } = await import("@tina4/core");
-      const { Router } = await import("@tina4/core");
-      const { initDatabase, Database } = await import("@tina4/orm");
-      const { Log } = await import("@tina4/core");
+      const { loadEnv, Router, Log } = await import("../../core/src/index.js");
+      const { initDatabase, Database } = await import("../../orm/src/index.js");
 
       loadEnv();
 

@@ -14,10 +14,10 @@ export async function listRoutes(): Promise<void> {
     process.exit(1);
   }
 
-  let discoverRoutes: typeof import("@tina4/core").discoverRoutes;
+  let discoverRoutes: typeof import("../../../core/src/index.js").discoverRoutes;
 
   try {
-    const core = await import("@tina4/core");
+    const core = await import("../../../core/src/index.js");
     discoverRoutes = core.discoverRoutes;
   } catch {
     console.error("  Error: @tina4/core is required to list routes.");

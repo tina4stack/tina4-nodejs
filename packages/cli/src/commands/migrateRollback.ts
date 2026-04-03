@@ -13,13 +13,13 @@ import { resolve } from "node:path";
 export async function migrateRollback(migrationDir?: string): Promise<void> {
   const dir = resolve(migrationDir ?? "migrations");
 
-  let initDatabase: typeof import("@tina4/orm").initDatabase;
-  let ensureMigrationTable: typeof import("@tina4/orm").ensureMigrationTable;
-  let rollbackFn: typeof import("@tina4/orm").rollback;
-  let getLastBatchMigrations: typeof import("@tina4/orm").getLastBatchMigrations;
+  let initDatabase: typeof import("../../../orm/src/index.js").initDatabase;
+  let ensureMigrationTable: typeof import("../../../orm/src/index.js").ensureMigrationTable;
+  let rollbackFn: typeof import("../../../orm/src/index.js").rollback;
+  let getLastBatchMigrations: typeof import("../../../orm/src/index.js").getLastBatchMigrations;
 
   try {
-    const orm = await import("@tina4/orm");
+    const orm = await import("../../../orm/src/index.js");
     initDatabase = orm.initDatabase;
     ensureMigrationTable = orm.ensureMigrationTable;
     rollbackFn = orm.rollback;

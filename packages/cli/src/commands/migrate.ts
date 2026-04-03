@@ -20,15 +20,15 @@ export async function runMigrations(migrationDir?: string): Promise<void> {
   }
 
   // Initialise the database so the adapter is available
-  let initDatabase: typeof import("@tina4/orm").initDatabase;
-  let ensureMigrationTable: typeof import("@tina4/orm").ensureMigrationTable;
-  let isMigrationApplied: typeof import("@tina4/orm").isMigrationApplied;
-  let recordMigration: typeof import("@tina4/orm").recordMigration;
-  let getNextBatch: typeof import("@tina4/orm").getNextBatch;
-  let getAdapter: typeof import("@tina4/orm").getAdapter;
+  let initDatabase: typeof import("../../../orm/src/index.js").initDatabase;
+  let ensureMigrationTable: typeof import("../../../orm/src/index.js").ensureMigrationTable;
+  let isMigrationApplied: typeof import("../../../orm/src/index.js").isMigrationApplied;
+  let recordMigration: typeof import("../../../orm/src/index.js").recordMigration;
+  let getNextBatch: typeof import("../../../orm/src/index.js").getNextBatch;
+  let getAdapter: typeof import("../../../orm/src/index.js").getAdapter;
 
   try {
-    const orm = await import("@tina4/orm");
+    const orm = await import("../../../orm/src/index.js");
     initDatabase = orm.initDatabase;
     ensureMigrationTable = orm.ensureMigrationTable;
     isMigrationApplied = orm.isMigrationApplied;

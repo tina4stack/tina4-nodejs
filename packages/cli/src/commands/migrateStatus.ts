@@ -10,12 +10,12 @@ import { resolve } from "node:path";
 export async function migrateStatus(migrationDir?: string): Promise<void> {
   const dir = resolve(migrationDir ?? "migrations");
 
-  let initDatabase: typeof import("@tina4/orm").initDatabase;
-  let ensureMigrationTable: typeof import("@tina4/orm").ensureMigrationTable;
-  let statusFn: typeof import("@tina4/orm").status;
+  let initDatabase: typeof import("../../../orm/src/index.js").initDatabase;
+  let ensureMigrationTable: typeof import("../../../orm/src/index.js").ensureMigrationTable;
+  let statusFn: typeof import("../../../orm/src/index.js").status;
 
   try {
-    const orm = await import("@tina4/orm");
+    const orm = await import("../../../orm/src/index.js");
     initDatabase = orm.initDatabase;
     ensureMigrationTable = orm.ensureMigrationTable;
     statusFn = orm.status;
