@@ -22,7 +22,9 @@ export interface Tina4Request extends IncomingMessage {
   query: Record<string, string>;
   body: unknown;
   ip: string;
-  files: UploadedFile[];
+  files: Record<string, UploadedFile | UploadedFile[]>;
+  cookies: Record<string, string>;
+  contentType: string;
   session: Tina4Session;
   user?: Record<string, unknown>;
 }
@@ -41,6 +43,7 @@ export interface Tina4ResponseMethods {
   json(data: unknown, status?: number): Tina4Response;
   html(content: string, status?: number): Tina4Response;
   text(content: string, status?: number): Tina4Response;
+  xml(content: string, status?: number): Tina4Response;
   status(code: number): Tina4Response;
   header(name: string, value: string | number | readonly string[]): Tina4Response;
   send(data: unknown, statusCode?: number, contentType?: string): Tina4Response;

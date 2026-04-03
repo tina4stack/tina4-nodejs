@@ -110,6 +110,14 @@ export function createResponse(res: ServerResponse): Tina4Response {
     return response;
   };
 
+  response.xml = function (content: string, status?: number): Tina4Response {
+    if (res.headersSent) return response;
+    if (status !== undefined) res.statusCode = status;
+    safeSetHeader("Content-Type", "application/xml; charset=utf-8");
+    safeEnd(content);
+    return response;
+  };
+
   response.send = function (data: unknown, statusCode?: number, contentType?: string): Tina4Response {
     return response(data, statusCode, contentType);
   };

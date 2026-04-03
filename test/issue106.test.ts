@@ -130,14 +130,15 @@ const { parseMultipart } = await import("../packages/core/src/request.ts");
 if (typeof parseMultipart === "function") {
   const { fields, files } = parseMultipart(bodyBuffer, boundary);
   assert("Multipart fields extracted (title)", fields["title"] === "Hello World");
-  assert("Multipart files separated from body", files.length === 1);
+  assert("Multipart files separated from body", Object.keys(files).length === 1);
+  const avatarFile = files["avatar"] as any;
   assert(
     "Uploaded file has correct filename",
-    files[0].filename === "photo.png",
+    avatarFile.filename === "photo.png",
   );
   assert(
     "Uploaded file has correct field name",
-    files[0].fieldName === "avatar",
+    avatarFile.fieldName === "avatar",
   );
 } else {
   // parseMultipart may not be exported; test via createRequest flow

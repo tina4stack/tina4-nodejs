@@ -12,7 +12,19 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   tReq.params = {};
   tReq.query = query;
   tReq.body = undefined;
-  tReq.files = [];
+  tReq.files = {};
+  tReq.contentType = (req.headers["content-type"] ?? "") as string;
+
+  // Parse cookies from Cookie header
+  const cookieHeader = (req.headers.cookie ?? "") as string;
+  const cookies: Record<string, string> = {};
+  if (cookieHeader) {
+    for (const pair of cookieHeader.split(";")) {
+      const [k, ...v] = pair.trim().split("=");
+      if (k) cookies[k.trim()] = v.join("=").trim();
+    }
+  }
+  tReq.cookies = cookies;
 
   // Determine client IP with X-Forwarded-For support
   const forwarded = req.headers["x-forwarded-for"];
@@ -109,9 +121,9 @@ function extractBoundary(contentType: string): string | null {
 export function parseMultipart(
   body: Buffer,
   boundary: string,
-): { fields: Record<string, string>; files: UploadedFile[] } {
+): { fields: Record<string, string>; files: Record<string, UploadedFile | UploadedFile[]> } {
   const fields: Record<string, string> = {};
-  const files: UploadedFile[] = [];
+  const files: Record<string, UploadedFile | UploadedFile[]> = {};
 
   const delimiter = Buffer.from(`--${boundary}`);
   const closeDelimiter = Buffer.from(`--${boundary}--`);
@@ -152,13 +164,20 @@ export function parseMultipart(
 
     if (disposition.filename) {
       // File upload — standardised format: filename, type, content (raw bytes), size
-      files.push({
+      const file: UploadedFile = {
         fieldName: disposition.name,
         filename: disposition.filename,
         type: partContentType ?? "application/octet-stream",
         content: Buffer.from(content),
         size: content.length,
-      });
+      };
+      // Dict keyed by field name — multiple files under same name become array
+      if (files[disposition.name]) {
+        const existing = files[disposition.name];
+        files[disposition.name] = Array.isArray(existing) ? [...existing, file] : [existing, file];
+      } else {
+        files[disposition.name] = file;
+      }
     } else if (disposition.name) {
       // Regular field
       fields[disposition.name] = content.toString("utf-8");

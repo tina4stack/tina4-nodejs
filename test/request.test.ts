@@ -46,7 +46,7 @@ function fakeIncomingWithBody(
   req.params = {};
   req.query = {};
   req.body = undefined;
-  req.files = [];
+  req.files = {};
   req.ip = "127.0.0.1";
 
   // Push body data and end the stream
@@ -71,7 +71,7 @@ assert("Creates Tina4Request from IncomingMessage", req1 !== null);
 assert("Initializes params as empty object", typeof req1.params === "object" && Object.keys(req1.params).length === 0);
 assert("Initializes query as empty object", typeof req1.query === "object" && Object.keys(req1.query).length === 0);
 assert("Initializes body as undefined", req1.body === undefined);
-assert("Initializes files as empty array", Array.isArray(req1.files) && req1.files.length === 0);
+assert("Initializes files as empty object", typeof req1.files === "object" && Object.keys(req1.files).length === 0);
 assert("Sets ip address", typeof req1.ip === "string" && req1.ip.length > 0);
 
 // --- Query string parsing ---
