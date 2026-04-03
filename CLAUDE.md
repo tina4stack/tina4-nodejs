@@ -160,6 +160,32 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 
 **`tina4_sequences` table** — Auto-created by `getNextId()` on first use for SQLite, MySQL, and MSSQL. Stores the current sequence value per table. Do not modify this table manually.
 
+### File Uploads
+
+Multipart file uploads are available via `req.files` (array of UploadedFile objects):
+
+```typescript
+// req.files[0] =>
+{
+  fieldName: "avatar",
+  filename: "photo.png",
+  type: "image/png",
+  content: Buffer,            // raw bytes — NOT base64
+  size: 102400
+}
+```
+
+```typescript
+post("/api/upload", (req, res) => {
+  const file = req.files?.find(f => f.fieldName === "avatar");
+  if (!file) return res.json({ error: "No file" }, 400);
+  fs.writeFileSync(`src/public/uploads/${file.filename}`, file.content);
+  return res.json({ ok: true });
+});
+```
+
+Max upload size: `TINA4_MAX_UPLOAD_SIZE` env var (default 10MB).
+
 ### @tina4/swagger (`packages/swagger/`)
 Auto-generates OpenAPI 3.0 docs.
 
