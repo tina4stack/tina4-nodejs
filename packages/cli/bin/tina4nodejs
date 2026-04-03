@@ -1,2 +1,10 @@
 #!/bin/sh
-exec npx tsx "$(dirname "$0")/../src/bin.ts" "$@"
+# Resolve symlinks to find the real script location
+SCRIPT="$0"
+while [ -L "$SCRIPT" ]; do
+  DIR="$(cd -P "$(dirname "$SCRIPT")" && pwd)"
+  SCRIPT="$(readlink "$SCRIPT")"
+  [ "${SCRIPT%"${SCRIPT#?}"}" != "/" ] && SCRIPT="$DIR/$SCRIPT"
+done
+DIR="$(cd -P "$(dirname "$SCRIPT")" && pwd)"
+exec npx tsx "$DIR/../src/bin.ts" "$@"
