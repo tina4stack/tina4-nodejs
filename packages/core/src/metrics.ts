@@ -54,6 +54,9 @@ function relativePath(filePath: string, root: string = "."): string {
   return path.relative(root, filePath);
 }
 
+// Stores the resolved scan root so fileDetail() can locate framework files.
+let _lastScanRoot = "";
+
 // ── Test file detection ─────────────────────────────────────
 
 function hasMatchingTest(relPath: string): boolean {
@@ -591,10 +594,13 @@ function detectViolations(
 function resolveRoot(root: string = "src"): string {
   const rootPath = path.resolve(root);
   if (fs.existsSync(rootPath) && walkFiles(rootPath, [".ts", ".js"]).length > 0) {
+    _lastScanRoot = rootPath;
     return root;
   }
   // Fallback: scan the framework package itself
-  return path.resolve(path.dirname(new URL(import.meta.url).pathname));
+  const fwDir = path.resolve(path.dirname(new URL(import.meta.url).pathname));
+  _lastScanRoot = fwDir;
+  return fwDir;
 }
 
 // ── Quick Metrics ────────────────────────────────────────────
@@ -854,7 +860,15 @@ export function fullAnalysis(root: string = "src"): Record<string, any> {
 // ── File Detail ──────────────────────────────────────────────
 
 export function fileDetail(filePath: string): Record<string, any> {
-  const resolved = path.resolve(filePath);
+  let resolved = path.resolve(filePath);
+  if (!fs.existsSync(resolved) && _lastScanRoot) {
+    // Try resolving relative to the last scan root (framework mode)
+    const candidate = path.resolve(_lastScanRoot, filePath);
+    if (fs.existsSync(candidate)) {
+      resolved = candidate;
+      filePath = candidate;
+    }
+  }
   if (!fs.existsSync(resolved)) {
     return { error: `File not found: ${filePath}` };
   }
