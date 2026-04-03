@@ -240,14 +240,20 @@ export class BaseModel {
     return (this as unknown as typeof BaseModel).findById.call(this, id, include) as T | null;
   }
 
-  /** Alias for selectOne(). */
-  static load<T extends BaseModel>(
-    this: new (data?: Record<string, unknown>) => T,
-    sql: string,
-    params?: unknown[],
-    include?: string[],
-  ): T | null {
-    return (this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T)).selectOne<T>(sql, params, include);
+  /**
+   * Load a record into this instance via selectOne.
+   * Returns true if found and loaded, false otherwise.
+   */
+  load(sql: string, params?: unknown[], include?: string[]): boolean {
+    const ModelClass = this.constructor as typeof BaseModel & (new (data?: Record<string, unknown>) => BaseModel);
+    const result = ModelClass.selectOne(sql, params, include);
+    if (!result) return false;
+    const data = (result as any).toJSON ? (result as any).toJSON() : result;
+    for (const [key, value] of Object.entries(data)) {
+      (this as any)[key] = value;
+    }
+    (this as any)._exists = true;
+    return true;
   }
 
   /**
