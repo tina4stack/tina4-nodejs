@@ -455,6 +455,13 @@ export class BaseModel {
   }
 
   /**
+   * Convert to an associative object (alias for toDict).
+   */
+  toAssoc(include?: string[]): Record<string, unknown> {
+    return this.toDict(include);
+  }
+
+  /**
    * Convert to a plain object (alias for toDict).
    */
   toObject(): Record<string, unknown> {
@@ -477,9 +484,10 @@ export class BaseModel {
 
   /**
    * Convert to JSON string.
+   * @param include Optional relationship names to include.
    */
-  toJson(): string {
-    return JSON.stringify(this.toDict());
+  toJson(include?: string[]): string {
+    return JSON.stringify(this.toDict(include));
   }
 
   /**
@@ -659,7 +667,7 @@ export class BaseModel {
     conditions?: string,
     params?: unknown[],
     limit?: number,
-    skip?: number,
+    offset?: number,
   ): T[] {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
@@ -679,8 +687,8 @@ export class BaseModel {
     if (limit !== undefined) {
       sql += ` LIMIT ${limit}`;
     }
-    if (skip !== undefined) {
-      sql += ` OFFSET ${skip}`;
+    if (offset !== undefined) {
+      sql += ` OFFSET ${offset}`;
     }
 
     const rows = db.query(sql, params);
@@ -773,6 +781,8 @@ export class BaseModel {
     this: T,
     relatedClass: typeof BaseModel & (new (data?: Record<string, unknown>) => R),
     foreignKey: string,
+    limit: number = 100,
+    offset: number = 0,
   ): R[] {
     const ModelClass = this.constructor as typeof BaseModel;
     const pk = ModelClass.getPkField();
@@ -787,6 +797,7 @@ export class BaseModel {
     if (relatedClass.softDelete) {
       sql += ` AND is_deleted = 0`;
     }
+    sql += ` LIMIT ${limit} OFFSET ${offset}`;
 
     const rows = db.query(sql, [pkValue]);
     const related = rows.map((row) => new relatedClass(row as Record<string, unknown>) as R);
