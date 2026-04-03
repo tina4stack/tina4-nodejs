@@ -233,6 +233,7 @@ export class Database {
 
   /** Whether to automatically commit after each write operation */
   private autoCommit: boolean = process.env.TINA4_AUTOCOMMIT === "true";
+  private lastError: string | null = null;
 
   /** Database engine type (sqlite, postgres, mysql, mssql, firebird) */
   private dbType: string = "sqlite";
@@ -351,13 +352,15 @@ export class Database {
       if (this.autoCommit) {
         try { adapter.commit(); } catch { /* no active transaction */ }
       }
+      this.lastError = null;
       const upper = sql.trim().toUpperCase();
       if (upper.includes("RETURNING") || upper.startsWith("CALL ") ||
           upper.startsWith("EXEC ") || upper.startsWith("SELECT ")) {
         return result;
       }
       return true;
-    } catch {
+    } catch (e: any) {
+      this.lastError = e?.message ?? String(e);
       return false;
     }
   }
@@ -467,6 +470,11 @@ export class Database {
     }
 
     return results;
+  }
+
+  /** Return the last execute() error message, or null. */
+  getError(): string | null {
+    return this.lastError ?? null;
   }
 
   /** Get the last auto-increment id. */
