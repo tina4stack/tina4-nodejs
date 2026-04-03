@@ -30,7 +30,7 @@ const result = gql.addType("User", {
 });
 assert("addType returns GraphQL instance (chaining)", result === gql);
 
-const schema = gql.schema();
+const schema = gql.schemaSdl();
 assert("schema contains type User", schema.includes("type User {"));
 assert("schema contains field id: ID", schema.includes("id: ID"));
 assert("schema contains field name: String", schema.includes("name: String"));
@@ -49,7 +49,7 @@ gql.addQuery("user", { id: "ID!" }, "User", (root, args) => {
 
 gql.addQuery("users", {}, "[User]", () => users);
 
-const querySchema = gql.schema();
+const querySchema = gql.schemaSdl();
 assert("schema contains Query type", querySchema.includes("type Query {"));
 assert("schema contains user query with args", querySchema.includes("user(id: ID!): User"));
 assert("schema contains users query", querySchema.includes("users: [User]"));
@@ -86,7 +86,7 @@ assert("mutation returns data", r3.data !== null);
 assert("mutation returns created user", (r3.data as any)?.createUser?.name === "Eve");
 assert("mutation resolver was called", lastCreated !== null && lastCreated.name === "Eve");
 
-const mutationSchema = gql.schema();
+const mutationSchema = gql.schemaSdl();
 assert("schema contains Mutation type", mutationSchema.includes("type Mutation {"));
 
 // --- Variables ---
@@ -189,7 +189,7 @@ gql5.addType("Product", { id: { type: "ID" }, price: { type: "Float" } });
 gql5.addQuery("product", { id: "ID!" }, "Product", () => null);
 gql5.addMutation("deleteProduct", { id: "ID!" }, "Boolean", () => true);
 
-const sdl = gql5.schema();
+const sdl = gql5.schemaSdl();
 assert("SDL contains type definition", sdl.includes("type Product {"));
 assert("SDL contains query type", sdl.includes("type Query {"));
 assert("SDL contains mutation type", sdl.includes("type Mutation {"));

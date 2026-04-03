@@ -295,7 +295,7 @@ gql.addMutation("createProduct", { name: "String!" }, "Product", (_root, args) =
   return { id: "2", name: args.name };
 });
 
-const schema = gql.schema();
+const schema = gql.schemaSdl();
 assert("schema contains type Product", schema.includes("type Product {"));
 assert("schema contains Query type", schema.includes("type Query {"));
 assert("schema contains Mutation type", schema.includes("type Mutation {"));
