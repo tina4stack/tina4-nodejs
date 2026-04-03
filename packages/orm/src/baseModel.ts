@@ -294,6 +294,46 @@ export class BaseModel {
   }
 
   /**
+   * Query records with a WHERE clause.
+   * Matches Python/PHP/Ruby where() API.
+   *
+   * @param conditions WHERE clause (e.g. "age > ? AND active = ?")
+   * @param params     Bind parameters
+   * @param limit      Max records (default 20)
+   * @param offset     Skip records (default 0)
+   * @param include    Relationship names to eager-load
+   */
+  static where<T extends BaseModel>(
+    this: new (data?: Record<string, unknown>) => T,
+    conditions: string,
+    params?: unknown[],
+    limit: number = 20,
+    offset: number = 0,
+    include?: string[],
+  ): T[] {
+    const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
+    const db = ModelClass.getDb();
+
+    const parts: string[] = [];
+    if (ModelClass.softDelete) {
+      parts.push("is_deleted = 0");
+    }
+    if (ModelClass.tableFilter) {
+      parts.push(ModelClass.tableFilter);
+    }
+    parts.push(`(${conditions})`);
+
+    const sql = `SELECT * FROM "${ModelClass.tableName}" WHERE ${parts.join(" AND ")} LIMIT ${limit} OFFSET ${offset}`;
+
+    const rows = db.query(sql, params);
+    const instances = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
+    if (include) {
+      ModelClass._eagerLoad(instances, include);
+    }
+    return instances;
+  }
+
+  /**
    * Save this instance (insert or update).
    */
   save(): void {
