@@ -146,7 +146,7 @@ console.log("\n--- WebSocketServer API ---");
 const wss = new WebSocketServer({ port: 0 });
 assert("WebSocketServer constructor works", wss !== null);
 
-const onResult = wss.on("connection", () => {});
+const onResult = wss.on("open", () => {});
 assert("on() returns WebSocketServer (chaining)", onResult === wss);
 
 const clients = wss.getClients();

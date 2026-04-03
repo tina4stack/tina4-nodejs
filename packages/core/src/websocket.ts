@@ -6,7 +6,7 @@
  *   import { WebSocketServer } from "@tina4/core";
  *
  *   const wss = new WebSocketServer({ port: 8080 });
- *   wss.on("connection", (client) => {
+ *   wss.on("open", (client) => {
  *     console.log("Connected:", client.id);
  *   });
  *   wss.on("message", (client, message) => {
@@ -330,7 +330,7 @@ export class WebSocketServer {
     };
 
     this.clients.set(clientId, client);
-    this.emit("connection", client);
+    this.emit("open", client);
 
     // Handle incoming data
     let buffer = Buffer.alloc(0);
