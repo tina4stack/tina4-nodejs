@@ -92,8 +92,8 @@ export class I18n {
     try {
       const files = readdirSync(this._localeDir);
       const locales = files
-        .filter((f) => f.endsWith(".json"))
-        .map((f) => f.replace(/\.json$/, ""))
+        .filter((f) => f.endsWith(".json") || f.endsWith(".yml") || f.endsWith(".yaml"))
+        .map((f) => f.replace(/\.(json|ya?ml)$/, ""))
         .sort();
       return locales.length > 0 ? locales : [this._defaultLocale];
     } catch {
@@ -112,15 +112,58 @@ export class I18n {
         const raw = readFileSync(filePath, "utf-8");
         const data = JSON.parse(raw);
         this._translations.set(locale, I18n._flatten(data));
+        return;
       } catch {
         this._translations.set(locale, {});
+        return;
       }
-    } else {
-      this._translations.set(locale, {});
     }
+    // Try YAML (.yml or .yaml) — zero-dep parser
+    for (const ext of [".yml", ".yaml"]) {
+      const yamlPath = join(this._localeDir, `${locale}${ext}`);
+      if (existsSync(yamlPath)) {
+        try {
+          const raw = readFileSync(yamlPath, "utf-8");
+          const data = I18n._parseSimpleYaml(raw);
+          this._translations.set(locale, I18n._flatten(data));
+          return;
+        } catch { /* skip */ }
+      }
+    }
+    this._translations.set(locale, {});
   }
 
   /** Flatten nested objects: {"a": {"b": "c"}} → {"a.b": "c"} */
+
+  /** Zero-dep YAML parser for simple key: value locale files. */
+  private static _parseSimpleYaml(text: string): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    let currentParent: string | null = null;
+    for (const line of text.split("\n")) {
+      const stripped = line.trim();
+      if (!stripped || stripped.startsWith("#")) continue;
+      const indent = line.length - line.trimStart().length;
+      const colonIdx = stripped.indexOf(":");
+      if (colonIdx === -1) continue;
+      const key = stripped.substring(0, colonIdx).trim();
+      let value = stripped.substring(colonIdx + 1).trim();
+      // Strip quotes
+      if (value && (value[0] === '"' || value[0] === "'") && value[value.length - 1] === value[0]) {
+        value = value.substring(1, value.length - 1);
+      }
+      if (!value) {
+        currentParent = key;
+        result[key] = {};
+      } else if (indent > 0 && currentParent && typeof result[currentParent] === "object") {
+        (result[currentParent] as Record<string, string>)[key] = value;
+      } else {
+        currentParent = null;
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
   private static _flatten(data: Record<string, unknown>, prefix = ""): Record<string, string> {
     const result: Record<string, string> = {};
     for (const [key, value] of Object.entries(data)) {
