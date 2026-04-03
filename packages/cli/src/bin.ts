@@ -1,3 +1,4 @@
+#!/usr/bin/env npx tsx
 import { initProject } from "./commands/init.js";
 import { serveProject } from "./commands/serve.js";
 import { runMigrations } from "./commands/migrate.js";
