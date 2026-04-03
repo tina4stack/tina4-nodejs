@@ -761,29 +761,22 @@ export class BaseModel {
   }
 
   /**
-   * Apply a named scope (reusable query filter).
+   * Register a reusable query scope on the class.
+   *
+   * Usage:
+   *   User.scope("active", "active = ?", [1]);
+   *   const users = (User as any).active();          // calls where("active = ?", [1])
+   *   const users = (User as any).active(10, 5);     // with limit/offset
    */
-  static scope<T extends BaseModel>(
-    this: new (data?: Record<string, unknown>) => T,
+  static scope(
     name: string,
     filterSql: string,
     params?: unknown[],
-  ): T[] {
-    const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
-    const db = ModelClass.getDb();
-
-    const conditions: string[] = [];
-    if (ModelClass.softDelete) {
-      conditions.push("is_deleted = 0");
-    }
-    if (ModelClass.tableFilter) {
-      conditions.push(ModelClass.tableFilter);
-    }
-    conditions.push(filterSql);
-
-    const sql = `SELECT * FROM "${ModelClass.tableName}" WHERE ${conditions.join(" AND ")}`;
-    const rows = db.query(sql, params);
-    return rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
+  ): void {
+    const ModelClass = this as unknown as typeof BaseModel;
+    (ModelClass as any)[name] = (limit: number = 20, offset: number = 0) => {
+      return ModelClass.where.call(ModelClass as any, filterSql, params, limit, offset);
+    };
   }
 
   /**
