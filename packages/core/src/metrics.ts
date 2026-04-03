@@ -57,15 +57,64 @@ function relativePath(filePath: string): string {
 // ── Test file detection ─────────────────────────────────────
 
 function hasMatchingTest(relPath: string): boolean {
-  const name = relPath.split('/').pop()?.replace('.ts', '').replace('.js', '') || '';
-  const patterns = [
-    `test/${name}.test.ts`,
-    `test/${name}.test.js`,
-    `${relPath.replace('.ts', '.test.ts').replace('.js', '.test.js')}`,
-    `tests/${name}.test.ts`,
-    `spec/${name}.spec.ts`,
-  ];
-  return patterns.some(p => fs.existsSync(p));
+  const parts = relPath.split('/');
+  const basename = parts[parts.length - 1] || '';
+  const name = basename.replace(/\.(ts|js)$/, '');
+  // Parent directory name (e.g. "adapters" from "adapters/sqlite.ts")
+  const parentModule = parts.length > 1 ? parts[parts.length - 2] : '';
+
+  // Stage 1: Filename matching — name.test, name.spec, test_name patterns
+  const testDirs = ['test', 'tests', 'spec'];
+  for (const td of testDirs) {
+    const patterns = [
+      `${td}/${name}.test.ts`,
+      `${td}/${name}.test.js`,
+      `${td}/${name}.spec.ts`,
+      `${td}/${name}.spec.js`,
+      // Also check parent-named tests (test/database.test.ts covers adapters/sqlite.ts)
+      ...(parentModule && parentModule !== name ? [
+        `${td}/${parentModule}.test.ts`,
+        `${td}/${parentModule}.test.js`,
+        `${td}/${parentModule}.spec.ts`,
+      ] : []),
+    ];
+    if (patterns.some(p => fs.existsSync(p))) {
+      return true;
+    }
+  }
+
+  // Build the module import path for content matching
+  // e.g. "packages/core/src/metrics.ts" → "metrics" or "src/metrics"
+  const pathWithoutExt = relPath.replace(/\.(ts|js)$/, '');
+  // Build CamelCase class name from camelCase/kebab module name
+  // e.g. "sqlTranslation" → "SqlTranslation", "sql-translation" → "SqlTranslation"
+  const className = name
+    .replace(/[-_](.)/g, (_, c: string) => c.toUpperCase())
+    .replace(/^(.)/, (_, c: string) => c.toUpperCase());
+
+  // Stage 2+3: Content scan — check if any test file imports or references this module
+  for (const td of testDirs) {
+    if (!fs.existsSync(td)) continue;
+    const testFiles = walkFiles(td, ['.ts', '.js']);
+    for (const testFile of testFiles) {
+      const content = readFileSafe(testFile);
+      if (content === null) continue;
+      // Stage 2: import path matching
+      if (content.includes(name) && (
+        content.includes(`"${name}"`) || content.includes(`'${name}'`) ||
+        content.includes(`/${name}"`) || content.includes(`/${name}'`) ||
+        content.includes(pathWithoutExt)
+      )) {
+        return true;
+      }
+      // Stage 3: class name mention
+      if (className !== name && new RegExp(`\\b${className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(content)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 // ── Line counting ────────────────────────────────────────────
