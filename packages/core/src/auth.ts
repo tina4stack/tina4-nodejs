@@ -40,16 +40,23 @@ function base64urlDecode(str: string): Buffer {
  */
 export function getToken(
   payload: Record<string, unknown>,
-  secret: string,
-  expiresIn: number = 3600,
+  secret?: string,
+  expiresIn: number = 60,
   algorithm: string = "HS256",
 ): string {
+  if (!secret) {
+    secret = process.env.SECRET ?? "";
+    if (!secret) {
+      console.warn("Auth: SECRET not set in .env — using blank secret (insecure)");
+    }
+  }
+
   const header = { alg: algorithm, typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
 
   const claims: Record<string, unknown> = { ...payload, iat: now };
   if (expiresIn !== 0) {
-    claims.exp = now + expiresIn;
+    claims.exp = now + Math.floor(expiresIn * 60);
   }
 
   const h = base64urlEncode(Buffer.from(JSON.stringify(header)));
@@ -65,9 +72,15 @@ export function getToken(
  */
 export function validToken(
   token: string,
-  secret: string,
+  secret?: string,
   algorithm: string = "HS256",
 ): Record<string, unknown> | null {
+  if (!secret) {
+    secret = process.env.SECRET ?? "";
+    if (!secret) {
+      console.warn("Auth: SECRET not set in .env — using blank secret (insecure)");
+    }
+  }
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
@@ -145,24 +158,27 @@ function verifySignature(input: string, sig: string, secret: string, algorithm: 
  * @param password   - Plaintext password
  * @param salt       - Hex-encoded salt (auto-generated if omitted)
  * @param iterations - PBKDF2 iterations (default 100000)
- * @returns Format: `pbkdf2_sha256:iterations:salt:hash` (all hex-encoded)
+ * @returns Format: `pbkdf2_sha256$iterations$salt$hash` (all hex-encoded)
  */
 export function hashPassword(
   password: string,
   salt?: string,
-  iterations: number = 100000,
+  iterations: number = 260000,
 ): string {
   const actualSalt = salt ?? randomBytes(16).toString("hex");
   const dk = pbkdf2Sync(password, actualSalt, iterations, 32, "sha256");
-  return `pbkdf2_sha256:${iterations}:${actualSalt}:${dk.toString("hex")}`;
+  return `pbkdf2_sha256$${iterations}$${actualSalt}$${dk.toString("hex")}`;
 }
 
 /**
  * Check a password against a PBKDF2 hash string.
+ * Supports both $ and : delimiters for backward compatibility.
  */
 export function checkPassword(password: string, hash: string): boolean {
   try {
-    const parts = hash.split(":");
+    // Support both $ (standard) and : (legacy) delimiters
+    const delimiter = hash.includes("$") ? "$" : ":";
+    const parts = hash.split(delimiter);
     if (parts.length !== 4 || parts[0] !== "pbkdf2_sha256") return false;
 
     const iterations = parseInt(parts[1], 10);
@@ -225,8 +241,8 @@ export function authMiddleware(secret: string, algorithm: string = "HS256"): Mid
  */
 export function refreshToken(
   token: string,
-  secret: string,
-  expiresIn: number = 3600,
+  secret?: string,
+  expiresIn: number = 60,
   algorithm: string = "HS256",
 ): string | null {
   const payload = validToken(token, secret, algorithm);
@@ -249,7 +265,7 @@ export function refreshToken(
  */
 export function authenticateRequest(
   headers: Record<string, string | string[] | undefined>,
-  secret: string,
+  secret?: string,
   algorithm: string = "HS256",
 ): Record<string, unknown> | null {
   const authHeader =
@@ -258,7 +274,17 @@ export function authenticateRequest(
   if (!authHeader.startsWith("Bearer ")) return null;
 
   const token = authHeader.slice(7);
-  return validToken(token, secret, algorithm);
+
+  // Try JWT first
+  const payload = validToken(token, secret, algorithm);
+  if (payload !== null) return payload;
+
+  // Fallback: treat Bearer value as API key
+  if (validateApiKey(token)) {
+    return { _auth: "api_key" };
+  }
+
+  return null;
 }
 
 // ── Backward-Compatible Aliases ──────────────────────────────────

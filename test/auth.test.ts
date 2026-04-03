@@ -117,8 +117,8 @@ console.log("\n-- Password Hashing --");
 
 const hash1 = hashPassword("mypassword");
 assert("hashPassword returns a string", typeof hash1 === "string");
-assert("Hash has 4 colon-separated parts", hash1.split(":").length === 4);
-assert("Hash starts with pbkdf2_sha256", hash1.startsWith("pbkdf2_sha256:"));
+assert("Hash has 4 $-separated parts", hash1.split("$").length === 4);
+assert("Hash starts with pbkdf2_sha256$", hash1.startsWith("pbkdf2_sha256$"));
 
 assert("checkPassword correct password", checkPassword("mypassword", hash1) === true);
 assert("checkPassword wrong password", checkPassword("wrongpassword", hash1) === false);
