@@ -153,6 +153,7 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 - `fakeData.ts` — ORM-aware fake data extending core (adds `forField()` with column-name heuristics)
 - `seeder.ts` — Database seeding (`seedTable` for raw SQL, `seedOrm` for model-based)
 - `sqlTranslation.ts` — Cross-engine SQL translator (`SQLTranslator`) and TTL query cache (`QueryCache`)
+- `BaseModel.load<T>(filterOrId, params?)` — Load by PK (`load(42)`) or filter (`load("email = ?", ["a@b.com"])`). Returns `T | null`
 - `BaseModel.select<T>(sql, params?)` — Raw SQL query returning `T[]`
 - `BaseModel.selectOne<T>(sql, params?, include?)` — Raw SQL query returning `T | null` (first match or null, with optional eager loading)
 - QueryBuilder supports `toMongo()` for generating MongoDB query documents from the same fluent API

@@ -240,9 +240,36 @@ export class BaseModel {
     return (this as unknown as typeof BaseModel).findById.call(this, id, include) as T | null;
   }
 
-  /** Alias for findById(). */
-  static load<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown, include?: string[]): T | null {
-    return (this as unknown as typeof BaseModel).findById.call(this, id, include) as T | null;
+  /**
+   * Load a record by primary key or filter.
+   *
+   * Usage:
+   *   User.load(42)                          — load by PK
+   *   User.load("email = ?", ["a@b.com"])    — load by filter (first match)
+   */
+  static load<T extends BaseModel>(
+    this: new (data?: Record<string, unknown>) => T,
+    filterOrId: unknown,
+    paramsOrInclude?: unknown[] | string[],
+  ): T | null {
+    const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
+
+    if (typeof filterOrId === "number" || (typeof filterOrId === "string" && /^\d+$/.test(filterOrId))) {
+      // PK-based load
+      return ModelClass.findById.call(this, filterOrId, paramsOrInclude as string[]) as T | null;
+    }
+
+    // Filter-based load
+    const filter = filterOrId as string;
+    const params = (paramsOrInclude ?? []) as unknown[];
+    let sql = `SELECT * FROM "${ModelClass.tableName}" WHERE ${filter}`;
+    if (ModelClass.softDelete) {
+      sql += ` AND is_deleted = 0`;
+    }
+    if (ModelClass.tableFilter) {
+      sql += ` AND ${ModelClass.tableFilter}`;
+    }
+    return ModelClass.selectOne<T>(sql, params);
   }
 
   /**
