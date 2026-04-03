@@ -39,7 +39,7 @@
     "README.md"
   ],
   "bin": {
-    "tina4nodejs": "packages/cli/src/bin.ts"
+    "tina4nodejs": "packages/cli/bin/tina4nodejs"
   },
   "scripts": {
     "build": "npm run build --workspaces",
