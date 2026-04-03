@@ -68,60 +68,95 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
-/**
- * Extract text content from an XML element by tag name (simple string parser).
- * Returns the text content of the first matching element, or null.
- */
-function extractElement(xml: string, tagName: string): string | null {
-  // Try with namespace prefix variations
-  const patterns = [
-    new RegExp(`<(?:[a-zA-Z0-9]+:)?${tagName}[^>]*>([\\s\\S]*?)</(?:[a-zA-Z0-9]+:)?${tagName}>`, "i"),
-    new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)</${tagName}>`, "i"),
-  ];
+// ── Minimal zero-dep XML DOM parser ────────────────────────────
+// Stack-based parser that builds a tree. Handles namespaces by
+// stripping prefixes. No external dependencies.
 
-  for (const pattern of patterns) {
-    const match = xml.match(pattern);
-    if (match) return match[1];
+interface XmlNode {
+  tag: string;
+  children: XmlNode[];
+  text: string;
+}
+
+function parseXml(xml: string): XmlNode {
+  const root: XmlNode = { tag: "", children: [], text: "" };
+  const stack: XmlNode[] = [root];
+  let i = 0;
+
+  while (i < xml.length) {
+    if (xml[i] === "<") {
+      const closeIdx = xml.indexOf(">", i);
+      if (closeIdx === -1) break;
+      const tagContent = xml.substring(i + 1, closeIdx).trim();
+
+      if (tagContent.startsWith("/")) {
+        stack.pop();
+      } else if (tagContent.startsWith("?") || tagContent.startsWith("!")) {
+        // PI or comment — skip
+      } else {
+        const selfClosing = tagContent.endsWith("/");
+        const raw = selfClosing ? tagContent.slice(0, -1).trim() : tagContent;
+        const spaceIdx = raw.indexOf(" ");
+        const fullTag = spaceIdx === -1 ? raw : raw.substring(0, spaceIdx);
+        const colonIdx = fullTag.indexOf(":");
+        const localTag = colonIdx === -1 ? fullTag : fullTag.substring(colonIdx + 1);
+
+        const node: XmlNode = { tag: localTag, children: [], text: "" };
+        stack[stack.length - 1].children.push(node);
+        if (!selfClosing) stack.push(node);
+      }
+      i = closeIdx + 1;
+    } else {
+      const nextTag = xml.indexOf("<", i);
+      const text = (nextTag === -1 ? xml.substring(i) : xml.substring(i, nextTag)).trim();
+      if (text && stack.length > 1) {
+        stack[stack.length - 1].text += text;
+      }
+      i = nextTag === -1 ? xml.length : nextTag;
+    }
   }
 
+  return root;
+}
+
+function findNode(node: XmlNode, tagName: string): XmlNode | null {
+  if (node.tag === tagName) return node;
+  for (const child of node.children) {
+    const found = findNode(child, tagName);
+    if (found) return found;
+  }
   return null;
 }
 
-/**
- * Extract all direct child elements with their tag names and text content.
- * Returns an array of { name, value } pairs.
- */
-function extractChildren(xml: string): Array<{ name: string; value: string }> {
-  const results: Array<{ name: string; value: string }> = [];
-  // Match opening tags, capturing name (strip namespace prefix) and content
-  const pattern = /<(?:[a-zA-Z0-9]+:)?([a-zA-Z0-9_]+)[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?(\1)[^>]*>/g;
-
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(xml)) !== null) {
-    results.push({ name: match[1], value: match[2].trim() });
-  }
-
-  return results;
+function extractElement(xml: string, tagName: string): string | null {
+  const tree = parseXml(xml);
+  const node = findNode(tree, tagName);
+  if (!node) return null;
+  // Rebuild inner content from children
+  if (node.children.length === 0) return node.text || null;
+  // For complex content, fall back to regex on the original XML
+  const pattern = new RegExp(`<(?:[a-zA-Z0-9]+:)?${tagName}[^>]*>([\\s\\S]*?)</(?:[a-zA-Z0-9]+:)?${tagName}>`, "i");
+  const match = xml.match(pattern);
+  return match ? match[1] : node.text || null;
 }
 
-/**
- * Extract the SOAP Body content from a SOAP envelope.
- */
+function extractChildren(xml: string): Array<{ name: string; value: string }> {
+  const tree = parseXml(xml);
+  const target = tree.children.length === 1 ? tree.children[0] : tree;
+  return target.children.map(c => ({ name: c.tag, value: c.text }));
+}
+
 function extractSoapBody(xml: string): string | null {
   return extractElement(xml, "Body");
 }
 
-/**
- * Extract the operation element from the SOAP body.
- * Returns { name, content } or null.
- */
 function extractOperation(bodyXml: string): { name: string; content: string } | null {
-  // The first child element of Body is the operation
-  const match = bodyXml.match(/<(?:[a-zA-Z0-9]+:)?([a-zA-Z0-9_]+)[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?\1[^>]*>/i);
-  if (match) {
-    return { name: match[1], content: match[2] };
-  }
-  return null;
+  const tree = parseXml(bodyXml);
+  const firstChild = tree.children[0];
+  if (!firstChild) return null;
+  const pattern = new RegExp(`<(?:[a-zA-Z0-9]+:)?${firstChild.tag}[^>]*>([\\s\\S]*?)</(?:[a-zA-Z0-9]+:)?${firstChild.tag}>`, "i");
+  const match = bodyXml.match(pattern);
+  return { name: firstChild.tag, content: match ? match[1] : "" };
 }
 
 // ── Metadata storage ─────────────────────────────────────────
