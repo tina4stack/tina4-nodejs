@@ -477,6 +477,15 @@ export class Database {
     return this.lastError ?? null;
   }
 
+  /** Return query cache statistics. */
+  cacheStats(): { enabled: boolean; size: number; ttl: number } {
+    return {
+      enabled: process.env.TINA4_DB_CACHE === "true",
+      size: 0,
+      ttl: parseInt(process.env.TINA4_DB_CACHE_TTL ?? "30", 10),
+    };
+  }
+
   /** Get the last auto-increment id. */
   getLastId(): string | number {
     const id = this.getNextAdapter().lastInsertId();
