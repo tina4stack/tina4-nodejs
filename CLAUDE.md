@@ -153,9 +153,8 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 - `fakeData.ts` — ORM-aware fake data extending core (adds `forField()` with column-name heuristics)
 - `seeder.ts` — Database seeding (`seedTable` for raw SQL, `seedOrm` for model-based)
 - `sqlTranslation.ts` — Cross-engine SQL translator (`SQLTranslator`) and TTL query cache (`QueryCache`)
-- `BaseModel.load<T>(sql, params?, include?)` — Alias for `selectOne()`. Returns `T | null`
-- `BaseModel.select<T>(sql, params?)` — Raw SQL query returning `T[]`
-- `BaseModel.selectOne<T>(sql, params?, include?)` — Raw SQL query returning `T | null` (first match or null, with optional eager loading)
+- **Instance methods:** `save()`, `delete()`, `forceDelete()`, `restore()`, `load(sql, params?, include?): boolean` (selectOne into self), `validate(): string[]`, `toDict(include?): Record`, `toObject(): Record`, `toArray(): unknown[]`, `toList(): unknown[]`, `toJson(): string`, `hasOne()`, `hasMany()`, `belongsTo()`
+- **Static methods:** `find(id, include?)`, `findById(id, include?)`, `findAll(where?, params?, include?)`, `findOrFail(id)`, `create(data)`, `select(sql, params?)`, `selectOne(sql, params?, include?)`, `count(conditions?, params?)`, `withTrashed(conditions?, params?)`, `scope(name, filterSql, params?)`, `createTable()`, `query(): QueryBuilder`
 - QueryBuilder supports `toMongo()` for generating MongoDB query documents from the same fluent API
 - `getNextId(table: string, pkColumn?: string, generatorName?: string): Promise<number>` — Race-safe ID generation using atomic sequence table (`tina4_sequences`). SQLite/MySQL/MSSQL use `tina4_sequences` with atomic UPDATE+SELECT. PostgreSQL auto-creates sequences if missing. Firebird uses existing generators (unchanged).
 
