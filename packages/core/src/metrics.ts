@@ -50,8 +50,8 @@ function readFileSafe(filePath: string): string | null {
   }
 }
 
-function relativePath(filePath: string): string {
-  return path.relative(".", filePath);
+function relativePath(filePath: string, root: string = "."): string {
+  return path.relative(root, filePath);
 }
 
 // ── Test file detection ─────────────────────────────────────
@@ -241,7 +241,7 @@ interface FunctionInfo {
   file?: string;
 }
 
-function extractFunctions(source: string, filePath: string): FunctionInfo[] {
+function extractFunctions(source: string, filePath: string, root: string = "."): FunctionInfo[] {
   const functions: FunctionInfo[] = [];
   const lines = source.split("\n");
 
@@ -317,7 +317,7 @@ function extractFunctions(source: string, filePath: string): FunctionInfo[] {
           complexity,
           loc: funcLoc,
           args,
-          file: relativePath(filePath),
+          file: relativePath(filePath, root),
         });
 
         break; // Only match first pattern per line
@@ -639,7 +639,7 @@ export function quickMetrics(root: string = "src"): Record<string, any> {
     totalFunctions += functions;
 
     fileDetails.push({
-      path: relativePath(f),
+      path: relativePath(f, rootPath),
       loc: counts.loc,
       blank: counts.blank,
       comment: counts.comment,
@@ -753,7 +753,7 @@ export function fullAnalysis(root: string = "src"): Record<string, any> {
     const source = readFileSafe(f);
     if (source === null) continue;
 
-    const relPath = relativePath(f);
+    const relPath = relativePath(f, rootPath);
     const lines = source.split("\n");
     const loc = lines.filter(
       (l) => l.trim() && !l.trim().startsWith("//")
@@ -771,7 +771,7 @@ export function fullAnalysis(root: string = "src"): Record<string, any> {
     }
 
     // Analyze functions/methods
-    const fileFunctions = extractFunctions(source, f);
+    const fileFunctions = extractFunctions(source, f, rootPath);
     let fileComplexity = 0;
 
     for (const func of fileFunctions) {
