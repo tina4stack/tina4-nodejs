@@ -153,8 +153,8 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 - `fakeData.ts` — ORM-aware fake data extending core (adds `forField()` with column-name heuristics)
 - `seeder.ts` — Database seeding (`seedTable` for raw SQL, `seedOrm` for model-based)
 - `sqlTranslation.ts` — Cross-engine SQL translator (`SQLTranslator`) and TTL query cache (`QueryCache`)
-- **Instance methods:** `save()`, `delete()`, `forceDelete()`, `restore()`, `load(sql, params?, include?): boolean` (selectOne into self), `validate(): string[]`, `toDict(include?): Record`, `toObject(): Record`, `toArray(): unknown[]`, `toList(): unknown[]`, `toJson(): string`, `hasOne()`, `hasMany()`, `belongsTo()`
-- **Static methods:** `find(id, include?)`, `findById(id, include?)`, `findAll(where?, params?, include?)`, `findOrFail(id)`, `create(data)`, `select(sql, params?)`, `selectOne(sql, params?, include?)`, `count(conditions?, params?)`, `withTrashed(conditions?, params?)`, `scope(name, filterSql, params?)`, `createTable()`, `query(): QueryBuilder`
+- **Instance methods:** `save(): this|null` (fluent, null on failure), `delete()`, `forceDelete()`, `restore()`, `load(sql, params?, include?): boolean`, `validate(): string[]`, `toDict(include?)`, `toAssoc(include?)`, `toObject()`, `toArray(): unknown[]`, `toList()`, `toJson(include?)`, `hasOne(class, fk)`, `hasMany(class, fk, limit?, offset?)`, `belongsTo(class, fk)`
+- **Static methods:** `find(id, include?)`, `findById(id, include?)`, `findOrFail(id)`, `create(data)`, `all(where?, params?, include?)`, `select(sql, params?)`, `selectOne(sql, params?, include?)`, `where(conditions, params?, limit?, offset?, include?)`, `count(conditions?, params?)`, `withTrashed(conditions?, params?, limit?, offset?)`, `scope(name, filterSql, params?)` (registers reusable method), `createTable()`, `query()`
 - QueryBuilder supports `toMongo()` for generating MongoDB query documents from the same fluent API
 - `getNextId(table: string, pkColumn?: string, generatorName?: string): Promise<number>` — Race-safe ID generation using atomic sequence table (`tina4_sequences`). SQLite/MySQL/MSSQL use `tina4_sequences` with atomic UPDATE+SELECT. PostgreSQL auto-creates sequences if missing. Firebird uses existing generators (unchanged).
 
@@ -162,10 +162,10 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 
 ### File Uploads
 
-Multipart file uploads are available via `req.files` (array of UploadedFile objects):
+Multipart file uploads via `req.files` (dict keyed by field name):
 
 ```typescript
-// req.files[0] =>
+// req.files["avatar"] =>
 {
   fieldName: "avatar",
   filename: "photo.png",
@@ -177,14 +177,78 @@ Multipart file uploads are available via `req.files` (array of UploadedFile obje
 
 ```typescript
 post("/api/upload", (req, res) => {
-  const file = req.files?.find(f => f.fieldName === "avatar");
+  const file = req.files["avatar"];
   if (!file) return res.json({ error: "No file" }, 400);
-  fs.writeFileSync(`src/public/uploads/${file.filename}`, file.content);
+  fs.writeFileSync(`src/public/uploads/${(file as any).filename}`, (file as any).content);
   return res.json({ ok: true });
 });
 ```
 
 Max upload size: `TINA4_MAX_UPLOAD_SIZE` env var (default 10MB).
+
+### Auth
+
+```typescript
+// expires_in is in MINUTES (default 60). Reads SECRET from env if not passed.
+getToken(payload, secret?, expiresIn=60): string
+validToken(token, secret?): Record | null
+getPayload(token): Record | null
+refreshToken(token, secret?, expiresIn=60): string | null
+hashPassword(password, salt?, iterations=260000): string  // PBKDF2-SHA256, $ delimiter
+checkPassword(password, hash): boolean  // timing-safe
+validateApiKey(provided, expected?): boolean  // reads TINA4_API_KEY from env
+authenticateRequest(headers, secret?): Record | null  // Bearer JWT, falls back to API key
+// Also available as Auth.getToken(), Auth.validToken(), etc.
+```
+
+### Session
+
+```typescript
+session.start(sessionId?): string
+session.get(key, defaultValue?): unknown
+session.set(key, value): void
+session.delete(key): void
+session.has(key): boolean
+session.all(): Record
+session.clear(): void
+session.destroy(): void
+session.regenerate(): string
+session.flash(key, value?): unknown     // Dual-mode: set with value, get+remove without
+session.getFlash(key, defaultValue?): unknown
+session.save(): void                    // Public — persist to backend
+session.cookieHeader(name?): string     // Set-Cookie header value
+session.getSessionId(): string | null
+session.gc(): void
+```
+
+Backends: file, redis, redis-npm, valkey, mongodb, database.
+
+### Database extras
+
+```typescript
+db.execute(sql, params?): boolean | unknown  // bool for writes, result for RETURNING/CALL/EXEC
+db.getLastId(): string | number
+db.getError(): string | null
+db.cacheStats(): { enabled, size, ttl }
+```
+
+### Request extras
+
+```typescript
+req.files: Record<string, UploadedFile>  // dict keyed by field name (not array)
+req.cookies: Record<string, string>       // parsed from Cookie header
+req.contentType: string                   // from content-type header
+req.query: Record<string, string>         // query string params
+response.xml(content, status?): Tina4Response
+```
+
+### Queue
+
+```typescript
+queue.consume(topic?, id?, pollInterval=1000): AsyncGenerator<QueueJob>
+// Long-running async generator. Sleeps when empty. pollInterval=0 for single-pass.
+// Usage: for await (const job of queue.consume("emails")) { ... }
+```
 
 ### @tina4/swagger (`packages/swagger/`)
 Auto-generates OpenAPI 3.0 docs.
