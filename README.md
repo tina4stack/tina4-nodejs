@@ -2,7 +2,7 @@
   <img src="https://tina4.com/logo.svg" alt="Tina4" width="200">
 </p>
 <h1 align="center">Tina4 Node.js</h1>
-<h3 align="center">This Is Now A 4Framework</h3>
+<h3 align="center">The Intelligent Native Application 4ramework</h3>
 <p align="center">54 built-in features. Zero dependencies. One import, everything works.</p>
 <p align="center">
   <a href="https://www.npmjs.com/package/tina4-nodejs"><img src="https://img.shields.io/npm/v/tina4-nodejs?color=7b1fa2&label=npm" alt="npm"></a>

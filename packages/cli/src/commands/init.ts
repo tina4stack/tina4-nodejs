@@ -196,7 +196,7 @@ export default async function (req: Tina4Request, res: Tina4Response): Promise<v
 </head>
 <body>
   <h1>Welcome to {{ name }}</h1>
-  <p>This is not a framework.</p>
+  <p>The Intelligent Native Application 4ramework</p>
 </body>
 </html>
 `
@@ -219,7 +219,7 @@ export default async function (req: Tina4Request, res: Tina4Response): Promise<v
 </head>
 <body>
   <h1>tina4</h1>
-  <p><em>This is not a framework.</em></p>
+  <p><em>The Intelligent Native Application 4ramework</em></p>
   <p>Your API is running. Try:</p>
   <ul>
     <li><a href="/api/hello">GET /api/hello</a></li>

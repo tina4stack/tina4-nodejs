@@ -14,7 +14,7 @@ const args = process.argv.slice(2);
 const command = args[0];
 
 const HELP = `
-  tina4nodejs — This is not a framework.
+  tina4nodejs — The Intelligent Native Application 4ramework
 
   Usage:
     tina4nodejs init [dir]            Create a new Tina4 project (default: current directory)

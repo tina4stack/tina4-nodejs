@@ -361,7 +361,7 @@ h1{font-size:3rem;font-weight:700;margin-bottom:0.25rem;letter-spacing:-1px}
 <div class="hero">
     <img src="/images/tina4-logo-icon.webp" class="logo" alt="Tina4">
     <h1>Tina4NodeJs</h1>
-    <p class="tagline">This is not a framework</p>
+    <p class="tagline">The Intelligent Native Application 4ramework</p>
     <div class="actions">
         <a href="https://tina4.com/nodejs" class="btn" target="_blank">Website</a>
         <a href="/__dev" class="btn">Dev Admin</a>
@@ -483,7 +483,7 @@ export async function startServer(config?: Tina4Config): Promise<{
  / /  / / / / / /_/ /__  __/
 /_/  /_/_/ /_/\\__,_/  /_/
 ${reset}
-  Tina4 Node.js v${TINA4_VERSION} — This is not a framework
+  Tina4 Node.js v${TINA4_VERSION} — The Intelligent Native Application 4ramework
 
   Server:    http://${displayHost}:${port} (cluster, ${numCPUs} workers)
   Swagger:   http://localhost:${port}/swagger
@@ -963,7 +963,7 @@ ${reset}
  / /  / / / / / /_/ /__  __/
 /_/  /_/_/ /_/\\__,_/  /_/
 ${reset}
-  Tina4 Node.js v${TINA4_VERSION} — This is not a framework
+  Tina4 Node.js v${TINA4_VERSION} — The Intelligent Native Application 4ramework
 
   Server:    http://${displayHost}:${port} (${serverMode})
   Swagger:   http://localhost:${port}/swagger
