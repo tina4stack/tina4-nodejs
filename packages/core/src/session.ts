@@ -530,6 +530,14 @@ export class Session {
   }
 
   /**
+   * Return a Set-Cookie header value for this session.
+   */
+  cookieHeader(cookieName: string = "tina4_session"): string {
+    const sameSite = process.env.TINA4_SESSION_SAMESITE ?? "Lax";
+    return `${cookieName}=${this.sessionId}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${this.ttl}`;
+  }
+
+  /**
    * Run garbage collection on the session backend.
    * Removes expired file/database sessions. Redis/Valkey/Mongo handle TTL natively.
    */
