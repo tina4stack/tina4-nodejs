@@ -623,7 +623,20 @@ export class Queue {
    *       processEmail(job);
    *   }
    */
-  *consume(topic?: string, id?: string): Generator<QueueJob> {
+  /**
+   * Long-running async generator that polls the queue continuously.
+   * When empty, sleeps for pollInterval ms before polling again.
+   * No external while-loop or sleep needed.
+   *
+   * @param topic Queue topic (defaults to constructor topic)
+   * @param id Optional job ID — single yield, no polling
+   * @param pollInterval Milliseconds to sleep when queue is empty (default 1000)
+   *
+   * Usage:
+   *   for await (const job of queue.consume("emails")) { ... }
+   *   for await (const job of queue.consume("emails", undefined, 5000)) { ... }
+   */
+  async *consume(topic?: string, id?: string, pollInterval: number = 1000): AsyncGenerator<QueueJob> {
     const q = topic ?? this.topic;
 
     if (id !== undefined) {
@@ -632,8 +645,15 @@ export class Queue {
       return;
     }
 
-    let raw: any;
-    while ((raw = this.pop(q)) !== null) {
+    // pollInterval=0 → single-pass drain (returns when empty)
+    // pollInterval>0 → long-running poll (sleeps when empty, never returns)
+    while (true) {
+      const raw = this.pop(q) as any;
+      if (raw === null) {
+        if (pollInterval <= 0) break;
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        continue;
+      }
       yield createJob(raw, this, q);
     }
   }
