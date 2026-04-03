@@ -88,6 +88,28 @@ export class Events {
     }
 
     /**
+     * Emit an event and await all async listeners.
+     * Returns array of resolved results from each listener.
+     */
+    static async emitAsync(event: string, ...args: unknown[]): Promise<unknown[]> {
+        const entries = _listeners.get(event);
+        if (!entries) return [];
+
+        const snapshot = [...entries];
+        const results: unknown[] = [];
+
+        for (const entry of snapshot) {
+            if (entry.once) {
+                const idx = entries.indexOf(entry);
+                if (idx !== -1) entries.splice(idx, 1);
+            }
+            results.push(await entry.callback(...args));
+        }
+
+        return results;
+    }
+
+    /**
      * Get all listener callbacks for an event (in priority order).
      */
     static listeners(event: string): Array<(...args: unknown[]) => void> {
