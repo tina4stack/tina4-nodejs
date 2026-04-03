@@ -431,18 +431,6 @@ export class Session {
   }
 
   /**
-   * Clear all session data without destroying the session.
-   * The session ID and cookie remain — only the data is wiped.
-   */
-  clear(): void {
-    if (!this.data) return;
-    for (const key of Object.keys(this.data)) {
-      delete this.data[key];
-    }
-    this.save();
-  }
-
-  /**
    * Destroy the entire session.
    */
   destroy(): void {
@@ -506,28 +494,38 @@ export class Session {
   }
 
   /**
-   * Set flash data (auto-deleted after first read).
+   * Dual-mode flash: set with value, get+remove without.
+   *
+   *   session.flash("message", "Saved!")  // set
+   *   session.flash("message")            // get + auto-remove → "Saved!"
    */
-  flash(key: string, value: unknown): void {
-    this.set(`${FLASH_PREFIX}${key}`, value);
+  flash(key: string, value?: unknown): unknown {
+    const flashKey = `${FLASH_PREFIX}${key}`;
+    if (value !== undefined) {
+      // Set mode
+      this.set(flashKey, value);
+      return undefined;
+    }
+    // Get mode — read and remove
+    if (!this.data || !(flashKey in this.data)) return undefined;
+    const stored = this.data[flashKey];
+    delete this.data[flashKey];
+    this.save();
+    return stored;
   }
 
   /**
-   * Get flash data (auto-deleted after read).
+   * Get flash data by key (alias for flash(key) without value).
    */
   getFlash(key: string, defaultValue?: unknown): unknown {
-    const flashKey = `${FLASH_PREFIX}${key}`;
-    if (!this.data || !(flashKey in this.data)) return defaultValue;
-    const value = this.data[flashKey];
-    delete this.data[flashKey];
-    this.save();
-    return value ?? defaultValue;
+    const result = this.flash(key);
+    return result !== undefined ? result : defaultValue;
   }
 
   /**
    * Get the current session ID.
    */
-  getId(): string | null {
+  getSessionId(): string | null {
     return this.sessionId;
   }
 
@@ -541,9 +539,10 @@ export class Session {
     }
   }
 
-  // ── Private ───────────────────────────────────────────────────
-
-  private save(): void {
+  /**
+   * Persist session data to the backend.
+   */
+  save(): void {
     if (!this.sessionId || !this.data) return;
     this.handler.write(this.sessionId, this.data, this.ttl);
   }

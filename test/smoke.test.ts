@@ -205,7 +205,7 @@ sess.set("color", "blue");
 assert("session get returns set value", sess.get("color") === "blue");
 
 sess.destroy();
-assert("session destroyed", sess.getId() === null);
+assert("session destroyed", sess.getSessionId() === null);
 
 // ═══════════════════════════════════════════════════════════════════
 // 7. Auth/JWT

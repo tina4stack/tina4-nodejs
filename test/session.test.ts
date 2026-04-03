@@ -34,7 +34,7 @@ const s1 = new Session("file", { path: TEST_PATH });
 const id1 = s1.start();
 assert("start() returns a string", typeof id1 === "string");
 assert("Session ID is 32 hex chars", /^[0-9a-f]{32}$/.test(id1));
-assert("getId() matches", s1.getId() === id1);
+assert("getId() matches", s1.getSessionId() === id1);
 
 // ── Set / Get / Has / Delete ─────────────────────────────────────
 
@@ -77,7 +77,7 @@ assert("Session file exists before destroy", existsSync(filePath2));
 
 s2.destroy();
 assert("Session file removed after destroy", !existsSync(filePath2));
-assert("getId() is null after destroy", s2.getId() === null);
+assert("getId() is null after destroy", s2.getSessionId() === null);
 assert("get returns default after destroy", s2.get("key", "gone") === "gone");
 
 // ── Session Regenerate ───────────────────────────────────────────
