@@ -443,8 +443,9 @@ export class DevAdmin {
 // ---------------------------------------------------------------------------
 
 const handleDashboard: RouteHandler = (_req, res) => {
+  const spa = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tina4 Dev Admin</title></head><body><div id="app" data-framework="nodejs" data-color="#22c55e"></div><script src="/__dev/js/tina4-dev-admin.min.js"></script></body></html>';
   res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-  res.raw.end(renderDashboard());
+  res.raw.end(spa);
 };
 
 function handleStatus(router: Router): RouteHandler {
