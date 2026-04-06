@@ -1207,9 +1207,21 @@ const handleVersionCheck: RouteHandler = async (_req, res) => {
 // Dev Admin JS handler — serves the shared JS file
 // ---------------------------------------------------------------------------
 
-const handleDevAdminJs: RouteHandler = (_req, res) => {
-  res.raw.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" });
-  res.raw.end(renderDevAdminJs());
+const handleDevAdminJs: RouteHandler = async (_req, res) => {
+  // Serve the pre-built SPA bundle from public/js/
+  const { readFileSync } = await import("node:fs");
+  const { dirname, join } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const dir = dirname(fileURLToPath(import.meta.url));
+  const jsPath = join(dir, "..", "public", "js", "tina4-dev-admin.min.js");
+  try {
+    const content = readFileSync(jsPath, "utf-8");
+    res.raw.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" });
+    res.raw.end(content);
+  } catch {
+    res.raw.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" });
+    res.raw.end(renderDevAdminJs());
+  }
 };
 
 // ---------------------------------------------------------------------------
