@@ -1208,20 +1208,35 @@ const handleVersionCheck: RouteHandler = async (_req, res) => {
 // ---------------------------------------------------------------------------
 
 const handleDevAdminJs: RouteHandler = async (_req, res) => {
-  // Serve the pre-built SPA bundle from public/js/
-  const { readFileSync } = await import("node:fs");
-  const { dirname, join } = await import("node:path");
+  const { readFileSync, existsSync } = await import("node:fs");
+  const { dirname, join, resolve } = await import("node:path");
   const { fileURLToPath } = await import("node:url");
   const dir = dirname(fileURLToPath(import.meta.url));
-  const jsPath = join(dir, "..", "public", "js", "tina4-dev-admin.min.js");
-  try {
-    const content = readFileSync(jsPath, "utf-8");
-    res.raw.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" });
-    res.raw.end(content);
-  } catch {
-    res.raw.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" });
-    res.raw.end(renderDevAdminJs());
+
+  // Try multiple paths — handles both monorepo dev and npm-installed package
+  const candidates = [
+    join(dir, "..", "public", "js", "tina4-dev-admin.min.js"),           // src/../public/js/
+    join(dir, "..", "..", "public", "js", "tina4-dev-admin.min.js"),     // deeper nesting
+    resolve(process.cwd(), "node_modules", "tina4-nodejs", "packages", "core", "public", "js", "tina4-dev-admin.min.js"),
+    resolve(process.cwd(), "public", "js", "tina4-dev-admin.min.js"),   // project public/
+  ];
+
+  for (const jsPath of candidates) {
+    if (existsSync(jsPath)) {
+      try {
+        const content = readFileSync(jsPath, "utf-8");
+        if (content.length > 40000) {  // SPA bundle is ~72KB, old inline is ~32KB
+          res.raw.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" });
+          res.raw.end(content);
+          return;
+        }
+      } catch { /* try next */ }
+    }
   }
+
+  // Fallback to inline JS (old dev admin)
+  res.raw.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" });
+  res.raw.end(renderDevAdminJs());
 };
 
 // ---------------------------------------------------------------------------
