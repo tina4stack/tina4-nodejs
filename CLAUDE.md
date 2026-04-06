@@ -1,10 +1,10 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.10.42)
+# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.10.70)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.10.42 — The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.10.70 — The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -240,6 +240,7 @@ req.cookies: Record<string, string>       // parsed from Cookie header
 req.contentType: string                   // from content-type header
 req.query: Record<string, string>         // query string params
 response.xml(content, status?): Tina4Response
+response.stream(generator, contentType?: string, status?: number): void  // SSE/streaming
 ```
 
 ### Queue
@@ -677,7 +678,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 
 ## v3 Features Summary
 
-- **44 built-in features**, zero third-party dependencies
+- **45 built-in features**, zero third-party dependencies
 - **1,812 tests** passing across all modules
 - **Race-safe `getNextId()`** with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
@@ -695,6 +696,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 - **SameSite=Lax** default on session cookies (`TINA4_SESSION_SAMESITE`)
 - **`tina4 init`** generates Dockerfile and .dockerignore
 - **Gallery**: 7 interactive examples with Try It deploy at `/_dev/`
+- **SSE/Streaming**: `response.stream()` for Server-Sent Events — pass an async generator, framework handles chunked transfer encoding and keep-alive
 
 ## Don'ts
 

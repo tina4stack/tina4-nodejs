@@ -1,4 +1,4 @@
-# Tina4 Node.js v3.10.42 — Agent Instructions
+# Tina4 Node.js v3.10.70 — Agent Instructions
 
 You are working on a **Tina4 for Node.js/TypeScript** project.
 Documentation: https://tina4.com

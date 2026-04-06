@@ -1,4 +1,4 @@
-# Tina4 Node.js v3.10.42 — Conventions
+# Tina4 Node.js v3.10.70 — Conventions
 
 This is a **Tina4 for Node.js/TypeScript** project (https://tina4.com).
 

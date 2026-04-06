@@ -242,6 +242,40 @@ export function createResponse(res: ServerResponse): Tina4Response {
     return response.render(name, data, status, templateDir);
   };
 
+  /**
+   * Stream response from an async generator for Server-Sent Events (SSE).
+   *
+   * Usage:
+   *   export default async function (req, res) {
+   *     res.stream(async function* () {
+   *       for (let i = 0; i < 10; i++) {
+   *         yield `data: message ${i}\n\n`;
+   *         await new Promise(r => setTimeout(r, 1000));
+   *       }
+   *     }());
+   *   }
+   */
+  (response as any).stream = async function (
+    source: AsyncIterable<string | Buffer>,
+    contentType: string = "text/event-stream",
+  ): Promise<Tina4Response> {
+    if (res.headersSent) return response;
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+
+    for await (const chunk of source) {
+      const data = typeof chunk === "string" ? chunk : chunk.toString();
+      res.write(data);
+    }
+
+    res.end();
+    return response;
+  };
+
   return response;
 }
 
