@@ -63,56 +63,70 @@ function hasMatchingTest(relPath: string): boolean {
   const parts = relPath.split('/');
   const basename = parts[parts.length - 1] || '';
   const name = basename.replace(/\.(ts|js)$/, '');
-  // Parent directory name (e.g. "adapters" from "adapters/sqlite.ts")
   const parentModule = parts.length > 1 ? parts[parts.length - 2] : '';
 
-  // Stage 1: Filename matching — name.test, name.spec, test_name patterns
-  const testDirs = ['test', 'tests', 'spec'];
-  for (const td of testDirs) {
-    const patterns = [
-      `${td}/${name}.test.ts`,
-      `${td}/${name}.test.js`,
-      `${td}/${name}.spec.ts`,
-      `${td}/${name}.spec.js`,
-      // Also check parent-named tests (test/database.test.ts covers adapters/sqlite.ts)
-      ...(parentModule && parentModule !== name ? [
-        `${td}/${parentModule}.test.ts`,
-        `${td}/${parentModule}.test.js`,
-        `${td}/${parentModule}.spec.ts`,
-      ] : []),
-    ];
-    if (patterns.some(p => fs.existsSync(p))) {
-      return true;
+  // Search both CWD and the scan root (framework dir when in fallback mode)
+  const searchRoots = [process.cwd()];
+  if (_lastScanRoot && _lastScanRoot !== process.cwd()) {
+    // Go up from scan root to find the repo root (where test/ lives)
+    let repoRoot = _lastScanRoot;
+    // Walk up until we find a test/ or tests/ dir, max 5 levels
+    for (let i = 0; i < 5; i++) {
+      if (fs.existsSync(path.join(repoRoot, 'test')) || fs.existsSync(path.join(repoRoot, 'tests')) || fs.existsSync(path.join(repoRoot, 'spec'))) {
+        searchRoots.push(repoRoot);
+        break;
+      }
+      const parent = path.dirname(repoRoot);
+      if (parent === repoRoot) break;
+      repoRoot = parent;
     }
   }
 
-  // Build the module import path for content matching
-  // e.g. "packages/core/src/metrics.ts" → "metrics" or "src/metrics"
-  const pathWithoutExt = relPath.replace(/\.(ts|js)$/, '');
-  // Build CamelCase class name from camelCase/kebab module name
-  // e.g. "sqlTranslation" → "SqlTranslation", "sql-translation" → "SqlTranslation"
-  const className = name
-    .replace(/[-_](.)/g, (_, c: string) => c.toUpperCase())
-    .replace(/^(.)/, (_, c: string) => c.toUpperCase());
+  const testDirs = ['test', 'tests', 'spec'];
 
-  // Stage 2+3: Content scan — check if any test file imports or references this module
-  for (const td of testDirs) {
-    if (!fs.existsSync(td)) continue;
-    const testFiles = walkFiles(td, ['.ts', '.js']);
-    for (const testFile of testFiles) {
-      const content = readFileSafe(testFile);
-      if (content === null) continue;
-      // Stage 2: import path matching
-      if (content.includes(name) && (
-        content.includes(`"${name}"`) || content.includes(`'${name}'`) ||
-        content.includes(`/${name}"`) || content.includes(`/${name}'`) ||
-        content.includes(pathWithoutExt)
-      )) {
-        return true;
-      }
-      // Stage 3: class name mention
-      if (className !== name && new RegExp(`\\b${className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(content)) {
-        return true;
+  for (const root of searchRoots) {
+    // Stage 1: Filename matching
+    for (const td of testDirs) {
+      const patterns = [
+        path.join(root, td, `${name}.test.ts`),
+        path.join(root, td, `${name}.test.js`),
+        path.join(root, td, `${name}.spec.ts`),
+        path.join(root, td, `${name}.spec.js`),
+        path.join(root, td, `test_${name}.ts`),
+        path.join(root, td, `test_${name}.js`),
+        path.join(root, td, `test_${name}.py`),
+        path.join(root, td, `${name}_test.rb`),
+        path.join(root, td, `${name}_spec.rb`),
+        ...(parentModule && parentModule !== name ? [
+          path.join(root, td, `${parentModule}.test.ts`),
+          path.join(root, td, `${parentModule}.test.js`),
+          path.join(root, td, `${parentModule}.spec.ts`),
+        ] : []),
+      ];
+      if (patterns.some(p => fs.existsSync(p))) return true;
+    }
+
+    // Stage 2+3: Content scan
+    const pathWithoutExt = relPath.replace(/\.(ts|js|py|rb|php)$/, '');
+    const className = name
+      .replace(/[-_](.)/g, (_: string, c: string) => c.toUpperCase())
+      .replace(/^(.)/, (_: string, c: string) => c.toUpperCase());
+
+    for (const td of testDirs) {
+      const fullTd = path.join(root, td);
+      if (!fs.existsSync(fullTd)) continue;
+      const testFiles = walkFiles(fullTd, ['.ts', '.js', '.py', '.rb']);
+      for (const testFile of testFiles) {
+        const content = readFileSafe(testFile);
+        if (content === null) continue;
+        if (content.includes(name) && (
+          content.includes(`"${name}"`) || content.includes(`'${name}'`) ||
+          content.includes(`/${name}"`) || content.includes(`/${name}'`) ||
+          content.includes(pathWithoutExt)
+        )) return true;
+        if (className !== name && new RegExp(`\\b${className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(content)) {
+          return true;
+        }
       }
     }
   }
