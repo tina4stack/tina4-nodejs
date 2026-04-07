@@ -235,9 +235,63 @@ export class BaseModel {
     return instance;
   }
 
-  /** Alias for findById(). */
-  static find<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown, include?: string[]): T | null {
-    return (this as unknown as typeof BaseModel).findById.call(this, id, include) as T | null;
+  /**
+   * Find records by filter dict. Always returns an array.
+   *
+   * Usage:
+   *   User.find({ name: "Alice" })              → [User, ...]
+   *   User.find({ age: 18 }, 10)                → [User, ...] (limit 10)
+   *   User.find({}, 100, 0, "name ASC")         → [User, ...] (with orderBy)
+   *   User.find()                                → all records
+   *
+   * Use findById(id) for single-record primary key lookup.
+   */
+  static find<T extends BaseModel>(
+    this: new (data?: Record<string, unknown>) => T,
+    filter?: Record<string, unknown>,
+    limit = 100,
+    offset = 0,
+    orderBy?: string,
+    include?: string[],
+  ): T[] {
+    const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
+    const db = ModelClass.getDb();
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (filter) {
+      for (const [key, value] of Object.entries(filter)) {
+        const col = ModelClass.getDbColumn(key) ?? key;
+        conditions.push(`"${col}" = ?`);
+        params.push(value);
+      }
+    }
+
+    if (ModelClass.softDelete) {
+      conditions.push("is_deleted = 0");
+    }
+
+    let sql = `SELECT * FROM "${ModelClass.tableName}"`;
+    if (conditions.length > 0) {
+      sql += ` WHERE ${conditions.join(" AND ")}`;
+    }
+    if (orderBy) {
+      sql += ` ORDER BY ${orderBy}`;
+    }
+
+    const rows = db.fetch(sql, params, limit, offset);
+    const data = (rows as any)?.data ?? rows;
+    const instances = (Array.isArray(data) ? data : []).map((row: Record<string, unknown>) => {
+      const inst = new this(row) as T;
+      (inst as any)._exists = true;
+      return inst;
+    });
+
+    if (include) {
+      ModelClass._eagerLoad(instances as BaseModel[], include);
+    }
+
+    return instances;
   }
 
   /**
@@ -362,7 +416,7 @@ export class BaseModel {
    * Save this instance (insert or update).
    * Returns this on success (fluent), null on failure.
    */
-  save(): this | null {
+  save(): this | false {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
@@ -405,7 +459,7 @@ export class BaseModel {
       db.commit();
     } catch (e) {
       db.rollback();
-      return null;
+      return false;
     }
     (this as any)._exists = true;
     return this;
