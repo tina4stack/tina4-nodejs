@@ -244,8 +244,32 @@ export class BaseModel {
    * Load a record into this instance via selectOne.
    * Returns true if found and loaded, false otherwise.
    */
-  load(sql: string, params?: unknown[], include?: string[]): boolean {
+  /**
+   * Load a record into this instance.
+   *
+   * Usage:
+   *   orm.id = 1; orm.load()          — uses PK already set
+   *   orm.load("id = ?", [1])         — filter with params
+   *   orm.load("id = 1")              — filter string
+   *
+   * Returns true if found, false otherwise.
+   */
+  load(filter?: string, params?: unknown[], include?: string[]): boolean {
     const ModelClass = this.constructor as typeof BaseModel & (new (data?: Record<string, unknown>) => BaseModel);
+    const table = (ModelClass as any).tableName ?? (this as any).tableName;
+
+    let sql: string;
+    if (filter === undefined || filter === null) {
+      // No args — use PK already set
+      const pk = (ModelClass as any).primaryKey ?? (this as any).primaryKey ?? "id";
+      const pkValue = (this as any)[pk];
+      if (pkValue === undefined || pkValue === null) return false;
+      sql = `SELECT * FROM ${table} WHERE ${pk} = ?`;
+      params = [pkValue];
+    } else {
+      sql = `SELECT * FROM ${table} WHERE ${filter}`;
+    }
+
     const result = ModelClass.selectOne(sql, params, include);
     if (!result) return false;
     const data = (result as any).toJSON ? (result as any).toJSON() : result;
