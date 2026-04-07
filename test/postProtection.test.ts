@@ -5,7 +5,7 @@
  * Run with: npx tsx test/postProtection.test.ts
  */
 import { Router, runRouteMiddlewares } from "../packages/core/src/router.ts";
-import { createToken, validateToken, authMiddleware } from "../packages/core/src/auth.ts";
+import { getToken, validToken, authMiddleware } from "../packages/core/src/auth.ts";
 import type { Tina4Request, Tina4Response, Middleware } from "../packages/core/src/types.ts";
 
 let passed = 0;
@@ -68,7 +68,7 @@ console.log("-- POST with authMiddleware --");
 // ── POST with valid token succeeds ──────────────────────────────
 
 {
-  const token = createToken({ userId: 1, role: "admin" }, SECRET);
+  const token = getToken({ userId: 1, role: "admin" }, SECRET);
   const req = mockRequest(`Bearer ${token}`);
   const mock = mockResponse();
   let nextCalled = false;
@@ -83,7 +83,7 @@ console.log("-- POST with authMiddleware --");
 console.log("\n-- Expired token --");
 
 {
-  const expiredToken = createToken({ userId: 1 }, SECRET, -1);
+  const expiredToken = getToken({ userId: 1 }, SECRET, -1);
   const req = mockRequest(`Bearer ${expiredToken}`);
   const mock = mockResponse();
   let nextCalled = false;
@@ -110,7 +110,7 @@ console.log("\n-- Malformed token --");
 console.log("\n-- Wrong secret --");
 
 {
-  const wrongToken = createToken({ userId: 1 }, "wrong-secret");
+  const wrongToken = getToken({ userId: 1 }, "wrong-secret");
   const req = mockRequest(`Bearer ${wrongToken}`);
   const mock = mockResponse();
   let nextCalled = false;
@@ -202,7 +202,7 @@ console.log("\n-- Mixed routes --");
 console.log("\n-- Custom claims preserved through auth --");
 
 {
-  const token = createToken({ userId: 42, role: "admin", scope: "write" }, SECRET);
+  const token = getToken({ userId: 42, role: "admin", scope: "write" }, SECRET);
   const req = mockRequest(`Bearer ${token}`);
   const mock = mockResponse();
   let nextCalled = false;

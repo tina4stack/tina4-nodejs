@@ -12,7 +12,7 @@ import {
   loadEnv, getEnv, hasEnv, resetEnv,
   Log,
   rateLimiter,
-  createToken, validateToken, hashPassword, checkPassword,
+  getToken, validToken, hashPassword, checkPassword,
   Session,
   I18n,
   FakeData,
@@ -215,14 +215,14 @@ console.log("\n=== 7. Auth/JWT ===\n");
 
 const SECRET = "smoke-test-secret-key";
 
-const token = createToken({ userId: 1 }, SECRET, 3600);
-assert("createToken returns string", typeof token === "string");
+const token = getToken({ userId: 1 }, SECRET, 3600);
+assert("getToken returns string", typeof token === "string");
 
-const jwtPayload = validateToken(token, SECRET);
-assert("validateToken returns payload", jwtPayload !== null && jwtPayload.userId === 1);
+const jwtPayload = validToken(token, SECRET);
+assert("validToken returns payload", jwtPayload !== null && jwtPayload.userId === 1);
 
-const expired = createToken({ userId: 1 }, SECRET, -1);
-assert("expired token rejected", validateToken(expired, SECRET) === null);
+const expired = getToken({ userId: 1 }, SECRET, -1);
+assert("expired token rejected", validToken(expired, SECRET) === null);
 
 const hash = hashPassword("password123");
 assert("hashPassword returns string", typeof hash === "string");
@@ -263,16 +263,16 @@ assert("CORS middleware calls next()", corsNextCalled);
 console.log("\n=== 9. Queue ===\n");
 
 const queueDir = join(TMP, "queue");
-const q = new Queue("file", { path: queueDir });
+const q = new Queue({ topic: "emails", path: queueDir });
 
-const jobId = q.push("emails", { to: "bob@test.com", subject: "Hi" });
+const jobId = q.push({ to: "bob@test.com", subject: "Hi" });
 assert("push returns job id", typeof jobId === "string" && jobId.length > 0);
 
-const job = q.pop("emails");
+const job = q.pop();
 assert("pop returns job", job !== null);
 assert("job has correct payload", job !== null && (job.payload as any).to === "bob@test.com");
 
-const emptyJob = q.pop("emails");
+const emptyJob = q.pop();
 assert("pop on empty queue returns null", emptyJob === null);
 
 // ═══════════════════════════════════════════════════════════════════

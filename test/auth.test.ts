@@ -3,7 +3,7 @@
  * Run with: npx tsx test/auth.test.ts
  */
 import {
-  createToken, validateToken, getPayload,
+  getToken, validToken, getPayload,
   hashPassword, checkPassword,
   authMiddleware,
   refreshToken, authenticateRequest, validateApiKey,
@@ -33,20 +33,20 @@ console.log("=== Auth Tests ===\n");
 
 console.log("-- JWT HS256 --");
 
-const token1 = createToken({ userId: 42, role: "admin" }, SECRET, 3600, "HS256");
-assert("createToken returns a string", typeof token1 === "string");
+const token1 = getToken({ userId: 42, role: "admin" }, SECRET, 3600, "HS256");
+assert("getToken returns a string", typeof token1 === "string");
 assert("JWT has 3 parts", token1.split(".").length === 3);
 
-const payload1 = validateToken(token1, SECRET, "HS256");
-assert("validateToken returns payload", payload1 !== null);
+const payload1 = validToken(token1, SECRET, "HS256");
+assert("validToken returns payload", payload1 !== null);
 assert("payload contains userId", payload1?.userId === 42);
 assert("payload contains role", payload1?.role === "admin");
 assert("payload contains iat", typeof payload1?.iat === "number");
 assert("payload contains exp", typeof payload1?.exp === "number");
 
 // Standard claims
-const token2 = createToken({ sub: "user:1", iss: "tina4" }, SECRET);
-const payload2 = validateToken(token2, SECRET);
+const token2 = getToken({ sub: "user:1", iss: "tina4" }, SECRET);
+const payload2 = validToken(token2, SECRET);
 assert("sub claim preserved", payload2?.sub === "user:1");
 assert("iss claim preserved", payload2?.iss === "tina4");
 
@@ -54,29 +54,29 @@ assert("iss claim preserved", payload2?.iss === "tina4");
 
 console.log("\n-- JWT Expiration --");
 
-const expiredToken = createToken({ userId: 1 }, SECRET, -1); // already expired
-const expiredPayload = validateToken(expiredToken, SECRET);
+const expiredToken = getToken({ userId: 1 }, SECRET, -1); // already expired
+const expiredPayload = validToken(expiredToken, SECRET);
 assert("Expired token returns null", expiredPayload === null);
 
 // Token with no expiry (expiresIn = 0)
-const noExpToken = createToken({ userId: 1 }, SECRET, 0);
-const noExpPayload = validateToken(noExpToken, SECRET);
+const noExpToken = getToken({ userId: 1 }, SECRET, 0);
+const noExpPayload = validToken(noExpToken, SECRET);
 assert("Token with expiresIn=0 has no exp claim", noExpPayload !== null && !("exp" in noExpPayload));
 
 // ── JWT Invalid Signature ─────────────────────────────────────────
 
 console.log("\n-- JWT Invalid Signature --");
 
-const badSigPayload = validateToken(token1, "wrong-secret");
+const badSigPayload = validToken(token1, "wrong-secret");
 assert("Wrong secret returns null", badSigPayload === null);
 
 const tamperedToken = token1.slice(0, -3) + "abc";
-const tamperedPayload = validateToken(tamperedToken, SECRET);
+const tamperedPayload = validToken(tamperedToken, SECRET);
 assert("Tampered token returns null", tamperedPayload === null);
 
-assert("Malformed token returns null", validateToken("not.a.jwt", SECRET) === null);
-assert("Empty string returns null", validateToken("", SECRET) === null);
-assert("Two parts returns null", validateToken("a.b", SECRET) === null);
+assert("Malformed token returns null", validToken("not.a.jwt", SECRET) === null);
+assert("Empty string returns null", validToken("", SECRET) === null);
+assert("Two parts returns null", validToken("a.b", SECRET) === null);
 
 // ── JWT Decode (no verification) ──────────────────────────────────
 
@@ -101,14 +101,14 @@ const { privateKey, publicKey } = generateKeyPairSync("rsa", {
   privateKeyEncoding: { type: "pkcs8", format: "pem" },
 });
 
-const rsaToken = createToken({ userId: 99 }, privateKey, 3600, "RS256");
+const rsaToken = getToken({ userId: 99 }, privateKey, 3600, "RS256");
 assert("RS256 token generated", typeof rsaToken === "string");
 
-const rsaPayload = validateToken(rsaToken, publicKey, "RS256");
+const rsaPayload = validToken(rsaToken, publicKey, "RS256");
 assert("RS256 token verifies with public key", rsaPayload !== null);
 assert("RS256 payload contains userId", rsaPayload?.userId === 99);
 
-const rsaWrongKey = validateToken(rsaToken, SECRET, "HS256");
+const rsaWrongKey = validToken(rsaToken, SECRET, "HS256");
 assert("RS256 token fails with HS256 verify", rsaWrongKey === null);
 
 // ── Password Hashing ─────────────────────────────────────────────
@@ -171,7 +171,7 @@ function mockResponse(): { response: Tina4Response; lastCall: { data: unknown; s
 
 // Valid token
 {
-  const validToken = createToken({ userId: 7 }, SECRET);
+  const validToken = getToken({ userId: 7 }, SECRET);
   const req = mockRequest(`Bearer ${validToken}`);
   const { response, lastCall } = mockResponse() as any;
   let nextCalled = false;
@@ -183,7 +183,7 @@ function mockResponse(): { response: Tina4Response; lastCall: { data: unknown; s
 
 // Expired token
 {
-  const expToken = createToken({ userId: 1 }, SECRET, -1);
+  const expToken = getToken({ userId: 1 }, SECRET, -1);
   const req = mockRequest(`Bearer ${expToken}`);
   const mock = mockResponse();
   let nextCalled = false;
@@ -217,12 +217,12 @@ function mockResponse(): { response: Tina4Response; lastCall: { data: unknown; s
 console.log("\n-- Token Refresh --");
 
 {
-  const original = createToken({ userId: 42, role: "admin" }, SECRET, 3600);
+  const original = getToken({ userId: 42, role: "admin" }, SECRET, 3600);
   const refreshed = refreshToken(original, SECRET, 7200);
   assert("refreshToken returns a string", typeof refreshed === "string");
   assert("refreshed token is different from original", refreshed !== original);
 
-  const refreshedPayload = validateToken(refreshed!, SECRET);
+  const refreshedPayload = validToken(refreshed!, SECRET);
   assert("refreshed token is valid", refreshedPayload !== null);
   assert("refreshed token preserves userId", refreshedPayload?.userId === 42);
   assert("refreshed token preserves role", refreshedPayload?.role === "admin");
@@ -230,7 +230,7 @@ console.log("\n-- Token Refresh --");
 }
 
 {
-  const expired = createToken({ userId: 1 }, SECRET, -1);
+  const expired = getToken({ userId: 1 }, SECRET, -1);
   const refreshed = refreshToken(expired, SECRET);
   assert("refreshToken returns null for expired token", refreshed === null);
 }
@@ -250,7 +250,7 @@ console.log("\n-- Token Refresh --");
 console.log("\n-- authenticateRequest --");
 
 {
-  const token = createToken({ userId: 99, scope: "read" }, SECRET);
+  const token = getToken({ userId: 99, scope: "read" }, SECRET);
   const payload = authenticateRequest(
     { authorization: `Bearer ${token}` },
     SECRET,
@@ -271,7 +271,7 @@ console.log("\n-- authenticateRequest --");
 }
 
 {
-  const expired = createToken({ userId: 1 }, SECRET, -1);
+  const expired = getToken({ userId: 1 }, SECRET, -1);
   const payload = authenticateRequest(
     { authorization: `Bearer ${expired}` },
     SECRET,
@@ -281,7 +281,7 @@ console.log("\n-- authenticateRequest --");
 
 {
   // Test case-insensitive Authorization header
-  const token = createToken({ userId: 50 }, SECRET);
+  const token = getToken({ userId: 50 }, SECRET);
   const payload = authenticateRequest(
     { Authorization: `Bearer ${token}` },
     SECRET,
@@ -336,8 +336,8 @@ console.log("\n-- Auth Class Wrapper --");
   assert("Auth.refreshToken is a function", typeof Auth.refreshToken === "function");
   assert("Auth.authenticateRequest is a function", typeof Auth.authenticateRequest === "function");
   assert("Auth.validateApiKey is a function", typeof Auth.validateApiKey === "function");
-  assert("Auth.createToken is alias for getToken", Auth.createToken === Auth.getToken);
-  assert("Auth.validateToken is alias for validToken", Auth.validateToken === Auth.validToken);
+  assert("Auth.getToken matches standalone getToken", Auth.getToken === getToken);
+  assert("Auth.validToken matches standalone validToken", Auth.validToken === validToken);
 
   // Verify Auth class methods produce same results as standalone functions
   const classToken = Auth.getToken({ userId: 77 }, SECRET);
@@ -358,8 +358,8 @@ console.log("\n-- JWT Edge Cases --");
   for (let i = 0; i < 50; i++) {
     largePayload[`key_${i}`] = `value_${i}_${"x".repeat(100)}`;
   }
-  const largeToken = createToken(largePayload, SECRET);
-  const largeParsed = validateToken(largeToken, SECRET);
+  const largeToken = getToken(largePayload, SECRET);
+  const largeParsed = validToken(largeToken, SECRET);
   assert("large payload round-trips", largeParsed?.key_0 === largePayload.key_0);
 }
 
@@ -371,8 +371,8 @@ console.log("\n-- JWT Edge Cases --");
     unicode: "\u00e9\u00e8\u00ea",
     newline: "line1\nline2",
   };
-  const specialToken = createToken(specialPayload, SECRET);
-  const specialParsed = validateToken(specialToken, SECRET);
+  const specialToken = getToken(specialPayload, SECRET);
+  const specialParsed = validToken(specialToken, SECRET);
   assert("special characters preserved", specialParsed?.name === "O'Brien & Co.");
   assert("unicode preserved", specialParsed?.unicode === "\u00e9\u00e8\u00ea");
 }
@@ -380,8 +380,8 @@ console.log("\n-- JWT Edge Cases --");
 {
   // Numeric payload values
   const numPayload = { count: 0, negative: -5, float: 3.14 };
-  const numToken = createToken(numPayload, SECRET);
-  const numParsed = validateToken(numToken, SECRET);
+  const numToken = getToken(numPayload, SECRET);
+  const numParsed = validToken(numToken, SECRET);
   assert("zero preserved", numParsed?.count === 0);
   assert("negative preserved", numParsed?.negative === -5);
   assert("float preserved", numParsed?.float === 3.14);
@@ -390,8 +390,8 @@ console.log("\n-- JWT Edge Cases --");
 {
   // Boolean payload
   const boolPayload = { active: true, deleted: false };
-  const boolToken = createToken(boolPayload, SECRET);
-  const boolParsed = validateToken(boolToken, SECRET);
+  const boolToken = getToken(boolPayload, SECRET);
+  const boolParsed = validToken(boolToken, SECRET);
   assert("true preserved", boolParsed?.active === true);
   assert("false preserved", boolParsed?.deleted === false);
 }
@@ -413,7 +413,7 @@ console.log("\n-- Auth Middleware RS256 --");
 
 {
   const mwRsa = authMiddleware(publicKey, "RS256");
-  const rsaToken = createToken({ userId: 88 }, privateKey, 3600, "RS256");
+  const rsaToken = getToken({ userId: 88 }, privateKey, 3600, "RS256");
   const req = mockRequest(`Bearer ${rsaToken}`);
   const mock = mockResponse();
   let nextCalled = false;

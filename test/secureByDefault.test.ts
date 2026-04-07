@@ -11,7 +11,7 @@
  * Run with: npx tsx test/secureByDefault.test.ts
  */
 import { Router } from "../packages/core/src/router.ts";
-import { createToken, validToken } from "../packages/core/src/auth.ts";
+import { getToken, validToken } from "../packages/core/src/auth.ts";
 import type { Tina4Request, Tina4Response, RouteHandler } from "../packages/core/src/types.ts";
 
 let passed = 0;
@@ -80,7 +80,7 @@ console.log("-- Write methods (secure by default) --");
   const router = new Router();
   router.post("/api/data", handler);
   const match = router.match("POST", "/api/data");
-  const token = createToken({ userId: 42 }, SECRET, 3600);
+  const token = getToken({ userId: 42 }, SECRET, 3600);
   const result = simulateAuthEnforcement(match!, `Bearer ${token}`);
   assert("14. POST with valid Bearer returns 200", result.status === 200);
   assert("14b. User payload attached", result.userPayload?.userId === 42);
@@ -158,7 +158,7 @@ console.log("\n-- Edge cases --");
   const router = new Router();
   router.post("/api/data", handler);
   const match = router.match("POST", "/api/data");
-  const expiredToken = createToken({ userId: 1 }, SECRET, -1);
+  const expiredToken = getToken({ userId: 1 }, SECRET, -1);
   const result = simulateAuthEnforcement(match!, `Bearer ${expiredToken}`);
   assert("Expired Bearer on POST returns 401", result.status === 401);
 }
@@ -175,7 +175,7 @@ console.log("\n-- Edge cases --");
   const router = new Router();
   router.get("/api/private", handler).secure();
   const match = router.match("GET", "/api/private");
-  const token = createToken({ role: "admin" }, SECRET, 3600);
+  const token = getToken({ role: "admin" }, SECRET, 3600);
   const result = simulateAuthEnforcement(match!, `Bearer ${token}`);
   assert("Valid Bearer on secure GET returns 200", result.status === 200);
 }

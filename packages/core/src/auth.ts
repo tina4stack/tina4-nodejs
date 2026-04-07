@@ -287,14 +287,6 @@ export function authenticateRequest(
   return null;
 }
 
-// ── Backward-Compatible Aliases ──────────────────────────────────
-
-/** Alias for getToken() — kept for backward compatibility. */
-export const createToken = getToken;
-
-/** Alias for validToken() — kept for backward compatibility. */
-export const validateToken = validToken;
-
 // ── API Key Validation ───────────────────────────────────────────
 
 /**
@@ -341,7 +333,4 @@ export class Auth {
   static refreshToken = refreshToken;
   static authenticateRequest = authenticateRequest;
   static validateApiKey = validateApiKey;
-  // Legacy aliases
-  static createToken = getToken;
-  static validateToken = validToken;
 }

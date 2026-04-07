@@ -88,15 +88,15 @@ const TEST_PATH = join("/tmp", "tina4-qb-test-" + Date.now());
 
 try { rmSync(TEST_PATH, { recursive: true, force: true }); } catch {}
 
-const fileQueue = new Queue("file", { path: TEST_PATH });
-const fqId = fileQueue.push("test-queue", { data: "hello" });
+const fileQueue = new Queue({ topic: "test-queue", path: TEST_PATH });
+const fqId = fileQueue.push({ data: "hello" });
 assert("file queue push returns id", typeof fqId === "string" && fqId.length > 0);
 
-const fqJob = fileQueue.pop("test-queue");
+const fqJob = fileQueue.pop();
 assert("file queue pop returns job", fqJob !== null);
 assert("file queue job has correct payload", fqJob !== null && (fqJob.payload as any).data === "hello");
 
-const fqEmpty = fileQueue.pop("test-queue");
+const fqEmpty = fileQueue.pop();
 assert("file queue pop returns null when empty", fqEmpty === null);
 
 try { rmSync(TEST_PATH, { recursive: true, force: true }); } catch {}

@@ -38,7 +38,7 @@ export {
   APPLICATION_OCTET, TEXT_HTML, TEXT_PLAIN, TEXT_CSV, TEXT_XML,
 } from "./constants.js";
 export {
-  getToken, validToken, createToken, validateToken, getPayload,
+  getToken, validToken, getPayload,
   hashPassword, checkPassword,
   authMiddleware,
   refreshToken, authenticateRequest, validateApiKey,
@@ -52,6 +52,8 @@ export { ScssCompiler } from "./scss.js";
 export type { ScssConfig } from "./scss.js";
 export { Queue } from "./queue.js";
 export type { QueueConfig, QueueJob, ProcessOptions } from "./queue.js";
+export { createJob } from "./job.js";
+export type { JobData, JobQueueBridge } from "./job.js";
 export { GraphQL, ParseError } from "./graphql.js";
 export type { GraphQLField, ResolverFn, GraphQLResult } from "./graphql.js";
 export {
@@ -79,6 +81,7 @@ export { renderErrorOverlay, renderProductionError, isDebugMode } from "./errorO
 export { AI_TOOLS, isInstalled, showMenu, installSelected, installAll, generateContext } from "./ai.js";
 export type { AiTool } from "./ai.js";
 export type { ImapMessage, ImapFullMessage } from "./messenger.js";
+export { LiteBackend } from "./queueBackends/liteBackend.js";
 export { RabbitMQBackend } from "./queueBackends/rabbitmqBackend.js";
 export type { RabbitMQConfig } from "./queueBackends/rabbitmqBackend.js";
 export { KafkaBackend } from "./queueBackends/kafkaBackend.js";

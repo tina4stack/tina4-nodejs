@@ -36,62 +36,62 @@ console.log("=== Queue Tests ===\n");
 // --- Push and Pop ---
 console.log("--- Push and Pop ---");
 
-const q = new Queue("file", { path: TEST_PATH });
+const qEmails = new Queue({ topic: "emails", path: TEST_PATH });
 
-const jobId1 = q.push("emails", { to: "alice@test.com", subject: "Hello" });
+const jobId1 = qEmails.push({ to: "alice@test.com", subject: "Hello" });
 assert("push returns a job ID (string)", typeof jobId1 === "string" && jobId1.length > 0);
 
-const jobId2 = q.push("emails", { to: "bob@test.com", subject: "Hi" });
+const jobId2 = qEmails.push({ to: "bob@test.com", subject: "Hi" });
 assert("push returns unique IDs", jobId1 !== jobId2);
 
-const job1 = q.pop("emails");
+const job1 = qEmails.pop();
 assert("pop returns a job", job1 !== null);
 assert("popped job has correct payload", job1 !== null && (job1.payload as any).to === "alice@test.com");
 assert("popped job has correct status", job1 !== null && job1.status === "reserved");
 assert("popped job has id", job1 !== null && typeof job1.id === "string");
 assert("popped job has createdAt", job1 !== null && typeof job1.createdAt === "string");
 
-const job2 = q.pop("emails");
+const job2 = qEmails.pop();
 assert("second pop returns second job", job2 !== null && (job2.payload as any).to === "bob@test.com");
 
-const job3 = q.pop("emails");
+const job3 = qEmails.pop();
 assert("pop on empty queue returns null", job3 === null);
 
 // --- Size ---
 console.log("\n--- Size ---");
 
-const q2 = new Queue("file", { path: TEST_PATH });
-q2.push("tasks", { action: "a" });
-q2.push("tasks", { action: "b" });
-q2.push("tasks", { action: "c" });
+const qTasks = new Queue({ topic: "tasks", path: TEST_PATH });
+qTasks.push({ action: "a" });
+qTasks.push({ action: "b" });
+qTasks.push({ action: "c" });
 
-assert("size returns 3 after 3 pushes", q2.size("tasks") === 3);
+assert("size returns 3 after 3 pushes", qTasks.size() === 3);
 
-q2.pop("tasks");
-assert("size returns 2 after 1 pop", q2.size("tasks") === 2);
+qTasks.pop();
+assert("size returns 2 after 1 pop", qTasks.size() === 2);
 
 // --- Clear ---
 console.log("\n--- Clear ---");
 
-q2.clear("tasks");
-assert("size is 0 after clear", q2.size("tasks") === 0);
+qTasks.clear();
+assert("size is 0 after clear", qTasks.size() === 0);
 
-const afterClear = q2.pop("tasks");
+const afterClear = qTasks.pop();
 assert("pop returns null after clear", afterClear === null);
 
 // --- Failed Jobs ---
 console.log("\n--- Failed Jobs ---");
 
-const q3 = new Queue("file", { path: TEST_PATH });
-q3.push("work", { item: 1 });
-q3.push("work", { item: 2 });
+const qWork = new Queue({ topic: "work", path: TEST_PATH });
+qWork.push({ item: 1 });
+qWork.push({ item: 2 });
 
 // Process with a handler that fails
-q3.process("work", (job: QueueJob) => {
+qWork.process((job: QueueJob) => {
   throw new Error("intentional failure");
 }, { maxRetries: 3 });
 
-const failedJobs = q3.failed("work");
+const failedJobs = qWork.failed();
 assert("failed returns failed jobs", failedJobs.length === 2);
 assert("failed job has error message", failedJobs[0].error === "intentional failure");
 assert("failed job has status 'failed'", failedJobs[0].status === "failed");
@@ -100,27 +100,27 @@ assert("failed job has status 'failed'", failedJobs[0].status === "failed");
 console.log("\n--- Retry ---");
 
 const failedId = failedJobs[0].id;
-const retried = q3.retry(failedId);
+const retried = qWork.retry(failedId);
 assert("retry returns true for existing failed job", retried === true);
 
-const retriedJob = q3.pop("work");
+const retriedJob = qWork.pop();
 assert("retried job can be popped", retriedJob !== null);
 assert("retried job has correct id", retriedJob !== null && retriedJob.id === failedId);
 
-const noRetry = q3.retry("nonexistent-id");
+const noRetry = qWork.retry("nonexistent-id");
 assert("retry returns false for nonexistent job", noRetry === false);
 
 // --- Ordering (FIFO) ---
 console.log("\n--- FIFO Ordering ---");
 
-const q4 = new Queue("file", { path: TEST_PATH });
-q4.push("ordered", { seq: 1 });
-q4.push("ordered", { seq: 2 });
-q4.push("ordered", { seq: 3 });
+const qOrdered = new Queue({ topic: "ordered", path: TEST_PATH });
+qOrdered.push({ seq: 1 });
+qOrdered.push({ seq: 2 });
+qOrdered.push({ seq: 3 });
 
-const o1 = q4.pop("ordered");
-const o2 = q4.pop("ordered");
-const o3 = q4.pop("ordered");
+const o1 = qOrdered.pop();
+const o2 = qOrdered.pop();
+const o3 = qOrdered.pop();
 assert("FIFO: first push is first pop", o1 !== null && (o1.payload as any).seq === 1);
 assert("FIFO: second push is second pop", o2 !== null && (o2.payload as any).seq === 2);
 assert("FIFO: third push is third pop", o3 !== null && (o3.payload as any).seq === 3);
@@ -128,25 +128,26 @@ assert("FIFO: third push is third pop", o3 !== null && (o3.payload as any).seq =
 // --- Delayed Jobs ---
 console.log("\n--- Delayed Jobs ---");
 
-const q5 = new Queue("file", { path: TEST_PATH });
-q5.push("delayed", { action: "later" }, 3600); // 1 hour delay
+const qDelayed = new Queue({ topic: "delayed", path: TEST_PATH });
+qDelayed.push({ action: "later" }, 3600); // 1 hour delay
 
-const delayedJob = q5.pop("delayed");
+const delayedJob = qDelayed.pop();
 assert("delayed job is not popped before delay expires", delayedJob === null);
-assert("delayed queue still has size 1", q5.size("delayed") === 1);
+assert("delayed queue still has size 1", qDelayed.size() === 1);
 
 // --- Separate Queues ---
 console.log("\n--- Separate Queues ---");
 
-const q6 = new Queue("file", { path: TEST_PATH });
-q6.push("alpha", { type: "a" });
-q6.push("beta", { type: "b" });
+const qAlpha = new Queue({ topic: "alpha", path: TEST_PATH });
+const qBeta = new Queue({ topic: "beta", path: TEST_PATH });
+qAlpha.push({ type: "a" });
+qBeta.push({ type: "b" });
 
-assert("separate queues have independent size", q6.size("alpha") === 1 && q6.size("beta") === 1);
+assert("separate queues have independent size", qAlpha.size() === 1 && qBeta.size() === 1);
 
-const alphaJob = q6.pop("alpha");
+const alphaJob = qAlpha.pop();
 assert("pop from alpha returns alpha job", alphaJob !== null && (alphaJob.payload as any).type === "a");
-assert("beta queue unaffected by alpha pop", q6.size("beta") === 1);
+assert("beta queue unaffected by alpha pop", qBeta.size() === 1);
 
 // Clean up
 cleanup();
@@ -278,15 +279,15 @@ console.log("\n--- Env Default ---");
   assert("env default uses file backend", qt8.size() === 1);
 }
 
-// --- Legacy constructor still works ---
-console.log("\n--- Legacy Constructor ---");
+// --- Topic constructor ---
+console.log("\n--- Topic Constructor ---");
 
 {
-  const ql = new Queue("file", { path: TEST_PATH_TOPIC });
-  ql.push("legacy_queue", { legacy: true });
-  assert("legacy push works with queue name", ql.size("legacy_queue") === 1);
-  const lj = ql.pop("legacy_queue");
-  assert("legacy pop works with queue name", lj !== null && (lj.payload as any).legacy === true);
+  const ql = new Queue({ topic: "legacy_queue", path: TEST_PATH_TOPIC });
+  ql.push({ legacy: true });
+  assert("topic push works", ql.size() === 1);
+  const lj = ql.pop();
+  assert("topic pop works", lj !== null && (lj.payload as any).legacy === true);
 }
 
 cleanupTopic();

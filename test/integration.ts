@@ -2,7 +2,7 @@
  * Integration test — verifies the full Tina4 developer experience.
  * Run with: npx tsx test/integration.ts
  */
-import { startServer, createToken } from "../packages/core/src/index.ts";
+import { startServer, getToken } from "../packages/core/src/index.ts";
 import http from "node:http";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -77,7 +77,7 @@ process.env.TINA4_DEBUG = "true";
 // Set up auth secret and generate a test token for write operations
 const TEST_SECRET = "integration-test-secret";
 process.env.SECRET = TEST_SECRET;
-const testToken = createToken({ sub: "test-user", role: "admin" }, TEST_SECRET, 3600);
+const testToken = getToken({ sub: "test-user", role: "admin" }, TEST_SECRET, 3600);
 
 console.log("=== Starting Tina4 Integration Test ===\n");
 
