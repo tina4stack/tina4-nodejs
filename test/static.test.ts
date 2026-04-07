@@ -186,7 +186,8 @@ console.log("\n--- Response headers ---");
 console.log("\n--- Custom static directory ---");
 
 import { mkdirSync, writeFileSync, rmSync as rmSyncFs } from "node:fs";
-const customDir = "/tmp/tina4-static-test-" + Date.now();
+import { tmpdir } from "node:os";
+const customDir = join(tmpdir(), "tina4-static-test-" + Date.now());
 mkdirSync(join(customDir, "images"), { recursive: true });
 mkdirSync(join(customDir, "data"), { recursive: true });
 
