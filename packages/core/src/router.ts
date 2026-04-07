@@ -113,10 +113,12 @@ export class Router {
       routes.splice(existingIndex, 1);
     }
 
-    // Write methods (POST/PUT/PATCH/DELETE) are secure by default
+    // Write methods (POST/PUT/PATCH/DELETE) are secure by default,
+    // unless custom middleware is registered (developer handles auth themselves)
     const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
     const isWrite = WRITE_METHODS.has(method);
-    const secureDefault = isWrite ? (definition.secure ?? true) : definition.secure;
+    const hasMiddleware = definition.middlewares && definition.middlewares.length > 0;
+    const secureDefault = isWrite && !hasMiddleware ? (definition.secure ?? true) : definition.secure;
 
     const compiled: CompiledRoute = {
       pattern: definition.pattern,
