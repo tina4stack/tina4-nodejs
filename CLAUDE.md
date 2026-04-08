@@ -121,7 +121,7 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `auth.ts` — Authentication helpers
 - `cache.ts` — In-memory caching
 - `session.ts` — Session management with pluggable handlers. `TINA4_SESSION_SAMESITE` env var (default: Lax)
-- `websocket.ts` — WebSocket support with backplane for scaling via Redis pub/sub (`TINA4_WS_BACKPLANE`, `TINA4_WS_BACKPLANE_URL`)
+- `websocket.ts` — WebSocket support with backplane for scaling via Redis pub/sub (`TINA4_WS_BACKPLANE`, `TINA4_WS_BACKPLANE_URL`). Rooms API: `wss.joinRoom(clientId, room)`, `wss.leaveRoom(clientId, room)`, `wss.broadcastToRoom(room, msg, excludeIds?)`, `wss.getRoomConnections(room)`, `wss.roomCount(room)`, `wss.getClientRooms(clientId)`
 - `queue.ts` — Queue system with pluggable backends
 - `graphql.ts` — GraphQL engine
 - `i18n.ts` — Internationalization / localization

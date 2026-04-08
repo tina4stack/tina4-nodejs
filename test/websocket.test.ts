@@ -323,6 +323,192 @@ const trunc64 = Buffer.from([0x81, 127, 0x00, 0x00, 0x00]); // missing rest of 8
 const parsedTrunc64 = parseFrame(trunc64);
 assert("truncated 64-bit frame returns null", parsedTrunc64 === null);
 
+// --- WebSocket Rooms ---
+console.log("\n--- WebSocket Rooms ---");
+
+// Mock socket that records written data
+class MockSocket {
+  written: Buffer[] = [];
+  closed = false;
+  remoteAddress = "127.0.0.1";
+  write(data: Buffer): boolean { this.written.push(data); return true; }
+  end(): void { this.closed = true; }
+  on(): void {}
+}
+
+function makeTestServer(): WebSocketServer {
+  return new WebSocketServer({ port: 0 });
+}
+
+function injectClient(server: WebSocketServer, id: string, path = "/"): MockSocket {
+  const socket = new MockSocket();
+  (server as unknown as Record<string, unknown>)["clients"].set(id, {
+    id, socket, ip: "127.0.0.1", connectedAt: Date.now(), closed: false, path,
+  } as WebSocketClient);
+  return socket;
+}
+
+// getRoomConnections returns empty array for unknown room
+{
+  const s = makeTestServer();
+  const conns = s.getRoomConnections("chat");
+  assert("getRoomConnections returns [] for unknown room", Array.isArray(conns) && conns.length === 0);
+}
+
+// roomCount returns 0 for unknown room
+{
+  const s = makeTestServer();
+  assert("roomCount returns 0 for unknown room", s.roomCount("chat") === 0);
+}
+
+// joinRoom adds client to room
+{
+  const s = makeTestServer();
+  injectClient(s, "c1");
+  s.joinRoom("c1", "chat");
+  assert("joinRoom: client appears in room", s.getRoomConnections("chat").includes("c1"));
+}
+
+// roomCount reflects membership
+{
+  const s = makeTestServer();
+  injectClient(s, "c1");
+  injectClient(s, "c2");
+  s.joinRoom("c1", "chat");
+  s.joinRoom("c2", "chat");
+  assert("roomCount is 2 after two joins", s.roomCount("chat") === 2);
+}
+
+// joinRoom is idempotent
+{
+  const s = makeTestServer();
+  injectClient(s, "c1");
+  s.joinRoom("c1", "chat");
+  s.joinRoom("c1", "chat");
+  assert("joinRoom idempotent: roomCount stays 1", s.roomCount("chat") === 1);
+}
+
+// leaveRoom removes client from room
+{
+  const s = makeTestServer();
+  injectClient(s, "c1");
+  s.joinRoom("c1", "chat");
+  s.leaveRoom("c1", "chat");
+  assert("leaveRoom: client removed from room", !s.getRoomConnections("chat").includes("c1"));
+}
+
+// leaveRoom on non-member is no-op
+{
+  const s = makeTestServer();
+  s.leaveRoom("nobody", "chat");
+  assert("leaveRoom on non-member: no error", s.roomCount("chat") === 0);
+}
+
+// getClientRooms returns room names for a client
+{
+  const s = makeTestServer();
+  injectClient(s, "c1");
+  s.joinRoom("c1", "chat");
+  s.joinRoom("c1", "sports");
+  const rooms = s.getClientRooms("c1");
+  assert("getClientRooms returns both rooms",
+    rooms.includes("chat") && rooms.includes("sports") && rooms.length === 2);
+}
+
+// getClientRooms returns [] for unknown client
+{
+  const s = makeTestServer();
+  assert("getClientRooms returns [] for unknown client",
+    Array.isArray(s.getClientRooms("ghost")) && s.getClientRooms("ghost").length === 0);
+}
+
+// client can be in multiple rooms
+{
+  const s = makeTestServer();
+  injectClient(s, "c1");
+  s.joinRoom("c1", "room-a");
+  s.joinRoom("c1", "room-b");
+  s.joinRoom("c1", "room-c");
+  assert("client can join 3 rooms", s.getClientRooms("c1").length === 3);
+}
+
+// multiple clients in same room
+{
+  const s = makeTestServer();
+  injectClient(s, "c1");
+  injectClient(s, "c2");
+  injectClient(s, "c3");
+  s.joinRoom("c1", "lobby");
+  s.joinRoom("c2", "lobby");
+  s.joinRoom("c3", "lobby");
+  const conns = s.getRoomConnections("lobby");
+  assert("3 clients in same room",
+    conns.includes("c1") && conns.includes("c2") && conns.includes("c3"));
+}
+
+// room is empty after last member leaves
+{
+  const s = makeTestServer();
+  injectClient(s, "c1");
+  s.joinRoom("c1", "quiet");
+  s.leaveRoom("c1", "quiet");
+  assert("room is empty after last member leaves", s.roomCount("quiet") === 0);
+}
+
+// broadcastToRoom sends to all room members
+{
+  const s = makeTestServer();
+  const sock1 = injectClient(s, "c1");
+  const sock2 = injectClient(s, "c2");
+  injectClient(s, "c3");  // not in room
+  s.joinRoom("c1", "vip");
+  s.joinRoom("c2", "vip");
+  s.broadcastToRoom("vip", "hello");
+  assert("broadcastToRoom sends to room members",
+    sock1.written.length === 1 && sock2.written.length === 1);
+}
+
+// broadcastToRoom does not send to non-members
+{
+  const s = makeTestServer();
+  injectClient(s, "c1");
+  const sock2 = injectClient(s, "c2");
+  s.joinRoom("c1", "vip");
+  // c2 not in room
+  s.broadcastToRoom("vip", "hello");
+  assert("broadcastToRoom does not send to non-members", sock2.written.length === 0);
+}
+
+// broadcastToRoom with exclude list
+{
+  const s = makeTestServer();
+  const sock1 = injectClient(s, "c1");
+  const sock2 = injectClient(s, "c2");
+  s.joinRoom("c1", "room");
+  s.joinRoom("c2", "room");
+  s.broadcastToRoom("room", "msg", ["c1"]);
+  assert("broadcastToRoom excludes specified client",
+    sock1.written.length === 0 && sock2.written.length === 1);
+}
+
+// broadcastToRoom to empty room is no-op
+{
+  const s = makeTestServer();
+  s.broadcastToRoom("ghost-room", "hello");
+  assert("broadcastToRoom on empty room is no-op", true);
+}
+
+// rooms are cleaned up when client leaves all rooms
+{
+  const s = makeTestServer();
+  injectClient(s, "c1");
+  s.joinRoom("c1", "a");
+  s.joinRoom("c1", "b");
+  s.leaveRoom("c1", "a");
+  s.leaveRoom("c1", "b");
+  assert("client has no rooms after leaving all", s.getClientRooms("c1").length === 0);
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

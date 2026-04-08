@@ -170,6 +170,10 @@ export class WebSocketServer {
   private server: Server | null = null;
   private clients: Map<string, WebSocketClient> = new Map();
   private handlers: Map<string, EventHandler[]> = new Map();
+  /** rooms[roomName] = Set of clientIds */
+  private rooms: Map<string, Set<string>> = new Map();
+  /** clientRooms[clientId] = Set of roomNames */
+  private clientRooms: Map<string, Set<string>> = new Map();
 
   constructor(options?: { port?: number }) {
     this.port = options?.port ?? parseInt(process.env.TINA4_WS_PORT ?? "8080", 10);
@@ -281,6 +285,70 @@ export class WebSocketServer {
     return this.clients;
   }
 
+  // ── Rooms ──────────────────────────────────────────────────
+
+  /**
+   * Add a client to a named room.
+   */
+  joinRoom(clientId: string, roomName: string): void {
+    if (!this.rooms.has(roomName)) this.rooms.set(roomName, new Set());
+    this.rooms.get(roomName)!.add(clientId);
+
+    if (!this.clientRooms.has(clientId)) this.clientRooms.set(clientId, new Set());
+    this.clientRooms.get(clientId)!.add(roomName);
+  }
+
+  /**
+   * Remove a client from a named room.
+   */
+  leaveRoom(clientId: string, roomName: string): void {
+    this.rooms.get(roomName)?.delete(clientId);
+    this.clientRooms.get(clientId)?.delete(roomName);
+  }
+
+  /**
+   * Return the list of client IDs in a room.
+   */
+  getRoomConnections(roomName: string): string[] {
+    return Array.from(this.rooms.get(roomName) ?? []);
+  }
+
+  /**
+   * Return the number of clients in a room.
+   */
+  roomCount(roomName: string): number {
+    return this.rooms.get(roomName)?.size ?? 0;
+  }
+
+  /**
+   * Return the names of all rooms a client has joined.
+   */
+  getClientRooms(clientId: string): string[] {
+    return Array.from(this.clientRooms.get(clientId) ?? []);
+  }
+
+  /**
+   * Broadcast a message to all clients in a room.
+   */
+  broadcastToRoom(roomName: string, message: string, excludeIds?: string[]): void {
+    const members = this.rooms.get(roomName);
+    if (!members) return;
+
+    const frame = buildFrame(OP_TEXT, Buffer.from(message, "utf-8"));
+    const exclude = new Set(excludeIds ?? []);
+
+    for (const clientId of members) {
+      if (exclude.has(clientId)) continue;
+      const client = this.clients.get(clientId);
+      if (!client || client.closed) continue;
+      try {
+        client.socket.write(frame);
+      } catch {
+        // client disconnected
+      }
+    }
+  }
+
   // ── Private ────────────────────────────────────────────────
 
   private emit(event: string, ...args: unknown[]): void {
@@ -348,12 +416,14 @@ export class WebSocketServer {
     socket.on("close", () => {
       client.closed = true;
       this.clients.delete(clientId);
+      this.removeClientFromAllRooms(clientId);
       this.emit("close", client);
     });
 
     socket.on("error", (err) => {
       client.closed = true;
       this.clients.delete(clientId);
+      this.removeClientFromAllRooms(clientId);
       this.emit("error", err, client);
     });
   }
@@ -405,6 +475,7 @@ export class WebSocketServer {
               // already closed
             }
             this.clients.delete(client.id);
+            this.removeClientFromAllRooms(client.id);
             this.emit("close", client);
           }
           break;
@@ -413,5 +484,15 @@ export class WebSocketServer {
     }
 
     setBuffer(remaining);
+  }
+
+  private removeClientFromAllRooms(clientId: string): void {
+    const rooms = this.clientRooms.get(clientId);
+    if (rooms) {
+      for (const roomName of rooms) {
+        this.rooms.get(roomName)?.delete(clientId);
+      }
+    }
+    this.clientRooms.delete(clientId);
   }
 }
