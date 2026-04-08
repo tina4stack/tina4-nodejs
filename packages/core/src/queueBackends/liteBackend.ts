@@ -122,12 +122,14 @@ export class LiteBackend {
     return count;
   }
 
-  clear(queue: string): void {
+  clear(queue: string): number {
     const dir = this.ensureDir(queue);
+    let count = 0;
     try {
       const files = readdirSync(dir).filter(f => f.endsWith(".queue-data"));
       for (const file of files) {
         unlinkSync(join(dir, file));
+        count++;
       }
     } catch {
       // directory might not exist
@@ -140,11 +142,13 @@ export class LiteBackend {
         const files = readdirSync(failedDir).filter(f => f.endsWith(".queue-data"));
         for (const file of files) {
           unlinkSync(join(failedDir, file));
+          count++;
         }
       }
     } catch {
       // ignore
     }
+    return count;
   }
 
   failed(queue: string): QueueJob[] {
@@ -168,7 +172,7 @@ export class LiteBackend {
     return results;
   }
 
-  retry(queue: string, jobId: string): boolean {
+  retry(queue: string, jobId: string, delaySeconds?: number): boolean {
     try {
       const queues = readdirSync(this.basePath);
       for (const q of queues) {
@@ -180,6 +184,7 @@ export class LiteBackend {
           job.status = "pending";
           job.attempts = (job.attempts || 0) + 1;
           job.error = undefined;
+          job.delayUntil = delaySeconds ? new Date(Date.now() + delaySeconds * 1000).toISOString() : null;
 
           this.seq++;
           const prefix = `${Date.now()}-${String(this.seq).padStart(6, "0")}`;

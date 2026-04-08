@@ -745,3 +745,84 @@ export async function createMigration(
 
   return { upPath, downPath };
 }
+
+/**
+ * Object-oriented Migration class — canonical Tina4 Migration API.
+ *
+ * Provides parity with Python, PHP, and Ruby:
+ *   - migrate()           Run all pending migrations
+ *   - rollback(steps=1)   Roll back last N batches
+ *   - status()            Show completed/pending
+ *   - create(description) Scaffold new .sql + .down.sql files
+ *   - getApplied()        List applied migrations
+ *   - getPending()        List pending migration filenames
+ *   - getFiles()          List all migration files on disk
+ *
+ * @example
+ *   const m = new Migration(db, { migrationsDir: "migrations" });
+ *   await m.migrate();
+ *   await m.rollback(2);
+ *   await m.status();
+ *   await m.create("add users table");
+ */
+export class Migration {
+  private db?: DatabaseAdapter;
+  private dir: string;
+  private delimiter: string;
+
+  constructor(db?: DatabaseAdapter, options?: { migrationsDir?: string; delimiter?: string }) {
+    this.db = db;
+    this.dir = options?.migrationsDir ?? "migrations";
+    this.delimiter = options?.delimiter ?? ";";
+  }
+
+  /** Run all pending migrations. Returns applied/skipped/failed summary. */
+  async migrate(): Promise<MigrationResult> {
+    return migrate(this.db, { migrationsDir: this.dir, delimiter: this.delimiter });
+  }
+
+  /** Roll back the last N batches. Returns list of rolled-back migration names. */
+  async rollback(steps = 1): Promise<string[]> {
+    const db = this.db ?? (await import("./database.js")).getAdapter();
+    // If tracking table doesn't exist yet there's nothing to roll back
+    if (!db.tableExists(MIGRATION_TABLE)) return [];
+    const rolled: string[] = [];
+    for (let i = 0; i < steps; i++) {
+      const batch = rollback(this.dir, this.delimiter);
+      if (batch.length === 0) break;
+      rolled.push(...batch);
+    }
+    return rolled;
+  }
+
+  /** Get migration status: which are completed and which are pending. */
+  async status(): Promise<MigrationStatus> {
+    return status(this.db, { migrationsDir: this.dir });
+  }
+
+  /** Scaffold a new .sql + .down.sql migration file. Returns created paths. */
+  async create(description: string): Promise<{ upPath: string; downPath: string }> {
+    return createMigration(description, { migrationsDir: this.dir });
+  }
+
+  /** Return list of completed (applied) migration filenames. */
+  async getApplied(): Promise<string[]> {
+    const s = await this.status();
+    return s.completed;
+  }
+
+  /** Return list of pending migration filenames. */
+  async getPending(): Promise<string[]> {
+    const s = await this.status();
+    return s.pending;
+  }
+
+  /** Return sorted list of all migration files on disk (excludes .down.sql). */
+  getFiles(): string[] {
+    const dir = resolve(this.dir);
+    if (!existsSync(dir)) return [];
+    return sortMigrationFiles(
+      readdirSync(dir).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql")),
+    );
+  }
+}

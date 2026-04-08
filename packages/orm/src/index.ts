@@ -32,6 +32,7 @@ export {
   migrate,
   createMigration,
   status,
+  Migration,
 } from "./migration.js";
 export type { MigrationResult, MigrationStatus } from "./migration.js";
 export { generateCrudRoutes } from "./autoCrud.js";

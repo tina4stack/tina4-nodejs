@@ -219,8 +219,7 @@ process.env.SECRET = SECRET;
 const token = getToken({ userId: 1 }, 3600);
 assert("getToken returns string", typeof token === "string");
 
-const jwtPayload = validToken(token);
-assert("validToken returns payload", jwtPayload !== null && jwtPayload.userId === 1);
+assert("validToken returns true", validToken(token) === true);
 
 const expired = getToken({ userId: 1 }, -1);
 assert("expired token rejected", validToken(expired) === false);

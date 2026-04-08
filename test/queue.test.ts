@@ -96,19 +96,30 @@ assert("failed returns failed jobs", failedJobs.length === 2);
 assert("failed job has error message", failedJobs[0].error === "intentional failure");
 assert("failed job has status 'failed'", failedJobs[0].status === "failed");
 
-// --- Retry ---
+// --- Retry (instance-scoped dead letter retry) ---
 console.log("\n--- Retry ---");
 
-const failedId = failedJobs[0].id;
-const retried = qWork.retry(failedId);
-assert("retry returns true for existing failed job", retried === true);
+// Simulate jobs becoming dead letters by pushing and failing them maxRetries times
+const qDead = new Queue({ topic: "dead-work", path: TEST_PATH, maxRetries: 1 });
+qDead.push({ item: "dead-a" });
+qDead.push({ item: "dead-b" });
 
-const retriedJob = qWork.pop();
+// Process once to fail them — with maxRetries=1, one failure makes them dead letters
+qDead.process((job: QueueJob) => {
+  throw new Error("intentional failure");
+}, { maxRetries: 1 });
+
+const deadBeforeRetry = qDead.deadLetters();
+assert("dead letters exist before retry", deadBeforeRetry.length === 2);
+
+const retried = qDead.retry();
+assert("retry() returns true when dead letters exist", retried === true);
+
+const retriedJob = qDead.pop();
 assert("retried job can be popped", retriedJob !== null);
-assert("retried job has correct id", retriedJob !== null && retriedJob.id === failedId);
 
-const noRetry = qWork.retry("nonexistent-id");
-assert("retry returns false for nonexistent job", noRetry === false);
+const noRetry = qDead.retry();
+assert("retry() returns false when no dead letters", noRetry === false);
 
 // --- Ordering (FIFO) ---
 console.log("\n--- FIFO Ordering ---");

@@ -1,5 +1,5 @@
 import type { Tina4Request, Tina4Response, Middleware } from "./types.js";
-import { validToken } from "./auth.js";
+import { validToken, getPayload } from "./auth.js";
 
 export class MiddlewareChain {
   private middlewares: Middleware[] = [];
@@ -455,8 +455,7 @@ export class CsrfMiddleware {
     if (authHeader.startsWith("Bearer ")) {
       const bearerToken = authHeader.slice(7).trim();
       if (bearerToken) {
-          const payload = validToken(bearerToken);
-        if (payload !== false && typeof payload !== "boolean") {
+        if (validToken(bearerToken)) {
           return [req, res];
         }
       }
@@ -493,15 +492,15 @@ export class CsrfMiddleware {
     }
 
     // Validate the token
-    const payload = validToken(token);
-
-    if (payload === false || typeof payload === "boolean") {
+    if (!validToken(token)) {
       res({
         error: "CSRF_INVALID",
         message: "Invalid or missing form token",
       }, 403);
       return [req, res];
     }
+
+    const payload = getPayload(token) ?? {};
 
     // Session binding — if token has session_id, verify it matches
     const tokenSessionId = payload.session_id as string | undefined;

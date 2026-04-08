@@ -2,6 +2,7 @@ import { getAdapter, getNamedAdapter, setAdapter, parseDatabaseUrl } from "./dat
 import { validate as validateFields } from "./validation.js";
 import { QueryBuilder } from "./queryBuilder.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
+import { QueryCache } from "./sqlTranslation.js";
 import type { DatabaseAdapter, FieldDefinition, RelationshipDefinition } from "./types.js";
 
 /**
@@ -54,6 +55,7 @@ export class BaseModel {
   static hasMany?: RelationshipDefinition[];
   static belongsTo?: RelationshipDefinition[];
   static _db?: string;
+  static _queryCache?: QueryCache;
 
   /**
    * When true, auto-generates fieldMapping entries from camelCase field names
@@ -68,6 +70,12 @@ export class BaseModel {
    * Properties not listed here use the property name as-is.
    */
   static fieldMapping: Record<string, string> = {};
+
+  /**
+   * When true, auto-generates CRUD routes for this model.
+   * Models must explicitly opt-in by setting `static autoCrud = true;`.
+   */
+  static autoCrud: boolean = false;
 
   /** Instance data */
   [key: string]: unknown;
@@ -468,7 +476,7 @@ export class BaseModel {
   /**
    * Delete this instance. Uses soft delete if configured.
    */
-  delete(): void {
+  delete(): boolean {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
@@ -498,6 +506,7 @@ export class BaseModel {
       db.rollback();
       throw e;
     }
+    return true;
   }
 
   /**
@@ -630,9 +639,9 @@ export class BaseModel {
    * Generate and execute CREATE TABLE DDL from the model's field definitions.
    * Uses the adapter's createTable method if available, otherwise builds SQL directly.
    */
-  static createTable(): void {
+  static createTable(): boolean {
     const db = this.getDb();
-    if (db.tableExists(this.tableName)) return;
+    if (db.tableExists(this.tableName)) return true;
 
     if (typeof db.createTable === "function") {
       // Remap field keys to DB column names if fieldMapping is defined
@@ -679,6 +688,7 @@ export class BaseModel {
         throw e;
       }
     }
+    return true;
   }
 
   /**
@@ -691,6 +701,45 @@ export class BaseModel {
       throw new Error(`${ModelClass.tableName}: record with id ${id} not found`);
     }
     return result;
+  }
+
+  /**
+   * Return true if a record with the given primary key exists.
+   */
+  static exists(id: unknown): boolean {
+    const ModelClass = this as unknown as typeof BaseModel;
+    return ModelClass.findById(id) !== null;
+  }
+
+  /**
+   * Run a raw SQL query with results cached by TTL. Cache is per-model-class.
+   */
+  static cached<T extends BaseModel>(
+    this: new (data?: Record<string, unknown>) => T,
+    sql: string,
+    params?: unknown[],
+    ttl = 60,
+  ): T[] {
+    const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
+    if (!ModelClass._queryCache) {
+      ModelClass._queryCache = new QueryCache({ defaultTtl: ttl, maxSize: 500 });
+    }
+    const key = QueryCache.queryKey(`${ModelClass.tableName}:${sql}`, params ?? []);
+    const hit = ModelClass._queryCache.get(key) as T[] | undefined;
+    if (hit !== undefined) return hit;
+    const results = ModelClass.select<T>(sql, params);
+    ModelClass._queryCache.set(key, results, ttl);
+    return results;
+  }
+
+  /**
+   * Clear the per-model query cache.
+   */
+  static clearCache(): void {
+    const ModelClass = this as unknown as typeof BaseModel;
+    if (ModelClass._queryCache) {
+      ModelClass._queryCache.clear();
+    }
   }
 
   /**
@@ -725,7 +774,7 @@ export class BaseModel {
   /**
    * Permanently delete this instance, bypassing soft delete.
    */
-  forceDelete(): void {
+  forceDelete(): boolean {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
@@ -747,12 +796,13 @@ export class BaseModel {
       db.rollback();
       throw e;
     }
+    return true;
   }
 
   /**
    * Restore a soft-deleted record.
    */
-  restore(): void {
+  restore(): boolean {
     const ModelClass = this.constructor as typeof BaseModel;
     if (!ModelClass.softDelete) {
       throw new Error("restore() is only available on models with softDelete enabled");
@@ -779,6 +829,7 @@ export class BaseModel {
       throw e;
     }
     this.is_deleted = 0;
+    return true;
   }
 
   /**

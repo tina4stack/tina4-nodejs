@@ -57,7 +57,7 @@ export interface QueueBackendInterface {
   push(queue: string, payload: unknown, delay?: number): string;
   pop(queue: string): QueueJob | null;
   size(queue: string): number;
-  clear(queue: string): void;
+  clear(queue: string): number;
 }
 
 // ── Queue ────────────────────────────────────────────────────
@@ -185,16 +185,16 @@ export class Queue {
   }
 
   /**
-   * Remove all jobs from this queue's topic.
+   * Remove all jobs from this queue's topic. Returns the number cleared.
    */
-  clear(): void {
+  clear(): number {
     const q = this.topic;
 
     if (this.externalBackend) {
       this.externalBackend.clear(q);
-      return;
+      return 0;
     }
-    this.liteBackend.clear(q);
+    return this.liteBackend.clear(q);
   }
 
   /**
@@ -205,10 +205,21 @@ export class Queue {
   }
 
   /**
-   * Retry a failed job by moving it back to the queue.
+   * Retry all dead letter jobs for this queue's topic.
+   * Moves failed jobs that exceeded max retries back to pending.
+   *
+   * @param delaySeconds - Optional delay before jobs become available
+   * @returns true if at least one job was re-queued, false if none found
    */
-  retry(jobId: string, delaySeconds?: number): boolean {
-    return this.liteBackend.retry(this.topic, jobId, delaySeconds);
+  retry(delaySeconds?: number): boolean {
+    const deadJobs = this.deadLetters();
+    if (deadJobs.length === 0) return false;
+    let retried = false;
+    for (const job of deadJobs) {
+      const ok = this.liteBackend.retry(this.topic, job.id, delaySeconds);
+      if (ok) retried = true;
+    }
+    return retried;
   }
 
   /**

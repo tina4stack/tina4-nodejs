@@ -8,7 +8,7 @@ import cluster from "node:cluster";
 import os from "node:os";
 import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
 import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
-import { validToken } from "./auth.js";
+import { validToken, getPayload } from "./auth.js";
 import { discoverRoutes } from "./routeDiscovery.js";
 import { createRequest, parseBody } from "./request.js";
 import { createResponse, setDefaultTemplatesDir } from "./response.js";
@@ -596,7 +596,7 @@ ${reset}
           console.log(`    \x1b[35m${definition.tableName}\x1b[0m (${Object.keys(definition.fields).length} fields)`);
         }
 
-        // Generate auto-CRUD routes (file-based routes take precedence)
+        // Generate auto-CRUD routes for all discovered models
         const crudRoutes = orm.generateCrudRoutes(models);
         for (const route of crudRoutes) {
           // Only add if no file-based route already handles this
@@ -791,15 +791,12 @@ ${reset}
         if (match.secure === true && match.noAuth !== true && !isDevAdmin) {
           const authHeader = req.headers.authorization ?? "";
           const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-          const secret = process.env.SECRET || "";
-          const payload = token ? validToken(token, secret) : null;
-
-          if (!payload) {
+          if (!token || !validToken(token)) {
             res.raw.writeHead(401, { "Content-Type": "application/json" });
             res.raw.end(JSON.stringify({ error: "Unauthorized" }));
             return;
           }
-          req.user = payload;
+          req.user = getPayload(token) ?? {};
         }
 
         // Inject path params by name into handler arguments, then request/response

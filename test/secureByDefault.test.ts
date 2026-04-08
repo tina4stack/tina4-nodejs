@@ -11,7 +11,7 @@
  * Run with: npx tsx test/secureByDefault.test.ts
  */
 import { Router } from "../packages/core/src/router.ts";
-import { getToken, validToken } from "../packages/core/src/auth.ts";
+import { getToken, validToken, getPayload } from "../packages/core/src/auth.ts";
 import type { Tina4Request, Tina4Response, RouteHandler } from "../packages/core/src/types.ts";
 
 let passed = 0;
@@ -46,12 +46,10 @@ function simulateAuthEnforcement(
   if (match.secure === true && match.noAuth !== true) {
     const header = authHeader ?? "";
     const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-    const payload = token ? validToken(token) : null;
-
-    if (!payload) {
+    if (!token || !validToken(token)) {
       return { status: 401, userPayload: null };
     }
-    return { status: 200, userPayload: payload };
+    return { status: 200, userPayload: getPayload(token) };
   }
   // Not secure or noAuth — request proceeds
   return { status: 200, userPayload: null };

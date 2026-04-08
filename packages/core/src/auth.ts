@@ -71,9 +71,7 @@ export function getToken(
  * Secret is always read from `process.env.SECRET`.
  * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
  */
-export function validToken(
-  token: string,
-): boolean | Record<string, unknown> {
+export function validToken(token: string): boolean {
   const secret = process.env.SECRET ?? "";
   if (!secret) {
     console.warn("Auth: SECRET not set in .env — using blank secret (insecure)");
@@ -96,7 +94,7 @@ export function validToken(
       return false;
     }
 
-    return payload;
+    return true;
   } catch {
     return false;
   }
@@ -213,16 +211,12 @@ export function authMiddleware(secret?: string, algorithm: string = "HS256"): Mi
     }
 
     const token = authHeader.slice(7);
-    // Use env-backed validToken; secret/algorithm params kept for backward compat
-    // but validToken now always reads from env
-    const payload = validToken(token);
-
-    if (payload === false || typeof payload === "boolean") {
+    if (!validToken(token)) {
       res({ error: "Unauthorized" }, 401);
       return;
     }
 
-    (req as any).auth = payload;
+    (req as any).auth = getPayload(token);
     next();
   };
 }
@@ -243,8 +237,10 @@ export function refreshToken(
   token: string,
   expiresIn: number = 3600,
 ): string | null {
-  const payload = validToken(token);
-  if (payload === false || typeof payload === "boolean") return null;
+  if (!validToken(token)) return null;
+
+  const payload = getPayload(token);
+  if (!payload) return null;
 
   // Strip standard timing claims so getToken sets fresh ones
   const { iat: _iat, exp: _exp, ...claims } = payload;
@@ -274,8 +270,7 @@ export function authenticateRequest(
   const token = authHeader.slice(7);
 
   // Try JWT first (secret/algorithm params kept for backward compat but validToken reads from env)
-  const payload = validToken(token);
-  if (payload !== false && typeof payload !== "boolean") return payload;
+  if (validToken(token)) return getPayload(token);
 
   // Fallback: treat Bearer value as API key
   if (validateApiKey(token)) {
