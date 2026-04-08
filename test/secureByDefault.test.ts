@@ -46,8 +46,7 @@ function simulateAuthEnforcement(
   if (match.secure === true && match.noAuth !== true) {
     const header = authHeader ?? "";
     const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-    const secret = process.env.SECRET || "";
-    const payload = token ? validToken(token, secret) : null;
+    const payload = token ? validToken(token) : null;
 
     if (!payload) {
       return { status: 401, userPayload: null };
@@ -80,7 +79,7 @@ console.log("-- Write methods (secure by default) --");
   const router = new Router();
   router.post("/api/data", handler);
   const match = router.match("POST", "/api/data");
-  const token = getToken({ userId: 42 }, SECRET, 3600);
+  const token = getToken({ userId: 42 }, 3600);
   const result = simulateAuthEnforcement(match!, `Bearer ${token}`);
   assert("14. POST with valid Bearer returns 200", result.status === 200);
   assert("14b. User payload attached", result.userPayload?.userId === 42);
@@ -158,7 +157,7 @@ console.log("\n-- Edge cases --");
   const router = new Router();
   router.post("/api/data", handler);
   const match = router.match("POST", "/api/data");
-  const expiredToken = getToken({ userId: 1 }, SECRET, -1);
+  const expiredToken = getToken({ userId: 1 }, -1);
   const result = simulateAuthEnforcement(match!, `Bearer ${expiredToken}`);
   assert("Expired Bearer on POST returns 401", result.status === 401);
 }
@@ -175,7 +174,7 @@ console.log("\n-- Edge cases --");
   const router = new Router();
   router.get("/api/private", handler).secure();
   const match = router.match("GET", "/api/private");
-  const token = getToken({ role: "admin" }, SECRET, 3600);
+  const token = getToken({ role: "admin" }, 3600);
   const result = simulateAuthEnforcement(match!, `Bearer ${token}`);
   assert("Valid Bearer on secure GET returns 200", result.status === 200);
 }

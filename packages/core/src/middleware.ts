@@ -455,9 +455,8 @@ export class CsrfMiddleware {
     if (authHeader.startsWith("Bearer ")) {
       const bearerToken = authHeader.slice(7).trim();
       if (bearerToken) {
-        const secret = process.env.SECRET || "tina4-default-secret";
-        const payload = validToken(bearerToken, secret);
-        if (payload !== null) {
+          const payload = validToken(bearerToken);
+        if (payload !== false && typeof payload !== "boolean") {
           return [req, res];
         }
       }
@@ -494,10 +493,9 @@ export class CsrfMiddleware {
     }
 
     // Validate the token
-    const secret = process.env.SECRET || "tina4-default-secret";
-    const payload = validToken(token, secret);
+    const payload = validToken(token);
 
-    if (payload === null) {
+    if (payload === false || typeof payload === "boolean") {
       res({
         error: "CSRF_INVALID",
         message: "Invalid or missing form token",

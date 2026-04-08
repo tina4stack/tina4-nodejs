@@ -22,6 +22,7 @@ function assert(label: string, condition: boolean) {
 }
 
 const SECRET = "test-secret-key-for-post-protection";
+process.env.SECRET = SECRET;
 const authMw = authMiddleware(SECRET);
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -68,7 +69,7 @@ console.log("-- POST with authMiddleware --");
 // ── POST with valid token succeeds ──────────────────────────────
 
 {
-  const token = getToken({ userId: 1, role: "admin" }, SECRET);
+  const token = getToken({ userId: 1, role: "admin" });
   const req = mockRequest(`Bearer ${token}`);
   const mock = mockResponse();
   let nextCalled = false;
@@ -83,7 +84,7 @@ console.log("-- POST with authMiddleware --");
 console.log("\n-- Expired token --");
 
 {
-  const expiredToken = getToken({ userId: 1 }, SECRET, -1);
+  const expiredToken = getToken({ userId: 1 }, -1);
   const req = mockRequest(`Bearer ${expiredToken}`);
   const mock = mockResponse();
   let nextCalled = false;
@@ -110,7 +111,9 @@ console.log("\n-- Malformed token --");
 console.log("\n-- Wrong secret --");
 
 {
-  const wrongToken = getToken({ userId: 1 }, "wrong-secret");
+  process.env.SECRET = "wrong-secret";
+  const wrongToken = getToken({ userId: 1 });
+  process.env.SECRET = SECRET;
   const req = mockRequest(`Bearer ${wrongToken}`);
   const mock = mockResponse();
   let nextCalled = false;
@@ -202,7 +205,7 @@ console.log("\n-- Mixed routes --");
 console.log("\n-- Custom claims preserved through auth --");
 
 {
-  const token = getToken({ userId: 42, role: "admin", scope: "write" }, SECRET);
+  const token = getToken({ userId: 42, role: "admin", scope: "write" });
   const req = mockRequest(`Bearer ${token}`);
   const mock = mockResponse();
   let nextCalled = false;

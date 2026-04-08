@@ -32,31 +32,29 @@ function base64urlDecode(str: string): Buffer {
 /**
  * Create a signed JWT token.
  *
- * @param payload  - Claims to encode (e.g. `{ userId: 1, role: "admin" }`)
- * @param secret   - HMAC secret (HS256) or PEM private key (RS256)
+ * Secret is always read from `process.env.SECRET`.
+ * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
+ *
+ * @param payload   - Claims to encode (e.g. `{ userId: 1, role: "admin" }`)
  * @param expiresIn - Lifetime in seconds (default 3600)
- * @param algorithm - "HS256" or "RS256" (default "HS256")
  * @returns Signed JWT string: header.payload.signature
  */
 export function getToken(
   payload: Record<string, unknown>,
-  secret?: string,
-  expiresIn: number = 60,
-  algorithm: string = "HS256",
+  expiresIn: number = 3600,
 ): string {
+  const secret = process.env.SECRET ?? "";
   if (!secret) {
-    secret = process.env.SECRET ?? "";
-    if (!secret) {
-      console.warn("Auth: SECRET not set in .env — using blank secret (insecure)");
-    }
+    console.warn("Auth: SECRET not set in .env — using blank secret (insecure)");
   }
+  const algorithm = process.env.TINA4_JWT_ALGORITHM ?? "HS256";
 
   const header = { alg: algorithm, typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
 
   const claims: Record<string, unknown> = { ...payload, iat: now };
   if (expiresIn !== 0) {
-    claims.exp = now + Math.floor(expiresIn * 60);
+    claims.exp = now + expiresIn;
   }
 
   const h = base64urlEncode(Buffer.from(JSON.stringify(header)));
@@ -68,39 +66,39 @@ export function getToken(
 }
 
 /**
- * Validate a JWT token and return the decoded payload, or null if invalid/expired.
+ * Validate a JWT token and return the decoded payload, or false if invalid/expired.
+ *
+ * Secret is always read from `process.env.SECRET`.
+ * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
  */
 export function validToken(
   token: string,
-  secret?: string,
-  algorithm: string = "HS256",
-): Record<string, unknown> | null {
+): boolean | Record<string, unknown> {
+  const secret = process.env.SECRET ?? "";
   if (!secret) {
-    secret = process.env.SECRET ?? "";
-    if (!secret) {
-      console.warn("Auth: SECRET not set in .env — using blank secret (insecure)");
-    }
+    console.warn("Auth: SECRET not set in .env — using blank secret (insecure)");
   }
+  const algorithm = process.env.TINA4_JWT_ALGORITHM ?? "HS256";
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return null;
+    if (parts.length !== 3) return false;
 
     const [h, p, sig] = parts;
     const signingInput = `${h}.${p}`;
 
-    if (!verifySignature(signingInput, sig, secret, algorithm)) {
-      return null;
+    if (!verifySignature(signingInput, sig, secret as string, algorithm)) {
+      return false;
     }
 
     const payload = JSON.parse(base64urlDecode(p).toString()) as Record<string, unknown>;
 
     if (typeof payload.exp === "number" && Date.now() / 1000 > payload.exp) {
-      return null;
+      return false;
     }
 
     return payload;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -205,7 +203,7 @@ export function checkPassword(password: string, hash: string): boolean {
  * Authorization header. On success, attaches the decoded payload to
  * `(request as any).auth`. On failure, sends a 401 JSON response.
  */
-export function authMiddleware(secret: string, algorithm: string = "HS256"): Middleware {
+export function authMiddleware(secret?: string, algorithm: string = "HS256"): Middleware {
   return (req: Tina4Request, res: Tina4Response, next: () => void): void => {
     const authHeader = req.headers.authorization ?? "";
 
@@ -215,9 +213,11 @@ export function authMiddleware(secret: string, algorithm: string = "HS256"): Mid
     }
 
     const token = authHeader.slice(7);
-    const payload = validToken(token, secret, algorithm);
+    // Use env-backed validToken; secret/algorithm params kept for backward compat
+    // but validToken now always reads from env
+    const payload = validToken(token);
 
-    if (payload === null) {
+    if (payload === false || typeof payload === "boolean") {
       res({ error: "Unauthorized" }, 401);
       return;
     }
@@ -233,24 +233,22 @@ export function authMiddleware(secret: string, algorithm: string = "HS256"): Mid
  * Refresh a JWT token — validate the existing token then re-sign
  * with a fresh expiry.
  *
+ * Secret is always read from `process.env.SECRET`.
+ *
  * @param token     - Existing JWT to refresh
- * @param secret    - HMAC secret or PEM key
  * @param expiresIn - New lifetime in seconds (default 3600)
- * @param algorithm - "HS256" or "RS256" (default "HS256")
  * @returns New signed JWT string, or null if the input token is invalid/expired
  */
 export function refreshToken(
   token: string,
-  secret?: string,
-  expiresIn: number = 60,
-  algorithm: string = "HS256",
+  expiresIn: number = 3600,
 ): string | null {
-  const payload = validToken(token, secret, algorithm);
-  if (payload === null) return null;
+  const payload = validToken(token);
+  if (payload === false || typeof payload === "boolean") return null;
 
   // Strip standard timing claims so getToken sets fresh ones
   const { iat: _iat, exp: _exp, ...claims } = payload;
-  return getToken(claims, secret, expiresIn, algorithm);
+  return getToken(claims, expiresIn);
 }
 
 // ── Request Authentication ───────────────────────────────────────
@@ -275,9 +273,9 @@ export function authenticateRequest(
 
   const token = authHeader.slice(7);
 
-  // Try JWT first
-  const payload = validToken(token, secret, algorithm);
-  if (payload !== null) return payload;
+  // Try JWT first (secret/algorithm params kept for backward compat but validToken reads from env)
+  const payload = validToken(token);
+  if (payload !== false && typeof payload !== "boolean") return payload;
 
   // Fallback: treat Bearer value as API key
   if (validateApiKey(token)) {

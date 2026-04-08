@@ -32,6 +32,7 @@ function assert(label: string, condition: boolean) {
 }
 
 const SECRET = "csrf-test-secret";
+process.env.SECRET = SECRET;
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -160,7 +161,7 @@ console.log("\n-- Body token --");
 
 {
   setupEnv();
-  const token = getToken({ csrf: true }, SECRET, 3600);
+  const token = getToken({ csrf: true }, 3600);
   const req = mockRequest({
     method: "POST",
     body: { formToken: token },
@@ -172,7 +173,7 @@ console.log("\n-- Body token --");
 
 {
   setupEnv();
-  const token = getToken({ csrf: true }, SECRET, 3600);
+  const token = getToken({ csrf: true }, 3600);
   const req = mockRequest({
     method: "PUT",
     body: { formToken: token },
@@ -188,7 +189,7 @@ console.log("\n-- Header token --");
 
 {
   setupEnv();
-  const token = getToken({ csrf: true }, SECRET, 3600);
+  const token = getToken({ csrf: true }, 3600);
   const req = mockRequest({
     method: "POST",
     headers: { "x-form-token": token },
@@ -200,7 +201,7 @@ console.log("\n-- Header token --");
 
 {
   setupEnv();
-  const token = getToken({ csrf: true }, SECRET, 3600);
+  const token = getToken({ csrf: true }, 3600);
   const req = mockRequest({
     method: "POST",
     body: {},
@@ -217,7 +218,7 @@ console.log("\n-- Header precedence over body --");
 
 {
   setupEnv();
-  const validHeaderToken = getToken({ csrf: true }, SECRET, 3600);
+  const validHeaderToken = getToken({ csrf: true }, 3600);
   const req = mockRequest({
     method: "POST",
     body: { formToken: "not.a.valid.token" },
@@ -233,8 +234,8 @@ console.log("\n-- Header precedence over body --");
 
 {
   setupEnv();
-  const validBodyToken = getToken({ csrf: true }, SECRET, 3600);
-  const validHeaderToken = getToken({ csrf: true }, SECRET, 3600);
+  const validBodyToken = getToken({ csrf: true }, 3600);
+  const validHeaderToken = getToken({ csrf: true }, 3600);
   const req = mockRequest({
     method: "POST",
     body: { formToken: validBodyToken },
@@ -251,7 +252,7 @@ console.log("\n-- Query param rejection --");
 
 {
   setupEnv();
-  const token = getToken({ csrf: true }, SECRET, 3600);
+  const token = getToken({ csrf: true }, 3600);
   const req = mockRequest({
     method: "POST",
     query: { formToken: token },
@@ -263,7 +264,7 @@ console.log("\n-- Query param rejection --");
 
 {
   setupEnv();
-  const token = getToken({ csrf: true }, SECRET, 3600);
+  const token = getToken({ csrf: true }, 3600);
   const req = mockRequest({
     method: "POST",
     query: { formToken: token },
@@ -291,7 +292,7 @@ console.log("\n-- Invalid tokens --");
 
 {
   setupEnv();
-  const expiredToken = getToken({ csrf: true }, SECRET, -1);
+  const expiredToken = getToken({ csrf: true }, -1);
   const req = mockRequest({
     method: "POST",
     body: { formToken: expiredToken },
@@ -303,7 +304,9 @@ console.log("\n-- Invalid tokens --");
 
 {
   setupEnv();
-  const wrongSecretToken = getToken({ csrf: true }, "wrong-secret", 3600);
+  process.env.SECRET = "wrong-secret";
+  const wrongSecretToken = getToken({ csrf: true }, 3600);
+  process.env.SECRET = SECRET;
   const req = mockRequest({
     method: "POST",
     body: { formToken: wrongSecretToken },
@@ -345,7 +348,7 @@ console.log("\n-- Bearer auth skip --");
 
 {
   setupEnv();
-  const bearerToken = getToken({ userId: 1 }, SECRET, 3600);
+  const bearerToken = getToken({ userId: 1 }, 3600);
   const req = mockRequest({
     method: "POST",
     headers: { authorization: `Bearer ${bearerToken}` },
@@ -372,7 +375,7 @@ console.log("\n-- Session binding --");
 
 {
   setupEnv();
-  const token = getToken({ csrf: true, session_id: "session-abc" }, SECRET, 3600);
+  const token = getToken({ csrf: true, session_id: "session-abc" }, 3600);
   const req = mockRequest({
     method: "POST",
     body: { formToken: token },
@@ -385,7 +388,7 @@ console.log("\n-- Session binding --");
 
 {
   setupEnv();
-  const token = getToken({ csrf: true, session_id: "session-match" }, SECRET, 3600);
+  const token = getToken({ csrf: true, session_id: "session-match" }, 3600);
   const req = mockRequest({
     method: "POST",
     body: { formToken: token },
@@ -398,7 +401,7 @@ console.log("\n-- Session binding --");
 
 {
   setupEnv();
-  const token = getToken({ csrf: true }, SECRET, 3600);
+  const token = getToken({ csrf: true }, 3600);
   const req = mockRequest({
     method: "POST",
     body: { formToken: token },

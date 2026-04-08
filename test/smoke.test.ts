@@ -214,15 +214,16 @@ assert("session destroyed", sess.getSessionId() === null);
 console.log("\n=== 7. Auth/JWT ===\n");
 
 const SECRET = "smoke-test-secret-key";
+process.env.SECRET = SECRET;
 
-const token = getToken({ userId: 1 }, SECRET, 3600);
+const token = getToken({ userId: 1 }, 3600);
 assert("getToken returns string", typeof token === "string");
 
-const jwtPayload = validToken(token, SECRET);
+const jwtPayload = validToken(token);
 assert("validToken returns payload", jwtPayload !== null && jwtPayload.userId === 1);
 
-const expired = getToken({ userId: 1 }, SECRET, -1);
-assert("expired token rejected", validToken(expired, SECRET) === null);
+const expired = getToken({ userId: 1 }, -1);
+assert("expired token rejected", validToken(expired) === false);
 
 const hash = hashPassword("password123");
 assert("hashPassword returns string", typeof hash === "string");
