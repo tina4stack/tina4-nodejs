@@ -30,9 +30,9 @@ class SafeString {
  *   - Date, Map, Set, Error, RegExp (shown with their type and contents)
  *   - Class instances (shown with the class name prefix)
  *
- * Intended for the `|dump` filter in templates. Output is a plain string;
- * the filter wraps it in <pre> and marks it safe so the template engine
- * doesn't double-escape.
+ * Used by both the `|dump` filter and the `dump()` global function.
+ * Output is a plain string; callers wrap it in <pre> and mark it safe so
+ * the template engine doesn't double-escape.
  */
 function inspectValue(value: unknown, seen: WeakSet<object> = new WeakSet(), depth = 0): string {
   // Primitives
@@ -114,6 +114,29 @@ function inspectValue(value: unknown, seen: WeakSet<object> = new WeakSet(), dep
   } finally {
     seen.delete(obj);
   }
+}
+
+/**
+ * Render a value as a pre-formatted, HTML-escaped dump wrapped in <pre> tags.
+ * Returns a SafeString so the template engine does not double-escape the
+ * entities. Shared by the `|dump` filter and the `dump()` global function.
+ *
+ * Gated on TINA4_DEBUG=true. In production (TINA4_DEBUG unset or false)
+ * dump output is suppressed entirely to avoid leaking internal state,
+ * stack-traceable object shapes, or sensitive values into rendered HTML.
+ */
+function renderDump(value: unknown): SafeString {
+  const debugMode = (process.env.TINA4_DEBUG ?? "").toLowerCase() === "true";
+  if (!debugMode) {
+    return new SafeString("");
+  }
+  const dumped = inspectValue(value);
+  const escaped = dumped
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+  return new SafeString(`<pre>${escaped}</pre>`);
 }
 
 type TokenType = "TEXT" | "VAR" | "BLOCK" | "COMMENT";
@@ -1264,6 +1287,11 @@ export class Frond {
     this.globals.form_token = (descriptor?: string) => _generateFormToken(descriptor || "");
     this.globals.formTokenValue = (descriptor?: string) => _generateFormTokenValue(descriptor || "");
     this.globals.form_token_value = (descriptor?: string) => _generateFormTokenValue(descriptor || "");
+
+    // Debug helper: {{ dump(x) }} — gated on TINA4_DEBUG, see renderDump().
+    // Available alongside the |dump filter so both styles work:
+    //   {{ user|dump }}   and   {{ dump(user) }}
+    this.globals.dump = (value: unknown) => renderDump(value);
   }
 
   sandbox(filters?: string[], tags?: string[], vars?: string[]): Frond {
@@ -1687,18 +1715,11 @@ export class Frond {
           case "keys":       value = (typeof value === "object" && value !== null && !Array.isArray(value)) ? Object.keys(value) : []; continue;
           case "values":     value = (typeof value === "object" && value !== null && !Array.isArray(value)) ? Object.values(value) : []; continue;
           case "json_encode": value = JSON.stringify(value); continue;
-          case "dump": {
-            // Use a safe inspector rather than JSON.stringify — handles
-            // circular refs, BigInt, Map/Set, Error, Date, class instances.
-            const dumped = inspectValue(value);
-            const escaped = dumped
-              .replace(/&/g, "&amp;")
-              .replace(/</g, "&lt;")
-              .replace(/>/g, "&gt;")
-              .replace(/"/g, "&quot;");
-            value = new SafeString(`<pre>${escaped}</pre>`);
+          case "dump":
+            // Delegates to renderDump(), which is gated on TINA4_DEBUG.
+            // In production this emits an empty SafeString (no leaked state).
+            value = renderDump(value);
             continue;
-          }
           case "nl2br":      value = String(value).replace(/\n/g, "<br>\n"); continue;
           case "unique":     value = Array.isArray(value) ? [...new Set(value)] : value; continue;
           case "sort":       value = Array.isArray(value) ? [...value].sort() : value; continue;

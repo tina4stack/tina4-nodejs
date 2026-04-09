@@ -109,49 +109,87 @@ assert("sha256 length", engine.renderString("{{ text | sha256 }}", { text: "hell
 assert("map filter", engine.renderString('{{ users | map("name") | join(", ") }}', { users: [{ name: "A" }, { name: "B" }] }) === "A, B");
 assert("column filter", engine.renderString('{{ rows | column("x") | join(",") }}', { rows: [{ x: 1 }, { x: 2 }] }) === "1,2");
 assert("string filter", engine.renderString("{{ num | string }}", { num: 42 }) === "42");
-// Dump filter — the inspectValue-based implementation wraps output in <pre>
-// and handles complex objects that JSON.stringify would crash or silently
-// corrupt (circular refs, BigInt, Map/Set, Error, class instances, Date).
-assert("dump plain array",    engine.renderString("{{ val | dump | safe }}", { val: [1, 2] }) === "<pre>[1, 2]</pre>");
-assert("dump plain object",   engine.renderString("{{ val | dump | safe }}", { val: { a: 1, b: "hi" } }) === '<pre>{ a: 1, b: &quot;hi&quot; }</pre>');
-assert("dump class instance", (() => {
-  class User { constructor(public name: string) {} }
-  return engine.renderString("{{ val | dump | safe }}", { val: new User("Alice") });
-})() === '<pre>User { name: &quot;Alice&quot; }</pre>');
-assert("dump circular ref does not throw", (() => {
-  const c: { name: string; self?: unknown } = { name: "root" };
-  c.self = c;
-  const out = engine.renderString("{{ val | dump | safe }}", { val: c });
-  return out.includes("[Circular]") && out.includes("root");
-})());
-assert("dump BigInt does not throw", (() => {
-  const out = engine.renderString("{{ val | dump | safe }}", { val: { n: 9007199254740993n } });
-  return out.includes("9007199254740993n");
-})());
-assert("dump Date retains type", (() => {
-  const out = engine.renderString("{{ val | dump | safe }}", { val: new Date("2026-04-09T13:00:00Z") });
-  return out.includes("Date(2026-04-09T13:00:00.000Z)");
-})());
-assert("dump Map shows contents", (() => {
-  const out = engine.renderString("{{ val | dump | safe }}", { val: new Map([["a", 1], ["b", 2]]) });
-  return out.includes("Map(2)") && out.includes("a") && out.includes("b");
-})());
-assert("dump Set shows contents", (() => {
-  const out = engine.renderString("{{ val | dump | safe }}", { val: new Set([1, 2, 3]) });
-  return out.includes("Set(3)") && out.includes("1, 2, 3");
-})());
-assert("dump Error shows type + message", (() => {
-  const out = engine.renderString("{{ val | dump | safe }}", { val: new Error("boom") });
-  return out.includes("Error(") && out.includes("boom");
-})());
-assert("dump undefined property preserved", (() => {
-  const out = engine.renderString("{{ val | dump | safe }}", { val: { a: undefined, b: 1 } });
-  return out.includes("undefined");
-})());
-assert("dump function shown as [Function: ...]", (() => {
-  const out = engine.renderString("{{ val | dump | safe }}", { val: { cb: function myFn() {} } });
-  return out.includes("[Function:");
-})());
+// Dump filter + dump() global function — the inspectValue-based
+// implementation wraps output in <pre> and handles complex objects that
+// JSON.stringify would crash or silently corrupt (circular refs, BigInt,
+// Map/Set, Error, class instances, Date).
+//
+// Dump is gated on TINA4_DEBUG=true and returns "" in production. We
+// explicitly enable debug for the dump assertions, then restore the
+// previous value afterwards so later tests aren't affected.
+{
+  const prevDebug = process.env.TINA4_DEBUG;
+  process.env.TINA4_DEBUG = "true";
+
+  assert("dump plain array",    engine.renderString("{{ val | dump | safe }}", { val: [1, 2] }) === "<pre>[1, 2]</pre>");
+  assert("dump plain object",   engine.renderString("{{ val | dump | safe }}", { val: { a: 1, b: "hi" } }) === '<pre>{ a: 1, b: &quot;hi&quot; }</pre>');
+  assert("dump class instance", (() => {
+    class User { constructor(public name: string) {} }
+    return engine.renderString("{{ val | dump | safe }}", { val: new User("Alice") });
+  })() === '<pre>User { name: &quot;Alice&quot; }</pre>');
+  assert("dump circular ref does not throw", (() => {
+    const c: { name: string; self?: unknown } = { name: "root" };
+    c.self = c;
+    const out = engine.renderString("{{ val | dump | safe }}", { val: c });
+    return out.includes("[Circular]") && out.includes("root");
+  })());
+  assert("dump BigInt does not throw", (() => {
+    const out = engine.renderString("{{ val | dump | safe }}", { val: { n: 9007199254740993n } });
+    return out.includes("9007199254740993n");
+  })());
+  assert("dump Date retains type", (() => {
+    const out = engine.renderString("{{ val | dump | safe }}", { val: new Date("2026-04-09T13:00:00Z") });
+    return out.includes("Date(2026-04-09T13:00:00.000Z)");
+  })());
+  assert("dump Map shows contents", (() => {
+    const out = engine.renderString("{{ val | dump | safe }}", { val: new Map([["a", 1], ["b", 2]]) });
+    return out.includes("Map(2)") && out.includes("a") && out.includes("b");
+  })());
+  assert("dump Set shows contents", (() => {
+    const out = engine.renderString("{{ val | dump | safe }}", { val: new Set([1, 2, 3]) });
+    return out.includes("Set(3)") && out.includes("1, 2, 3");
+  })());
+  assert("dump Error shows type + message", (() => {
+    const out = engine.renderString("{{ val | dump | safe }}", { val: new Error("boom") });
+    return out.includes("Error(") && out.includes("boom");
+  })());
+  assert("dump undefined property preserved", (() => {
+    const out = engine.renderString("{{ val | dump | safe }}", { val: { a: undefined, b: 1 } });
+    return out.includes("undefined");
+  })());
+  assert("dump function shown as [Function: ...]", (() => {
+    const out = engine.renderString("{{ val | dump | safe }}", { val: { cb: function myFn() {} } });
+    return out.includes("[Function:");
+  })());
+
+  // dump() global function — must produce identical output to the filter
+  // form so templates can use either style interchangeably.
+  assert("dump() function form matches filter form", (() => {
+    const data = { val: { a: 1, b: "hi" } };
+    const filterOut = engine.renderString("{{ val | dump | safe }}", data);
+    const fnOut = engine.renderString("{{ dump(val) | safe }}", data);
+    return filterOut === fnOut && fnOut === '<pre>{ a: 1, b: &quot;hi&quot; }</pre>';
+  })());
+  assert("dump() function on circular ref", (() => {
+    const c: { name: string; self?: unknown } = { name: "root" };
+    c.self = c;
+    const out = engine.renderString("{{ dump(val) | safe }}", { val: c });
+    return out.includes("[Circular]");
+  })());
+
+  // Production gating — TINA4_DEBUG=false suppresses dump entirely so no
+  // internal state leaks through rendered HTML.
+  process.env.TINA4_DEBUG = "false";
+  const frondProd = new Frond(tmpDir);
+  assert("dump filter silent in production",
+    frondProd.renderString("{{ val | dump | safe }}", { val: { secret: "hunter2" } }) === "");
+  assert("dump() function silent in production",
+    frondProd.renderString("{{ dump(val) | safe }}", { val: { secret: "hunter2" } }) === "");
+
+  // Restore
+  if (prevDebug === undefined) delete process.env.TINA4_DEBUG;
+  else process.env.TINA4_DEBUG = prevDebug;
+}
 assert("format filter", engine.renderString('{{ "Hello %s, you are %s" | format("Alice", "cool") }}', {}) === "Hello Alice, you are cool");
 assert("filter chain", engine.renderString("{{ name | upper | trim }}", { name: "  hello  " }) === "HELLO");
 
