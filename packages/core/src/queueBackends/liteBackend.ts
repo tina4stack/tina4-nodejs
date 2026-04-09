@@ -90,6 +90,49 @@ export class LiteBackend {
     return null;
   }
 
+  popBatch(queue: string, bridge: JobQueueBridge, count: number): QueueJob[] {
+    const dir = this.ensureDir(queue);
+
+    let files: string[];
+    try {
+      files = readdirSync(dir).filter(f => f.endsWith(".queue-data")).sort();
+    } catch {
+      return [];
+    }
+
+    const now = new Date().toISOString();
+    const results: QueueJob[] = [];
+
+    for (const file of files) {
+      if (results.length >= count) break;
+      const filePath = join(dir, file);
+      let job: QueueJob;
+      try {
+        job = JSON.parse(readFileSync(filePath, "utf-8"));
+      } catch {
+        continue;
+      }
+
+      if (job.status !== "pending") continue;
+      if (job.delayUntil && job.delayUntil > now) continue;
+
+      job.status = "reserved";
+      job.topic = queue;
+      job.priority = job.priority ?? 0;
+      writeFileSync(filePath, JSON.stringify(job, null, 2));
+
+      try {
+        unlinkSync(filePath);
+      } catch {
+        // Already consumed by another worker
+      }
+
+      results.push(createJob(job as any, bridge));
+    }
+
+    return results;
+  }
+
   size(queue: string, status: string = "pending"): number {
     if (status === "failed") {
       const failedDir = this.ensureFailedDir(queue);

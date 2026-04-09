@@ -51,6 +51,14 @@ export interface ProcessOptions {
   pollInterval?: number;
   maxJobs?: number;
   maxRetries?: number;
+  batchSize?: number;
+}
+
+export interface ConsumeOptions {
+  batchSize?: number;
+  pollInterval?: number;
+  iterations?: number;
+  id?: string;
 }
 
 export interface QueueBackendInterface {
@@ -140,10 +148,17 @@ export class Queue {
   }
 
   /**
+   * Pop up to count jobs at once. Returns a partial batch if fewer available.
+   */
+  popBatch(count: number): QueueJob[] {
+    return this.liteBackend.popBatch(this.topic, this, count);
+  }
+
+  /**
    * Process jobs from a queue with a handler function.
    */
   process(
-    handler: (job: QueueJob) => Promise<void> | void,
+    handler: (job: QueueJob | QueueJob[]) => Promise<void> | void,
     options?: ProcessOptions,
   ): void {
     const queue = this.topic;
@@ -151,23 +166,44 @@ export class Queue {
 
     const maxJobs = opts?.maxJobs ?? Infinity;
     const maxRetries = opts?.maxRetries ?? this._maxRetries;
+    const batchSize = opts?.batchSize;
     let processed = 0;
 
-    while (processed < maxJobs) {
-      const job = this.pop();
-      if (!job) break;
-      try {
-        const result = handler(job);
-        if (result instanceof Promise) {
-          result.catch((err: Error) => {
-            this._failJob(queue, job, err.message, maxRetries);
-          });
+    if (batchSize && batchSize > 1) {
+      while (processed < maxJobs) {
+        const remaining = maxJobs === Infinity ? batchSize : Math.min(batchSize, maxJobs - processed);
+        const jobs = this.popBatch(remaining);
+        if (jobs.length === 0) break;
+        try {
+          const result = handler(jobs);
+          if (result instanceof Promise) {
+            result.catch((err: Error) => {
+              for (const job of jobs) this._failJob(queue, job, err.message, maxRetries);
+            });
+          }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          for (const job of jobs) this._failJob(queue, job, message, maxRetries);
         }
-        processed++;
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        this._failJob(queue, job, message, maxRetries);
-        processed++;
+        processed += jobs.length;
+      }
+    } else {
+      while (processed < maxJobs) {
+        const job = this.pop();
+        if (!job) break;
+        try {
+          const result = handler(job);
+          if (result instanceof Promise) {
+            result.catch((err: Error) => {
+              this._failJob(queue, job, err.message, maxRetries);
+            });
+          }
+          processed++;
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          this._failJob(queue, job, message, maxRetries);
+          processed++;
+        }
       }
     }
   }
@@ -279,29 +315,61 @@ export class Queue {
    *   for await (const job of queue.consume("emails")) { ... }
    *   for await (const job of queue.consume("emails", undefined, 5000)) { ... }
    */
-  async *consume(topic?: string, id?: string, pollInterval: number = 1000, iterations: number = 0): AsyncGenerator<QueueJob> {
-    const q = topic ?? this.topic;
+  async *consume(topicOrOptions?: string | ConsumeOptions, id?: string, pollInterval: number = 1000, iterations: number = 0): AsyncGenerator<QueueJob | QueueJob[]> {
+    // Support options-object form: consume({ batchSize, pollInterval, iterations, id })
+    let q: string;
+    let resolvedId: string | undefined;
+    let resolvedPollInterval: number;
+    let resolvedIterations: number;
+    let batchSize: number | undefined;
 
-    if (id !== undefined) {
-      const raw = this.popById(id);
+    if (topicOrOptions !== null && typeof topicOrOptions === "object") {
+      const opts = topicOrOptions as ConsumeOptions;
+      q = this.topic;
+      resolvedId = opts.id;
+      resolvedPollInterval = opts.pollInterval ?? 1000;
+      resolvedIterations = opts.iterations ?? 0;
+      batchSize = opts.batchSize;
+    } else {
+      q = (topicOrOptions as string | undefined) ?? this.topic;
+      resolvedId = id;
+      resolvedPollInterval = pollInterval;
+      resolvedIterations = iterations;
+      batchSize = undefined;
+    }
+
+    if (resolvedId !== undefined) {
+      const raw = this.popById(resolvedId);
       if (raw) yield createJob(raw as any, this);
       return;
     }
 
     // pollInterval=0 → single-pass drain (returns when empty)
     // pollInterval>0 → long-running poll (sleeps when empty, never returns)
-    // iterations>0   → stop after consuming N jobs
+    // iterations>0   → stop after consuming N jobs (or N batches when batchSize>1)
     let consumed = 0;
     while (true) {
-      const raw = this.pop(q) as any;
-      if (raw === null) {
-        if (pollInterval <= 0) break;
-        await new Promise(resolve => setTimeout(resolve, pollInterval));
-        continue;
+      if (batchSize && batchSize > 1) {
+        const jobs = this.popBatch(batchSize);
+        if (jobs.length === 0) {
+          if (resolvedPollInterval <= 0) break;
+          await new Promise(resolve => setTimeout(resolve, resolvedPollInterval));
+          continue;
+        }
+        yield jobs;
+        consumed++;
+        if (resolvedIterations > 0 && consumed >= resolvedIterations) break;
+      } else {
+        const raw = this.pop() as any;
+        if (raw === null) {
+          if (resolvedPollInterval <= 0) break;
+          await new Promise(resolve => setTimeout(resolve, resolvedPollInterval));
+          continue;
+        }
+        yield createJob(raw, this);
+        consumed++;
+        if (resolvedIterations > 0 && consumed >= resolvedIterations) break;
       }
-      yield createJob(raw, this);
-      consumed++;
-      if (iterations > 0 && consumed >= iterations) break;
     }
   }
 

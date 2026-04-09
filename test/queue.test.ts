@@ -442,6 +442,83 @@ console.log("\n--- getMaxRetries ---");
   assert("getMaxRetries returns default", qt.getMaxRetries() >= 0);
 }
 
+// --- popBatch ---
+console.log("\n--- popBatch ---");
+
+const TEST_PATH_BATCH = join("/tmp", "tina4-queue-batch-test-" + Date.now());
+function cleanupBatch() {
+  try { rmSync(TEST_PATH_BATCH, { recursive: true, force: true }); } catch {}
+}
+cleanupBatch();
+
+{
+  // returns up to count jobs as an array
+  const q = new Queue({ topic: "batch_test", path: TEST_PATH_BATCH });
+  q.push({ n: 1 });
+  q.push({ n: 2 });
+  q.push({ n: 3 });
+  const jobs = q.popBatch(2);
+  assert("popBatch returns an array", Array.isArray(jobs));
+  assert("popBatch returns up to count jobs", jobs.length === 2);
+  q.clear();
+}
+
+{
+  // returns partial batch when fewer jobs available
+  const q = new Queue({ topic: "batch_partial", path: TEST_PATH_BATCH });
+  q.push({ n: 1 });
+  const jobs = q.popBatch(10);
+  assert("popBatch returns partial batch when fewer available", jobs.length === 1);
+  q.clear();
+}
+
+{
+  // returns empty array when queue is empty
+  const q = new Queue({ topic: "batch_empty", path: TEST_PATH_BATCH });
+  const jobs = q.popBatch(5);
+  assert("popBatch returns empty array when queue empty", Array.isArray(jobs) && jobs.length === 0);
+}
+
+// --- consume with batchSize ---
+console.log("\n--- consume with batchSize ---");
+
+{
+  const q = new Queue({ topic: "batch_consume", path: TEST_PATH_BATCH });
+  q.clear();
+  for (let i = 0; i < 5; i++) q.push({ n: i });
+
+  const batches: QueueJob[][] = [];
+  for await (const jobs of q.consume({ batchSize: 2, pollInterval: 0, iterations: 3 })) {
+    batches.push(jobs as QueueJob[]);
+    for (const job of jobs as QueueJob[]) job.complete();
+  }
+  const total = batches.reduce((s, b) => s + b.length, 0);
+  assert("consume batchSize yields all 5 jobs total", total === 5);
+  assert("consume batchSize yields arrays", batches.every(b => Array.isArray(b)));
+  q.clear();
+}
+
+// --- process with batchSize ---
+console.log("\n--- process with batchSize ---");
+
+{
+  const q = new Queue({ topic: "batch_process", path: TEST_PATH_BATCH });
+  q.clear();
+  for (let i = 0; i < 6; i++) q.push({ n: i });
+  const received: number[] = [];
+  q.process((jobs: QueueJob | QueueJob[]) => {
+    const arr = Array.isArray(jobs) ? jobs : [jobs];
+    for (const job of arr) {
+      received.push((job.payload as any).n);
+      job.complete();
+    }
+  }, { batchSize: 3 });
+  assert("process batchSize passes all 6 jobs to handler", received.length === 6);
+  q.clear();
+}
+
+cleanupBatch();
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
