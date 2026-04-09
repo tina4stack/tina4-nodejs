@@ -69,7 +69,7 @@ const TOKEN_PATTERNS: Array<[string, RegExp]> = [
   ["COMMENT", /#[^\n]*/y],
 ];
 
-function tokenize(source: string): Token[] {
+export function tokenize(source: string): Token[] {
   const tokens: Token[] = [];
   let pos = 0;
 

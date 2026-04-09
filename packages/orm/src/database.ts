@@ -223,7 +223,7 @@ export class Database {
   private pool: (DatabaseAdapter | null)[] = [];
 
   /** Pool size (0 = single connection) */
-  private poolSize: number = 0;
+  private _poolSize: number = 0;
 
   /** Round-robin index */
   private poolIndex: number = 0;
@@ -270,7 +270,7 @@ export class Database {
       setAdapter(adapters[0]);
 
       const db = new Database(adapters[0]);
-      db.poolSize = pool;
+      db._poolSize = pool;
       db.pool = adapters;
       db.poolIndex = 0;
       db.adapter = null;  // Don't use single-adapter path
@@ -304,9 +304,9 @@ export class Database {
    * Get the next adapter — from pool (round-robin) or single connection.
    */
   private getNextAdapter(): DatabaseAdapter {
-    if (this.poolSize > 0) {
+    if (this._poolSize > 0) {
       const idx = this.poolIndex;
-      this.poolIndex = (this.poolIndex + 1) % this.poolSize;
+      this.poolIndex = (this.poolIndex + 1) % this._poolSize;
       return this.pool[idx] as DatabaseAdapter;
     }
 
@@ -319,14 +319,44 @@ export class Database {
   }
 
   /** Get the pool size (0 = single connection mode). */
-  getPoolSize(): number {
-    return this.poolSize;
+  poolSize(): number {
+    return this._poolSize;
+  }
+
+  /** Alias for poolSize() — returns total pool size (0 = single connection mode). */
+  size(): number {
+    return this._poolSize;
   }
 
   /** Get the number of active (created) connections in the pool. */
-  getActivePoolCount(): number {
-    if (this.poolSize === 0) return this.adapter ? 1 : 0;
+  activeCount(): number {
+    if (this._poolSize === 0) return this.adapter ? 1 : 0;
     return this.pool.filter(a => a !== null).length;
+  }
+
+  /**
+   * Borrow a connection from the pool (or the single adapter).
+   * The caller is responsible for returning it via checkin().
+   */
+  checkout(): DatabaseAdapter {
+    return this.getNextAdapter();
+  }
+
+  /**
+   * Return a borrowed connection to the pool.
+   * For round-robin pools this is a no-op (connections stay in the pool array),
+   * but the method exists for API parity and future pooling strategies.
+   */
+  checkin(_adapter: DatabaseAdapter): void {
+    // No-op for round-robin pool — connections are not removed on checkout.
+  }
+
+  /**
+   * Close all pooled connections and clear the pool.
+   * Equivalent to close() but named for explicit pool teardown.
+   */
+  closeAll(): void {
+    this.close();
   }
 
   /** Query rows with optional pagination. Returns a DatabaseResult wrapper. */
@@ -376,9 +406,9 @@ export class Database {
   }
 
   /** Update rows in a table matching filter. */
-  update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown>): DatabaseWriteResult {
+  update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown>, params?: unknown[]): DatabaseWriteResult {
     const adapter = this.getNextAdapter();
-    const result = adapter.update(table, data, filter ?? {});
+    const result = adapter.update(table, data, filter ?? {}, params);
     if (this.autoCommit) {
       try { adapter.commit(); } catch { /* no active transaction */ }
     }
@@ -386,9 +416,9 @@ export class Database {
   }
 
   /** Delete rows from a table matching filter. */
-  delete(table: string, filter?: Record<string, unknown>): DatabaseWriteResult {
+  delete(table: string, filter?: Record<string, unknown>, params?: unknown[]): DatabaseWriteResult {
     const adapter = this.getNextAdapter();
-    const result = adapter.delete(table, filter ?? {});
+    const result = adapter.delete(table, filter ?? {}, params);
     if (this.autoCommit) {
       try { adapter.commit(); } catch { /* no active transaction */ }
     }
@@ -397,7 +427,7 @@ export class Database {
 
   /** Close all database connections (pool or single). */
   close(): void {
-    if (this.poolSize > 0) {
+    if (this._poolSize > 0) {
       for (let i = 0; i < this.pool.length; i++) {
         if (this.pool[i] !== null) {
           this.pool[i]!.close();
@@ -454,7 +484,7 @@ export class Database {
    * @param paramSets - Array of parameter arrays, one per execution.
    * @returns Array of results from each execution.
    */
-  executeMany(sql: string, paramSets: unknown[][]): unknown[] {
+  executeMany(sql: string, paramSets: unknown[][] = []): unknown[] {
     const adapter = this.getNextAdapter();
     const results: unknown[] = [];
 

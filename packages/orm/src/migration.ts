@@ -191,7 +191,7 @@ export function isMigrationApplied(name: string): boolean {
 /**
  * Record a migration as applied.
  */
-export function recordMigration(name: string, batch: number): void {
+export function recordMigration(name: string, batch: number, passed: number = 1): void {
   const adapter = getAdapter();
   if (isFirebirdAdapter(adapter)) {
     // Firebird: generate ID from sequence
@@ -747,6 +747,66 @@ export async function createMigration(
 }
 
 /**
+ * Create a new TypeScript class-based migration file with a timestamp prefix.
+ *
+ * @param description - Human-readable description (used in filename and class name).
+ * @param options - Optional configuration.
+ * @returns Path to the created file.
+ */
+export async function createClassMigration(
+  description: string,
+  options?: { migrationsDir?: string },
+): Promise<string> {
+  const dir = resolve(options?.migrationsDir ?? "migrations");
+
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  const safeName = description
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+
+  // Derive PascalCase class name
+  const className = description
+    .replace(/[^a-zA-Z0-9 ]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join("");
+
+  const now = new Date();
+  const timestamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join("");
+
+  const fileName = `${timestamp}_${safeName}.ts`;
+  const filePath = join(dir, fileName);
+
+  const content =
+    `// Migration: ${description}\n` +
+    `// Created: ${now.toISOString()}\n\n` +
+    `import type { DatabaseAdapter } from "@tina4/orm";\n\n` +
+    `export class ${className} {\n` +
+    `  async up(db: DatabaseAdapter): Promise<void> {\n` +
+    `    // db.execute("CREATE TABLE ...");\n` +
+    `  }\n\n` +
+    `  async down(db: DatabaseAdapter): Promise<void> {\n` +
+    `    // db.execute("DROP TABLE IF EXISTS ...");\n` +
+    `  }\n` +
+    `}\n`;
+
+  writeFileSync(filePath, content, "utf-8");
+  return filePath;
+}
+
+/**
  * Object-oriented Migration class — canonical Tina4 Migration API.
  *
  * Provides parity with Python, PHP, and Ruby:
@@ -800,8 +860,18 @@ export class Migration {
     return status(this.db, { migrationsDir: this.dir });
   }
 
-  /** Scaffold a new .sql + .down.sql migration file. Returns created paths. */
-  async create(description: string): Promise<{ upPath: string; downPath: string }> {
+  /**
+   * Scaffold a new migration file.
+   *
+   * kind="sql"   — creates {timestamp}_{description}.sql + .down.sql (default)
+   * kind="class" — creates {timestamp}_{description}.ts with a TypeScript class template
+   *
+   * Returns the path to the created up file (or class file).
+   */
+  async create(description: string, kind: "sql" | "class" = "sql"): Promise<string | { upPath: string; downPath: string }> {
+    if (kind === "class") {
+      return createClassMigration(description, { migrationsDir: this.dir });
+    }
     return createMigration(description, { migrationsDir: this.dir });
   }
 

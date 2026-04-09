@@ -501,6 +501,15 @@ export function cacheClear(): void {
   _getBackend().clear();
 }
 
+/** Remove expired entries from the cache. Returns count removed. */
+export function sweep(): number {
+  const backend = _getBackend();
+  if (typeof (backend as any).sweep === "function") {
+    return (backend as any).sweep();
+  }
+  return 0;
+}
+
 /** Return cache statistics from the active backend. */
 export function cacheBackendStats(): { hits: number; misses: number; size: number; backend: string } {
   return _getBackend().stats();

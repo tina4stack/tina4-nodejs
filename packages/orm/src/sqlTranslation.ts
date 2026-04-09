@@ -163,6 +163,7 @@ export class SQLTranslator {
 interface CacheEntry<T> {
   value: T;
   expiresAt: number;
+  tags: string[];
 }
 
 /**
@@ -201,11 +202,12 @@ export class QueryCache {
   }
 
   /**
-   * Set a cached value with optional TTL (seconds).
+   * Set a cached value with optional TTL (seconds) and tags for grouped
+   * invalidation via clearTag().
    */
-  set<T>(key: string, value: T, ttl?: number): void {
+  set<T>(key: string, value: T, ttl?: number, tags: string[] = []): void {
     // Evict oldest entry if at max size
-    if (this.store.size >= this.maxSize) {
+    if (this.store.size >= this.maxSize && !this.store.has(key)) {
       const firstKey = this.store.keys().next().value;
       if (firstKey !== undefined) this.store.delete(firstKey);
     }
@@ -213,7 +215,22 @@ export class QueryCache {
     this.store.set(key, {
       value,
       expiresAt: Date.now() + (ttl ?? this.defaultTtl) * 1000,
+      tags,
     });
+  }
+
+  /**
+   * Remove all entries that carry the given tag. Returns the number removed.
+   */
+  clearTag(tag: string): number {
+    let removed = 0;
+    for (const [key, entry] of this.store) {
+      if (entry.tags.includes(tag)) {
+        this.store.delete(key);
+        removed++;
+      }
+    }
+    return removed;
   }
 
   /**

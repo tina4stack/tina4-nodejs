@@ -267,6 +267,20 @@ while (Date.now() - start < 10) {} // busy wait 10ms
 
 assert("expired entry returns undefined", ttlCache.get("expires") === undefined);
 
+// --- QueryCache clearTag ---
+console.log("\n--- QueryCache clearTag ---");
+
+const tagCache = new QueryCache({ defaultTtl: 60 });
+tagCache.set("a", 1, 60, ["users", "list"]);
+tagCache.set("b", 2, 60, ["users"]);
+tagCache.set("c", 3, 60, ["products"]);
+
+const taggedRemoved = tagCache.clearTag("users");
+assert("clearTag removes correct count", taggedRemoved === 2);
+assert("clearTag removed 'a'", tagCache.get("a") === undefined);
+assert("clearTag removed 'b'", tagCache.get("b") === undefined);
+assert("clearTag kept 'c'", tagCache.get("c") === 3);
+
 // --- QueryCache sweep ---
 console.log("\n--- QueryCache sweep ---");
 

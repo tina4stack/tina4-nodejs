@@ -54,6 +54,12 @@ export class RouteRef {
     this.route.cached = true;
     return this;
   }
+
+  /** Append middleware class(es) to this route. */
+  middleware(...middlewareClasses: Middleware[]): this {
+    this.route.middlewares = [...(this.route.middlewares ?? []), ...middlewareClasses];
+    return this;
+  }
 }
 
 export interface RouteInfo {
@@ -194,7 +200,7 @@ export class Router {
   /**
    * Match a request method + pathname to a registered route.
    */
-  match(method: string, pathname: string): MatchResult | null {
+  match(method: string, path: string): MatchResult | null {
     const upperMethod = method.toUpperCase();
 
     // Try exact method first, then ANY routes are already registered under each method
@@ -202,7 +208,7 @@ export class Router {
     if (!routes) return null;
 
     for (const route of routes) {
-      const match = route.regex.exec(pathname);
+      const match = route.regex.exec(path);
       if (match) {
         const params: Record<string, string> = {};
         for (let i = 0; i < route.paramNames.length; i++) {
@@ -311,45 +317,57 @@ export class Router {
   // as an alternative to importing the top-level get(), post(), etc.
 
   /**
+   * Register a route for a specific HTTP method.
+   * Core registration method — all convenience methods delegate here.
+   */
+  static add(method: string, path: string, handler: RouteHandler, middleware?: Middleware[], swaggerMeta?: RouteMeta, template?: string): RouteRef {
+    const m = method.toUpperCase();
+    if (m === "ANY") {
+      return defaultRouter.any(path, handler, middleware, swaggerMeta);
+    }
+    return defaultRouter.addRoute({ method: m, pattern: path, handler, middlewares: middleware, meta: swaggerMeta, template });
+  }
+
+  /**
    * Register a GET route on the default global router.
    */
-  static get(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
-    return defaultRouter.get(path, handler, middlewares, meta);
+  static get(path: string, handler: RouteHandler, middleware?: Middleware[], swaggerMeta?: RouteMeta, template?: string): RouteRef {
+    return defaultRouter.get(path, handler, middleware, swaggerMeta);
   }
 
   /**
    * Register a POST route on the default global router.
    */
-  static post(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
-    return defaultRouter.post(path, handler, middlewares, meta);
+  static post(path: string, handler: RouteHandler, middleware?: Middleware[], swaggerMeta?: RouteMeta, template?: string): RouteRef {
+    return defaultRouter.post(path, handler, middleware, swaggerMeta);
   }
 
   /**
    * Register a PUT route on the default global router.
    */
-  static put(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
-    return defaultRouter.put(path, handler, middlewares, meta);
+  static put(path: string, handler: RouteHandler, middleware?: Middleware[], swaggerMeta?: RouteMeta, template?: string): RouteRef {
+    return defaultRouter.put(path, handler, middleware, swaggerMeta);
   }
 
   /**
    * Register a PATCH route on the default global router.
    */
-  static patch(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
-    return defaultRouter.patch(path, handler, middlewares, meta);
+  static patch(path: string, handler: RouteHandler, middleware?: Middleware[], swaggerMeta?: RouteMeta, template?: string): RouteRef {
+    return defaultRouter.patch(path, handler, middleware, swaggerMeta);
   }
 
   /**
    * Register a DELETE route on the default global router.
    */
-  static delete(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
-    return defaultRouter.delete(path, handler, middlewares, meta);
+  static delete(path: string, handler: RouteHandler, middleware?: Middleware[], swaggerMeta?: RouteMeta, template?: string): RouteRef {
+    return defaultRouter.delete(path, handler, middleware, swaggerMeta);
   }
 
   /**
    * Register a route that matches ANY HTTP method on the default global router.
    */
-  static any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
-    return defaultRouter.any(path, handler, middlewares, meta);
+  static any(path: string, handler: RouteHandler, middleware?: Middleware[], swaggerMeta?: RouteMeta, template?: string): RouteRef {
+    return defaultRouter.any(path, handler, middleware, swaggerMeta);
   }
 
   /**

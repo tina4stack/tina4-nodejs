@@ -85,7 +85,7 @@ export class I18n {
   }
 
   /** List available locale codes based on JSON files in the locale directory. */
-  getAvailableLocales(): string[] {
+  availableLocales(): string[] {
     if (!existsSync(this._localeDir)) {
       return [this._defaultLocale];
     }

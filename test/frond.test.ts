@@ -930,6 +930,24 @@ assert("division: {{ 10 / 2 }}",
 assert("modulo: {{ 10 % 3 }}",
   engine.renderString("{{ 10 % 3 }}", {}) === "1");
 
+// ── renderDump ────────────────────────────────────────────────
+console.log("\n--- renderDump ---");
+
+{
+  const prevDebug = process.env.TINA4_DEBUG;
+  delete process.env.TINA4_DEBUG;
+  assert("renderDump returns empty string when TINA4_DEBUG unset",
+    engine.renderDump({ key: "value" }) === "");
+  process.env.TINA4_DEBUG = "true";
+  const dumpResult = engine.renderDump({ key: "value" });
+  assert("renderDump returns HTML with <pre> in debug mode",
+    dumpResult.includes("<pre>"));
+  assert("renderDump handles null gracefully",
+    typeof engine.renderDump(null) === "string");
+  if (prevDebug === undefined) delete process.env.TINA4_DEBUG;
+  else process.env.TINA4_DEBUG = prevDebug;
+}
+
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 

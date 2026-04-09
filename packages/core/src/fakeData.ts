@@ -68,12 +68,6 @@ const JOB_TITLES = [
   "Systems Administrator",
 ];
 
-const COLORS = [
-  "red", "blue", "green", "yellow", "purple", "orange", "pink",
-  "cyan", "magenta", "teal", "indigo", "violet", "coral", "salmon",
-  "turquoise", "maroon", "navy", "olive", "silver", "gold",
-];
-
 const CURRENCIES = [
   "USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "CNY",
   "SEK", "NZD", "MXN", "SGD", "HKD", "NOK", "ZAR", "INR",
@@ -137,7 +131,7 @@ export class FakeData {
     return this.pick(LAST_NAMES);
   }
 
-  fullName(): string {
+  name(): string {
     return `${this.firstName()} ${this.lastName()}`;
   }
 
@@ -209,7 +203,7 @@ export class FakeData {
     return this.randInt(min, max + 1);
   }
 
-  float(min = 0, max = 1000, decimals = 2): number {
+  numeric(min = 0, max = 1000, decimals = 2): number {
     const raw = min + this.rng() * (max - min);
     return Number(raw.toFixed(decimals));
   }
@@ -251,11 +245,7 @@ export class FakeData {
     return `${this.randInt(1, 256)}.${this.randInt(0, 256)}.${this.randInt(0, 256)}.${this.randInt(1, 256)}`;
   }
 
-  color(): string {
-    return this.pick(COLORS);
-  }
-
-  hexColor(): string {
+  colorHex(): string {
     const hex = this.randInt(0, 0x1000000).toString(16).padStart(6, "0");
     return `#${hex}`;
   }
@@ -271,10 +261,30 @@ export class FakeData {
   }
 
   /**
+   * Returns multi-paragraph text.
+   * Matches Python's text() method.
+   */
+  text(paragraphs = 3): string {
+    const parts: string[] = [];
+    for (let i = 0; i < paragraphs; i++) {
+      parts.push(this.paragraph(4));
+    }
+    return parts.join("\n\n");
+  }
+
+  /**
+   * Returns a random element from the given array.
+   * Matches Python's choice() method.
+   */
+  choice<T>(items: T[]): T {
+    return items[this.randInt(0, items.length)];
+  }
+
+  /**
    * Run seed files from a directory. Each file should export a default async function.
    * Returns an array of executed file paths.
    */
-  async runSeeds(seedDir?: string): Promise<string[]> {
+  async seedDir(seedDir?: string): Promise<string[]> {
     const dir = resolve(seedDir ?? "src/seeds");
     if (!existsSync(dir)) return [];
     const files = readdirSync(dir)

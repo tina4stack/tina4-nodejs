@@ -359,8 +359,8 @@ console.log("\n=== 13. FakeData ===\n");
 
 const seeded1 = new FakeData(42);
 const seeded2 = new FakeData(42);
-const name1 = seeded1.fullName();
-const name2 = seeded2.fullName();
+const name1 = seeded1.name();
+const name2 = seeded2.name();
 assert("seeded data is deterministic", name1 === name2);
 
 const fake = new FakeData();

@@ -120,7 +120,7 @@ assert("loadTranslations returns record",
 // --- getAvailableLocales ---
 console.log("\n--- Available Locales ---");
 
-const locales = i18n.getAvailableLocales();
+const locales = i18n.availableLocales();
 assert("getAvailableLocales returns all locale files",
   locales.includes("en") && locales.includes("fr") && locales.includes("de"));
 
@@ -135,7 +135,7 @@ assert("Missing locale dir returns key as-is",
   i18nMissing.t("anything") === "anything");
 
 assert("Missing locale dir lists default locale only",
-  i18nMissing.getAvailableLocales().length === 1);
+  i18nMissing.availableLocales().length === 1);
 
 // Cleanup
 rmSync("/tmp/tina4-i18n-test", { recursive: true });

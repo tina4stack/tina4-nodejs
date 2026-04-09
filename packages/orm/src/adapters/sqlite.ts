@@ -100,7 +100,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
     }
   }
 
-  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): DatabaseResult {
+  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>, params?: unknown[]): DatabaseResult {
     const setClauses = Object.keys(data).map((k) => `"${k}" = ?`).join(", ");
     const whereClauses = Object.keys(filter).map((k) => `"${k}" = ?`).join(" AND ");
     const sql = `UPDATE "${table}" SET ${setClauses} WHERE ${whereClauses}`;
@@ -114,7 +114,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
     }
   }
 
-  delete(table: string, filter: Record<string, unknown> | string | Record<string, unknown>[]): DatabaseResult {
+  delete(table: string, filter: Record<string, unknown> | string | Record<string, unknown>[], params?: unknown[]): DatabaseResult {
     if (Array.isArray(filter)) {
       let totalAffected = 0;
       for (const row of filter) {
@@ -127,7 +127,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
     if (typeof filter === "string") {
       const sql = filter ? `DELETE FROM "${table}" WHERE ${filter}` : `DELETE FROM "${table}"`;
       try {
-        const result = this.db.prepare(sql).run();
+        const result = this.db.prepare(sql).run(...(params ?? []));
         return { success: true, rowsAffected: result.changes };
       } catch (e) {
         return { success: false, rowsAffected: 0, error: (e as Error).message };

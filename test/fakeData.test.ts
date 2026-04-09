@@ -35,7 +35,7 @@ const last = fake.lastName();
 assert("lastName returns a non-empty string",
   typeof last === "string" && last.length > 0);
 
-const full = fake.fullName();
+const full = fake.name();
 assert("fullName returns first and last name",
   typeof full === "string" && full.includes(" ") && full.split(" ").length === 2);
 
@@ -97,7 +97,7 @@ const int = fake.integer(10, 20);
 assert("integer is within range",
   int >= 10 && int <= 20);
 
-const flt = fake.float(1, 5, 2);
+const flt = fake.numeric(1, 5, 2);
 assert("float is within range and has decimals",
   flt >= 1 && flt <= 5);
 
@@ -130,10 +130,7 @@ assert("ipAddress has 4 octets",
 // --- Colors ---
 console.log("\n--- Colors ---");
 
-const color = fake.color();
-assert("color returns a color name", color.length > 0);
-
-const hex = fake.hexColor();
+const hex = fake.colorHex();
 assert("hexColor matches #RRGGBB format",
   /^#[0-9a-f]{6}$/.test(hex));
 
@@ -152,7 +149,7 @@ assert("currency returns a 3-letter code",
 console.log("\n--- Run Method ---");
 
 const rows = fake.run(() => ({
-  name: fake.fullName(),
+  name: fake.name(),
   email: fake.email(),
 }), 5);
 assert("run() generates correct number of records",
@@ -160,11 +157,11 @@ assert("run() generates correct number of records",
 assert("run() records have expected fields",
   typeof rows[0].name === "string" && typeof rows[0].email === "string");
 
-// --- runSeeds() with missing directory ---
-console.log("\n--- RunSeeds Method ---");
+// --- seedDir() with missing directory ---
+console.log("\n--- SeedDir Method ---");
 
-const seedResult = await fake.runSeeds("/tmp/nonexistent-seed-dir-xyz");
-assert("runSeeds() with missing dir returns empty array",
+const seedResult = await fake.seedDir("/tmp/nonexistent-seed-dir-xyz");
+assert("seedDir() with missing dir returns empty array",
   Array.isArray(seedResult) && seedResult.length === 0);
 
 // --- Seeded deterministic output ---
@@ -172,8 +169,8 @@ console.log("\n--- Seeded PRNG ---");
 
 const seeded1 = new FakeData(42);
 const seeded2 = new FakeData(42);
-const name1 = seeded1.fullName();
-const name2 = seeded2.fullName();
+const name1 = seeded1.name();
+const name2 = seeded2.name();
 assert("new FakeData(42) produces deterministic fullName",
   name1 === name2, `got "${name1}" vs "${name2}"`);
 
@@ -382,7 +379,7 @@ console.log("\n--- Range Boundaries ---");
 
 {
   const f = new FakeData();
-  const v = f.float(0, 0, 0);
+  const v = f.numeric(0, 0, 0);
   assert("float(0, 0, 0) returns 0", v === 0);
 }
 
@@ -430,18 +427,6 @@ console.log("\n--- Sentence Structure ---");
     assert(`sentence ${i + 1} starts uppercase`, s[0] === s[0].toUpperCase());
     assert(`sentence ${i + 1} ends with period`, s.endsWith("."));
   }
-}
-
-// --- Color variety ---
-console.log("\n--- Color Variety ---");
-
-{
-  const f = new FakeData();
-  const colors = new Set<string>();
-  for (let i = 0; i < 20; i++) {
-    colors.add(f.color());
-  }
-  assert("color() returns variety", colors.size > 3);
 }
 
 // --- Company structure ---

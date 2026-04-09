@@ -36,7 +36,7 @@ export class Api {
     /**
      * Add custom headers to all subsequent requests.
      */
-    addCustomHeaders(headers: Record<string, string>): void {
+    addHeaders(headers: Record<string, string>): void {
         Object.assign(this.headers, headers);
     }
 
@@ -78,36 +78,36 @@ export class Api {
      * HTTP POST request.
      */
     async post(path: string, body?: unknown, contentType: string = "application/json"): Promise<ApiResult> {
-        return this.sendRequest(path, "POST", body, contentType);
+        return this.sendRequest("POST", path, body, contentType);
     }
 
     /**
      * HTTP PUT request.
      */
     async put(path: string, body?: unknown, contentType: string = "application/json"): Promise<ApiResult> {
-        return this.sendRequest(path, "PUT", body, contentType);
+        return this.sendRequest("PUT", path, body, contentType);
     }
 
     /**
      * HTTP PATCH request.
      */
     async patch(path: string, body?: unknown, contentType: string = "application/json"): Promise<ApiResult> {
-        return this.sendRequest(path, "PATCH", body, contentType);
+        return this.sendRequest("PATCH", path, body, contentType);
     }
 
     /**
      * HTTP DELETE request.
      */
     async delete(path: string, body?: unknown): Promise<ApiResult> {
-        return this.sendRequest(path, "DELETE", body);
+        return this.sendRequest("DELETE", path, body);
     }
 
     /**
      * Generic request method — public entry point for any HTTP method.
      */
     async sendRequest(
-        path: string,
         method: string,
+        path: string,
         body?: unknown,
         contentType: string = "application/json",
     ): Promise<ApiResult> {

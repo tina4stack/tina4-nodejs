@@ -11,6 +11,7 @@ import {
   BaseModel,
   syncModels,
 } from "../packages/orm/src/index.ts";
+import { snakeToCamel, camelToSnake } from "../packages/orm/src/baseModel.ts";
 import type { FieldDefinition, DiscoveredModel } from "../packages/orm/src/index.ts";
 
 const TEST_DB = "/tmp/tina4-orm-test/test.db";
@@ -499,6 +500,19 @@ console.log("\n--- Create Without ID ---");
 
   // Clean up
   newUser.delete();
+}
+
+// ── snakeToCamel / camelToSnake ────────────────────────────────
+{
+  assert("snakeToCamel: first_name → firstName", snakeToCamel("first_name") === "firstName");
+  assert("snakeToCamel: user_id → userId", snakeToCamel("user_id") === "userId");
+  assert("snakeToCamel: id → id", snakeToCamel("id") === "id");
+  assert("snakeToCamel: my_field_name → myFieldName", snakeToCamel("my_field_name") === "myFieldName");
+
+  assert("camelToSnake: firstName → first_name", camelToSnake("firstName") === "first_name");
+  assert("camelToSnake: userId → user_id", camelToSnake("userId") === "user_id");
+  assert("camelToSnake: id → id", camelToSnake("id") === "id");
+  assert("camelToSnake: myFieldName → my_field_name", camelToSnake("myFieldName") === "my_field_name");
 }
 
 // Cleanup

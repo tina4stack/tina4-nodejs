@@ -1370,6 +1370,12 @@ export class Frond {
     this.compiledStrings.clear();
   }
 
+  /** Render a debug dump of a value as HTML — parity with PHP/Ruby/Python.
+   * Gated on TINA4_DEBUG=true. Returns empty string in production. */
+  renderDump(value: unknown): string {
+    return renderDump(value).toString();
+  }
+
   private load(name: string): string {
     const filePath = join(this.templateDir, name);
     if (!existsSync(filePath)) {

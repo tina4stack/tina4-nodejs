@@ -167,7 +167,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
   }
 
-  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): DatabaseResult {
+  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>, params?: unknown[]): DatabaseResult {
     throw new Error("Use updateAsync() for PostgreSQL.");
   }
 
@@ -190,7 +190,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
   }
 
-  delete(table: string, filter: Record<string, unknown>): DatabaseResult {
+  delete(table: string, filter: Record<string, unknown>, params?: unknown[]): DatabaseResult {
     throw new Error("Use deleteAsync() for PostgreSQL.");
   }
 

@@ -14,16 +14,6 @@ export class FakeData extends CoreFakeData {
     super(seed);
   }
 
-  /** Alias for fullName() to match the Python API. */
-  name(): string {
-    return this.fullName();
-  }
-
-  /** Alias for float() to match the Python API. */
-  numeric(min = 0, max = 1000, decimals = 2): number {
-    return this.float(min, max, decimals);
-  }
-
   /**
    * Generate a Date object within a year range.
    * Matches the Python API's datetime() method.
@@ -69,7 +59,7 @@ export class FakeData extends CoreFakeData {
     if (col.includes("company") || col.includes("org")) return this.company();
     if (col.includes("job") || col.includes("title") || col.includes("position")) return this.jobTitle();
     if (col.includes("url") || col.includes("website") || col.includes("link")) return this.url();
-    if (col.includes("color") || col.includes("colour")) return this.hexColor();
+    if (col.includes("color") || col.includes("colour")) return this.colorHex();
     if (col.includes("uuid") || col === "guid") return this.uuid();
     if (col === "ip" || col === "ip_address" || col === "ipaddress") return this.ipAddress();
     if (col.includes("currency")) return this.currency();

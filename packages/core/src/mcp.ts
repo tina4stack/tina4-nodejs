@@ -990,3 +990,6 @@ export function registerDevTools(server: McpServer): void {
     schemaFromParams([]),
   );
 }
+
+/** Alias for registerDevTools — parity with PHP/Ruby/Python. */
+export const register = registerDevTools;

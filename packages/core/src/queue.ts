@@ -247,7 +247,12 @@ export class Queue {
    * @param delaySeconds - Optional delay before jobs become available
    * @returns true if at least one job was re-queued, false if none found
    */
-  retry(delaySeconds?: number): boolean {
+  retry(jobId?: string, delaySeconds?: number): boolean {
+    if (jobId) {
+      // Retry a specific job by ID
+      return this.liteBackend.retry(this.topic, jobId, delaySeconds);
+    }
+    // Retry all dead-letter jobs
     const deadJobs = this.deadLetters();
     if (deadJobs.length === 0) return false;
     let retried = false;
@@ -282,7 +287,7 @@ export class Queue {
   /**
    * Produce a message onto a topic. Convenience wrapper around push().
    */
-  produce(topic: string, payload: unknown, delay?: number, priority: number = 0): string {
+  produce(topic: string, payload: unknown, priority: number = 0, delay: number = 0): string {
     if (this.externalBackend) {
       return this.externalBackend.push(topic, payload, delay);
     }
@@ -315,13 +320,13 @@ export class Queue {
    *   for await (const job of queue.consume("emails")) { ... }
    *   for await (const job of queue.consume("emails", undefined, 5000)) { ... }
    */
-  async *consume(topicOrOptions?: string | ConsumeOptions, id?: string, pollInterval: number = 1000, iterations: number = 0): AsyncGenerator<QueueJob | QueueJob[]> {
+  async *consume(topicOrOptions?: string | ConsumeOptions, id?: string, pollInterval: number = 1000, iterations: number = 0, batchSize: number = 1): AsyncGenerator<QueueJob | QueueJob[]> {
     // Support options-object form: consume({ batchSize, pollInterval, iterations, id })
     let q: string;
     let resolvedId: string | undefined;
     let resolvedPollInterval: number;
     let resolvedIterations: number;
-    let batchSize: number | undefined;
+    let resolvedBatchSize: number;
 
     if (topicOrOptions !== null && typeof topicOrOptions === "object") {
       const opts = topicOrOptions as ConsumeOptions;
@@ -329,13 +334,13 @@ export class Queue {
       resolvedId = opts.id;
       resolvedPollInterval = opts.pollInterval ?? 1000;
       resolvedIterations = opts.iterations ?? 0;
-      batchSize = opts.batchSize;
+      resolvedBatchSize = opts.batchSize ?? batchSize;
     } else {
       q = (topicOrOptions as string | undefined) ?? this.topic;
       resolvedId = id;
       resolvedPollInterval = pollInterval;
       resolvedIterations = iterations;
-      batchSize = undefined;
+      resolvedBatchSize = batchSize;
     }
 
     if (resolvedId !== undefined) {
@@ -349,8 +354,8 @@ export class Queue {
     // iterations>0   → stop after consuming N jobs (or N batches when batchSize>1)
     let consumed = 0;
     while (true) {
-      if (batchSize && batchSize > 1) {
-        const jobs = this.popBatch(batchSize);
+      if (resolvedBatchSize && resolvedBatchSize > 1) {
+        const jobs = this.popBatch(resolvedBatchSize);
         if (jobs.length === 0) {
           if (resolvedPollInterval <= 0) break;
           await new Promise(resolve => setTimeout(resolve, resolvedPollInterval));

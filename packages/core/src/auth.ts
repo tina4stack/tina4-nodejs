@@ -35,32 +35,45 @@ function base64urlDecode(str: string): Buffer {
  * Secret is always read from `process.env.SECRET`.
  * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
  *
- * @param payload   - Claims to encode (e.g. `{ userId: 1, role: "admin" }`)
- * @param expiresIn - Lifetime in seconds (default 3600)
+ * @param payload          - Claims to encode (e.g. `{ userId: 1, role: "admin" }`)
+ * @param secretOrExpiresIn - Signing secret string, OR expiresIn number (back-compat with old 2-arg form)
+ * @param expiresIn         - Lifetime in seconds (default 3600). Only used when secret is a string.
  * @returns Signed JWT string: header.payload.signature
  */
 export function getToken(
   payload: Record<string, unknown>,
+  secretOrExpiresIn?: string | number,
   expiresIn: number = 3600,
+  algorithm?: string,
 ): string {
-  const secret = process.env.SECRET ?? "";
-  if (!secret) {
+  // Back-compat: if second arg is a number, treat it as expiresIn (old 2-arg form)
+  let resolvedSecret: string;
+  let resolvedExpiresIn: number;
+  if (typeof secretOrExpiresIn === "number") {
+    resolvedSecret = process.env.SECRET ?? "";
+    resolvedExpiresIn = secretOrExpiresIn;
+  } else {
+    resolvedSecret = secretOrExpiresIn ?? process.env.SECRET ?? "";
+    resolvedExpiresIn = expiresIn;
+  }
+
+  if (!resolvedSecret) {
     console.warn("Auth: SECRET not set in .env — using blank secret (insecure)");
   }
-  const algorithm = process.env.TINA4_JWT_ALGORITHM ?? "HS256";
+  const resolvedAlgorithm = algorithm ?? process.env.TINA4_JWT_ALGORITHM ?? "HS256";
 
-  const header = { alg: algorithm, typ: "JWT" };
+  const header = { alg: resolvedAlgorithm, typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
 
   const claims: Record<string, unknown> = { ...payload, iat: now };
-  if (expiresIn !== 0) {
-    claims.exp = now + expiresIn;
+  if (resolvedExpiresIn !== 0) {
+    claims.exp = now + resolvedExpiresIn;
   }
 
   const h = base64urlEncode(Buffer.from(JSON.stringify(header)));
   const p = base64urlEncode(Buffer.from(JSON.stringify(claims)));
   const signingInput = `${h}.${p}`;
-  const signature = sign(signingInput, secret, algorithm);
+  const signature = sign(signingInput, resolvedSecret, resolvedAlgorithm);
 
   return `${h}.${p}.${signature}`;
 }
@@ -71,12 +84,12 @@ export function getToken(
  * Secret is always read from `process.env.SECRET`.
  * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
  */
-export function validToken(token: string): boolean {
-  const secret = process.env.SECRET ?? "";
-  if (!secret) {
+export function validToken(token: string, secret?: string, algorithm?: string): boolean {
+  const resolvedSecret = secret ?? process.env.SECRET ?? "";
+  if (!resolvedSecret) {
     console.warn("Auth: SECRET not set in .env — using blank secret (insecure)");
   }
-  const algorithm = process.env.TINA4_JWT_ALGORITHM ?? "HS256";
+  const resolvedAlgorithm = algorithm ?? process.env.TINA4_JWT_ALGORITHM ?? "HS256";
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return false;
@@ -84,7 +97,7 @@ export function validToken(token: string): boolean {
     const [h, p, sig] = parts;
     const signingInput = `${h}.${p}`;
 
-    if (!verifySignature(signingInput, sig, secret as string, algorithm)) {
+    if (!verifySignature(signingInput, sig, resolvedSecret, resolvedAlgorithm)) {
       return false;
     }
 
@@ -211,7 +224,7 @@ export function authMiddleware(secret?: string, algorithm: string = "HS256"): Mi
     }
 
     const token = authHeader.slice(7);
-    if (!validToken(token)) {
+    if (!validToken(token, secret, algorithm)) {
       res({ error: "Unauthorized" }, 401);
       return;
     }

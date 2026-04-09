@@ -58,7 +58,7 @@ export interface WebSocketClient {
 
 type EventHandler = (...args: unknown[]) => void;
 
-// ── Frame Utilities (exported for testing) ───────────────────
+// ── Frame Utilities (internal) ───────────────────────────────
 
 /**
  * Compute Sec-WebSocket-Accept from Sec-WebSocket-Key per RFC 6455.
@@ -283,6 +283,27 @@ export class WebSocketServer {
    */
   getClients(): Map<string, WebSocketClient> {
     return this.clients;
+  }
+
+  /**
+   * Close a specific client connection with an optional code and reason.
+   */
+  close(clientId: string, code: number = 1000, reason: string = ""): void {
+    const client = this.clients.get(clientId);
+    if (!client || client.closed) return;
+    client.closed = true;
+    const reasonBytes = Buffer.from(reason, "utf-8");
+    const payload = Buffer.alloc(2 + reasonBytes.length);
+    payload.writeUInt16BE(code, 0);
+    reasonBytes.copy(payload, 2);
+    try {
+      client.socket.write(buildFrame(OP_CLOSE, payload));
+      client.socket.end();
+    } catch {
+      // already closed
+    }
+    this.clients.delete(clientId);
+    this.removeClientFromAllRooms(clientId);
   }
 
   // ── Rooms ──────────────────────────────────────────────────

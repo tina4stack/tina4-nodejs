@@ -51,6 +51,30 @@ export class MiddlewareChain {
  * the chain short-circuits and runBefore returns shouldContinue = false.
  */
 export class MiddlewareRunner {
+  /** Globally registered middleware classes (parity with PHP/Ruby/Python orchestrators). */
+  private static globalMiddleware: any[] = [];
+
+  /**
+   * Register a middleware class to run on every request.
+   * Mirrors Tina4\Middleware::use (PHP), Tina4::Middleware.use (Ruby),
+   * and Middleware.use (Python).
+   */
+  static use(cls: any): void {
+    if (!MiddlewareRunner.globalMiddleware.includes(cls)) {
+      MiddlewareRunner.globalMiddleware.push(cls);
+    }
+  }
+
+  /** Return the list of globally registered middleware classes. */
+  static getGlobal(): any[] {
+    return [...MiddlewareRunner.globalMiddleware];
+  }
+
+  /** Clear all globally registered middleware (primarily for tests). */
+  static reset(): void {
+    MiddlewareRunner.globalMiddleware = [];
+  }
+
   /**
    * Execute every beforeX static method found on the supplied classes,
    * in order. Returns the (possibly mutated) request and response pair and a

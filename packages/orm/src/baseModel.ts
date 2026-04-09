@@ -285,7 +285,7 @@ export class BaseModel {
    */
   static create<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
-    data: Record<string, unknown>,
+    data: Record<string, unknown> = {},
   ): T {
     const instance = new this(data) as T;
     instance.save();
@@ -403,6 +403,7 @@ export class BaseModel {
     where?: string,
     params?: unknown[],
     include?: string[],
+    orderBy?: string,
   ): T[] {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
@@ -419,7 +420,8 @@ export class BaseModel {
     }
 
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
-    const sql = `SELECT * FROM "${ModelClass.tableName}"${whereClause}`;
+    const orderClause = orderBy ? ` ORDER BY ${orderBy}` : "";
+    const sql = `SELECT * FROM "${ModelClass.tableName}"${whereClause}${orderClause}`;
 
     const rows = db.query(sql, params);
     const instances = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
@@ -755,28 +757,46 @@ export class BaseModel {
   /**
    * Return true if a record with the given primary key exists.
    */
-  static exists(id: unknown): boolean {
+  static exists(pkValue: unknown): boolean {
     const ModelClass = this as unknown as typeof BaseModel;
-    return ModelClass.findById(id) !== null;
+    return ModelClass.findById(pkValue) !== null;
   }
 
   /**
    * Run a raw SQL query with results cached by TTL. Cache is per-model-class.
+   *
+   * @param sql     SQL query string.
+   * @param params  Bind parameters.
+   * @param ttl     Cache TTL in seconds (default 60).
+   * @param limit   Max records to return (default 20).
+   * @param offset  Records to skip (default 0).
+   * @param include Relationship names to eager-load on cache miss.
    */
   static cached<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     sql: string,
     params?: unknown[],
     ttl = 60,
+    limit = 20,
+    offset = 0,
+    include?: string[],
   ): T[] {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     if (!ModelClass._queryCache) {
       ModelClass._queryCache = new QueryCache({ defaultTtl: ttl, maxSize: 500 });
     }
-    const key = QueryCache.queryKey(`${ModelClass.tableName}:${sql}`, params ?? []);
+    const cacheKey = `${ModelClass.tableName}:${sql}:${limit}:${offset}`;
+    const key = QueryCache.queryKey(cacheKey, params ?? []);
     const hit = ModelClass._queryCache.get(key) as T[] | undefined;
     if (hit !== undefined) return hit;
-    const results = ModelClass.select<T>(sql, params);
+
+    const db = ModelClass.getDb();
+    const querySql = `${sql} LIMIT ${limit} OFFSET ${offset}`;
+    const rows = db.query(querySql, params);
+    const results = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
+    if (include && results.length > 0) {
+      ModelClass._eagerLoad(results as BaseModel[], include);
+    }
     ModelClass._queryCache.set(key, results, ttl);
     return results;
   }
@@ -1258,6 +1278,23 @@ export class BaseModel {
         }
       }
     }
+  }
+
+  /**
+   * Public alias for _eagerLoad. Eagerly loads relationships for a list of instances,
+   * preventing N+1 queries.
+   *
+   * Usage:
+   *   const users = User.all();
+   *   await User.eagerLoad(users, ["posts", "profile"]);
+   *
+   * @param instances  Array of model instances to load relationships onto.
+   * @param includeList Array of relationship names (supports dot notation for nesting).
+   */
+  static eagerLoad(instances: BaseModel[], includeList: string[]): Promise<void> {
+    const ModelClass = this as unknown as typeof BaseModel;
+    ModelClass._eagerLoad(instances, includeList);
+    return Promise.resolve();
   }
 
   /**

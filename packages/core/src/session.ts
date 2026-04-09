@@ -68,7 +68,7 @@ interface SessionData {
  */
 export interface SessionHandler {
   read(sessionId: string): SessionData | null;
-  write(sessionId: string, data: SessionData, ttl: number): void;
+  write(sessionId: string, data: SessionData, ttl?: number): void;
   destroy(sessionId: string): void;
   /** Garbage-collect expired sessions. Optional — Redis/Valkey/Mongo handle TTL natively. */
   gc?(maxLifetime: number): void;
@@ -112,7 +112,7 @@ export class FileSessionHandler implements SessionHandler {
     }
   }
 
-  write(sessionId: string, data: SessionData, ttl: number): void {
+  write(sessionId: string, data: SessionData, ttl: number = 0): void {
     this.ensureDir();
     const expires = ttl > 0 ? Math.floor(Date.now() / 1000) + ttl : 0;
     const wrapper = { _data: data, _expires: expires };
@@ -126,7 +126,7 @@ export class FileSessionHandler implements SessionHandler {
     } catch { /* ignore */ }
   }
 
-  gc(_maxLifetime: number): void {
+  gc(maxLifetime: number = 0): void {
     if (!existsSync(this.storagePath)) return;
     const now = Math.floor(Date.now() / 1000);
     try {
@@ -298,7 +298,7 @@ export class RedisSessionHandler implements SessionHandler {
     }
   }
 
-  write(sessionId: string, data: SessionData, ttl: number): void {
+  write(sessionId: string, data: SessionData, ttl: number = 0): void {
     const json = JSON.stringify(data);
     if (ttl > 0) {
       this.execSync(["SETEX", this.key(sessionId), String(ttl), json]);
