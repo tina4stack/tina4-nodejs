@@ -19,6 +19,103 @@ class SafeString {
   toString() { return this.value; }
 }
 
+/**
+ * Produce a human-readable, debugger-friendly inspection of any value.
+ *
+ * Equivalent to PHP's var_dump, Python's repr, and Ruby's inspect. Unlike
+ * JSON.stringify (the previous implementation) this handles:
+ *   - Circular references (marked as [Circular])
+ *   - BigInt (shown as `123n`)
+ *   - undefined, Symbol, and function values (shown inline, not dropped)
+ *   - Date, Map, Set, Error, RegExp (shown with their type and contents)
+ *   - Class instances (shown with the class name prefix)
+ *
+ * Intended for the `|dump` filter in templates. Output is a plain string;
+ * the filter wraps it in <pre> and marks it safe so the template engine
+ * doesn't double-escape.
+ */
+function inspectValue(value: unknown, seen: WeakSet<object> = new WeakSet(), depth = 0): string {
+  // Primitives
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "bigint") return `${value.toString()}n`;
+  if (typeof value === "symbol") return value.toString();
+  if (typeof value === "function") {
+    const name = value.name || "(anonymous)";
+    return `[Function: ${name}]`;
+  }
+
+  // value is now object (including arrays, Date, Map, Set, etc.)
+  const obj = value as object;
+
+  // Cycle detection
+  if (seen.has(obj)) return "[Circular]";
+  seen.add(obj);
+
+  // Depth cap — prevents runaway recursion on enormous graphs
+  if (depth > 8) return "[...]";
+
+  try {
+    // Date
+    if (obj instanceof Date) {
+      return `Date(${obj.toISOString()})`;
+    }
+
+    // RegExp
+    if (obj instanceof RegExp) {
+      return obj.toString();
+    }
+
+    // Error
+    if (obj instanceof Error) {
+      return `${obj.constructor.name}(${JSON.stringify(obj.message)})`;
+    }
+
+    // Map
+    if (obj instanceof Map) {
+      if (obj.size === 0) return "Map(0) {}";
+      const entries: string[] = [];
+      for (const [k, v] of obj) {
+        entries.push(`${inspectValue(k, seen, depth + 1)} => ${inspectValue(v, seen, depth + 1)}`);
+      }
+      return `Map(${obj.size}) { ${entries.join(", ")} }`;
+    }
+
+    // Set
+    if (obj instanceof Set) {
+      if (obj.size === 0) return "Set(0) {}";
+      const items: string[] = [];
+      for (const v of obj) {
+        items.push(inspectValue(v, seen, depth + 1));
+      }
+      return `Set(${obj.size}) { ${items.join(", ")} }`;
+    }
+
+    // Array
+    if (Array.isArray(obj)) {
+      if (obj.length === 0) return "[]";
+      const items = obj.map((v) => inspectValue(v, seen, depth + 1));
+      return `[${items.join(", ")}]`;
+    }
+
+    // Plain object or class instance
+    const keys = Object.keys(obj);
+    const className = obj.constructor && obj.constructor.name !== "Object"
+      ? `${obj.constructor.name} `
+      : "";
+    if (keys.length === 0) return `${className}{}`;
+    const props = keys.map((k) => {
+      const v = (obj as Record<string, unknown>)[k];
+      return `${k}: ${inspectValue(v, seen, depth + 1)}`;
+    });
+    return `${className}{ ${props.join(", ")} }`;
+  } finally {
+    seen.delete(obj);
+  }
+}
+
 type TokenType = "TEXT" | "VAR" | "BLOCK" | "COMMENT";
 type Token = [TokenType, string];
 
@@ -1590,7 +1687,18 @@ export class Frond {
           case "keys":       value = (typeof value === "object" && value !== null && !Array.isArray(value)) ? Object.keys(value) : []; continue;
           case "values":     value = (typeof value === "object" && value !== null && !Array.isArray(value)) ? Object.values(value) : []; continue;
           case "json_encode": value = JSON.stringify(value); continue;
-          case "dump":       value = JSON.stringify(value); continue;
+          case "dump": {
+            // Use a safe inspector rather than JSON.stringify — handles
+            // circular refs, BigInt, Map/Set, Error, Date, class instances.
+            const dumped = inspectValue(value);
+            const escaped = dumped
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .replace(/"/g, "&quot;");
+            value = new SafeString(`<pre>${escaped}</pre>`);
+            continue;
+          }
           case "nl2br":      value = String(value).replace(/\n/g, "<br>\n"); continue;
           case "unique":     value = Array.isArray(value) ? [...new Set(value)] : value; continue;
           case "sort":       value = Array.isArray(value) ? [...value].sort() : value; continue;
