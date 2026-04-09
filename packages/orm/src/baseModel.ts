@@ -30,6 +30,12 @@ function _pluralRelKeys(): boolean {
 }
 
 /**
+ * Cross-model FK registry: maps referenced model name → list of has-many specs.
+ * Populated by BaseModel._processForeignKeys() when a model with foreignKey fields is used.
+ */
+const _fkRegistry = new Map<string, Array<{ foreignKey: string; declaringModel: string; hasManyKey: string }>>();
+
+/**
  * BaseModel provides instance methods for ORM models.
  * Models extend this class and define static properties.
  *
@@ -141,6 +147,49 @@ export class BaseModel {
       reverse[dbCol] = jsProp;
     }
     return reverse;
+  }
+
+  /**
+   * Process any foreignKey field definitions on this model, auto-wiring:
+   * - belongsTo entries on this model (strip _id from key → association name)
+   * - hasMany entries on the referenced model via the module-level _fkRegistry
+   *
+   * Idempotent — safe to call multiple times.
+   */
+  static _processForeignKeys(): void {
+    const fields = this.fields ?? {};
+    for (const [key, def] of Object.entries(fields)) {
+      if (def.type !== "foreignKey" || !def.references) continue;
+
+      // Auto-wire belongsTo on this model
+      const belongsName = key.endsWith("_id") ? key.slice(0, -3) : key;
+      this.belongsTo = this.belongsTo ?? [];
+      if (!this.belongsTo.find((r) => r.foreignKey === key)) {
+        this.belongsTo.push({ model: def.references, foreignKey: key });
+      }
+
+      // Register hasMany on the referenced model via the module-level registry
+      const hasManyKey = def.relatedName ?? (this.tableName ?? this.name.toLowerCase());
+      const existing = _fkRegistry.get(def.references) ?? [];
+      if (!existing.find((r) => r.foreignKey === key && r.declaringModel === this.name)) {
+        existing.push({ foreignKey: key, declaringModel: this.name, hasManyKey });
+        _fkRegistry.set(def.references, existing);
+      }
+    }
+  }
+
+  /**
+   * Merge any FK-registry-registered hasMany entries for this model.
+   * Called before relationship resolution so the referenced model gets its has-many wired.
+   */
+  static _applyFkRegistry(): void {
+    const entries = _fkRegistry.get(this.name) ?? [];
+    for (const entry of entries) {
+      this.hasMany = this.hasMany ?? [];
+      if (!this.hasMany.find((r) => r.foreignKey === entry.foreignKey && r.model === entry.declaringModel)) {
+        this.hasMany.push({ model: entry.declaringModel, foreignKey: entry.foreignKey });
+      }
+    }
   }
 
   /**
@@ -1029,6 +1078,10 @@ export class BaseModel {
   private _lazyLoadRelationship(relName: string): unknown {
     const ModelClass = this.constructor as typeof BaseModel;
 
+    // Apply FK registry so foreignKey fields auto-wire relationships
+    ModelClass._processForeignKeys();
+    ModelClass._applyFkRegistry();
+
     // Check hasOne
     if (ModelClass.hasOne) {
       const rel = ModelClass.hasOne.find((r) => r.model.toLowerCase() === relName || r.model === relName);
@@ -1078,6 +1131,10 @@ export class BaseModel {
     if (instances.length === 0) return;
 
     const ModelClass = instances[0].constructor as typeof BaseModel;
+
+    // Apply FK registry so foreignKey fields auto-wire hasMany on referenced models
+    ModelClass._processForeignKeys();
+    ModelClass._applyFkRegistry();
 
     // Group includes: top-level and nested
     const topLevel: Record<string, string[]> = {};

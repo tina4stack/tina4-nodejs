@@ -1,4 +1,4 @@
-export type FieldType = "string" | "integer" | "number" | "numeric" | "boolean" | "datetime" | "text";
+export type FieldType = "string" | "integer" | "number" | "numeric" | "boolean" | "datetime" | "text" | "foreignKey";
 
 export interface FieldDefinition {
   type: FieldType;
@@ -11,6 +11,10 @@ export interface FieldDefinition {
   min?: number;
   max?: number;
   pattern?: string;
+  /** For type "foreignKey": the referenced model name (string) */
+  references?: string;
+  /** For type "foreignKey": override the has-many property name on the referenced model */
+  relatedName?: string;
 }
 
 export interface RelationshipDefinition {
