@@ -486,6 +486,14 @@ export class Database {
     };
   }
 
+  /** Clear the query result cache. */
+  cacheClear(): void {
+    // Node database layer does not maintain an internal query cache at this
+    // level (caching lives in the SQLTranslation layer). This method exists
+    // for API parity with PHP, Python, and Ruby.
+    // To clear the SQLTranslation query cache use: QueryCache.clear()
+  }
+
   /** Get the last auto-increment id. */
   getLastId(): string | number {
     const id = this.getNextAdapter().lastInsertId();
