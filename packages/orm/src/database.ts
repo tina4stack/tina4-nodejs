@@ -95,7 +95,12 @@ export function parseDatabaseUrl(url: string, username?: string, password?: stri
   // Handle sqlite:// separately because URL class mangles the path
   if (url.startsWith("sqlite:///")) {
     // sqlite:///absolute/path — three slashes means absolute
-    const path = url.slice("sqlite://".length);
+    let path = url.slice("sqlite://".length);
+    // Windows: sqlite:///C:/Users/app.db → /C:/Users/app.db after slicing.
+    // The leading / before the drive letter must be removed.
+    if (/^\/[A-Za-z]:/.test(path)) {
+      path = path.slice(1);
+    }
     result = { type: "sqlite", path };
   } else if (url.startsWith("sqlite://")) {
     // sqlite://./relative or sqlite://relative
