@@ -1,5 +1,5 @@
 /**
- * Tests for template rendering in file-based routes and res.template().
+ * Tests for template rendering in file-based routes and res.render().
  * Run with: npx tsx test/templateRoute.test.ts
  */
 import { startServer } from "../packages/core/src/index.ts";
@@ -36,10 +36,10 @@ export default async function(req: any, res: any) {
 }
 `);
 
-// Route: GET /inline — uses res.template() directly
+// Route: GET /inline — uses res.render() directly
 writeFileSync(join(TEST_DIR, "src/routes/inline/get.ts"), `
 export default async function(req: any, res: any) {
-  return res.template("dashboard.twig", { title: "Inline Render", items: ["One", "Two"] });
+  return res.render("dashboard.twig", { title: "Inline Render", items: ["One", "Two"] });
 }
 `);
 
@@ -110,8 +110,8 @@ assert("Dashboard renders title", dashboard.raw.includes("<h1>My Dashboard</h1>"
 assert("Dashboard renders list items", dashboard.raw.includes("<li>Alpha</li>") && dashboard.raw.includes("<li>Beta</li>") && dashboard.raw.includes("<li>Gamma</li>"),
   `got: ${dashboard.raw.slice(0, 300)}`);
 
-// --- res.template() inline ---
-console.log("\n--- Inline res.template() ---");
+// --- res.render() inline ---
+console.log("\n--- Inline res.render() ---");
 
 const inline = await request("GET", "/inline");
 assert("GET /inline returns 200", inline.status === 200);

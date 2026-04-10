@@ -233,15 +233,6 @@ export function createResponse(res: ServerResponse): Tina4Response {
     }
   };
 
-  response.template = async function (
-    name: string,
-    data?: Record<string, unknown>,
-    status?: number,
-    templateDir?: string,
-  ): Promise<Tina4Response> {
-    return response.render(name, data, status, templateDir);
-  };
-
   /**
    * Stream response from an async generator for Server-Sent Events (SSE).
    *

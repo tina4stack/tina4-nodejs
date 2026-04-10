@@ -3,7 +3,7 @@
  *
  * Usage:
  *   // Standalone
- *   const result = QueryBuilder.from("users", db)
+ *   const result = QueryBuilder.fromTable("users", db)
  *     .select("id", "name")
  *     .where("active = ?", [1])
  *     .orderBy("name ASC")
@@ -49,7 +49,7 @@ export class QueryBuilder {
    * @param db - Optional database adapter.
    * @returns A new QueryBuilder instance.
    */
-  static from(tableName: string, db?: DatabaseAdapter): QueryBuilder {
+  static fromTable(tableName: string, db?: DatabaseAdapter): QueryBuilder {
     return new QueryBuilder(tableName, db);
   }
 

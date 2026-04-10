@@ -828,7 +828,7 @@ ${reset}
           typeof result === "object" &&
           !Buffer.isBuffer(result)
         ) {
-          await res.template(match.template, result as Record<string, unknown>);
+          await res.render(match.template, result as Record<string, unknown>);
         }
 
         if (!res.raw.writableEnded) {

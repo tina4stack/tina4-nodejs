@@ -54,31 +54,31 @@ console.log("=== QueryBuilder Tests ===\n");
 // ---------- 1. from() creates a QueryBuilder ----------
 console.log("--- 1. from() creates a QueryBuilder ---");
 {
-  const qb = QueryBuilder.from("users", db);
+  const qb = QueryBuilder.fromTable("users", db);
   assert("from() returns a QueryBuilder instance", qb instanceof QueryBuilder);
-  assert("from() without db returns a QueryBuilder", QueryBuilder.from("users") instanceof QueryBuilder);
+  assert("from() without db returns a QueryBuilder", QueryBuilder.fromTable("users") instanceof QueryBuilder);
 }
 
 // ---------- 2. select() sets columns ----------
 console.log("\n--- 2. select() sets columns ---");
 {
-  const sql = QueryBuilder.from("users").select("id", "name").toSql();
+  const sql = QueryBuilder.fromTable("users").select("id", "name").toSql();
   assert("select() sets specific columns", sql === "SELECT id, name FROM users");
 
-  const sqlDefault = QueryBuilder.from("users").toSql();
+  const sqlDefault = QueryBuilder.fromTable("users").toSql();
   assert("default select is *", sqlDefault === "SELECT * FROM users");
 
-  const sqlEmpty = QueryBuilder.from("users").select().toSql();
+  const sqlEmpty = QueryBuilder.fromTable("users").select().toSql();
   assert("select() with no args keeps *", sqlEmpty === "SELECT * FROM users");
 }
 
 // ---------- 3. where() adds AND conditions ----------
 console.log("\n--- 3. where() adds AND conditions ---");
 {
-  const sql = QueryBuilder.from("users").where("age > ?", [18]).toSql();
+  const sql = QueryBuilder.fromTable("users").where("age > ?", [18]).toSql();
   assert("single where()", sql === "SELECT * FROM users WHERE age > ?");
 
-  const sql2 = QueryBuilder.from("users")
+  const sql2 = QueryBuilder.fromTable("users")
     .where("age > ?", [18])
     .where("role = ?", ["admin"])
     .toSql();
@@ -88,7 +88,7 @@ console.log("\n--- 3. where() adds AND conditions ---");
 // ---------- 4. orWhere() adds OR conditions ----------
 console.log("\n--- 4. orWhere() adds OR conditions ---");
 {
-  const sql = QueryBuilder.from("users")
+  const sql = QueryBuilder.fromTable("users")
     .where("role = ?", ["admin"])
     .orWhere("role = ?", ["user"])
     .toSql();
@@ -98,7 +98,7 @@ console.log("\n--- 4. orWhere() adds OR conditions ---");
 // ---------- 5. join() adds INNER JOIN ----------
 console.log("\n--- 5. join() adds INNER JOIN ---");
 {
-  const sql = QueryBuilder.from("users")
+  const sql = QueryBuilder.fromTable("users")
     .join("orders", "orders.user_id = users.id")
     .toSql();
   assert("join() adds INNER JOIN", sql === "SELECT * FROM users INNER JOIN orders ON orders.user_id = users.id");
@@ -107,7 +107,7 @@ console.log("\n--- 5. join() adds INNER JOIN ---");
 // ---------- 6. leftJoin() adds LEFT JOIN ----------
 console.log("\n--- 6. leftJoin() adds LEFT JOIN ---");
 {
-  const sql = QueryBuilder.from("users")
+  const sql = QueryBuilder.fromTable("users")
     .leftJoin("orders", "orders.user_id = users.id")
     .toSql();
   assert("leftJoin() adds LEFT JOIN", sql === "SELECT * FROM users LEFT JOIN orders ON orders.user_id = users.id");
@@ -116,17 +116,17 @@ console.log("\n--- 6. leftJoin() adds LEFT JOIN ---");
 // ---------- 7. groupBy() adds GROUP BY ----------
 console.log("\n--- 7. groupBy() adds GROUP BY ---");
 {
-  const sql = QueryBuilder.from("users").groupBy("role").toSql();
+  const sql = QueryBuilder.fromTable("users").groupBy("role").toSql();
   assert("groupBy() single column", sql === "SELECT * FROM users GROUP BY role");
 
-  const sql2 = QueryBuilder.from("users").groupBy("role").groupBy("age").toSql();
+  const sql2 = QueryBuilder.fromTable("users").groupBy("role").groupBy("age").toSql();
   assert("groupBy() multiple columns", sql2 === "SELECT * FROM users GROUP BY role, age");
 }
 
 // ---------- 8. having() adds HAVING ----------
 console.log("\n--- 8. having() adds HAVING ---");
 {
-  const sql = QueryBuilder.from("users")
+  const sql = QueryBuilder.fromTable("users")
     .select("role", "COUNT(*) as cnt")
     .groupBy("role")
     .having("cnt > ?", [1])
@@ -137,10 +137,10 @@ console.log("\n--- 8. having() adds HAVING ---");
 // ---------- 9. orderBy() adds ORDER BY ----------
 console.log("\n--- 9. orderBy() adds ORDER BY ---");
 {
-  const sql = QueryBuilder.from("users").orderBy("name ASC").toSql();
+  const sql = QueryBuilder.fromTable("users").orderBy("name ASC").toSql();
   assert("orderBy() single", sql === "SELECT * FROM users ORDER BY name ASC");
 
-  const sql2 = QueryBuilder.from("users").orderBy("name ASC").orderBy("age DESC").toSql();
+  const sql2 = QueryBuilder.fromTable("users").orderBy("name ASC").orderBy("age DESC").toSql();
   assert("orderBy() multiple", sql2 === "SELECT * FROM users ORDER BY name ASC, age DESC");
 }
 
@@ -149,7 +149,7 @@ console.log("\n--- 10. limit() sets LIMIT and OFFSET ---");
 {
   // Note: limit/offset are not appended to toSql() — they're passed to fetch().
   // Verify toSql() output is correct (no LIMIT in SQL string).
-  const qb = QueryBuilder.from("users", db).limit(3, 1);
+  const qb = QueryBuilder.fromTable("users", db).limit(3, 1);
   const sql = qb.toSql();
   assert("limit() does not append to SQL (passed to fetch)", sql === "SELECT * FROM users");
 
@@ -161,7 +161,7 @@ console.log("\n--- 10. limit() sets LIMIT and OFFSET ---");
 // ---------- 11. toSql() generates correct SQL ----------
 console.log("\n--- 11. toSql() generates correct SQL ---");
 {
-  const sql = QueryBuilder.from("users")
+  const sql = QueryBuilder.fromTable("users")
     .select("users.name", "orders.amount")
     .join("orders", "orders.user_id = users.id")
     .where("users.age > ?", [20])
@@ -183,7 +183,7 @@ console.log("\n--- 11. toSql() generates correct SQL ---");
 // ---------- 12. Method chaining returns this ----------
 console.log("\n--- 12. Method chaining returns this ---");
 {
-  const qb = QueryBuilder.from("users");
+  const qb = QueryBuilder.fromTable("users");
   assert("select() returns same instance", qb.select("id") === qb);
   assert("where() returns same instance", qb.where("id = ?", [1]) === qb);
   assert("orWhere() returns same instance", qb.orWhere("id = ?", [2]) === qb);
@@ -198,16 +198,16 @@ console.log("\n--- 12. Method chaining returns this ---");
 // ---------- 13. get() returns results ----------
 console.log("\n--- 13. get() returns results ---");
 {
-  const rows = QueryBuilder.from("users", db).get();
+  const rows = QueryBuilder.fromTable("users", db).get();
   assert("get() returns all 5 users", rows.length === 5);
   assert("get() returns objects with name", (rows[0] as any).name === "Alice");
 
-  const filtered = QueryBuilder.from("users", db)
+  const filtered = QueryBuilder.fromTable("users", db)
     .where("role = ?", ["admin"])
     .get();
   assert("get() with where returns filtered rows", filtered.length === 2);
 
-  const selected = QueryBuilder.from("users", db)
+  const selected = QueryBuilder.fromTable("users", db)
     .select("name", "email")
     .where("id = ?", [1])
     .get();
@@ -218,13 +218,13 @@ console.log("\n--- 13. get() returns results ---");
 // ---------- 14. first() returns single record or null ----------
 console.log("\n--- 14. first() returns single record or null ---");
 {
-  const row = QueryBuilder.from("users", db)
+  const row = QueryBuilder.fromTable("users", db)
     .where("id = ?", [1])
     .first();
   assert("first() returns a record", row !== null);
   assert("first() returns correct record", (row as any).name === "Alice");
 
-  const noRow = QueryBuilder.from("users", db)
+  const noRow = QueryBuilder.fromTable("users", db)
     .where("id = ?", [999])
     .first();
   assert("first() returns null for no match", noRow === null);
@@ -233,15 +233,15 @@ console.log("\n--- 14. first() returns single record or null ---");
 // ---------- 15. count() returns number ----------
 console.log("\n--- 15. count() returns number ---");
 {
-  const total = QueryBuilder.from("users", db).count();
+  const total = QueryBuilder.fromTable("users", db).count();
   assert("count() returns total rows", total === 5);
 
-  const adminCount = QueryBuilder.from("users", db)
+  const adminCount = QueryBuilder.fromTable("users", db)
     .where("role = ?", ["admin"])
     .count();
   assert("count() with where returns filtered count", adminCount === 2);
 
-  const userCount = QueryBuilder.from("users", db)
+  const userCount = QueryBuilder.fromTable("users", db)
     .where("role = ?", ["user"])
     .count();
   assert("count() user role returns 3", userCount === 3);
@@ -250,10 +250,10 @@ console.log("\n--- 15. count() returns number ---");
 // ---------- 16. exists() returns boolean ----------
 console.log("\n--- 16. exists() returns boolean ---");
 {
-  const hasUsers = QueryBuilder.from("users", db).exists();
+  const hasUsers = QueryBuilder.fromTable("users", db).exists();
   assert("exists() returns true when rows exist", hasUsers === true);
 
-  const hasNone = QueryBuilder.from("users", db)
+  const hasNone = QueryBuilder.fromTable("users", db)
     .where("age > ?", [100])
     .exists();
   assert("exists() returns false when no rows match", hasNone === false);
@@ -264,7 +264,7 @@ console.log("\n--- 17. No database throws error ---");
 {
   let threw = false;
   try {
-    QueryBuilder.from("users").get();
+    QueryBuilder.fromTable("users").get();
   } catch (e: any) {
     threw = true;
     assert("error message mentions no adapter", e.message.includes("No database adapter"));
@@ -273,7 +273,7 @@ console.log("\n--- 17. No database throws error ---");
 
   let threwFirst = false;
   try {
-    QueryBuilder.from("users").first();
+    QueryBuilder.fromTable("users").first();
   } catch {
     threwFirst = true;
   }
@@ -281,7 +281,7 @@ console.log("\n--- 17. No database throws error ---");
 
   let threwCount = false;
   try {
-    QueryBuilder.from("users").count();
+    QueryBuilder.fromTable("users").count();
   } catch {
     threwCount = true;
   }
@@ -289,7 +289,7 @@ console.log("\n--- 17. No database throws error ---");
 
   let threwExists = false;
   try {
-    QueryBuilder.from("users").exists();
+    QueryBuilder.fromTable("users").exists();
   } catch {
     threwExists = true;
   }
@@ -300,7 +300,7 @@ console.log("\n--- 17. No database throws error ---");
 console.log("\n--- 18. Complex multi-clause query ---");
 {
   // Build a complex query and verify both SQL and results
-  const sql = QueryBuilder.from("users")
+  const sql = QueryBuilder.fromTable("users")
     .select("users.name", "SUM(orders.amount) as total")
     .join("orders", "orders.user_id = users.id")
     .where("users.age >= ?", [25])
@@ -320,7 +320,7 @@ console.log("\n--- 18. Complex multi-clause query ---");
   assert("complex SQL is correct", sql === expected, `got: ${sql}`);
 
   // Execute the complex query
-  const rows = QueryBuilder.from("users", db)
+  const rows = QueryBuilder.fromTable("users", db)
     .select("users.name", "SUM(orders.amount) as total")
     .join("orders", "orders.user_id = users.id")
     .where("users.age >= ?", [25])
@@ -335,22 +335,22 @@ console.log("\n--- 18. Complex multi-clause query ---");
 // ---------- 19. Empty results ----------
 console.log("\n--- 19. Empty results ---");
 {
-  const rows = QueryBuilder.from("users", db)
+  const rows = QueryBuilder.fromTable("users", db)
     .where("age > ?", [200])
     .get();
   assert("get() returns empty array for no matches", Array.isArray(rows) && rows.length === 0);
 
-  const first = QueryBuilder.from("users", db)
+  const first = QueryBuilder.fromTable("users", db)
     .where("age > ?", [200])
     .first();
   assert("first() returns null for no matches", first === null);
 
-  const cnt = QueryBuilder.from("users", db)
+  const cnt = QueryBuilder.fromTable("users", db)
     .where("age > ?", [200])
     .count();
   assert("count() returns 0 for no matches", cnt === 0);
 
-  const exists = QueryBuilder.from("users", db)
+  const exists = QueryBuilder.fromTable("users", db)
     .where("age > ?", [200])
     .exists();
   assert("exists() returns false for no matches", exists === false);
@@ -359,7 +359,7 @@ console.log("\n--- 19. Empty results ---");
 // ---------- Bonus: left join with null rows ----------
 console.log("\n--- Bonus: LEFT JOIN includes unmatched rows ---");
 {
-  const rows = QueryBuilder.from("users", db)
+  const rows = QueryBuilder.fromTable("users", db)
     .select("users.name", "orders.amount")
     .leftJoin("orders", "orders.user_id = users.id")
     .orderBy("users.name ASC")
@@ -373,7 +373,7 @@ console.log("\n--- Bonus: LEFT JOIN includes unmatched rows ---");
 // ---------- Bonus: where with no params ----------
 console.log("\n--- Bonus: where() with no params ---");
 {
-  const sql = QueryBuilder.from("users").where("active = 1").toSql();
+  const sql = QueryBuilder.fromTable("users").where("active = 1").toSql();
   assert("where() works without params array", sql === "SELECT * FROM users WHERE active = 1");
 }
 

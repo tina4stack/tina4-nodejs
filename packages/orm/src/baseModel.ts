@@ -201,7 +201,7 @@ export class BaseModel {
    * @returns A QueryBuilder instance bound to this model's table and database.
    */
   static query(): QueryBuilder {
-    return QueryBuilder.from(this.tableName, this.getDb());
+    return QueryBuilder.fromTable(this.tableName, this.getDb());
   }
 
   /**
