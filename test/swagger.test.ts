@@ -2,7 +2,7 @@
  * Unit tests for the Swagger/OpenAPI module.
  * Run with: npx tsx test/swagger.test.ts
  */
-import { generateOpenAPISpec } from "../packages/swagger/src/generator.ts";
+import { generate } from "../packages/swagger/src/generator.ts";
 import type { RouteDefinition } from "../packages/core/src/index.ts";
 
 let pass = 0;
@@ -21,7 +21,7 @@ function assert(name: string, condition: boolean, detail = "") {
 console.log("=== Swagger Tests ===\n");
 
 // --- Basic spec generation ---
-console.log("--- generateOpenAPISpec basics ---");
+console.log("--- generate basics ---");
 
 const routes: RouteDefinition[] = [
   { method: "GET", pattern: "/api/users", handler: async () => {} },
@@ -47,7 +47,7 @@ const models = [
   },
 ];
 
-const spec = generateOpenAPISpec(routes, models);
+const spec = generate(routes, models);
 
 assert("spec has openapi version", spec.openapi === "3.0.3");
 assert("spec has info object", spec.info !== undefined);
@@ -90,7 +90,7 @@ const routesWithMeta: RouteDefinition[] = [
   },
 ];
 
-const metaSpec = generateOpenAPISpec(routesWithMeta, []);
+const metaSpec = generate(routesWithMeta, []);
 const getProducts = metaSpec.paths["/api/products"]?.get as Record<string, unknown>;
 assert("meta summary is used", getProducts?.summary === "List all products");
 assert("meta tags are used", Array.isArray(getProducts?.tags) && (getProducts?.tags as string[])[0] === "products");
@@ -161,14 +161,14 @@ const routeNoMeta: RouteDefinition[] = [
   { method: "GET", pattern: "/api/orders", handler: async () => {} },
 ];
 
-const tagSpec = generateOpenAPISpec(routeNoMeta, []);
+const tagSpec = generate(routeNoMeta, []);
 const getOrders = tagSpec.paths["/api/orders"]?.get as Record<string, unknown>;
 assert("tags inferred from path", Array.isArray(getOrders?.tags) && (getOrders?.tags as string[])[0] === "orders");
 
 // --- Empty spec ---
 console.log("\n--- Empty spec ---");
 
-const emptySpec = generateOpenAPISpec([], []);
+const emptySpec = generate([], []);
 assert("empty routes produce empty paths", Object.keys(emptySpec.paths).length === 0);
 assert("empty models produce empty schemas", Object.keys(emptySpec.components?.schemas ?? {}).length === 0);
 
@@ -179,7 +179,7 @@ const catchAllRoutes: RouteDefinition[] = [
   { method: "GET", pattern: "/api/files/[...path]", handler: async () => {} },
 ];
 
-const catchSpec = generateOpenAPISpec(catchAllRoutes, []);
+const catchSpec = generate(catchAllRoutes, []);
 assert("catch-all route converted to {path}", "/api/files/{path}" in catchSpec.paths);
 
 // Summary

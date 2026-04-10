@@ -608,7 +608,7 @@ npx tina4nodejs test      # Run all tests
 
 Add test files in \`test/\` directory. Use built-in inline testing:
 \`\`\`typescript
-import { tests, assertEqual, runAllTests } from "@tina4/core";
+import { tests, assertEqual, runAll } from "@tina4/core";
 \`\`\`
 
 ## Important

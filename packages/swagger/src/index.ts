@@ -1,2 +1,2 @@
-export { generateOpenAPISpec } from "./generator.js";
+export { generate } from "./generator.js";
 export { createSwaggerRoutes } from "./ui.js";

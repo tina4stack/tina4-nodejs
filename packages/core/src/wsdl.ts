@@ -6,13 +6,13 @@
  *
  * Matches the PHP reference implementation (Tina4\WSDL).
  *
- *   import { WSDLService, WSDLOp } from "@tina4/core";
+ *   import { WSDLService, WSDLOperation } from "@tina4/core";
  *
  *   class Calculator extends WSDLService {
  *     serviceName = "Calculator";
  *     serviceUrl = "/api/calculator";
  *
- *     @WSDLOp({ output: { Result: "int" } })
+ *     @WSDLOperation({ output: { Result: "int" } })
  *     async Add(a: number, b: number): Promise<Record<string, unknown>> {
  *       return { Result: a + b };
  *     }
@@ -21,14 +21,14 @@
 
 // ── Types ────────────────────────────────────────────────────
 
-export interface WSDLOperation {
+export interface WSDLOperationMeta {
   name: string;
   description?: string;
   input?: Record<string, string>;   // param name -> type
   output?: Record<string, string>;  // return name -> type
 }
 
-interface WSDLOpConfig {
+interface WSDLOperationConfig {
   description?: string;
   input?: Record<string, string>;
   output?: Record<string, string>;
@@ -167,13 +167,13 @@ const WSDL_OPS_KEY = Symbol("wsdl_operations");
 /**
  * Decorator function for marking methods as WSDL operations.
  *
- *   @WSDLOp({ description: "Add two numbers", input: { a: "int", b: "int" }, output: { Result: "int" } })
+ *   @WSDLOperation({ description: "Add two numbers", input: { a: "int", b: "int" }, output: { Result: "int" } })
  *   async Add(a: number, b: number): Promise<Record<string, unknown>> { ... }
  */
-export function WSDLOp(config?: WSDLOpConfig) {
+export function WSDLOperation(config?: WSDLOperationConfig) {
   return function (_target: unknown, propertyKey: string, descriptor: PropertyDescriptor) {
     // Store metadata on the method itself
-    const op: WSDLOperation = {
+    const op: WSDLOperationMeta = {
       name: propertyKey,
       description: config?.description,
       input: config?.input,
@@ -214,12 +214,12 @@ export abstract class WSDLService {
   }
 
   /** Discovered operations (populated on first use). */
-  private _operations: Map<string, WSDLOperation> | null = null;
+  private _operations: Map<string, WSDLOperationMeta> | null = null;
 
   /**
    * Discover operations by scanning for methods with _wsdlOp metadata.
    */
-  private discoverOperations(): Map<string, WSDLOperation> {
+  private discoverOperations(): Map<string, WSDLOperationMeta> {
     if (this._operations) return this._operations;
 
     this._operations = new Map();
@@ -233,7 +233,7 @@ export abstract class WSDLService {
         try {
           const method = (this as Record<string, unknown>)[name];
           if (typeof method === "function" && (method as unknown as Record<string, unknown>)._wsdlOp) {
-            const op = (method as unknown as Record<string, unknown>)._wsdlOp as WSDLOperation;
+            const op = (method as unknown as Record<string, unknown>)._wsdlOp as WSDLOperationMeta;
             if (!this._operations.has(name)) {
               this._operations.set(name, op);
             }
@@ -386,7 +386,7 @@ export abstract class WSDLService {
   /**
    * Handle incoming SOAP request (parse XML, dispatch to method, return SOAP response).
    */
-  async handleRequest(soapXml: string): Promise<string> {
+  async handle(soapXml: string = ""): Promise<string> {
     const ops = this.discoverOperations();
 
     // Parse SOAP body
@@ -538,7 +538,7 @@ export abstract class WSDLService {
       return;
     }
 
-    const soapResponse = await this.handleRequest(xmlBody);
+    const soapResponse = await this.handle(xmlBody);
 
     if (typeof res.send === "function") {
       if (typeof res.setHeader === "function") {

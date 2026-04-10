@@ -10,7 +10,7 @@ import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
 import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
 import { validToken, getPayload } from "./auth.js";
 import { discoverRoutes } from "./routeDiscovery.js";
-import { createRequest, parseBody } from "./request.js";
+import { createRequest } from "./request.js";
 import { createResponse, setDefaultTemplatesDir } from "./response.js";
 import { MiddlewareChain, cors, requestLogger } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
@@ -439,6 +439,28 @@ function deployGallery(name) {
 // Allows handle() to route requests without requiring a reference to the server.
 let _dispatchFn: ((rawReq: IncomingMessage, rawRes: ServerResponse) => Promise<void>) | null = null;
 
+/** Module-level server handle for start()/stop() parity. */
+let _serverHandle: { close: () => void; router: Router; port: number } | null = null;
+
+/**
+ * Start the Tina4 HTTP server.
+ * Thin wrapper around startServer() for cross-framework parity with PHP and Ruby.
+ */
+export async function start(config?: Tina4Config): Promise<{ close: () => void; router: Router; port: number }> {
+  _serverHandle = await startServer(config);
+  return _serverHandle;
+}
+
+/**
+ * Stop the running Tina4 server gracefully.
+ */
+export function stop(): void {
+  if (_serverHandle) {
+    _serverHandle.close();
+    _serverHandle = null;
+  }
+}
+
 /**
  * Dispatch a raw Node.js request through the Tina4 router and write the response.
  * Requires startServer() to have been called first.
@@ -640,7 +662,7 @@ ${reset}
       // ORM not available, swagger will work without model schemas
     }
 
-    const getSpec = () => swagger.generateOpenAPISpec(allRoutes, modelDefs as any);
+    const getSpec = () => swagger.generate(allRoutes, modelDefs as any);
     const swaggerRoutes = swagger.createSwaggerRoutes(getSpec);
     for (const route of swaggerRoutes) {
       router.addRoute(route);
@@ -696,7 +718,7 @@ ${reset}
       if (res.raw.writableEnded) return;
 
       // Parse request body
-      await parseBody(req);
+      await req.parseBody();
 
       const pathname = (req.url ?? "/").split("?")[0];
 

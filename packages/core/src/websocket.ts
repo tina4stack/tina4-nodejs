@@ -214,9 +214,9 @@ export class WebSocketServer {
   }
 
   /**
-   * Send a message to a specific client.
+   * Send a message to a specific client by ID.
    */
-  send(clientId: string, message: string): void {
+  sendTo(clientId: string, message: string): void {
     const client = this.clients.get(clientId);
     if (!client || client.closed) return;
 

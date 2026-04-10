@@ -24,7 +24,7 @@ import {
   responseCache, clearCache,
   Api,
   DevMailbox,
-  WSDLService, WSDLOp,
+  WSDLService, WSDLOperation,
   AI_TOOLS, isInstalled, generateContext, installSelected,
 } from "../packages/core/src/index.ts";
 import type { Tina4Request, Tina4Response, Middleware } from "../packages/core/src/index.ts";
@@ -39,7 +39,7 @@ import {
 import type { FieldDefinition, DiscoveredModel } from "../packages/orm/src/index.ts";
 
 // ── Swagger imports ─────────────────────────────────────────────────
-import { generateOpenAPISpec } from "../packages/swagger/src/index.ts";
+import { generate } from "../packages/swagger/src/index.ts";
 import type { RouteDefinition } from "../packages/core/src/index.ts";
 
 // ── Frond imports ───────────────────────────────────────────────────
@@ -327,7 +327,7 @@ const models = [
   },
 ];
 
-const spec = generateOpenAPISpec(routes, models);
+const spec = generate(routes, models);
 assert("spec has openapi version", spec.openapi === "3.0.3");
 assert("spec has paths", typeof spec.paths === "object");
 assert("spec has /api/items path", "/api/items" in spec.paths);
@@ -458,7 +458,7 @@ assert("hasEnv returns false for missing", hasEnv("NONEXISTENT_KEY_XYZ") === fal
 console.log("\n=== 20. WSDL ===\n");
 
 assert("WSDLService class exists", typeof WSDLService === "function");
-assert("WSDLOp decorator exists", typeof WSDLOp === "function");
+assert("WSDLOperation decorator exists", typeof WSDLOperation === "function");
 
 class TestCalc extends WSDLService {
   serviceName = "TestCalc";

@@ -2,7 +2,7 @@
  * Unit tests for the inline testing framework (testing.ts).
  * Run with: npx tsx test/testing.test.ts
  */
-import { tests, assertEqual, assertThrows, assertTrue, assertFalse, runAllTests, resetTests } from "../packages/core/src/index.ts";
+import { tests, assertEqual, assertRaises, assertTrue, assertFalse, runAll, reset } from "../packages/core/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -23,11 +23,11 @@ console.log("=== Inline Testing Framework Tests ===\n");
 console.log("--- Exports ---");
 assert("tests is a function", typeof tests === "function");
 assert("assertEqual is a function", typeof assertEqual === "function");
-assert("assertThrows is a function", typeof assertThrows === "function");
+assert("assertRaises is a function", typeof assertRaises === "function");
 assert("assertTrue is a function", typeof assertTrue === "function");
 assert("assertFalse is a function", typeof assertFalse === "function");
-assert("runAllTests is a function", typeof runAllTests === "function");
-assert("resetTests is a function", typeof resetTests === "function");
+assert("runAll is a function", typeof runAll === "function");
+assert("reset is a function", typeof reset === "function");
 
 // --- assertEqual ---
 console.log("\n--- assertEqual ---");
@@ -38,14 +38,14 @@ assert("assertEqual type is 'equal'", eq.type === "equal");
 assert("assertEqual stores args", Array.isArray(eq.args) && eq.args[0] === 1 && eq.args[1] === 2);
 assert("assertEqual stores expected", eq.expected === 3);
 
-// --- assertThrows ---
-console.log("\n--- assertThrows ---");
+// --- assertRaises ---
+console.log("\n--- assertRaises ---");
 
-const throws = assertThrows(Error, ["bad"]);
-assert("assertThrows returns assertion object", throws !== null);
-assert("assertThrows type is 'raises'", throws.type === "raises");
-assert("assertThrows stores exception class", throws.exception === Error);
-assert("assertThrows stores args", throws.args[0] === "bad");
+const throws = assertRaises(Error, ["bad"]);
+assert("assertRaises returns assertion object", throws !== null);
+assert("assertRaises type is 'raises'", throws.type === "raises");
+assert("assertRaises stores exception class", throws.exception === Error);
+assert("assertRaises stores args", throws.args[0] === "bad");
 
 // --- assertTrue ---
 console.log("\n--- assertTrue ---");
@@ -66,7 +66,7 @@ assert("assertFalse stores args", falseAssert.args[0] === 0);
 // --- tests decorator ---
 console.log("\n--- tests Decorator ---");
 
-resetTests();
+reset();
 
 const add = tests(
   assertEqual([2, 3], 5),
@@ -79,11 +79,11 @@ const add = tests(
 assert("tests() returns the original function", typeof add === "function");
 assert("Decorated function still works", add(10, 20) === 30);
 
-// --- runAllTests with passing tests ---
-console.log("\n--- runAllTests Passing ---");
+// --- runAll with passing tests ---
+console.log("\n--- runAll Passing ---");
 
-const results = runAllTests({ quiet: true });
-assert("runAllTests returns results object", results !== null);
+const results = runAll({ quiet: true });
+assert("runAll returns results object", results !== null);
 assert("Results has passed count", typeof results.passed === "number");
 assert("Results has failed count", typeof results.failed === "number");
 assert("Results has errors count", typeof results.errors === "number");
@@ -94,10 +94,10 @@ assert("No errors", results.errors === 0);
 assert("Details has 3 entries", results.details.length === 3);
 assert("First detail status is passed", results.details[0].status === "passed");
 
-// --- runAllTests with failing test ---
-console.log("\n--- runAllTests Failing ---");
+// --- runAll with failing test ---
+console.log("\n--- runAll Failing ---");
 
-resetTests();
+reset();
 
 tests(
   assertEqual([1, 1], 999),  // This will fail: 1+1=2, not 999
@@ -105,32 +105,32 @@ tests(
   return a + b;
 });
 
-const failResults = runAllTests({ quiet: true });
+const failResults = runAll({ quiet: true });
 assert("Failing test increments failed count", failResults.failed === 1);
 assert("Failing test detail has status 'failed'", failResults.details[0].status === "failed");
 assert("Failing test detail has message", typeof failResults.details[0].message === "string");
 
-// --- runAllTests with error (throws) ---
-console.log("\n--- runAllTests with assertThrows ---");
+// --- runAll with error (throws) ---
+console.log("\n--- runAll with assertRaises ---");
 
-resetTests();
+reset();
 
 tests(
-  assertThrows(Error, [null]),
+  assertRaises(Error, [null]),
   assertEqual([5, 3], 8),
 )(function divide(a: number, b: number | null = null): number {
   if (b === null) throw new Error("b required");
   return a + b;
 });
 
-const throwResults = runAllTests({ quiet: true });
-assert("assertThrows passes when error thrown", throwResults.passed === 2);
+const throwResults = runAll({ quiet: true });
+assert("assertRaises passes when error thrown", throwResults.passed === 2);
 assert("No failures in throw test", throwResults.failed === 0);
 
-// --- assertTrue / assertFalse in runAllTests ---
+// --- assertTrue / assertFalse in runAll ---
 console.log("\n--- assertTrue/assertFalse in Runner ---");
 
-resetTests();
+reset();
 
 tests(
   assertTrue([1]),
@@ -142,21 +142,21 @@ tests(
   return x;
 });
 
-const boolResults = runAllTests({ quiet: true });
+const boolResults = runAll({ quiet: true });
 assert("All truthy/falsy assertions pass", boolResults.passed === 5 && boolResults.failed === 0);
 
-// --- resetTests ---
-console.log("\n--- resetTests ---");
+// --- reset ---
+console.log("\n--- reset ---");
 
-resetTests();
-const emptyResults = runAllTests({ quiet: true });
+reset();
+const emptyResults = runAll({ quiet: true });
 assert("After reset, no tests run", emptyResults.passed === 0 && emptyResults.failed === 0 && emptyResults.errors === 0);
 assert("After reset, details empty", emptyResults.details.length === 0);
 
 // --- failfast option ---
 console.log("\n--- failfast ---");
 
-resetTests();
+reset();
 
 tests(
   assertEqual([1, 1], 999),  // fail
@@ -165,26 +165,26 @@ tests(
   return a + b;
 });
 
-const ffResults = runAllTests({ quiet: true, failfast: true });
+const ffResults = runAll({ quiet: true, failfast: true });
 assert("Failfast stops after first failure", ffResults.details.length === 1);
 assert("Failfast reports the failure", ffResults.failed === 1);
 
 // --- Named function preserved ---
 console.log("\n--- Function Name ---");
 
-resetTests();
+reset();
 
 const myFunc = tests()(function namedFunction(x: number): number { return x; });
 assert("Named function name preserved", myFunc.name === "namedFunction");
 
 // --- Anonymous function ---
-resetTests();
+reset();
 
 const anonFunc = tests()((x: number) => x * 2);
 assert("Anonymous function works", anonFunc(5) === 10);
 
 // Cleanup
-resetTests();
+reset();
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

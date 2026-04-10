@@ -35,7 +35,7 @@ export {
   Migration,
 } from "./migration.js";
 export type { MigrationResult, MigrationStatus } from "./migration.js";
-export { generateCrudRoutes } from "./autoCrud.js";
+export { AutoCrud, generateCrudRoutes } from "./autoCrud.js";
 export { buildQuery, parseQueryString } from "./query.js";
 export { validate } from "./validation.js";
 export type { ValidationError } from "./validation.js";

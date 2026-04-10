@@ -323,6 +323,13 @@ export class ServiceRunner {
   }
 
   /**
+   * Check if a 5-field cron pattern matches the given (or current) date/time.
+   */
+  static matchCron(pattern: string, now?: Date): boolean {
+    return matchesCron(pattern, now ?? new Date());
+  }
+
+  /**
    * Watch service files for changes and hot-reload in dev mode.
    */
   static watch(serviceDir?: string): void {

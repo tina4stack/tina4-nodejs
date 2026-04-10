@@ -5,7 +5,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { watchForChanges } from "../packages/core/src/watcher.ts";
+import { watchForChanges, start, stop } from "../packages/core/src/watcher.ts";
 
 let pass = 0;
 let fail = 0;
@@ -160,6 +160,72 @@ console.log("\n--- Cleanup ---");
   writeFileSync(join(dir, "after-close.ts"), "should not trigger");
   await new Promise((r) => setTimeout(r, 400));
   assert("does not trigger callback after close", !called);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- start() / stop() API ---
+console.log("\n--- start() / stop() API ---");
+
+assert("start is a function", typeof start === "function");
+assert("stop is a function", typeof stop === "function");
+
+{
+  // start() should not throw
+  const dir = makeTempDir();
+  let threw = false;
+  try { start([dir], () => {}); } catch { threw = true; }
+  assert("start() does not throw", !threw);
+  stop();
+  rmSync(dir, { recursive: true, force: true });
+}
+
+{
+  // stop() without start should not throw
+  let threw = false;
+  try { stop(); } catch { threw = true; }
+  assert("stop() without start does not throw", !threw);
+}
+
+{
+  // start() is idempotent (calling twice does not duplicate watchers)
+  const dir = makeTempDir();
+  let callCount = 0;
+  start([dir], () => { callCount++; });
+  start([dir], () => { callCount += 100; }); // should be ignored
+
+  writeFileSync(join(dir, "idempotent.ts"), "x");
+  await new Promise((r) => setTimeout(r, 400));
+  assert("start() is idempotent (second call ignored)", callCount >= 1 && callCount < 100);
+
+  stop();
+  rmSync(dir, { recursive: true, force: true });
+}
+
+{
+  // start() detects file changes
+  const dir = makeTempDir();
+  let called = false;
+  start([dir], () => { called = true; });
+
+  writeFileSync(join(dir, "change.ts"), "hello");
+  await new Promise((r) => setTimeout(r, 400));
+  assert("start() triggers callback on file change", called);
+
+  stop();
+  rmSync(dir, { recursive: true, force: true });
+}
+
+{
+  // stop() prevents further callbacks
+  const dir = makeTempDir();
+  let called = false;
+  start([dir], () => { called = true; });
+  stop();
+
+  writeFileSync(join(dir, "after-stop.ts"), "nope");
+  await new Promise((r) => setTimeout(r, 400));
+  assert("stop() prevents further callbacks", !called);
+
   rmSync(dir, { recursive: true, force: true });
 }
 

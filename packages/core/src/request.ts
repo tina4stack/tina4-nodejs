@@ -36,6 +36,29 @@ export function createRequest(req: IncomingMessage): Tina4Request {
     tReq.ip = req.socket?.remoteAddress ?? "127.0.0.1";
   }
 
+  // Add convenience methods
+  tReq.header = function (name: string): string | undefined {
+    const val = req.headers[name.toLowerCase()];
+    if (Array.isArray(val)) return val[0];
+    return val;
+  };
+
+  tReq.bearerToken = function (): string | null {
+    const auth = tReq.header("authorization") ?? "";
+    if (auth.toLowerCase().startsWith("bearer ")) {
+      return auth.slice(7);
+    }
+    return null;
+  };
+
+  tReq.param = function (key: string, defaultValue?: string): string | undefined {
+    return tReq.params[key] ?? tReq.query[key] ?? defaultValue;
+  };
+
+  tReq.parseBody = function (): Promise<void> {
+    return parseBody(tReq);
+  };
+
   return tReq;
 }
 
@@ -50,7 +73,7 @@ export class PayloadTooLargeError extends Error {
   }
 }
 
-export async function parseBody(req: Tina4Request): Promise<void> {
+async function parseBody(req: Tina4Request): Promise<void> {
   const method = req.method?.toUpperCase();
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
 

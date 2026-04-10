@@ -52,23 +52,15 @@ cleanup();
 console.log("\n--- capture() ---");
 
 setup();
-const captureResult = mailbox.capture({
-  to: "alice@test.com",
-  subject: "Hello",
-  body: "Hi Alice!",
-});
+const captureResult = mailbox.capture("alice@test.com", "Hello", "Hi Alice!");
 assert("capture returns success", captureResult.success === true);
 assert("capture returns id", typeof captureResult.id === "string");
 
-const r1 = mailbox.capture({ to: "a@test.com", subject: "One", body: "1" });
-const r2 = mailbox.capture({ to: "b@test.com", subject: "Two", body: "2" });
+const r1 = mailbox.capture("a@test.com", "One", "1");
+const r2 = mailbox.capture("b@test.com", "Two", "2");
 assert("unique ids for each message", r1.id !== r2.id);
 
-const arrayResult = mailbox.capture({
-  to: ["alice@test.com", "bob@test.com"],
-  subject: "Group",
-  body: "Hello everyone",
-});
+const arrayResult = mailbox.capture(["alice@test.com", "bob@test.com"], "Group", "Hello everyone");
 assert("accepts array of recipients", arrayResult.success === true);
 cleanup();
 
@@ -80,12 +72,12 @@ const emptyInbox = mailbox.inbox();
 assert("empty inbox returns array", Array.isArray(emptyInbox));
 assert("empty inbox has 0 messages", emptyInbox.length === 0);
 
-mailbox.capture({ to: "a@test.com", subject: "Test", body: "Body" });
-mailbox.capture({ to: "b@test.com", subject: "Test2", body: "Body2" });
+mailbox.capture("a@test.com", "Test", "Body");
+mailbox.capture("b@test.com", "Test2", "Body2");
 assert("inbox returns captured messages", mailbox.inbox().length === 2);
 
 for (let i = 0; i < 5; i++) {
-  mailbox.capture({ to: `u${i}@test.com`, subject: `Msg ${i}`, body: "x" });
+  mailbox.capture(`u${i}@test.com`, `Msg ${i}`, "x");
 }
 assert("respects limit parameter", mailbox.inbox(3).length === 3);
 cleanup();
@@ -94,14 +86,14 @@ cleanup();
 console.log("\n--- clear() ---");
 
 setup();
-mailbox.capture({ to: "a@test.com", subject: "Keep", body: "data" });
-mailbox.capture({ to: "b@test.com", subject: "Keep2", body: "data2" });
+mailbox.capture("a@test.com", "Keep", "data");
+mailbox.capture("b@test.com", "Keep2", "data2");
 assert("inbox has 2 before clear", mailbox.inbox().length === 2);
 mailbox.clear();
 assert("inbox empty after clear", mailbox.inbox().length === 0);
 
 setup();
-mailbox.capture({ to: "a@test.com", subject: "Test", body: "body" });
+mailbox.capture("a@test.com", "Test", "body");
 mailbox.clear("inbox");
 assert("clear inbox only empties inbox", mailbox.inbox(50, 0, "inbox").length === 0);
 assert("clear inbox keeps outbox", mailbox.inbox(50, 0, "outbox").length === 1);
@@ -120,12 +112,7 @@ cleanup();
 console.log("\n--- Message Structure ---");
 
 setup();
-mailbox.capture({
-  to: "alice@test.com",
-  from: "sender@test.com",
-  subject: "Structure Test",
-  body: "Check fields",
-});
+mailbox.capture("alice@test.com", "Structure Test", "Check fields", false, [], [], undefined, [], "sender@test.com");
 const msgs = mailbox.inbox();
 assert("captured 1 message", msgs.length === 1);
 const msg = msgs[0];
@@ -149,7 +136,7 @@ cleanup();
 console.log("\n--- read() and delete() ---");
 
 setup();
-const readResult = mailbox.capture({ to: "a@test.com", subject: "Read me", body: "hi" });
+const readResult = mailbox.capture("a@test.com", "Read me", "hi");
 const readMsg = mailbox.read(readResult.id!);
 assert("read retrieves message", readMsg !== null);
 assert("read message has correct subject", readMsg!.subject === "Read me");
@@ -157,7 +144,7 @@ assert("read marks message as read", readMsg!.read === true);
 
 assert("read returns null for non-existent", mailbox.read("non-existent-id") === null);
 
-const delResult = mailbox.capture({ to: "a@test.com", subject: "Delete me", body: "bye" });
+const delResult = mailbox.capture("a@test.com", "Delete me", "bye");
 assert("delete returns true", mailbox.delete(delResult.id!) === true);
 assert("deleted message is gone", mailbox.read(delResult.id!) === null);
 assert("delete returns false for non-existent", mailbox.delete("non-existent-id") === false);
@@ -168,14 +155,7 @@ console.log("\n--- CC and BCC ---");
 
 setup();
 {
-  const result = mailbox.capture({
-    to: "alice@test.com",
-    from: "sender@test.com",
-    subject: "With CC",
-    body: "Test CC",
-    cc: ["cc1@test.com", "cc2@test.com"],
-    bcc: ["bcc1@test.com"],
-  });
+  const result = mailbox.capture("alice@test.com", "With CC", "Test CC", false, ["cc1@test.com", "cc2@test.com"], ["bcc1@test.com"], undefined, [], "sender@test.com");
   assert("capture with cc/bcc succeeds", result.success === true);
 
   const msg = mailbox.read(result.id!);
@@ -191,12 +171,7 @@ console.log("\n--- HTML Content ---");
 
 setup();
 {
-  const result = mailbox.capture({
-    to: "alice@test.com",
-    subject: "HTML Email",
-    body: "<h1>Hello</h1><p>World</p>",
-    html: true,
-  });
+  const result = mailbox.capture("alice@test.com", "HTML Email", "<h1>Hello</h1><p>World</p>", true);
   assert("capture with html flag succeeds", result.success === true);
 
   const msg = mailbox.read(result.id!);
@@ -210,11 +185,7 @@ console.log("\n--- Multiple Recipients ---");
 
 setup();
 {
-  const result = mailbox.capture({
-    to: ["a@test.com", "b@test.com", "c@test.com"],
-    subject: "Multi",
-    body: "To multiple",
-  });
+  const result = mailbox.capture(["a@test.com", "b@test.com", "c@test.com"], "Multi", "To multiple");
   assert("capture with 3 recipients", result.success === true);
 
   const msg = mailbox.read(result.id!);
@@ -227,11 +198,7 @@ console.log("\n--- Default From ---");
 
 setup();
 {
-  const result = mailbox.capture({
-    to: "alice@test.com",
-    subject: "No From",
-    body: "Test",
-  });
+  const result = mailbox.capture("alice@test.com", "No From", "Test");
   const msg = mailbox.read(result.id!);
   assert("default from is set", msg !== null && typeof msg!.from === "string" && msg!.from.length > 0);
 }
@@ -246,15 +213,15 @@ setup();
   assert("count returns object with total", typeof c0 === "object" && typeof c0.total === "number");
   assert("count is 0 initially", c0.total === 0);
 
-  mailbox.capture({ to: "a@test.com", subject: "1", body: "1" });
+  mailbox.capture("a@test.com", "1", "1");
   const c1 = mailbox.count();
   // capture stores in both inbox and outbox, so total = inbox + outbox = 2
   assert("count.inbox is 1 after 1 capture", c1.inbox === 1);
   assert("count.outbox is 1 after 1 capture", c1.outbox === 1);
   assert("count.total is 2 after 1 capture (inbox+outbox)", c1.total === 2);
 
-  mailbox.capture({ to: "b@test.com", subject: "2", body: "2" });
-  mailbox.capture({ to: "c@test.com", subject: "3", body: "3" });
+  mailbox.capture("b@test.com", "2", "2");
+  mailbox.capture("c@test.com", "3", "3");
   const c3 = mailbox.count();
   assert("count.inbox is 3 after 3 captures", c3.inbox === 3);
   assert("count.outbox is 3 after 3 captures", c3.outbox === 3);
@@ -273,7 +240,7 @@ console.log("\n--- Inbox Pagination ---");
 setup();
 {
   for (let i = 0; i < 10; i++) {
-    mailbox.capture({ to: `u${i}@test.com`, subject: `Msg ${i}`, body: `Body ${i}` });
+    mailbox.capture(`u${i}@test.com`, `Msg ${i}`, `Body ${i}`);
   }
 
   const page1 = mailbox.inbox(3, 0);
@@ -295,7 +262,7 @@ console.log("\n--- Persistence ---");
 
 setup();
 {
-  mailbox.capture({ to: "persist@test.com", subject: "Persist", body: "Data" });
+  mailbox.capture("persist@test.com", "Persist", "Data");
 
   // Create a new mailbox instance pointing to the same directory
   const mailbox2 = new DevMailbox(mailboxDir);
@@ -310,7 +277,7 @@ console.log("\n--- Empty Subject and Body ---");
 
 setup();
 {
-  const result = mailbox.capture({ to: "a@test.com", subject: "", body: "" });
+  const result = mailbox.capture("a@test.com", "", "");
   assert("empty subject/body capture succeeds", result.success === true);
 
   const msg = mailbox.read(result.id!);
@@ -326,7 +293,7 @@ setup();
 {
   const longSubject = "A".repeat(500);
   const longBody = "B".repeat(10000);
-  const result = mailbox.capture({ to: "a@test.com", subject: longSubject, body: longBody });
+  const result = mailbox.capture("a@test.com", longSubject, longBody);
   assert("long content capture succeeds", result.success === true);
 
   const msg = mailbox.read(result.id!);

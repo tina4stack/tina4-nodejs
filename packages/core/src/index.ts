@@ -12,15 +12,15 @@ export type {
   WebSocketRouteDefinition,
 } from "./types.js";
 
-export { startServer, resolvePortAndHost, handle } from "./server.js";
+export { startServer, resolvePortAndHost, handle, start, stop } from "./server.js";
 export { Router, RouteGroup, RouteRef, defaultRouter, runRouteMiddlewares } from "./router.js";
 export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";
 export { discoverRoutes } from "./routeDiscovery.js";
 export { MiddlewareChain, MiddlewareRunner, cors, requestLogger, CorsMiddleware, RateLimiterMiddleware, RequestLogger, SecurityHeadersMiddleware, CsrfMiddleware } from "./middleware.js";
 export type { CorsConfig } from "./middleware.js";
-export { createRequest, parseBody } from "./request.js";
-export { createResponse, errorResponse, setDefaultTemplatesDir } from "./response.js";
+export { createRequest } from "./request.js";
+export { createResponse, errorResponse, setDefaultTemplatesDir, getFrond, setFrond, getFrameworkFrond } from "./response.js";
 export { tryServeStatic } from "./static.js";
 export { loadEnv, getEnv, requireEnv, hasEnv, allEnv, resetEnv, isTruthy } from "./dotenv.js";
 export { Log } from "./logger.js";
@@ -74,8 +74,8 @@ export { DevAdmin, MessageLog, RequestInspector, ErrorTracker, DevMailboxStore, 
 export { Messenger } from "./messenger.js";
 export type { SendResult, EmailMessage } from "./messenger.js";
 export { DevMailbox, createMessenger } from "./devMailbox.js";
-export { WSDLService, WSDLOp } from "./wsdl.js";
-export type { WSDLOperation } from "./wsdl.js";
+export { WSDLService, WSDLOperation } from "./wsdl.js";
+export type { WSDLOperationMeta } from "./wsdl.js";
 export { HtmlElement, htmlElement, addHtmlHelpers } from "./htmlElement.js";
 export { renderErrorOverlay, renderProductionError, isDebugMode } from "./errorOverlay.js";
 export { AI_TOOLS, isInstalled, showMenu, installSelected, installAll, generateContext } from "./ai.js";
@@ -96,7 +96,7 @@ export { ValkeySessionHandler } from "./sessionHandlers/valkeyHandler.js";
 export type { ValkeySessionConfig } from "./sessionHandlers/valkeyHandler.js";
 export { RedisNpmSessionHandler } from "./sessionHandlers/redisHandler.js";
 export type { RedisNpmSessionConfig } from "./sessionHandlers/redisHandler.js";
-export { tests, assertEqual, assertThrows, assertTrue, assertFalse, runAllTests, resetTests } from "./testing.js";
+export { tests, assertEqual, assertRaises, assertTrue, assertFalse, runAll, reset } from "./testing.js";
 export { TestClient, TestResponse } from "./testClient.js";
 export { Container, container } from "./container.js";
 export { Validator } from "./validator.js";

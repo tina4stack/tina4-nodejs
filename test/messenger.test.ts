@@ -67,11 +67,7 @@ assert("DevMailbox has seed method", typeof mailbox.seed === "function");
 // --- DevMailbox capture ---
 console.log("\n--- DevMailbox capture ---");
 
-const result = mailbox.capture({
-  to: "alice@test.com",
-  subject: "Hello",
-  body: "Hi there!",
-});
+const result = mailbox.capture("alice@test.com", "Hello", "Hi there!");
 
 assert("capture returns success", result.success === true);
 assert("capture returns message", typeof result.message === "string");
@@ -120,14 +116,14 @@ assert("count returns total", counts.total === 2);
 console.log("\n--- DevMailbox unreadCount ---");
 
 // Capture another message (unread)
-mailbox.capture({ to: "bob@test.com", subject: "Unread", body: "New message" });
+mailbox.capture("bob@test.com", "Unread", "New message");
 const unread = mailbox.unreadCount();
 assert("unreadCount returns count of unread messages", unread >= 1);
 
 // --- DevMailbox multiple captures ---
 console.log("\n--- Multiple captures ---");
 
-mailbox.capture({ to: ["c@test.com"], subject: "Third", body: "3", cc: ["cc@test.com"] });
+mailbox.capture(["c@test.com"], "Third", "3", false, ["cc@test.com"]);
 const inboxAfter = mailbox.inbox();
 assert("inbox has 3 messages after 3 captures", inboxAfter.length === 3);
 
@@ -148,7 +144,7 @@ mailbox.clear("inbox");
 const afterClear = mailbox.inbox();
 assert("inbox is empty after clear(inbox)", afterClear.length === 0);
 
-mailbox.capture({ to: "x@test.com", subject: "New", body: "after clear" });
+mailbox.capture("x@test.com", "New", "after clear");
 mailbox.clear(); // clear all
 const afterClearAll = mailbox.count();
 assert("all folders empty after clear()", afterClearAll.total === 0);

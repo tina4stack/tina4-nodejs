@@ -2,7 +2,7 @@
  * Unit tests for request parsing (request.ts).
  * Run with: npx tsx test/request.test.ts
  */
-import { createRequest, parseBody } from "../packages/core/src/index.ts";
+import { createRequest } from "../packages/core/src/index.ts";
 import type { Tina4Request } from "../packages/core/src/index.ts";
 import { IncomingMessage } from "node:http";
 import { Socket } from "node:net";
@@ -43,17 +43,11 @@ function fakeIncomingWithBody(
   req.url = url;
   req.method = method;
   req.headers = { host: "localhost:3000", ...headers };
-  req.params = {};
-  req.query = {};
-  req.body = undefined;
-  req.files = {};
-  req.ip = "127.0.0.1";
-
   // Push body data and end the stream
   req.push(Buffer.from(body));
   req.push(null);
 
-  return req;
+  return createRequest(req);
 }
 
 console.log("=== Request Parsing Tests ===\n");
@@ -61,7 +55,7 @@ console.log("=== Request Parsing Tests ===\n");
 // --- Exports ---
 console.log("--- Exports ---");
 assert("createRequest is a function", typeof createRequest === "function");
-assert("parseBody is a function", typeof parseBody === "function");
+// parseBody is now an instance method on Tina4Request (req.parseBody())
 
 // --- createRequest basic ---
 console.log("\n--- createRequest Basic ---");
@@ -109,7 +103,7 @@ const jsonReq = fakeIncomingWithBody(
   JSON.stringify({ name: "Alice", age: 30 }),
   { "content-type": "application/json" },
 );
-await parseBody(jsonReq);
+await jsonReq.parseBody();
 assert("JSON body parsed as object", typeof jsonReq.body === "object" && jsonReq.body !== null);
 assert("JSON body has correct name", (jsonReq.body as any).name === "Alice");
 assert("JSON body has correct age", (jsonReq.body as any).age === 30);
@@ -123,7 +117,7 @@ const formReq = fakeIncomingWithBody(
   "username=alice&password=secret",
   { "content-type": "application/x-www-form-urlencoded" },
 );
-await parseBody(formReq);
+await formReq.parseBody();
 assert("Form body parsed as object", typeof formReq.body === "object");
 assert("Form body has username", (formReq.body as any).username === "alice");
 assert("Form body has password", (formReq.body as any).password === "secret");
@@ -132,17 +126,17 @@ assert("Form body has password", (formReq.body as any).password === "secret");
 console.log("\n--- parseBody Skips GET ---");
 
 const getReq = fakeIncomingWithBody("/data", "GET", "ignored", { "content-type": "application/json" });
-await parseBody(getReq);
+await getReq.parseBody();
 assert("GET request body remains undefined", getReq.body === undefined);
 
 // --- parseBody skips HEAD ---
 const headReq = fakeIncomingWithBody("/data", "HEAD", "ignored", { "content-type": "application/json" });
-await parseBody(headReq);
+await headReq.parseBody();
 assert("HEAD request body remains undefined", headReq.body === undefined);
 
 // --- parseBody skips OPTIONS ---
 const optReq = fakeIncomingWithBody("/data", "OPTIONS", "ignored", { "content-type": "application/json" });
-await parseBody(optReq);
+await optReq.parseBody();
 assert("OPTIONS request body remains undefined", optReq.body === undefined);
 
 // --- parseBody with invalid JSON ---
@@ -154,7 +148,7 @@ const badJsonReq = fakeIncomingWithBody(
   "not valid json {{{",
   { "content-type": "application/json" },
 );
-await parseBody(badJsonReq);
+await badJsonReq.parseBody();
 assert("Invalid JSON stored as raw string", typeof badJsonReq.body === "string");
 
 // --- parseBody with plain text ---
@@ -166,7 +160,7 @@ const textReq = fakeIncomingWithBody(
   "Hello World",
   { "content-type": "text/plain" },
 );
-await parseBody(textReq);
+await textReq.parseBody();
 assert("Plain text body stored as string", textReq.body === "Hello World");
 
 // --- parseBody multipart boundary extraction ---
@@ -191,7 +185,7 @@ const multiReq = fakeIncomingWithBody(
   multipartBody,
   { "content-type": `multipart/form-data; boundary=----WebKitFormBoundary123` },
 );
-await parseBody(multiReq);
+await multiReq.parseBody();
 assert("Multipart body parsed", multiReq.body !== undefined);
 assert("Multipart field1 extracted", (multiReq.body as any).field1 === "value1");
 assert("Multipart field2 extracted", (multiReq.body as any).field2 === "value2");

@@ -122,6 +122,11 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
     return this.records[Symbol.iterator]();
   }
 
+  /** Total count — cross-framework parity with Python/Ruby. */
+  size(): number {
+    return this.count;
+  }
+
   /** Number of records in this page. */
   get length(): number {
     return this.records.length;

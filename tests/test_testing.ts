@@ -3,8 +3,8 @@
  */
 
 import {
-  tests, assertEqual, assertThrows, assertTrue, assertFalse,
-  runAllTests, resetTests,
+  tests, assertEqual, assertRaises, assertTrue, assertFalse,
+  runAll, reset,
 } from "../packages/core/src/testing.js";
 
 // ── Functions under test ───────────────────────────────────────────
@@ -25,7 +25,7 @@ const upper = tests(
 });
 
 const addSafe = tests(
-  assertThrows(Error, [null]),
+  assertRaises(Error, [null]),
   assertEqual([5, 3], 8),
 )(function addSafe(a: unknown, b: unknown = null): number {
   if (b === null) throw new Error("b required");
@@ -43,7 +43,7 @@ const isTruthy = tests(
 
 // ── Run and verify ─────────────────────────────────────────────────
 
-const results = runAllTests({ quiet: true });
+const results = runAll({ quiet: true });
 
 const errors: string[] = [];
 
@@ -60,7 +60,7 @@ for (const d of results.details) {
 
 // ── Test deliberate failure ────────────────────────────────────────
 
-resetTests();
+reset();
 
 tests(
   assertEqual([1, 1], 999),
@@ -68,14 +68,14 @@ tests(
   return (a as number) + (b as number);
 });
 
-const failResults = runAllTests({ quiet: true });
+const failResults = runAll({ quiet: true });
 
 if (failResults.failed !== 1) errors.push(`expected 1 failed for badAdd, got ${failResults.failed}`);
 if (failResults.passed !== 0) errors.push(`expected 0 passed for badAdd, got ${failResults.passed}`);
 
 // ── Test error reporting ───────────────────────────────────────────
 
-resetTests();
+reset();
 
 tests(
   assertEqual([1], 1),
@@ -83,7 +83,7 @@ tests(
   throw new Error("boom");
 });
 
-const errorResults = runAllTests({ quiet: true });
+const errorResults = runAll({ quiet: true });
 
 if (errorResults.errors !== 1) errors.push(`expected 1 error for willCrash, got ${errorResults.errors}`);
 

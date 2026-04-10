@@ -21,7 +21,7 @@
  *
  *   const mail = new Messenger();                                      // reads from .env
  *   const mail = new Messenger({ host: "smtp.office365.com", port: 587 }); // override
- *   await mail.send({ to: "user@test.com", subject: "Welcome", body: "<h1>Hello!</h1>", html: true, text: "Hello!" });
+ *   await mail.send("user@test.com", "Welcome", "<h1>Hello!</h1>", true, "Hello!");
  */
 import net from "node:net";
 import tls from "node:tls";
@@ -355,7 +355,19 @@ export class Messenger {
   /**
    * Send an email via SMTP.
    */
-  async send(options: SendOptions): Promise<SendResult> {
+  async send(
+    to: string | string[],
+    subject: string,
+    body: string,
+    html: boolean = false,
+    text?: string,
+    cc?: string | string[],
+    bcc?: string | string[],
+    replyTo?: string,
+    attachments?: string[],
+    headers?: Record<string, string>,
+  ): Promise<SendResult> {
+    const options: SendOptions = { to, subject, body, html, text, cc, bcc, replyTo, attachments, headers };
     const toList = Array.isArray(options.to) ? options.to : [options.to];
     const ccList = Array.isArray(options.cc) ? options.cc : (options.cc ? [options.cc] : []);
     const bccList = Array.isArray(options.bcc) ? options.bcc : (options.bcc ? [options.bcc] : []);
@@ -655,7 +667,24 @@ export class Messenger {
   /**
    * Search messages using IMAP search criteria.
    */
-  async search(query: string, folder: string = "INBOX"): Promise<ImapMessage[]> {
+  async search(
+    folder: string = "INBOX",
+    subject?: string,
+    sender?: string,
+    since?: string,
+    before?: string,
+    unseenOnly: boolean = false,
+    limit: number = 50,
+  ): Promise<ImapMessage[]> {
+    // Build IMAP SEARCH criteria from structured params
+    const criteria: string[] = ["ALL"];
+    if (subject) criteria.push(`SUBJECT "${subject}"`);
+    if (sender) criteria.push(`FROM "${sender}"`);
+    if (since) criteria.push(`SINCE ${since}`);
+    if (before) criteria.push(`BEFORE ${before}`);
+    if (unseenOnly) criteria.push("UNSEEN");
+
+    const query = criteria.join(" ");
     const socket = await this.imapConnect();
     try {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
@@ -665,7 +694,7 @@ export class Messenger {
 
       uids.reverse();
       const messages: ImapMessage[] = [];
-      for (const uid of uids.slice(0, 50)) {
+      for (const uid of uids.slice(0, limit)) {
         const fetchResp = await imapCommand(socket, `FETCH ${uid} (FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])`);
         messages.push(parseHeaderResponse(uid, fetchResp));
       }
@@ -711,6 +740,25 @@ export class Messenger {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
       const searchResp = await imapCommand(socket, "SEARCH UNSEEN");
       return parseSearchResponse(searchResp).length;
+    } finally {
+      await this.imapDisconnect(socket);
+    }
+  }
+
+  /**
+   * List available IMAP folders/mailboxes.
+   */
+  async folders(): Promise<string[]> {
+    const socket = await this.imapConnect();
+    try {
+      const resp = await imapCommand(socket, 'LIST "" "*"');
+      const result: string[] = [];
+      for (const line of resp.split("\r\n")) {
+        // Parse LIST response: * LIST (\flags) "/" "FolderName"
+        const m = line.match(/\* LIST \([^)]*\) "[^"]*" "?([^"\r\n]+)"?/i);
+        if (m) result.push(m[1]);
+      }
+      return result;
     } finally {
       await this.imapDisconnect(socket);
     }

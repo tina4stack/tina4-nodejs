@@ -2,7 +2,7 @@
  * Unit tests for the WSDL/SOAP module.
  * Run with: npx tsx test/wsdl.test.ts
  */
-import { WSDLService, WSDLOp } from "../packages/core/src/index.ts";
+import { WSDLService, WSDLOperation } from "../packages/core/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -114,8 +114,8 @@ const soapRequest = `<?xml version="1.0" encoding="UTF-8"?>
   </soap:Body>
 </soap:Envelope>`;
 
-const soapResponse = await calc.handleRequest(soapRequest);
-assert("handleRequest returns SOAP response", typeof soapResponse === "string");
+const soapResponse = await calc.handle(soapRequest);
+assert("handle returns SOAP response", typeof soapResponse === "string");
 assert("response is XML", soapResponse.includes('<?xml'));
 assert("response contains Envelope", soapResponse.includes("Envelope"));
 assert("response contains Body", soapResponse.includes("Body"));
@@ -135,7 +135,7 @@ const mulRequest = `<?xml version="1.0" encoding="UTF-8"?>
   </soap:Body>
 </soap:Envelope>`;
 
-const mulResponse = await calc.handleRequest(mulRequest);
+const mulResponse = await calc.handle(mulRequest);
 assert("Multiply response contains Result=42", mulResponse.includes("<Result>42</Result>"));
 assert("Multiply response contains MultiplyResponse", mulResponse.includes("MultiplyResponse"));
 
@@ -146,7 +146,7 @@ const noBodyReq = `<?xml version="1.0" encoding="UTF-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
 </soap:Envelope>`;
 
-const noBodyResp = await calc.handleRequest(noBodyReq);
+const noBodyResp = await calc.handle(noBodyReq);
 assert("missing body returns SOAP fault", noBodyResp.includes("Fault"));
 assert("fault code is Client", noBodyResp.includes("Client"));
 assert("fault message mentions Body", noBodyResp.includes("Body"));
@@ -159,7 +159,7 @@ const unknownOpReq = `<?xml version="1.0" encoding="UTF-8"?>
   </soap:Body>
 </soap:Envelope>`;
 
-const unknownOpResp = await calc.handleRequest(unknownOpReq);
+const unknownOpResp = await calc.handle(unknownOpReq);
 assert("unknown operation returns SOAP fault", unknownOpResp.includes("Fault"));
 assert("fault mentions unknown operation", unknownOpResp.includes("UnknownOp"));
 
@@ -169,7 +169,7 @@ const emptyBodyReq = `<?xml version="1.0" encoding="UTF-8"?>
   <soap:Body></soap:Body>
 </soap:Envelope>`;
 
-const emptyBodyResp = await calc.handleRequest(emptyBodyReq);
+const emptyBodyResp = await calc.handle(emptyBodyReq);
 assert("empty body returns SOAP fault", emptyBodyResp.includes("Fault"));
 
 // --- Service with different types ---
@@ -222,7 +222,7 @@ const boolReq = `<?xml version="1.0" encoding="UTF-8"?>
   </soap:Body>
 </soap:Envelope>`;
 
-const boolResp = await boolService.handleRequest(boolReq);
+const boolResp = await boolService.handle(boolReq);
 assert("boolean true rendered as true", boolResp.includes("<result>true</result>"));
 
 // --- WSDL without endpoint URL uses serviceUrl ---

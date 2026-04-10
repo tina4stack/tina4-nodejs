@@ -1,4 +1,4 @@
-import type { Middleware } from "./types.js";
+import type { Middleware, Tina4Request, Tina4Response } from "./types.js";
 
 /** Per-IP sliding window entry */
 interface RateLimitEntry {
@@ -104,4 +104,91 @@ export function rateLimiter(config?: RateLimiterConfig): Middleware {
     entry.timestamps.push(now);
     next();
   };
+}
+
+/** Rate limit check result */
+export interface RateLimitResult {
+  allowed: boolean;
+  limit: number;
+  remaining: number;
+  reset: number;
+  retryAfter?: number;
+}
+
+/**
+ * Class-based rate limiter with check/reset/apply methods.
+ * Matches the Python/PHP/Ruby API surface.
+ */
+export class RateLimiter {
+  readonly limit: number;
+  readonly window: number;
+  private store = new Map<string, number[]>();
+
+  constructor(config?: RateLimiterConfig) {
+    this.limit = config?.limit
+      ?? (process.env.TINA4_RATE_LIMIT ? parseInt(process.env.TINA4_RATE_LIMIT, 10) : 100);
+    this.window = config?.windowSeconds
+      ?? (process.env.TINA4_RATE_WINDOW ? parseInt(process.env.TINA4_RATE_WINDOW, 10) : 60);
+  }
+
+  /** Check if a request from the given IP is allowed. */
+  check(ip: string): RateLimitResult {
+    const now = Date.now();
+    const windowMs = this.window * 1000;
+    const cutoff = now - windowMs;
+
+    let timestamps = this.store.get(ip);
+    if (!timestamps) {
+      timestamps = [];
+      this.store.set(ip, timestamps);
+    }
+
+    // Prune expired
+    const filtered = timestamps.filter((t) => t > cutoff);
+    this.store.set(ip, filtered);
+
+    const resetTime = filtered.length > 0
+      ? Math.ceil((filtered[0] + windowMs) / 1000)
+      : Math.ceil((now + windowMs) / 1000);
+
+    if (filtered.length >= this.limit) {
+      const retryAfter = Math.max(1, resetTime - Math.ceil(now / 1000));
+      return { allowed: false, limit: this.limit, remaining: 0, reset: resetTime, retryAfter };
+    }
+
+    filtered.push(now);
+    return {
+      allowed: true,
+      limit: this.limit,
+      remaining: this.limit - filtered.length,
+      reset: resetTime,
+    };
+  }
+
+  /** Clear all tracked request data. */
+  reset(): void {
+    this.store.clear();
+  }
+
+  /** Apply rate limiting to a request/response pair. Sets headers and 429 if exceeded. */
+  apply(request: Tina4Request, response: Tina4Response): [Tina4Request, Tina4Response] {
+    const ip = (request as Record<string, unknown>).ip as string ?? "unknown";
+    const result = this.check(ip);
+
+    response.header("X-RateLimit-Limit", String(result.limit));
+    response.header("X-RateLimit-Remaining", String(result.remaining));
+    response.header("X-RateLimit-Reset", String(result.reset));
+
+    if (!result.allowed) {
+      response.header("Retry-After", String(result.retryAfter ?? 1));
+      response({ error: "Too Many Requests", retryAfter: result.retryAfter }, 429);
+    }
+
+    return [request, response];
+  }
+
+  /** Middleware hook — enforces rate limiting before the route handler. */
+  beforeRateLimit(request: Tina4Request, response: Tina4Response): [Tina4Request, Tina4Response] {
+    return this.apply(request, response);
+  }
 }

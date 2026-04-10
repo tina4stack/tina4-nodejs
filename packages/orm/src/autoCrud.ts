@@ -4,6 +4,70 @@ import { getAdapter } from "./database.js";
 import { buildQuery, parseQueryString } from "./query.js";
 import { validate } from "./validation.js";
 
+/**
+ * Auto-CRUD — discovers ORM models and auto-generates REST endpoints.
+ *
+ * Generated endpoints per model:
+ *   GET    /api/{table}        — list with pagination, filtering, sorting
+ *   GET    /api/{table}/{id}   — get single record
+ *   POST   /api/{table}        — create record
+ *   PUT    /api/{table}/{id}   — update record
+ *   DELETE /api/{table}/{id}   — delete record
+ */
+export class AutoCrud {
+  private static registered: Map<string, DiscoveredModel> = new Map();
+
+  /**
+   * Register a model for auto-CRUD.
+   */
+  static register(model: DiscoveredModel, prefix: string = "/api"): void {
+    const tableName = model.definition.tableName;
+    if (!tableName) {
+      throw new Error(`AutoCrud: model has no tableName set.`);
+    }
+    AutoCrud.registered.set(tableName, model);
+  }
+
+  /**
+   * Discover models from the provided array and register them.
+   * (In Node.js, models are discovered by the server and passed in.)
+   */
+  static discover(discoveredModels: DiscoveredModel[], prefix: string = "/api"): string[] {
+    const names: string[] = [];
+    for (const model of discoveredModels) {
+      AutoCrud.register(model, prefix);
+      names.push(model.definition.tableName);
+    }
+    return names;
+  }
+
+  /**
+   * Return all registered models.
+   */
+  static models(): Map<string, DiscoveredModel> {
+    return new Map(AutoCrud.registered);
+  }
+
+  /**
+   * Clear all registered models (useful for testing).
+   */
+  static clear(): void {
+    AutoCrud.registered.clear();
+  }
+
+  /**
+   * Generate route definitions for all registered models.
+   */
+  static generateRoutes(): RouteDefinition[] {
+    const models = Array.from(AutoCrud.registered.values());
+    return generateCrudRoutes(models);
+  }
+}
+
+/**
+ * Generate CRUD route definitions for the given models.
+ * (Standalone function for backward compatibility.)
+ */
 export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[] {
   const routes: RouteDefinition[] = [];
 
@@ -38,33 +102,28 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
         const adapter = getAdapter();
-        const options = parseQueryString(req.query);
-        const { sql, countSql, params } = buildQuery(tableName, options, extraConditions);
 
-        const countParams = params.slice(0, -2); // Remove LIMIT and OFFSET
-        const items = adapter.query(sql, params);
-        const [{ total }] = adapter.query<{ total: number }>(countSql, countParams);
+        // Parse query params for filtering / sorting / pagination
+        const qp = parseQueryString(req.query ?? {});
+        const { sql, countSql, params } = buildQuery(tableName, qp, extraConditions);
 
-        const limit = options.limit ?? 100;
-        const page = options.page ?? 1;
-        const offset = (page - 1) * limit;
-        const totalPages = Math.ceil(total / limit);
+        // params includes limit and offset at the end; countSql doesn't need them
+        const countParams = params.slice(0, -2);
+        const rows = adapter.query(sql, params);
+
+        const countRow = adapter.query(countSql, countParams);
+        const total = Number(countRow[0]?.total ?? 0);
+        const limit = qp.limit ?? 100;
+        const page = qp.page ?? 1;
 
         res.json({
-          // Primary keys
-          records: items,
-          data: items,
-          count: total,
-          total,
-          limit,
-          offset,
-          page,
-          per_page: limit,
-          perPage: limit,
-          totalPages,
-          total_pages: totalPages,
-          // Legacy nested meta (kept for any clients that use it)
-          meta: { total, page, limit, totalPages },
+          data: rows,
+          meta: {
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit),
+          },
         });
       },
     });
@@ -79,16 +138,19 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
         const adapter = getAdapter();
+
         const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
-        const items = adapter.query(
+        const rows = adapter.query(
           `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
           [req.params.id],
         );
-        if (items.length === 0) {
+
+        if (rows.length === 0) {
           res.status(404).json({ error: "Not Found", statusCode: 404 });
           return;
         }
-        res.json({ data: items[0] });
+
+        res.json({ data: rows[0] });
       },
     });
 
@@ -101,47 +163,39 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const body = req.body as Record<string, unknown> | undefined;
-        if (!body || typeof body !== "object") {
-          res.status(400).json({ error: "Request body is required", statusCode: 400 });
-          return;
-        }
-
-        const errors = validate(body, fields, false);
-        if (errors.length > 0) {
-          res.status(422).json({ error: "Validation failed", statusCode: 422, errors });
-          return;
-        }
-
         const adapter = getAdapter();
+        const body = req.body as Record<string, unknown>;
 
-        // Filter to known fields, exclude auto-increment PKs
-        const insertFields = Object.entries(body).filter(([key]) => {
-          const def = fields[key];
-          return def && !(def.primaryKey && def.autoIncrement);
-        });
-
-        // Add is_deleted = 0 for soft delete models
-        if (softDelete) {
-          insertFields.push(["is_deleted", 0]);
+        // Validate against field definitions
+        const errors = validate(body, fields);
+        if (errors.length > 0) {
+          res.status(422).json({ error: "Validation failed", errors });
+          return;
         }
 
-        const columns = insertFields.map(([k]) => `"${getDbCol(k)}"`).join(", ");
-        const placeholders = insertFields.map(() => "?").join(", ");
-        const values = insertFields.map(([, v]) => v);
+        // Map JS property names to DB column names
+        const dbBody: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(body)) {
+          dbBody[getDbCol(key)] = value;
+        }
 
-        const result = adapter.execute(
-          `INSERT INTO "${tableName}" (${columns}) VALUES (${placeholders})`,
+        const columns = Object.keys(dbBody);
+        const values = Object.values(dbBody);
+        const placeholders = columns.map(() => "?").join(", ");
+
+        adapter.execute(
+          `INSERT INTO "${tableName}" (${columns.map((c) => `"${c}"`).join(", ")}) VALUES (${placeholders})`,
           values,
-        ) as { lastInsertRowid?: number };
-
-        const id = result.lastInsertRowid;
-        const created = adapter.query(
-          `SELECT * FROM "${tableName}" WHERE "${pkColumn}" = ?`,
-          [id],
         );
 
-        res.status(201).json({ data: created[0] });
+        // Fetch the created record to include auto-generated fields (e.g. id)
+        const lastId = adapter.lastInsertId();
+        const created = adapter.query(
+          `SELECT * FROM "${tableName}" WHERE "${pkColumn}" = ?`,
+          [lastId],
+        );
+
+        res.status(201).json({ data: created[0] ?? { ...body, [pkField]: lastId } });
       },
     });
 
@@ -154,21 +208,9 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const body = req.body as Record<string, unknown> | undefined;
-        if (!body || typeof body !== "object") {
-          res.status(400).json({ error: "Request body is required", statusCode: 400 });
-          return;
-        }
-
-        const errors = validate(body, fields, true);
-        if (errors.length > 0) {
-          res.status(422).json({ error: "Validation failed", statusCode: 422, errors });
-          return;
-        }
-
         const adapter = getAdapter();
+        const body = req.body as Record<string, unknown>;
 
-        // Check exists (respect soft delete)
         const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
         const existing = adapter.query(
           `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
@@ -179,18 +221,19 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
           return;
         }
 
-        // Filter to known fields
-        const updateFields = Object.entries(body).filter(([key]) => fields[key] && !fields[key].primaryKey);
-        if (updateFields.length === 0) {
-          res.json({ data: existing[0] });
-          return;
+        // Map JS property names to DB column names
+        const dbBody: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(body)) {
+          dbBody[getDbCol(key)] = value;
         }
 
-        const setClause = updateFields.map(([k]) => `"${getDbCol(k)}" = ?`).join(", ");
-        const values = [...updateFields.map(([, v]) => v), req.params.id];
+        const setClauses = Object.keys(dbBody)
+          .map((col) => `"${col}" = ?`)
+          .join(", ");
+        const values = [...Object.values(dbBody), req.params.id];
 
         adapter.execute(
-          `UPDATE "${tableName}" SET ${setClause} WHERE "${pkColumn}" = ?`,
+          `UPDATE "${tableName}" SET ${setClauses} WHERE "${pkColumn}" = ?`,
           values,
         );
 

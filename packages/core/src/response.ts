@@ -9,12 +9,65 @@ const _frondCache = new Map<string, InstanceType<any>>();
 /** Default templates directory — set via setDefaultTemplatesDir(). */
 let _defaultTemplatesDir: string | null = null;
 
+/** Global user Frond engine — set via setFrond(). */
+let _globalFrond: InstanceType<any> | null = null;
+
+/** Singleton framework Frond engine for built-in templates. */
+let _frameworkFrond: InstanceType<any> | null = null;
+
 /**
- * Set the default templates directory for render()/template().
+ * Set the default templates directory for render().
  * Called by server.ts during startup.
  */
 export function setDefaultTemplatesDir(dir: string): void {
   _defaultTemplatesDir = dir;
+}
+
+/**
+ * Return the global Frond engine, creating a default if needed.
+ */
+export async function getFrond(): Promise<InstanceType<any>> {
+  if (_globalFrond) return _globalFrond;
+  const dir = _defaultTemplatesDir ?? nodePath.resolve(process.cwd(), "src/templates");
+  let engine = _frondCache.get(dir);
+  if (!engine) {
+    const { Frond } = await import("@tina4/frond");
+    engine = new Frond(dir);
+    _frondCache.set(dir, engine);
+  }
+  _globalFrond = engine;
+  return engine;
+}
+
+/**
+ * Return the singleton Frond engine for built-in framework templates.
+ * Syncs custom filters/globals from the user engine.
+ */
+export async function getFrameworkFrond(): Promise<InstanceType<any> | null> {
+  const frameworkDir = nodePath.resolve(nodePath.dirname(import.meta.url.replace("file://", "")), "..", "templates");
+  if (!_frameworkFrond && fs.existsSync(frameworkDir)) {
+    try {
+      const { Frond } = await import("@tina4/frond");
+      _frameworkFrond = new Frond(frameworkDir);
+    } catch { return null; }
+  }
+  // Sync custom filters/globals from the user engine
+  if (_frameworkFrond && _globalFrond) {
+    if (typeof _globalFrond._filters === "object") {
+      Object.assign(_frameworkFrond._filters ??= {}, _globalFrond._filters);
+    }
+    if (typeof _globalFrond._globals === "object") {
+      Object.assign(_frameworkFrond._globals ??= {}, _globalFrond._globals);
+    }
+  }
+  return _frameworkFrond;
+}
+
+/**
+ * Register a pre-configured Frond engine for response.render().
+ */
+export function setFrond(engine: InstanceType<any>): void {
+  _globalFrond = engine;
 }
 
 /**

@@ -3,17 +3,17 @@
  *
  * Attach test assertions to functions and run them all at once.
  *
- *     import { tests, assertEqual, assertThrows, runAllTests } from "./testing.js";
+ *     import { tests, assertEqual, assertRaises, runAll } from "./testing.js";
  *
  *     const add = tests(
  *       assertEqual([5, 3], 8),
- *       assertThrows(Error, [null]),
+ *       assertRaises(Error, [null]),
  *     )(function add(a: number, b: number | null = null): number {
  *       if (b === null) throw new Error("b required");
  *       return a + b;
  *     });
  *
- *     runAllTests();
+ *     runAll();
  */
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ export function assertEqual(args: unknown[], expected: unknown): Assertion {
 }
 
 /** Assert that calling the function with `args` throws an instance of `errorClass`. */
-export function assertThrows(
+export function assertRaises(
   errorClass: new (...a: unknown[]) => Error,
   args: unknown[],
 ): Assertion {
@@ -93,7 +93,7 @@ export function tests(
 // ── Runner ─────────────────────────────────────────────────────────
 
 /** Run all registered tests. Returns results summary. */
-export function runAllTests(
+export function runAll(
   options: { quiet?: boolean; failfast?: boolean } = {},
 ): TestResults {
   const { quiet = false, failfast = false } = options;
@@ -141,7 +141,7 @@ export function runAllTests(
 }
 
 /** Reset the test registry (useful between test runs). */
-export function resetTests(): void {
+export function reset(): void {
   registry.length = 0;
 }
 

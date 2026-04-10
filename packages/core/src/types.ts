@@ -27,6 +27,14 @@ export interface Tina4Request extends IncomingMessage {
   contentType: string;
   session: Tina4Session;
   user?: Record<string, unknown>;
+  /** Get a specific header value by name (case-insensitive). */
+  header(name: string): string | undefined;
+  /** Extract the Bearer token from the Authorization header. */
+  bearerToken(): string | null;
+  /** Get a parameter by key from merged params (route + query). */
+  param(key: string, defaultValue?: string): string | undefined;
+  /** Parse the request body based on content type. */
+  parseBody(): Promise<void>;
 }
 
 export interface CookieOptions {

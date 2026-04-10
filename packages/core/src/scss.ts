@@ -1,8 +1,8 @@
 // Tina4 SCSS — Zero-dependency SCSS-to-CSS compiler (subset).
 // Supports variables, nesting, & parent selector, @import, @mixin/@include, comments, basic math.
 
-import { readFileSync, existsSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { join, resolve, dirname, basename } from "node:path";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -45,6 +45,48 @@ export class ScssCompiler {
     // Strip leading $ if provided
     const key = name.startsWith("$") ? name.slice(1) : name;
     this._variables[key] = value;
+  }
+
+  /** Compile all .scss files in a directory into a single CSS output file. */
+  compileScss(scssDir: string = "src/scss", output: string = "public/css/default.css", minify: boolean = false): string {
+    const absDir = resolve(scssDir);
+    if (!existsSync(absDir)) return "";
+
+    // Collect non-partial .scss files, sorted
+    const files = readdirSync(absDir)
+      .filter((f) => f.endsWith(".scss") && !f.startsWith("_"))
+      .sort()
+      .map((f) => join(absDir, f));
+
+    if (files.length === 0) return "";
+
+    // Merge all files, resolving imports
+    const paths = [absDir, ...this._importPaths];
+    const imported = new Set<string>();
+    let merged = "";
+    for (const file of files) {
+      const content = readFileSync(file, "utf-8");
+      imported.add(file);
+      merged += resolveImports(content, paths, imported) + "\n";
+    }
+
+    let css = compileString(merged, paths, { ...this._variables });
+
+    if (minify) {
+      css = css.replace(/\/\*.*?\*\//gs, "");
+      css = css.replace(/\s+/g, " ");
+      css = css.replace(/\s*([{}:;,])\s*/g, "$1");
+      css = css.replace(/;}/g, "}");
+      css = css.trim();
+    }
+
+    // Write output
+    const absOutput = resolve(output);
+    const outDir = dirname(absOutput);
+    if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
+    writeFileSync(absOutput, css, "utf-8");
+
+    return css;
   }
 }
 

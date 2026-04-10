@@ -136,11 +136,11 @@ assert("clear empties requests", RequestInspector.get().length === 0);
 console.log("\n--- ErrorTracker ---");
 
 // Clear static state
-(ErrorTracker as any).errors = [];
+ErrorTracker.reset();
 
-ErrorTracker.track("Something went wrong", "Error\n  at main.ts:10");
-ErrorTracker.track("Database connection failed");
-ErrorTracker.track("Timeout exceeded", "Error\n  at db.ts:42");
+ErrorTracker.capture("Error", "Something went wrong", "Error\n  at main.ts:10");
+ErrorTracker.capture("Error", "Database connection failed");
+ErrorTracker.capture("Error", "Timeout exceeded", "Error\n  at db.ts:42");
 
 const errors = ErrorTracker.get();
 assert("get() returns tracked errors", errors.length === 3);
@@ -152,10 +152,24 @@ assert("error has stack when provided", typeof errors[0].stack === "string");
 assert("error has resolved=false", errors[0].resolved === false);
 assert("error without stack has undefined stack", errors[1].stack === undefined);
 
+// --- ErrorTracker capture dedup ---
+console.log("\n--- ErrorTracker capture dedup ---");
+
+ErrorTracker.reset();
+ErrorTracker.capture("ValueError", "bad input", "", "app.ts", 10);
+ErrorTracker.capture("ValueError", "bad input", "", "app.ts", 10);
+const dedupErrors = ErrorTracker.get();
+assert("dedup: same error produces 1 entry", dedupErrors.length === 1);
+assert("dedup: count increments to 2", (dedupErrors[0] as any).count === 2);
+
 // --- ErrorTracker resolve ---
 console.log("\n--- ErrorTracker resolve ---");
 
-const errId = errors[0].id;
+ErrorTracker.reset();
+ErrorTracker.capture("Error", "Timeout exceeded", "Error\n  at db.ts:42");
+ErrorTracker.capture("Error", "Database connection failed");
+const errorsForResolve = ErrorTracker.get();
+const errId = errorsForResolve[0].id;
 const resolved = ErrorTracker.resolve(errId);
 assert("resolve returns true for existing error", resolved === true);
 
@@ -171,8 +185,61 @@ console.log("\n--- ErrorTracker clearResolved ---");
 
 ErrorTracker.clearResolved();
 const afterClearResolved = ErrorTracker.get();
-assert("clearResolved removes resolved errors", afterClearResolved.length === 2);
+assert("clearResolved removes resolved errors", afterClearResolved.length === 1);
 assert("unresolved errors remain", afterClearResolved.every((e) => e.resolved === false));
+
+// --- ErrorTracker health ---
+console.log("\n--- ErrorTracker health ---");
+
+ErrorTracker.reset();
+ErrorTracker.capture("Error", "one", "", "a.ts", 1);
+ErrorTracker.capture("Error", "two", "", "b.ts", 2);
+const healthId = ErrorTracker.get()[0].id;
+ErrorTracker.resolve(healthId);
+const health = ErrorTracker.health();
+assert("health total is 2", health.total === 2);
+assert("health unresolved is 1", health.unresolved === 1);
+assert("health resolved is 1", health.resolved === 1);
+assert("health healthy is false", health.healthy === false);
+
+// --- ErrorTracker health empty ---
+ErrorTracker.reset();
+const emptyHealth = ErrorTracker.health();
+assert("empty health is healthy", emptyHealth.healthy === true);
+assert("empty health total is 0", emptyHealth.total === 0);
+
+// --- ErrorTracker unresolvedCount ---
+console.log("\n--- ErrorTracker unresolvedCount ---");
+
+ErrorTracker.reset();
+ErrorTracker.capture("Error", "one", "", "a.ts", 1);
+ErrorTracker.capture("Error", "two", "", "b.ts", 2);
+const ucId = ErrorTracker.get()[0].id;
+ErrorTracker.resolve(ucId);
+assert("unresolvedCount returns 1", ErrorTracker.unresolvedCount() === 1);
+
+// --- ErrorTracker clearAll ---
+console.log("\n--- ErrorTracker clearAll ---");
+
+ErrorTracker.capture("Error", "three", "", "c.ts", 3);
+ErrorTracker.clearAll();
+assert("clearAll removes all errors", ErrorTracker.get().length === 0);
+
+// --- ErrorTracker reset ---
+console.log("\n--- ErrorTracker reset ---");
+
+ErrorTracker.capture("Error", "after-clear");
+ErrorTracker.reset();
+assert("reset removes all errors", ErrorTracker.get().length === 0);
+
+// --- ErrorTracker track (legacy alias) ---
+console.log("\n--- ErrorTracker track (legacy) ---");
+
+ErrorTracker.reset();
+ErrorTracker.track("Legacy message", "stack trace");
+const legacyErrors = ErrorTracker.get();
+assert("track still works as legacy alias", legacyErrors.length === 1);
+assert("track message stored", legacyErrors[0].message === "Legacy message");
 
 // ── Status API includes db_tables ───────────────────────────
 

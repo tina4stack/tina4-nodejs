@@ -16,7 +16,7 @@
  */
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
-import { createRequest, parseBody } from "./request.js";
+import { createRequest } from "./request.js";
 import { createResponse } from "./response.js";
 import { defaultRouter, type Router } from "./router.js";
 
@@ -153,7 +153,7 @@ export class TestClient {
     const res = createResponse(rawRes);
 
     // Parse body (populates req.body)
-    await parseBody(req);
+    await req.parseBody();
 
     // Split path for route matching
     const cleanPath = path.includes("?") ? path.split("?")[0] : path;

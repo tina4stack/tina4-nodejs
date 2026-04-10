@@ -191,15 +191,40 @@ export class RequestInspector {
 
 export class ErrorTracker {
   private static errors: ErrorEntry[] = [];
+  private static maxErrors = 200;
+  private static registered = false;
 
+  /**
+   * Capture an error with dedup (matches PHP/Ruby/Python signature).
+   * Duplicate errors (same message) increment count and update last_seen.
+   */
+  static capture(errorType: string, message: string, traceback = "", file = "", line = 0): void {
+    const fingerprint = `${errorType}|${message}|${file}|${line}`;
+    const existing = this.errors.find((e) => (e as any).fingerprint === fingerprint);
+    const now = new Date().toISOString();
+
+    if (existing) {
+      (existing as any).count = ((existing as any).count || 1) + 1;
+      (existing as any).last_seen = now;
+      existing.resolved = false; // re-open resolved duplicates
+    } else {
+      this.errors.push({
+        id: `err_${Date.now()}_${this.errors.length}`,
+        timestamp: now,
+        message,
+        stack: traceback || undefined,
+        resolved: false,
+        ...({ fingerprint, error_type: errorType, file, line, count: 1, first_seen: now, last_seen: now } as any),
+      });
+      if (this.errors.length > this.maxErrors) {
+        this.errors = this.errors.slice(-this.maxErrors);
+      }
+    }
+  }
+
+  /** Legacy alias for capture (backward compatibility). */
   static track(message: string, stack?: string): void {
-    this.errors.push({
-      id: `err_${Date.now()}_${this.errors.length}`,
-      timestamp: new Date().toISOString(),
-      message,
-      stack,
-      resolved: false,
-    });
+    this.capture("Error", message, stack || "");
   }
 
   static get(): ErrorEntry[] {
@@ -217,6 +242,56 @@ export class ErrorTracker {
 
   static clearResolved(): void {
     this.errors = this.errors.filter((e) => !e.resolved);
+  }
+
+  /** Remove ALL tracked errors. */
+  static clearAll(): void {
+    this.errors = [];
+  }
+
+  /** Health summary — are there unresolved errors? */
+  static health(): { healthy: boolean; total: number; unresolved: number; resolved: number } {
+    const total = this.errors.length;
+    const resolved = this.errors.filter((e) => e.resolved).length;
+    const unresolved = total - resolved;
+    return { healthy: unresolved === 0, total, unresolved, resolved };
+  }
+
+  /** Count of unresolved errors. */
+  static unresolvedCount(): number {
+    return this.errors.filter((e) => !e.resolved).length;
+  }
+
+  /** Reset all state (for testing). */
+  static reset(): void {
+    this.errors = [];
+    this.registered = false;
+  }
+
+  /**
+   * Register global error handlers to feed the tracker.
+   * Safe to call multiple times — only registers once.
+   */
+  static register(): void {
+    if (this.registered) return;
+    this.registered = true;
+
+    process.on("uncaughtException", (err: Error) => {
+      this.capture(
+        err.constructor.name,
+        err.message,
+        err.stack || "",
+      );
+    });
+
+    process.on("unhandledRejection", (reason: unknown) => {
+      const err = reason instanceof Error ? reason : new Error(String(reason));
+      this.capture(
+        err.constructor.name,
+        err.message,
+        err.stack || "",
+      );
+    });
   }
 }
 
@@ -355,6 +430,9 @@ export class DevAdmin {
    * Register all /__dev routes on the given router.
    */
   static register(router: Router): void {
+    // Register error handlers to feed the ErrorTracker
+    ErrorTracker.register();
+
     const routes: Array<{ method: string; pattern: string; handler: RouteHandler }> = [
       // Dashboard
       { method: "GET", pattern: "/__dev", handler: handleDashboard },

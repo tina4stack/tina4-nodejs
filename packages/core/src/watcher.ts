@@ -7,6 +7,72 @@ import { resolve, extname } from "node:path";
  */
 const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 
+// Module-level state for start()/stop() API
+let _watchers: ReturnType<typeof watch>[] = [];
+let _debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let _codeChangePending = false;
+let _running = false;
+
+/**
+ * Start the DevReload file watcher.
+ *
+ * Watches the given directories for file changes and calls onChange when
+ * a change is detected. Mirrors the Python DevReload.start() API.
+ *
+ * @param dirs - Directories to watch. Defaults to ["src", "public"].
+ * @param onChange - Callback invoked on file change. Receives `{ code: boolean }`.
+ */
+export function start(
+  dirs: string[] = ["src", "public"],
+  onChange: (info: { code: boolean }) => void = () => {},
+): void {
+  if (_running) return;
+  _running = true;
+
+  const debouncedOnChange = () => {
+    if (_debounceTimer) clearTimeout(_debounceTimer);
+    _debounceTimer = setTimeout(() => {
+      const code = _codeChangePending;
+      _codeChangePending = false;
+      console.log(
+        `\n  \x1b[33mFile change detected${code ? ", reloading routes" : ""}...\x1b[0m\n`,
+      );
+      onChange({ code });
+    }, 200);
+  };
+
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    try {
+      const watcher = watch(resolve(dir), { recursive: true }, (_event, filename) => {
+        if (filename && CODE_EXTENSIONS.has(extname(filename))) {
+          _codeChangePending = true;
+        }
+        debouncedOnChange();
+      });
+      _watchers.push(watcher);
+    } catch {
+      console.warn(`  Warning: Could not watch ${dir}`);
+    }
+  }
+}
+
+/**
+ * Stop the DevReload file watcher.
+ *
+ * Closes all active file watchers and resets internal state.
+ * Mirrors the Python DevReload.stop() API.
+ */
+export function stop(): void {
+  if (!_running) return;
+  _running = false;
+  for (const w of _watchers) w.close();
+  _watchers = [];
+  if (_debounceTimer) clearTimeout(_debounceTimer);
+  _debounceTimer = null;
+  _codeChangePending = false;
+}
+
 /**
  * Watch directories for file changes.
  *

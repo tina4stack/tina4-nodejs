@@ -8,9 +8,9 @@ interface OpenAPISpec {
   components?: { schemas?: Record<string, unknown> };
 }
 
-export function generateOpenAPISpec(
+export function generate(
   routes: RouteDefinition[],
-  models: ModelDefinition[]
+  models: ModelDefinition[] = []
 ): OpenAPISpec {
   const spec: OpenAPISpec = {
     openapi: "3.0.3",

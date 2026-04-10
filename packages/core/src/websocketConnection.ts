@@ -17,6 +17,10 @@ export interface WebSocketConnection {
   send(message: string): void;
   /** Broadcast a message to all connections on the same path (path-scoped) */
   broadcast(message: string): void;
+  /** Join a room */
+  joinRoom(roomName: string): void;
+  /** Leave a room */
+  leaveRoom(roomName: string): void;
   /** Close this connection */
   close(): void;
 }

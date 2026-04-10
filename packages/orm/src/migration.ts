@@ -706,8 +706,11 @@ export async function status(
  */
 export async function createMigration(
   description: string,
-  options?: { migrationsDir?: string },
-): Promise<{ upPath: string; downPath: string }> {
+  options?: { migrationsDir?: string; kind?: "sql" | "class" },
+): Promise<string | { upPath: string; downPath: string }> {
+  if (options?.kind === "class") {
+    return createClassMigration(description, options);
+  }
   const dir = resolve(options?.migrationsDir ?? "migrations");
 
   // Ensure directory exists

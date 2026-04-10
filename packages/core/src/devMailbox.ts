@@ -7,7 +7,7 @@
  *   import { DevMailbox, createMessenger } from "@tina4/core";
  *
  *   const mailbox = new DevMailbox();
- *   mailbox.capture({ to: "alice@test.com", subject: "Hello", body: "Hi!" });
+ *   mailbox.capture("alice@test.com", "Hello", "Hi!");
  *   const messages = mailbox.inbox();
  */
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
@@ -39,33 +39,33 @@ export class DevMailbox {
   /**
    * Capture an email to the dev mailbox instead of sending it.
    */
-  capture(options: {
-    to: string | string[];
-    subject: string;
-    body: string;
-    html?: boolean;
-    cc?: string[];
-    bcc?: string[];
-    replyTo?: string;
-    attachments?: string[];
-    from?: string;
-  }): SendResult {
+  capture(
+    to: string | string[],
+    subject: string,
+    body: string,
+    html: boolean = false,
+    cc: string[] = [],
+    bcc: string[] = [],
+    replyTo?: string,
+    attachments: string[] = [],
+    from?: string,
+  ): SendResult {
     const id = randomUUID();
-    const toList = Array.isArray(options.to) ? options.to : [options.to];
+    const toList = Array.isArray(to) ? to : [to];
     const now = new Date().toISOString();
 
     const message: EmailMessage = {
       id,
       type: "outbox",
-      from: options.from ?? process.env.SMTP_FROM ?? "dev@localhost",
+      from: from ?? process.env.SMTP_FROM ?? "dev@localhost",
       to: toList,
-      cc: options.cc ?? [],
-      bcc: options.bcc ?? [],
-      reply_to: options.replyTo,
-      subject: options.subject,
-      body: options.body,
-      html: options.html ?? false,
-      attachments: options.attachments ?? [],
+      cc,
+      bcc,
+      reply_to: replyTo,
+      subject,
+      body,
+      html,
+      attachments,
       date: now,
       read: false,
     };
