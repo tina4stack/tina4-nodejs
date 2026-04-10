@@ -932,3 +932,39 @@ export class GraphQL {
     return resolved;
   }
 }
+
+/**
+ * Lightweight GraphQL type wrapper matching Ruby's GraphQLType.
+ */
+export class GraphQLType {
+  static readonly SCALARS = ["String", "Int", "Float", "Boolean", "ID"];
+
+  name: string;
+  kind: string;
+  ofType: GraphQLType | null;
+
+  constructor(name: string, kind: string = "object", ofType: GraphQLType | null = null) {
+    this.name = name;
+    this.kind = kind;
+    this.ofType = ofType;
+  }
+
+  /**
+   * Parse a GraphQL type string like "String", "String!", "[Int!]!".
+   */
+  static parse(typeStr: string): GraphQLType {
+    const s = String(typeStr).trim();
+    if (s.endsWith("!")) {
+      const inner = GraphQLType.parse(s.slice(0, -1));
+      return new GraphQLType(s, "non_null", inner);
+    }
+    if (s.startsWith("[") && s.endsWith("]")) {
+      const inner = GraphQLType.parse(s.slice(1, -1));
+      return new GraphQLType(s, "list", inner);
+    }
+    if (GraphQLType.SCALARS.includes(s)) {
+      return new GraphQLType(s, "scalar");
+    }
+    return new GraphQLType(s, "object");
+  }
+}

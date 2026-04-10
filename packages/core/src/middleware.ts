@@ -268,6 +268,13 @@ export class CorsMiddleware {
 
     return [req, res];
   }
+
+  /**
+   * Check if a request is an OPTIONS preflight.
+   */
+  static isPreflight(method: string): boolean {
+    return method?.toUpperCase() === "OPTIONS";
+  }
 }
 
 /**
@@ -353,6 +360,36 @@ export class RateLimiterMiddleware {
 
     entry.timestamps.push(now);
     return [req, res];
+  }
+
+  /**
+   * Check if an IP is within rate limits without recording a request.
+   * Returns [allowed, info] matching Python/Ruby API.
+   */
+  static check(ip: string): [boolean, { limit: number; remaining: number; reset: number; window: number }] {
+    const limit = process.env.TINA4_RATE_LIMIT ? parseInt(process.env.TINA4_RATE_LIMIT, 10) : 100;
+    const windowSeconds = process.env.TINA4_RATE_WINDOW ? parseInt(process.env.TINA4_RATE_WINDOW, 10) : 60;
+    const windowMs = windowSeconds * 1000;
+    const now = Date.now();
+    const cutoff = now - windowMs;
+
+    let entry = RateLimiterMiddleware.store.get(ip);
+    if (!entry) {
+      entry = { timestamps: [] };
+      RateLimiterMiddleware.store.set(ip, entry);
+    }
+    entry.timestamps = entry.timestamps.filter((t) => t > cutoff);
+
+    const remaining = Math.max(0, limit - entry.timestamps.length);
+    const reset = entry.timestamps.length > 0
+      ? Math.ceil((entry.timestamps[0] + windowMs - now) / 1000)
+      : windowSeconds;
+
+    if (entry.timestamps.length >= limit) {
+      return [false, { limit, remaining: 0, reset, window: windowSeconds }];
+    }
+
+    return [true, { limit, remaining: remaining - 1, reset: windowSeconds, window: windowSeconds }];
   }
 }
 
