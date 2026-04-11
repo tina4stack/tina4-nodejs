@@ -8,7 +8,7 @@ import cluster from "node:cluster";
 import os from "node:os";
 import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
 import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
-import { validToken, getPayload } from "./auth.js";
+import { validToken, getPayload, refreshToken } from "./auth.js";
 import { discoverRoutes } from "./routeDiscovery.js";
 import { createRequest } from "./request.js";
 import { createResponse, setDefaultTemplatesDir } from "./response.js";
@@ -19,6 +19,7 @@ import { createHealthRoute } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
 import { DevAdmin, RequestInspector } from "./devAdmin.js";
+import { I18n } from "./i18n.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -568,6 +569,22 @@ ${reset}
     // Frond not available
   }
 
+  // Auto-wire i18n → template global t() when locale files exist
+  if (frondEngine) {
+    const localeDir = resolve(base, process.env.TINA4_LOCALE_DIR ?? "src/locales");
+    if (existsSync(localeDir)) {
+      try {
+        const localeFiles = readdirSync(localeDir).filter((f: string) => f.endsWith(".json"));
+        if (localeFiles.length > 0 && !frondEngine.globals?.t) {
+          const i18nInstance = new I18n(localeDir, process.env.TINA4_LOCALE ?? "en");
+          frondEngine.addGlobal("t", (key: string, params?: Record<string, string>) => i18nInstance.t(key, params));
+        }
+      } catch {
+        // Locale directory unreadable — skip auto-wire
+      }
+    }
+  }
+
   // Built-in middleware
   middleware.use(cors());
   middleware.use(requestLogger());
@@ -807,18 +824,56 @@ ${reset}
           if (!proceed || res.raw.writableEnded) return;
         }
 
-        // Auth enforcement: secure routes require a valid Bearer token
+        // Auth enforcement: secure routes require a valid token
+        // Check sources in priority order: Authorization header > body formToken > session token
         // Dev admin routes (/__dev) are always public
         const isDevAdmin = pathname.startsWith("/__dev");
         if (match.secure === true && match.noAuth !== true && !isDevAdmin) {
           const authHeader = req.headers.authorization ?? "";
-          const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-          if (!token || !validToken(token)) {
+          const headerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+
+          // Priority 1: Authorization Bearer header
+          let resolvedToken = "";
+          let tokenSource: "header" | "body" | "session" | "" = "";
+
+          if (headerToken && validToken(headerToken)) {
+            resolvedToken = headerToken;
+            tokenSource = "header";
+          }
+
+          // Priority 2: formToken from request body
+          if (!resolvedToken) {
+            const bodyToken = (req.body as Record<string, unknown>)?.formToken as string | undefined;
+            if (bodyToken && validToken(bodyToken)) {
+              resolvedToken = bodyToken;
+              tokenSource = "body";
+            }
+          }
+
+          // Priority 3: Session token
+          if (!resolvedToken) {
+            const sessionToken = (req as any).session?.get?.("token") as string | undefined;
+            if (sessionToken && validToken(sessionToken)) {
+              resolvedToken = sessionToken;
+              tokenSource = "session";
+            }
+          }
+
+          if (!resolvedToken) {
             res.raw.writeHead(401, { "Content-Type": "application/json" });
             res.raw.end(JSON.stringify({ error: "Unauthorized" }));
             return;
           }
-          req.user = getPayload(token) ?? {};
+
+          req.user = getPayload(resolvedToken) ?? {};
+
+          // When body formToken validates, return a FreshToken header with a refreshed JWT
+          if (tokenSource === "body") {
+            const fresh = refreshToken(resolvedToken);
+            if (fresh) {
+              res.header("FreshToken", fresh);
+            }
+          }
         }
 
         // Inject path params by name into handler arguments, then request/response

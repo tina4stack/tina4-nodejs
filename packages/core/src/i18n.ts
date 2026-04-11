@@ -174,6 +174,18 @@ export class I18n {
         result[fullKey] = String(value);
       }
     }
+    // Add leaf-key aliases: "nav.home" → also store as "home" (first-wins on conflict)
+    if (!prefix) {
+      for (const [dotKey, val] of Object.entries(result)) {
+        const lastDot = dotKey.lastIndexOf(".");
+        if (lastDot !== -1) {
+          const leafKey = dotKey.substring(lastDot + 1);
+          if (!(leafKey in result)) {
+            result[leafKey] = val;
+          }
+        }
+      }
+    }
     return result;
   }
 }

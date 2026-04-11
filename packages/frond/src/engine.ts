@@ -357,10 +357,26 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
       return null;
     }
 
+    // Slice syntax: value[1:5], value[:10], value[start:end]
+    const isQuotedPart = (part.startsWith('"') && part.endsWith('"')) ||
+                         (part.startsWith("'") && part.endsWith("'"));
+    if (isBracket && part.includes(":") && !isQuotedPart) {
+      const sliceParts = part.split(":", 2);
+      const sStart = sliceParts[0].trim() ? parseInt(String(evalExpr(sliceParts[0].trim(), context)), 10) : undefined;
+      const sEnd = sliceParts[1].trim() ? parseInt(String(evalExpr(sliceParts[1].trim(), context)), 10) : undefined;
+      if (Array.isArray(value)) {
+        value = (value as unknown[]).slice(sStart ?? 0, sEnd);
+      } else if (typeof value === "string") {
+        value = (value as string).slice(sStart ?? 0, sEnd);
+      } else {
+        return null;
+      }
+      continue;
+    }
+
     let key: string | number;
     // Check if this part came from bracket access and needs variable resolution
-    if ((part.startsWith('"') && part.endsWith('"')) ||
-        (part.startsWith("'") && part.endsWith("'"))) {
+    if (isQuotedPart) {
       // Quoted string literal — strip quotes
       key = part.slice(1, -1);
     } else {
@@ -369,7 +385,7 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
         key = asNum;
       } else if (isBracket) {
         // Only resolve as a variable from context for bracket-derived parts
-        const resolved = context[part];
+        const resolved = evalExpr(part, context);
         key = resolved !== undefined ? String(resolved) : part;
       } else {
         // Dot-derived parts or root — use the part name directly as the key
@@ -397,10 +413,11 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
 function findOutsideQuotes(expr: string, needle: string): number {
   let inQuote: string | null = null;
   let depth = 0;
+  let bracketDepth = 0;
   let i = 0;
   while (i <= expr.length - needle.length) {
     const ch = expr[i];
-    if ((ch === '"' || ch === "'") && depth === 0) {
+    if ((ch === '"' || ch === "'") && depth === 0 && bracketDepth === 0) {
       if (inQuote === null) {
         inQuote = ch;
       } else if (ch === inQuote) {
@@ -412,7 +429,9 @@ function findOutsideQuotes(expr: string, needle: string): number {
     if (inQuote) { i++; continue; }
     if (ch === "(") depth++;
     else if (ch === ")") depth--;
-    if (depth === 0 && expr.slice(i, i + needle.length) === needle) {
+    else if (ch === "[") bracketDepth++;
+    else if (ch === "]") bracketDepth--;
+    if (depth === 0 && bracketDepth === 0 && expr.slice(i, i + needle.length) === needle) {
       return i;
     }
     i++;
@@ -425,10 +444,11 @@ function splitOutsideQuotes(expr: string, sep: string): string[] {
   let currentStart = 0;
   let inQuote: string | null = null;
   let depth = 0;
+  let bracketDepth = 0;
   let i = 0;
   while (i <= expr.length - sep.length) {
     const ch = expr[i];
-    if ((ch === '"' || ch === "'") && depth === 0) {
+    if ((ch === '"' || ch === "'") && depth === 0 && bracketDepth === 0) {
       if (inQuote === null) {
         inQuote = ch;
       } else if (ch === inQuote) {
@@ -440,7 +460,9 @@ function splitOutsideQuotes(expr: string, sep: string): string[] {
     if (inQuote) { i++; continue; }
     if (ch === "(") depth++;
     else if (ch === ")") depth--;
-    if (depth === 0 && expr.slice(i, i + sep.length) === sep) {
+    else if (ch === "[") bracketDepth++;
+    else if (ch === "]") bracketDepth--;
+    if (depth === 0 && bracketDepth === 0 && expr.slice(i, i + sep.length) === sep) {
       parts.push(expr.slice(currentStart, i));
       i += sep.length;
       currentStart = i;
@@ -1446,10 +1468,46 @@ export class Frond {
 
   private extractBlocks(source: string): Record<string, string> {
     const blocks: Record<string, string> = {};
-    const pattern = /\{%[-\s]*block\s+(\w+)\s*[-]?%\}([\s\S]*?)\{%[-\s]*endblock\s*[-]?%\}/g;
-    let m: RegExpExecArray | null;
-    while ((m = pattern.exec(source)) !== null) {
-      blocks[m[1]] = m[2];
+    const blockOpen = /\{%[-\s]*block\s+(\w+)\s*[-]?%\}/g;
+    const blockClose = /\{%[-\s]*endblock\s*[-]?%\}/g;
+
+    let pos = 0;
+    while (pos < source.length) {
+      blockOpen.lastIndex = pos;
+      const mOpen = blockOpen.exec(source);
+      if (!mOpen) break;
+
+      const name = mOpen[1];
+      const contentStart = mOpen.index + mOpen[0].length;
+      let depth = 1;
+      let scan = contentStart;
+
+      while (depth > 0 && scan < source.length) {
+        blockOpen.lastIndex = scan;
+        blockClose.lastIndex = scan;
+        const nextOpen = blockOpen.exec(source);
+        const nextClose = blockClose.exec(source);
+
+        if (!nextClose) break; // malformed — no matching endblock
+
+        if (nextOpen && nextOpen.index < nextClose.index) {
+          depth++;
+          scan = nextOpen.index + nextOpen[0].length;
+        } else {
+          depth--;
+          if (depth === 0) {
+            blocks[name] = source.slice(contentStart, nextClose.index);
+            pos = nextClose.index + nextClose[0].length;
+            break;
+          }
+          scan = nextClose.index + nextClose[0].length;
+        }
+      }
+
+      if (depth > 0) {
+        // malformed, skip forward
+        pos = contentStart;
+      }
     }
     return blocks;
   }
@@ -1459,6 +1517,40 @@ export class Frond {
     context: Record<string, unknown>,
     childBlocks: Record<string, string>,
   ): string {
+    // --- Multi-level extends: check if parent itself extends a grandparent ---
+    const extendsMatch = parentSource.trimStart().match(/\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/);
+    if (extendsMatch) {
+      const grandparentName = extendsMatch[1];
+      const grandparentSource = this.load(grandparentName);
+
+      // Extract block defaults defined in the parent template
+      const parentBlocks = this.extractBlocks(parentSource);
+
+      // Child blocks override parent blocks at the same name
+      const mergedBlocks: Record<string, string> = { ...parentBlocks, ...childBlocks };
+
+      // Resolve nested blocks: if a block value contains {% block inner %} tags,
+      // replace them with mergedBlocks values too
+      const nestedBlockRe = /\{%[-\s]*block\s+(\w+)\s*[-]?%\}([\s\S]*?)\{%[-\s]*endblock\s*[-]?%\}/g;
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const name of Object.keys(mergedBlocks)) {
+          const resolved = mergedBlocks[name].replace(nestedBlockRe, (_m, innerName: string, innerDefault: string) => {
+            return mergedBlocks[innerName] ?? innerDefault;
+          });
+          if (resolved !== mergedBlocks[name]) {
+            mergedBlocks[name] = resolved;
+            changed = true;
+          }
+        }
+      }
+
+      // Recurse up the chain (handles 3+, 4+, ... levels)
+      return this.renderWithBlocks(grandparentSource, context, mergedBlocks);
+    }
+
+    // --- Leaf parent (no extends) — resolve blocks and render ---
     const pattern = /\{%[-\s]*block\s+(\w+)\s*[-]?%\}([\s\S]*?)\{%[-\s]*endblock\s*[-]?%\}/g;
     const engine = this;
 

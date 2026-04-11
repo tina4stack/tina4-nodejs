@@ -365,6 +365,46 @@ writeFileSync(join(tmpDir, "child-mp.html"), '{% extends "base-mp.html" %}{% blo
   assert("Multiple blocks with parent()", r.includes("Base Header") && r.includes("+ Extra Header") && r.includes("Base Footer") && r.includes("+ Extra Footer"));
 }
 
+// ── Multi-level extends (A extends B extends C) ────────────────
+console.log("\n--- Multi-level extends ---");
+
+// 3-level chain: grandchild -> child -> base
+writeFileSync(join(tmpDir, "base-ml.html"), "<html>{% block head %}<head>Default Head</head>{% endblock %}{% block body %}<body>Default Body</body>{% endblock %}</html>");
+writeFileSync(join(tmpDir, "layout-ml.html"), '{% extends "base-ml.html" %}{% block head %}<head>Layout Head</head>{% endblock %}{% block body %}<body>{% block content %}Layout Content{% endblock %}</body>{% endblock %}');
+writeFileSync(join(tmpDir, "page-ml.html"), '{% extends "layout-ml.html" %}{% block content %}Page Content{% endblock %}');
+{
+  const r = engine.render("page-ml.html", {});
+  assert("3-level extends: grandchild block reaches root", r.includes("Page Content"));
+  assert("3-level extends: parent block preserved", r.includes("Layout Head"));
+  assert("3-level extends: wrapper html present", r.includes("<html>") && r.includes("</html>"));
+}
+
+// 3-level with variables
+writeFileSync(join(tmpDir, "page-ml-var.html"), '{% extends "layout-ml.html" %}{% block content %}Hello {{ name }}{% endblock %}');
+{
+  const r = engine.render("page-ml-var.html", { name: "World" });
+  assert("3-level extends with variables", r.includes("Hello World"));
+}
+
+// 3-level with grandchild overriding a block from root (skipping middle)
+writeFileSync(join(tmpDir, "page-ml-head.html"), '{% extends "layout-ml.html" %}{% block head %}<head>Custom Head</head>{% endblock %}{% block content %}Custom Content{% endblock %}');
+{
+  const r = engine.render("page-ml-head.html", {});
+  assert("3-level extends: grandchild overrides root block", r.includes("Custom Head") && !r.includes("Layout Head"));
+  assert("3-level extends: grandchild also overrides nested block", r.includes("Custom Content"));
+}
+
+// 4-level chain
+writeFileSync(join(tmpDir, "base-4.html"), "<root>{% block slot %}Base{% endblock %}</root>");
+writeFileSync(join(tmpDir, "mid1-4.html"), '{% extends "base-4.html" %}{% block slot %}{% block inner %}Mid1{% endblock %}{% endblock %}');
+writeFileSync(join(tmpDir, "mid2-4.html"), '{% extends "mid1-4.html" %}{% block inner %}Mid2 {% block deep %}deep-default{% endblock %}{% endblock %}');
+writeFileSync(join(tmpDir, "leaf-4.html"), '{% extends "mid2-4.html" %}{% block deep %}Leaf{% endblock %}');
+{
+  const r = engine.render("leaf-4.html", {});
+  assert("4-level extends chain", r.includes("Leaf") && r.includes("<root>"));
+}
+
+
 // ── Macros ──────────────────────────────────────────────────────
 console.log("\n--- Macros ---");
 
