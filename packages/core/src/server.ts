@@ -448,6 +448,26 @@ let _serverHandle: { close: () => void; router: Router; port: number } | null = 
  * Thin wrapper around startServer() for cross-framework parity with PHP and Ruby.
  */
 export async function start(config?: Tina4Config): Promise<{ close: () => void; router: Router; port: number }> {
+  if (process.env.TINA4_CLI !== 'true' && process.env.TINA4_OVERRIDE_CLIENT !== 'true') {
+    console.log();
+    console.log('='.repeat(60));
+    console.log();
+    console.log('  Tina4 must be started with the tina4 CLI:');
+    console.log();
+    console.log('    tina4 serve              (development)');
+    console.log('    tina4 serve --production (production)');
+    console.log();
+    console.log('  Install: cargo install tina4');
+    console.log('  Docs:    https://tina4.com');
+    console.log();
+    console.log('  To run directly, add to .env:');
+    console.log('    TINA4_OVERRIDE_CLIENT=true');
+    console.log();
+    console.log('='.repeat(60));
+    console.log();
+    process.exit(1);
+  }
+
   _serverHandle = await startServer(config);
   return _serverHandle;
 }

@@ -26,6 +26,9 @@ import { createHash } from "node:crypto";
 import { randomUUID } from "node:crypto";
 import type { Socket } from "node:net";
 import type { Server } from "node:http";
+import type { WebSocketConnection } from "./websocketConnection.js";
+import type { WebSocketRouteHandler } from "./types.js";
+import { Router } from "./router.js";
 
 // ── Constants ────────────────────────────────────────────────
 
@@ -174,6 +177,8 @@ export class WebSocketServer {
   private rooms: Map<string, Set<string>> = new Map();
   /** clientRooms[clientId] = Set of roomNames */
   private clientRooms: Map<string, Set<string>> = new Map();
+  /** Route-style handlers registered via route(), keyed by path */
+  private _routeHandlers: Map<string, (conn: WebSocketConnection) => void | Promise<void>> = new Map();
 
   constructor(options?: { port?: number }) {
     this.port = options?.port ?? parseInt(process.env.TINA4_WS_PORT ?? "8080", 10);
@@ -187,6 +192,46 @@ export class WebSocketServer {
     list.push(handler as EventHandler);
     this.handlers.set(event, list);
     return this;
+  }
+
+  /**
+   * Register a WebSocket handler for a path (decorator style, matches Python).
+   *
+   * The handler receives a WebSocketConnection and sets up callbacks via
+   * `conn.onMessage(handler)` and `conn.onClose(handler)`.
+   *
+   * Internally this creates an adapter that converts from the decorator style
+   * to the Router's `(conn, event, data)` style and registers it via
+   * `Router.websocket()`.
+   */
+  route(path: string, handler: (conn: WebSocketConnection) => void | Promise<void>): void {
+    this._routeHandlers.set(path, handler);
+
+    // Adapt to Router's (conn, event, data) style
+    const adapter: WebSocketRouteHandler = async (conn, event, data) => {
+      if (event === "open") {
+        const result = handler(conn);
+        if (result instanceof Promise) {
+          await result;
+        }
+      } else if (event === "message") {
+        if (conn._onMessage) {
+          const result = conn._onMessage(data);
+          if (result instanceof Promise) {
+            await result;
+          }
+        }
+      } else if (event === "close") {
+        if (conn._onClose) {
+          const result = conn._onClose();
+          if (result instanceof Promise) {
+            await result;
+          }
+        }
+      }
+    };
+
+    Router.websocket(path, adapter);
   }
 
   /**

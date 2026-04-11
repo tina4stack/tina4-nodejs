@@ -23,4 +23,16 @@ export interface WebSocketConnection {
   leaveRoom(roomName: string): void;
   /** Close this connection */
   close(): void;
+
+  // ── Callback properties (used by WebSocketServer.route() adapter) ──
+
+  /** Internal message callback, set via onMessage(). */
+  _onMessage: ((data: string) => void | Promise<void>) | null;
+  /** Internal close callback, set via onClose(). */
+  _onClose: (() => void | Promise<void>) | null;
+
+  /** Register a message handler (decorator style, matches Python). */
+  onMessage(handler: (data: string) => void | Promise<void>): void;
+  /** Register a close handler (decorator style, matches Python). */
+  onClose(handler: () => void | Promise<void>): void;
 }
