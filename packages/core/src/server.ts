@@ -448,7 +448,8 @@ let _serverHandle: { close: () => void; router: Router; port: number } | null = 
  * Thin wrapper around startServer() for cross-framework parity with PHP and Ruby.
  */
 export async function start(config?: Tina4Config): Promise<{ close: () => void; router: Router; port: number }> {
-  if (process.env.TINA4_CLI !== 'true' && process.env.TINA4_OVERRIDE_CLIENT !== 'true') {
+  const isManaged = process.argv.includes('--managed');
+  if (!isManaged && process.env.TINA4_OVERRIDE_CLIENT !== 'true') {
     console.log();
     console.log('='.repeat(60));
     console.log();
