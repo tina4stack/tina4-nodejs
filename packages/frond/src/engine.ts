@@ -1085,7 +1085,20 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   last: (v) => Array.isArray(v) ? v[v.length - 1] ?? null : null,
   join: (v, sep) => Array.isArray(v) ? v.map(String).join(sep !== undefined ? String(sep) : ", ") : String(v),
   split: (v, sep) => String(v).split(sep !== undefined ? String(sep) : " "),
-  replace: (v, from, to) => from !== undefined && to !== undefined ? String(v).split(String(from)).join(String(to)) : String(v),
+  replace: (v: unknown, from?: unknown, to?: unknown) => {
+    const s = String(v);
+    if (from !== undefined && typeof from === 'object' && from !== null && !Array.isArray(from)) {
+      let result = s;
+      for (const [old, newVal] of Object.entries(from as Record<string, unknown>)) {
+        result = result.split(old).join(String(newVal));
+      }
+      return result;
+    }
+    if (from !== undefined && to !== undefined) {
+      return s.split(String(from)).join(String(to));
+    }
+    return s;
+  },
   default: (v, fallback) => (v !== null && v !== undefined && v !== "") ? v : (fallback !== undefined ? fallback : ""),
   raw: (v) => v,
   safe: (v) => v,

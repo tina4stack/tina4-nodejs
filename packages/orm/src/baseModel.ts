@@ -67,7 +67,7 @@ export class BaseModel {
    * When true, auto-generates fieldMapping entries from camelCase field names
    * to snake_case DB column names. Explicit fieldMapping entries always win.
    */
-  static autoMap: boolean = false;
+  static autoMap: boolean = true;
 
   /**
    * Maps JS property names to database column names.
@@ -563,13 +563,15 @@ export class BaseModel {
   /**
    * Convert to plain object (dictionary).
    * @param include Optional array of relationship names to include (supports dot notation for nesting).
+   * @param case_ Key casing: 'camel' (default, keys as-is) or 'snake' (convert via fieldMapping).
    */
-  toDict(include?: string[]): Record<string, unknown> {
+  toDict(include?: string[], case_: "camel" | "snake" = "camel"): Record<string, unknown> {
     const ModelClass = this.constructor as typeof BaseModel;
     const result: Record<string, unknown> = {};
     for (const key of Object.keys(ModelClass.fields)) {
       if (this[key] !== undefined) {
-        result[key] = this[key];
+        const outKey = case_ === "snake" ? (ModelClass.fieldMapping[key] ?? key) : key;
+        result[outKey] = this[key];
       }
     }
     // Include soft delete field
@@ -604,11 +606,11 @@ export class BaseModel {
           result[relName] = null;
         } else if (Array.isArray(data)) {
           result[relName] = (data as BaseModel[]).map((r) =>
-            r.toDict(nested.length > 0 ? nested : undefined),
+            r.toDict(nested.length > 0 ? nested : undefined, case_),
           );
         } else if (typeof (data as BaseModel).toDict === "function") {
           result[relName] = (data as BaseModel).toDict(
-            nested.length > 0 ? nested : undefined,
+            nested.length > 0 ? nested : undefined, case_,
           );
         }
       }
@@ -639,15 +641,15 @@ export class BaseModel {
   /**
    * Convert to an associative object (alias for toDict).
    */
-  toAssoc(include?: string[]): Record<string, unknown> {
-    return this.toDict(include);
+  toAssoc(include?: string[], case_: "camel" | "snake" = "camel"): Record<string, unknown> {
+    return this.toDict(include, case_);
   }
 
   /**
    * Convert to a plain object (alias for toDict).
    */
-  toObject(): Record<string, unknown> {
-    return this.toDict();
+  toObject(case_: "camel" | "snake" = "camel"): Record<string, unknown> {
+    return this.toDict(undefined, case_);
   }
 
   /**
@@ -668,8 +670,8 @@ export class BaseModel {
    * Convert to JSON string.
    * @param include Optional relationship names to include.
    */
-  toJson(include?: string[]): string {
-    return JSON.stringify(this.toDict(include));
+  toJson(include?: string[], case_: "camel" | "snake" = "camel"): string {
+    return JSON.stringify(this.toDict(include, case_));
   }
 
   /**
