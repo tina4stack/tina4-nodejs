@@ -47,14 +47,14 @@ export async function migrateStatus(migrationDir?: string): Promise<void> {
   if (result.completed.length > 0) {
     console.log(`  Completed (${result.completed.length}):`);
     for (const file of result.completed) {
-      console.log(`    ✓ ${file}`);
+      console.log(`    [OK] ${file}`);
     }
   }
 
   if (result.pending.length > 0) {
     console.log(`  Pending (${result.pending.length}):`);
     for (const file of result.pending) {
-      console.log(`    ○ ${file}`);
+      console.log(`    [ ] ${file}`);
     }
   }
 
