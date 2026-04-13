@@ -46,7 +46,11 @@ export async function serveProject(options: ServeOptions): Promise<void> {
   // gets a 404 whose response path bypasses the dev toolbar injection, so the
   // toolbar appears to "vanish" after a hot reload. Route-file-only clearing
   // matches the behaviour of Python's DevReload and the fix made in PHP v3.10.87.
-  const noReload = ["true", "1", "yes"].includes((process.env.TINA4_NO_RELOAD ?? "").toLowerCase());
+  // Skip internal file watcher when launched by the Rust CLI (--managed).
+  // The Rust CLI owns file watching, SCSS compilation, and browser reload.
+  // Running both causes double-reloads and SCSS recompile loops.
+  const isManaged = process.argv.includes("--managed");
+  const noReload = isManaged || ["true", "1", "yes"].includes((process.env.TINA4_NO_RELOAD ?? "").toLowerCase());
   const watchDirs = [routesDir, ormDir, modelsDir, templatesDir].filter((d) => existsSync(d));
   let watcher: { close: () => void } | null = null;
   if (!noReload) {
