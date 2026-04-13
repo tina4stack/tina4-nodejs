@@ -80,11 +80,19 @@ export class ScssCompiler {
       css = css.trim();
     }
 
-    // Write output
+    // Write output only if content changed (avoids triggering DevReload loops)
     const absOutput = resolve(output);
     const outDir = dirname(absOutput);
     if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
-    writeFileSync(absOutput, css, "utf-8");
+    let existing: string | null = null;
+    try {
+      existing = existsSync(absOutput) ? readFileSync(absOutput, "utf-8") : null;
+    } catch {
+      existing = null;
+    }
+    if (existing !== css) {
+      writeFileSync(absOutput, css, "utf-8");
+    }
 
     return css;
   }
