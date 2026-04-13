@@ -48,7 +48,7 @@ export class ScssCompiler {
   }
 
   /** Compile all .scss files in a directory into a single CSS output file. */
-  compileScss(scssDir: string = "src/scss", output: string = "public/css/default.css", minify: boolean = false): string {
+  compileScss(scssDir: string = "src/scss", output: string = "src/public/css/default.css", minify: boolean = false): string {
     const absDir = resolve(scssDir);
     if (!existsSync(absDir)) return "";
 
