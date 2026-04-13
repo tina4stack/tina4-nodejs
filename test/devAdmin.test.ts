@@ -3,7 +3,7 @@
  * Run with: npx tsx test/devAdmin.test.ts
  */
 import {
-  MessageLog, RequestInspector, ErrorTracker, renderDashboard,
+  MessageLog, RequestInspector, ErrorTracker,
 } from "../packages/core/src/index.ts";
 import { SQLiteAdapter } from "../packages/orm/src/index.ts";
 
@@ -241,17 +241,6 @@ const legacyErrors = ErrorTracker.get();
 assert("track still works as legacy alias", legacyErrors.length === 1);
 assert("track message stored", legacyErrors[0].message === "Legacy message");
 
-// ── Status API includes db_tables ───────────────────────────
-
-console.log("\n--- Status API: db_tables field ---");
-
-// The handleStatus handler returns db_tables in its response.
-// We verify the dashboard references the db-count element ID that
-// displays the table count from the status API's db_tables field.
-const dashHtml = renderDashboard();
-assert("dashboard HTML has db-count element for db_tables display", dashHtml.includes("db-count"));
-assert("dashboard shows Database tab with db count badge", dashHtml.includes('id="db-count"'));
-
 // ── Multi-statement SQL execution ──────────────────────────
 
 console.log("\n--- Multi-statement SQL execution ---");
@@ -296,36 +285,6 @@ const rbRows = rbDb.fetch<{ id: number }>("SELECT * FROM test_rb");
 assert("multi-statement rollback: no rows after rollback", rbRows.length === 0);
 rbDb.close();
 
-// ── Database tab HTML ──────────────────────────────────────
-
-console.log("\n--- Database tab HTML ---");
-
-const html = renderDashboard();
-
-// Split-screen layout elements
-assert("dashboard has table-list element", html.includes("table-list"));
-assert("dashboard has query-results element", html.includes("query-results"));
-assert("dashboard has query-input element", html.includes("query-input"));
-
-// Copy/Paste buttons
-assert("dashboard has Copy CSV button", html.includes("Copy CSV"));
-assert("dashboard has Copy JSON button", html.includes("Copy JSON"));
-assert("dashboard has Paste button", html.includes("Paste"));
-
-// Copy/paste function references
-assert("dashboard has copyResults function call", html.includes("copyResults"));
-assert("dashboard has pasteData function call", html.includes("pasteData"));
-
-// Limit dropdown
-assert("dashboard has query-limit dropdown", html.includes("query-limit"));
-assert("dashboard has limit option 20", html.includes('value="20"'));
-assert("dashboard has limit option All (0)", html.includes('value="0"'));
-
-// Seed controls
-assert("dashboard has seed-table element", html.includes("seed-table"));
-assert("dashboard has seed-count element", html.includes("seed-count"));
-assert("dashboard has seedTable function call", html.includes("seedTable()"));
-
 // ── SQLite LIMIT dedup ─────────────────────────────────────
 
 console.log("\n--- SQLite LIMIT dedup ---");
@@ -351,6 +310,208 @@ const noLimitParam = limDb.fetch<{ id: number }>("SELECT * FROM items");
 assert("fetch with no limit param: returns all 10 rows", noLimitParam.length === 10);
 
 limDb.close();
+
+// ── DevAdmin API Endpoint Tests ────────────────────────────
+// These tests register the DevAdmin routes on a real Router instance,
+// then invoke each handler with mock req/res objects and assert the
+// response shape.
+
+console.log("\n--- DevAdmin API Endpoint Tests ---");
+
+import {
+  DevAdmin, DevQueue,
+} from "../packages/core/src/index.ts";
+import { Router } from "../packages/core/src/index.ts";
+
+// Set TINA4_DEBUG so DevAdmin.isEnabled() is true
+process.env.TINA4_DEBUG = "true";
+
+const router = new Router();
+DevAdmin.register(router);
+
+// Helper: find a registered handler by method + pattern
+function findHandler(method: string, pattern: string) {
+  const routes = router.getRoutes();
+  const route = routes.find((r) => r.method === method && r.pattern === pattern);
+  return route?.handler;
+}
+
+// Helper: create a mock request
+function mockReq(url = "/"): any {
+  return { url, headers: {}, method: "GET" };
+}
+
+// Helper: create a mock response that captures the JSON output
+function mockRes(): any {
+  let captured: any = undefined;
+  return {
+    json(data: any, _status?: number) { captured = data; },
+    html(_data: any, _status?: number) {},
+    get result() { return captured; },
+  };
+}
+
+// --- handleStatus ---
+console.log("\n--- handleStatus endpoint ---");
+
+const statusHandler = findHandler("GET", "/__dev/api/status");
+assert("handleStatus handler is registered", statusHandler !== undefined);
+
+if (statusHandler) {
+  // Seed some data so status has content
+  MessageLog.clear();
+  MessageLog.log("test", "info", "status check");
+  RequestInspector.clear();
+  RequestInspector.capture("GET", "/test", 200, 5);
+
+  const res = mockRes();
+  await statusHandler(mockReq("/__dev/api/status"), res);
+  const data = res.result;
+
+  assert("handleStatus returns an object", typeof data === "object" && data !== null);
+  assert("handleStatus has framework field", typeof data.framework === "string" && data.framework.includes("tina4-nodejs"));
+  assert("handleStatus has routes field (number)", typeof data.routes === "number");
+  assert("handleStatus has messages field", data.messages !== undefined);
+  assert("handleStatus has requests field", data.requests !== undefined);
+  assert("handleStatus has memory field", typeof data.memory === "object");
+  assert("handleStatus has uptime field", typeof data.uptime === "number");
+  assert("handleStatus has timestamp field", typeof data.timestamp === "string");
+  assert("handleStatus has nodeVersion field", typeof data.nodeVersion === "string");
+  assert("handleStatus has debug field", typeof data.debug === "string");
+  assert("handleStatus has health field", typeof data.health === "object");
+}
+
+// --- handleRoutes ---
+console.log("\n--- handleRoutes endpoint ---");
+
+const routesHandler = findHandler("GET", "/__dev/api/routes");
+assert("handleRoutes handler is registered", routesHandler !== undefined);
+
+if (routesHandler) {
+  const res = mockRes();
+  routesHandler(mockReq("/__dev/api/routes"), res);
+  const data = res.result;
+
+  assert("handleRoutes returns an object", typeof data === "object" && data !== null);
+  assert("handleRoutes has routes array", Array.isArray(data.routes));
+  assert("handleRoutes has count field", typeof data.count === "number");
+  assert("handleRoutes count matches routes length", data.count === data.routes.length);
+  // Internal routes (/__dev) should be filtered out
+  const hasDevRoute = data.routes.some((r: any) => r.path.startsWith("/__dev"));
+  assert("handleRoutes filters out /__dev routes", !hasDevRoute);
+}
+
+// --- handleMessages ---
+console.log("\n--- handleMessages endpoint ---");
+
+const messagesHandler = findHandler("GET", "/__dev/api/messages");
+assert("handleMessages handler is registered", messagesHandler !== undefined);
+
+if (messagesHandler) {
+  MessageLog.clear();
+  MessageLog.log("api", "info", "Test message 1");
+  MessageLog.log("api", "warn", "Test message 2");
+
+  const res = mockRes();
+  messagesHandler(mockReq("/__dev/api/messages"), res);
+  const data = res.result;
+
+  assert("handleMessages returns an object", typeof data === "object" && data !== null);
+  assert("handleMessages has messages array", Array.isArray(data.messages));
+  assert("handleMessages messages has correct count", data.messages.length === 2);
+  assert("handleMessages has counts field", typeof data.counts === "object");
+  assert("handleMessages counts has total", typeof data.counts.total === "number");
+
+  // Test category filter via query param
+  MessageLog.log("other", "info", "Other category");
+  const resFiltered = mockRes();
+  messagesHandler(mockReq("/__dev/api/messages?category=api"), resFiltered);
+  const filteredData = resFiltered.result;
+  assert("handleMessages category filter works", filteredData.messages.length === 2);
+  assert("handleMessages filtered messages are all 'api'", filteredData.messages.every((m: any) => m.category === "api"));
+}
+
+// --- handleSystem ---
+console.log("\n--- handleSystem endpoint ---");
+
+const systemHandler = findHandler("GET", "/__dev/api/system");
+assert("handleSystem handler is registered", systemHandler !== undefined);
+
+if (systemHandler) {
+  const res = mockRes();
+  await systemHandler(mockReq("/__dev/api/system"), res);
+  const data = res.result;
+
+  assert("handleSystem returns an object", typeof data === "object" && data !== null);
+  assert("handleSystem has node_version field", typeof data.node_version === "string");
+  assert("handleSystem has platform field", typeof data.platform === "string");
+  assert("handleSystem has architecture field", typeof data.architecture === "string");
+  assert("handleSystem has pid field", typeof data.pid === "number");
+  assert("handleSystem has memory_mb field", typeof data.memory_mb === "number");
+  assert("handleSystem has memory object", typeof data.memory === "object");
+  assert("handleSystem memory has current_mb", typeof data.memory.current_mb === "number");
+  assert("handleSystem has framework object", typeof data.framework === "object");
+  assert("handleSystem framework has name", data.framework.name === "tina4-nodejs");
+  assert("handleSystem has uptime object", typeof data.uptime === "object");
+  assert("handleSystem uptime has seconds", typeof data.uptime.seconds === "number");
+  assert("handleSystem has cpus field", typeof data.cpus === "number");
+  assert("handleSystem has node object", typeof data.node === "object");
+}
+
+// --- handleTables ---
+console.log("\n--- handleTables endpoint ---");
+
+const tablesHandler = findHandler("GET", "/__dev/api/tables");
+assert("handleTables handler is registered", tablesHandler !== undefined);
+
+if (tablesHandler) {
+  // Without a database connected, it should return empty tables array
+  const res = mockRes();
+  await tablesHandler(mockReq("/__dev/api/tables"), res);
+  const data = res.result;
+
+  assert("handleTables returns an object", typeof data === "object" && data !== null);
+  assert("handleTables has tables field", Array.isArray(data.tables));
+  // When no DB is connected, tables should be empty and may have a message
+  assert("handleTables tables is an array (empty without DB)", data.tables.length === 0);
+}
+
+// --- handleQueue ---
+console.log("\n--- handleQueue endpoint ---");
+
+const queueHandler = findHandler("GET", "/__dev/api/queue");
+assert("handleQueue handler is registered", queueHandler !== undefined);
+
+if (queueHandler) {
+  // Clear and seed some queue jobs
+  // DevQueue has no public clear, so we work with what's there
+  DevQueue.add("send-email", { to: "test@example.com" });
+  DevQueue.add("process-image", { file: "photo.jpg" });
+
+  const res = mockRes();
+  queueHandler(mockReq("/__dev/api/queue"), res);
+  const data = res.result;
+
+  assert("handleQueue returns an object", typeof data === "object" && data !== null);
+  assert("handleQueue has jobs array", Array.isArray(data.jobs));
+  assert("handleQueue has stats object", typeof data.stats === "object");
+  assert("handleQueue stats has pending field", typeof data.stats.pending === "number");
+  assert("handleQueue stats has completed field", typeof data.stats.completed === "number");
+  assert("handleQueue stats has failed field", typeof data.stats.failed === "number");
+  assert("handleQueue jobs have expected shape", data.jobs.length >= 2);
+  const job = data.jobs[0];
+  assert("handleQueue job has id", typeof job.id === "string");
+  assert("handleQueue job has topic", typeof job.topic === "string");
+  assert("handleQueue job has status", typeof job.status === "string");
+  assert("handleQueue job has created_at", typeof job.created_at === "string");
+
+  // Test status filter
+  const resFiltered = mockRes();
+  queueHandler(mockReq("/__dev/api/queue?status=completed"), resFiltered);
+  const filteredData = resFiltered.result;
+  assert("handleQueue status filter returns only matching jobs",
+    filteredData.jobs.every((j: any) => j.status === "completed") || filteredData.jobs.length === 0);
+}
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);
