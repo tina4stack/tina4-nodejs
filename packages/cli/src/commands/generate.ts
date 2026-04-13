@@ -88,13 +88,19 @@ export function parseFields(fieldsStr: string): Array<[string, string]> {
 }
 
 export function parseCliArgs(args: string[]): { flags: Record<string, string | boolean>; positional: string[] } {
+  // Boolean-only flags that never take a value argument
+  const booleanFlags = new Set(["no-browser", "no-reload", "production", "managed", "all", "clear"]);
+
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
   let i = 0;
   while (i < args.length) {
     if (args[i].startsWith("--")) {
       const key = args[i].slice(2);
-      if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+      if (booleanFlags.has(key)) {
+        flags[key] = true;
+        i += 1;
+      } else if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
         flags[key] = args[i + 1];
         i += 2;
       } else {
