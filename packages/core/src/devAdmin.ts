@@ -437,6 +437,9 @@ export class DevAdmin {
       // Dashboard
       { method: "GET", pattern: "/__dev", handler: handleDashboard },
       { method: "GET", pattern: "/__dev/", handler: handleDashboard },
+      // Reload — called by Rust CLI on file changes
+      { method: "GET", pattern: "/__dev/api/mtime", handler: handleMtime },
+      { method: "POST", pattern: "/__dev/api/reload", handler: handleReload },
       // Status & system
       { method: "GET", pattern: "/__dev/api/status", handler: handleStatus(router) },
       { method: "GET", pattern: "/__dev/api/system", handler: handleSystem },
@@ -524,6 +527,23 @@ const handleDashboard: RouteHandler = (_req, res) => {
   const spa = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tina4 Dev Admin</title></head><body><div id="app" data-framework="nodejs" data-color="#22c55e"></div><script src="/__dev/js/tina4-dev-admin.min.js"></script></body></html>';
   res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.raw.end(spa);
+};
+
+// Reload mtime counter — updated by POST /__dev/api/reload from Rust CLI
+let _reloadMtime = 0;
+let _reloadFile = "";
+
+const handleMtime: RouteHandler = async (_req, res) => {
+  res.json({ mtime: _reloadMtime, file: _reloadFile });
+};
+
+const handleReload: RouteHandler = async (req, res) => {
+  _reloadMtime = Math.floor(Date.now() / 1000);
+  const body = req.body as Record<string, unknown> | undefined;
+  _reloadFile = (body?.file as string) || "";
+  const reloadType = (body?.type as string) || "reload";
+  console.log(`  External reload trigger: ${reloadType}${_reloadFile ? ` (${_reloadFile})` : ""}`);
+  res.json({ ok: true, type: reloadType });
 };
 
 function handleStatus(router: Router): RouteHandler {
