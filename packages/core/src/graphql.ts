@@ -480,8 +480,9 @@ export class GraphQL {
   /**
    * Execute a GraphQL query string.
    */
-  execute(query: string, variables?: Record<string, unknown>): GraphQLResult {
+  execute(query: string, variables?: Record<string, unknown>, context?: Record<string, unknown>): GraphQLResult {
     const vars = variables ?? {};
+    const ctx = context ?? {};
     const errors: Array<{ message: string; path?: string[] }> = [];
 
     let doc: { definitions: ParsedOperation[] };
@@ -511,7 +512,10 @@ export class GraphQL {
     const data: Record<string, unknown> = {};
 
     for (const sel of op.selections) {
-      const [value, errs] = this.resolveField(sel, resolvers, null, vars);
+      // Check directives (@skip, @include, @auth, @role, @guest)
+      if (!this.checkDirectives(sel.directives ?? [], vars, ctx)) continue;
+
+      const [value, errs] = this.resolveField(sel, resolvers, null, vars, ctx);
       errors.push(...errs);
       const key = sel.alias ?? sel.name;
       data[key] = value;
@@ -841,22 +845,36 @@ export class GraphQL {
     resolvers: Map<string, QueryConfig>,
     parent: unknown,
     variables: Record<string, unknown>,
+    context: Record<string, unknown> = {},
   ): [unknown, Array<{ message: string; path?: string[] }>] {
     const errors: Array<{ message: string; path?: string[] }> = [];
     const name = sel.name;
     const args = this.resolveArgs(sel.args, variables);
 
+    // Check directives (@auth, @role, @guest, @skip, @include)
+    if (!this.checkDirectives(sel.directives ?? [], variables, context)) {
+      return [null, errors];
+    }
+
     let value: unknown = undefined;
 
     if (parent !== null && parent !== undefined) {
-      // Resolve from parent object
       if (typeof parent === "object" && parent !== null) {
         value = (parent as Record<string, unknown>)[name];
       }
     } else if (resolvers.has(name)) {
       const config = resolvers.get(name)!;
+
+      // Input validation
+      const validationErrors = this.validateArgs(args, config.args ?? {}, name);
+      if (validationErrors.length > 0) {
+        return [null, validationErrors];
+      }
+
+      // Inject sub-selections into context for DataLoader/eager-loading
+      const ctx = { ...context, __selections: sel.selections ?? [] };
       try {
-        value = config.resolver(null, args, {});
+        value = config.resolver(null, args, ctx);
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e);
         errors.push({ message, path: [name] });
@@ -864,45 +882,30 @@ export class GraphQL {
       }
     }
 
-    // If no sub-selections, return the scalar value
     if (!sel.selections || sel.selections.length === 0) {
       return [value, errors];
     }
 
-    // Handle list types
     if (Array.isArray(value)) {
       const result: Record<string, unknown>[] = [];
       for (const item of value) {
         const obj: Record<string, unknown> = {};
         for (const subSel of sel.selections) {
-          const [subVal, subErrs] = this.resolveField(
-            subSel,
-            new Map(),
-            item,
-            variables,
-          );
+          const [subVal, subErrs] = this.resolveField(subSel, new Map(), item, variables, context);
           errors.push(...subErrs);
-          const key = subSel.alias ?? subSel.name;
-          obj[key] = subVal;
+          obj[subSel.alias ?? subSel.name] = subVal;
         }
         result.push(obj);
       }
       return [result, errors];
     }
 
-    // Handle object types
     if (value !== null && value !== undefined) {
       const obj: Record<string, unknown> = {};
       for (const subSel of sel.selections) {
-        const [subVal, subErrs] = this.resolveField(
-          subSel,
-          new Map(),
-          value,
-          variables,
-        );
+        const [subVal, subErrs] = this.resolveField(subSel, new Map(), value, variables, context);
         errors.push(...subErrs);
-        const key = subSel.alias ?? subSel.name;
-        obj[key] = subVal;
+        obj[subSel.alias ?? subSel.name] = subVal;
       }
       return [obj, errors];
     }
@@ -930,6 +933,120 @@ export class GraphQL {
       }
     }
     return resolved;
+  }
+
+  /**
+   * Check directives: @skip, @include, @auth, @role, @guest.
+   * Returns true if the field should be included, false to skip.
+   */
+  private checkDirectives(
+    directives: Array<{ name: string; args: Record<string, unknown> }>,
+    variables: Record<string, unknown>,
+    context: Record<string, unknown> = {},
+  ): boolean {
+    for (const d of directives) {
+      let val = d.args?.if;
+      if (typeof val === "object" && val !== null && "$var" in val) {
+        val = variables[(val as { $var: string }).$var];
+      }
+
+      if (d.name === "skip" && val) return false;
+      if (d.name === "include" && !val) return false;
+
+      // Auth: @auth — requires any authenticated user
+      if (d.name === "auth" && !context.user) return false;
+
+      // Auth: @role(role: "admin") — requires specific role
+      if (d.name === "role") {
+        const required = d.args?.role;
+        const user = context.user as Record<string, unknown> | undefined;
+        const actual = user?.role ?? context.role;
+        if (!required || actual !== required) return false;
+      }
+
+      // Auth: @guest — only for unauthenticated
+      if (d.name === "guest" && context.user) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Validate resolved args against declared types.
+   */
+  private validateArgs(
+    args: Record<string, unknown>,
+    argConfigs: Record<string, string>,
+    fieldName: string,
+  ): Array<{ message: string; path?: string[] }> {
+    const errors: Array<{ message: string; path?: string[] }> = [];
+
+    for (const [argName, declaredType] of Object.entries(argConfigs)) {
+      const parsed = GraphQLType.parse(declaredType);
+      const value = args[argName];
+      const isNonNull = parsed.kind === "non_null";
+      const innerType = isNonNull ? parsed.ofType! : parsed;
+      const baseName = innerType.kind === "list" ? "list" : innerType.name;
+
+      if (isNonNull && (value === null || value === undefined || value === "")) {
+        errors.push({
+          message: `Argument '${argName}' on field '${fieldName}' is required (type: ${declaredType})`,
+          path: [fieldName],
+        });
+        continue;
+      }
+
+      if (value === null || value === undefined) continue;
+
+      if (baseName === "list" && Array.isArray(value)) {
+        const itemType = innerType.ofType;
+        if (itemType) {
+          const itemName = itemType.kind === "non_null" ? (itemType.ofType?.name ?? "String") : itemType.name;
+          for (let i = 0; i < value.length; i++) {
+            if (!this.coerceValue(value[i], itemName)) {
+              errors.push({
+                message: `Argument '${argName}[${i}]' on field '${fieldName}' expected ${itemName}, got ${typeof value[i]}`,
+                path: [fieldName],
+              });
+            }
+          }
+        }
+        continue;
+      }
+
+      if (GraphQLType.SCALARS.includes(baseName)) {
+        if (!this.coerceValue(value, baseName)) {
+          errors.push({
+            message: `Argument '${argName}' on field '${fieldName}' expected type ${baseName}, got ${typeof value}`,
+            path: [fieldName],
+          });
+        }
+      }
+    }
+
+    return errors;
+  }
+
+  private coerceValue(value: unknown, typeName: string): boolean {
+    if (typeName === "String" || typeName === "ID") {
+      return typeof value === "string" || typeof value === "number";
+    }
+    if (typeName === "Int") {
+      if (typeof value === "boolean") return false;
+      if (typeof value === "number") return Number.isInteger(value);
+      if (typeof value === "string") return /^-?\d+$/.test(value);
+      return false;
+    }
+    if (typeName === "Float") {
+      if (typeof value === "boolean") return false;
+      if (typeof value === "number") return true;
+      if (typeof value === "string") return !isNaN(parseFloat(value));
+      return false;
+    }
+    if (typeName === "Boolean") {
+      return typeof value === "boolean" || value === 0 || value === 1
+        || value === "true" || value === "false";
+    }
+    return true;
   }
 }
 
