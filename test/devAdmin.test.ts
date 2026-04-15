@@ -513,6 +513,56 @@ if (queueHandler) {
     filteredData.jobs.every((j: any) => j.status === "completed") || filteredData.jobs.length === 0);
 }
 
+// --- Hot reload parity ---
+// Mirrors tina4-php/tests/DevAdminTest.php, tina4-python/tests/test_dev_admin.py,
+// tina4-ruby/spec/dev_admin_spec.rb. The mtime counter must only advance when
+// POST /__dev/api/reload is called. No filesystem scan, no sentinel file.
+console.log("\n--- hot reload ---");
+
+const mtimeHandler = findHandler("GET", "/__dev/api/mtime");
+const reloadHandler = findHandler("POST", "/__dev/api/reload");
+assert("mtime handler is registered", mtimeHandler !== undefined);
+assert("reload handler is registered", reloadHandler !== undefined);
+
+if (mtimeHandler && reloadHandler) {
+  function reqWithBody(url: string, body: any): any {
+    return { url, headers: {}, method: "POST", body };
+  }
+
+  // POST bumps the counter
+  const beforeTs = Math.floor(Date.now() / 1000);
+  const postRes = mockRes();
+  await reloadHandler(reqWithBody("/__dev/api/reload", { file: "src/routes/home.ts", type: "reload" }), postRes);
+  const afterTs = Math.floor(Date.now() / 1000);
+
+  assert("reload returns ok", postRes.result?.ok === true);
+  assert("reload echoes type", postRes.result?.type === "reload");
+
+  const g1 = mockRes();
+  await mtimeHandler(mockReq("/__dev/api/mtime"), g1);
+  const d1 = g1.result;
+  assert("mtime in [before, after]", d1.mtime >= beforeTs && d1.mtime <= afterTs);
+  assert("mtime file echoes POST body", d1.file === "src/routes/home.ts");
+
+  // No sentinel file is written to disk
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const srcSentinel = path.join(process.cwd(), "src", ".reload_sentinel");
+  const tinaSentinel = path.join(process.cwd(), ".tina4", ".reload_sentinel");
+  assert("no src/.reload_sentinel on disk", !fs.existsSync(srcSentinel));
+  assert("no .tina4/.reload_sentinel on disk", !fs.existsSync(tinaSentinel));
+
+  // Monotonic across successive reloads
+  await new Promise((r) => setTimeout(r, 1100));
+  const postRes2 = mockRes();
+  await reloadHandler(reqWithBody("/__dev/api/reload", { file: "b.ts" }), postRes2);
+
+  const g2 = mockRes();
+  await mtimeHandler(mockReq("/__dev/api/mtime"), g2);
+  assert("mtime strictly greater after a later reload", g2.result.mtime > d1.mtime);
+  assert("file updated to latest reload", g2.result.file === "b.ts");
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
