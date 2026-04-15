@@ -454,6 +454,8 @@ export class DevAdmin {
       { method: "POST", pattern: "/__dev/api/requests/clear", handler: handleRequestsClear },
       // Queue management
       { method: "GET", pattern: "/__dev/api/queue", handler: handleQueue },
+      { method: "GET", pattern: "/__dev/api/queue/topics", handler: handleQueueTopics },
+      { method: "GET", pattern: "/__dev/api/queue/dead-letters", handler: handleQueueDeadLetters },
       { method: "POST", pattern: "/__dev/api/queue/retry", handler: handleQueueRetry },
       { method: "POST", pattern: "/__dev/api/queue/purge", handler: handleQueuePurge },
       { method: "POST", pattern: "/__dev/api/queue/replay", handler: handleQueueReplay },
@@ -779,6 +781,50 @@ const handleQueue: RouteHandler = (req, res) => {
     stats: { pending: data.pending, completed: data.completed, failed: data.failed, reserved: data.reserved },
     jobs: mappedJobs,
   });
+};
+
+const handleQueueTopics: RouteHandler = (_req, res) => {
+  try {
+    // Prefer on-disk file-queue topics under ./data/queue; fall back to "default".
+    // Using dynamic require avoids a hard dep on node:fs in tree-shaken builds.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require("node:fs");
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const path = require("node:path");
+    const queueDir = path.join(process.cwd(), "data", "queue");
+    let topics: string[] = [];
+    if (fs.existsSync(queueDir)) {
+      topics = fs
+        .readdirSync(queueDir)
+        .filter((d: string) => {
+          try { return fs.statSync(path.join(queueDir, d)).isDirectory(); } catch { return false; }
+        })
+        .sort();
+    }
+    if (topics.length === 0) topics = ["default"];
+    res.json({ topics });
+  } catch (e: any) {
+    res.json({ topics: ["default"], error: String(e?.message ?? e) });
+  }
+};
+
+const handleQueueDeadLetters: RouteHandler = (req, res) => {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const topic = url.searchParams.get("topic") ?? "default";
+  // DevQueue is in-memory and has no separate dead-letter store yet;
+  // surface failed jobs as dead letters until the queue backend is wired in.
+  const data = DevQueue.stats();
+  const jobs = data.jobs
+    .filter((j) => j.status === "failed")
+    .map((j) => ({
+      id: j.id,
+      topic: j.name,
+      status: "dead_letter",
+      attempts: 1,
+      created_at: j.timestamp,
+      data: j.payload ?? {},
+    }));
+  res.json({ jobs, count: jobs.length, topic });
 };
 
 const handleQueueRetry: RouteHandler = (_req, res) => {
