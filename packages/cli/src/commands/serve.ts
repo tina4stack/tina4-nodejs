@@ -27,7 +27,6 @@ export async function serveProject(options: ServeOptions): Promise<void> {
   }
 
   const { startServer } = await import("../../../core/src/index.js");
-  const { watchForChanges } = await import("../../../core/src/watcher.js");
 
   const server = await startServer({
     port,
