@@ -54,6 +54,7 @@ export interface Tina4ResponseMethods {
   xml(content: string, status?: number): Tina4Response;
   status(code: number): Tina4Response;
   header(name: string, value: string | number | readonly string[]): Tina4Response;
+  addHeader(name: string, value: string): void;
   send(data: unknown, statusCode?: number, contentType?: string): Tina4Response;
   redirect(url: string, code?: number): Tina4Response;
   cookie(name: string, value: string, options?: CookieOptions): Tina4Response;

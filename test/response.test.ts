@@ -276,6 +276,36 @@ console.log("\n--- Buffer handling ---");
   assert("buffer sets application/octet-stream", ended.headers["content-type"] === "application/octet-stream");
 }
 
+// --- addHeader (parity with Python/PHP/Ruby) ---
+console.log("\n--- addHeader ---");
+
+{
+  const { res, ended } = mockServerResponse();
+  const response = createResponse(res);
+  assert("response has addHeader method", typeof response.addHeader === "function");
+  response.addHeader("X-Custom", "value-1");
+  assert("addHeader sets header on underlying response", ended.headers["x-custom"] === "value-1");
+}
+
+{
+  const { res, ended } = mockServerResponse();
+  const response = createResponse(res);
+  response.addHeader("X-One", "1");
+  response.addHeader("X-Two", "2");
+  response.json({ ok: true });
+  assert("addHeader + json coexist (X-One)", ended.headers["x-one"] === "1");
+  assert("addHeader + json coexist (X-Two)", ended.headers["x-two"] === "2");
+  assert("json content-type still set", ended.headers["content-type"] === "application/json");
+}
+
+{
+  const { res, ended } = mockServerResponse();
+  const response = createResponse(res);
+  const ret = response.addHeader("X-Void", "y") as unknown;
+  assert("addHeader returns void (undefined)", ret === undefined);
+  assert("addHeader still applied header", ended.headers["x-void"] === "y");
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

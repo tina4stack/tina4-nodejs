@@ -185,6 +185,13 @@ export function createResponse(res: ServerResponse): Tina4Response {
     return response;
   };
 
+  /**
+   * Add a single response header (primary method — parity with Python/PHP/Ruby).
+   */
+  response.addHeader = function (name: string, value: string): void {
+    safeSetHeader(name, value);
+  };
+
   response.redirect = function (url: string, code?: number): Tina4Response {
     if (res.headersSent) return response;
     res.statusCode = code ?? 302;

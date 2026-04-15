@@ -15,6 +15,8 @@ export interface WebSocketConnection {
   params: Record<string, string>;
   /** Send a message to this connection only */
   send(message: string): void;
+  /** Serialize an object to JSON and send it to this connection. Parity with Python/PHP. */
+  sendJson(data: unknown): void;
   /** Broadcast a message to all connections on the same path (path-scoped) */
   broadcast(message: string): void;
   /** Join a room */

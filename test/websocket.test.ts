@@ -509,6 +509,46 @@ function injectClient(server: WebSocketServer, id: string, path = "/"): MockSock
   assert("client has no rooms after leaving all", s.getClientRooms("c1").length === 0);
 }
 
+// --- WebSocketConnection.sendJson (interface parity with Python/PHP) ---
+console.log("\n--- WebSocketConnection.sendJson ---");
+
+{
+  // Build a minimal object satisfying the WebSocketConnection interface
+  // with sendJson delegating to send() (the canonical implementation pattern).
+  const sent: string[] = [];
+  const conn: import("../packages/core/src/websocketConnection.ts").WebSocketConnection = {
+    id: "test-1",
+    path: "/ws/test",
+    ip: "127.0.0.1",
+    headers: {},
+    params: {},
+    send(message: string) { sent.push(message); },
+    sendJson(data: unknown) { this.send(JSON.stringify(data)); },
+    broadcast() {},
+    joinRoom() {},
+    leaveRoom() {},
+    close() {},
+    _onMessage: null,
+    _onClose: null,
+    onMessage(h) { this._onMessage = h; },
+    onClose(h) { this._onClose = h; },
+  };
+
+  assert("sendJson exists on interface impl", typeof conn.sendJson === "function");
+
+  conn.sendJson({ hello: "world", n: 42 });
+  assert(
+    "sendJson serializes object to JSON via send()",
+    sent.length === 1 && sent[0] === '{"hello":"world","n":42}',
+  );
+
+  conn.sendJson([1, 2, 3]);
+  assert("sendJson serializes array to JSON via send()", sent[1] === "[1,2,3]");
+
+  conn.sendJson(null);
+  assert("sendJson handles null", sent[2] === "null");
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
