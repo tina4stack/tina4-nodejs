@@ -384,6 +384,29 @@ export class Router {
     defaultRouter.group(prefix, callback, middlewares);
   }
 
+  /**
+   * Supported typed-parameter constraints. Mirrored verbatim in
+   * tina4-python / tina4-php / tina4-ruby for cross-framework parity.
+   *
+   * Any type name not in this table throws at route registration time —
+   * we never silently fall through to the default matcher, because a
+   * typo like `{id:inetger}` would otherwise match anything and create
+   * a security footgun (see tina4-book#125).
+   */
+  private static readonly PARAM_TYPE_PATTERNS: Record<string, string> = {
+    string: "[^/]+",            // default, any non-slash segment
+    int: "\\d+",
+    integer: "\\d+",
+    float: "[\\d.]+",
+    number: "[\\d.]+",
+    alpha: "[A-Za-z]+",         // letters only
+    alnum: "[A-Za-z0-9]+",      // letters + digits
+    slug: "[a-z0-9-]+",         // URL slug
+    uuid: "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+    path: ".+",                  // greedy
+    ".*": ".+",
+  };
+
   private compilePattern(pattern: string): { regex: RegExp; paramNames: string[] } {
     const paramNames: string[] = [];
 
@@ -407,19 +430,14 @@ export class Router {
           const name = colonIdx >= 0 ? inner.slice(0, colonIdx) : inner;
           const type = colonIdx >= 0 ? inner.slice(colonIdx + 1) : "string";
           paramNames.push(name);
-          switch (type) {
-            case "int":
-            case "integer":
-              return "(\\d+)";
-            case "float":
-            case "number":
-              return "([\\d.]+)";
-            case "path":
-            case ".*":
-              return "(.+)";
-            default:
-              return "([^/]+)";
+          const table = Router.PARAM_TYPE_PATTERNS;
+          if (!Object.prototype.hasOwnProperty.call(table, type)) {
+            const valid = Object.keys(table).filter((k) => k !== ".*").sort().join(", ");
+            throw new Error(
+              `Unknown param type '${type}' in route '${pattern}'. Valid types: ${valid}.`
+            );
           }
+          return `(${table[type]})`;
         }
         // Dynamic param: [id] (file-based routing internal syntax)
         if (segment.startsWith("[") && segment.endsWith("]")) {

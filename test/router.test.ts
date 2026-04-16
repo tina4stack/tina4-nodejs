@@ -201,6 +201,80 @@ console.log("\n--- Clear ---");
 router9.clear();
 assert("Clear removes all routes", router9.listRoutes().length === 0);
 
+// --- Typed-parameter constraints (parity with tina4-python) ---
+// Fixes tina4-book#125. All 4 frameworks share the same type set:
+//   string (default), int/integer, float/number, alpha, alnum, slug,
+//   uuid, path (greedy). Unknown types throw at registration.
+console.log("\n--- Typed parameters ---");
+{
+  const r = new Router();
+  const h = async (_req: any, _res: any) => {};
+
+  r.get("/users/{id:int}", h);
+  assert("{id:int} matches digits", r.match("GET", "/users/123") !== null);
+  assert("{id:int} rejects non-numeric", r.match("GET", "/users/abc") === null);
+
+  r.clear();
+  r.get("/users/{name:alpha}", h);
+  assert("{name:alpha} matches letters", r.match("GET", "/users/Alice") !== null);
+  assert("{name:alpha} rejects digits", r.match("GET", "/users/alice123") === null);
+  assert("{name:alpha} rejects hyphen", r.match("GET", "/users/alice-bob") === null);
+
+  r.clear();
+  r.get("/api/{code:alnum}", h);
+  assert("{code:alnum} matches letters+digits", r.match("GET", "/api/abc123") !== null);
+  assert("{code:alnum} rejects hyphen", r.match("GET", "/api/abc-123") === null);
+  assert("{code:alnum} rejects dot", r.match("GET", "/api/abc.123") === null);
+
+  r.clear();
+  r.get("/posts/{slug:slug}", h);
+  assert("{slug:slug} matches url-safe slug", r.match("GET", "/posts/hello-world") !== null);
+  assert("{slug:slug} rejects uppercase", r.match("GET", "/posts/Hello-World") === null);
+  assert("{slug:slug} rejects underscore", r.match("GET", "/posts/hello_world") === null);
+
+  r.clear();
+  r.get("/api/{id:uuid}", h);
+  assert(
+    "{id:uuid} matches UUID",
+    r.match("GET", "/api/550e8400-e29b-41d4-a716-446655440000") !== null,
+  );
+  assert("{id:uuid} rejects non-UUID", r.match("GET", "/api/not-a-uuid") === null);
+
+  r.clear();
+  r.get("/a/{name:string}", h);
+  r.get("/b/{name}", h);
+  assert("{name:string} matches default", r.match("GET", "/a/alice") !== null);
+  assert("{name} implicit still works", r.match("GET", "/b/alice") !== null);
+
+  // Unknown types throw at registration
+  const bad = [":str", ":inetger", ":word"];
+  for (const t of bad) {
+    let threw = false;
+    let msg = "";
+    try {
+      r.clear();
+      r.get(`/api/{x${t}}`, h);
+    } catch (e: any) {
+      threw = true;
+      msg = String(e?.message ?? e);
+    }
+    assert(`Unknown type '${t}' throws at registration`, threw);
+    assert(`Unknown type '${t}' message mentions 'Unknown param type'`, msg.includes("Unknown param type"));
+  }
+
+  // Message lists valid types
+  let errMsg = "";
+  try {
+    r.clear();
+    r.get("/api/{x:word}", h);
+  } catch (e: any) {
+    errMsg = String(e?.message ?? e);
+  }
+  for (const t of ["alpha", "alnum", "int", "slug", "uuid"]) {
+    assert(`Error message lists '${t}'`, errMsg.includes(t));
+  }
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
