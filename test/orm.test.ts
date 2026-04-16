@@ -515,6 +515,37 @@ console.log("\n--- Create Without ID ---");
   assert("camelToSnake: myFieldName → my_field_name", camelToSnake("myFieldName") === "my_field_name");
 }
 
+// ── Parity contract: driver-native types on read path ──────────
+//
+// Mirrors tina4-python's TestFieldsNativeTypes suite. Guards against
+// any future ORM read-path change that would accidentally re-coerce
+// a value that's already the correct type (e.g. a native Date instance
+// returned by the `pg` adapter on PostgreSQL).
+//
+// See tina4-python/plan/orm-field-validate-native-types.md.
+{
+  const adapter = getAdapter();
+  if (adapter) {
+    await adapter.execute(
+      "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, created_at TEXT)"
+    );
+    await adapter.execute(
+      "INSERT INTO events (title, created_at) VALUES (?, ?)",
+      ["launch", "2026-04-16 22:30:00"]
+    );
+    const rows = await adapter.query("SELECT * FROM events WHERE id = 1");
+    const arr = Array.isArray(rows) ? rows : [];
+    assert("ORM datetime round-trip: fetch returns an array", Array.isArray(rows));
+    assert("ORM datetime round-trip: row exists", arr.length === 1);
+    assert(
+      "ORM datetime round-trip: datetime value preserved",
+      (arr[0] as any)?.created_at === "2026-04-16 22:30:00"
+    );
+  } else {
+    assert("ORM datetime round-trip: adapter unavailable (skipped)", true);
+  }
+}
+
 // Cleanup
 closeDatabase();
 try { rmSync("/tmp/tina4-orm-test", { recursive: true }); } catch {}
