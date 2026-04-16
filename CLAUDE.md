@@ -108,7 +108,6 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `response.ts` — Wraps `ServerResponse`, adds `.json()`, `.html()`, `.status()`, `.send()`, `.redirect()`
 - `middleware.ts` — Chain runner, built-in CORS and request logger
 - `static.ts` — Serves files from `public/` with MIME type detection
-- `watcher.ts` — `fs.watch` for hot-reload in dev mode
 - `types.ts` — All shared type definitions (`Tina4Request`, `Tina4Response`, `RouteHandler`, etc.)
 - `events.ts` — Observer-pattern event system (`Events.on`, `emit`, `once`, `off`, `clear`)
 - `ai.ts` — AI coding tool detection and context scaffolding (`detectAi`, `installAiContext`, `aiStatusReport`)
@@ -566,7 +565,7 @@ import { Router } from "./router.js";  // .js even though the file is .ts
 2. **`tsx` for dev** — No build step needed during development. TypeScript runs directly.
 3. **Convention-based models** — `static fields = {}` over decorators. No special TypeScript config needed.
 4. **CDN for Swagger UI** — Keeps install under 8MB. Single HTML file loads from unpkg.com.
-5. **Process restart for hot-reload** — Simpler and more reliable than HMR with ESM.
+5. **Browser reload, not process restart** — The `tina4` Rust CLI watches `src/`, `migrations/`, `.env` and POSTs `/__dev/api/reload` to the running server. The server stays up; only the browser reloads (via WS on `/__dev_reload`, polling fallback on `GET /__dev/api/mtime`). No ESM HMR gymnastics, no server restart, no framework-side watcher.
 6. **SQLite default** — `node:sqlite` is synchronous and fast. Full adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird.
 7. **CLI named `tina4nodejs`** (primary) with `tina4` as alias — So `npx tina4nodejs init` or `npx tina4 init` both work.
 8. **Event system** — Static `Events` class, synchronous dispatch, priority ordering, zero deps.
