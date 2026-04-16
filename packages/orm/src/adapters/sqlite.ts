@@ -1,17 +1,48 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
+
+/**
+ * Resolve a SQLite path argument against the project root (cwd).
+ *
+ * Matches the tina4-python + tina4-php convention:
+ *   ":memory:"         → passthrough
+ *   "data/app.db"      → {cwd}/data/app.db  (auto-mkdir under cwd)
+ *   "/abs/app.db"      → /abs/app.db        (NO auto-mkdir; user's responsibility)
+ *   "C:/Users/app.db"  → C:/Users/app.db    (NO auto-mkdir)
+ *
+ * Never mkdir a directory that isn't a descendant of cwd — that was the
+ * root cause of the `EROFS: read-only file system, mkdir '/data'` crash
+ * reported on macOS.
+ */
+function resolveSqlitePath(dbPath: string): string {
+  if (dbPath === ":memory:") return dbPath;
+
+  let path = dbPath;
+  if (!isAbsolute(path)) {
+    path = join(process.cwd(), path);
+    // Auto-mkdir is safe here — we know the parent is under cwd
+    mkdirSync(dirname(path), { recursive: true });
+  } else {
+    // Absolute path. Only auto-mkdir if it's a descendant of cwd.
+    const cwd = resolve(process.cwd());
+    const abs = resolve(path);
+    if (abs.startsWith(cwd + "/") || abs === cwd) {
+      mkdirSync(dirname(abs), { recursive: true });
+    }
+    // Otherwise, trust the user — don't touch the filesystem.
+  }
+  return path;
+}
 
 export class SQLiteAdapter implements DatabaseAdapter {
   private db: DatabaseSync;
   private _lastInsertId: number | bigint | null = null;
 
   constructor(dbPath: string) {
-    if (dbPath !== ":memory:") {
-      mkdirSync(dirname(dbPath), { recursive: true });
-    }
-    this.db = new DatabaseSync(dbPath);
+    const resolved = resolveSqlitePath(dbPath);
+    this.db = new DatabaseSync(resolved);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
   }

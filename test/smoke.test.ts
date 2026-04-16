@@ -142,7 +142,10 @@ closeDatabase();
 
 console.log("\n=== 3. Database ===\n");
 
-const sqliteUrl = parseDatabaseUrl("sqlite:///tmp/test.db");
+// sqlite:///X is relative to cwd (matches Python/PHP convention).
+// For absolute paths, use four slashes: sqlite:////X.
+// See tina4-python plan/sqlite-url-relative-to-project-root.md.
+const sqliteUrl = parseDatabaseUrl("sqlite:////tmp/test.db");
 assert("parseDatabaseUrl sqlite type", sqliteUrl.type === "sqlite");
 assert("parseDatabaseUrl sqlite path", sqliteUrl.path === "/tmp/test.db");
 

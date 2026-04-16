@@ -22,13 +22,33 @@ console.log("=== DATABASE_URL Parser Tests ===\n");
 // --- SQLite ---
 console.log("--- SQLite URLs ---");
 
-const sqlite1 = parseDatabaseUrl("sqlite:///var/data/app.db");
-assert("sqlite absolute path type", sqlite1.type === "sqlite");
-assert("sqlite absolute path", sqlite1.path === "/var/data/app.db");
+// Convention (matches tina4-python + tina4-php):
+//   sqlite:///X       → relative to cwd (three slashes)
+//   sqlite:////X      → absolute (four slashes)
+//   sqlite:///C:/...  → Windows absolute (drive letter)
+//   sqlite::memory:   → in-memory
+
+const sqlite1 = parseDatabaseUrl("sqlite:///data/app.db");
+assert("sqlite:/// is relative (type)", sqlite1.type === "sqlite");
+assert("sqlite:/// is relative (path)", sqlite1.path === "data/app.db");
+
+const sqlite1a = parseDatabaseUrl("sqlite:///app.db");
+assert("sqlite:///app.db bare relative", sqlite1a.path === "app.db");
+
+const sqlite1b = parseDatabaseUrl("sqlite:////var/data/app.db");
+assert("sqlite:////X is absolute", sqlite1b.path === "/var/data/app.db");
+
+const sqlite1c = parseDatabaseUrl("sqlite:///C:/Users/app.db");
+assert("sqlite:///C:/ is Windows absolute", sqlite1c.path === "C:/Users/app.db");
+
+const sqlite1m1 = parseDatabaseUrl("sqlite::memory:");
+assert("sqlite::memory: short form", sqlite1m1.path === ":memory:");
+const sqlite1m2 = parseDatabaseUrl("sqlite:///:memory:");
+assert("sqlite:///:memory: URL form", sqlite1m2.path === ":memory:");
 
 const sqlite2 = parseDatabaseUrl("sqlite://./data/app.db");
-assert("sqlite relative path type", sqlite2.type === "sqlite");
-assert("sqlite relative path", sqlite2.path === "./data/app.db");
+assert("sqlite:// two-slash legacy relative path type", sqlite2.type === "sqlite");
+assert("sqlite:// two-slash legacy relative path", sqlite2.path === "./data/app.db");
 
 // --- PostgreSQL ---
 console.log("\n--- PostgreSQL URLs ---");

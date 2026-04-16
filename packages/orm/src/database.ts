@@ -92,18 +92,31 @@ export interface ParsedDatabaseUrl {
 export function parseDatabaseUrl(url: string, username?: string, password?: string): ParsedDatabaseUrl {
   let result: ParsedDatabaseUrl;
 
-  // Handle sqlite:// separately because URL class mangles the path
-  if (url.startsWith("sqlite:///")) {
-    // sqlite:///absolute/path — three slashes means absolute
-    let path = url.slice("sqlite://".length);
-    // Windows: sqlite:///C:/Users/app.db → /C:/Users/app.db after slicing.
-    // The leading / before the drive letter must be removed.
-    if (/^\/[A-Za-z]:/.test(path)) {
-      path = path.slice(1);
-    }
-    result = { type: "sqlite", path };
+  // Handle sqlite:// separately because URL class mangles the path.
+  //
+  // Convention (matches tina4-python, tina4-php, and the docs):
+  //   sqlite::memory:              → in-memory
+  //   sqlite:///:memory:           → in-memory (URL form)
+  //   sqlite:///app.db             → ./app.db (relative to cwd)
+  //   sqlite:///data/app.db        → ./data/app.db (relative)
+  //   sqlite:////absolute/app.db   → /absolute/app.db (absolute)
+  //   sqlite:///C:/Users/app.db    → C:/Users/app.db (Windows absolute)
+  if (url === "sqlite::memory:" || url === "sqlite:///:memory:") {
+    result = { type: "sqlite", path: ":memory:" };
+  } else if (url.startsWith("sqlite:///")) {
+    // Strip the "sqlite://" prefix (leaving one "/" + path)
+    let rest = url.slice("sqlite://".length); // e.g. "/data/app.db" or "//abs/app.db" or "/C:/Users/..."
+    // Drop exactly one leading "/"
+    if (rest.startsWith("/")) rest = rest.slice(1);
+    // Windows absolute: C:/Users/app.db or C:\...
+    const isWindowsAbs = /^[A-Za-z]:[\/\\]/.test(rest);
+    // Unix absolute: still starts with "/" after the strip (four-slash URL form)
+    const isUnixAbs = rest.startsWith("/");
+    result = { type: "sqlite", path: isWindowsAbs || isUnixAbs ? rest : rest };
+    // Relative paths are resolved against cwd by the SQLite adapter at connect time;
+    // keep the string as-is here so tests can inspect the raw form.
   } else if (url.startsWith("sqlite://")) {
-    // sqlite://./relative or sqlite://relative
+    // sqlite://./relative or sqlite://relative — legacy two-slash form
     const path = url.slice("sqlite://".length);
     result = { type: "sqlite", path };
   } else if (url.startsWith("mssql://") || url.startsWith("sqlserver://")) {
