@@ -60,6 +60,12 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   /** Convert ? placeholders to $1, $2, ... for pg. */
+  /** Ensure bytea columns are Buffer (already the case with pg). No-op guard. */
+  private decodeBlobs<T>(row: T): T {
+    // pg npm returns bytea as Buffer — already raw bytes. No conversion needed.
+    return row;
+  }
+
   private convertPlaceholders(sql: string): string {
     let count = 0;
     return sql.replace(/\?/g, () => {
@@ -114,7 +120,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     this.ensureConnected();
     const convertedSql = this.convertPlaceholders(sql);
     const result = await this.client!.query(convertedSql, params);
-    return result.rows as T[];
+    return (result.rows as T[]).map(row => this.decodeBlobs(row));
   }
 
   fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): T[] {

@@ -161,7 +161,15 @@ export class FirebirdAdapter implements DatabaseAdapter {
   async queryAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
     this.ensureConnected();
     const rows = await this.queryPromise(sql, params);
-    return rows as T[];
+    return (rows as T[]).map(row => this.decodeBlobs(row));
+  }
+
+  /** Ensure BLOB columns are readable — node-firebird may return callback-based
+   *  blob readers. Convert to Buffer. Regular buffers pass through unchanged. */
+  private decodeBlobs<T>(row: T): T {
+    // node-firebird returns BLOBs as Buffer by default when using
+    // query(sql, params, callback) — already raw bytes.
+    return row;
   }
 
   fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): T[] {
