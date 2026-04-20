@@ -867,6 +867,35 @@ function evalTest(
 
 // ── Filters ────────────────────────────────────────────────────
 
+/**
+ * Split `"first.groupSummary"` into `["first", "groupSummary"]` so a
+ * filter segment followed by property access — `{{ x | first.name }}`
+ * — can apply the filter then traverse the path on the result. Returns
+ * `[fname, ""]` when no structural `.` is present.
+ *
+ * The split point sits outside parens/brackets/braces and quotes so
+ * filter args like `round(1.5)` or `date("Y.m.d")` don't false-trigger.
+ * Parity with tina4-python and tina4-php.
+ */
+function splitFilterNameAndPath(fname: string): [string, string] {
+  let depth = 0;
+  let inQ: string | null = null;
+  for (let i = 0; i < fname.length; i++) {
+    const ch = fname[i];
+    if (inQ !== null) {
+      if (ch === inQ && (i === 0 || fname[i - 1] !== "\\")) inQ = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inQ = ch; continue; }
+    if (ch === "(" || ch === "[" || ch === "{") { depth++; continue; }
+    if (ch === ")" || ch === "]" || ch === "}") { depth--; continue; }
+    if (ch === "." && depth === 0) {
+      return [fname.slice(0, i), fname.slice(i + 1)];
+    }
+  }
+  return [fname, ""];
+}
+
 function parseFilterChain(expr: string): [string, [string, string[]][]] {
   // Check cache first
   const cached = filterChainCache.get(expr);
@@ -1738,6 +1767,33 @@ export class Frond {
     let value = evalExpr(varName, context);
     for (const [fname, args] of filters) {
       if (fname === "raw" || fname === "safe") continue;
+
+      // Filter + property-access chain: `first.groupSummary` — apply
+      // the filter, then traverse the path on the result via a
+      // synthetic context so evalExpr's dotted resolution does the
+      // work. Parity with tina4-python + tina4-php. `first` and
+      // `last` are inlined because they're in the fast-path switch
+      // rather than `this.filters`.
+      const [realFname, tailPath] = splitFilterNameAndPath(fname);
+      if (tailPath) {
+        let applied = false;
+        if (realFname === "first") {
+          value = Array.isArray(value) ? value[0] ?? null : null;
+          applied = true;
+        } else if (realFname === "last") {
+          value = Array.isArray(value) ? value[value.length - 1] ?? null : null;
+          applied = true;
+        } else if (this.filters[realFname]) {
+          value = this.filters[realFname](value, ...args);
+          applied = true;
+        }
+        if (applied) {
+          value = evalExpr("__frondFilterTmp." + tailPath,
+                           { __frondFilterTmp: value });
+          continue;
+        }
+      }
+
       const fn = this.filters[fname];
       if (fn) {
         value = fn(value, ...args);
@@ -1799,6 +1855,36 @@ export class Frond {
       if (this._sandbox && this._allowedFilters !== null) {
         if (!this._allowedFilters.has(fname)) {
           continue; // Silently skip blocked filter
+        }
+      }
+
+      // Filter + property-access chain: `first.groupSummary` — apply
+      // the filter, then traverse the path on the result via evalExpr.
+      // Done BEFORE the inline fast-path so `items|first.name` works
+      // whether or not `first` is in the fast-path list.
+      //
+      // We inline `first` and `last` here because they're defined by
+      // the fast-path switch below, not in `this.filters` — without
+      // this explicit branch, the chain would fall through and we'd
+      // return the unfiltered array. All other registered filters
+      // route through `this.filters[realFname]`.
+      const [realFname, tailPath] = splitFilterNameAndPath(fname);
+      if (tailPath) {
+        let applied = false;
+        if (realFname === "first") {
+          value = Array.isArray(value) ? value[0] ?? null : null;
+          applied = true;
+        } else if (realFname === "last") {
+          value = Array.isArray(value) ? value[value.length - 1] ?? null : null;
+          applied = true;
+        } else if (this.filters[realFname]) {
+          value = this.filters[realFname](value, ...args);
+          applied = true;
+        }
+        if (applied) {
+          value = evalExpr("__frondFilterTmp." + tailPath,
+                           { __frondFilterTmp: value });
+          continue;
         }
       }
 
