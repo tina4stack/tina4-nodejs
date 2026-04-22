@@ -618,7 +618,11 @@ console.log("\n=== Dev Tools Registration Tests ===\n");
       }),
     );
     const tools = resp.result.tools;
-    assert("all 24 dev tools registered", tools.length === 24);
+    // Node.js mirrors the Python master surface area (24 original + 21 parity
+    // tools: plan_*, index_*, project_overview, file_patch, docs_*, git_status,
+    // deps_list). plan_uncomplete_step is available on the Plan class but not
+    // exposed via MCP (matches Python — only plan_complete_step is a tool).
+    assert("all 45 dev tools registered", tools.length === 45);
 
     const toolNames = tools.map((t: any) => t.name).sort();
     const expectedNames = [
@@ -628,16 +632,37 @@ console.log("\n=== Dev Tools Registration Tests ===\n");
       "database_execute",
       "database_query",
       "database_tables",
+      "deps_list",
+      "docs_list",
+      "docs_search",
+      "docs_section",
       "env_list",
       "error_log",
       "file_list",
+      "file_patch",
       "file_read",
       "file_write",
+      "git_status",
+      "index_file",
+      "index_overview",
+      "index_rebuild",
+      "index_search",
       "log_tail",
       "migration_create",
       "migration_run",
       "migration_status",
       "orm_describe",
+      "plan_add_step",
+      "plan_archive",
+      "plan_complete_step",
+      "plan_create",
+      "plan_current",
+      "plan_flesh",
+      "plan_list",
+      "plan_note",
+      "plan_read",
+      "plan_switch_to",
+      "project_overview",
       "queue_status",
       "route_list",
       "route_test",

@@ -519,6 +519,52 @@ export class DevAdmin {
       }},
       // Version check (proxy to avoid CORS)
       { method: "GET", pattern: "/__dev/api/version-check", handler: handleVersionCheck },
+      // ── Parity surface area (ported from Python tina4_python.dev_admin) ──
+      // Thoughts / activity feed (live tail of MessageLog for the AI chat pane)
+      { method: "GET", pattern: "/__dev/api/thoughts", handler: handleThoughts },
+      // Supervise — currently stubbed; full implementation requires a Rust
+      // agent + worktree manager that doesn't exist in tina4-nodejs yet.
+      { method: "POST", pattern: "/__dev/api/supervise/create", handler: handleSuperviseStub },
+      { method: "GET", pattern: "/__dev/api/supervise/sessions", handler: handleSuperviseStub },
+      { method: "GET", pattern: "/__dev/api/supervise/diff", handler: handleSuperviseStub },
+      { method: "POST", pattern: "/__dev/api/supervise/commit", handler: handleSuperviseStub },
+      { method: "POST", pattern: "/__dev/api/supervise/cancel", handler: handleSuperviseStub },
+      // Execute — proxies to the framework_port+2000 Rust agent (SSE passthrough)
+      { method: "POST", pattern: "/__dev/api/execute", handler: handleExecute },
+      // File browser / editor
+      { method: "GET", pattern: "/__dev/api/files", handler: handleFiles },
+      { method: "GET", pattern: "/__dev/api/file", handler: handleFileRead },
+      { method: "POST", pattern: "/__dev/api/file/save", handler: handleFileSave },
+      { method: "GET", pattern: "/__dev/api/file/raw", handler: handleFileRaw },
+      { method: "POST", pattern: "/__dev/api/file/rename", handler: handleFileRename },
+      { method: "POST", pattern: "/__dev/api/file/delete", handler: handleFileDelete },
+      // Dependency search (npm registry) + install
+      { method: "GET", pattern: "/__dev/api/deps/search", handler: handleDepsSearch },
+      { method: "POST", pattern: "/__dev/api/deps/install", handler: handleDepsInstall },
+      // Git status
+      { method: "GET", pattern: "/__dev/api/git/status", handler: handleGitStatus },
+      // MCP tool introspection over the built-in MCP server
+      { method: "GET", pattern: "/__dev/api/mcp/tools", handler: handleMcpTools },
+      { method: "POST", pattern: "/__dev/api/mcp/call", handler: handleMcpCall },
+      // Scaffolding
+      { method: "GET", pattern: "/__dev/api/scaffold", handler: handleScaffoldList },
+      { method: "POST", pattern: "/__dev/api/scaffold/run", handler: handleScaffoldRun },
+      // Plan API (ported from Python)
+      { method: "GET", pattern: "/__dev/api/plan/current", handler: handlePlanCurrent },
+      { method: "GET", pattern: "/__dev/api/plan/list", handler: handlePlanList },
+      { method: "POST", pattern: "/__dev/api/plan/create", handler: handlePlanCreate },
+      { method: "POST", pattern: "/__dev/api/plan/switch", handler: handlePlanSwitch },
+      { method: "POST", pattern: "/__dev/api/plan/complete-step", handler: handlePlanCompleteStep },
+      { method: "POST", pattern: "/__dev/api/plan/add-step", handler: handlePlanAddStep },
+      { method: "POST", pattern: "/__dev/api/plan/note", handler: handlePlanNote },
+      { method: "POST", pattern: "/__dev/api/plan/archive", handler: handlePlanArchive },
+      { method: "GET", pattern: "/__dev/api/plan/read", handler: handlePlanRead },
+      { method: "POST", pattern: "/__dev/api/plan/flesh", handler: handlePlanFlesh },
+      // Project index API
+      { method: "POST", pattern: "/__dev/api/index/rebuild", handler: handleIndexRebuild },
+      { method: "GET", pattern: "/__dev/api/index/search", handler: handleIndexSearch },
+      { method: "GET", pattern: "/__dev/api/index/file", handler: handleIndexFile },
+      { method: "GET", pattern: "/__dev/api/index/overview", handler: handleIndexOverview },
       // JS asset
       { method: "GET", pattern: "/__dev/js/tina4-dev-admin.min.js", handler: handleDevAdminJs },
     ];
@@ -1378,6 +1424,447 @@ const handleVersionCheck: RouteHandler = async (_req, res) => {
     // Offline or timeout — return current as latest
   }
   res.json({ current, latest });
+};
+
+// ---------------------------------------------------------------------------
+// Parity handlers — ported from Python tina4_python.dev_admin
+// ---------------------------------------------------------------------------
+
+function safeJoin(projectRoot: string, rel: string): string | null {
+  const resolved = resolve(projectRoot, rel);
+  if (!resolved.startsWith(projectRoot)) return null;
+  return resolved;
+}
+
+const handleThoughts: RouteHandler = (req, res) => {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const limit = parseInt(url.searchParams.get("limit") ?? "100", 10);
+  const entries = MessageLog.get(undefined, limit).map((e) => ({
+    id: e.id,
+    timestamp: e.timestamp,
+    level: e.level,
+    category: e.category,
+    message: e.message,
+    data: e.data,
+  }));
+  res.json({ thoughts: entries, count: entries.length });
+};
+
+const handleSuperviseStub: RouteHandler = (_req, res) => {
+  res.json(
+    {
+      error: "supervise API not implemented in tina4-nodejs yet",
+      note: "Requires Rust agent + worktree manager for parity with Python/PHP. Stubbed intentionally.",
+    },
+    501,
+  );
+};
+
+const handleExecute: RouteHandler = async (req, res) => {
+  // Proxy to framework_port+2000 Rust agent (SSE passthrough).
+  const port = parseInt(process.env.TINA4_PORT ?? process.env.PORT ?? "7148", 10);
+  const agentUrl = `http://127.0.0.1:${port + 2000}/execute`;
+  try {
+    const upstream = await fetch(agentUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body ?? {}),
+    });
+    if (!upstream.body) {
+      res.json({ error: "agent returned no body" }, 502);
+      return;
+    }
+    res.raw.writeHead(upstream.status || 200, {
+      "Content-Type": upstream.headers.get("content-type") || "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    const reader = upstream.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) res.raw.write(Buffer.from(value));
+    }
+    res.raw.end();
+  } catch (e) {
+    res.json({ error: `agent unreachable at ${agentUrl}: ${(e as Error).message}` }, 502);
+  }
+};
+
+const handleFiles: RouteHandler = (req, res) => {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const rel = url.searchParams.get("path") ?? ".";
+  const root = resolve(process.cwd());
+  const target = safeJoin(root, rel);
+  if (!target || !existsSync(target)) {
+    res.json({ error: `Path not found: ${rel}` }, 404);
+    return;
+  }
+  const stat = statSync(target);
+  if (!stat.isDirectory()) {
+    res.json({ error: `Not a directory: ${rel}` }, 400);
+    return;
+  }
+  const entries = readdirSync(target, { withFileTypes: true })
+    .filter((e) => !e.name.startsWith(".") || e.name === ".env")
+    .map((e) => {
+      const full = join(target, e.name);
+      let size = 0;
+      try { size = e.isFile() ? statSync(full).size : 0; } catch { /* ignore */ }
+      return {
+        name: e.name,
+        type: e.isDirectory() ? "dir" : "file",
+        size,
+        path: relative(root, full),
+      };
+    })
+    .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1));
+  res.json({ path: relative(root, target) || ".", entries });
+};
+
+const handleFileRead: RouteHandler = (req, res) => {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const rel = url.searchParams.get("path") ?? "";
+  const root = resolve(process.cwd());
+  const target = safeJoin(root, rel);
+  if (!target || !existsSync(target) || !statSync(target).isFile()) {
+    res.json({ error: `File not found: ${rel}` }, 404);
+    return;
+  }
+  try {
+    const content = readFileSync(target, "utf-8");
+    res.json({ path: relative(root, target), content, bytes: Buffer.byteLength(content, "utf-8") });
+  } catch (e) {
+    res.json({ error: (e as Error).message }, 500);
+  }
+};
+
+const handleFileSave: RouteHandler = async (req, res) => {
+  const body = (req.body as Record<string, unknown>) || {};
+  const rel = (body.path as string) || "";
+  const content = (body.content as string) ?? "";
+  const root = resolve(process.cwd());
+  const target = safeJoin(root, rel);
+  if (!target) {
+    res.json({ error: `Path escapes project directory: ${rel}` }, 400);
+    return;
+  }
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    const existed = existsSync(target);
+    writeFileSync(target, content, "utf-8");
+    try {
+      const { Plan } = await import("./plan.js");
+      Plan.recordAction(existed ? "patched" : "created", relative(root, target));
+    } catch { /* ignore */ }
+    res.json({ ok: true, path: relative(root, target), bytes: Buffer.byteLength(content, "utf-8") });
+  } catch (e) {
+    res.json({ error: (e as Error).message }, 500);
+  }
+};
+
+const handleFileRaw: RouteHandler = (req, res) => {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const rel = url.searchParams.get("path") ?? "";
+  const root = resolve(process.cwd());
+  const target = safeJoin(root, rel);
+  if (!target || !existsSync(target) || !statSync(target).isFile()) {
+    res.raw.writeHead(404);
+    res.raw.end("Not found");
+    return;
+  }
+  try {
+    const buf = readFileSync(target);
+    const ext = target.slice(target.lastIndexOf(".") + 1).toLowerCase();
+    const mime: Record<string, string> = {
+      js: "application/javascript", ts: "text/plain", json: "application/json",
+      html: "text/html", css: "text/css", svg: "image/svg+xml",
+      png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+      md: "text/markdown", txt: "text/plain",
+    };
+    res.raw.writeHead(200, { "Content-Type": mime[ext] || "application/octet-stream" });
+    res.raw.end(buf);
+  } catch (e) {
+    res.raw.writeHead(500);
+    res.raw.end((e as Error).message);
+  }
+};
+
+const handleFileRename: RouteHandler = async (req, res) => {
+  const body = (req.body as Record<string, unknown>) || {};
+  const from = (body.from as string) || "";
+  const to = (body.to as string) || "";
+  const root = resolve(process.cwd());
+  const src = safeJoin(root, from);
+  const dst = safeJoin(root, to);
+  if (!src || !dst) {
+    res.json({ error: "Invalid path" }, 400);
+    return;
+  }
+  if (!existsSync(src)) {
+    res.json({ error: `Source not found: ${from}` }, 404);
+    return;
+  }
+  try {
+    const { renameSync } = await import("node:fs");
+    mkdirSync(dirname(dst), { recursive: true });
+    renameSync(src, dst);
+    res.json({ ok: true, from: relative(root, src), to: relative(root, dst) });
+  } catch (e) {
+    res.json({ error: (e as Error).message }, 500);
+  }
+};
+
+const handleFileDelete: RouteHandler = async (req, res) => {
+  const body = (req.body as Record<string, unknown>) || {};
+  const rel = (body.path as string) || "";
+  const root = resolve(process.cwd());
+  const target = safeJoin(root, rel);
+  if (!target) {
+    res.json({ error: "Invalid path" }, 400);
+    return;
+  }
+  if (!existsSync(target)) {
+    res.json({ error: `Not found: ${rel}` }, 404);
+    return;
+  }
+  try {
+    const { rmSync } = await import("node:fs");
+    rmSync(target, { recursive: true, force: true });
+    res.json({ ok: true, deleted: relative(root, target) });
+  } catch (e) {
+    res.json({ error: (e as Error).message }, 500);
+  }
+};
+
+const handleDepsSearch: RouteHandler = async (req, res) => {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const q = url.searchParams.get("q") ?? "";
+  if (!q) {
+    res.json({ error: "q required" }, 400);
+    return;
+  }
+  try {
+    const r = await fetch(`https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(q)}&size=20`);
+    const data = (await r.json()) as { objects?: Array<Record<string, any>> };
+    const results = (data.objects || []).map((o) => ({
+      name: o.package?.name,
+      version: o.package?.version,
+      description: o.package?.description,
+      links: o.package?.links,
+    }));
+    res.json({ results });
+  } catch (e) {
+    res.json({ error: (e as Error).message }, 502);
+  }
+};
+
+const handleDepsInstall: RouteHandler = async (req, res) => {
+  const body = (req.body as Record<string, unknown>) || {};
+  const pkg = (body.package as string) || "";
+  const dev = Boolean(body.dev);
+  if (!pkg || !/^[@A-Za-z0-9][\w@/.\-]*$/.test(pkg)) {
+    res.json({ error: "invalid package name" }, 400);
+    return;
+  }
+  try {
+    const { execFileSync } = await import("node:child_process");
+    const args = ["install", dev ? "--save-dev" : "--save", pkg];
+    const output = execFileSync("npm", args, {
+      cwd: resolve(process.cwd()),
+      timeout: 120_000,
+      encoding: "utf-8",
+    }).toString();
+    res.json({ ok: true, package: pkg, output });
+  } catch (e) {
+    res.json({ error: (e as Error).message }, 500);
+  }
+};
+
+const handleGitStatus: RouteHandler = async (_req, res) => {
+  try {
+    const { execFileSync } = await import("node:child_process");
+    const cwd = resolve(process.cwd());
+    try {
+      execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd, timeout: 3000 });
+    } catch {
+      res.json({ error: "Not a git repository" }, 400);
+      return;
+    }
+    const run = (args: string[]): string =>
+      execFileSync("git", args, { cwd, timeout: 3000, encoding: "utf-8" }).toString().trim();
+    res.json({
+      branch: run(["branch", "--show-current"]),
+      status: run(["status", "--porcelain"]).split(/\r?\n/).filter((l) => l),
+      recent_commits: run(["log", "--oneline", "-5"]).split(/\r?\n/).filter((l) => l),
+    });
+  } catch (e) {
+    res.json({ error: `git unavailable: ${(e as Error).message}` }, 500);
+  }
+};
+
+const handleMcpTools: RouteHandler = async (_req, res) => {
+  try {
+    const { McpServer } = await import("./mcp.js");
+    const instances = (McpServer as unknown as { _instances: Array<any> })._instances || [];
+    const tools: Array<{ server: string; name: string; description: string; inputSchema: unknown }> = [];
+    for (const s of instances) {
+      for (const t of ((s as any)._tools as Map<string, any>).values()) {
+        tools.push({ server: s.name, name: t.name, description: t.description, inputSchema: t.inputSchema });
+      }
+    }
+    res.json({ tools, count: tools.length });
+  } catch (e) {
+    res.json({ error: (e as Error).message }, 500);
+  }
+};
+
+const handleMcpCall: RouteHandler = async (req, res) => {
+  const body = (req.body as Record<string, unknown>) || {};
+  const name = (body.name as string) || "";
+  const args = (body.arguments as Record<string, unknown>) || {};
+  try {
+    const { McpServer } = await import("./mcp.js");
+    const instances = (McpServer as unknown as { _instances: Array<any> })._instances || [];
+    for (const s of instances) {
+      const tool = ((s as any)._tools as Map<string, any>).get(name);
+      if (tool) {
+        const result = await tool.handler(args);
+        res.json({ ok: true, result });
+        return;
+      }
+    }
+    res.json({ error: `Unknown tool: ${name}` }, 404);
+  } catch (e) {
+    res.json({ error: (e as Error).message }, 500);
+  }
+};
+
+const handleScaffoldList: RouteHandler = (_req, res) => {
+  res.json({
+    scaffolds: [
+      { name: "route", description: "Create a new route file in src/routes/" },
+      { name: "model", description: "Create a new ORM model in src/models/" },
+      { name: "migration", description: "Create a new SQL migration file" },
+      { name: "middleware", description: "Create a new middleware class" },
+    ],
+  });
+};
+
+const handleScaffoldRun: RouteHandler = async (req, res) => {
+  const body = (req.body as Record<string, unknown>) || {};
+  const kind = (body.kind as string) || "";
+  const name = (body.name as string) || "";
+  if (!kind || !name || !/^[A-Za-z_][\w]*$/.test(name)) {
+    res.json({ error: "kind and valid name required" }, 400);
+    return;
+  }
+  try {
+    const { execFileSync } = await import("node:child_process");
+    const output = execFileSync("npx", ["tina4nodejs", "generate", kind, name], {
+      cwd: resolve(process.cwd()),
+      timeout: 30_000,
+      encoding: "utf-8",
+    }).toString();
+    res.json({ ok: true, kind, name, output });
+  } catch (e) {
+    res.json({ error: (e as Error).message }, 500);
+  }
+};
+
+// ── Plan routes ─────────────────────────────────────────────
+
+const handlePlanCurrent: RouteHandler = async (_req, res) => {
+  const { Plan } = await import("./plan.js");
+  res.json(Plan.current());
+};
+
+const handlePlanList: RouteHandler = async (_req, res) => {
+  const { Plan } = await import("./plan.js");
+  res.json({ plans: Plan.listPlans() });
+};
+
+const handlePlanCreate: RouteHandler = async (req, res) => {
+  const { Plan } = await import("./plan.js");
+  const body = (req.body as Record<string, unknown>) || {};
+  res.json(
+    Plan.create(
+      (body.title as string) || "",
+      (body.goal as string) || "",
+      (body.steps as string[]) || [],
+      body.make_current !== false,
+    ),
+  );
+};
+
+const handlePlanSwitch: RouteHandler = async (req, res) => {
+  const { Plan } = await import("./plan.js");
+  const body = (req.body as Record<string, unknown>) || {};
+  res.json(Plan.setCurrent((body.name as string) || ""));
+};
+
+const handlePlanCompleteStep: RouteHandler = async (req, res) => {
+  const { Plan } = await import("./plan.js");
+  const body = (req.body as Record<string, unknown>) || {};
+  res.json(Plan.completeStep((body.index as number) ?? -1, (body.name as string) || ""));
+};
+
+const handlePlanAddStep: RouteHandler = async (req, res) => {
+  const { Plan } = await import("./plan.js");
+  const body = (req.body as Record<string, unknown>) || {};
+  res.json(Plan.addStep((body.text as string) || "", (body.name as string) || ""));
+};
+
+const handlePlanNote: RouteHandler = async (req, res) => {
+  const { Plan } = await import("./plan.js");
+  const body = (req.body as Record<string, unknown>) || {};
+  res.json(Plan.appendNote((body.text as string) || "", (body.name as string) || ""));
+};
+
+const handlePlanArchive: RouteHandler = async (req, res) => {
+  const { Plan } = await import("./plan.js");
+  const body = (req.body as Record<string, unknown>) || {};
+  res.json(Plan.archive((body.name as string) || ""));
+};
+
+const handlePlanRead: RouteHandler = async (req, res) => {
+  const { Plan } = await import("./plan.js");
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const name = url.searchParams.get("name") ?? "";
+  res.json(Plan.read(name));
+};
+
+const handlePlanFlesh: RouteHandler = async (req, res) => {
+  const { Plan } = await import("./plan.js");
+  const body = (req.body as Record<string, unknown>) || {};
+  res.json(await Plan.flesh((body.name as string) || "", (body.prompt as string) || ""));
+};
+
+// ── Project index routes ────────────────────────────────────
+
+const handleIndexRebuild: RouteHandler = async (_req, res) => {
+  const { ProjectIndex } = await import("./projectIndex.js");
+  res.json(ProjectIndex.refresh());
+};
+
+const handleIndexSearch: RouteHandler = async (req, res) => {
+  const { ProjectIndex } = await import("./projectIndex.js");
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const q = url.searchParams.get("q") ?? "";
+  const limit = parseInt(url.searchParams.get("limit") ?? "20", 10);
+  res.json({ results: ProjectIndex.search(q, limit) });
+};
+
+const handleIndexFile: RouteHandler = async (req, res) => {
+  const { ProjectIndex } = await import("./projectIndex.js");
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const p = url.searchParams.get("path") ?? "";
+  res.json(ProjectIndex.fileEntry(p));
+};
+
+const handleIndexOverview: RouteHandler = async (_req, res) => {
+  const { ProjectIndex } = await import("./projectIndex.js");
+  res.json(ProjectIndex.overview());
 };
 
 // ---------------------------------------------------------------------------

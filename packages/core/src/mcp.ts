@@ -989,6 +989,349 @@ export function registerDevTools(server: McpServer): void {
     "Framework version, Node.js version, project info",
     schemaFromParams([]),
   );
+
+  // ── Plan tools ──────────────────────────────────────────────
+  //
+  // Ported from Python's tina4_python.mcp.tools — names match exactly.
+  // The Plan storage format is byte-for-byte compatible across frameworks.
+
+  const loadPlan = () => require("./plan.js").Plan as typeof import("./plan.js").Plan;
+  const loadIndex = () =>
+    require("./projectIndex.js").ProjectIndex as typeof import("./projectIndex.js").ProjectIndex;
+
+  server.registerTool(
+    "plan_current",
+    () => loadPlan().current(),
+    "The active plan: title, steps (done/not), next step, progress",
+    schemaFromParams([]),
+  );
+
+  server.registerTool(
+    "plan_list",
+    () => loadPlan().listPlans(),
+    "All plans in plan/ with progress and which one is active",
+    schemaFromParams([]),
+  );
+
+  server.registerTool(
+    "plan_create",
+    (args) =>
+      loadPlan().create(
+        (args.title as string) || "",
+        (args.goal as string) || "",
+        (args.steps as string[]) || [],
+        args.make_current !== false,
+      ),
+    "Create a new markdown plan in plan/ and make it active",
+    schemaFromParams([
+      { name: "title", type: "string" },
+      { name: "goal", type: "string", default: "" },
+      { name: "steps", type: "array", default: [] },
+      { name: "make_current", type: "boolean", default: true },
+    ]),
+  );
+
+  server.registerTool(
+    "plan_switch_to",
+    (args) => loadPlan().setCurrent((args.name as string) || ""),
+    "Make a different plan the active one",
+    schemaFromParams([{ name: "name", type: "string" }]),
+  );
+
+  server.registerTool(
+    "plan_complete_step",
+    (args) => loadPlan().completeStep((args.index as number) ?? -1),
+    "Tick a step as done (call the moment the step finishes)",
+    schemaFromParams([{ name: "index", type: "integer" }]),
+  );
+
+  server.registerTool(
+    "plan_add_step",
+    (args) => loadPlan().addStep((args.text as string) || ""),
+    "Append a new unchecked step to the current plan",
+    schemaFromParams([{ name: "text", type: "string" }]),
+  );
+
+  server.registerTool(
+    "plan_note",
+    (args) => loadPlan().appendNote((args.text as string) || ""),
+    "Append a timestamped note/breadcrumb to the current plan",
+    schemaFromParams([{ name: "text", type: "string" }]),
+  );
+
+  server.registerTool(
+    "plan_archive",
+    (args) => loadPlan().archive((args.name as string) || ""),
+    "Move a finished plan to plan/done/ and clear the current pointer",
+    schemaFromParams([{ name: "name", type: "string", default: "" }]),
+  );
+
+  server.registerTool(
+    "plan_read",
+    (args) => loadPlan().read((args.name as string) || ""),
+    "Full structured view of any plan by filename",
+    schemaFromParams([{ name: "name", type: "string" }]),
+  );
+
+  server.registerTool(
+    "plan_flesh",
+    async (args) =>
+      await loadPlan().flesh((args.name as string) || "", (args.prompt as string) || ""),
+    "Auto-generate concrete build steps via the AI backend and append them to an existing plan",
+    schemaFromParams([
+      { name: "name", type: "string", default: "" },
+      { name: "prompt", type: "string", default: "" },
+    ]),
+  );
+
+  // ── Project-index tools ─────────────────────────────────────
+
+  server.registerTool(
+    "index_rebuild",
+    () => loadIndex().refresh(),
+    "Refresh the persistent project index (lazy, mtime-based)",
+    schemaFromParams([]),
+  );
+
+  server.registerTool(
+    "index_search",
+    (args) => loadIndex().search((args.query as string) || "", (args.limit as number) || 20),
+    "Find files by path, symbol, route, or summary — use FIRST for 'where is X'",
+    schemaFromParams([
+      { name: "query", type: "string" },
+      { name: "limit", type: "integer", default: 20 },
+    ]),
+  );
+
+  server.registerTool(
+    "index_file",
+    (args) => loadIndex().fileEntry((args.path as string) || ""),
+    "Full index entry for one file: symbols, routes, imports",
+    schemaFromParams([{ name: "path", type: "string" }]),
+  );
+
+  server.registerTool(
+    "index_overview",
+    () => loadIndex().overview(),
+    "Project shape: files by language, routes, models, recent edits",
+    schemaFromParams([]),
+  );
+
+  server.registerTool(
+    "project_overview",
+    () => {
+      const out: Record<string, unknown> = {};
+      try { out.index = loadIndex().overview(); } catch (e) { out.index = { error: (e as Error).message }; }
+      try { out.plans = loadPlan().listPlans(); } catch (e) { out.plans = { error: (e as Error).message }; }
+      try { out.current_plan = loadPlan().current(); } catch (e) { out.current_plan = { error: (e as Error).message }; }
+      try {
+        const db = (globalThis as any).__tina4_db;
+        out.tables = db?.getTables?.() ?? [];
+      } catch (e) { out.tables = { error: (e as Error).message }; }
+      return out;
+    },
+    "One-shot snapshot: index overview, plans, current plan, tables",
+    schemaFromParams([]),
+  );
+
+  // ── file_patch (targeted edit) ──────────────────────────────
+
+  server.registerTool(
+    "file_patch",
+    (args) => {
+      try {
+        const rel = (args.path as string) || "";
+        const oldStr = (args.old_string as string) || "";
+        const newStr = (args.new_string as string) || "";
+        const count = (args.count as number) || 1;
+        const projectRoot = path.resolve(process.cwd());
+        const resolved = path.resolve(projectRoot, rel);
+        if (!resolved.startsWith(projectRoot)) {
+          return { error: `Path escapes project directory: ${rel}` };
+        }
+        if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+          return { error: `File not found: ${rel}` };
+        }
+        const original = fs.readFileSync(resolved, "utf-8");
+        let occurrences = 0;
+        let idx = -1;
+        while ((idx = original.indexOf(oldStr, idx + 1)) !== -1) occurrences++;
+        if (occurrences === 0) return { error: `old_string not found in ${rel}` };
+        if (occurrences !== count) {
+          return {
+            error:
+              `old_string appears ${occurrences} times, expected ${count}. ` +
+              "Expand old_string to make it unique, or set count explicitly.",
+          };
+        }
+        let updated = original;
+        for (let i = 0; i < count; i++) updated = updated.replace(oldStr, newStr);
+        fs.writeFileSync(resolved, updated, "utf-8");
+        try { loadPlan().recordAction("patched", rel); } catch { /* best-effort */ }
+        return {
+          patched: rel,
+          replacements: count,
+          bytes: Buffer.byteLength(updated, "utf-8"),
+        };
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
+    },
+    "Targeted edit: replace old_string with new_string in a file (must match exactly `count` times)",
+    schemaFromParams([
+      { name: "path", type: "string" },
+      { name: "old_string", type: "string" },
+      { name: "new_string", type: "string" },
+      { name: "count", type: "integer", default: 1 },
+    ]),
+  );
+
+  // ── docs_list / docs_search / docs_section ──────────────────
+
+  const frameworkDocPaths = (): string[] => {
+    const projectRoot = path.resolve(process.cwd());
+    const candidates = [
+      path.join(projectRoot, "CLAUDE.md"),
+      path.join(projectRoot, "AGENTS.md"),
+      path.join(projectRoot, "CONVENTIONS.md"),
+      path.join(projectRoot, "README.md"),
+    ];
+    return candidates.filter((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
+  };
+
+  server.registerTool(
+    "docs_list",
+    () => frameworkDocPaths().map((p) => ({ name: path.basename(p), bytes: fs.statSync(p).size })),
+    "List framework documentation files available for lookup",
+    schemaFromParams([]),
+  );
+
+  server.registerTool(
+    "docs_search",
+    (args) => {
+      const query = (args.query as string) || "";
+      const limit = (args.limit as number) || 5;
+      const contextLines = (args.context_lines as number) || 4;
+      if (!query || query.length < 2) return { error: "query must be at least 2 characters" };
+      const needle = query.toLowerCase();
+      const hits: Array<{ file: string; line: number; score: number; snippet: string }> = [];
+      for (const p of frameworkDocPaths()) {
+        let lines: string[];
+        try { lines = fs.readFileSync(p, "utf-8").split(/\r?\n/); } catch { continue; }
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].toLowerCase().includes(needle)) {
+            const start = Math.max(0, i - contextLines);
+            const end = Math.min(lines.length, i + contextLines + 1);
+            const snippet = lines.slice(start, end).join("\n");
+            let score = 1;
+            if (lines[i].includes(query)) score += 1;
+            if (lines[i].trimStart().startsWith("#")) score += 2;
+            hits.push({ file: path.basename(p), line: i + 1, score, snippet });
+          }
+        }
+      }
+      hits.sort((a, b) => b.score - a.score);
+      return hits.slice(0, Math.max(1, limit));
+    },
+    "Search Tina4 framework docs for a query string (use before guessing)",
+    schemaFromParams([
+      { name: "query", type: "string" },
+      { name: "limit", type: "integer", default: 5 },
+      { name: "context_lines", type: "integer", default: 4 },
+    ]),
+  );
+
+  server.registerTool(
+    "docs_section",
+    (args) => {
+      const file = (args.file as string) || "";
+      const heading = (args.heading as string) || "";
+      const match = frameworkDocPaths().find((p) => path.basename(p) === file);
+      if (!match) return { error: `Unknown doc file: ${file}. Try docs_list() first.` };
+      const lines = fs.readFileSync(match, "utf-8").split(/\r?\n/);
+      const headingLc = heading.toLowerCase().trim();
+      let start = -1;
+      let startLevel = 0;
+      for (let i = 0; i < lines.length; i++) {
+        const stripped = lines[i].replace(/^\s+/, "");
+        if (stripped.startsWith("#")) {
+          const level = stripped.length - stripped.replace(/^#+/, "").length;
+          const title = stripped.slice(level).trim().toLowerCase();
+          if (title.includes(headingLc)) {
+            start = i;
+            startLevel = level;
+            break;
+          }
+        }
+      }
+      if (start < 0) return { error: `Heading '${heading}' not found in ${file}` };
+      let end = lines.length;
+      for (let j = start + 1; j < lines.length; j++) {
+        const stripped = lines[j].replace(/^\s+/, "");
+        if (stripped.startsWith("#")) {
+          const level = stripped.length - stripped.replace(/^#+/, "").length;
+          if (level <= startLevel) { end = j; break; }
+        }
+      }
+      return { file, heading: lines[start].trim(), body: lines.slice(start, end).join("\n") };
+    },
+    "Return a full markdown section from a framework doc file",
+    schemaFromParams([
+      { name: "file", type: "string" },
+      { name: "heading", type: "string" },
+    ]),
+  );
+
+  // ── git_status / deps_list ──────────────────────────────────
+
+  server.registerTool(
+    "git_status",
+    () => {
+      try {
+        const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+        const cwd = path.resolve(process.cwd());
+        const run = (args: string[]): string => {
+          return execFileSync("git", args, { cwd, timeout: 3000, encoding: "utf-8" }).toString().trim();
+        };
+        try {
+          execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd, timeout: 3000 });
+        } catch {
+          return { error: "Not a git repository" };
+        }
+        return {
+          branch: run(["branch", "--show-current"]),
+          status: run(["status", "--porcelain"]).split(/\r?\n/).filter((l) => l),
+          recent_commits: run(["log", "--oneline", "-5"]).split(/\r?\n/).filter((l) => l),
+        };
+      } catch (e) {
+        return { error: `git unavailable: ${(e as Error).message}` };
+      }
+    },
+    "Show git branch, modified/untracked files, recent commits",
+    schemaFromParams([]),
+  );
+
+  server.registerTool(
+    "deps_list",
+    () => {
+      const pkgPath = path.join(path.resolve(process.cwd()), "package.json");
+      if (!fs.existsSync(pkgPath)) return { error: "No package.json at project root" };
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        return {
+          name: pkg.name || "",
+          version: pkg.version || "",
+          engines: pkg.engines || {},
+          dependencies: pkg.dependencies || {},
+          devDependencies: pkg.devDependencies || {},
+        };
+      } catch (e) {
+        return { error: `Failed to parse package.json: ${(e as Error).message}` };
+      }
+    },
+    "List this project's declared Node.js dependencies",
+    schemaFromParams([]),
+  );
 }
 
 /** Alias for registerDevTools — parity with PHP/Ruby/Python. */

@@ -111,3 +111,7 @@ export {
   PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR,
 } from "./mcp.js";
 export type { JsonRpcMessage, McpToolDefinition, McpResourceDefinition, JsonSchema, McpToolParam } from "./mcp.js";
+export { Plan } from "./plan.js";
+export type { PlanStep, ParsedPlan, PlanSummary, ExecutionSummary, CurrentPlan } from "./plan.js";
+export { ProjectIndex } from "./projectIndex.js";
+export type { FileEntry, FileRoute } from "./projectIndex.js";
