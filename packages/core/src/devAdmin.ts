@@ -1104,7 +1104,9 @@ const handleBrokenResolve: RouteHandler = (req, res) => {
 };
 
 const handleBrokenClear: RouteHandler = (_req, res) => {
-  ErrorTracker.clearResolved();
+  // "Clear All" button — flush every tracked error, not only the
+  // ones individually marked resolved. Matches PHP/Python/Ruby.
+  ErrorTracker.clearAll();
   res.json({ cleared: true });
 };
 
