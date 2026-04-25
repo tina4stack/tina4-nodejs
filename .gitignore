@@ -12,3 +12,4 @@ data/
 example/.env
 .claude/settings.local.json
 .claude/worktrees/
+.tina4/

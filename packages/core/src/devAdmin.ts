@@ -565,6 +565,12 @@ export class DevAdmin {
       { method: "GET", pattern: "/__dev/api/index/search", handler: handleIndexSearch },
       { method: "GET", pattern: "/__dev/api/index/file", handler: handleIndexFile },
       { method: "GET", pattern: "/__dev/api/index/overview", handler: handleIndexOverview },
+      // Live API RAG (Docs) — see plan/v3/22-LIVE-API-RAG.md
+      { method: "GET", pattern: "/__dev/api/docs/search", handler: handleDocsSearch },
+      { method: "GET", pattern: "/__dev/api/docs/class", handler: handleDocsClass },
+      { method: "GET", pattern: "/__dev/api/docs/method", handler: handleDocsMethod },
+      { method: "GET", pattern: "/__dev/api/docs/index", handler: handleDocsIndex },
+      { method: "GET", pattern: "/__dev/api/docs/.well-known.json", handler: handleDocsWellKnown },
       // JS asset
       { method: "GET", pattern: "/__dev/js/tina4-dev-admin.min.js", handler: handleDevAdminJs },
     ];
@@ -1870,6 +1876,73 @@ const handleIndexOverview: RouteHandler = async (_req, res) => {
 };
 
 // ---------------------------------------------------------------------------
+// Live API RAG (Docs) — plan/v3/22-LIVE-API-RAG.md
+// ---------------------------------------------------------------------------
+
+const handleDocsSearch: RouteHandler = async (req, res) => {
+  const { Docs } = await import("./docs.js");
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const q = url.searchParams.get("q") ?? "";
+  const k = parseInt(url.searchParams.get("k") ?? "5", 10);
+  const source = url.searchParams.get("source") ?? "all";
+  const includePrivate = isTruthy(url.searchParams.get("include_private") ?? "false");
+  const start = Date.now();
+  const results = Docs.mcpSearch(q, k, undefined, source, includePrivate);
+  res.json({ ok: true, query: q, results, took_ms: Date.now() - start });
+};
+
+const handleDocsClass: RouteHandler = async (req, res) => {
+  const { Docs } = await import("./docs.js");
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const name = url.searchParams.get("name") ?? "";
+  const spec = Docs.mcpClass(name);
+  if (!spec) {
+    res.json({ ok: false, error: `class not found: ${name}` }, 404);
+    return;
+  }
+  res.json({ ok: true, class: spec });
+};
+
+const handleDocsMethod: RouteHandler = async (req, res) => {
+  const { Docs } = await import("./docs.js");
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const cls = url.searchParams.get("class") ?? "";
+  const name = url.searchParams.get("name") ?? "";
+  const spec = Docs.mcpMethod(cls, name);
+  if (!spec) {
+    res.json({ ok: false, error: `method not found: ${cls}.${name}` }, 404);
+    return;
+  }
+  res.json({ ok: true, method: spec });
+};
+
+const handleDocsIndex: RouteHandler = async (req, res) => {
+  const { Docs } = await import("./docs.js");
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const source = url.searchParams.get("source") ?? "all";
+  const docs = new (Docs as any)(process.cwd());
+  let entries: any[] = docs.index();
+  if (source !== "all") entries = entries.filter((e) => e.source === source);
+  res.json({ ok: true, count: entries.length, entries });
+};
+
+const handleDocsWellKnown: RouteHandler = async (_req, res) => {
+  res.json({
+    ok: true,
+    name: "tina4-live-docs",
+    description: "Live API docs for this Tina4 project (framework + user code)",
+    spec: "plan/v3/22-LIVE-API-RAG.md",
+    endpoints: {
+      search: "/__dev/api/docs/search?q=<query>&k=<int>&source=<framework|user|all>&include_private=<bool>",
+      class: "/__dev/api/docs/class?name=<fqn>",
+      method: "/__dev/api/docs/method?class=<fqn>&name=<method>",
+      index: "/__dev/api/docs/index?source=<framework|user|all>",
+    },
+    mcp_tools: ["api_search", "api_class", "api_method"],
+  });
+};
+
+// ---------------------------------------------------------------------------
 // Dev Admin JS handler — serves the shared JS file
 // ---------------------------------------------------------------------------
 
@@ -1934,9 +2007,54 @@ function renderToolbarHtml(ctx: {
     <span style="color:#ffeb3b;">req:${ctx.requestId}</span>
     <span style="color:#90caf9;">${ctx.routeCount} routes</span>
     <span style="color:#888;">Node.js ${nodeVersion}</span>
-    <a href="#" onclick="(function(e){e.preventDefault();var p=document.getElementById('tina4-dev-panel');if(p){p.style.display=p.style.display==='none'?'block':'none';return;}var c=document.createElement('div');c.id='tina4-dev-panel';c.style.cssText='position:fixed;top:3rem;left:0;right:0;bottom:2rem;z-index:99998;transition:all 0.2s';var f=document.createElement('iframe');f.src='/__dev';f.style.cssText='width:100%;height:100%;border:1px solid #2e7d32;border-radius:0.5rem;box-shadow:0 8px 32px rgba(0,0,0,0.5);background:#0f172a';c.appendChild(f);document.body.appendChild(c);})(event)" style="color:#ef9a9a;margin-left:auto;text-decoration:none;cursor:pointer;">Dashboard &#8599;</a>
+    <a href="#" onclick="window.__tina4ToggleOverlay(event)" style="color:#ef9a9a;margin-left:auto;text-decoration:none;cursor:pointer;">Dashboard &#8599;</a>
     <span onclick="this.parentElement.style.display='none'" style="cursor:pointer;color:#888;margin-left:8px;">&#10005;</span>
 </div>
+<script>
+// Overlay open/toggle helper + auto-restore. Persist the dev-admin
+// iframe's open/closed state across parent reloads so saving a file
+// doesn't lose the user's dev-admin context. Cross-framework parity
+// with PHP / Python / Ruby — same localStorage key.
+(function(){
+    var STATE_KEY = 'tina4_dev_overlay_open';
+    function buildOverlay() {
+        var c = document.createElement('div');
+        c.id = 'tina4-dev-panel';
+        c.style.cssText = 'position:fixed;top:3rem;left:0;right:0;bottom:2rem;z-index:99998;transition:all 0.2s';
+        var f = document.createElement('iframe');
+        f.src = '/__dev';
+        f.style.cssText = 'width:100%;height:100%;border:1px solid #2e7d32;border-radius:0.5rem;box-shadow:0 8px 32px rgba(0,0,0,0.5);background:#0f172a';
+        c.appendChild(f);
+        document.body.appendChild(c);
+        return c;
+    }
+    window.__tina4ToggleOverlay = function(e) {
+        if (e) e.preventDefault();
+        var p = document.getElementById('tina4-dev-panel');
+        if (p) {
+            var hide = p.style.display !== 'none';
+            p.style.display = hide ? 'none' : 'block';
+            try { localStorage.setItem(STATE_KEY, hide ? '0' : '1'); } catch (_) {}
+            return;
+        }
+        buildOverlay();
+        try { localStorage.setItem(STATE_KEY, '1'); } catch (_) {}
+    };
+    function restoreIfOpen() {
+        try {
+            if (location.pathname.indexOf('/__dev') === 0) return;
+            if (localStorage.getItem(STATE_KEY) === '1' && !document.getElementById('tina4-dev-panel')) {
+                buildOverlay();
+            }
+        } catch (_) {}
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', restoreIfOpen);
+    } else {
+        restoreIfOpen();
+    }
+})();
+</script>
 <script>
 function tina4VersionModal(){
     var m=document.getElementById('tina4-ver-modal');

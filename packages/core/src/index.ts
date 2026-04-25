@@ -116,3 +116,6 @@ export { Plan } from "./plan.js";
 export type { PlanStep, ParsedPlan, PlanSummary, ExecutionSummary, CurrentPlan } from "./plan.js";
 export { ProjectIndex } from "./projectIndex.js";
 export type { FileEntry, FileRoute } from "./projectIndex.js";
+export { Docs } from "./docs.js";
+export type { DocsHit, ClassSpec, MethodSpec, IndexEntry, DriftHit } from "./docs.js";
+export { writeMcpDiscovery } from "./docsAutoDiscovery.js";

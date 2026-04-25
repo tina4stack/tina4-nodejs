@@ -715,6 +715,13 @@ ${reset}
   if (DevAdmin.isEnabled()) {
     DevAdmin.register(router);
     console.log(`  Dev dashboard at  \x1b[36mhttp://localhost:${port}/__dev\x1b[0m`);
+    // Live Docs MCP discovery — write .tina4/mcp.json so AI tools find this server.
+    try {
+      const { writeMcpDiscovery } = await import("./docsAutoDiscovery.js");
+      writeMcpDiscovery(process.cwd(), Number(port));
+    } catch (e) {
+      console.log(`  (mcp discovery skipped: ${(e as Error).message})`);
+    }
   }
 
   async function dispatch(rawReq: IncomingMessage, rawRes: ServerResponse): Promise<void> {

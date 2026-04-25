@@ -529,7 +529,7 @@ const rows = cache.remember(key, 60, () => db.execute(sql, params));
   ```typescript
   export const template = "page.twig";  // renders src/templates/page.twig
   ```
-  The route handler provides data; the template renders the HTML. Use `res.template("name.twig", data)` for programmatic template rendering.
+  The route handler provides data; the template renders the HTML. Use `res.render("name.twig", data)` for programmatic template rendering. Matches Python `response.render()`, PHP `$response->render()`, Ruby `response.render` — same method name across all four frameworks.
 
 ### Model Files
 - Located in `src/models/`

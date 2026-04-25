@@ -1332,6 +1332,73 @@ export function registerDevTools(server: McpServer): void {
     "List this project's declared Node.js dependencies",
     schemaFromParams([]),
   );
+
+  // ── Live API RAG (Docs) — plan/v3/22-LIVE-API-RAG.md ──────────
+
+  server.registerTool(
+    "api_search",
+    (args) => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { Docs } = require("./docs.js") as typeof import("./docs.js");
+        return Docs.mcpSearch(
+          (args.query as string) || "",
+          parseInt(String(args.k ?? 5), 10) || 5,
+          undefined,
+          (args.source as string) || "all",
+          Boolean(args.include_private),
+        );
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
+    },
+    "Search the live API index (framework + user code) for matching classes/methods",
+    schemaFromParams([
+      { name: "query", type: "string" },
+      { name: "k", type: "integer", default: 5 },
+      { name: "source", type: "string", default: "all" },
+      { name: "include_private", type: "boolean", default: false },
+    ]),
+  );
+
+  server.registerTool(
+    "api_class",
+    (args) => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { Docs } = require("./docs.js") as typeof import("./docs.js");
+        const spec = Docs.mcpClass((args.name as string) || "");
+        return spec ?? { error: `class not found: ${args.name}` };
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
+    },
+    "Return the full class spec (methods + properties) for a single class FQN",
+    schemaFromParams([{ name: "name", type: "string" }]),
+  );
+
+  server.registerTool(
+    "api_method",
+    (args) => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { Docs } = require("./docs.js") as typeof import("./docs.js");
+        // PHP names the param `class`, Python names it `class_` — Node.js MCP
+        // accepts the raw `class` field from the JSON-RPC payload.
+        const cls = (args.class as string) || (args.class_name as string) || "";
+        const name = (args.name as string) || "";
+        const spec = Docs.mcpMethod(cls, name);
+        return spec ?? { error: `method not found: ${cls}.${name}` };
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
+    },
+    "Return the full spec for a single method (signature, file, line, visibility)",
+    schemaFromParams([
+      { name: "class", type: "string" },
+      { name: "name", type: "string" },
+    ]),
+  );
 }
 
 /** Alias for registerDevTools — parity with PHP/Ruby/Python. */
