@@ -20,6 +20,7 @@ import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
 import { DevAdmin, RequestInspector } from "./devAdmin.js";
 import { I18n } from "./i18n.js";
+import { stopAllBackgroundTasks } from "./background.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -549,6 +550,7 @@ ${reset}
       // Return a handle that kills all workers
       return {
         close: () => {
+          stopAllBackgroundTasks();
           for (const id in cluster.workers) {
             cluster.workers[id]?.kill();
           }
@@ -1075,6 +1077,8 @@ ${reset}
       }
       resolvePromise({
         close: () => {
+          // Clear any registered background timers so graceful shutdown actually exits.
+          stopAllBackgroundTasks();
           if (aiServer) aiServer.close();
           server.close();
           // Close database if ORM was initialized

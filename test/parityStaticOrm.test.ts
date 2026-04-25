@@ -1,0 +1,215 @@
+/**
+ * Parity sweep: confirm Python-style static class helpers are available
+ * on BaseModel — findOrFail, count, withTrashed, scope — and that seedOrm
+ * works on a real ORM model, not just plain objects.
+ *
+ * Mirrors tina4-python's `MyModel.find_or_fail(pk)`, `MyModel.count(...)`,
+ * `MyModel.with_trashed(...)`, `MyModel.scope(name, sql, params)` and
+ * `seed_orm(ModelClass, count, overrides, seed)`.
+ *
+ * Run with: npx tsx test/parityStaticOrm.test.ts
+ */
+import { rmSync, mkdirSync } from "node:fs";
+import {
+  initDatabase,
+  closeDatabase,
+  getAdapter,
+  BaseModel,
+  syncModels,
+  seedOrm,
+} from "../packages/orm/src/index.ts";
+import type { FieldDefinition, DiscoveredModel } from "../packages/orm/src/index.ts";
+
+const TEST_DB = "/tmp/tina4-parity-static-orm/test.db";
+let pass = 0;
+let fail = 0;
+
+function assert(name: string, condition: boolean, detail = "") {
+  if (condition) {
+    console.log(`  \x1b[32mPASS\x1b[0m ${name}`);
+    pass++;
+  } else {
+    console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
+    fail++;
+  }
+}
+
+// Clean slate
+try { rmSync("/tmp/tina4-parity-static-orm", { recursive: true }); } catch {}
+mkdirSync("/tmp/tina4-parity-static-orm", { recursive: true });
+
+console.log("=== Parity: Static ORM Helpers + seedOrm ===\n");
+
+await initDatabase({ type: "sqlite", path: TEST_DB });
+
+class User extends BaseModel {
+  static tableName = "users";
+  static fields: Record<string, FieldDefinition> = {
+    id:    { type: "integer", primaryKey: true, autoIncrement: true },
+    name:  { type: "string", required: true, maxLength: 50 },
+    email: { type: "string", required: true, maxLength: 100 },
+    age:   { type: "integer", min: 0, max: 150 },
+  };
+}
+
+class Article extends BaseModel {
+  static tableName = "articles";
+  static softDelete = true;
+  static fields: Record<string, FieldDefinition> = {
+    id:        { type: "integer", primaryKey: true, autoIncrement: true },
+    title:     { type: "string", required: true, maxLength: 200 },
+    author_id: { type: "integer" },
+  };
+}
+
+const userModel: DiscoveredModel = {
+  definition: { tableName: "users", fields: User.fields },
+  filePath: "test",
+  modelClass: User,
+};
+const articleModel: DiscoveredModel = {
+  definition: { tableName: "articles", fields: Article.fields, softDelete: true },
+  filePath: "test",
+  modelClass: Article,
+};
+
+syncModels([userModel, articleModel]);
+
+// --- Existence: static methods are present ---
+console.log("--- Static Method Existence ---");
+assert("BaseModel.findOrFail exists",  typeof (BaseModel as any).findOrFail === "function");
+assert("BaseModel.count exists",       typeof (BaseModel as any).count === "function");
+assert("BaseModel.withTrashed exists", typeof (BaseModel as any).withTrashed === "function");
+assert("BaseModel.scope exists",       typeof (BaseModel as any).scope === "function");
+assert("seedOrm exported",             typeof seedOrm === "function");
+
+// --- findOrFail ---
+console.log("\n--- findOrFail ---");
+const alice = new User({ name: "Alice", email: "alice@test.com", age: 30 });
+alice.save();
+const bob = new User({ name: "Bob", email: "bob@test.com", age: 25 });
+bob.save();
+
+const aliceId = (alice as any).id;
+const found = User.findOrFail(aliceId);
+assert("findOrFail returns the row", (found as any).name === "Alice");
+
+let threw = false;
+let errMsg = "";
+try {
+  User.findOrFail(999_999);
+} catch (e) {
+  threw = true;
+  errMsg = (e as Error).message;
+}
+assert("findOrFail throws on missing", threw);
+assert("findOrFail error mentions table", errMsg.includes("users"));
+assert("findOrFail error mentions id", errMsg.includes("999999") || errMsg.includes("999,999"));
+
+// --- count ---
+console.log("\n--- count ---");
+const charlie = new User({ name: "Charlie", email: "charlie@test.com", age: 40 });
+charlie.save();
+assert("count() returns total rows", User.count() === 3);
+assert("count(conditions, params) filters", User.count("age > ?", [27]) === 2);
+assert("count() with no matches returns 0", User.count("age > ?", [1000]) === 0);
+
+// --- withTrashed (soft delete) ---
+console.log("\n--- withTrashed ---");
+const a1 = new Article({ title: "Live", author_id: aliceId });
+a1.save();
+const a2 = new Article({ title: "Dead", author_id: aliceId });
+a2.save();
+a2.delete(); // soft delete
+
+const liveOnly = Article.all();
+assert("Article.all() excludes soft-deleted", liveOnly.length === 1);
+
+const includingTrashed = Article.withTrashed();
+assert("withTrashed() includes soft-deleted rows", includingTrashed.length === 2);
+
+const trashedFiltered = Article.withTrashed("title = ?", ["Dead"]);
+assert(
+  "withTrashed(conditions) filters and includes soft-deleted",
+  trashedFiltered.length === 1 && (trashedFiltered[0] as any).title === "Dead",
+);
+
+// withTrashed should also respect count() semantics on count() — count itself
+// excludes soft-deleted (matches Python). withTrashed gives a way to bypass.
+assert("count still excludes soft-deleted articles", Article.count() === 1);
+
+// --- scope ---
+console.log("\n--- scope ---");
+User.scope("adult", "age >= ?", [18]);
+const adults = (User as any).adult();
+assert("scope creates a callable static method", Array.isArray(adults));
+assert("scope returns rows matching SQL", adults.length === 3); // all three are >= 18
+
+User.scope("over30", "age > ?", [30]);
+const over30 = (User as any).over30();
+assert("scope filters correctly", over30.length === 1 && (over30[0] as any).name === "Charlie");
+
+// --- seedOrm against a real ORM class ---
+console.log("\n--- seedOrm against real class ---");
+class Widget extends BaseModel {
+  static tableName = "widgets";
+  static fields: Record<string, FieldDefinition> = {
+    id:    { type: "integer", primaryKey: true, autoIncrement: true },
+    name:  { type: "string", required: true, maxLength: 50 },
+    price: { type: "number", min: 1, max: 1000 },
+  };
+}
+const widgetModel: DiscoveredModel = {
+  definition: { tableName: "widgets", fields: Widget.fields },
+  filePath: "test",
+  modelClass: Widget,
+};
+syncModels([widgetModel]);
+
+const inserted = await seedOrm(Widget as any, 7, undefined, 42);
+assert("seedOrm returns count inserted", inserted === 7);
+assert("seedOrm produced rows in the table", Widget.count() === 7);
+
+// Overrides applied to every row
+const inserted2 = await seedOrm(Widget as any, 3, { name: "FixedName" }, 42);
+assert("seedOrm with overrides returns count", inserted2 === 3);
+const fixed = Widget.all('name = ?', ["FixedName"]);
+assert("seedOrm overrides land in the database", fixed.length === 3);
+
+// Determinism with seed
+class Gadget extends BaseModel {
+  static tableName = "gadgets";
+  static fields: Record<string, FieldDefinition> = {
+    id:   { type: "integer", primaryKey: true, autoIncrement: true },
+    name: { type: "string", maxLength: 50 },
+  };
+}
+const gadgetModel: DiscoveredModel = {
+  definition: { tableName: "gadgets", fields: Gadget.fields },
+  filePath: "test",
+  modelClass: Gadget,
+};
+syncModels([gadgetModel]);
+
+await seedOrm(Gadget as any, 5, undefined, 123);
+const firstRun = Gadget.all().map((g: any) => g.name);
+
+// Wipe and reseed with same seed
+getAdapter().execute(`DELETE FROM "gadgets"`);
+await seedOrm(Gadget as any, 5, undefined, 123);
+const secondRun = Gadget.all().map((g: any) => g.name);
+
+assert(
+  "seedOrm with the same seed produces the same rows",
+  JSON.stringify(firstRun) === JSON.stringify(secondRun),
+);
+
+// Cleanup
+closeDatabase();
+
+// Summary
+console.log(`\n${"=".repeat(50)}`);
+console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
+console.log(`${"=".repeat(50)}\n`);
+
+process.exit(fail > 0 ? 1 : 0);
