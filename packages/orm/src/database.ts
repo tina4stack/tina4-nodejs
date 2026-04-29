@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult } from "./types.js";
 import { DatabaseResult } from "./databaseResult.js";
 
@@ -257,6 +258,23 @@ export class Database {
   private dbType: string = "sqlite";
 
   /**
+   * Async-local storage for the adapter pinned to the current transaction.
+   *
+   * With pooling enabled, ordinary calls round-robin through the pool. Inside
+   * a transaction, however, all calls must land on the SAME adapter — otherwise
+   * startTransaction(), execute() and commit() each rotate to a different
+   * connection and the transaction is meaningless (executes autocommit on
+   * whatever adapter they hit; the final commit lands on yet another adapter
+   * that has nothing to commit; rollback() is silently no-op'd).
+   *
+   * AsyncLocalStorage is the Node analog of Python's threading.local. It pins
+   * the adapter to the current async task tree so concurrent transactions on
+   * the same Database don't clobber each other. startTransaction() sets the
+   * pin via .enterWith(); commit()/rollback() clear it.
+   */
+  private txStore: AsyncLocalStorage<{ adapter: DatabaseAdapter | null }> = new AsyncLocalStorage();
+
+  /**
    * Create a Database wrapping an existing adapter.
    * For creating a Database from a URL, use the async static factories:
    *   Database.create(url) or Database.fromEnv()
@@ -320,8 +338,15 @@ export class Database {
 
   /**
    * Get the next adapter — from pool (round-robin) or single connection.
+   *
+   * If a transaction is active (an adapter is pinned in async-local storage),
+   * that adapter is returned for every call so the whole transaction is
+   * atomic on one connection. Otherwise pooled mode round-robins.
    */
   private getNextAdapter(): DatabaseAdapter {
+    const pinned = this.txStore.getStore()?.adapter;
+    if (pinned) return pinned;
+
     if (this._poolSize > 0) {
       const idx = this.poolIndex;
       this.poolIndex = (this.poolIndex + 1) % this._poolSize;
@@ -457,19 +482,37 @@ export class Database {
     }
   }
 
-  /** Start a transaction. */
+  /**
+   * Start a transaction. Pins the adapter to the current async context for
+   * the whole transaction so executes and the final commit/rollback all run
+   * on the same connection (critical when pool > 0).
+   */
   startTransaction(): void {
-    this.getNextAdapter().startTransaction();
+    // Pick an adapter using the normal selection logic, then pin it.
+    const adapter = this.getNextAdapter();
+    let store = this.txStore.getStore();
+    if (store) {
+      store.adapter = adapter;
+    } else {
+      this.txStore.enterWith({ adapter });
+    }
+    adapter.startTransaction();
   }
 
-  /** Commit the current transaction. */
+  /** Commit the current transaction and release the adapter pin. */
   commit(): void {
-    this.getNextAdapter().commit();
+    const adapter = this.getNextAdapter();
+    adapter.commit();
+    const store = this.txStore.getStore();
+    if (store) store.adapter = null;
   }
 
-  /** Rollback the current transaction. */
+  /** Rollback the current transaction and release the adapter pin. */
   rollback(): void {
-    this.getNextAdapter().rollback();
+    const adapter = this.getNextAdapter();
+    adapter.rollback();
+    const store = this.txStore.getStore();
+    if (store) store.adapter = null;
   }
 
   /** Check if a table exists. */
