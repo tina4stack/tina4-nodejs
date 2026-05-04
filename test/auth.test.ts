@@ -26,7 +26,7 @@ function assert(label: string, condition: boolean) {
 }
 
 const SECRET = "test-secret-key-for-jwt";
-process.env.SECRET = SECRET;
+process.env.TINA4_SECRET = SECRET;
 
 console.log("=== Auth Tests ===\n");
 
@@ -72,10 +72,10 @@ assert("Token with expiresIn=0 has no exp claim", noExpPayload !== null && !("ex
 console.log("\n-- JWT Invalid Signature --");
 
 // Test with wrong secret via env
-const origSecret = process.env.SECRET;
-process.env.SECRET = "wrong-secret";
+const origSecret = process.env.TINA4_SECRET;
+process.env.TINA4_SECRET = "wrong-secret";
 assert("Wrong secret returns false", validToken(token1) === false);
-process.env.SECRET = origSecret;
+process.env.TINA4_SECRET = origSecret;
 
 const tamperedToken = token1.slice(0, -3) + "abc";
 assert("Tampered token returns false", validToken(tamperedToken) === false);
@@ -108,23 +108,23 @@ const { privateKey, publicKey } = generateKeyPairSync("rsa", {
 });
 
 // RS256: set secret/algorithm via env for getToken/validToken
-process.env.SECRET = privateKey;
+process.env.TINA4_SECRET = privateKey;
 process.env.TINA4_JWT_ALGORITHM = "RS256";
 const rsaToken = getToken({ userId: 99 }, 3600);
 assert("RS256 token generated", typeof rsaToken === "string");
 
-process.env.SECRET = publicKey;
+process.env.TINA4_SECRET = publicKey;
 assert("RS256 token verifies with public key", validToken(rsaToken) === true);
 const rsaPayload = getPayload(rsaToken);
 assert("RS256 payload contains userId", rsaPayload?.userId === 99);
 
 // HS256 cannot verify an RS256 token
-process.env.SECRET = SECRET;
+process.env.TINA4_SECRET = SECRET;
 process.env.TINA4_JWT_ALGORITHM = "HS256";
 assert("RS256 token fails with HS256 verify", validToken(rsaToken) === false);
 
 // Restore env
-process.env.SECRET = SECRET;
+process.env.TINA4_SECRET = SECRET;
 delete process.env.TINA4_JWT_ALGORITHM;
 
 // ── Password Hashing ─────────────────────────────────────────────
@@ -158,7 +158,7 @@ assert("Empty hash returns false", checkPassword("test", "") === false);
 
 console.log("\n-- Auth Middleware --");
 
-// authMiddleware reads secret from env (process.env.SECRET already set to SECRET)
+// authMiddleware reads secret from env (process.env.TINA4_SECRET already set to SECRET)
 const mw = authMiddleware();
 
 // Helper to create mock request/response
@@ -444,14 +444,14 @@ console.log("\n-- Auth Middleware RS256 --");
 console.log("\n-- getToken with explicit secret --");
 
 {
-  process.env.SECRET = SECRET;
+  process.env.TINA4_SECRET = SECRET;
   const tokenWithSecret = getToken({ userId: 1 }, "custom-secret-xyz", 3600);
   assert("getToken with explicit secret returns a string", typeof tokenWithSecret === "string");
   // Token signed with custom secret — env SECRET should NOT validate it
-  process.env.SECRET = "different-secret";
+  process.env.TINA4_SECRET = "different-secret";
   assert("token signed with custom secret is invalid with different env SECRET", validToken(tokenWithSecret) === false);
   // Restore
-  process.env.SECRET = SECRET;
+  process.env.TINA4_SECRET = SECRET;
 }
 
 {

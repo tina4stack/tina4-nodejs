@@ -1,6 +1,6 @@
 {
   "name": "@tina4/orm",
-  "version": "3.11.32",
+  "version": "3.12.0",
   "description": "Tina4 ORM — models, auto-CRUD, query builder",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,6 +14,7 @@
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "pg": "^8.20.0"
+  }
 }

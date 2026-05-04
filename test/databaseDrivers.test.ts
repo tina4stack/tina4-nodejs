@@ -148,7 +148,14 @@ try {
   skip("PostgreSQL missing package error", "pg package is installed");
 } catch (e) {
   const msg = (e as Error).message;
-  assert("PostgreSQL missing package error", msg.includes("pg") && (msg.includes("Install") || msg.includes("requires")));
+  // If the message references pg + Install/requires we know it's the "missing package"
+  // path we expected. Otherwise pg IS installed and the connect() failed for a
+  // different reason (no server, auth, etc.) — that's a SKIP, not a FAIL.
+  if (msg.includes("pg") && (msg.includes("Install") || msg.includes("requires"))) {
+    assert("PostgreSQL missing package error", true);
+  } else {
+    skip("PostgreSQL missing package error", "pg package is installed");
+  }
 }
 
 // MySQL

@@ -300,25 +300,25 @@ console.log("\nResource Registration and Read");
 console.log("\nLocalhost Detection");
 
 {
-  const oldHost = process.env.HOST_NAME;
+  const oldHost = process.env.TINA4_HOST_NAME;
 
-  process.env.HOST_NAME = "localhost:7148";
+  process.env.TINA4_HOST_NAME = "localhost:7148";
   assert("isLocalhost — localhost", isLocalhost() === true);
 
-  process.env.HOST_NAME = "127.0.0.1:7148";
+  process.env.TINA4_HOST_NAME = "127.0.0.1:7148";
   assert("isLocalhost — 127.0.0.1", isLocalhost() === true);
 
-  process.env.HOST_NAME = "0.0.0.0:7148";
+  process.env.TINA4_HOST_NAME = "0.0.0.0:7148";
   assert("isLocalhost — 0.0.0.0", isLocalhost() === true);
 
-  process.env.HOST_NAME = "myserver.example.com:7148";
+  process.env.TINA4_HOST_NAME = "myserver.example.com:7148";
   assert("isLocalhost — remote false", isLocalhost() === false);
 
   // Restore
   if (oldHost !== undefined) {
-    process.env.HOST_NAME = oldHost;
+    process.env.TINA4_HOST_NAME = oldHost;
   } else {
-    delete process.env.HOST_NAME;
+    delete process.env.TINA4_HOST_NAME;
   }
 }
 

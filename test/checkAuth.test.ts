@@ -24,7 +24,7 @@ function assert(label: string, condition: boolean) {
 }
 
 const SECRET = "test-secret-for-checkauth";
-process.env.SECRET = SECRET;
+process.env.TINA4_SECRET = SECRET;
 
 console.log("=== checkAuth Tests ===\n");
 

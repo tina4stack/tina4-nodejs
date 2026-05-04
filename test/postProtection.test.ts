@@ -22,7 +22,7 @@ function assert(label: string, condition: boolean) {
 }
 
 const SECRET = "test-secret-key-for-post-protection";
-process.env.SECRET = SECRET;
+process.env.TINA4_SECRET = SECRET;
 const authMw = authMiddleware(SECRET);
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -111,9 +111,9 @@ console.log("\n-- Malformed token --");
 console.log("\n-- Wrong secret --");
 
 {
-  process.env.SECRET = "wrong-secret";
+  process.env.TINA4_SECRET = "wrong-secret";
   const wrongToken = getToken({ userId: 1 });
-  process.env.SECRET = SECRET;
+  process.env.TINA4_SECRET = SECRET;
   const req = mockRequest(`Bearer ${wrongToken}`);
   const mock = mockResponse();
   let nextCalled = false;

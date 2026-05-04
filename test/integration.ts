@@ -76,7 +76,7 @@ process.env.TINA4_DEBUG = "true";
 
 // Set up auth secret and generate a test token for write operations
 const TEST_SECRET = "integration-test-secret";
-process.env.SECRET = TEST_SECRET;
+process.env.TINA4_SECRET = TEST_SECRET;
 const testToken = getToken({ sub: "test-user", role: "admin" }, TEST_SECRET, 3600);
 
 console.log("=== Starting Tina4 Integration Test ===\n");
@@ -239,7 +239,7 @@ console.log(`${"=".repeat(50)}\n`);
 server.close();
 delete process.env.TINA4_RATE_LIMIT;
 delete process.env.TINA4_DEBUG;
-delete process.env.SECRET;
+delete process.env.TINA4_SECRET;
 rmSync(TEST_DIR, { recursive: true });
 
 process.exit(fail > 0 ? 1 : 0);

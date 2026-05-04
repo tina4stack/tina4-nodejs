@@ -822,21 +822,21 @@ async function createAdapterFromUrl(url: string, username?: string, password?: s
 }
 
 /**
- * Initialize the database from a config object or DATABASE_URL env var.
+ * Initialize the database from a config object or TINA4_DATABASE_URL env var.
  * Now returns a Database wrapper instance.
  *
  * Priority:
  *   1. config.url (explicit URL)
- *   2. process.env.DATABASE_URL
+ *   2. process.env.TINA4_DATABASE_URL
  *   3. config.type + config.path (legacy)
  */
 export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
-  // Resolve credentials: config.user > config.username > env DATABASE_USERNAME
-  const resolvedUser = config?.user ?? config?.username ?? process.env.DATABASE_USERNAME;
-  const resolvedPassword = config?.password ?? process.env.DATABASE_PASSWORD;
+  // Resolve credentials: config.user > config.username > env TINA4_DATABASE_USERNAME
+  const resolvedUser = config?.user ?? config?.username ?? process.env.TINA4_DATABASE_USERNAME;
+  const resolvedPassword = config?.password ?? process.env.TINA4_DATABASE_PASSWORD;
 
   // Resolve from URL if provided
-  const url = config?.url ?? process.env.DATABASE_URL;
+  const url = config?.url ?? process.env.TINA4_DATABASE_URL;
 
   if (url) {
     const adapter = await createAdapterFromUrl(url, resolvedUser, resolvedPassword);

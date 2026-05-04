@@ -47,6 +47,83 @@ const TINA4_VERSION = readPackageVersion();
 /** Cache Frond instances by template directory to avoid repeated instantiation. */
 const frondCache = new Map<string, InstanceType<any>>();
 
+// ─── Legacy env var guard (v3.12 hard rename) ────────────────────────────
+// All framework env vars now require the TINA4_ prefix. If any of these
+// pre-3.12 names are present in the environment we refuse to boot —
+// silently ignoring them would cause auth/db/mail to fall back to
+// defaults with no warning. Each maps to its new TINA4_-prefixed
+// canonical name.
+const _LEGACY_ENV_VARS: Record<string, string> = {
+  DATABASE_URL:           "TINA4_DATABASE_URL",
+  DATABASE_USERNAME:      "TINA4_DATABASE_USERNAME",
+  DATABASE_PASSWORD:      "TINA4_DATABASE_PASSWORD",
+  DB_URL:                 "TINA4_DATABASE_URL",
+  SECRET:                 "TINA4_SECRET",
+  API_KEY:                "TINA4_API_KEY",
+  JWT_ALGORITHM:          "TINA4_JWT_ALGORITHM",
+  SMTP_HOST:              "TINA4_MAIL_HOST",
+  SMTP_PORT:              "TINA4_MAIL_PORT",
+  SMTP_USERNAME:          "TINA4_MAIL_USERNAME",
+  SMTP_PASSWORD:          "TINA4_MAIL_PASSWORD",
+  SMTP_FROM:              "TINA4_MAIL_FROM",
+  SMTP_FROM_NAME:         "TINA4_MAIL_FROM_NAME",
+  IMAP_HOST:              "TINA4_MAIL_IMAP_HOST",
+  IMAP_PORT:              "TINA4_MAIL_IMAP_PORT",
+  IMAP_USER:              "TINA4_MAIL_IMAP_USERNAME",
+  IMAP_PASS:              "TINA4_MAIL_IMAP_PASSWORD",
+  HOST_NAME:              "TINA4_HOST_NAME",
+  SWAGGER_TITLE:          "TINA4_SWAGGER_TITLE",
+  SWAGGER_DESCRIPTION:    "TINA4_SWAGGER_DESCRIPTION",
+  SWAGGER_VERSION:        "TINA4_SWAGGER_VERSION",
+  ORM_PLURAL_TABLE_NAMES: "TINA4_ORM_PLURAL_TABLE_NAMES",
+};
+
+/**
+ * Refuse to boot if pre-3.12 un-prefixed env vars are still set.
+ *
+ * Tina4 v3.12 hard-renamed every framework-specific env var to use the
+ * `TINA4_` prefix. Booting silently with a legacy `DATABASE_URL` or
+ * `SECRET` would let auth, DB, or mail fall back to insecure defaults
+ * while the user thought their config was being read. Better to die
+ * loudly with a list of names to fix.
+ *
+ * Bypass with `TINA4_ALLOW_LEGACY_ENV=true` in CI / migration scripts
+ * that genuinely need both names set during a transition window.
+ */
+export function _checkLegacyEnvVars(): void {
+  if (isTruthy(process.env.TINA4_ALLOW_LEGACY_ENV)) {
+    return;
+  }
+  const found = Object.keys(_LEGACY_ENV_VARS)
+    .filter((name) => process.env[name] !== undefined)
+    .sort();
+  if (found.length === 0) {
+    return;
+  }
+  const bar = "─".repeat(72);
+  const lines: string[] = [
+    "",
+    bar,
+    "Tina4 v3.12 requires TINA4_ prefix on all framework env vars.",
+    "Your environment still has these legacy names:",
+    "",
+  ];
+  for (const old of found) {
+    const next = _LEGACY_ENV_VARS[old];
+    lines.push(`    ${old.padEnd(28)}  →  ${next}`);
+  }
+  lines.push(
+    "",
+    "Run `tina4 env-migrate` to rewrite your .env automatically,",
+    "or rename manually. See https://tina4.com/release/3.12.0",
+    "Set TINA4_ALLOW_LEGACY_ENV=true to bypass during migration.",
+    bar,
+    "",
+  );
+  process.stderr.write(lines.join("\n") + "\n");
+  process.exit(2);
+}
+
 /**
  * Kill whatever process is listening on *port*.
  * Uses lsof on macOS/Linux and netstat + taskkill on Windows.
@@ -231,23 +308,96 @@ function getGalleryDeployedState(): Record<string, boolean> {
   return state;
 }
 
+/**
+ * Auto-routing scans this single subdirectory of src/templates/. Only files
+ * in src/templates/pages/ become URLs — everything else (partials, layouts,
+ * base.twig, errors, components, macros) is never URL-exposed and remains
+ * renderable only via {% include %} / {% extends %} / res.render().
+ *
+ * Convention adapted from Next.js' pages/ directory and Nuxt's pages/ folder.
+ * Explicit, secure by default, no skip lists to maintain.
+ */
+const TEMPLATE_PAGES_DIR = "pages";
+
+/**
+ * Honour TINA4_TEMPLATE_ROUTING=off|false|0|no|disabled as an explicit kill
+ * switch. Default: enabled. Drop a file in src/templates/pages/ and it serves
+ * at the matching URL — the zero-config Tina4 convention. Operators who want
+ * explicit-only routing can set TINA4_TEMPLATE_ROUTING=off and every URL
+ * must be registered via get() / post() (or be a static file).
+ */
+export function templateAutoRoutingEnabled(): boolean {
+  const val = (process.env.TINA4_TEMPLATE_ROUTING ?? "on").trim().toLowerCase();
+  return !["off", "false", "0", "no", "disabled"].includes(val);
+}
+
+/**
+ * RFC 7231 / RFC 9110 status reason phrases. Used to write a correct HTTP
+ * status line — previously some paths wrote "HTTP/1.1 404 OK" because the
+ * canonical phrase wasn't being looked up per code.
+ */
+const HTTP_REASON_PHRASES: Record<number, string> = {
+  100: "Continue", 101: "Switching Protocols",
+  200: "OK", 201: "Created", 202: "Accepted", 204: "No Content",
+  206: "Partial Content",
+  301: "Moved Permanently", 302: "Found", 303: "See Other",
+  304: "Not Modified", 307: "Temporary Redirect", 308: "Permanent Redirect",
+  400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
+  404: "Not Found", 405: "Method Not Allowed", 406: "Not Acceptable",
+  409: "Conflict", 410: "Gone", 413: "Content Too Large",
+  415: "Unsupported Media Type", 422: "Unprocessable Content",
+  429: "Too Many Requests",
+  500: "Internal Server Error", 501: "Not Implemented",
+  502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout",
+};
+
+/**
+ * Return the canonical HTTP reason phrase for `status`. Falls back to a
+ * sensible label when an exotic status is used. Never returns an empty string.
+ */
+export function httpReason(status: number): string {
+  const phrase = HTTP_REASON_PHRASES[status];
+  if (phrase) return phrase;
+  return status >= 200 && status < 300 ? "OK" : "Error";
+}
+
 /** Template cache: url_path -> template_file. Null until first production lookup. */
 let templateCache: Map<string, string> | null = null;
 
 /**
- * Resolve a URL path to a template file in src/templates/.
+ * Reset the production template cache. Tests use this between scenarios so
+ * a fresh scan picks up fixture files in a tmp project.
+ */
+export function resetTemplateCache(): void {
+  templateCache = null;
+}
+
+/**
+ * Resolve a URL path to a template file in src/templates/pages/.
+ *
+ * Only files inside `src/templates/pages/` auto-route from a URL. Anything
+ * in `src/templates/` outside `pages/` (partials, layouts, base.twig,
+ * errors, components) is never served standalone.
+ *
  * Dev mode: checks filesystem every time for live changes.
  * Production: uses a cached lookup built once at startup.
+ *
+ * The whole feature can be turned off with `TINA4_TEMPLATE_ROUTING=off`.
  */
-function resolveTemplate(pathname: string, templatesDir: string): string | null {
-  const cleanPath = pathname.replace(/^\//, "") || "index";
+export function resolveTemplate(pathname: string, templatesDir: string): string | null {
+  if (!templateAutoRoutingEnabled()) return null;
+
+  const cleanPath = pathname.replace(/^\/+/, "").replace(/\/+$/, "") || "index";
   const isDev = (process.env.TINA4_DEBUG ?? "false").toLowerCase() === "true";
 
   if (isDev) {
+    // Skip underscore-prefixed files even within pages/ — they're private
+    // by Hugo/Jekyll convention (helpers, fragments) and shouldn't auto-serve.
+    if (cleanPath.split("/").some((seg) => seg.startsWith("_"))) return null;
+    const pagesDir = resolve(templatesDir, TEMPLATE_PAGES_DIR);
     for (const ext of [".twig", ".html"]) {
-      const candidate = cleanPath + ext;
-      if (existsSync(resolve(templatesDir, candidate))) {
-        return candidate;
+      if (existsSync(resolve(pagesDir, cleanPath + ext))) {
+        return `${TEMPLATE_PAGES_DIR}/${cleanPath}${ext}`;
       }
     }
     return null;
@@ -256,21 +406,24 @@ function resolveTemplate(pathname: string, templatesDir: string): string | null 
   // Production: cached lookup
   if (!templateCache) {
     templateCache = new Map();
-    if (existsSync(templatesDir)) {
+    const pagesDir = resolve(templatesDir, TEMPLATE_PAGES_DIR);
+    if (existsSync(pagesDir)) {
       const scan = (dir: string, prefix: string) => {
         for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          // Skip private files even within pages/ (e.g. pages/_helper.twig)
+          if (entry.name.startsWith("_")) continue;
           const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
           if (entry.isDirectory()) {
             scan(resolve(dir, entry.name), rel);
           } else if (entry.name.endsWith(".twig") || entry.name.endsWith(".html")) {
             const urlPath = rel.replace(/\.(twig|html)$/, "");
             if (!templateCache!.has(urlPath)) {
-              templateCache!.set(urlPath, rel);
+              templateCache!.set(urlPath, `${TEMPLATE_PAGES_DIR}/${rel}`);
             }
           }
         }
       };
-      scan(templatesDir, "");
+      scan(pagesDir, "");
     }
   }
   return templateCache.get(cleanPath) ?? null;
@@ -502,6 +655,9 @@ export async function startServer(config?: Tina4Config): Promise<{
   // Load .env early so TINA4_DEBUG is available for cluster decision
   loadEnv();
 
+  // Refuse to boot with pre-3.12 un-prefixed env vars set.
+  _checkLegacyEnvVars();
+
   const resolved = resolvePortAndHost(config);
   const host = resolved.host;
   let port = resolved.port;
@@ -566,6 +722,9 @@ ${reset}
   const modelsDir = resolve(base, config?.modelsDir ?? "src/models");
   const ormDir = resolve(base, "src/orm");
   const staticDir = resolve(base, config?.staticDir ?? "public");
+  // src/public is the second-tier static dir (Python parity). When the user
+  // ships a Vite/SPA build there, src/public/index.html auto-serves at "/".
+  const srcPublicDir = resolve(base, "src/public");
   const templatesDir = resolve(base, config?.templatesDir ?? "src/templates");
 
   // .env already loaded above for cluster decision
@@ -834,8 +993,12 @@ ${reset}
         res.raw.end = wrappedEnd;
       }
 
-      // Try static files first (project public dir, then framework built-in public dir)
+      // Try static files first (project public dir, src/public dir, then framework built-in)
+      // Index resolution: "/" or "/foo/" picks up index.html so SPA builds Just Work.
       if (existsSync(staticDir) && tryServeStatic(staticDir, req, res)) {
+        return;
+      }
+      if (existsSync(srcPublicDir) && tryServeStatic(srcPublicDir, req, res)) {
         return;
       }
       if (tryServeStatic(BUILTIN_PUBLIC_DIR, req, res)) {
@@ -944,34 +1107,45 @@ ${reset}
         return;
       }
 
-      // Try serving a template file (e.g. /hello -> src/templates/hello.twig or hello.html)
+      // Try serving a template file (e.g. /hello -> src/templates/pages/hello.twig)
       if ((req.method ?? "GET") === "GET") {
         const tplFile = resolveTemplate(pathname, templatesDir);
         if (tplFile) {
-          const html = readFileSync(resolve(templatesDir, tplFile), "utf-8");
-          res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          res.raw.end(html);
+          // Render through Frond so {% include %} / {% extends %} work,
+          // not raw readFileSync.
+          if (frondEngine) {
+            const html = frondEngine.render(tplFile, {});
+            res.raw.writeHead(200, undefined, { "Content-Type": "text/html; charset=utf-8" });
+            res.raw.end(html);
+          } else {
+            const html = readFileSync(resolve(templatesDir, tplFile), "utf-8");
+            res.raw.writeHead(200, undefined, { "Content-Type": "text/html; charset=utf-8" });
+            res.raw.end(html);
+          }
           return;
         }
 
-        // Show landing page for "/" when no template exists
-        if (pathname === "/") {
+        // Landing page renders only at "/" AND only when TINA4_DEBUG=true.
+        // In production "/" with no static index.html and no pages/index.twig
+        // falls through to a clean 404 — the framework's branded welcome,
+        // gallery and version never leak to real users.
+        if (pathname === "/" && isDevMode()) {
           const allRoutes = router.getRoutes().map((r) => ({
             method: r.method,
             pattern: r.pattern,
             flags: [] as string[],
           }));
           const html = renderLandingPage(allRoutes, port);
-          res.raw.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.raw.writeHead(200, undefined, { "Content-Type": "text/html; charset=utf-8" });
           res.raw.end(html);
           return;
         }
       }
 
-      // 404
+      // 404 — pass canonical reason phrase so the status line is well-formed
       const html404 = await renderErrorPage(404, { path: pathname }, templatesDir);
       if (html404) {
-        res.raw.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+        res.raw.writeHead(404, httpReason(404), { "Content-Type": "text/html; charset=utf-8" });
         res.raw.end(html404);
       } else {
         res({ error: "Not Found", statusCode: 404, message: `No route found for ${req.method} ${pathname}` }, 404);

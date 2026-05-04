@@ -32,7 +32,7 @@ function base64urlDecode(str: string): Buffer {
 /**
  * Create a signed JWT token.
  *
- * Secret is always read from `process.env.SECRET`.
+ * Secret is always read from `process.env.TINA4_SECRET`.
  * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
  *
  * @param payload          - Claims to encode (e.g. `{ userId: 1, role: "admin" }`)
@@ -50,15 +50,15 @@ export function getToken(
   let resolvedSecret: string;
   let resolvedExpiresIn: number;
   if (typeof secretOrExpiresIn === "number") {
-    resolvedSecret = process.env.SECRET ?? "";
+    resolvedSecret = process.env.TINA4_SECRET ?? "";
     resolvedExpiresIn = secretOrExpiresIn;
   } else {
-    resolvedSecret = secretOrExpiresIn ?? process.env.SECRET ?? "";
+    resolvedSecret = secretOrExpiresIn ?? process.env.TINA4_SECRET ?? "";
     resolvedExpiresIn = expiresIn;
   }
 
   if (!resolvedSecret) {
-    console.warn("Auth: SECRET not set in .env — using blank secret (insecure)");
+    console.warn("Auth: TINA4_SECRET not set in .env — using blank secret (insecure)");
   }
   const resolvedAlgorithm = algorithm ?? process.env.TINA4_JWT_ALGORITHM ?? "HS256";
 
@@ -81,13 +81,13 @@ export function getToken(
 /**
  * Validate a JWT token and return the decoded payload, or false if invalid/expired.
  *
- * Secret is always read from `process.env.SECRET`.
+ * Secret is always read from `process.env.TINA4_SECRET`.
  * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
  */
 export function validToken(token: string, secret?: string, algorithm?: string): boolean {
-  const resolvedSecret = secret ?? process.env.SECRET ?? "";
+  const resolvedSecret = secret ?? process.env.TINA4_SECRET ?? "";
   if (!resolvedSecret) {
-    console.warn("Auth: SECRET not set in .env — using blank secret (insecure)");
+    console.warn("Auth: TINA4_SECRET not set in .env — using blank secret (insecure)");
   }
   const resolvedAlgorithm = algorithm ?? process.env.TINA4_JWT_ALGORITHM ?? "HS256";
   try {
@@ -240,7 +240,7 @@ export function authMiddleware(secret?: string, algorithm: string = "HS256"): Mi
  * Refresh a JWT token — validate the existing token then re-sign
  * with a fresh expiry.
  *
- * Secret is always read from `process.env.SECRET`.
+ * Secret is always read from `process.env.TINA4_SECRET`.
  *
  * @param token     - Existing JWT to refresh
  * @param expiresIn - New lifetime in seconds (default 3600)

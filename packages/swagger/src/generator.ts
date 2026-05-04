@@ -15,9 +15,9 @@ export function generate(
   const spec: OpenAPISpec = {
     openapi: "3.0.3",
     info: {
-      title: process.env.SWAGGER_TITLE ?? "Tina4 API",
-      version: "0.0.1",
-      description: "Auto-generated API documentation",
+      title: process.env.TINA4_SWAGGER_TITLE ?? "Tina4 API",
+      version: process.env.TINA4_SWAGGER_VERSION ?? "0.0.1",
+      description: process.env.TINA4_SWAGGER_DESCRIPTION ?? "Auto-generated API documentation",
     },
     paths: {},
     components: { schemas: {} },

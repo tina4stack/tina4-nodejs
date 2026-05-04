@@ -12,7 +12,7 @@ export type {
   WebSocketRouteDefinition,
 } from "./types.js";
 
-export { startServer, resolvePortAndHost, handle, start, stop } from "./server.js";
+export { startServer, resolvePortAndHost, handle, start, stop, httpReason, resolveTemplate, resetTemplateCache, templateAutoRoutingEnabled } from "./server.js";
 export { background, stopAllBackgroundTasks, backgroundTaskCount } from "./background.js";
 export { Router, RouteGroup, RouteRef, defaultRouter, runRouteMiddlewares } from "./router.js";
 export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";

@@ -41,7 +41,7 @@ function extractToken(html: string): string {
 }
 
 // Set up
-process.env.SECRET = "test-secret-key";
+process.env.TINA4_SECRET = "test-secret-key";
 const tmpDir = "/tmp/frond-formtoken-test";
 try { rmSync(tmpDir, { recursive: true }); } catch {}
 mkdirSync(tmpDir, { recursive: true });

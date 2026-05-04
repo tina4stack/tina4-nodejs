@@ -28,7 +28,7 @@ function assert(label: string, condition: boolean) {
 }
 
 const SECRET = "secure-test-secret";
-process.env.SECRET = SECRET;
+process.env.TINA4_SECRET = SECRET;
 
 // Dummy handler
 const handler: RouteHandler = async (_req: Tina4Request, res: Tina4Response) => {

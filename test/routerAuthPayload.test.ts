@@ -31,7 +31,7 @@ function assert(label: string, condition: boolean) {
 }
 
 const SECRET = "test-router-auth-secret";
-process.env.SECRET = SECRET;
+process.env.TINA4_SECRET = SECRET;
 
 // Dummy handler — used when we only care about auth enforcement, not route logic
 const handler: RouteHandler = async (_req: Tina4Request, res: Tina4Response) => {

@@ -168,17 +168,17 @@ assert("pagination offset works", page2.length === 2);
 // --- createMessenger factory ---
 console.log("\n--- createMessenger factory ---");
 
-// Without SMTP_HOST set, should return DevMailbox
-const origHost = process.env.SMTP_HOST;
+// Without TINA4_MAIL_HOST set, should return DevMailbox
+const origHost = process.env.TINA4_MAIL_HOST;
 const origEnv = process.env.NODE_ENV;
-delete process.env.SMTP_HOST;
+delete process.env.TINA4_MAIL_HOST;
 process.env.NODE_ENV = "development";
 
 const devMsngr = createMessenger();
-assert("createMessenger returns DevMailbox when no SMTP_HOST", devMsngr instanceof DevMailbox);
+assert("createMessenger returns DevMailbox when no TINA4_MAIL_HOST", devMsngr instanceof DevMailbox);
 
 // Restore
-if (origHost) process.env.SMTP_HOST = origHost;
+if (origHost) process.env.TINA4_MAIL_HOST = origHost;
 if (origEnv) process.env.NODE_ENV = origEnv;
 
 // Cleanup

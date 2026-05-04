@@ -1271,7 +1271,7 @@ export function setFormTokenSessionId(sessionId: string): void {
 }
 
 function _buildFormTokenJwt(descriptor: string = ""): string {
-  const secret = process.env.SECRET || "tina4-default-secret";
+  const secret = process.env.TINA4_SECRET || "tina4-default-secret";
   const ttlMinutes = parseInt(process.env.TINA4_TOKEN_LIMIT || "60", 10);
 
   const header = { alg: "HS256", typ: "JWT" };

@@ -32,7 +32,7 @@ function assert(label: string, condition: boolean) {
 }
 
 const SECRET = "csrf-test-secret";
-process.env.SECRET = SECRET;
+process.env.TINA4_SECRET = SECRET;
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -89,12 +89,12 @@ function mockResponse(): { res: Tina4Response; raw: MockRaw; state: ResponseStat
 /** Helper: ensure env is set before each logical test group */
 function setupEnv() {
   process.env.TINA4_CSRF = "true";
-  process.env.SECRET = SECRET;
+  process.env.TINA4_SECRET = SECRET;
 }
 
 function cleanEnv() {
   delete process.env.TINA4_CSRF;
-  delete process.env.SECRET;
+  delete process.env.TINA4_SECRET;
 }
 
 console.log("=== CSRF Middleware Tests ===\n");
@@ -304,9 +304,9 @@ console.log("\n-- Invalid tokens --");
 
 {
   setupEnv();
-  process.env.SECRET = "wrong-secret";
+  process.env.TINA4_SECRET = "wrong-secret";
   const wrongSecretToken = getToken({ csrf: true }, 3600);
-  process.env.SECRET = SECRET;
+  process.env.TINA4_SECRET = SECRET;
   const req = mockRequest({
     method: "POST",
     body: { formToken: wrongSecretToken },
@@ -417,7 +417,7 @@ console.log("\n-- CSRF env toggle --");
 
 {
   process.env.TINA4_CSRF = "false";
-  process.env.SECRET = SECRET;
+  process.env.TINA4_SECRET = SECRET;
   const req = mockRequest({ method: "POST" });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
@@ -426,7 +426,7 @@ console.log("\n-- CSRF env toggle --");
 
 {
   process.env.TINA4_CSRF = "0";
-  process.env.SECRET = SECRET;
+  process.env.TINA4_SECRET = SECRET;
   const req = mockRequest({ method: "POST" });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
@@ -435,7 +435,7 @@ console.log("\n-- CSRF env toggle --");
 
 {
   process.env.TINA4_CSRF = "no";
-  process.env.SECRET = SECRET;
+  process.env.TINA4_SECRET = SECRET;
   const req = mockRequest({ method: "POST" });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
@@ -444,7 +444,7 @@ console.log("\n-- CSRF env toggle --");
 
 {
   process.env.TINA4_CSRF = "true";
-  process.env.SECRET = SECRET;
+  process.env.TINA4_SECRET = SECRET;
   const req = mockRequest({ method: "POST" });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
@@ -453,7 +453,7 @@ console.log("\n-- CSRF env toggle --");
 
 {
   delete process.env.TINA4_CSRF;
-  process.env.SECRET = SECRET;
+  process.env.TINA4_SECRET = SECRET;
   const req = mockRequest({ method: "POST" });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);

@@ -302,28 +302,24 @@ export class Messenger {
   private imapPass: string;
 
   constructor(options?: MessengerOptions) {
-    // Priority: constructor > TINA4_MAIL_* > SMTP_* > sensible default
+    // Priority: constructor > TINA4_MAIL_* > sensible default.
+    // Legacy SMTP_*/IMAP_* env vars were removed in v3.12 — boot guard rejects them.
     this.host = options?.host
       ?? process.env.TINA4_MAIL_HOST
-      ?? process.env.SMTP_HOST
       ?? "localhost";
     this.port = options?.port
-      ?? parseInt(process.env.TINA4_MAIL_PORT ?? process.env.SMTP_PORT ?? "587", 10);
+      ?? parseInt(process.env.TINA4_MAIL_PORT ?? "587", 10);
     this.username = options?.username
       ?? process.env.TINA4_MAIL_USERNAME
-      ?? process.env.SMTP_USERNAME
       ?? "";
     this.password = options?.password
       ?? process.env.TINA4_MAIL_PASSWORD
-      ?? process.env.SMTP_PASSWORD
       ?? "";
     this.fromAddress = options?.fromAddress
       ?? process.env.TINA4_MAIL_FROM
-      ?? process.env.SMTP_FROM
       ?? (this.username || "noreply@localhost");
     this.fromName = options?.fromName
       ?? process.env.TINA4_MAIL_FROM_NAME
-      ?? process.env.SMTP_FROM_NAME
       ?? "";
 
     // Encryption: constructor > .env > backward-compat useTls > default "tls"
@@ -340,15 +336,14 @@ export class Messenger {
 
     this.imapHost = options?.imapHost
       ?? process.env.TINA4_MAIL_IMAP_HOST
-      ?? process.env.IMAP_HOST
       ?? "";
     this.imapPort = options?.imapPort
-      ?? parseInt(process.env.TINA4_MAIL_IMAP_PORT ?? process.env.IMAP_PORT ?? "993", 10);
+      ?? parseInt(process.env.TINA4_MAIL_IMAP_PORT ?? "993", 10);
     this.imapUser = options?.imapUser
-      ?? process.env.IMAP_USER
+      ?? process.env.TINA4_MAIL_IMAP_USERNAME
       ?? this.username;
     this.imapPass = options?.imapPass
-      ?? process.env.IMAP_PASS
+      ?? process.env.TINA4_MAIL_IMAP_PASSWORD
       ?? this.password;
   }
 

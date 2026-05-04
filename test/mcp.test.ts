@@ -437,24 +437,24 @@ console.log("\n=== Security Tests ===\n");
 
 // test_localhost_detection
 {
-  const oldHost = process.env.HOST_NAME;
+  const oldHost = process.env.TINA4_HOST_NAME;
   try {
-    process.env.HOST_NAME = "localhost:7148";
+    process.env.TINA4_HOST_NAME = "localhost:7148";
     assert("localhost:7148 is localhost", isLocalhost() === true);
 
-    process.env.HOST_NAME = "127.0.0.1:7148";
+    process.env.TINA4_HOST_NAME = "127.0.0.1:7148";
     assert("127.0.0.1 is localhost", isLocalhost() === true);
 
-    process.env.HOST_NAME = "0.0.0.0:7148";
+    process.env.TINA4_HOST_NAME = "0.0.0.0:7148";
     assert("0.0.0.0 is localhost", isLocalhost() === true);
 
-    process.env.HOST_NAME = "myserver.example.com:7148";
+    process.env.TINA4_HOST_NAME = "myserver.example.com:7148";
     assert("remote host is not localhost", isLocalhost() === false);
   } finally {
     if (oldHost !== undefined) {
-      process.env.HOST_NAME = oldHost;
+      process.env.TINA4_HOST_NAME = oldHost;
     } else {
-      delete process.env.HOST_NAME;
+      delete process.env.TINA4_HOST_NAME;
     }
   }
 }

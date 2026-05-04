@@ -157,7 +157,7 @@ export function schemaFromParams(params: McpToolParam[]): JsonSchema {
 // ── Localhost detection ──────────────────────────────────────
 
 export function isLocalhost(): boolean {
-  const hostEnv = process.env.HOST_NAME || "localhost:7148";
+  const hostEnv = process.env.TINA4_HOST_NAME || "localhost:7148";
   const host = hostEnv.split(":")[0];
   return ["localhost", "127.0.0.1", "0.0.0.0", "::1", ""].includes(host);
 }

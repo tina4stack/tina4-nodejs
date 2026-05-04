@@ -1206,9 +1206,9 @@ function parseEnvFile(): Record<string, string> {
 const handleConnections: RouteHandler = (_req, res) => {
   const env = parseEnvFile();
   res.json({
-    url: env.DATABASE_URL ?? "",
-    username: env.DATABASE_USERNAME ?? "",
-    password: env.DATABASE_PASSWORD ? "***" : "",
+    url: env.TINA4_DATABASE_URL ?? "",
+    username: env.TINA4_DATABASE_USERNAME ?? "",
+    password: env.TINA4_DATABASE_PASSWORD ? "***" : "",
   });
 };
 
@@ -1274,7 +1274,7 @@ const handleConnectionsSave: RouteHandler = (req, res) => {
   try {
     const envPath = join(process.cwd(), ".env");
     const lines = existsSync(envPath) ? readFileSync(envPath, "utf-8").split("\n") : [];
-    const keysFound: Record<string, boolean> = { DATABASE_URL: false, DATABASE_USERNAME: false, DATABASE_PASSWORD: false };
+    const keysFound: Record<string, boolean> = { TINA4_DATABASE_URL: false, TINA4_DATABASE_USERNAME: false, TINA4_DATABASE_PASSWORD: false };
     const newLines: string[] = [];
     for (const line of lines) {
       const trimmed = line.trim();
@@ -1283,12 +1283,12 @@ const handleConnectionsSave: RouteHandler = (req, res) => {
         continue;
       }
       const key = trimmed.split("=", 1)[0].trim();
-      if (key === "DATABASE_URL") { newLines.push(`DATABASE_URL=${url}`); keysFound.DATABASE_URL = true; }
-      else if (key === "DATABASE_USERNAME") { newLines.push(`DATABASE_USERNAME=${username}`); keysFound.DATABASE_USERNAME = true; }
-      else if (key === "DATABASE_PASSWORD") { newLines.push(`DATABASE_PASSWORD=${password}`); keysFound.DATABASE_PASSWORD = true; }
+      if (key === "TINA4_DATABASE_URL") { newLines.push(`TINA4_DATABASE_URL=${url}`); keysFound.TINA4_DATABASE_URL = true; }
+      else if (key === "TINA4_DATABASE_USERNAME") { newLines.push(`TINA4_DATABASE_USERNAME=${username}`); keysFound.TINA4_DATABASE_USERNAME = true; }
+      else if (key === "TINA4_DATABASE_PASSWORD") { newLines.push(`TINA4_DATABASE_PASSWORD=${password}`); keysFound.TINA4_DATABASE_PASSWORD = true; }
       else { newLines.push(line); }
     }
-    const values: Record<string, string> = { DATABASE_URL: url, DATABASE_USERNAME: username, DATABASE_PASSWORD: password };
+    const values: Record<string, string> = { TINA4_DATABASE_URL: url, TINA4_DATABASE_USERNAME: username, TINA4_DATABASE_PASSWORD: password };
     for (const [key, found] of Object.entries(keysFound)) {
       if (!found) newLines.push(`${key}=${values[key]}`);
     }

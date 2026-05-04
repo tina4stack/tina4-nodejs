@@ -40,7 +40,7 @@ DB_PASSWORD="s3cret with spaces"
 SINGLE_QUOTED='no escape \\n here'
 
 # Export prefix
-export API_KEY=abc123
+export MY_API_KEY=abc123
 
 # Multi-line with backslash
 LONG_VALUE=hello\\
@@ -58,7 +58,7 @@ delete process.env.DB_PORT;
 delete process.env.DB_NAME;
 delete process.env.DB_PASSWORD;
 delete process.env.SINGLE_QUOTED;
-delete process.env.API_KEY;
+delete process.env.MY_API_KEY;
 delete process.env.LONG_VALUE;
 delete process.env.EMPTY_VAR;
 
@@ -68,7 +68,7 @@ assert("Parses basic KEY=value", parsed.DB_HOST === "localhost");
 assert("Parses numeric value as string", parsed.DB_PORT === "5432");
 assert("Parses double-quoted value", parsed.DB_PASSWORD === "s3cret with spaces");
 assert("Parses single-quoted value literally", parsed.SINGLE_QUOTED === "no escape \\n here");
-assert("Strips export prefix", parsed.API_KEY === "abc123");
+assert("Strips export prefix", parsed.MY_API_KEY === "abc123");
 assert("Handles multi-line with backslash", parsed.LONG_VALUE === "helloworld");
 assert("Handles empty value", parsed.EMPTY_VAR === "");
 assert("Skips comments", parsed["# This is a comment"] === undefined);

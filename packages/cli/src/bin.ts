@@ -138,7 +138,7 @@ async function main(): Promise<void> {
 
       loadEnv();
 
-      const dbUrl = process.env.DATABASE_URL;
+      const dbUrl = process.env.TINA4_DATABASE_URL;
       let db: unknown = null;
       if (dbUrl) {
         try {

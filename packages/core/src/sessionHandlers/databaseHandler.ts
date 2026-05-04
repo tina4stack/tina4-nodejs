@@ -42,10 +42,10 @@ export class DatabaseSessionHandler implements SessionHandler {
   }
 
   /**
-   * Resolve the database file path from DATABASE_URL or use the default.
+   * Resolve the database file path from TINA4_DATABASE_URL or use the default.
    */
   private resolveDbPath(): string {
-    const url = process.env.DATABASE_URL;
+    const url = process.env.TINA4_DATABASE_URL;
     if (url && url.startsWith("sqlite://")) {
       // sqlite:///path/to/db  or  sqlite://./relative/path
       return url.replace(/^sqlite:\/\//, "");

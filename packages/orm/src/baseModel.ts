@@ -21,11 +21,11 @@ export function camelToSnake(name: string): string {
 }
 
 /**
- * Check whether ORM_PLURAL_TABLE_NAMES is enabled in .env.
+ * Check whether TINA4_ORM_PLURAL_TABLE_NAMES is enabled in .env.
  * When true, hasMany relationship keys get an "s" suffix (e.g. "posts" instead of "post").
  */
 function _pluralRelKeys(): boolean {
-  const v = process.env.ORM_PLURAL_TABLE_NAMES ?? "";
+  const v = process.env.TINA4_ORM_PLURAL_TABLE_NAMES ?? "";
   return /^(true|1|yes)$/i.test(v);
 }
 
@@ -217,8 +217,8 @@ export class BaseModel {
     try {
       return getAdapter();
     } catch {
-      // No adapter registered — try DATABASE_URL auto-discovery
-      const url = process.env.DATABASE_URL;
+      // No adapter registered — try TINA4_DATABASE_URL auto-discovery
+      const url = process.env.TINA4_DATABASE_URL;
       if (url) {
         const parsed = parseDatabaseUrl(url);
         if (parsed.type === "sqlite") {

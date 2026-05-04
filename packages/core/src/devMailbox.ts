@@ -57,7 +57,7 @@ export class DevMailbox {
     const message: EmailMessage = {
       id,
       type: "outbox",
-      from: from ?? process.env.SMTP_FROM ?? "dev@localhost",
+      from: from ?? process.env.TINA4_MAIL_FROM ?? "dev@localhost",
       to: toList,
       cc,
       bcc,
@@ -286,7 +286,7 @@ export class DevMailbox {
  *
  * Returns DevMailbox when:
  *   - TINA4_DEBUG is "true", OR
- *   - No SMTP_HOST is configured
+ *   - No TINA4_MAIL_HOST is configured
  *
  * Returns a real Messenger otherwise (SMTP configured + not debug mode).
  *
@@ -294,7 +294,7 @@ export class DevMailbox {
  */
 export function createMessenger(): Messenger | DevMailbox {
   const debug = process.env.TINA4_DEBUG;
-  const smtpHost = process.env.SMTP_HOST;
+  const smtpHost = process.env.TINA4_MAIL_HOST;
 
   // Force dev mode when TINA4_DEBUG is truthy
   if (isTruthy(debug)) {
