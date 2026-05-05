@@ -988,6 +988,58 @@ console.log("\n--- renderDump ---");
   else process.env.TINA4_DEBUG = prevDebug;
 }
 
+// ── Filter + property chain (regression for tina4-php#113) ───
+//
+// Property access chained after a filter must resolve as
+// (filter).property, never as a literal `filter.property` filter
+// name. Silent null here once cost a receipt template the entire
+// invoice total — render shows R0.00.
+console.log("\n--- filter + property chain (issue #113) ---");
+{
+  const data113 = { details: [{ groupSummary: { totalAmount: 190 } }] };
+
+  assert(
+    "#113 filter then single property",
+    engine.renderString("{{ details|first.groupSummary.totalAmount }}", data113)
+      === "190",
+  );
+
+  assert(
+    "#113 filter then property in {% set %}",
+    engine.renderString(
+      "{% set summary = details|first.groupSummary %}{{ summary.totalAmount }}",
+      data113,
+    ) === "190",
+  );
+
+  const multi = { invoices: [{ customer: { address: { city: "Cape Town" } } }] };
+  assert(
+    "#113 filter then multi-level chain",
+    engine.renderString("{{ invoices|first.customer.address.city }}", multi)
+      === "Cape Town",
+  );
+
+  const rows = { rows: [{ sku: "A1" }, { sku: "B2" }] };
+  assert(
+    "#113 last filter then property",
+    engine.renderString("{{ rows|last.sku }}", rows) === "B2",
+  );
+
+  // number_format(2) — verifies filter args path stays intact
+  assert(
+    "#113 number_format(2) preserves filter args",
+    engine.renderString("{{ price|number_format(2) }}", { price: 19.5 })
+      === "19.50",
+  );
+
+  // replace(".", "-") — dots inside quoted args must NOT be split
+  assert(
+    "#113 dot inside quoted filter args is not a property",
+    engine.renderString('{{ stamp|replace(".", "-") }}', { stamp: "2026.05.05" })
+      === "2026-05-05",
+  );
+}
+
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 
