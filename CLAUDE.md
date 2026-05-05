@@ -1,10 +1,10 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.12.2)
+# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.12.3)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.10.95 — The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.12.3 — The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -509,6 +509,383 @@ cache.clear();    // remove everything
 // Get-or-set pattern
 const rows = cache.remember(key, 60, () => db.execute(sql, params));
 ```
+
+## Module: Router (`packages/core/src/router.ts`)
+
+Programmatic route registration. The convention is file-based discovery in `src/routes/`, but a `Router` class and module-level `get`/`post`/etc. helpers are also exported for libraries, plugins, and tests.
+
+```typescript
+import { Router, defaultRouter, get, post, put, patch, del, any } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "@tina4/core";
+
+// Module-level helpers register on the default global router
+get("/api/users", async (req, res) => res.json([]));
+post("/api/users", async (req, res) => res.json({ ok: true }));
+put("/api/users/{id}", handler);
+patch("/api/users/{id}", handler);
+del("/api/users/{id}", handler);   // "del" — "delete" is a reserved word
+any("/api/webhook", handler);      // matches all HTTP methods
+
+// Wildcard routes: catch-all segment
+get("/api/files/{...path}", async (req, res) => {
+  const path = req.params["path"];   // "a/b/c.txt"
+  return res.send(path);
+});
+
+// Fluent route refs — chain auth, cache, middleware
+get("/api/data", handler).secure().cache(60);
+
+// Dedicated Router instance (e.g. for sub-apps or testing)
+const r = new Router();
+r.get("/ping", async (_req, res) => res.json({ pong: true }));
+r.group("/api/v1", (g) => {
+  g.get("/users", listUsers);
+  g.post("/users", createUser);
+});
+```
+
+**Path patterns:** `{id}` for dynamic params, `{...slug}` for catch-all. Read params via `req.params["id"]`.
+
+## Module: Database (`packages/orm/src/database.ts`)
+
+Full Database API. The same instance covers all five drivers (sqlite, postgres, mysql, mssql, firebird) — pick the driver via `DATABASE_URL` or pass a `DatabaseConfig` to `initDatabase()`.
+
+```typescript
+import { initDatabase, Database, DatabaseResult } from "@tina4/orm";
+
+const db = await initDatabase({ url: "sqlite:///app.db" });
+// Connection pooling: pass `pool: 4` for round-robin connections.
+
+// Reads — synchronous (node:sqlite is sync; other adapters are wrapped)
+db.fetch(sql, params?, limit?, offset?): DatabaseResult           // .records, .count, .limit, .offset
+db.fetchOne<T>(sql, params?): T | null
+
+// Writes — return boolean for simple writes, result for RETURNING / CALL / EXEC / SELECT
+db.execute(sql, params?): boolean | unknown
+db.executeMany(sql, paramSets): unknown[]                         // wrapped in a transaction
+db.insert(table, data): DatabaseWriteResult
+db.update(table, data, filter?, params?): DatabaseWriteResult
+db.delete(table, filter?, params?): DatabaseWriteResult
+
+// Last-write metadata
+db.getLastId(): string | number | null
+db.getError(): string | null
+
+// Transactions — autoCommit defaults to ON unless TINA4_DB_AUTOCOMMIT=false
+db.startTransaction(): void
+db.commit(): void
+db.rollback(): void
+
+// Schema introspection
+db.tableExists(name): boolean
+db.getTables(): string[]
+db.getColumns(table): { name, type, nullable?, default?, primaryKey? }[]
+
+// Race-safe sequence — uses tina4_sequences for SQLite/MySQL/MSSQL,
+// auto-creates Postgres sequences, and uses native Firebird generators.
+db.getNextId(table, pkColumn?, generatorName?): number
+
+// Query cache (TINA4_DB_CACHE=true)
+db.cacheStats(): { enabled, size, ttl }
+db.cacheClear(): void
+
+// Connection pool access (null when pooling disabled)
+db.pool
+```
+
+**`tina4_sequences` table** — Auto-created by `getNextId()` on first use for SQLite, MySQL, and MSSQL. Stores the current sequence value per table. Do not modify this table manually.
+
+## Module: ORM (`packages/orm/src/baseModel.ts`)
+
+Active-Record base class. Models live in `src/models/` and are auto-discovered. Use `static fields` (not decorators) — same convention across all four frameworks.
+
+```typescript
+import { BaseModel, ormBind } from "@tina4/orm";
+
+export default class User extends BaseModel {
+  static tableName = "users";
+  static fields = {
+    id:        { type: "integer" as const, primaryKey: true, autoIncrement: true },
+    email:     { type: "string"  as const, required: true, maxLength: 255 },
+    author_id: { type: "foreignKey" as const, references: "Author" }, // auto-wires belongsTo + hasMany
+  };
+  static softDelete = true;   // optional — toggles is_deleted column
+}
+
+// Instance methods (chainable where it makes sense)
+const user = new User({ email: "alice@example.com" });
+user.save();              // returns this on success, null on failure
+user.delete();            // soft-delete if enabled, otherwise hard
+user.forceDelete();       // bypasses soft-delete
+user.restore();           // clears soft-delete marker
+user.load(sql, params?, include?): boolean
+user.validate(): string[];                 // empty = valid
+user.toDict(include?); user.toAssoc(include?); user.toObject();
+user.toArray(): unknown[]; user.toList();
+user.toJson(include?): string;
+user.hasOne(RelatedClass, fk?);
+user.hasMany(RelatedClass, fk?, limit?, offset?);
+user.belongsTo(RelatedClass, fk?);
+
+// Static methods — also callable as `new User().all()`
+User.find(id, include?);
+User.findById(id, include?);
+User.findOrFail(id);                       // throws if missing
+User.create(data);                         // construct + save
+User.all(where?, params?, include?);
+User.select(sql, params?);
+User.selectOne(sql, params?, include?);
+User.where(conditions, params?, limit?, offset?, include?);
+User.count(conditions?, params?);
+User.withTrashed(conditions?, params?, limit?, offset?);
+User.scope(name, filterSql, params?);     // registers a reusable named method
+User.createTable();
+User.query(): QueryBuilder;
+BaseModel.registerModel(name, class);     // for foreignKey name resolution
+
+ormBind(db);   // bind a Database instance for all models in the registry
+```
+
+**Soft delete:** set `static softDelete = true`. Adds an `is_deleted` INTEGER column (0/1). `delete()` flips the flag, `forceDelete()` removes the row, `restore()` clears it.
+
+## Module: QueryBuilder (`packages/orm/src/queryBuilder.ts`)
+
+Fluent builder for JOINs, aggregates, and GROUP BY. Prefer over raw `db.fetch()` for any query more involved than a single table read.
+
+```typescript
+import { QueryBuilder } from "@tina4/orm";
+
+// Standalone
+const orders = QueryBuilder.fromTable("orders o")
+  .select("o.*", "c.name as customer_name")
+  .join("customers c", "o.customer_id = c.id")
+  .where("o.status = ?", ["pending"])
+  .orderBy("o.created_at DESC")
+  .limit(20)
+  .get();                       // → row[]
+
+// LEFT JOIN
+QueryBuilder.fromTable("products p")
+  .leftJoin("categories c", "p.category_id = c.id")
+  .get();
+
+// Aggregates with HAVING
+const top = QueryBuilder.fromTable("orders")
+  .select("customer_id", "SUM(total) as total")
+  .groupBy("customer_id")
+  .having("SUM(total) > ?", [1000])
+  .first();                     // → single row | null
+
+// From an ORM model
+const adults = User.query().where("age > ?", [18]).orderBy("name").get();
+
+// Methods: fromTable, select, where, orWhere, join, leftJoin, groupBy, having,
+// orderBy, limit, get, first, count, exists, toSql, toMongo
+```
+
+**NoSQL bridge:** `toMongo()` returns `{ filter, projection, sort, limit, skip }` — the same fluent state expressed as a MongoDB query document.
+
+## Module: Migration (`packages/orm/src/migration.ts`)
+
+SQL-file based migrations under `migrations/`. The framework runs pending migrations on startup; the helpers here are for programmatic control (CLI, scripts, tests).
+
+```typescript
+import {
+  migrate, rollback, status, createMigration, syncModels,
+  ensureMigrationTable, isMigrationApplied, recordMigration,
+} from "@tina4/orm";
+
+await migrate(db);                          // run all pending migrations
+await rollback(db, 1);                      // roll back last N batches (default 1)
+await status(db);                           // pending vs applied
+await createMigration("add users table");   // scaffolds migrations/<ts>_add_users_table.sql
+syncModels(discoveredModels);               // auto-create tables / add columns from `static fields`
+```
+
+Migration tracking lives in `tina4_migration` (id, name, batch, applied_at). Schema sync runs alongside SQL migrations on boot.
+
+## Module: Frond (`packages/frond/src/engine.ts`)
+
+Zero-dependency Twig-compatible template engine. Replaces the older `Template`. Supports variables, filters, `if`/`for`/`set`, `extends`/`block`, `include`, `macro`, comments, whitespace control, tests, fragment caching, and sandbox mode.
+
+```typescript
+import { Frond } from "@tina4/frond";
+
+const frond = new Frond("src/templates");
+
+frond.render("page.twig", { user, posts });           // file template
+frond.renderString("Hello {{ name }}", { name: "Al" });
+
+// Customise
+frond.addFilter("upper", (v) => String(v).toUpperCase());
+frond.addGlobal("siteName", "Tina4");
+frond.addTest("even", (v) => Number(v) % 2 === 0);
+
+// Sandbox — restrict capabilities for user-supplied templates
+frond.sandbox(["upper"], ["if"], ["x"]);   // allowed: filters, tags, vars
+frond.unsandbox();
+```
+
+- **SafeString** — filters can return `new SafeString(value)` to bypass auto-escaping.
+- **Fragment caching** — `{% cache "key" 300 %}...{% endcache %}` caches block output for TTL seconds.
+- **Raw blocks** — `{% raw %}...{% endraw %}` outputs literal template syntax.
+- **Pre-compiled regexes** + token caching (cleared on file mtime change in dev mode) for ~2.8x render improvement over the naive path.
+
+## Module: Api (`packages/core/src/api.ts`)
+
+Zero-dep HTTP client over `node:http` / `node:https`. Used by integrations, queue producers, health checks, and tests.
+
+```typescript
+import { Api } from "@tina4/core";
+
+const api = new Api("https://api.example.com", "" /* authHeader */, 30 /* timeoutSeconds */);
+
+api.addHeaders({ "X-Trace-Id": "abc" });
+api.setBearerToken(token);
+api.setBasicAuth(user, pass);
+api.setIgnoreSsl(true);                  // dev / self-signed certs only
+
+const r = await api.get("/users", { active: "1" });
+await api.post("/users",   { name: "Alice" });
+await api.put("/users/1",  { name: "Alice" });
+await api.patch("/users/1",{ active: false });
+await api.delete("/users/1");
+await api.sendRequest("OPTIONS", "/users");
+
+// Result shape (all methods return the same):
+//   { http_code: 200, body: <parsed JSON or string>, headers: {...}, error: null }
+```
+
+`error` is non-null on transport failure or timeout; `http_code` is `null` if the request never reached the server.
+
+## Module: Queue (`packages/core/src/queue.ts`)
+
+Pluggable job queue (file/RabbitMQ/Kafka/MongoDB backends). The same fluent API works against any backend — pick via env vars.
+
+```typescript
+import { Queue } from "@tina4/core";
+
+const queue = new Queue("emails", 3 /* maxRetries */);
+
+const id = queue.push({ to: "a@b.c", body: "hi" }, 0 /* delaySec */, 0 /* priority */);
+const job = queue.pop();
+queue.size("pending");
+queue.purge("completed");
+queue.retryFailed();
+queue.deadLetters();
+queue.produce("notifications", payload, 0, 0);
+
+// Job methods
+job?.complete();
+job?.fail("smtp timeout");
+job?.reject("permanent");
+job?.retry(60);
+
+// Long-running consumer — async generator
+for await (const job of queue.consume("emails")) {
+  try {
+    await sendEmail(job.payload);
+    job.complete();
+  } catch (err) {
+    job.fail(String(err));
+  }
+}
+// pollInterval=0 for single-pass drain (tests).
+```
+
+## Module: Background Tasks (`packages/core/src/background.ts`)
+
+Periodic callbacks that run alongside the HTTP server. Use this instead of bare `setInterval` so timers integrate with the server lifecycle and clear on graceful shutdown.
+
+```typescript
+import { background, stopAllBackgroundTasks, backgroundTaskCount } from "@tina4/core";
+
+// Run every 2 seconds
+const task = background(() => processQueue(), 2);
+
+// Async callbacks are fine — rejections are caught and logged.
+background(async () => {
+  const r = await api.get("/health");
+  if (r.error) Log.warn("health check failed");
+}, 30);
+
+task.stop();              // stop just this one
+stopAllBackgroundTasks(); // stop everything (also runs on SIGTERM/SIGINT)
+backgroundTaskCount();    // test helper
+```
+
+**Never use bare `setInterval` for periodic work in a Tina4 app.** `background()` catches errors, integrates with shutdown signals, calls `timer.unref()` so it doesn't block process exit, and matches Python's `background()` API exactly.
+
+## Module: DI Container (`packages/core/src/container.ts`)
+
+Lightweight dependency injection. Transient factories build a fresh instance every `get()`; singletons memoise the first build. Node.js is single-threaded, so no locking is needed.
+
+```typescript
+import { Container, container } from "@tina4/core";
+
+// Use the default global container, or construct your own
+container.register("mailer", () => new MailService());        // transient
+container.singleton("db", () => initDatabase({ url }));        // singleton
+
+const mailer = container.get<MailService>("mailer");           // new each call
+const db     = container.get<Database>("db");                  // same each call
+
+container.has("db");      // true
+container.has("missing"); // false
+container.reset();        // clear all registrations + cached instances
+```
+
+## Module: Response Cache (`packages/core/src/cache.ts`)
+
+Multi-backend cache. Used as middleware to cache GET responses, or directly via `cacheGet`/`cacheSet` for arbitrary key/value caching. Backends: memory (default), redis/valkey, file.
+
+```typescript
+import {
+  responseCache, cacheGet, cacheSet, cacheDelete, cacheClear, cacheStats,
+} from "@tina4/core";
+
+// Middleware on a route
+get("/api/products", listProducts).middleware(responseCache({ ttl: 60 }));
+
+// Direct key/value usage (same shape across all four frameworks)
+cacheSet("user:1", { name: "Alice" }, 120);
+const u = cacheGet("user:1");
+cacheDelete("user:1");
+cacheClear();
+
+cacheStats();   // { hits, misses, size, backend }
+```
+
+Environment:
+- `TINA4_CACHE_BACKEND` — `memory` | `redis` | `file` (default: `memory`)
+- `TINA4_CACHE_URL` — `redis://localhost:6379` (redis backend only)
+- `TINA4_CACHE_TTL` — default TTL seconds (default: `0` = disabled)
+- `TINA4_CACHE_MAX_ENTRIES` — max entries (default: `1000`)
+
+## Firebird-Specific Rules
+
+When using Firebird as the database engine:
+
+- **No `IF NOT EXISTS`** for `ALTER TABLE ADD` — the migration runner detects already-present columns via `RDB$RELATION_FIELDS` and skips silently.
+- **No `AUTOINCREMENT`** — use generators. `db.getNextId(table, pkColumn?, generatorName?)` creates and uses generators (default name: `GEN_<TABLE>_ID`).
+- **Pagination** — `SQLTranslator.limitToRows()` rewrites `LIMIT n OFFSET m` to Firebird's `ROWS m+1 TO m+n` syntax automatically.
+- **No `TEXT` type** — use `VARCHAR(n)` or `BLOB SUB_TYPE TEXT`. The migration tracker schema (`tina4_migration`) uses `VARCHAR(500)` for the name column on Firebird.
+- **No `REAL`/`FLOAT`** — use `DOUBLE PRECISION`.
+- **BLOB handling** — `db.fetch()` and `db.fetchOne()` auto-convert memoryview/Buffer BLOB columns to `Buffer` (raw bytes, not base64).
+- **No triggers, no foreign keys** in migrations on Firebird-targeted projects — relationships are wired in the ORM layer instead.
+
+## How DevReload works
+
+The `tina4` Rust CLI is the sole file watcher for the Tina4 stack — there is no framework-side watcher. The flow:
+
+1. Rust CLI (`npx tina4nodejs serve`) watches `src/`, `migrations/`, `.env`. Noise is filtered (Access/Metadata events, `node_modules`, `.git`, `dist`, `logs`, `.log`/`.db*`/`.swp` files) and a real mtime check defeats overlayfs spurious events.
+2. On a real change, the CLI POSTs `/__dev/api/reload` to the running server.
+3. The framework bumps its in-memory reload counter and (a) broadcasts `{type: 'reload'}` over WebSocket at `/__dev_reload`, and (b) exposes the counter at `GET /__dev/api/mtime` for the polling fallback.
+4. The browser's dev toolbar JS listens on the WS (primary) and polls `/__dev/api/mtime` every 3s (fallback). On a change it reloads the page, or swaps the stylesheet if the change was CSS.
+
+No configuration needed — set `TINA4_DEBUG=true` to enable. If you're running without the Rust CLI (e.g. Docker), there is no automatic reload; the production path is unaffected.
+
+**AI dual-port mode:** when `TINA4_DEBUG=true` and `TINA4_NO_AI_PORT` is unset, the main port suppresses reload/toolbar injection (so AI tools never trigger a refresh) and a second server on `port+1000` provides the normal hot-reload experience for browser testing.
 
 ## Conventions You Must Follow
 
