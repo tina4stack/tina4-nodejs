@@ -23,6 +23,66 @@ function requireFirebird(): any {
   }
 }
 
+// Detects a Windows drive-letter prefix like "C:/" or "C:\". The leading-slash
+// variant ("/C:/...") shows up after URL parsing strips one slash off
+// "firebird://host:port/C:/...".
+const WIN_DRIVE_RE = /^\/?[A-Za-z]:[/\\]/;
+
+/**
+ * Turn a URL path component into a Firebird database identifier.
+ *
+ * Firebird is the awkward one — it needs either an absolute file path on the
+ * server, a Windows drive-letter path, or an alias name. The classic URI form
+ * uses a double-slash to keep the leading "/" of an absolute path through
+ * URL parsing:
+ *
+ *     firebird://host:port//firebird/data/app.fdb   ->  /firebird/data/app.fdb
+ *
+ * But that double slash is unintuitive to anyone used to the way
+ * postgres / mysql / mssql encode the database name. We accept five
+ * equivalent forms and normalise all of them:
+ *
+ *   - `//abs/path/db.fdb`    -> `/abs/path/db.fdb`   (classic double-slash)
+ *   - `/abs/path/db.fdb`     -> `/abs/path/db.fdb`   (single-slash, what most people type)
+ *   - `/C:/Data/db.fdb`      -> `C:/Data/db.fdb`     (Windows, leading URL slash dropped)
+ *   - `/C%3A/Data/db.fdb`    -> `C:/Data/db.fdb`     (Windows with URL-encoded colon)
+ *   - `/employee`            -> `employee`           (alias — single token)
+ *
+ * Aliases are detected as the leftover case: a single token with no
+ * slashes. Anything path-like is kept as a path.
+ */
+export function normalizeFirebirdDbIdentifier(rawPath: string): string {
+  let decoded = decodeURIComponent(rawPath);
+
+  // Classic double-slash form: //abs/path -> /abs/path
+  if (decoded.startsWith("//")) {
+    decoded = decoded.slice(1);
+  }
+
+  // Windows drive-letter — drop the URL-introduced leading slash.
+  // /C:/Data/db.fdb -> C:/Data/db.fdb
+  if (WIN_DRIVE_RE.test(decoded)) {
+    if (decoded.startsWith("/")) {
+      decoded = decoded.slice(1);
+    }
+    return decoded;
+  }
+
+  // Look at the content after stripping the leading slash. If it's a single
+  // token with no separators, it's a Firebird alias — return WITHOUT the
+  // leading slash (the alias name itself is the identifier).
+  const body = decoded.startsWith("/") ? decoded.slice(1) : decoded;
+  if (body && !body.includes("/") && !body.includes("\\")) {
+    return body;
+  }
+
+  // Otherwise it's a file path. If it already has a leading slash, keep it.
+  // If it's a relative-looking path (slash-separated but no leading "/")
+  // promote it to absolute — Firebird needs absolute paths and we don't know
+  // the server's CWD anyway.
+  return decoded.startsWith("/") ? decoded : "/" + decoded;
+}
+
 export interface FirebirdConfig {
   host?: string;
   port?: number;
@@ -69,6 +129,21 @@ export class FirebirdAdapter implements DatabaseAdapter {
       };
     }
 
+    // Firebird database identifier resolution — two layers:
+    //
+    // 1. `TINA4_DATABASE_FIREBIRD_PATH` env override wins if set. Useful for
+    //    Windows users with raw backslash paths (no URL encoding required)
+    //    and for ops setups that keep server URL and DB location in separate
+    //    config layers.
+    // 2. Otherwise normalise whatever the URL or config supplied — accepts
+    //    every sensible variant (single/double slash, drive letter, alias).
+    const envOverride = process.env.TINA4_DATABASE_FIREBIRD_PATH;
+    if (envOverride && envOverride.length > 0) {
+      fbConfig.database = envOverride;
+    } else if (typeof fbConfig.database === "string" && fbConfig.database.length > 0) {
+      fbConfig.database = normalizeFirebirdDbIdentifier(fbConfig.database);
+    }
+
     await new Promise<void>((resolve, reject) => {
       fb.attach(fbConfig, (err: Error | null, db: any) => {
         if (err) reject(err);
@@ -82,6 +157,8 @@ export class FirebirdAdapter implements DatabaseAdapter {
 
   private parseUrl(url: string): { host?: string; port?: number; user?: string; password?: string; database?: string } {
     // firebird://user:pass@host:port/path/to/db.fdb
+    // The path part after the host is normalised by normalizeFirebirdDbIdentifier()
+    // in connect(); here we just preserve it (with the leading "/" the regex strips).
     const match = url.match(/firebird:\/\/(?:([^:]+):([^@]+)@)?([^:/]+)(?::(\d+))?\/(.*)/);
     if (match) {
       return {
