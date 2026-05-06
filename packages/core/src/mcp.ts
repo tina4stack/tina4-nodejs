@@ -162,6 +162,44 @@ export function isLocalhost(): boolean {
   return ["localhost", "127.0.0.1", "0.0.0.0", "::1", ""].includes(host);
 }
 
+// ── MCP env config (Python parity) ───────────────────────────
+
+/** Truthy check that mirrors `dotenv.isTruthy` without the import cycle. */
+function envTruthy(val: string | undefined): boolean {
+  if (val == null) return false;
+  return ["true", "1", "yes", "on"].includes(val.trim().toLowerCase());
+}
+
+/**
+ * Whether the built-in MCP server should auto-start.
+ *
+ * Default: `true` when `TINA4_DEBUG=true`, `false` otherwise. The `TINA4_MCP`
+ * env var can force either state explicitly. Matches the Python framework
+ * which only exposes MCP endpoints in dev mode by default.
+ */
+export function mcpEnabled(): boolean {
+  const raw = process.env.TINA4_MCP;
+  if (raw === undefined || raw.trim() === "") {
+    return envTruthy(process.env.TINA4_DEBUG);
+  }
+  return envTruthy(raw);
+}
+
+/**
+ * Resolve the MCP HTTP port. Default: HTTP server port + 2000.
+ *
+ * `TINA4_MCP_PORT` overrides directly. The `mainPort` argument is the
+ * primary HTTP port (the framework passes `port` from `resolvePortAndHost`).
+ */
+export function mcpPort(mainPort: number = 7148): number {
+  const raw = process.env.TINA4_MCP_PORT;
+  if (raw && raw.trim() !== "") {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n > 0) return n;
+  }
+  return mainPort + 2000;
+}
+
 // ── McpServer class ──────────────────────────────────────────
 
 export class McpServer {

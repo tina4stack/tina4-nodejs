@@ -15,7 +15,7 @@ import { createResponse, setDefaultTemplatesDir } from "./response.js";
 import { MiddlewareChain, cors, requestLogger } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
 import { loadEnv, isTruthy } from "./dotenv.js";
-import { createHealthRoute } from "./health.js";
+import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
 import { DevAdmin, RequestInspector } from "./devAdmin.js";
@@ -198,15 +198,30 @@ function openBrowser(url: string) {
 /**
  * Resolve port and host with priority: explicit config > ENV var > default.
  * Exported for testability.
+ *
+ * Host resolution prefers `TINA4_HOST` (the framework-prefixed name —
+ * matches Python parity) and falls back to the unprefixed `HOST` env var
+ * for backwards compatibility.
  */
 export function resolvePortAndHost(config?: { port?: number; host?: string }): { port: number; host: string } {
   const port = config?.port
     ?? (process.env.PORT ? parseInt(process.env.PORT, 10) : undefined)
     ?? 7148;
   const host = config?.host
+    ?? process.env.TINA4_HOST
     ?? process.env.HOST
     ?? "0.0.0.0";
   return { port, host };
+}
+
+/**
+ * Whether the boot banner should be suppressed. Set TINA4_SUPPRESS=true to
+ * silence the ASCII-art banner and route table on startup — useful in CI,
+ * test runners, and embedded contexts where stdout is consumed by another
+ * process.
+ */
+export function isBannerSuppressed(): boolean {
+  return isTruthy(process.env.TINA4_SUPPRESS);
 }
 
 function isDevMode(): boolean {
@@ -677,7 +692,8 @@ export async function startServer(config?: Tina4Config): Promise<{
       const reset = isTty ? "\x1b[0m" : "";
       const logLevel = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
 
-      console.log(`${color}
+      if (!isBannerSuppressed()) {
+        console.log(`${color}
   ______ _             __ __
  /_  __/(_)___  ____ _/ // /
   / /  / / __ \\/ __ \`/ // /_
@@ -691,6 +707,7 @@ ${reset}
   Dashboard: http://localhost:${port}/__dev
   Debug:     OFF (Log level: ${logLevel})
 `);
+      }
 
       for (let i = 0; i < numCPUs; i++) {
         cluster.fork();
@@ -737,9 +754,11 @@ ${reset}
     router.addRoute(route);
   }
 
-  // Register health check endpoint
-  const healthRoute = createHealthRoute(TINA4_VERSION);
-  router.addRoute(healthRoute);
+  // Register health check endpoint(s). createHealthRoutes returns both the
+  // env-configured path (default /__health) and a /health legacy alias.
+  for (const healthRoute of createHealthRoutes(TINA4_VERSION)) {
+    router.addRoute(healthRoute);
+  }
 
   // Initialize Frond template engine
   let frondEngine: any = null;
@@ -837,9 +856,16 @@ ${reset}
     }
   }
 
-  // Initialize Swagger
+  // Initialize Swagger — gated on TINA4_SWAGGER_ENABLED (default: enabled
+  // in debug mode, off in production). Loading the swagger module also
+  // pulls in route discovery for the generator, so skip the import entirely
+  // when disabled.
   try {
     const swagger = await import("../../swagger/src/index.js");
+    if (!swagger.swaggerEnabled()) {
+      // Skip the rest of the swagger block when disabled.
+      throw new Error("__swagger_disabled__");
+    }
     const allRoutes = router.getRoutes();
 
     // Collect model definitions for schema generation
@@ -889,9 +915,12 @@ ${reset}
 
     // Auto-start session — read cookie, create session, save + set cookie on response end
     {
-      const { Session } = await import("./session.js");
+      const { Session, buildSessionCookie } = await import("./session.js");
       const cookieHeader = rawReq.headers.cookie ?? "";
-      const sidMatch = cookieHeader.match(/tina4_session=([^;]+)/);
+      const cookieName = process.env.TINA4_SESSION_NAME ?? "tina4_session";
+      // Build a regex from the (possibly customised) cookie name. Escape regex meta-chars.
+      const escapedName = cookieName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const sidMatch = cookieHeader.match(new RegExp(`${escapedName}=([^;]+)`));
       const existingSid = sidMatch ? sidMatch[1] : undefined;
       const sess = new Session();
       sess.start(existingSid);
@@ -909,8 +938,7 @@ ${reset}
         const newSid = (sess as any).sessionId ?? (sess as any).getSessionId?.();
         if (newSid && newSid !== existingSid && !rawRes.headersSent) {
           const ttl = parseInt(process.env.TINA4_SESSION_TTL ?? "3600", 10);
-          const sameSite = process.env.TINA4_SESSION_SAMESITE ?? "Lax";
-          rawRes.setHeader("Set-Cookie", `tina4_session=${newSid}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${ttl}`);
+          rawRes.setHeader("Set-Cookie", buildSessionCookie(newSid, ttl));
         }
         return origEnd(...args);
       } as typeof rawRes.end;
@@ -1234,7 +1262,8 @@ ${reset}
         ? `\n  Test Port: http://localhost:${testPort} (stable — no hot-reload)`
         : "";
 
-      console.log(`${color}
+      if (!isBannerSuppressed()) {
+        console.log(`${color}
   ______ _             __ __
  /_  __/(_)___  ____ _/ // /
   / /  / / __ \\/ __ \`/ // /_
@@ -1248,6 +1277,7 @@ ${reset}
   Dashboard: http://localhost:${port}/__dev
   Debug:     ${isDebug ? "ON" : "OFF"} (Log level: ${logLevel})${dualPortLines}
 `);
+      }
       const noBrowser = isTruthy(process.env.TINA4_NO_BROWSER);
       if (!noBrowser) {
         // Open browser on test port (hot-reload) if available, otherwise main port

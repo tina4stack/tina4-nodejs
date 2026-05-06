@@ -1,2 +1,2 @@
 export { generate } from "./generator.js";
-export { createSwaggerRoutes } from "./ui.js";
+export { createSwaggerRoutes, swaggerEnabled } from "./ui.js";

@@ -531,10 +531,15 @@ export class Session {
 
   /**
    * Return a Set-Cookie header value for this session.
+   *
+   * Honours these env vars (cross-framework parity):
+   *   TINA4_SESSION_NAME      — cookie name (default: "tina4_session")
+   *   TINA4_SESSION_SAMESITE  — SameSite attribute (default: "Lax")
+   *   TINA4_SESSION_HTTPONLY  — emit HttpOnly (default: true)
+   *   TINA4_SESSION_SECURE    — emit Secure (default: false)
    */
-  cookieHeader(cookieName: string = "tina4_session"): string {
-    const sameSite = process.env.TINA4_SESSION_SAMESITE ?? "Lax";
-    return `${cookieName}=${this.sessionId}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${this.ttl}`;
+  cookieHeader(cookieName?: string): string {
+    return buildSessionCookie(this.sessionId, this.ttl, cookieName);
   }
 
   /**
@@ -554,4 +559,39 @@ export class Session {
     if (!this.sessionId || !this.data) return;
     this.handler.write(this.sessionId, this.data, this.ttl);
   }
+}
+
+/**
+ * Build the `Set-Cookie` header value for a Tina4 session. Centralised so
+ * the auto-cookie path in server.ts and `Session.cookieHeader()` agree on
+ * which env vars are honoured and what the defaults are.
+ *
+ * Env vars (Python parity):
+ *   TINA4_SESSION_NAME      — cookie name (default: "tina4_session")
+ *   TINA4_SESSION_SAMESITE  — SameSite attribute (default: "Lax")
+ *   TINA4_SESSION_HTTPONLY  — emit HttpOnly (default: true)
+ *   TINA4_SESSION_SECURE    — emit Secure (default: false)
+ */
+export function buildSessionCookie(sessionId: string | null, ttl: number, cookieName?: string): string {
+  const name = cookieName ?? process.env.TINA4_SESSION_NAME ?? "tina4_session";
+  const sameSite = process.env.TINA4_SESSION_SAMESITE ?? "Lax";
+
+  // HttpOnly defaults to TRUE (matches existing behaviour and Python parity).
+  // Treat any explicit non-truthy value (false/0/no/off) as opt-out.
+  const httpOnlyRaw = process.env.TINA4_SESSION_HTTPONLY;
+  const httpOnly = httpOnlyRaw === undefined
+    ? true
+    : !["false", "0", "no", "off"].includes(httpOnlyRaw.trim().toLowerCase());
+
+  // Secure defaults to FALSE — only emit when the operator opts in (https
+  // deployments). Setting it eagerly would break http://localhost dev cookies.
+  const secureRaw = process.env.TINA4_SESSION_SECURE ?? "";
+  const secure = ["true", "1", "yes", "on"].includes(secureRaw.trim().toLowerCase());
+
+  const parts = [`${name}=${sessionId ?? ""}`, "Path=/"];
+  if (httpOnly) parts.push("HttpOnly");
+  parts.push(`SameSite=${sameSite}`);
+  if (secure) parts.push("Secure");
+  parts.push(`Max-Age=${ttl}`);
+  return parts.join("; ");
 }

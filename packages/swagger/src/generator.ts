@@ -1,9 +1,17 @@
 import type { RouteDefinition } from "@tina4/core";
 import type { ModelDefinition, FieldDefinition } from "@tina4/orm";
 
+interface OpenAPISpecInfo {
+  title: string;
+  version: string;
+  description?: string;
+  contact?: { name?: string; url?: string; email?: string };
+  license?: { name: string; url?: string };
+}
+
 interface OpenAPISpec {
   openapi: string;
-  info: { title: string; version: string; description?: string };
+  info: OpenAPISpecInfo;
   paths: Record<string, Record<string, unknown>>;
   components?: { schemas?: Record<string, unknown> };
 }
@@ -12,13 +20,30 @@ export function generate(
   routes: RouteDefinition[],
   models: ModelDefinition[] = []
 ): OpenAPISpec {
+  const info: OpenAPISpecInfo = {
+    title: process.env.TINA4_SWAGGER_TITLE ?? "Tina4 API",
+    version: process.env.TINA4_SWAGGER_VERSION ?? "0.0.1",
+    description: process.env.TINA4_SWAGGER_DESCRIPTION ?? "Auto-generated API documentation",
+  };
+
+  // Optional contact email — surfaced in the OpenAPI `info.contact.email`
+  // field when set. Matches the python `SWAGGER_CONTACT_EMAIL` convention.
+  const contactEmail = (process.env.TINA4_SWAGGER_CONTACT_EMAIL ?? "").trim();
+  if (contactEmail.length > 0) {
+    info.contact = { email: contactEmail };
+  }
+
+  // Optional license — accepts a plain SPDX identifier ("MIT", "Apache-2.0")
+  // or a "Name|URL" pair. Empty string disables license output entirely.
+  const licenseRaw = (process.env.TINA4_SWAGGER_LICENSE ?? "").trim();
+  if (licenseRaw.length > 0) {
+    const [name, url] = licenseRaw.split("|").map((s) => s.trim());
+    info.license = url ? { name, url } : { name };
+  }
+
   const spec: OpenAPISpec = {
     openapi: "3.0.3",
-    info: {
-      title: process.env.TINA4_SWAGGER_TITLE ?? "Tina4 API",
-      version: process.env.TINA4_SWAGGER_VERSION ?? "0.0.1",
-      description: process.env.TINA4_SWAGGER_DESCRIPTION ?? "Auto-generated API documentation",
-    },
+    info,
     paths: {},
     components: { schemas: {} },
   };

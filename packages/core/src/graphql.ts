@@ -374,6 +374,29 @@ interface QueryConfig {
   resolver: ResolverFn;
 }
 
+// ── Env-driven config ────────────────────────────────────────
+
+/**
+ * URL the GraphQL handler should be mounted at.
+ * `TINA4_GRAPHQL_ENDPOINT` overrides the default `/graphql`.
+ */
+export function graphqlEndpoint(): string {
+  const raw = (process.env.TINA4_GRAPHQL_ENDPOINT ?? "").trim();
+  if (raw.length === 0) return "/graphql";
+  return raw.startsWith("/") ? raw : `/${raw}`;
+}
+
+/**
+ * Whether to auto-generate the schema from registered ORM models.
+ * `TINA4_GRAPHQL_AUTO_SCHEMA=true` (default) lets the dev server build a
+ * usable schema with no manual wiring; set to `false` to require explicit
+ * `addType` / `addQuery` calls.
+ */
+export function graphqlAutoSchemaEnabled(): boolean {
+  const raw = (process.env.TINA4_GRAPHQL_AUTO_SCHEMA ?? "true").trim().toLowerCase();
+  return ["true", "1", "yes", "on"].includes(raw);
+}
+
 // ── GraphQL Engine ───────────────────────────────────────────
 
 export class GraphQL {

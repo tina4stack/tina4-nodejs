@@ -67,6 +67,8 @@ interface MessengerOptions {
   imapPort?: number;
   imapUser?: string;
   imapPass?: string;
+  /** IMAP transport security: "tls" (default), "starttls", or "none". */
+  imapEncryption?: string;
 }
 
 export interface ImapMessage {
@@ -300,6 +302,7 @@ export class Messenger {
   private imapPort: number;
   private imapUser: string;
   private imapPass: string;
+  private imapEncryption: string;
 
   constructor(options?: MessengerOptions) {
     // Priority: constructor > TINA4_MAIL_* > sensible default.
@@ -345,6 +348,22 @@ export class Messenger {
     this.imapPass = options?.imapPass
       ?? process.env.TINA4_MAIL_IMAP_PASSWORD
       ?? this.password;
+
+    // IMAP encryption — separate from SMTP encryption because IMAP almost
+    // always uses port 993 + implicit TLS while SMTP toggles between 587
+    // (STARTTLS) and 465 (implicit TLS). Default is "tls" to match
+    // industry-standard IMAPS port 993 behaviour.
+    this.imapEncryption = (options?.imapEncryption
+      ?? process.env.TINA4_MAIL_IMAP_ENCRYPTION
+      ?? "tls").toLowerCase();
+  }
+
+  /**
+   * Read-only IMAP encryption mode for inspection / tests.
+   * Returns one of "tls", "starttls", "none", "ssl".
+   */
+  getImapEncryption(): string {
+    return this.imapEncryption;
   }
 
   /**
@@ -570,7 +589,12 @@ export class Messenger {
 
     let socket: net.Socket | tls.TLSSocket;
 
-    if (this.imapPort === 993) {
+    // Honour TINA4_MAIL_IMAP_ENCRYPTION when set; otherwise infer from port.
+    // "tls" / "ssl" → implicit TLS connect; anything else → plain connect.
+    const useTls = this.imapEncryption === "tls" || this.imapEncryption === "ssl"
+      || (this.imapEncryption === "" && this.imapPort === 993);
+
+    if (useTls) {
       socket = tls.connect({ host: this.imapHost, port: this.imapPort, rejectUnauthorized: false });
       await new Promise<void>((resolve, reject) => {
         socket.once("secureConnect", resolve);

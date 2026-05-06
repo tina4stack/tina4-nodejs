@@ -1,4 +1,16 @@
 import type { RouteHandler, RouteDefinition, RouteMeta, Middleware, Tina4Request, Tina4Response, WebSocketRouteHandler, WebSocketRouteDefinition } from "./types.js";
+import { isTruthy } from "./dotenv.js";
+
+/**
+ * Whether `TINA4_TRAILING_SLASH_REDIRECT` is enabled.
+ *
+ * Default: false. When true, a request to `/foo/` that has no exact match
+ * but matches `/foo` will be treated as a hit on `/foo` — callers can use
+ * the returned pattern to issue a 308 redirect (Python parity).
+ */
+export function isTrailingSlashRedirectEnabled(): boolean {
+  return isTruthy(process.env.TINA4_TRAILING_SLASH_REDIRECT);
+}
 
 interface MatchResult {
   handler: RouteHandler;
@@ -199,6 +211,11 @@ export class Router {
 
   /**
    * Match a request method + pathname to a registered route.
+   *
+   * When `TINA4_TRAILING_SLASH_REDIRECT=true` and the request path ends in
+   * a trailing slash that doesn't match a registered route, retry without
+   * the trailing slash. Returning the de-slashed pattern lets callers issue
+   * a 308 redirect instead of a hard 404 — Python parity.
    */
   match(method: string, path: string): MatchResult | null {
     const upperMethod = method.toUpperCase();
@@ -207,6 +224,28 @@ export class Router {
     const routes = this.routes.get(upperMethod);
     if (!routes) return null;
 
+    const direct = this.matchRoute(routes, path);
+    if (direct) return direct;
+
+    // Trailing-slash redirect — strip a single trailing "/" and retry.
+    // Root "/" is intentionally excluded (it's its own route).
+    if (
+      isTrailingSlashRedirectEnabled() &&
+      path.length > 1 &&
+      path.endsWith("/")
+    ) {
+      const stripped = path.replace(/\/+$/, "");
+      if (stripped.length > 0) {
+        const retry = this.matchRoute(routes, stripped);
+        if (retry) return retry;
+      }
+    }
+
+    return null;
+  }
+
+  /** Inner match against a list of compiled routes, no trailing-slash logic. */
+  private matchRoute(routes: CompiledRoute[], path: string): MatchResult | null {
     for (const route of routes) {
       const match = route.regex.exec(path);
       if (match) {
@@ -227,7 +266,6 @@ export class Router {
         };
       }
     }
-
     return null;
   }
 

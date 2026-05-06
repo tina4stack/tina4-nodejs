@@ -12,9 +12,9 @@ export type {
   WebSocketRouteDefinition,
 } from "./types.js";
 
-export { startServer, resolvePortAndHost, handle, start, stop, httpReason, resolveTemplate, resetTemplateCache, templateAutoRoutingEnabled } from "./server.js";
+export { startServer, resolvePortAndHost, handle, start, stop, httpReason, resolveTemplate, resetTemplateCache, templateAutoRoutingEnabled, isBannerSuppressed } from "./server.js";
 export { background, stopAllBackgroundTasks, backgroundTaskCount } from "./background.js";
-export { Router, RouteGroup, RouteRef, defaultRouter, runRouteMiddlewares } from "./router.js";
+export { Router, RouteGroup, RouteRef, defaultRouter, runRouteMiddlewares, isTrailingSlashRedirectEnabled } from "./router.js";
 export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";
 export { discoverRoutes } from "./routeDiscovery.js";
@@ -25,7 +25,7 @@ export { createResponse, errorResponse, setDefaultTemplatesDir, getFrond, setFro
 export { tryServeStatic } from "./static.js";
 export { loadEnv, getEnv, requireEnv, hasEnv, allEnv, resetEnv, isTruthy } from "./dotenv.js";
 export { Log } from "./logger.js";
-export { createHealthRoute } from "./health.js";
+export { createHealthRoute, createHealthRoutes, healthPath } from "./health.js";
 export { rateLimiter } from "./rateLimiter.js";
 export type { RateLimiterConfig } from "./rateLimiter.js";
 export {
@@ -45,7 +45,7 @@ export {
   refreshToken, authenticateRequest, validateApiKey,
   Auth,
 } from "./auth.js";
-export { Session, FileSessionHandler, RedisSessionHandler } from "./session.js";
+export { Session, FileSessionHandler, RedisSessionHandler, buildSessionCookie } from "./session.js";
 export type { SessionConfig, SessionHandler } from "./session.js";
 export { I18n } from "./i18n.js";
 export { FakeData } from "./fakeData.js";
@@ -55,7 +55,7 @@ export { Queue } from "./queue.js";
 export type { QueueConfig, QueueJob, ProcessOptions } from "./queue.js";
 export { createJob } from "./job.js";
 export type { JobData, JobQueueBridge } from "./job.js";
-export { GraphQL, ParseError } from "./graphql.js";
+export { GraphQL, ParseError, graphqlEndpoint, graphqlAutoSchemaEnabled } from "./graphql.js";
 export type { GraphQLField, ResolverFn, GraphQLResult } from "./graphql.js";
 export {
   WebSocketServer,
@@ -108,7 +108,7 @@ export type { WebSocketBackplane } from "./websocketBackplane.js";
 export {
   McpServer, mcpTool, mcpResource, registerDevTools,
   encodeResponse, encodeError, encodeNotification, decodeRequest,
-  schemaFromParams, isLocalhost,
+  schemaFromParams, isLocalhost, mcpEnabled, mcpPort,
   PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR,
 } from "./mcp.js";
 export type { JsonRpcMessage, McpToolDefinition, McpResourceDefinition, JsonSchema, McpToolParam } from "./mcp.js";

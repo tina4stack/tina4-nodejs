@@ -76,11 +76,18 @@ function parseEnvContent(content: string): Record<string, string> {
  * Load environment variables from a .env file into process.env.
  * Does not override existing process.env values unless they are undefined.
  *
- * @param path - Path to the .env file. Defaults to ".env" in the current working directory.
+ * Resolution order for the env file path:
+ *   1. Explicit `path` argument
+ *   2. `TINA4_ENV_FILE` env var (if set and non-empty)
+ *   3. `.env` in the current working directory
+ *
+ * @param path - Path to the .env file. Optional override.
  * @returns The parsed key-value pairs, or an empty object if the file doesn't exist.
  */
 export function loadEnv(path?: string): Record<string, string> {
-  const envPath = resolve(path ?? ".env");
+  const fromEnv = (process.env.TINA4_ENV_FILE ?? "").trim();
+  const target = path ?? (fromEnv.length > 0 ? fromEnv : ".env");
+  const envPath = resolve(target);
 
   if (!existsSync(envPath)) {
     return {};

@@ -14,7 +14,7 @@ export { FetchResult } from "./types.js";
 
 export { DatabaseResult } from "./databaseResult.js";
 export type { ColumnInfoResult } from "./databaseResult.js";
-export { Database, initDatabase, getAdapter, setAdapter, closeDatabase, parseDatabaseUrl, setNamedAdapter, getNamedAdapter } from "./database.js";
+export { Database, initDatabase, getAdapter, setAdapter, closeDatabase, parseDatabaseUrl, setNamedAdapter, getNamedAdapter, resolveDbPool } from "./database.js";
 export type { DatabaseConfig, ParsedDatabaseUrl } from "./database.js";
 export { discoverModels } from "./model.js";
 export type { DiscoveredModel } from "./model.js";

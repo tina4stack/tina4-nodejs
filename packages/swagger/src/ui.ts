@@ -26,6 +26,23 @@ const SWAGGER_UI_HTML = (specUrl: string) => `<!DOCTYPE html>
 </body>
 </html>`;
 
+/**
+ * Whether the Swagger UI + spec routes should be registered at boot.
+ *
+ * Default: enabled when `TINA4_DEBUG=true`, disabled otherwise. Operators
+ * can force either state with `TINA4_SWAGGER_ENABLED=true|false`. Matches
+ * Python parity: dev-only by default to keep production attack surface
+ * minimal, but easy to expose intentionally for public APIs.
+ */
+export function swaggerEnabled(): boolean {
+  const raw = (process.env.TINA4_SWAGGER_ENABLED ?? "").trim().toLowerCase();
+  if (raw === "") {
+    const debug = (process.env.TINA4_DEBUG ?? "").trim().toLowerCase();
+    return ["true", "1", "yes", "on"].includes(debug);
+  }
+  return ["true", "1", "yes", "on"].includes(raw);
+}
+
 export function createSwaggerRoutes(
   getSpec: () => Record<string, unknown>
 ): RouteDefinition[] {

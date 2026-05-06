@@ -830,6 +830,21 @@ async function createAdapterFromUrl(url: string, username?: string, password?: s
  *   2. process.env.TINA4_DATABASE_URL
  *   3. config.type + config.path (legacy)
  */
+/**
+ * Resolve the connection-pool size from `TINA4_DB_POOL`.
+ *
+ * Default: 0 (single-connection mode). Any positive integer enables
+ * round-robin pooling with that many connections — Database.create() honours
+ * this transparently. The env var is the simple deploy-time override; tests
+ * and library users can still pass `pool` directly to Database.create().
+ */
+export function resolveDbPool(): number {
+  const raw = process.env.TINA4_DB_POOL;
+  if (raw === undefined || raw.trim() === "") return 0;
+  const n = parseInt(raw, 10);
+  return isNaN(n) || n < 0 ? 0 : n;
+}
+
 export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
   // Resolve credentials: config.user > config.username > env TINA4_DATABASE_USERNAME
   const resolvedUser = config?.user ?? config?.username ?? process.env.TINA4_DATABASE_USERNAME;
@@ -839,6 +854,12 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
   const url = config?.url ?? process.env.TINA4_DATABASE_URL;
 
   if (url) {
+    const pool = resolveDbPool();
+    if (pool > 0) {
+      // Pool-aware path — delegate to Database.create which manages
+      // round-robin adapter rotation and async-local-storage transaction pinning.
+      return Database.create(url, resolvedUser, resolvedPassword, pool);
+    }
     const adapter = await createAdapterFromUrl(url, resolvedUser, resolvedPassword);
     setAdapter(adapter);
     return new Database(adapter);

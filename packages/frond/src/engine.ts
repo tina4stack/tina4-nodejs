@@ -1327,10 +1327,16 @@ export class Frond {
   private _allowedVars: Set<string> | null;
   private fragmentCache: Map<string, [string, number]>;
   private _autoEscape: boolean;
-  /** Token pre-compilation cache for file templates */
-  private compiled = new Map<string, { tokens: Token[]; mtime: number }>();
+  /**
+   * Token pre-compilation cache for file templates.
+   *
+   * `cachedAt` is captured so the TINA4_TEMPLATE_CACHE_TTL env var can
+   * force re-compilation after N seconds even in production. TTL of 0
+   * means "no time-based invalidation" — entries live forever.
+   */
+  private compiled = new Map<string, { tokens: Token[]; mtime: number; cachedAt: number }>();
   /** Token pre-compilation cache for string templates */
-  private compiledStrings = new Map<string, Token[]>();
+  private compiledStrings = new Map<string, { tokens: Token[]; cachedAt: number }>();
 
   getTemplateDir(): string { return this.templateDir; }
 
@@ -1386,6 +1392,20 @@ export class Frond {
     this.tests[name] = fn;
   }
 
+  /**
+   * Read the cache TTL in seconds. `TINA4_TEMPLATE_CACHE_TTL=0` (the
+   * default) keeps the existing "cache forever in prod" behaviour — any
+   * positive value invalidates compiled tokens after N seconds, useful
+   * when running long-lived servers behind a slow file sync where mtime
+   * isn't a reliable freshness signal.
+   */
+  private cacheTtlSeconds(): number {
+    const raw = process.env.TINA4_TEMPLATE_CACHE_TTL;
+    if (raw === undefined) return 0;
+    const n = parseInt(raw, 10);
+    return isNaN(n) || n < 0 ? 0 : n;
+  }
+
   render(template: string, data?: Record<string, unknown>): string {
     const context = { ...this.globals, ...(data || {}) };
     const filePath = join(this.templateDir, template);
@@ -1395,12 +1415,17 @@ export class Frond {
     }
 
     const debugMode = (process.env.TINA4_DEBUG || "").toLowerCase() === "true";
+    const ttlMs = this.cacheTtlSeconds() * 1000;
 
     if (!debugMode) {
       // Production: use permanent cache (no filesystem checks)
       const cached = this.compiled.get(template);
       if (cached) {
-        return this.executeCached(cached.tokens, context);
+        // TTL=0 means cache forever; any positive value invalidates the
+        // compiled tokens after N seconds.
+        if (ttlMs === 0 || (Date.now() - cached.cachedAt) < ttlMs) {
+          return this.executeCached(cached.tokens, context);
+        }
       }
     }
     // Dev mode: skip cache entirely — always re-read and re-tokenize
@@ -1410,7 +1435,7 @@ export class Frond {
     const source = readFileSync(filePath, "utf-8");
     const mtime = statSync(filePath).mtimeMs;
     const tokens = tokenize(source);
-    this.compiled.set(template, { tokens, mtime });
+    this.compiled.set(template, { tokens, mtime, cachedAt: Date.now() });
     return this.executeWithSource(source, tokens, context);
   }
 
@@ -1418,13 +1443,16 @@ export class Frond {
     const context = { ...this.globals, ...(data || {}) };
 
     const key = createHash("md5").update(source).digest("hex");
-    const cachedTokens = this.compiledStrings.get(key);
-    if (cachedTokens) {
-      return this.executeCached(cachedTokens, context);
+    const ttlMs = this.cacheTtlSeconds() * 1000;
+    const cached = this.compiledStrings.get(key);
+    if (cached) {
+      if (ttlMs === 0 || (Date.now() - cached.cachedAt) < ttlMs) {
+        return this.executeCached(cached.tokens, context);
+      }
     }
 
     const tokens = tokenize(source);
-    this.compiledStrings.set(key, tokens);
+    this.compiledStrings.set(key, { tokens, cachedAt: Date.now() });
     return this.executeCached(tokens, context);
   }
 
