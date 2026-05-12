@@ -1,13 +1,18 @@
 {
   "name": "tina4-nodejs",
-
-
-
-  "version": "3.12.6",
-
+  "version": "3.12.8",
   "type": "module",
-  "description": "Tina4 for Node.js/TypeScript — 54 built-in features, zero dependencies",
-  "keywords": ["tina4", "framework", "web", "api", "orm", "graphql", "websocket", "typescript"],
+  "description": "Tina4 for Node.js/TypeScript \u2014 54 built-in features, zero dependencies",
+  "keywords": [
+    "tina4",
+    "framework",
+    "web",
+    "api",
+    "orm",
+    "graphql",
+    "websocket",
+    "typescript"
+  ],
   "homepage": "https://tina4.com/nodejs",
   "repository": {
     "type": "git",
