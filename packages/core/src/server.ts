@@ -913,6 +913,36 @@ ${reset}
     const req = createRequest(rawReq);
     const res = createResponse(rawRes);
 
+    // RFC 9110 §9.3.2: the server MUST NOT send content in a HEAD response.
+    // Intercept rawRes.write / rawRes.end so every code path — explicit
+    // Router.head() handler, GET auto-fallback, 405 / 404 responses — drops
+    // its body. Content-Length is preserved when present, so cache
+    // validators / link checkers / monitoring probes still see the size
+    // the equivalent GET would have sent.
+    if ((rawReq.method ?? "GET").toUpperCase() === "HEAD") {
+      const origEnd = rawRes.end.bind(rawRes);
+      const origWrite = rawRes.write.bind(rawRes);
+      let accumulated = 0;
+      rawRes.write = ((chunk?: any, _enc?: any, cb?: any): boolean => {
+        if (chunk != null) {
+          accumulated += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
+        }
+        if (typeof cb === "function") cb();
+        return true;
+      }) as typeof rawRes.write;
+      rawRes.end = ((chunk?: any, _enc?: any, cb?: any): any => {
+        if (chunk != null && typeof chunk !== "function") {
+          accumulated += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
+        }
+        if (accumulated > 0 && !rawRes.headersSent && !rawRes.hasHeader("Content-Length")) {
+          rawRes.setHeader("Content-Length", String(accumulated));
+        }
+        const realCb = typeof chunk === "function" ? chunk : cb;
+        return origEnd(undefined, undefined, realCb);
+        void origWrite; // referenced to keep tsc happy
+      }) as typeof rawRes.end;
+    }
+
     // Auto-start session — read cookie, create session, save + set cookie on response end
     {
       const { Session, buildSessionCookie } = await import("./session.js");
@@ -1168,6 +1198,36 @@ ${reset}
           res.raw.end(html);
           return;
         }
+      }
+
+      // RFC 9110 conformance — before falling through to 404, check whether
+      // the PATH is registered under any OTHER method.
+      //   - OPTIONS request → 204 with Allow header (§9.3.7)
+      //   - Any other method (PUT on GET-only, TRACE, CONNECT, etc.)
+      //     → 405 with Allow header (§15.5.6 + §10.2.1)
+      const allowedMethods = router.methodsAllowedForPath(pathname);
+      if (allowedMethods.length > 0) {
+        const allowHeader = allowedMethods.join(", ");
+        const requestMethod = (req.method ?? "GET").toUpperCase();
+        if (requestMethod === "OPTIONS") {
+          res.raw.writeHead(204, undefined, { Allow: allowHeader, "Content-Length": "0" });
+          res.raw.end();
+          return;
+        }
+        const body = JSON.stringify({
+          error: "Method Not Allowed",
+          path: pathname,
+          method: requestMethod,
+          allow: allowedMethods,
+          statusCode: 405,
+        });
+        res.raw.writeHead(405, httpReason(405), {
+          Allow: allowHeader,
+          "Content-Type": "application/json",
+          "Content-Length": String(Buffer.byteLength(body)),
+        });
+        res.raw.end(body);
+        return;
       }
 
       // 404 — pass canonical reason phrase so the status line is well-formed

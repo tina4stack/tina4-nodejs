@@ -191,6 +191,28 @@ export class Router {
   }
 
   /**
+   * Register an explicit HEAD route. By default the framework auto-handles
+   * HEAD by falling back to the GET route and stripping the body
+   * (RFC 9110 §9.3.2). Use this only when you need a HEAD handler that
+   * does something different from GET — e.g. cheaper existence-check
+   * logic, custom validator headers without the cost of building the body.
+   * The framework still strips the response body for you on the way out.
+   */
+  head(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.addRoute({ method: "HEAD", pattern: path, handler, middlewares, meta });
+  }
+
+  /**
+   * Register an explicit OPTIONS route. By default the framework auto-
+   * handles OPTIONS by building an Allow header from every method
+   * registered for the path and returning 204 (RFC 9110 §9.3.7). Use
+   * this to take over that behaviour.
+   */
+  options(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
+    return this.addRoute({ method: "OPTIONS", pattern: path, handler, middlewares, meta });
+  }
+
+  /**
    * Register a route that matches ANY HTTP method.
    */
   any(path: string, handler: RouteHandler, middlewares?: Middleware[], meta?: RouteMeta): RouteRef {
@@ -222,26 +244,63 @@ export class Router {
 
     // Try exact method first, then ANY routes are already registered under each method
     const routes = this.routes.get(upperMethod);
-    if (!routes) return null;
+    if (routes) {
+      const direct = this.matchRoute(routes, path);
+      if (direct) return direct;
 
-    const direct = this.matchRoute(routes, path);
-    if (direct) return direct;
+      // Trailing-slash redirect — strip a single trailing "/" and retry.
+      // Root "/" is intentionally excluded (it's its own route).
+      if (
+        isTrailingSlashRedirectEnabled() &&
+        path.length > 1 &&
+        path.endsWith("/")
+      ) {
+        const stripped = path.replace(/\/+$/, "");
+        if (stripped.length > 0) {
+          const retry = this.matchRoute(routes, stripped);
+          if (retry) return retry;
+        }
+      }
+    }
 
-    // Trailing-slash redirect — strip a single trailing "/" and retry.
-    // Root "/" is intentionally excluded (it's its own route).
-    if (
-      isTrailingSlashRedirectEnabled() &&
-      path.length > 1 &&
-      path.endsWith("/")
-    ) {
-      const stripped = path.replace(/\/+$/, "");
-      if (stripped.length > 0) {
-        const retry = this.matchRoute(routes, stripped);
-        if (retry) return retry;
+    // RFC 9110 §9.3.2: HEAD is identical to GET except for the absence
+    // of a response body. If no explicit HEAD route matched, fall back
+    // to the GET route — the dispatcher strips the body on the way out.
+    if (upperMethod === "HEAD") {
+      const getRoutes = this.routes.get("GET");
+      if (getRoutes) {
+        return this.matchRoute(getRoutes, path);
       }
     }
 
     return null;
+  }
+
+  /**
+   * Return the list of HTTP methods registered for ``path``, in canonical
+   * order GET / POST / PUT / PATCH / DELETE / HEAD / OPTIONS. Used by the
+   * dispatcher to build the ``Allow:`` header on 405 / OPTIONS responses
+   * (RFC 9110 §10.2.1, §9.3.7).
+   *
+   * If GET is registered, HEAD is appended implicitly (HEAD auto-fallback).
+   * OPTIONS is appended whenever any method exists for the path (the
+   * framework auto-handles OPTIONS).
+   */
+  methodsAllowedForPath(path: string): string[] {
+    const order = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+    const seen = new Set<string>();
+    for (const m of order) {
+      const routes = this.routes.get(m);
+      if (!routes) continue;
+      if (this.matchRoute(routes, path)) {
+        seen.add(m);
+      }
+    }
+    if (seen.size > 0) {
+      if (seen.has("GET")) seen.add("HEAD");
+      seen.add("OPTIONS");
+    }
+    return order.filter((m) => seen.has(m));
   }
 
   /** Inner match against a list of compiled routes, no trailing-slash logic. */
