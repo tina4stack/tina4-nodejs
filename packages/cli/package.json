@@ -1,7 +1,7 @@
 {
   "name": "tina4nodejs",
-  "version": "3.12.9",
-  "description": "Tina4 CLI \u2014 The Intelligent Native Application 4ramework",
+  "version": "3.12.10",
+  "description": "Tina4 CLI — The Intelligent Native Application 4ramework",
   "type": "module",
   "bin": {
     "tina4nodejs": "./dist/bin.js",
