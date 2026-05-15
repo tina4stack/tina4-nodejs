@@ -20,6 +20,24 @@ export interface Tina4Session {
 export interface Tina4Request extends IncomingMessage {
   params: Record<string, string>;
   query: Record<string, string>;
+  /**
+   * Request path only — no query string. Matches `request.path` in
+   * Python/PHP/Ruby. Example: `/users/42`.
+   */
+  path: string;
+  /**
+   * Raw query string with no leading "?". Matches `request.query_string`
+   * (Python/Ruby) and `request.queryString` (PHP). Example: `"page=2"`.
+   */
+  queryString: string;
+  /**
+   * Full absolute URL — `scheme://host[:port]/path[?query]`.
+   * Honours X-Forwarded-Proto / X-Forwarded-Host. Matches PHP/Ruby/Python parity.
+   *
+   * Note: this overrides Node's native `IncomingMessage.url` (which contains
+   * only path+query). Inside Tina4 handlers, `req.url` is always the full URL.
+   */
+  url: string;
   body: unknown;
   ip: string;
   files: Record<string, UploadedFile | UploadedFile[]>;

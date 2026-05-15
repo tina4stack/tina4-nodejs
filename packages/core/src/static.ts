@@ -27,8 +27,15 @@ export function tryServeStatic(
   req: Tina4Request,
   res: Tina4Response
 ): boolean {
-  const url = req.url ?? "/";
-  const pathname = url.split("?")[0];
+  // Prefer req.path (always path-only, set by createRequest). Fall back to
+  // parsing req.url for hand-rolled request objects in unit tests.
+  let pathname = req.path;
+  if (!pathname) {
+    const raw = req.url ?? "/";
+    pathname = raw.startsWith("http")
+      ? new URL(raw).pathname
+      : raw.split("?")[0];
+  }
 
   // Try exact file match, then index.html for directory requests
   const candidates = [

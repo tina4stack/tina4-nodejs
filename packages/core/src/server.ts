@@ -984,7 +984,7 @@ ${reset}
       // Parse request body
       await req.parseBody();
 
-      const pathname = (req.url ?? "/").split("?")[0];
+      const pathname = req.path;
 
       // Track request start time for dev inspector
       const reqStartTime = DevAdmin.isEnabled() ? Date.now() : 0;
@@ -1252,7 +1252,7 @@ ${reset}
           const html500 = await renderErrorPage(500, {
             error_message: errorMessage,
             request_id: `${Date.now().toString(36)}`,
-            path: (req.url ?? "/").split("?")[0],
+            path: req.path,
           }, templatesDir);
           if (html500) {
             res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });

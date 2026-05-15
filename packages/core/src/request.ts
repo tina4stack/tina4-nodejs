@@ -3,7 +3,16 @@ import type { Tina4Request, UploadedFile } from "./types.js";
 
 export function createRequest(req: IncomingMessage): Tina4Request {
   const tReq = req as Tina4Request;
-  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+
+  // Resolve scheme + host honouring proxy headers — parity with PHP/Python/Ruby.
+  const xfProto = req.headers["x-forwarded-proto"];
+  const proto = (Array.isArray(xfProto) ? xfProto[0] : xfProto)
+    ?? ((req.socket as { encrypted?: boolean })?.encrypted ? "https" : "http");
+  const xfHost = req.headers["x-forwarded-host"];
+  const host = (Array.isArray(xfHost) ? xfHost[0] : xfHost)
+    ?? (req.headers.host ?? "localhost");
+
+  const url = new URL(req.url ?? "/", `${proto}://${host}`);
   const query: Record<string, string> = {};
   for (const [key, value] of url.searchParams) {
     query[key] = value;
@@ -11,6 +20,13 @@ export function createRequest(req: IncomingMessage): Tina4Request {
 
   tReq.params = {};
   tReq.query = query;
+  // Path, query string, and full URL — same shape across all four frameworks.
+  // `path` is the URL path only; `queryString` is the raw query without "?".
+  // `url` is overridden from Node's IncomingMessage.url (path+query) to the
+  // full absolute URL — parity with PHP/Python/Ruby.
+  tReq.path = url.pathname;
+  tReq.queryString = url.search.replace(/^\?/, "");
+  tReq.url = url.toString();
   tReq.body = undefined;
   tReq.files = {};
   tReq.contentType = (req.headers["content-type"] ?? "") as string;
