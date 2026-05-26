@@ -869,6 +869,20 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
   const rawType = config?.type ?? "sqlite";
   const type = rawType === "sqlserver" ? "mssql" : rawType;
 
+  // Loud warning when we hit the default SQLite path because nothing was
+  // configured. Silent fallback was the cause of "my migrations went to the
+  // wrong DB" — the developer thought their .env was being honoured.
+  // Only warn when the caller passed no config AND no env var was set; an
+  // explicit `{ type: "sqlite" }` call is intentional and stays silent.
+  if (config === undefined && !process.env.TINA4_DATABASE_URL) {
+    const path = "./data/tina4.db";
+    console.warn(
+      `[tina4] No TINA4_DATABASE_URL set — falling back to SQLite at ${path}. ` +
+      `If you meant to use Postgres/MySQL/etc., set TINA4_DATABASE_URL in your .env ` +
+      `and re-run. (Was the .env loaded? CLI commands must call loadEnv() first.)`,
+    );
+  }
+
   switch (type) {
     case "sqlite": {
       const { SQLiteAdapter } = await import("./adapters/sqlite.js");

@@ -10,8 +10,14 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { loadEnv } from "../../../core/src/dotenv.js";
 
 export async function runMigrations(migrationDir?: string): Promise<void> {
+  // Load .env before initialising the DB so DATABASE_URL/TINA4_DATABASE_URL
+  // from the project's .env is visible. Without this the migrate command
+  // falls back to ./data/tina4.db regardless of what the project configured.
+  loadEnv();
+
   const dir = resolve(migrationDir ?? "migrations");
 
   if (!existsSync(dir)) {
@@ -40,11 +46,15 @@ export async function runMigrations(migrationDir?: string): Promise<void> {
     process.exit(1);
   }
 
-  // Ensure database is initialised (uses DATABASE_URL or defaults to sqlite)
+  // Ensure database is initialised (uses TINA4_DATABASE_URL/DATABASE_URL or
+  // defaults to sqlite). initDatabase() is async — MUST be awaited, otherwise
+  // setAdapter() has not run by the time ensureMigrationTable() asks for the
+  // adapter and the whole CLI crashes with "No database adapter configured."
   try {
-    initDatabase();
-  } catch {
-    // Adapter may already be set — ignore
+    await initDatabase();
+  } catch (err) {
+    console.error(`  Error initialising database: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
   }
 
   ensureMigrationTable();

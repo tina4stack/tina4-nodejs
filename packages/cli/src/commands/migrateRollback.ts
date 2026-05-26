@@ -9,8 +9,13 @@
  *   tina4 migrate:rollback ./path/to/migrations
  */
 import { resolve } from "node:path";
+import { loadEnv } from "../../../core/src/dotenv.js";
 
 export async function migrateRollback(migrationDir?: string): Promise<void> {
+  // .env must load before initDatabase() — otherwise DATABASE_URL from the
+  // project's .env is invisible and we silently fall back to ./data/tina4.db.
+  loadEnv();
+
   const dir = resolve(migrationDir ?? "migrations");
 
   let initDatabase: typeof import("../../../orm/src/index.js").initDatabase;
@@ -29,11 +34,14 @@ export async function migrateRollback(migrationDir?: string): Promise<void> {
     process.exit(1);
   }
 
-  // Ensure database is initialised
+  // Ensure database is initialised — MUST await; initDatabase() is async
+  // and calls setAdapter() inside the promise. Without await, the next call
+  // to getAdapter() throws "No database adapter configured."
   try {
-    initDatabase();
-  } catch {
-    // Adapter may already be set — ignore
+    await initDatabase();
+  } catch (err) {
+    console.error(`  Error initialising database: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
   }
 
   ensureMigrationTable();

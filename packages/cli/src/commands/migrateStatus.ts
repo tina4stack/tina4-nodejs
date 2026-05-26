@@ -6,8 +6,12 @@
  *   tina4 migrate:status ./path/to/migrations
  */
 import { resolve } from "node:path";
+import { loadEnv } from "../../../core/src/dotenv.js";
 
 export async function migrateStatus(migrationDir?: string): Promise<void> {
+  // .env must load before initDatabase() so the project's DATABASE_URL is seen.
+  loadEnv();
+
   const dir = resolve(migrationDir ?? "migrations");
 
   let initDatabase: typeof import("../../../orm/src/index.js").initDatabase;
@@ -24,11 +28,13 @@ export async function migrateStatus(migrationDir?: string): Promise<void> {
     process.exit(1);
   }
 
-  // Ensure database is initialised
+  // Ensure database is initialised — MUST await; initDatabase() is async
+  // and calls setAdapter() inside. Without await, getAdapter() throws.
   try {
-    initDatabase();
-  } catch {
-    // Adapter may already be set — ignore
+    await initDatabase();
+  } catch (err) {
+    console.error(`  Error initialising database: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
   }
 
   ensureMigrationTable();
