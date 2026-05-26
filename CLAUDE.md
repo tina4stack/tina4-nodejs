@@ -548,7 +548,7 @@ r.group("/api/v1", (g) => {
 
 ## Module: Database (`packages/orm/src/database.ts`)
 
-Full Database API. The same instance covers all five drivers (sqlite, postgres, mysql, mssql, firebird) — pick the driver via `DATABASE_URL` or pass a `DatabaseConfig` to `initDatabase()`.
+Full Database API. The same instance covers all five drivers (sqlite, postgres, mysql, mssql, firebird) — pick the driver via `TINA4_DATABASE_URL` or pass a `DatabaseConfig` to `initDatabase()`.
 
 ```typescript
 import { initDatabase, Database, DatabaseResult } from "@tina4/orm";
@@ -956,26 +956,26 @@ import { Router } from "./router.js";  // .js even though the file is .ts
 ## Database Configuration
 
 ### Connection string format
-Set `DATABASE_URL` in your `.env` file using `driver://host:port/database` format:
+Set `TINA4_DATABASE_URL` in your `.env` file using `driver://host:port/database` format:
 
 ```bash
 # SQLite (default if nothing configured)
-DATABASE_URL=sqlite:///path/to/db.sqlite
-DATABASE_URL=sqlite://./data/tina4.db
+TINA4_DATABASE_URL=sqlite:///path/to/db.sqlite
+TINA4_DATABASE_URL=sqlite://./data/tina4.db
 
 # PostgreSQL
-DATABASE_URL=postgres://localhost:5432/mydb
-DATABASE_URL=postgresql://localhost:5432/mydb
+TINA4_DATABASE_URL=postgres://localhost:5432/mydb
+TINA4_DATABASE_URL=postgresql://localhost:5432/mydb
 
 # MySQL
-DATABASE_URL=mysql://localhost:3306/mydb
+TINA4_DATABASE_URL=mysql://localhost:3306/mydb
 
 # MSSQL / SQL Server (both schemes work)
-DATABASE_URL=mssql://localhost:1433/mydb
-DATABASE_URL=sqlserver://localhost:1433/mydb
+TINA4_DATABASE_URL=mssql://localhost:1433/mydb
+TINA4_DATABASE_URL=sqlserver://localhost:1433/mydb
 
 # Firebird
-DATABASE_URL=firebird://localhost:3050/mydb
+TINA4_DATABASE_URL=firebird://localhost:3050/mydb
 ```
 
 ### Credentials
@@ -983,15 +983,15 @@ Credentials can be embedded in the URL or provided separately:
 
 ```bash
 # In the URL
-DATABASE_URL=postgres://user:pass@localhost:5432/mydb
+TINA4_DATABASE_URL=postgres://user:pass@localhost:5432/mydb
 
 # Or as separate env vars (merged when URL has no credentials)
-DATABASE_URL=postgres://localhost:5432/mydb
-DATABASE_USERNAME=myuser
-DATABASE_PASSWORD=mypass
+TINA4_DATABASE_URL=postgres://localhost:5432/mydb
+TINA4_DATABASE_USERNAME=myuser
+TINA4_DATABASE_PASSWORD=mypass
 ```
 
-Credential priority: `config.user` > `config.username` > `DATABASE_USERNAME` env var.
+Credential priority: `config.user` > `config.username` > `TINA4_DATABASE_USERNAME` env var.
 
 ### Programmatic configuration
 ```typescript

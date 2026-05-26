@@ -78,4 +78,4 @@ npx tina4nodejs routes    # List routes
 ## Database
 
 Default: SQLite via `node:sqlite`. Adapters for PostgreSQL, MySQL, MSSQL, Firebird.
-Set `DATABASE_URL` in `.env`.
+Set `TINA4_DATABASE_URL` in `.env`.
