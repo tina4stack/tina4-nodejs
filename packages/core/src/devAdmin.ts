@@ -623,6 +623,22 @@ const handleReload: RouteHandler = async (req, res) => {
   _reloadFile = (body?.file as string) || "";
   const reloadType = (body?.type as string) || "reload";
   console.log(`  External reload trigger: ${reloadType}${_reloadFile ? ` (${_reloadFile})` : ""}`);
+
+  // Re-discover so new files in src/routes/ register without a server restart.
+  // rediscoverRoutes() is idempotent — already-loaded files are skipped, only
+  // the new ones run. Add the freshly-discovered routes to the default router.
+  try {
+    const { rediscoverRoutes } = await import("./routeDiscovery.js");
+    const newRoutes = await rediscoverRoutes();
+    if (newRoutes.length > 0) {
+      const { defaultRouter } = await import("./router.js");
+      for (const route of newRoutes) defaultRouter.addRoute(route);
+      console.log(`  Re-discovered ${newRoutes.length} new route(s) on reload`);
+    }
+  } catch (err) {
+    console.error(`  Re-discover on reload failed:`, err);
+  }
+
   res.json({ ok: true, type: reloadType });
 };
 
