@@ -2,6 +2,9 @@
  * Unit tests for the error overlay (errorOverlay.ts).
  * Run with: npx tsx test/errorOverlay.test.ts
  */
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 import { renderErrorOverlay, renderProductionError, isDebugMode } from "../packages/core/src/index.ts";
 
 let pass = 0;
@@ -130,6 +133,45 @@ if (originalDebug !== undefined) {
   process.env.TINA4_DEBUG = originalDebug;
 } else {
   delete process.env.TINA4_DEBUG;
+}
+
+// --- Stale-file badge (Feature A / Tier 5) ---
+console.log("\n--- Stale-file badge ---");
+
+// Build an Error whose stack points at a file we control on disk, then
+// touch the file's mtime to simulate "AI rewrote it between captures".
+const staleDir = fs.mkdtempSync(path.join(os.tmpdir(), "tina4-stale-"));
+try {
+  const targetFile = path.join(staleDir, "frame_source.ts");
+  fs.writeFileSync(targetFile, "// line 1\n// line 2\nthrow new Error('boom');\n", "utf-8");
+
+  // Forge an Error with a stack referencing our file at line 3.
+  function buildErr(file: string, line: number): Error {
+    const e = new Error("simulated failure");
+    e.stack = `Error: simulated failure\n    at handler (${file}:${line}:5)\n`;
+    return e;
+  }
+
+  // Case 1: file mtime is 5 seconds in the FUTURE relative to capturedAt.
+  // The overlay stamps capturedAt = now/1000 internally; bumping the file
+  // mtime forward guarantees mtime > capturedAt + 0.5.
+  const future = (Date.now() + 5000) / 1000;
+  fs.utimesSync(targetFile, future, future);
+  const staleHtml = renderErrorOverlay(buildErr(targetFile, 3));
+  assert("shows stale badge when file modified after capture",
+    staleHtml.includes("FILE MODIFIED @"));
+  assert("stale badge has UTC label", staleHtml.includes("UTC"));
+  assert("stale badge mentions source mismatch",
+    staleHtml.includes("source may not match what failed"));
+
+  // Case 2: file mtime is 10 seconds in the PAST — no badge.
+  const past = (Date.now() - 10_000) / 1000;
+  fs.utimesSync(targetFile, past, past);
+  const freshHtml = renderErrorOverlay(buildErr(targetFile, 3));
+  assert("omits stale badge when file unchanged",
+    !freshHtml.includes("FILE MODIFIED"));
+} finally {
+  fs.rmSync(staleDir, { recursive: true, force: true });
 }
 
 // Summary

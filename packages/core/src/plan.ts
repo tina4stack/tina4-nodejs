@@ -35,6 +35,9 @@ export interface PlanSummary {
   steps_total: number;
   steps_done: number;
   is_current: boolean;
+  /** Path relative to project root — lets the SPA open the right file
+   *  regardless of which dir the plan came from (plan/ vs .tina4/plans/). */
+  path: string;
 }
 
 export interface ExecutionSummary {
@@ -158,25 +161,63 @@ function loadParsed(name: string): { path: string; plan: ParsedPlan } {
 // ── Plan namespace ────────────────────────────────────────────
 
 export const Plan = {
+  /**
+   * All plan files — merged from `plan/` (user-curated canonical) and
+   * `.tina4/plans/` (where the Rust supervisor's planner writes).
+   *
+   * Two directories exist because of a historic split: the framework
+   * treats `plan/` as the canonical project location, but the Rust agent's
+   * planner writes to `.tina4/plans/` (alongside other AI-state artefacts
+   * like chat history). Until those are unified we read both so plans
+   * created either way are discoverable. Dedup by filename when a plan
+   * exists in both — `plan/` wins on collision.
+   *
+   * Newest-first by filename (Rust planner uses unix-timestamp prefixes).
+   */
   listPlans(): PlanSummary[] {
-    const d = planDir();
+    const root = projectRoot();
     const current = Plan.currentName() || "";
-    const out: PlanSummary[] = [];
-    const entries = fs.readdirSync(d).filter((f) => f.endsWith(".md")).sort();
-    for (const name of entries) {
-      const full = path.join(d, name);
-      if (!fs.statSync(full).isFile()) continue;
-      const parsed = parse(fs.readFileSync(full, "utf-8"));
-      const total = parsed.steps.length;
-      const done = parsed.steps.filter((s) => s.done).length;
-      out.push({
-        name,
-        title: parsed.title || name.replace(/\.md$/, ""),
-        steps_total: total,
-        steps_done: done,
-        is_current: name === current,
-      });
+
+    // Order matters for dedup: user-curated first.
+    const dirs: string[] = [planDir()];
+    const rustPlans = path.join(root, ".tina4", "plans");
+    if (fs.existsSync(rustPlans) && fs.statSync(rustPlans).isDirectory()) {
+      dirs.push(rustPlans);
     }
+
+    const seen = new Set<string>();
+    const out: PlanSummary[] = [];
+    for (const dir of dirs) {
+      let entries: string[];
+      try {
+        entries = fs.readdirSync(dir).filter((f) => f.endsWith(".md")).sort();
+      } catch {
+        continue;  // dir disappeared between exists() and readdir — skip
+      }
+      for (const name of entries) {
+        if (seen.has(name)) continue;  // plan/ wins over .tina4/plans/ on name clash
+        const full = path.join(dir, name);
+        let stat;
+        try { stat = fs.statSync(full); } catch { continue; }
+        if (!stat.isFile()) continue;
+        seen.add(name);
+        const parsed = parse(fs.readFileSync(full, "utf-8"));
+        const total = parsed.steps.length;
+        const done = parsed.steps.filter((s) => s.done).length;
+        out.push({
+          name,
+          title: parsed.title || name.replace(/\.md$/, ""),
+          steps_total: total,
+          steps_done: done,
+          is_current: name === current,
+          // Relative path from project root — lets the SPA open the right
+          // file in the editor regardless of source dir.
+          path: path.relative(root, full),
+        });
+      }
+    }
+    // Newest first by name (filenames start with unix timestamps).
+    out.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
     return out;
   },
 

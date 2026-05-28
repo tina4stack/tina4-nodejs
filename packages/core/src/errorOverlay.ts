@@ -19,7 +19,7 @@
  * In production, call renderProductionError() instead.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { isTruthy } from "./dotenv.js";
 
@@ -111,8 +111,38 @@ function formatSourceBlock(filename: string, lineno: number): string {
     + rows + `</div>`;
 }
 
-function formatFrame(frame: StackFrame): string {
+/**
+ * Render one stack frame.
+ *
+ * When the file was modified AFTER `capturedAt`, append a peach
+ * "FILE MODIFIED" badge so a stale browser-cached overlay can't lie
+ * about what the source looks like now. The AI coder often rewrites
+ * files in place between page loads, leaving the overlay's source
+ * view showing different code than what raised the error.
+ *
+ * `capturedAt` is in seconds (Date.now() / 1000) for parity with
+ * Python's time.time().
+ */
+function formatFrame(frame: StackFrame, capturedAt = 0): string {
   const source = frame.file && frame.line > 0 ? formatSourceBlock(frame.file, frame.line) : "";
+  let staleBadge = "";
+  if (capturedAt && frame.file) {
+    try {
+      const absPath = resolve(frame.file);
+      const mtime = statSync(absPath).mtimeMs / 1000;
+      if (mtime > capturedAt + 0.5) {  // 0.5s margin for fs noise
+        const d = new Date(mtime * 1000);
+        const mtimeIso = `${String(d.getUTCHours()).padStart(2, "0")}:`
+          + `${String(d.getUTCMinutes()).padStart(2, "0")}:`
+          + `${String(d.getUTCSeconds()).padStart(2, "0")}`;
+        staleBadge = ` <span style="background:${PEACH};color:${BG};padding:1px 8px;`
+          + `border-radius:3px;font-size:11px;font-weight:700;margin-left:6px;">`
+          + `FILE MODIFIED @ ${mtimeIso} UTC &mdash; source may not match what failed</span>`;
+      }
+    } catch {
+      // best-effort — ignore missing files / permission errors
+    }
+  }
   return `<div style="margin-bottom:16px;">`
     + `<div style="margin-bottom:4px;">`
     + `<span style="color:${BLUE};">${esc(frame.file)}</span>`
@@ -120,6 +150,7 @@ function formatFrame(frame: StackFrame): string {
     + `<span style="color:${YELLOW};">${frame.line}</span>`
     + `<span style="color:${SUBTEXT};"> in </span>`
     + `<span style="color:${GREEN};">${esc(frame.func)}</span>`
+    + staleBadge
     + `</div>`
     + source
     + `</div>`;
@@ -153,14 +184,21 @@ function table(pairs: Array<[string, string]>): string {
  * @returns Complete HTML page string.
  */
 export function renderErrorOverlay(error: Error, request?: any): string {
+  // Stamp ONCE per render — every frame compares against this. Seconds-since-epoch
+  // matches Python's time.time() so frames stale by < 0.5s of fs noise don't trip.
+  const capturedAt = Date.now() / 1000;
   const excType = error.constructor?.name ?? "Error";
   const excMsg = error.message ?? String(error);
   const frames = error.stack ? parseStack(error.stack) : [];
 
   // ── Stack trace ──
+  // Each frame compares its source file's mtime to capturedAt and flags itself
+  // if the file has been modified since — protects against the "browser cached
+  // an old overlay, then the AI rewrote the file" confusion where displayed
+  // source no longer matches what actually raised the error.
   let framesHtml = "";
   for (const frame of frames) {
-    framesHtml += formatFrame(frame);
+    framesHtml += formatFrame(frame, capturedAt);
   }
 
   // ── Request info ──
