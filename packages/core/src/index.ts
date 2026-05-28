@@ -71,7 +71,18 @@ export type { ResponseCacheConfig } from "./cache.js";
 export { Api } from "./api.js";
 export type { ApiResult } from "./api.js";
 export { Events } from "./events.js";
-export { DevAdmin, MessageLog, RequestInspector, ErrorTracker, DevMailboxStore, DevQueue, WsTracker } from "./devAdmin.js";
+export { DevAdmin, MessageLog, RequestInspector, ErrorTracker, DevMailboxStore, DevQueue, WsTracker, supervisorBaseUrl } from "./devAdmin.js";
+export {
+  feedbackEnabled,
+  feedbackWhitelist,
+  feedbackIdentifyUser,
+  feedbackIsWhitelisted,
+  feedbackRateLimitOk,
+  injectFeedbackWidget,
+  handleFeedbackTurn,
+  handleFeedbackWidgetJs,
+  registerFeedbackRoutes,
+} from "./feedback.js";
 export { Messenger } from "./messenger.js";
 export type { SendResult, EmailMessage } from "./messenger.js";
 export { DevMailbox, createMessenger } from "./devMailbox.js";

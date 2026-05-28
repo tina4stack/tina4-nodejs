@@ -19,6 +19,7 @@ import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
 import { DevAdmin, RequestInspector } from "./devAdmin.js";
+import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
 import { stopAllBackgroundTasks } from "./background.js";
 
@@ -1031,11 +1032,49 @@ ${reset}
             };
             if (typeof chunk === "string") {
               chunk = injectDevToolbar(chunk, toolbarCtx);
+              chunk = injectFeedbackWidget(req, chunk as string);
             } else if (Buffer.isBuffer(chunk)) {
               const html = chunk.toString("utf-8");
-              chunk = injectDevToolbar(html, toolbarCtx);
+              chunk = injectFeedbackWidget(req, injectDevToolbar(html, toolbarCtx));
             }
             // Remove content-length since toolbar injection changes body size
+            if (!res.raw.headersSent) {
+              res.raw.removeHeader("content-length");
+            }
+          }
+          if (typeof encodingOrCb === "function") {
+            return originalEnd(chunk, encodingOrCb);
+          }
+          if (encodingOrCb !== undefined) {
+            return originalEnd(chunk, encodingOrCb, cb);
+          }
+          return originalEnd(chunk, cb);
+        };
+        res.raw.end = wrappedEnd;
+      } else if (
+        feedbackEnabled() &&
+        !pathname.startsWith("/__dev") &&
+        !pathname.startsWith("/__feedback")
+      ) {
+        // Production / non-dev path: still inject the feedback widget for
+        // whitelisted users. The injector itself re-checks the whitelist,
+        // path, and html marker so the wrapper is cheap when it no-ops.
+        const originalEnd = res.raw.end.bind(res.raw);
+        const wrappedEnd: typeof res.raw.end = function (
+          chunk?: unknown,
+          encodingOrCb?: BufferEncoding | (() => void),
+          cb?: () => void,
+        ) {
+          const contentType = res.raw.getHeader("content-type");
+          if (
+            typeof contentType === "string" &&
+            contentType.includes("text/html")
+          ) {
+            if (typeof chunk === "string") {
+              chunk = injectFeedbackWidget(req, chunk);
+            } else if (Buffer.isBuffer(chunk)) {
+              chunk = injectFeedbackWidget(req, chunk.toString("utf-8"));
+            }
             if (!res.raw.headersSent) {
               res.raw.removeHeader("content-length");
             }

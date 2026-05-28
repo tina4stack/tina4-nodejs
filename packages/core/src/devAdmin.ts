@@ -18,6 +18,7 @@ import type { RouteHandler } from "./types.js";
 import { DevMailbox } from "./devMailbox.js";
 import { isTruthy } from "./dotenv.js";
 import { quickMetrics, fullAnalysis, fileDetail } from "./metrics.js";
+import { registerFeedbackRoutes } from "./feedback.js";
 
 const cpuCount = osCpus().length;
 
@@ -432,6 +433,12 @@ export class DevAdmin {
   static register(router: Router): void {
     // Register error handlers to feed the ErrorTracker
     ErrorTracker.register();
+
+    // Customer feedback widget routes — gated at request time by
+    // TINA4_ENABLE_FEEDBACK + TINA4_FEEDBACK_WHITELIST. The handlers
+    // themselves are always registered (so toggling env vars doesn't
+    // require a server restart) but each request re-checks the gate.
+    registerFeedbackRoutes(router);
 
     const routes: Array<{ method: string; pattern: string; handler: RouteHandler }> = [
       // Dashboard
@@ -1193,7 +1200,7 @@ const handleTool: RouteHandler = (req, res) => {
  *   3. `PORT` + 2000 — auto-derived (matches `tina4 serve` agent port).
  *   4. Fallback `http://127.0.0.1:9145` — matches standalone `tina4 agent`.
  */
-function supervisorBaseUrl(): string {
+export function supervisorBaseUrl(): string {
   const explicit = (process.env.TINA4_SUPERVISOR_URL ?? "").replace(/\/+$/, "");
   if (explicit) return explicit;
   const agentPort = (process.env.TINA4_AGENT_PORT ?? "").trim();
