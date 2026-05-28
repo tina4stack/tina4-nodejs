@@ -562,6 +562,128 @@ function redactEnv(key: string, value: string): string {
   return value;
 }
 
+// ── Defensive write helpers (mirrors tina4-python tools.py) ──
+//
+// Five layered guards wrap `file_write` and `file_patch`:
+//   1. agentLog — structured audit log at .tina4/agent.log + stderr
+//   2. looksLikeProse — reject sentences-as-filenames (AI mishap)
+//   3. normalizeCoderPath — rewrite bare routes/, orm/, ... to src/<dir>/
+//   4. agentBackup — copy pre-write content to .tina4/backups/
+//   5. truncation guard (inline in file_write) — refuse suspicious shrinkage
+
+/**
+ * Append a structured line to `.tina4/agent.log` AND echo to stderr.
+ * Cheap — never blocks the caller on I/O failure.
+ */
+function agentLog(projectRoot: string, category: string, message: string): void {
+  try {
+    const logDir = path.join(projectRoot, ".tina4");
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+    const logPath = path.join(logDir, "agent.log");
+    const ts = new Date().toISOString().replace(/\..+/, "Z");
+    fs.appendFileSync(logPath, `${ts} [${category}] ${message}\n`, "utf-8");
+  } catch {
+    // logging must never fail the actual call
+  }
+  process.stderr.write(`  [agent ${category}] ${message}\n`);
+}
+
+const SANE_PATH_SEGMENT = /^[A-Za-z0-9._\-]+$/;
+
+/**
+ * Return an error string if the path looks like prose, else null.
+ * AI agents sometimes pass natural language as `path` to file_write
+ * and produce folders with prose names — catch the slip here.
+ */
+function looksLikeProse(relPath: string): string | null {
+  if (!relPath || !relPath.trim()) {
+    return "path is empty";
+  }
+  if (relPath.length > 300) {
+    return `path too long (${relPath.length} chars); use a real filename`;
+  }
+  const badSequences = ["`", "\n", "\t", "  ", " — ", " (", " [", "?", "*", "<", ">", "|"];
+  for (const bad of badSequences) {
+    if (relPath.includes(bad)) {
+      return `path contains illegal character sequence ${JSON.stringify(bad)} — looks like prose, not a filename`;
+    }
+  }
+  for (const seg of relPath.split("/")) {
+    if (!seg || seg === "." || seg === "..") {
+      continue;
+    }
+    if (seg.length > 80) {
+      return `path segment too long: ${JSON.stringify(seg.slice(0, 60))}… — use a short filename`;
+    }
+    if (!SANE_PATH_SEGMENT.test(seg)) {
+      return `path segment ${JSON.stringify(seg)} contains disallowed characters — stick to [A-Za-z0-9._-]`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Rewrite bare top-level Tina4-conventional directories into their
+ * `src/<dir>/` canonical form. The framework's auto-discovery only
+ * scans `src/`, so a file at `templates/foo.twig` is dead weight —
+ * the framework never loads it. Mirrors Python's _normalize_coder_path.
+ */
+function normalizeCoderPath(projectRoot: string, relPath: string): string {
+  const passthroughPrefixes = ["src/", "migrations/", "plan/", "tests/", "test/", ".tina4/"];
+  const passthroughFiles = new Set([
+    "app.py", "app.ts", "app.rb", "index.php",
+    "composer.json", "package.json", "Gemfile",
+    "pyproject.toml", "requirements.txt",
+    ".env", ".env.example",
+  ]);
+  if (passthroughPrefixes.some((p) => relPath.startsWith(p))) {
+    return relPath;
+  }
+  if (passthroughFiles.has(relPath)) {
+    return relPath;
+  }
+  const bareDirs = ["routes", "orm", "templates", "seeds", "controllers", "models", "middleware"];
+  for (const d of bareDirs) {
+    if (relPath.startsWith(`${d}/`)) {
+      const rewritten = `src/${relPath}`;
+      agentLog(projectRoot, "write.path_normalized", `${relPath} → ${rewritten}`);
+      return rewritten;
+    }
+  }
+  return relPath;
+}
+
+/**
+ * Copy `target` into `.tina4/backups/` with a timestamped name.
+ * Returns the relative backup path on success, null on failure.
+ */
+function agentBackup(projectRoot: string, target: string): string | null {
+  try {
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
+      return null;
+    }
+    const backupDir = path.join(projectRoot, ".tina4", "backups");
+    if (!fs.existsSync(backupDir)) {
+      fs.mkdirSync(backupDir, { recursive: true });
+    }
+    let rel = path.relative(projectRoot, target);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      rel = path.basename(target);
+    }
+    const safe = rel.replace(/[/\\]/g, "__");
+    const ts = new Date().toISOString().replace(/:/g, "-").replace(/\..+/, "Z");
+    const backupName = `${safe}.${ts}.bak`;
+    const backupPath = path.join(backupDir, backupName);
+    fs.writeFileSync(backupPath, fs.readFileSync(target));
+    return `.tina4/backups/${backupName}`;
+  } catch (e) {
+    agentLog(projectRoot, "write.backup_failed", `${target}: ${(e as Error).message}`);
+    return null;
+  }
+}
+
 /**
  * Register all 24 built-in dev tools on the given McpServer.
  */
@@ -734,15 +856,56 @@ export function registerDevTools(server: McpServer): void {
   server.registerTool(
     "file_write",
     (args) => {
-      const p = safePath(projectRoot, args.path as string);
+      let rawPath = (args.path as string) || "";
+      // 1. Prose check first — before path resolution.
+      const proseErr = looksLikeProse(rawPath);
+      if (proseErr) {
+        return { error: `Invalid path ${JSON.stringify(rawPath)}: ${proseErr}` };
+      }
+      // 2. Coder-path normalization — rewrite bare top-level
+      //    Tina4 dirs (templates/, routes/, ...) into src/.
+      rawPath = normalizeCoderPath(projectRoot, rawPath);
+      // 3. Safe path resolution (sandbox check — throws on escape).
+      const p = safePath(projectRoot, rawPath);
+      // 4. Compute old/new sizes for truncation guard + audit log.
+      const oldBytes = fs.existsSync(p) && fs.statSync(p).isFile()
+        ? fs.readFileSync(p)
+        : Buffer.alloc(0);
+      const oldSize = oldBytes.length;
+      const oldLines = (oldBytes.toString("utf-8").match(/\n/g) || []).length;
+      const content = args.content as string;
+      const newBytes = Buffer.from(content, "utf-8");
+      const newSize = newBytes.length;
+      const newLines = (content.match(/\n/g) || []).length;
+      const relPath = path.relative(projectRoot, p);
+
+      // 5. Truncation guard — refuse suspicious shrinkage on non-trivial files.
+      if (oldSize > 200 && newSize * 100 < oldSize * 30) {
+        const msg = `REFUSED ${relPath} (would shrink ${oldSize} → ${newSize} bytes / ` +
+          `${oldLines} → ${newLines} lines, looks truncated)`;
+        agentLog(projectRoot, "write.refused", msg);
+        return { error: msg, refused: true, old_bytes: oldSize, new_bytes: newSize };
+      }
+
+      // 6. Backup before overwrite.
+      const backupRel = oldSize > 0 ? agentBackup(projectRoot, p) : null;
+
+      // 7. Write.
       const dir = path.dirname(p);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      const content = args.content as string;
       fs.writeFileSync(p, content, "utf-8");
-      const relPath = path.relative(projectRoot, p);
-      return { written: relPath, bytes: Buffer.byteLength(content, "utf-8") };
+
+      agentLog(projectRoot, "write.ok",
+        `${relPath} (${oldSize}B/${oldLines}L → ${newSize}B/${newLines}L, ` +
+        `backup: ${backupRel || "(no prior file)"})`);
+
+      const result: Record<string, unknown> = { written: relPath, bytes: newSize };
+      if (backupRel) {
+        result.backup = backupRel;
+      }
+      return result;
     },
     "Write or update a project file",
     schemaFromParams([
@@ -1178,19 +1341,30 @@ export function registerDevTools(server: McpServer): void {
     "file_patch",
     (args) => {
       try {
-        const rel = (args.path as string) || "";
+        let rel = (args.path as string) || "";
         const oldStr = (args.old_string as string) || "";
         const newStr = (args.new_string as string) || "";
         const count = (args.count as number) || 1;
         const projectRoot = path.resolve(process.cwd());
+
+        // 1. Prose check first — before path resolution.
+        const proseErr = looksLikeProse(rel);
+        if (proseErr) {
+          return { error: `Invalid path ${JSON.stringify(rel)}: ${proseErr}` };
+        }
+        // 2. Coder-path normalization.
+        rel = normalizeCoderPath(projectRoot, rel);
+        // 3. Safe path resolution (sandbox check).
         const resolved = path.resolve(projectRoot, rel);
         if (!resolved.startsWith(projectRoot)) {
           return { error: `Path escapes project directory: ${rel}` };
         }
+        // 4. Existence check.
         if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
           return { error: `File not found: ${rel}` };
         }
         const original = fs.readFileSync(resolved, "utf-8");
+        // 5. Match-count guard.
         let occurrences = 0;
         let idx = -1;
         while ((idx = original.indexOf(oldStr, idx + 1)) !== -1) occurrences++;
@@ -1204,13 +1378,30 @@ export function registerDevTools(server: McpServer): void {
         }
         let updated = original;
         for (let i = 0; i < count; i++) updated = updated.replace(oldStr, newStr);
+
+        // 6. Backup before overwrite — same path as file_write so
+        //    recovery is uniform regardless of which tool touched the file.
+        const backupRel = agentBackup(projectRoot, resolved);
+
+        // 7. Write.
         fs.writeFileSync(resolved, updated, "utf-8");
         try { loadPlan().recordAction("patched", rel); } catch { /* best-effort */ }
-        return {
+
+        const oldSize = Buffer.byteLength(original, "utf-8");
+        const newSize = Buffer.byteLength(updated, "utf-8");
+        agentLog(projectRoot, "patch.ok",
+          `${rel} (replaced ${count}× old_string, ${oldSize}B → ${newSize}B, ` +
+          `backup: ${backupRel || "(none)"})`);
+
+        const result: Record<string, unknown> = {
           patched: rel,
           replacements: count,
-          bytes: Buffer.byteLength(updated, "utf-8"),
+          bytes: newSize,
         };
+        if (backupRel) {
+          result.backup = backupRel;
+        }
+        return result;
       } catch (e) {
         return { error: (e as Error).message };
       }

@@ -390,6 +390,209 @@ console.log("\nInstance Registry");
   assert("instances — cleared", McpServer._instances.length === 0);
 }
 
+// ── Defensive Write Helpers (Tier 1 parity port from Python) ─
+
+console.log("\nDefensive Write Helpers");
+
+/**
+ * Invoke an MCP tool and unwrap the JSON-RPC + tools/call envelope.
+ * The MCP `tools/call` response shape is:
+ *   { jsonrpc, id, result: { content: [{ type: "text", text: "<json>" }] } }
+ * For string returns the inner text is the raw string; for object returns
+ * it is JSON-encoded — try to parse it back, fall through to the raw text.
+ */
+function callTool(server: McpServer, name: string, args: Record<string, unknown>): {
+  rpc: { jsonrpc?: string; id?: unknown; result?: unknown; error?: { code: number; message: string } };
+  result: Record<string, unknown> | string | null;
+} {
+  const rpc = JSON.parse(server.handleMessage({
+    jsonrpc: "2.0", id: 1, method: "tools/call",
+    params: { name, arguments: args },
+  }));
+  let result: Record<string, unknown> | string | null = null;
+  const content = (rpc.result as { content?: Array<{ text?: string }> } | undefined)?.content;
+  if (content && content.length > 0 && typeof content[0].text === "string") {
+    const raw = content[0].text;
+    try {
+      result = JSON.parse(raw);
+    } catch {
+      result = raw;
+    }
+  }
+  return { rpc, result };
+}
+
+// refuses prose paths in file_write
+{
+  McpServer._instances = [];
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tina4-mcp-test-"));
+  const oldCwd = process.cwd();
+  process.chdir(tmpDir);
+  try {
+    const server = new McpServer("/test-prose", "Prose Test");
+    registerDevTools(server);
+    const { result } = callTool(server, "file_write", {
+      path: "The plan requires implementing a new feature for users.ts",
+      content: "x",
+    });
+    assert(
+      "refuses prose paths in file_write",
+      typeof result === "object" && result !== null && typeof (result as Record<string, unknown>).error === "string",
+      `Got: ${JSON.stringify(result)}`,
+    );
+  } finally {
+    process.chdir(oldCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// normalizes bare routes/ to src/routes/
+{
+  McpServer._instances = [];
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tina4-mcp-test-"));
+  const oldCwd = process.cwd();
+  process.chdir(tmpDir);
+  try {
+    const server = new McpServer("/test-normalize", "Normalize Test");
+    registerDevTools(server);
+    const { result } = callTool(server, "file_write", {
+      path: "routes/foo.ts",
+      content: "export default async function (req, res) {}\n",
+    });
+    const landedAt = path.join(tmpDir, "src", "routes", "foo.ts");
+    const written = (result as { written?: string } | null)?.written;
+    assert(
+      "normalizes bare routes/ to src/routes/ — file lands at src/routes/foo.ts",
+      fs.existsSync(landedAt) && (written ?? "").replace(/\\/g, "/") === "src/routes/foo.ts",
+      `Got: ${JSON.stringify(result)}; exists=${fs.existsSync(landedAt)}`,
+    );
+    const logPath = path.join(tmpDir, ".tina4", "agent.log");
+    const logContent = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf-8") : "";
+    assert(
+      "normalizes bare routes/ to src/routes/ — agent.log has path_normalized entry",
+      logContent.includes("write.path_normalized") && logContent.includes("routes/foo.ts"),
+      `Log content: ${logContent.slice(0, 300)}`,
+    );
+  } finally {
+    process.chdir(oldCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// backs up existing file before overwrite
+{
+  McpServer._instances = [];
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tina4-mcp-test-"));
+  const oldCwd = process.cwd();
+  process.chdir(tmpDir);
+  try {
+    const server = new McpServer("/test-backup", "Backup Test");
+    registerDevTools(server);
+    const target = path.join(tmpDir, "src", "routes", "foo.ts");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "original content\n", "utf-8");
+
+    const { result } = callTool(server, "file_write", {
+      path: "src/routes/foo.ts",
+      content: "new content that is reasonably similar in length to the old one\n",
+    });
+    const backup = (result as { backup?: string } | null)?.backup ?? "";
+    const backupDir = path.join(tmpDir, ".tina4", "backups");
+    const backups = fs.existsSync(backupDir) ? fs.readdirSync(backupDir) : [];
+    assert(
+      "backs up existing file before overwrite — backup in .tina4/backups/",
+      backups.length === 1 && backup.startsWith(".tina4/backups/"),
+      `Got: ${JSON.stringify(result)}; backups=${JSON.stringify(backups)}`,
+    );
+    assert(
+      "backs up existing file before overwrite — backup contains original",
+      backups.length === 1 &&
+        fs.readFileSync(path.join(backupDir, backups[0]), "utf-8") === "original content\n",
+    );
+  } finally {
+    process.chdir(oldCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// refuses suspicious truncation
+{
+  McpServer._instances = [];
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tina4-mcp-test-"));
+  const oldCwd = process.cwd();
+  process.chdir(tmpDir);
+  try {
+    const server = new McpServer("/test-truncation", "Truncation Test");
+    registerDevTools(server);
+    const target = path.join(tmpDir, "src", "routes", "big.ts");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    // 500-byte original
+    const original = "x".repeat(500);
+    fs.writeFileSync(target, original, "utf-8");
+
+    // Overwrite with 50 bytes — should be REFUSED (50/500 = 10% < 30%)
+    const { result } = callTool(server, "file_write", {
+      path: "src/routes/big.ts",
+      content: "y".repeat(50),
+    });
+    const r = result as { error?: string; refused?: boolean } | null;
+    assert(
+      "refuses suspicious truncation — returns error with refused flag",
+      r !== null && r.refused === true && typeof r.error === "string" && r.error.includes("REFUSED"),
+      `Got: ${JSON.stringify(result)}`,
+    );
+    const stillThere = fs.readFileSync(target, "utf-8");
+    assert(
+      "refuses suspicious truncation — original file intact",
+      stillThere === original,
+      `Original was modified: length=${stillThere.length}`,
+    );
+  } finally {
+    process.chdir(oldCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// lets canonical src/ paths pass through (no rewrite)
+{
+  McpServer._instances = [];
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tina4-mcp-test-"));
+  const oldCwd = process.cwd();
+  process.chdir(tmpDir);
+  try {
+    const server = new McpServer("/test-passthrough", "Passthrough Test");
+    registerDevTools(server);
+    const { result } = callTool(server, "file_write", {
+      path: "src/routes/foo.ts",
+      content: "export default async function (req, res) {}\n",
+    });
+    const landedAt = path.join(tmpDir, "src", "routes", "foo.ts");
+    const written = (result as { written?: string } | null)?.written;
+    assert(
+      "lets canonical src/ paths pass through — file lands at src/routes/foo.ts",
+      fs.existsSync(landedAt) && (written ?? "").replace(/\\/g, "/") === "src/routes/foo.ts",
+      `Got: ${JSON.stringify(result)}`,
+    );
+    // Path should NOT have been double-prefixed to src/src/routes/foo.ts
+    const doublyPrefixed = path.join(tmpDir, "src", "src", "routes", "foo.ts");
+    assert(
+      "lets canonical src/ paths pass through — no double-prefix",
+      !fs.existsSync(doublyPrefixed),
+    );
+    // agent.log should NOT contain a path_normalized entry for this write
+    const logPath = path.join(tmpDir, ".tina4", "agent.log");
+    const logContent = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf-8") : "";
+    assert(
+      "lets canonical src/ paths pass through — no path_normalized log entry",
+      !logContent.includes("write.path_normalized"),
+      `Log content: ${logContent.slice(0, 300)}`,
+    );
+  } finally {
+    process.chdir(oldCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 // ── Summary ──────────────────────────────────────────────────
 
 console.log(`\nMCP Tests: ${pass} passed, ${fail} failed`);
