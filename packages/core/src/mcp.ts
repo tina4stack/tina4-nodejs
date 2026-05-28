@@ -17,6 +17,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { spawnSync } from "node:child_process";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -685,6 +686,95 @@ function agentBackup(projectRoot: string, target: string): string | null {
 }
 
 /**
+ * Try syntax-checking a freshly-written JS/TS module to catch
+ * hallucinated framework APIs and broken syntax BEFORE the next
+ * request hits the broken handler. Mirrors Python's _verify_python_import.
+ *
+ * Returns null on success, or the captured error string on failure.
+ *
+ * - Only checks files under `src/` with extensions .js / .ts / .mjs / .cjs.
+ * - Skips test files (*.test.{ts,js}, *.spec.{ts,js}) — they have their
+ *   own loading patterns and would fail single-file type checking.
+ * - .js / .mjs / .cjs → `node --check <file>` (fast, exit 0 = OK).
+ * - .ts → `npx --no-install tsc --noEmit --allowJs --skipLibCheck <file>`.
+ *   If tsc isn't available locally, returns null (don't block the write).
+ * - Uses spawnSync with 5-second timeout so a hung subprocess never
+ *   blocks the MCP server.
+ */
+function verifyNodeSyntax(absPath: string, relPath: string): string | null {
+  if (!relPath.startsWith("src/")) {
+    return null;
+  }
+  const ext = path.extname(relPath).toLowerCase();
+  if (![".js", ".ts", ".mjs", ".cjs"].includes(ext)) {
+    return null;
+  }
+  const base = path.basename(relPath);
+  if (/\.(test|spec)\.(ts|js|mjs|cjs)$/.test(base)) {
+    return null;
+  }
+
+  let cmd: string;
+  let args: string[];
+  if (ext === ".ts") {
+    cmd = "npx";
+    args = ["--no-install", "tsc", "--noEmit", "--allowJs", "--skipLibCheck", absPath];
+  } else {
+    cmd = "node";
+    args = ["--check", absPath];
+  }
+
+  let proc;
+  try {
+    proc = spawnSync(cmd, args, {
+      encoding: "utf-8",
+      timeout: 5000,
+      cwd: path.dirname(path.dirname(absPath)),
+    });
+  } catch (e) {
+    return `verification subprocess failed: ${(e as Error).message}`;
+  }
+
+  // npx may fail to find tsc — gracefully return null instead of blocking.
+  if (ext === ".ts" && (proc.error || proc.status === null || proc.status === 127)) {
+    return null;
+  }
+  if (proc.error) {
+    return `verification subprocess failed: ${proc.error.message}`;
+  }
+  if (proc.status === 0) {
+    return null;
+  }
+
+  // Errors land on stderr for `node --check`, stdout for tsc.
+  const raw = (ext === ".ts" ? (proc.stdout || "") + (proc.stderr || "") : (proc.stderr || "") + (proc.stdout || "")).trim();
+  // npx placeholder when tsc isn't installed locally — bail silently
+  // rather than block the write with a meaningless banner.
+  if (ext === ".ts" && raw.includes("This is not the tsc command")) {
+    return null;
+  }
+  if (!raw) {
+    return `syntax check failed (exit ${proc.status}, no output)`;
+  }
+  const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) {
+    return `syntax check failed (exit ${proc.status})`;
+  }
+  // Strip the absolute path prefix from the first meaningful line so the
+  // LLM sees a stable, project-relative error message.
+  const stripPath = (line: string): string => line.replace(absPath, relPath);
+  // For tsc: the first line is usually "src/foo.ts(3,5): error TS1109: ...".
+  // For node --check: the first line is the file path; the actual error is
+  // a later "SyntaxError: ..." line. Pick the most informative line.
+  for (const line of lines) {
+    if (/error|SyntaxError|TS\d+/i.test(line)) {
+      return stripPath(line);
+    }
+  }
+  return stripPath(lines[0]);
+}
+
+/**
  * Register all 24 built-in dev tools on the given McpServer.
  */
 export function registerDevTools(server: McpServer): void {
@@ -904,6 +994,13 @@ export function registerDevTools(server: McpServer): void {
       const result: Record<string, unknown> = { written: relPath, bytes: newSize };
       if (backupRel) {
         result.backup = backupRel;
+      }
+      // 8. Post-write syntax verification — catch broken JS/TS inline
+      //    so the LLM sees the error on its next turn.
+      const importErr = verifyNodeSyntax(p, relPath);
+      if (importErr) {
+        result.import_error = importErr;
+        agentLog(projectRoot, "write.import_failed", `${relPath}: ${importErr}`);
       }
       return result;
     },
@@ -1400,6 +1497,13 @@ export function registerDevTools(server: McpServer): void {
         };
         if (backupRel) {
           result.backup = backupRel;
+        }
+        // 8. Post-patch syntax verification — same inline check as
+        //    file_write so a hallucinated edit surfaces immediately.
+        const importErr = verifyNodeSyntax(resolved, rel);
+        if (importErr) {
+          result.import_error = importErr;
+          agentLog(projectRoot, "patch.import_failed", `${rel}: ${importErr}`);
         }
         return result;
       } catch (e) {

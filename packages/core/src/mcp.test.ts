@@ -593,6 +593,104 @@ function callTool(server: McpServer, name: string, args: Record<string, unknown>
   }
 }
 
+// catches JS syntax errors via node --check
+{
+  McpServer._instances = [];
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tina4-mcp-test-"));
+  const oldCwd = process.cwd();
+  process.chdir(tmpDir);
+  try {
+    const server = new McpServer("/test-verify-js", "Verify JS");
+    registerDevTools(server);
+    const { result } = callTool(server, "file_write", {
+      path: "src/routes/broken.js",
+      content: "const x = ;\n",
+    });
+    const r = result as { written?: string; import_error?: string } | null;
+    assert(
+      "catches JS syntax errors via node --check — result has import_error",
+      r !== null && typeof r.import_error === "string" && r.import_error.length > 0,
+      `Got: ${JSON.stringify(result)}`,
+    );
+    const logPath = path.join(tmpDir, ".tina4", "agent.log");
+    const logContent = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf-8") : "";
+    assert(
+      "catches JS syntax errors via node --check — agent.log has write.import_failed",
+      logContent.includes("write.import_failed") && logContent.includes("src/routes/broken.js"),
+      `Log content: ${logContent.slice(0, 400)}`,
+    );
+  } finally {
+    process.chdir(oldCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// skips non-code files (no syntax check attempted)
+{
+  McpServer._instances = [];
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tina4-mcp-test-"));
+  const oldCwd = process.cwd();
+  process.chdir(tmpDir);
+  try {
+    const server = new McpServer("/test-verify-skip-ext", "Verify Skip Ext");
+    registerDevTools(server);
+    // .twig content that would obviously fail any JS parser
+    const { result } = callTool(server, "file_write", {
+      path: "src/templates/page.twig",
+      content: "{% if not valid js %}<h1>Hi</h1>{% endif %}\n",
+    });
+    const r = result as { written?: string; import_error?: string } | null;
+    assert(
+      "skips non-code files — no import_error attached",
+      r !== null && r.import_error === undefined && typeof r.written === "string",
+      `Got: ${JSON.stringify(result)}`,
+    );
+    const logPath = path.join(tmpDir, ".tina4", "agent.log");
+    const logContent = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf-8") : "";
+    assert(
+      "skips non-code files — no write.import_failed in agent.log",
+      !logContent.includes("write.import_failed"),
+      `Log content: ${logContent.slice(0, 400)}`,
+    );
+  } finally {
+    process.chdir(oldCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// skips files outside src/
+{
+  McpServer._instances = [];
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tina4-mcp-test-"));
+  const oldCwd = process.cwd();
+  process.chdir(tmpDir);
+  try {
+    const server = new McpServer("/test-verify-skip-outside", "Verify Skip Outside");
+    registerDevTools(server);
+    // Broken JS placed under tests/ — must NOT be checked
+    const { result } = callTool(server, "file_write", {
+      path: "tests/foo.js",
+      content: "const x = ;\n",
+    });
+    const r = result as { written?: string; import_error?: string } | null;
+    assert(
+      "skips files outside src/ — no import_error attached",
+      r !== null && r.import_error === undefined && typeof r.written === "string",
+      `Got: ${JSON.stringify(result)}`,
+    );
+    const logPath = path.join(tmpDir, ".tina4", "agent.log");
+    const logContent = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf-8") : "";
+    assert(
+      "skips files outside src/ — no write.import_failed in agent.log",
+      !logContent.includes("write.import_failed"),
+      `Log content: ${logContent.slice(0, 400)}`,
+    );
+  } finally {
+    process.chdir(oldCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 // ── Summary ──────────────────────────────────────────────────
 
 console.log(`\nMCP Tests: ${pass} passed, ${fail} failed`);
