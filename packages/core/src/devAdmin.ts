@@ -478,8 +478,18 @@ export class DevAdmin {
       { method: "POST", pattern: "/__dev/api/websockets/disconnect", handler: handleWebsocketsDisconnect },
       // Tools
       { method: "POST", pattern: "/__dev/api/tool", handler: handleTool },
-      // Chat
+      // Chat — proxies to Rust agent /chat (SSE passthrough). Forwards
+      // active_file and any other body keys verbatim. See proxyToSupervisor.
       { method: "POST", pattern: "/__dev/api/chat", handler: handleChat },
+      // Threads — proxies to Rust agent /threads. Mirrors Python's
+      // _api_threads + _api_threads_sub.
+      { method: "GET",  pattern: "/__dev/api/threads", handler: handleThreads },
+      { method: "POST", pattern: "/__dev/api/threads", handler: handleThreads },
+      { method: "GET",    pattern: "/__dev/api/threads/{id}", handler: handleThreadsSub },
+      { method: "PATCH",  pattern: "/__dev/api/threads/{id}", handler: handleThreadsSub },
+      { method: "DELETE", pattern: "/__dev/api/threads/{id}", handler: handleThreadsSub },
+      { method: "GET",    pattern: "/__dev/api/threads/{id}/messages", handler: handleThreadsSub },
+      { method: "POST",   pattern: "/__dev/api/threads/{id}/messages", handler: handleThreadsSub },
       // Connections
       { method: "GET", pattern: "/__dev/api/connections", handler: handleConnections },
       { method: "POST", pattern: "/__dev/api/connections/test", handler: handleConnectionsTest },
@@ -1171,19 +1181,204 @@ const handleTool: RouteHandler = (req, res) => {
   res.json({ tool, status: "executed", message: `Tool '${tool}' executed (stub)`, timestamp: new Date().toISOString() });
 };
 
-// -- Chat handler --
+// -- Supervisor proxy helpers --
 
-const handleChat: RouteHandler = (req, res) => {
-  const message = (req as any).body?.message ?? "";
-  if (!message) {
-    res.json({ error: "Missing message parameter" });
+/**
+ * Return the base URL for the co-located Rust agent server.
+ *
+ * Mirrors Python's `_supervisor_base_url()` in
+ * `tina4_python/dev_admin/__init__.py`. Resolution order:
+ *   1. `TINA4_SUPERVISOR_URL` — explicit full URL.
+ *   2. `TINA4_AGENT_PORT` — explicit port on 127.0.0.1.
+ *   3. `PORT` + 2000 — auto-derived (matches `tina4 serve` agent port).
+ *   4. Fallback `http://127.0.0.1:9145` — matches standalone `tina4 agent`.
+ */
+function supervisorBaseUrl(): string {
+  const explicit = (process.env.TINA4_SUPERVISOR_URL ?? "").replace(/\/+$/, "");
+  if (explicit) return explicit;
+  const agentPort = (process.env.TINA4_AGENT_PORT ?? "").trim();
+  if (/^\d+$/.test(agentPort)) return `http://127.0.0.1:${parseInt(agentPort, 10)}`;
+  const fwPort = (process.env.PORT ?? "").trim();
+  if (/^\d+$/.test(fwPort)) return `http://127.0.0.1:${parseInt(fwPort, 10) + 2000}`;
+  return "http://127.0.0.1:9145";
+}
+
+/**
+ * Forward a dev-admin request to the Rust agent server.
+ *
+ * Mirrors Python's `_proxy_to_supervisor()`. Strips the `/__dev/api` prefix,
+ * forwards method/body/query verbatim to `<base>{downstreamPath}`, and pipes
+ * the response back. SSE (`text/event-stream`) is streamed chunk-by-chunk so
+ * progress events reach the SPA live instead of after the full multi-agent
+ * run completes. When the agent is unreachable we respond with 503 and a
+ * hint so the SPA can show a useful error.
+ */
+async function proxyToSupervisor(
+  req: any,
+  res: any,
+  downstreamPath: string,
+): Promise<void> {
+  const base = supervisorBaseUrl();
+
+  // Forward query string verbatim
+  let qs = "";
+  try {
+    const reqUrl = new URL(req.url ?? "/", "http://localhost");
+    if (reqUrl.search) qs = reqUrl.search;
+  } catch { /* ignore */ }
+  const target = `${base}${downstreamPath}${qs}`;
+
+  const method = (req.method ?? "GET").toUpperCase();
+
+  // Build the body for methods that carry one
+  let bodyText: string | undefined;
+  if (method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE") {
+    const body = (req as any).body;
+    if (body !== undefined && body !== null) {
+      if (typeof body === "string") {
+        bodyText = body;
+      } else if (typeof body === "object") {
+        // SPA→agent convention fixup (matches Python): `/execute` sends
+        // plan_file as a bare filename but the rust agent expects a
+        // project-relative path. Prepend `plan/` when no slash is present.
+        let outBody: any = body;
+        if (!Array.isArray(body)) {
+          const pf = (body as any).plan_file;
+          if (typeof pf === "string" && pf && !pf.includes("/")) {
+            outBody = { ...body, plan_file: `plan/${pf}` };
+          }
+        }
+        bodyText = JSON.stringify(outBody);
+      }
+    }
+  }
+
+  // Heavy multi-agent endpoints get a generous timeout; metadata-only
+  // /supervise/* and /threads/* calls return fast.
+  const timeoutMs = downstreamPath === "/execute" || downstreamPath === "/chat" ? 600_000 : 30_000;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(target, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: bodyText,
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    res.json(
+      {
+        error: "supervisor unavailable",
+        detail: (e as Error).message,
+        hint: "Run `tina4 serve` (starts the agent server) or set TINA4_SUPERVISOR_URL",
+      },
+      503,
+    );
     return;
   }
-  // Placeholder AI chat response
-  res.json({
-    reply: `AI chat is not yet configured. You said: "${message}"`,
-    timestamp: new Date().toISOString(),
-  });
+
+  const ct = (upstream.headers.get("content-type") ?? "").toLowerCase();
+
+  // SSE / event-stream — stream chunks through as they arrive.
+  if (ct.includes("text/event-stream")) {
+    res.raw.writeHead(upstream.status || 200, {
+      "Content-Type": upstream.headers.get("content-type") ?? "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    if (typeof (res.raw as any).flushHeaders === "function") {
+      (res.raw as any).flushHeaders();
+    }
+    if (!upstream.body) {
+      res.raw.end();
+      clearTimeout(timer);
+      return;
+    }
+    const reader = upstream.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) res.raw.write(Buffer.from(value));
+      }
+    } finally {
+      clearTimeout(timer);
+      res.raw.end();
+    }
+    return;
+  }
+
+  clearTimeout(timer);
+
+  // JSON / other — drain the body and return as before.
+  const raw = await upstream.text();
+  const status = upstream.status || 200;
+  try {
+    res.json(JSON.parse(raw), status);
+  } catch {
+    // Non-JSON upstream — pass through as text with the same status.
+    res.raw.writeHead(status, {
+      "Content-Type": upstream.headers.get("content-type") ?? "text/plain; charset=utf-8",
+    });
+    res.raw.end(raw);
+  }
+}
+
+// -- Chat handler --
+//
+// Proxies POST /__dev/api/chat → Rust agent `POST /chat`. The SPA's Chat
+// view POSTs `{message, settings?, thread_id?, active_file?, files?}` and
+// expects an SSE stream of `event: status / message / done` chunks.
+// active_file (and any other body keys) are forwarded verbatim.
+const handleChat: RouteHandler = async (req, res) => {
+  await proxyToSupervisor(req, res, "/chat");
+};
+
+// -- Threads handlers --
+
+/**
+ * Proxy /__dev/api/threads → Rust agent /threads.
+ *   GET  → list threads
+ *   POST → create thread
+ * Method-multiplexed — anything else gets a 405.
+ */
+const handleThreads: RouteHandler = async (req, res) => {
+  const method = (req.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "POST") {
+    res.json({ error: "method not allowed" }, 405);
+    return;
+  }
+  await proxyToSupervisor(req, res, "/threads");
+};
+
+/**
+ * Proxy /__dev/api/threads/{id}[/messages] → Rust agent.
+ *
+ * Strips the dev-admin prefix and forwards the remaining path verbatim so
+ * /__dev/api/threads/abc/messages becomes /threads/abc/messages on the
+ * agent side. Mirrors Python's `_api_threads_sub`.
+ */
+const handleThreadsSub: RouteHandler = async (req, res) => {
+  let pathname = "";
+  try {
+    pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+  } catch {
+    pathname = req.url ?? "";
+  }
+  const prefix = "/__dev/api";
+  if (!pathname.startsWith(prefix)) {
+    res.json({ error: "not found" }, 404);
+    return;
+  }
+  const suffix = pathname.slice(prefix.length); // "/threads/abc[/messages]"
+  if (!suffix.startsWith("/threads/")) {
+    res.json({ error: "not found" }, 404);
+    return;
+  }
+  await proxyToSupervisor(req, res, suffix);
 };
 
 // ---------------------------------------------------------------------------

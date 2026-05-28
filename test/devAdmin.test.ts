@@ -563,6 +563,218 @@ if (mtimeHandler && reloadHandler) {
   assert("file updated to latest reload", g2.result.file === "b.ts");
 }
 
+// ── Supervisor proxy (chat + threads) ──────────────────────
+// Spins up a local HTTP stub on a random port, points
+// TINA4_SUPERVISOR_URL at it, and asserts our /__dev/api/chat and
+// /__dev/api/threads* handlers forward correctly. Mirrors Python's
+// proxy parity (tina4_python.dev_admin._api_chat / _api_threads).
+console.log("\n--- supervisor proxy (chat + threads) ---");
+{
+  const { createServer } = await import("node:http");
+
+  type Captured = {
+    method: string;
+    url: string;
+    body: string;
+    contentType: string;
+  };
+
+  // Tiny stub for the Rust agent. Routes responses based on path:
+  //   /chat            → SSE stream of two events
+  //   /threads (GET)   → JSON list
+  //   /threads (POST)  → JSON echo
+  //   /threads/<id>    → JSON echo (handles PATCH/GET)
+  const captured: Captured[] = [];
+  const stub = createServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf-8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      captured.push({
+        method: req.method ?? "",
+        url: req.url ?? "",
+        body,
+        contentType: String(req.headers["content-type"] ?? ""),
+      });
+
+      const url = new URL(req.url ?? "/", "http://x");
+      const path = url.pathname;
+
+      if (path === "/chat") {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+        });
+        res.write("event: status\ndata: {\"ok\":true}\n\n");
+        res.write("event: done\ndata: {}\n\n");
+        res.end();
+        return;
+      }
+
+      if (path === "/threads" && req.method === "GET") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ threads: [{ id: "abc" }, { id: "def" }] }));
+        return;
+      }
+
+      if (path === "/threads" && req.method === "POST") {
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ created: true, echo: body }));
+        return;
+      }
+
+      if (path.startsWith("/threads/")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ path, method: req.method, echo: body }));
+        return;
+      }
+
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "stub: not found" }));
+    });
+  });
+
+  await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+  const stubPort = (stub.address() as import("node:net").AddressInfo).port;
+  const prevSupervisor = process.env.TINA4_SUPERVISOR_URL;
+  process.env.TINA4_SUPERVISOR_URL = `http://127.0.0.1:${stubPort}`;
+
+  // Re-register routes so any cached env reads (there are none here, but
+  // safety) settle. The existing `router` already has handlers wired —
+  // supervisorBaseUrl() reads process.env on every call.
+  const chatHandler = findHandler("POST", "/__dev/api/chat");
+  const threadsListHandler = findHandler("GET", "/__dev/api/threads");
+  const threadsCreateHandler = findHandler("POST", "/__dev/api/threads");
+  const threadsPatchHandler = findHandler("PATCH", "/__dev/api/threads/{id}");
+  const threadsMessagesHandler = findHandler("GET", "/__dev/api/threads/{id}/messages");
+
+  assert("chat handler registered", chatHandler !== undefined);
+  assert("threads GET handler registered", threadsListHandler !== undefined);
+  assert("threads POST handler registered", threadsCreateHandler !== undefined);
+  assert("threads PATCH handler registered", threadsPatchHandler !== undefined);
+  assert("threads messages GET handler registered", threadsMessagesHandler !== undefined);
+
+  // Build a fuller mock res for streaming + status capture
+  function streamingRes(): any {
+    let json: any = undefined;
+    let status: number | undefined = undefined;
+    let chunks: Buffer[] = [];
+    let headers: Record<string, string | number | string[]> = {};
+    return {
+      json(data: any, s?: number) { json = data; status = s; },
+      html(_: any, s?: number) { status = s; },
+      raw: {
+        writeHead(code: number, h?: Record<string, string | number | string[]>) {
+          status = code;
+          if (h) headers = h;
+        },
+        write(buf: Buffer | string) {
+          chunks.push(Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf)));
+        },
+        end(buf?: Buffer | string) {
+          if (buf !== undefined) chunks.push(Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf)));
+        },
+        flushHeaders() { /* noop */ },
+      },
+      get result() { return json; },
+      get status() { return status; },
+      get streamed() { return Buffer.concat(chunks).toString("utf-8"); },
+      get streamHeaders() { return headers; },
+    };
+  }
+
+  function reqWith(opts: { url: string; method: string; body?: any }): any {
+    return { url: opts.url, method: opts.method, headers: {}, body: opts.body };
+  }
+
+  // 1. proxies threads list to the supervisor
+  captured.length = 0;
+  {
+    const res = streamingRes();
+    await threadsListHandler!(reqWith({ url: "/__dev/api/threads", method: "GET" }), res);
+    assert("threads list reached the stub", captured.some((c) => c.method === "GET" && c.url === "/threads"));
+    assert(
+      "threads list response forwarded verbatim",
+      res.result && Array.isArray((res.result as any).threads) && (res.result as any).threads.length === 2,
+    );
+  }
+
+  // 2. honours TINA4_SUPERVISOR_URL env var
+  //    The previous assertion already proves it (the stub is on a random
+  //    port that only TINA4_SUPERVISOR_URL points at) — assert it
+  //    explicitly so the intent is documented.
+  assert(
+    "honours TINA4_SUPERVISOR_URL env var",
+    captured.length >= 1 && process.env.TINA4_SUPERVISOR_URL === `http://127.0.0.1:${stubPort}`,
+  );
+
+  // 3. forwards active_file in chat POST (SSE response)
+  captured.length = 0;
+  {
+    const res = streamingRes();
+    await chatHandler!(reqWith({
+      url: "/__dev/api/chat",
+      method: "POST",
+      body: { message: "hello", active_file: "src/routes/home.ts", thread_id: "t1" },
+    }), res);
+    const chatCall = captured.find((c) => c.url === "/chat" && c.method === "POST");
+    assert("chat POST reached the stub", chatCall !== undefined);
+    let forwardedBody: any = {};
+    try { forwardedBody = JSON.parse(chatCall?.body ?? "{}"); } catch { /* leave default */ }
+    assert("active_file forwarded verbatim", forwardedBody.active_file === "src/routes/home.ts");
+    assert("message forwarded verbatim", forwardedBody.message === "hello");
+    assert("thread_id forwarded verbatim", forwardedBody.thread_id === "t1");
+    assert("chat content-type is JSON to upstream", chatCall?.contentType.includes("application/json") ?? false);
+    assert("chat response streamed back as SSE", res.streamed.includes("event: status") && res.streamed.includes("event: done"));
+  }
+
+  // 4. patches threads on upstream
+  captured.length = 0;
+  {
+    const res = streamingRes();
+    await threadsPatchHandler!(reqWith({
+      url: "/__dev/api/threads/abc123",
+      method: "PATCH",
+      body: { archived: true },
+    }), res);
+    const patchCall = captured.find((c) => c.method === "PATCH" && c.url === "/threads/abc123");
+    assert("PATCH threads/{id} reached the stub", patchCall !== undefined);
+    let forwardedBody: any = {};
+    try { forwardedBody = JSON.parse(patchCall?.body ?? "{}"); } catch { /* leave default */ }
+    assert("PATCH body forwarded verbatim", forwardedBody.archived === true);
+    const result = res.result as any;
+    assert(
+      "PATCH response forwarded verbatim",
+      result && result.path === "/threads/abc123" && result.method === "PATCH",
+    );
+  }
+
+  // 5. threads messages history (sub-path forwarding)
+  captured.length = 0;
+  {
+    const res = streamingRes();
+    await threadsMessagesHandler!(reqWith({
+      url: "/__dev/api/threads/abc123/messages",
+      method: "GET",
+    }), res);
+    const msgCall = captured.find((c) => c.method === "GET" && c.url === "/threads/abc123/messages");
+    assert("messages sub-path forwarded verbatim", msgCall !== undefined);
+  }
+
+  // 6. threads POST create rejects unsupported methods? GET/POST/PATCH all supported here.
+  //    The list+create handler enforces GET/POST only — sanity-check that.
+  {
+    const res = streamingRes();
+    await threadsListHandler!(reqWith({ url: "/__dev/api/threads", method: "PUT" }), res);
+    assert("threads list/create rejects PUT with 405", res.status === 405 && (res.result as any)?.error === "method not allowed");
+  }
+
+  // Cleanup
+  await new Promise<void>((resolve) => stub.close(() => resolve()));
+  if (prevSupervisor === undefined) delete process.env.TINA4_SUPERVISOR_URL;
+  else process.env.TINA4_SUPERVISOR_URL = prevSupervisor;
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
