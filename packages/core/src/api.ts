@@ -18,6 +18,23 @@ export interface ApiResult {
     error: string | null;
 }
 
+/**
+ * Constructor options for {@link Api}. Used as the second argument to
+ * `new Api(url, { ... })` — cross-framework parity with Python
+ * `Api(bearer_token=, ...)` kwargs added in 3.13.x.
+ */
+export interface ApiOptions {
+    authHeader?: string;
+    timeout?: number;
+    ignoreSsl?: boolean;
+    /** Positive form of ignoreSsl — `verifySsl: false` disables verification. */
+    verifySsl?: boolean;
+    bearerToken?: string;
+    username?: string;
+    password?: string;
+    headers?: Record<string, string>;
+}
+
 export class Api {
     private baseUrl: string;
     private headers: Record<string, string>;
@@ -25,11 +42,56 @@ export class Api {
     private authHeader: string;
     private ignoreSsl: boolean;
 
-    constructor(baseUrl: string = "", authHeader: string = "", timeout: number = 30) {
+    /**
+     * Construct an Api client.
+     *
+     * Two construction styles supported:
+     *
+     *     // Legacy positional form
+     *     new Api("https://api.example.com", "Bearer token", 30);
+     *
+     *     // 3.13.1: ergonomic options bag (recommended) — cross-framework
+     *     // parity with Python tina4_python.api.Api kwargs.
+     *     new Api("https://api.example.com", { bearerToken: "sk-abc" });
+     *     new Api("https://api.example.com", { username: "u", password: "p" });
+     *     new Api("https://api.example.com", { headers: { "X-Tenant": "acme" } });
+     *     new Api("https://self-signed.local", { verifySsl: false });
+     *
+     * Bearer wins over basic-auth when both passed. `verifySsl: false` is
+     * the positive form of `ignoreSsl: true`; `ignoreSsl` wins when both
+     * supplied for backward compatibility.
+     */
+    constructor(
+        baseUrl: string = "",
+        authHeaderOrOptions: string | ApiOptions = "",
+        timeout: number = 30
+    ) {
         this.baseUrl = baseUrl.replace(/\/+$/, "");
-        this.authHeader = authHeader;
-        this.timeout = timeout;
         this.headers = {};
+
+        // Options-bag form — second arg is an object literal
+        if (typeof authHeaderOrOptions === "object" && authHeaderOrOptions !== null) {
+            const opts = authHeaderOrOptions;
+            this.authHeader = opts.authHeader ?? "";
+            this.timeout = opts.timeout ?? timeout;
+            this.ignoreSsl = (opts.ignoreSsl ?? false) || (opts.verifySsl === false);
+
+            // Bearer wins over basic-auth when both are passed
+            if (opts.bearerToken != null) {
+                this.setBearerToken(opts.bearerToken);
+            } else if (opts.username != null && opts.password != null) {
+                this.setBasicAuth(opts.username, opts.password);
+            }
+
+            if (opts.headers) {
+                this.addHeaders(opts.headers);
+            }
+            return;
+        }
+
+        // Legacy positional form
+        this.authHeader = authHeaderOrOptions;
+        this.timeout = timeout;
         this.ignoreSsl = false;
     }
 

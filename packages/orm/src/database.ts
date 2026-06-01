@@ -415,6 +415,23 @@ export class Database {
   }
 
   /**
+   * Fetch rows and return the records array directly.
+   *
+   * Symmetric with `fetchOne`. For the common case where you just want
+   * the rows and don't need the `DatabaseResult` metadata, this is one
+   * less attribute access than `fetch(...).records`.
+   *
+   *     const rows = db.fetchAll("SELECT * FROM users WHERE active = ?", [true]);
+   *     for (const row of rows) console.log(row.name);
+   *
+   * Returns `[]` (not `null`) when no rows match. Cross-framework parity
+   * with Python `db.fetch_all()`, PHP `$db->fetchAll()`, and Ruby `db.fetch_all`.
+   */
+  fetchAll<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, offset?: number): T[] {
+    return this.fetch(sql, params, limit, offset).records as T[];
+  }
+
+  /**
    * Execute a write statement. Returns true/false for simple writes.
    * If SQL contains RETURNING, CALL, EXEC, or SELECT, returns the result set.
    */
@@ -843,6 +860,37 @@ export function resolveDbPool(): number {
   if (raw === undefined || raw.trim() === "") return 0;
   const n = parseInt(raw, 10);
   return isNaN(n) || n < 0 ? 0 : n;
+}
+
+/**
+ * Open a database connection — convention name matching SQLAlchemy
+ * `engine.connect()` and the cross-framework Database.get_connection()
+ * surface shipped in 3.13.x.
+ *
+ * Equivalent to `initDatabase({ url })` but with an opinionated, simpler
+ * signature: pass a URL string directly, or omit for env-based defaults
+ * (falls back to in-memory SQLite when nothing resolves).
+ *
+ *     const db = await Database.getConnection();                        // from env
+ *     const db = await Database.getConnection("sqlite://./app.db");     // explicit URL
+ *     const db = await Database.getConnection("postgres://localhost/x", { username: "u", password: "p" });
+ *
+ * Cross-framework parity with Python `Database.get_connection()`, PHP
+ * `\Tina4\Database::getConnection()`, and Ruby `Tina4::Database.get_connection`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-namespace
+export namespace Database {
+  export async function getConnection(
+    url?: string,
+    opts: { username?: string; password?: string } = {}
+  ): Promise<Database> {
+    const resolvedUrl = url ?? process.env.TINA4_DATABASE_URL ?? "sqlite::memory:";
+    return initDatabase({
+      url: resolvedUrl,
+      username: opts.username,
+      password: opts.password,
+    });
+  }
 }
 
 export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
