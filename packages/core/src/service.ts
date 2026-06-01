@@ -161,6 +161,64 @@ function startDaemonService(svc: RegisteredService): void {
   executeHandler(svc);
 }
 
+// ─── Tina4Service base class (3.13.1) ───────────────────────────────────────
+//
+// Class-based background service pattern. Cross-framework parity with
+// Python tina4_python.service (when shipped), PHP Tina4\Service, and Ruby
+// Tina4::Service. The documentation has long taught:
+//
+//   class EmailQueueWorker extends Tina4Service {
+//     async run() {
+//       while (!this.shouldStop()) {
+//         // process work
+//       }
+//     }
+//   }
+//
+//   ServiceRunner.registerService("emails", new EmailQueueWorker());
+//   await ServiceRunner.start();
+//
+// Subclasses MUST override `run()`. Optionally override `stop()` for
+// custom shutdown; always call `super.stop()` so the internal flag
+// gets set — `shouldStop()` reads from it.
+
+export abstract class Tina4Service {
+  private _running = true;
+
+  /** Main work loop — subclasses MUST override. */
+  abstract run(): Promise<void> | void;
+
+  /**
+   * Signal this service to stop. The next `shouldStop()` check returns true.
+   * Override for custom shutdown behaviour but always call `super.stop()`.
+   */
+  stop(): void {
+    this._running = false;
+  }
+
+  /**
+   * Returns true once `stop()` has been called. Use inside `run()` loops
+   * as the exit condition:
+   *
+   *     async run() {
+   *       while (!this.shouldStop()) { ... }
+   *     }
+   */
+  shouldStop(): boolean {
+    return !this._running;
+  }
+
+  /**
+   * Return a callable that ServiceRunner can register. Used by
+   * ServiceRunner.registerService under the hood.
+   */
+  asHandler(): ServiceHandler {
+    return async () => {
+      await this.run();
+    };
+  }
+}
+
 // ─── ServiceRunner ───────────────────────────────────────────────────────────
 
 export class ServiceRunner {
@@ -185,6 +243,35 @@ export class ServiceRunner {
       timerId: null,
       retries: 0,
     });
+  }
+
+  /**
+   * Register a class-based service (subclass of {@link Tina4Service}) by name.
+   *
+   * Wraps the service's `run()` method as the runner's handler. Defaults
+   * to `daemon: true` because Tina4Service subclasses manage their own
+   * loop inside `run()`. Override via `options`.
+   *
+   *     class EmailWorker extends Tina4Service { async run() { ... } }
+   *     ServiceRunner.registerService("emails", new EmailWorker());
+   *     await ServiceRunner.start();
+   *
+   * Cross-framework parity with PHP `ServiceRunner::registerService` and
+   * Ruby `Tina4::ServiceRunner.register_service`.
+   */
+  static registerService(
+    name: string,
+    service: Tina4Service,
+    options: ServiceOptions = {},
+  ): void {
+    const merged: ServiceOptions = { daemon: true, ...options };
+    this.register(name, service.asHandler(), merged);
+    // Stash the instance on the registry entry so future stop() calls
+    // can route to service.stop().
+    const entry = registry.get(name);
+    if (entry) {
+      (entry as unknown as Record<string, unknown>).instance = service;
+    }
   }
 
   /**

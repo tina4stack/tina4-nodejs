@@ -403,8 +403,106 @@ export class GraphQL {
   private types: Map<string, Record<string, GraphQLField>> = new Map();
   private queries: Map<string, QueryConfig> = new Map();
   private mutations: Map<string, QueryConfig> = new Map();
+  /** Object-type field resolvers indexed by `[typeName][fieldName]`. */
+  private fieldResolvers: Map<string, Map<string, ResolverFn>> = new Map();
 
-  constructor() {}
+  // ── Class-level resolver registry — 3.13.1 ──────────────────────────
+  //
+  // Resolvers registered via `GraphQL.resolve("Type", "field", fn)`
+  // accumulate here BEFORE any GraphQL instance exists. When `new GraphQL()`
+  // runs, the instance drains the registry into its schema. Cross-framework
+  // parity with Python @GraphQL.resolve, PHP GraphQL::resolve, Ruby
+  // Tina4::GraphQL.resolve.
+  private static classResolvers = new Map<string, Map<string, ResolverFn>>();
+  private static defaultInstance: GraphQL | null = null;
+
+  /**
+   * Decorator-style resolver registration.
+   *
+   *     GraphQL.resolve("Query", "products", async (root, args) =>
+   *       db.fetchAll("SELECT * FROM products"));
+   *
+   *     GraphQL.resolve("Mutation", "createProduct", async (root, args) => {
+   *       const p = new Product(args.input);
+   *       await p.save();
+   *       return p.toDict();
+   *     });
+   *
+   *     GraphQL.resolve("Product", "reviews", async (product, args) =>
+   *       db.fetchAll("SELECT * FROM reviews WHERE product_id = ?", [product.id]));
+   *
+   * Resolvers registered before any GraphQL instance exists accumulate
+   * in the class-level registry. `new GraphQL()` drains them into its
+   * schema. Resolvers registered after `setDefault(gql)` wire into the
+   * live schema immediately.
+   */
+  static resolve(typeName: string, fieldName: string, resolver: ResolverFn): void {
+    let typeMap = GraphQL.classResolvers.get(typeName);
+    if (!typeMap) {
+      typeMap = new Map();
+      GraphQL.classResolvers.set(typeName, typeMap);
+    }
+    typeMap.set(fieldName, resolver);
+
+    if (GraphQL.defaultInstance) {
+      GraphQL.defaultInstance.attachResolver(typeName, fieldName, resolver);
+    }
+  }
+
+  /**
+   * Designate `instance` as the default singleton. Post-startup
+   * `GraphQL.resolve()` calls wire into this instance's live schema.
+   */
+  static setDefault(instance: GraphQL): void {
+    GraphQL.defaultInstance = instance;
+  }
+
+  /** Test-only — clear the class-level registry. */
+  static _clearClassResolvers(): void {
+    GraphQL.classResolvers.clear();
+    GraphQL.defaultInstance = null;
+  }
+
+  constructor() {
+    // Drain any resolvers registered via the class-level GraphQL.resolve()
+    // BEFORE this instance was constructed.
+    for (const [typeName, fields] of GraphQL.classResolvers.entries()) {
+      for (const [fieldName, resolver] of fields.entries()) {
+        this.attachResolver(typeName, fieldName, resolver);
+      }
+    }
+  }
+
+  /** Wire a single resolver into the live schema. */
+  private attachResolver(typeName: string, fieldName: string, resolver: ResolverFn): void {
+    if (typeName === "Query") {
+      const existing = this.queries.get(fieldName) ?? { args: {}, returnType: "String", resolver };
+      existing.resolver = resolver;
+      this.queries.set(fieldName, existing);
+      return;
+    }
+    if (typeName === "Mutation") {
+      const existing = this.mutations.get(fieldName) ?? { args: {}, returnType: "String", resolver };
+      existing.resolver = resolver;
+      this.mutations.set(fieldName, existing);
+      return;
+    }
+    // Object-type field resolver
+    let typeMap = this.fieldResolvers.get(typeName);
+    if (!typeMap) {
+      typeMap = new Map();
+      this.fieldResolvers.set(typeName, typeMap);
+    }
+    typeMap.set(fieldName, resolver);
+  }
+
+  /**
+   * Get the field resolver registered for an object type, if any.
+   * Used by the executor during nested field resolution.
+   */
+  getFieldResolver(typeName: string, fieldName: string): ResolverFn | undefined {
+    return this.fieldResolvers.get(typeName)?.get(fieldName);
+  }
 
   /**
    * Return schema metadata for debugging.

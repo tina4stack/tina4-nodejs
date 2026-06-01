@@ -64,7 +64,7 @@ export {
   CLOSE_NORMAL, CLOSE_PROTOCOL_ERROR,
 } from "./websocket.js";
 export type { WebSocketClient } from "./websocket.js";
-export { ServiceRunner, matchCronField, matchesCron } from "./service.js";
+export { ServiceRunner, Tina4Service, matchCronField, matchesCron } from "./service.js";
 export type { ServiceOptions, ServiceContext, ServiceHandler, ServiceInfo } from "./service.js";
 export { responseCache, clearCache, cacheStats, cacheGet, cacheSet, cacheDelete, cacheClear, cacheBackendStats, _resetBackend } from "./cache.js";
 export type { ResponseCacheConfig } from "./cache.js";
