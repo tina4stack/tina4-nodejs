@@ -12,9 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 22+ is required — packages/orm/src/adapters/sqlite.ts uses
+      # `node:sqlite` (introduced in Node 22, stable in Node 24).
+      # Node 20 fails with ERR_UNKNOWN_BUILTIN_MODULE.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install dependencies
         run: npm install

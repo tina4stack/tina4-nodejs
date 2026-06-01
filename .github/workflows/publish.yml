@@ -20,9 +20,11 @@ jobs:
         with:
           fetch-depth: 0  # need full history for git log on the tagged commit
 
+      # Node 22+ required — packages/orm/src/adapters/sqlite.ts imports
+      # `node:sqlite` (Node 22 experimental, Node 24 stable).
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
