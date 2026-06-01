@@ -222,10 +222,10 @@ process.env.TINA4_SECRET = SECRET;
 const token = getToken({ userId: 1 }, 3600);
 assert("getToken returns string", typeof token === "string");
 
-assert("validToken returns true", validToken(token) === true);
+assert("validToken returns true", validToken(token) !== null);
 
 const expired = getToken({ userId: 1 }, -1);
-assert("expired token rejected", validToken(expired) === false);
+assert("expired token rejected", validToken(expired) === null);
 
 const hash = hashPassword("password123");
 assert("hashPassword returns string", typeof hash === "string");

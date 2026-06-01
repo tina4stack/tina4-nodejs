@@ -79,12 +79,19 @@ export function getToken(
 }
 
 /**
- * Validate a JWT token and return the decoded payload, or false if invalid/expired.
+ * Validate a JWT token. Returns the decoded payload on success, `null` if
+ * invalid/expired/malformed.
  *
- * Secret is always read from `process.env.TINA4_SECRET`.
+ * 3.13.0 — return type changed from `boolean` to `Record<string, unknown> | null`.
+ * Matches the convention used by `jsonwebtoken` and the Python / PHP / Ruby
+ * Auth.validToken signatures shipped at the same time. Legacy
+ * `if (validToken(t))` patterns keep working because a non-null object is
+ * truthy and null is falsy.
+ *
+ * Secret is read from `process.env.TINA4_SECRET` when not passed explicitly.
  * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
  */
-export function validToken(token: string, secret?: string, algorithm?: string): boolean {
+export function validToken(token: string, secret?: string, algorithm?: string): Record<string, unknown> | null {
   const resolvedSecret = secret ?? process.env.TINA4_SECRET ?? "";
   if (!resolvedSecret) {
     console.warn("Auth: TINA4_SECRET not set in .env — using blank secret (insecure)");
@@ -92,24 +99,24 @@ export function validToken(token: string, secret?: string, algorithm?: string): 
   const resolvedAlgorithm = algorithm ?? process.env.TINA4_JWT_ALGORITHM ?? "HS256";
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return false;
+    if (parts.length !== 3) return null;
 
     const [h, p, sig] = parts;
     const signingInput = `${h}.${p}`;
 
     if (!verifySignature(signingInput, sig, resolvedSecret, resolvedAlgorithm)) {
-      return false;
+      return null;
     }
 
     const payload = JSON.parse(base64urlDecode(p).toString()) as Record<string, unknown>;
 
     if (typeof payload.exp === "number" && Date.now() / 1000 > payload.exp) {
-      return false;
+      return null;
     }
 
-    return true;
+    return payload;
   } catch {
-    return false;
+    return null;
   }
 }
 

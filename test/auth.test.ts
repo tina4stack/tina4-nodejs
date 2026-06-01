@@ -38,7 +38,7 @@ const token1 = getToken({ userId: 42, role: "admin" }, 3600);
 assert("getToken returns a string", typeof token1 === "string");
 assert("JWT has 3 parts", token1.split(".").length === 3);
 
-assert("validToken returns true for valid token", validToken(token1) === true);
+assert("validToken returns true for valid token", validToken(token1) !== null);
 
 // Use getPayload to access the payload
 const payload1 = getPayload(token1);
@@ -49,7 +49,7 @@ assert("getPayload contains exp", typeof payload1?.exp === "number");
 
 // Standard claims
 const token2 = getToken({ sub: "user:1", iss: "tina4" });
-assert("validToken returns true for token2", validToken(token2) === true);
+assert("validToken returns true for token2", validToken(token2) !== null);
 const payload2 = getPayload(token2);
 assert("sub claim preserved", payload2?.sub === "user:1");
 assert("iss claim preserved", payload2?.iss === "tina4");
@@ -59,11 +59,11 @@ assert("iss claim preserved", payload2?.iss === "tina4");
 console.log("\n-- JWT Expiration --");
 
 const expiredToken = getToken({ userId: 1 }, -1); // already expired
-assert("Expired token returns false", validToken(expiredToken) === false);
+assert("Expired token returns false", validToken(expiredToken) === null);
 
 // Token with no expiry (expiresIn = 0)
 const noExpToken = getToken({ userId: 1 }, 0);
-assert("Token with expiresIn=0 is valid", validToken(noExpToken) === true);
+assert("Token with expiresIn=0 is valid", validToken(noExpToken) !== null);
 const noExpPayload = getPayload(noExpToken);
 assert("Token with expiresIn=0 has no exp claim", noExpPayload !== null && !("exp" in noExpPayload));
 
@@ -74,15 +74,15 @@ console.log("\n-- JWT Invalid Signature --");
 // Test with wrong secret via env
 const origSecret = process.env.TINA4_SECRET;
 process.env.TINA4_SECRET = "wrong-secret";
-assert("Wrong secret returns false", validToken(token1) === false);
+assert("Wrong secret returns false", validToken(token1) === null);
 process.env.TINA4_SECRET = origSecret;
 
 const tamperedToken = token1.slice(0, -3) + "abc";
-assert("Tampered token returns false", validToken(tamperedToken) === false);
+assert("Tampered token returns false", validToken(tamperedToken) === null);
 
-assert("Malformed token returns false", validToken("not.a.jwt") === false);
-assert("Empty string returns false", validToken("") === false);
-assert("Two parts returns false", validToken("a.b") === false);
+assert("Malformed token returns false", validToken("not.a.jwt") === null);
+assert("Empty string returns false", validToken("") === null);
+assert("Two parts returns false", validToken("a.b") === null);
 
 // ── JWT Decode (no verification) ──────────────────────────────────
 
@@ -114,14 +114,14 @@ const rsaToken = getToken({ userId: 99 }, 3600);
 assert("RS256 token generated", typeof rsaToken === "string");
 
 process.env.TINA4_SECRET = publicKey;
-assert("RS256 token verifies with public key", validToken(rsaToken) === true);
+assert("RS256 token verifies with public key", validToken(rsaToken) !== null);
 const rsaPayload = getPayload(rsaToken);
 assert("RS256 payload contains userId", rsaPayload?.userId === 99);
 
 // HS256 cannot verify an RS256 token
 process.env.TINA4_SECRET = SECRET;
 process.env.TINA4_JWT_ALGORITHM = "HS256";
-assert("RS256 token fails with HS256 verify", validToken(rsaToken) === false);
+assert("RS256 token fails with HS256 verify", validToken(rsaToken) === null);
 
 // Restore env
 process.env.TINA4_SECRET = SECRET;
@@ -239,7 +239,7 @@ console.log("\n-- Token Refresh --");
   assert("refreshToken returns a string", typeof refreshed === "string");
   assert("refreshed token is different from original", refreshed !== original);
 
-  assert("refreshed token is valid", validToken(refreshed!) === true);
+  assert("refreshed token is valid", validToken(refreshed!) !== null);
   const refreshedPayload = getPayload(refreshed!);
   assert("refreshed token preserves userId", refreshedPayload?.userId === 42);
   assert("refreshed token preserves role", refreshedPayload?.role === "admin");
@@ -356,7 +356,7 @@ console.log("\n-- Auth Class Wrapper --");
 
   // Verify Auth class methods produce same results as standalone functions
   const classToken = Auth.getToken({ userId: 77 }, SECRET);
-  assert("Auth class validToken works", Auth.validToken(classToken) === true);
+  assert("Auth class validToken works", Auth.validToken(classToken) !== null);
   const classPayload = Auth.getPayload(classToken);
   assert("Auth class getToken works", classPayload?.userId === 77);
 
@@ -375,7 +375,7 @@ console.log("\n-- JWT Edge Cases --");
     largePayload[`key_${i}`] = `value_${i}_${"x".repeat(100)}`;
   }
   const largeToken = getToken(largePayload, SECRET);
-  assert("large payload token is valid", validToken(largeToken) === true);
+  assert("large payload token is valid", validToken(largeToken) !== null);
   const largeParsed = getPayload(largeToken);
   assert("large payload round-trips", largeParsed?.key_0 === largePayload.key_0);
 }
@@ -449,7 +449,7 @@ console.log("\n-- getToken with explicit secret --");
   assert("getToken with explicit secret returns a string", typeof tokenWithSecret === "string");
   // Token signed with custom secret — env SECRET should NOT validate it
   process.env.TINA4_SECRET = "different-secret";
-  assert("token signed with custom secret is invalid with different env SECRET", validToken(tokenWithSecret) === false);
+  assert("token signed with custom secret is invalid with different env SECRET", validToken(tokenWithSecret) === null);
   // Restore
   process.env.TINA4_SECRET = SECRET;
 }
@@ -458,7 +458,7 @@ console.log("\n-- getToken with explicit secret --");
   // Back-compat: passing expiresIn as second arg still works
   const tokenBackCompat = getToken({ userId: 2 }, 1800);
   assert("getToken back-compat (expiresIn as 2nd arg) returns string", typeof tokenBackCompat === "string");
-  assert("getToken back-compat token is valid", validToken(tokenBackCompat) === true);
+  assert("getToken back-compat token is valid", validToken(tokenBackCompat) !== null);
 }
 
 // ── authenticateRequest with explicit secret ─────────────────────

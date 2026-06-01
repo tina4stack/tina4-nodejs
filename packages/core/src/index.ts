@@ -110,6 +110,8 @@ export { RedisNpmSessionHandler } from "./sessionHandlers/redisHandler.js";
 export type { RedisNpmSessionConfig } from "./sessionHandlers/redisHandler.js";
 export { tests, assertEqual, assertRaises, assertTrue, assertFalse, runAll, reset } from "./testing.js";
 export { TestClient, TestResponse } from "./testClient.js";
+export { Tina4Test, AssertionError as Tina4AssertionError } from "./test.js";
+export type { TestRunResults } from "./test.js";
 export { Container, container } from "./container.js";
 export { Validator } from "./validator.js";
 export type { ValidationError } from "./validator.js";
