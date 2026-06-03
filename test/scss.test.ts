@@ -115,6 +115,50 @@ assert("Multiplication: 10px * 2 = 20px",
 assert("Division: 100px / 4 = 25px",
   mathResult.includes("25px"));
 
+// --- Mixed-unit arithmetic — regression for tina4-nodejs#1 ---
+//
+// Before the fix, the evaluator extracted the unit from the first operand
+// only and dropped the second's, silently producing wrong CSS:
+//   100vh - 170px → -70vh (negative, layout-breaking)
+//   100% - 20px   → 80%
+// After the fix, mixed-unit expressions are left verbatim so the browser
+// computes them — that is exactly what calc() is for.
+console.log("\n--- Mixed-unit arithmetic (calc regression) ---");
+
+const calcVh = compiler.compile(`.box { max-height: 100vh - 170px; }`);
+assert("Mixed-unit vh-px outside calc: 100vh preserved",
+  calcVh.includes("100vh") && calcVh.includes("170px"));
+assert("Mixed-unit vh-px outside calc: NOT folded to -70vh",
+  !calcVh.includes("-70vh"));
+
+const calcPct = compiler.compile(`.box { width: 100% - 20px; }`);
+assert("Mixed-unit %-px outside calc: source preserved",
+  calcPct.includes("100%") && calcPct.includes("20px"));
+assert("Mixed-unit %-px outside calc: NOT folded to 80%",
+  !calcPct.includes("80%"));
+
+const calcInside = compiler.compile(`.box { max-height: calc(100vh - 170px); }`);
+assert("calc(100vh - 170px) preserved verbatim",
+  calcInside.includes("calc(100vh - 170px)"));
+
+const calcInsidePct = compiler.compile(`.box { width: calc(50% + 10px); }`);
+assert("calc(50% + 10px) preserved verbatim",
+  calcInsidePct.includes("calc(50% + 10px)"));
+
+const sameUnit = compiler.compile(`.box { width: 10px + 5px; padding: 1rem + 2rem; }`);
+assert("Same-unit addition still folds (10px + 5px = 15px)",
+  sameUnit.includes("15px"));
+assert("Same-unit rem addition still folds (1rem + 2rem = 3rem)",
+  sameUnit.includes("3rem"));
+
+const unitlessMul = compiler.compile(`.box { width: 2 * 5px; }`);
+assert("Unitless multiplication still folds (2 * 5px = 10px)",
+  unitlessMul.includes("10px"));
+
+const unitlessDiv = compiler.compile(`.box { width: 10px / 2; }`);
+assert("Unitless division still folds (10px / 2 = 5px)",
+  unitlessDiv.includes("5px"));
+
 // --- Mixins ---
 console.log("\n--- Mixins ---");
 

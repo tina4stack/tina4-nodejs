@@ -251,30 +251,70 @@ function resolveIncludes(
 // ── Math Evaluation ──────────────────────────────────────────────
 
 function evalMath(scss: string): string {
-  return scss.replace(
+  // Mixed-unit arithmetic is left verbatim — that is exactly what CSS calc()
+  // is for, and folding it silently produces invalid output (see tina4-nodejs#1).
+  // Math inside calc(...) is preserved untouched on the same principle: the
+  // author asked the browser to compute it.
+  //
+  // Rules for folding:
+  //   * Both operands unitless                  → fold
+  //   * Same unit on both operands              → fold, keep unit
+  //   * One operand unitless for * or /         → fold, keep the other unit
+  //   * Anything else (mixed units on +/-, etc) → leave verbatim
+
+  // Step 1 — mask calc(...) ranges so the math regex cannot eat into them.
+  const placeholders: string[] = [];
+  const masked = scss.replace(/calc\([^()]*\)/g, (m) => {
+    placeholders.push(m);
+    return `\x00CALC${placeholders.length - 1}\x00`;
+  });
+
+  // Step 2 — run the math fold on what remains.
+  const folded = masked.replace(
     /([\d.]+)([a-z%]*)\s*([+\-*/])\s*([\d.]+)([a-z%]*)/g,
-    (_m, n1: string, u1: string, op: string, n2: string, _u2: string) => {
-      try {
-        const num1 = parseFloat(n1);
-        const num2 = parseFloat(n2);
-        let result: number;
-        switch (op) {
-          case "+": result = num1 + num2; break;
-          case "-": result = num1 - num2; break;
-          case "*": result = num1 * num2; break;
-          case "/": result = num2 !== 0 ? num1 / num2 : 0; break;
-          default: return _m;
-        }
-        const unit = u1 || "";
-        if (result === Math.floor(result)) {
-          return `${Math.floor(result)}${unit}`;
-        }
-        return `${result.toFixed(2)}${unit}`;
-      } catch {
-        return _m;
+    (full, n1: string, u1: string, op: string, n2: string, u2: string) => {
+      const num1 = parseFloat(n1);
+      const num2 = parseFloat(n2);
+      if (Number.isNaN(num1) || Number.isNaN(num2)) return full;
+
+      const unit1 = u1 || "";
+      const unit2 = u2 || "";
+
+      // Decide result unit; bail if units are incompatible.
+      let unit: string;
+      if (unit1 === unit2) {
+        unit = unit1;
+      } else if ((op === "*" || op === "/") && unit1 === "") {
+        unit = unit2;
+      } else if ((op === "*" || op === "/") && unit2 === "") {
+        unit = unit1;
+      } else {
+        return full;
       }
+
+      let result: number;
+      switch (op) {
+        case "+": result = num1 + num2; break;
+        case "-": result = num1 - num2; break;
+        case "*": result = num1 * num2; break;
+        case "/":
+          if (num2 === 0) return full;
+          result = num1 / num2;
+          break;
+        default: return full;
+      }
+
+      if (result === Math.floor(result)) {
+        return `${Math.floor(result)}${unit}`;
+      }
+      return `${result.toFixed(2)}${unit}`;
     }
   );
+
+  // Step 3 — restore the calc() ranges verbatim.
+  return folded.replace(/\x00CALC(\d+)\x00/g, (_m, idx: string) => {
+    return placeholders[parseInt(idx, 10)];
+  });
 }
 
 // ── Nesting Flattener ────────────────────────────────────────────
