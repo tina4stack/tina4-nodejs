@@ -164,6 +164,80 @@ if (savedDebug !== undefined) {
 }
 delete process.env.TINA4_ENV;
 
+// --- Caller-name injection (TINA4_LOG_FUNC) ---
+console.log("\n--- TINA4_LOG_FUNC (caller-name injection) ---");
+
+// Use a separate file so we can assert byte-level on the most recent line.
+Log.configure({ logDir: TEST_LOG_DIR, logFile: "func.log" });
+const funcLogPath = join(TEST_LOG_DIR, "func.log");
+
+// Ensure we're in dev mode so the file path is exercised (writeToFile fires regardless).
+process.env.TINA4_DEBUG = "true";
+
+// Default: TINA4_LOG_FUNC unset → no caller-name segment in the line.
+delete process.env.TINA4_LOG_FUNC;
+function unrelatedHelper() {
+  Log.info("default-no-func");
+}
+unrelatedHelper();
+
+const noFuncContent = readFileSync(funcLogPath, "utf-8");
+const noFuncLine = noFuncContent.trim().split("\n").pop()!;
+assert("default: no [unrelatedHelper] segment in log line", !noFuncLine.includes("[unrelatedHelper]"));
+
+// Enable TINA4_LOG_FUNC — text mode injects [callerName] segment.
+process.env.TINA4_LOG_FUNC = "true";
+function myUserFunction() {
+  Log.info("with-func-enabled");
+}
+myUserFunction();
+
+const withFuncContent = readFileSync(funcLogPath, "utf-8");
+const withFuncLine = withFuncContent.trim().split("\n").pop()!;
+assert(
+  "TINA4_LOG_FUNC=true injects [myUserFunction] segment",
+  withFuncLine.includes("[myUserFunction]"),
+  `line was: ${withFuncLine}`,
+);
+
+// JSON mode adds a `function` field.
+process.env.TINA4_LOG_FORMAT = "json";
+function jsonModeCaller() {
+  Log.info("with-func-json");
+}
+jsonModeCaller();
+
+const jsonContent = readFileSync(funcLogPath, "utf-8");
+const jsonLine = jsonContent.trim().split("\n").pop()!;
+let parsedJson: any = null;
+try { parsedJson = JSON.parse(jsonLine); } catch { /* leave null */ }
+assert("JSON mode produces valid JSON line", parsedJson !== null);
+assert(
+  "JSON mode includes function: 'jsonModeCaller'",
+  parsedJson?.function === "jsonModeCaller",
+  `function field was: ${parsedJson?.function}`,
+);
+
+delete process.env.TINA4_LOG_FORMAT;
+
+// Anonymous frames — calls from a top-level callback should not bleed
+// internal/anonymous names through. We verify the field is either absent or
+// a real identifier (never "anonymous" / "<anonymous>").
+(function () {
+  Log.info("inside-iife");
+})();
+const anonContent = readFileSync(funcLogPath, "utf-8");
+const anonLine = anonContent.trim().split("\n").pop()!;
+assert(
+  "anonymous IIFE frames filtered out (no '[anonymous]' / '[<anonymous>]')",
+  !anonLine.includes("[anonymous]") && !anonLine.includes("[<anonymous>]"),
+  `line was: ${anonLine}`,
+);
+
+// Cleanup TINA4_LOG_FUNC + debug
+delete process.env.TINA4_LOG_FUNC;
+delete process.env.TINA4_DEBUG;
+
 // Cleanup
 rmSync("/tmp/tina4-logger-test", { recursive: true });
 

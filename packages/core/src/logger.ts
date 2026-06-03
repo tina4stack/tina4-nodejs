@@ -28,7 +28,65 @@ interface LogEntry {
   level: LogLevel;
   message: string;
   request_id?: string;
+  function?: string;
   context?: unknown;
+}
+
+/**
+ * Log frames we walk past when looking for the real caller of a Log.* call.
+ * Mirrors Python's `_OWN_FRAMES`. Anything matching is treated as internal.
+ */
+const OWN_FRAMES = new Set<string>([
+  "log", "Log.log",
+  "callerName", "Log.callerName",
+  "info", "debug", "warning", "warn", "error", "critical",
+  "Log.info", "Log.debug", "Log.warning", "Log.warn", "Log.error", "Log.critical",
+]);
+
+/** V8 stack-trace markers that mean "no real function name". */
+const ANON_NAMES = new Set<string>(["", "anonymous", "<anonymous>"]);
+
+/**
+ * Return the function name that called Log.{info,debug,warning,error}.
+ *
+ * Active only when `TINA4_LOG_FUNC=true` — captures `new Error().stack`,
+ * walks past Log's own frames (info / warn / error / debug / log /
+ * callerName) and returns the first user function name. Anonymous frames
+ * (`anonymous`, `<anonymous>`, bare file paths) are filtered out as noise.
+ * Returns undefined on any error — never throws. Parity feature #41 across
+ * all four Tina4 frameworks.
+ */
+function callerName(): string | undefined {
+  // Read the env directly (not via Env.bool) to keep the logger ↔ env cycle
+  // one-way: env helpers depend on Log, not the other way around.
+  const raw = (process.env.TINA4_LOG_FUNC ?? "").trim().toLowerCase();
+  if (raw !== "1" && raw !== "true" && raw !== "on" && raw !== "yes" && raw !== "y" && raw !== "t") {
+    return undefined;
+  }
+  try {
+    const stack = new Error().stack;
+    if (!stack) return undefined;
+    const lines = stack.split("\n");
+    // Skip line 0 ("Error") and walk frames. Cap at 32 to defend against
+    // pathological recursion / wrapper stacks.
+    for (let i = 1; i < lines.length && i < 32; i++) {
+      const line = lines[i];
+      // V8 frame: "    at functionName (file:line:col)"
+      //        or "    at file:line:col"           (anonymous)
+      //        or "    at async functionName (...)"
+      const m = line.match(/^\s+at\s+(?:async\s+)?([^\s(]+)\s*\(/);
+      if (!m) continue;
+      const name = m[1];
+      // Strip the leading `Object.` / class prefix some V8s emit, then check.
+      const bare = name.includes(".") ? name.split(".").pop()! : name;
+      if (OWN_FRAMES.has(name) || OWN_FRAMES.has(bare)) continue;
+      if (ANON_NAMES.has(bare)) continue;
+      return bare;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** ANSI color codes for terminal output */
@@ -308,6 +366,14 @@ export class Log {
       entry.request_id = Log.requestId;
     }
 
+    // Caller-name injection — opt-in via TINA4_LOG_FUNC=true. Off by default
+    // so existing log output stays byte-identical for users who haven't asked
+    // for it. Parity feature across all four Tina4 frameworks.
+    const fnName = callerName();
+    if (fnName) {
+      entry.function = fnName;
+    }
+
     if (data !== undefined) {
       entry.context = data;
     }
@@ -315,8 +381,9 @@ export class Log {
     // Build human-readable line
     const paddedLevel = level.padEnd(8);
     const reqPart = Log.requestId ? ` [${Log.requestId}]` : "";
+    const fnPart = fnName ? ` [${fnName}]` : "";
     const dataPart = data !== undefined ? ` ${JSON.stringify(data)}` : "";
-    const humanLine = `${entry.timestamp} [${paddedLevel}]${reqPart} ${message}${dataPart}`;
+    const humanLine = `${entry.timestamp} [${paddedLevel}]${reqPart}${fnPart} ${message}${dataPart}`;
 
     // Build the file-format line based on TINA4_LOG_FORMAT
     const fileLine = cfg.format === "json" ? JSON.stringify(entry) : humanLine;
