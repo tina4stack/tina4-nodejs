@@ -1,8 +1,8 @@
 /**
- * Unit tests for the DATABASE_URL parser.
+ * Unit tests for the TINA4_DATABASE_URL parser.
  * Run with: npx tsx test/database.test.ts
  */
-import { parseDatabaseUrl } from "../packages/orm/src/index.ts";
+import { Database, parseDatabaseUrl } from "../packages/orm/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -106,6 +106,47 @@ try {
   threw2 = true;
 }
 assert("Throws on invalid URL", threw2);
+
+// --- Database.fromEnv() default env var — regression for tina4-nodejs#45 ---
+//
+// Before the fix, fromEnv() defaulted to the legacy bare "DATABASE_URL"
+// while the rest of the framework reads "TINA4_DATABASE_URL". A caller
+// invoking Database.fromEnv() with no argument would look up the wrong
+// env var and either throw or silently miss the project's connection.
+console.log("\n--- Database.fromEnv default key ---");
+
+// Save + clear both keys so we know exactly what's being read.
+const _saved = {
+  TINA4_DATABASE_URL: process.env.TINA4_DATABASE_URL,
+  DATABASE_URL: process.env.DATABASE_URL,
+};
+delete process.env.TINA4_DATABASE_URL;
+delete process.env.DATABASE_URL;
+
+// Bare DATABASE_URL alone must NOT satisfy the lookup.
+process.env.DATABASE_URL = "sqlite:///wrong.db";
+let bareThrew = false;
+try {
+  await Database.fromEnv();
+} catch (e) {
+  bareThrew = /TINA4_DATABASE_URL/.test(String(e));
+}
+assert("fromEnv() default key is TINA4_DATABASE_URL, not bare DATABASE_URL", bareThrew);
+
+// With TINA4_DATABASE_URL set it must succeed.
+process.env.TINA4_DATABASE_URL = "sqlite::memory:";
+let goodOk = false;
+try {
+  const db = await Database.fromEnv();
+  goodOk = !!db;
+} catch {}
+assert("fromEnv() reads TINA4_DATABASE_URL when set", goodOk);
+
+// Restore previous environment so other tests in the suite stay clean.
+delete process.env.TINA4_DATABASE_URL;
+delete process.env.DATABASE_URL;
+if (_saved.TINA4_DATABASE_URL !== undefined) process.env.TINA4_DATABASE_URL = _saved.TINA4_DATABASE_URL;
+if (_saved.DATABASE_URL !== undefined) process.env.DATABASE_URL = _saved.DATABASE_URL;
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

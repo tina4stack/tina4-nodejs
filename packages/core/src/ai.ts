@@ -424,7 +424,7 @@ npx tina4nodejs routes    # List routes
 ## Database
 
 Default: SQLite via \`node:sqlite\`. Adapters for PostgreSQL, MySQL, MSSQL, Firebird.
-Set \`DATABASE_URL\` in \`.env\` (e.g. \`postgres://localhost:5432/mydb\`).
+Set \`TINA4_DATABASE_URL\` in \`.env\` (e.g. \`postgres://localhost:5432/mydb\`).
 
 ## Auth
 
@@ -485,7 +485,7 @@ npx tina4nodejs routes    # List routes
 ## Database
 
 Default: SQLite via \`node:sqlite\`. Adapters for PostgreSQL, MySQL, MSSQL, Firebird.
-Set \`DATABASE_URL\` in \`.env\`.
+Set \`TINA4_DATABASE_URL\` in \`.env\`.
 `;
 }
 
@@ -593,7 +593,7 @@ npx tina4nodejs routes          # List routes
 ## Database
 
 Default: SQLite via \`node:sqlite\`. Adapters for PostgreSQL, MySQL, MSSQL, Firebird.
-Set \`DATABASE_URL\` in \`.env\` (e.g. \`sqlite:///path/to/db.sqlite\`, \`postgres://localhost:5432/mydb\`).
+Set \`TINA4_DATABASE_URL\` in \`.env\` (e.g. \`sqlite:///path/to/db.sqlite\`, \`postgres://localhost:5432/mydb\`).
 
 ## Auth
 
@@ -693,7 +693,7 @@ npx tina4nodejs routes          # List routes
 ## Database
 
 Default: SQLite via \`node:sqlite\`. Adapters for PostgreSQL, MySQL, MSSQL, Firebird.
-Set \`DATABASE_URL\` in \`.env\`.
+Set \`TINA4_DATABASE_URL\` in \`.env\`.
 
 ## Auth
 

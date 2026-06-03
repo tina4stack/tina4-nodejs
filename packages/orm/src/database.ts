@@ -60,7 +60,7 @@ export interface DatabaseConfig {
 }
 
 /**
- * Parsed result from a DATABASE_URL connection string.
+ * Parsed result from a TINA4_DATABASE_URL connection string.
  */
 export interface ParsedDatabaseUrl {
   type: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird" | "mongodb" | "odbc";
@@ -75,7 +75,7 @@ export interface ParsedDatabaseUrl {
 }
 
 /**
- * Parse a DATABASE_URL connection string into its components.
+ * Parse a TINA4_DATABASE_URL connection string into its components.
  *
  * Supported formats:
  *   sqlite:///path/to/db.sqlite
@@ -325,10 +325,10 @@ export class Database {
 
   /**
    * Create a Database from an environment variable.
-   * @param envKey - Name of the env var holding the connection URL. Defaults to "DATABASE_URL".
+   * @param envKey - Name of the env var holding the connection URL. Defaults to "TINA4_DATABASE_URL".
    * @param pool - Number of pooled connections (0 = single, N>0 = round-robin)
    */
-  static async fromEnv(envKey = "DATABASE_URL", pool: number = 0): Promise<Database> {
+  static async fromEnv(envKey = "TINA4_DATABASE_URL", pool: number = 0): Promise<Database> {
     const url = process.env[envKey];
     if (!url) {
       throw new Error(`Environment variable "${envKey}" is not set.`);

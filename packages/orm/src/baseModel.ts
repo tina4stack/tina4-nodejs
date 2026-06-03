@@ -206,7 +206,7 @@ export class BaseModel {
 
   /**
    * Get the database adapter for this model.
-   * If no adapter is registered, attempts auto-discovery from DATABASE_URL.
+   * If no adapter is registered, attempts auto-discovery from TINA4_DATABASE_URL.
    * SQLite URLs are initialised synchronously. Other engines require initDatabase()
    * to be called before first use.
    */
@@ -229,12 +229,12 @@ export class BaseModel {
           return adapter;
         }
         throw new Error(
-          `DATABASE_URL is set to a non-SQLite engine ("${parsed.type}"). ` +
+          `TINA4_DATABASE_URL is set to a non-SQLite engine ("${parsed.type}"). ` +
           `Call await initDatabase() at startup before using ORM models.`,
         );
       }
       throw new Error(
-        "No database adapter configured. Call initDatabase() or set DATABASE_URL in .env.",
+        "No database adapter configured. Call initDatabase() or set TINA4_DATABASE_URL in .env.",
       );
     }
   }

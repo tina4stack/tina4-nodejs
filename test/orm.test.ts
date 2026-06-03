@@ -546,6 +546,49 @@ console.log("\n--- Create Without ID ---");
   }
 }
 
+// --- Error message — regression for tina4-nodejs#45 ---
+//
+// Before the fix, "No database adapter configured" pointed users at the
+// legacy bare DATABASE_URL. The boot guard since v3.12 rejects that key,
+// so the old error sent users straight into a dead end. The error must
+// now name TINA4_DATABASE_URL — the actual key the framework reads.
+console.log("\n--- ORM error mentions TINA4_DATABASE_URL ---");
+{
+  const savedTina4 = process.env.TINA4_DATABASE_URL;
+  const savedBare = process.env.DATABASE_URL;
+
+  closeDatabase();
+  delete process.env.TINA4_DATABASE_URL;
+  delete process.env.DATABASE_URL;
+
+  class _NoDbModel extends BaseModel {
+    static tableName = "no_db";
+    static fields = { id: { type: "integer" as const, primaryKey: true } };
+  }
+
+  let errMsg = "";
+  try {
+    await _NoDbModel.all();
+  } catch (e) {
+    errMsg = String((e as Error)?.message ?? e);
+  }
+
+  assert(
+    "ORM error names TINA4_DATABASE_URL",
+    /TINA4_DATABASE_URL/.test(errMsg),
+    `got: ${errMsg}`,
+  );
+  assert(
+    "ORM error does not point at legacy bare DATABASE_URL",
+    !/set DATABASE_URL/.test(errMsg),
+    `got: ${errMsg}`,
+  );
+
+  // Restore env so later tests/cleanups stay clean.
+  if (savedTina4 !== undefined) process.env.TINA4_DATABASE_URL = savedTina4;
+  if (savedBare !== undefined) process.env.DATABASE_URL = savedBare;
+}
+
 // Cleanup
 closeDatabase();
 try { rmSync("/tmp/tina4-orm-test", { recursive: true }); } catch {}

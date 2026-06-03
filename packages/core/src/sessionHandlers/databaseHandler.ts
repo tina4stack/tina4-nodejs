@@ -5,7 +5,7 @@
  * Stores sessions in a `tina4_session` table with JSON data and expiry.
  *
  * Configure via environment variables:
- *   DATABASE_URL  (default: "sqlite:///data/tina4_sessions.db")
+ *   TINA4_DATABASE_URL  (default: "sqlite:///data/tina4_sessions.db")
  *
  * The handler dynamically imports `better-sqlite3` and throws a clear
  * error if the package is not installed.
@@ -20,7 +20,7 @@ interface SessionData {
 }
 
 export interface DatabaseSessionConfig {
-  /** SQLite database file path (default: extracted from DATABASE_URL or "data/tina4_sessions.db") */
+  /** SQLite database file path (default: extracted from TINA4_DATABASE_URL or "data/tina4_sessions.db") */
   dbPath?: string;
 }
 
