@@ -1,8 +1,42 @@
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, IncomingHttpHeaders } from "node:http";
 import type { Tina4Request, UploadedFile } from "./types.js";
+
+/**
+ * Wrap Node's `IncomingHttpHeaders` in a Proxy so mixed-case lookups
+ * (`req.headers["Content-Type"]`) work alongside the canonical lowercase
+ * form Node already provides. Parity with PY-10-03 (Python ships a
+ * `CaseInsensitiveDict` for the same reason).
+ *
+ * The raw object is returned as-is by `Object.keys` / iteration — only
+ * string property reads/`in` checks are normalised.
+ */
+export function makeCaseInsensitiveHeaders(
+  raw: IncomingHttpHeaders,
+): IncomingHttpHeaders {
+  return new Proxy(raw, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string") {
+        const lower = prop.toLowerCase();
+        if (lower in target) return (target as Record<string, unknown>)[lower];
+        return Reflect.get(target, prop, receiver);
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+    has(target, prop) {
+      if (typeof prop === "string") {
+        return prop.toLowerCase() in target || Reflect.has(target, prop);
+      }
+      return Reflect.has(target, prop);
+    },
+  }) as IncomingHttpHeaders;
+}
 
 export function createRequest(req: IncomingMessage): Tina4Request {
   const tReq = req as Tina4Request;
+  // Wrap `req.headers` so mixed-case lookups work — Node's underlying object
+  // is already lower-cased, this just lets readers use any casing they like.
+  (tReq as unknown as { headers: IncomingHttpHeaders }).headers =
+    makeCaseInsensitiveHeaders(req.headers);
 
   // Resolve scheme + host honouring proxy headers — parity with PHP/Python/Ruby.
   const xfProto = req.headers["x-forwarded-proto"];
