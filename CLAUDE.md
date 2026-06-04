@@ -571,7 +571,7 @@ db.delete(table, filter?, params?): DatabaseWriteResult
 db.getLastId(): string | number | null
 db.getError(): string | null
 
-// Transactions — autoCommit defaults to ON unless TINA4_DB_AUTOCOMMIT=false
+// Transactions — autoCommit defaults to OFF; set TINA4_AUTOCOMMIT=true to enable
 db.startTransaction(): void
 db.commit(): void
 db.rollback(): void
