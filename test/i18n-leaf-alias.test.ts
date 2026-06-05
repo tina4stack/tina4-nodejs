@@ -226,6 +226,10 @@ if (frondEngine) {
   mkdirSync(emptyLocaleDir, { recursive: true });
 
   const { Frond: Frond2 } = await import("../packages/frond/src/engine.js");
+  // Clear class-level registry — the static-facade pattern persists
+  // ``addGlobal`` calls across instances, so the t() registered on
+  // frondEngine above would otherwise leak into this fresh instance.
+  Frond2.clearRegistry();
   const frondNoLocales = new Frond2(join(TEST_ROOT, "templates"));
 
   // Simulate auto-wire with empty locale dir
@@ -271,6 +275,9 @@ console.log("\n--- Auto-wire with nonexistent locale directory ---");
 
 if (frondEngine) {
   const { Frond: Frond4 } = await import("../packages/frond/src/engine.js");
+  // Same reason as the "no locales" block above — clear class-level
+  // registry so the t() global registered earlier doesn't leak in.
+  Frond4.clearRegistry();
   const frondNoDir = new Frond4(join(TEST_ROOT, "templates"));
 
   // Simulate auto-wire with a directory that doesn't exist

@@ -1317,6 +1317,56 @@ function _generateFormTokenValue(descriptor: string = ""): SafeString {
 // ── Frond Engine ───────────────────────────────────────────────
 
 export class Frond {
+  // ── Class-level registries ──────────────────────────────────
+  // Persist globals, filters, and tests across hot-reloads and at
+  // app-startup before any instance exists. When app.ts calls
+  // ``Frond.addFilter("money", fn)`` once, the class remembers it
+  // and every future ``new Frond()`` inherits it automatically.
+  // Mirrors Python's _class_globals / _class_filters / _class_tests.
+  private static classFilters: Map<string, FilterFn> = new Map();
+  private static classGlobals: Map<string, unknown> = new Map();
+  private static classTests: Map<string, TestFn> = new Map();
+
+  /**
+   * Register a custom filter at the class level — available to every
+   * future ``new Frond()`` instance. Callable as ``Frond.addFilter()``
+   * (static) or ``frond.addFilter()`` (instance). See instance method
+   * below for the dual-call semantics.
+   */
+  static addFilter(name: string, fn: FilterFn): void {
+    Frond.classFilters.set(name, fn);
+  }
+
+  /**
+   * Register a global variable available in all templates of every
+   * future instance. Callable as ``Frond.addGlobal()`` (static) or
+   * ``frond.addGlobal()`` (instance).
+   */
+  static addGlobal(name: string, value: unknown): void {
+    Frond.classGlobals.set(name, value);
+  }
+
+  /**
+   * Register a custom test (``{% if x is positive %}``) at the class
+   * level. Callable as ``Frond.addTest()`` (static) or
+   * ``frond.addTest()`` (instance).
+   */
+  static addTest(name: string, fn: TestFn): void {
+    Frond.classTests.set(name, fn);
+  }
+
+  /**
+   * Clear the class-level globals/filters/tests registries.
+   * Useful in test fixtures to prevent leaking state between tests.
+   * Does NOT affect built-in filters or globals — only user-registered
+   * ones via Frond.addFilter / addGlobal / addTest.
+   */
+  static clearRegistry(): void {
+    Frond.classFilters.clear();
+    Frond.classGlobals.clear();
+    Frond.classTests.clear();
+  }
+
   private templateDir: string;
   private filters: Record<string, FilterFn>;
   private globals: Record<string, unknown>;
@@ -1362,6 +1412,14 @@ export class Frond {
     // Available alongside the |dump filter so both styles work:
     //   {{ user|dump }}   and   {{ dump(user) }}
     this.globals.dump = (value: unknown) => renderDump(value);
+
+    // Drain the class-level registry. This is the key to surviving
+    // hot-reloads AND the static-facade pattern: app.ts calls
+    // Frond.addFilter("money", fn) once, the class remembers it,
+    // and every future Frond() instance picks it up automatically.
+    for (const [k, v] of Frond.classFilters) this.filters[k] = v;
+    for (const [k, v] of Frond.classGlobals) this.globals[k] = v;
+    for (const [k, v] of Frond.classTests) this.tests[k] = v;
   }
 
   sandbox(filters?: string[], tags?: string[], vars?: string[]): Frond {
@@ -1380,15 +1438,32 @@ export class Frond {
     return this;
   }
 
+  /**
+   * Register a custom filter. The filter is persisted at class level
+   * so new instances created by hot-reload inherit it automatically;
+   * the live instance's local filter map also receives the addition
+   * immediately. Mirrors Python's _ClassOrInstanceMethod dual-call.
+   */
   addFilter(name: string, fn: FilterFn): void {
+    Frond.classFilters.set(name, fn);
     this.filters[name] = fn;
   }
 
+  /**
+   * Register a global variable available in all templates. Persisted
+   * at class level — see ``addFilter`` for the dual-call semantics.
+   */
   addGlobal(name: string, value: unknown): void {
+    Frond.classGlobals.set(name, value);
     this.globals[name] = value;
   }
 
+  /**
+   * Register a custom test. Persisted at class level — see
+   * ``addFilter`` for the dual-call semantics.
+   */
   addTest(name: string, fn: TestFn): void {
+    Frond.classTests.set(name, fn);
     this.tests[name] = fn;
   }
 
