@@ -18,7 +18,11 @@ function requireTedious(): any {
     return tedious;
   } catch {
     throw new Error(
-      'MSSQL adapter requires the "tedious" package. Install it with: npm install tedious',
+      'MSSQL adapter requires the "tedious" package. Install one of:\n' +
+        "    npm install tedious\n" +
+        "    yarn add tedious\n" +
+        "    pnpm add tedious\n" +
+        "    bun add tedious",
     );
   }
 }

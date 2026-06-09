@@ -18,7 +18,11 @@ function requireFirebird(): any {
     return firebird;
   } catch {
     throw new Error(
-      'Firebird adapter requires the "node-firebird" package. Install it with: npm install node-firebird',
+      'Firebird adapter requires the "node-firebird" package. Install one of:\n' +
+        "    npm install node-firebird\n" +
+        "    yarn add node-firebird\n" +
+        "    pnpm add node-firebird\n" +
+        "    bun add node-firebird",
     );
   }
 }

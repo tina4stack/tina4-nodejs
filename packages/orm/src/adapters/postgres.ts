@@ -19,7 +19,11 @@ function requirePg(): typeof import("pg") {
     return pg!;
   } catch {
     throw new Error(
-      'PostgreSQL adapter requires the "pg" package. Install it with: npm install pg',
+      'PostgreSQL adapter requires the "pg" package. Install one of:\n' +
+        "    npm install pg\n" +
+        "    yarn add pg\n" +
+        "    pnpm add pg\n" +
+        "    bun add pg",
     );
   }
 }

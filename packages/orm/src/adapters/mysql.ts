@@ -18,7 +18,11 @@ function requireMysql2(): any {
     return mysql2;
   } catch {
     throw new Error(
-      'MySQL adapter requires the "mysql2" package. Install it with: npm install mysql2',
+      'MySQL adapter requires the "mysql2" package. Install one of:\n' +
+        "    npm install mysql2\n" +
+        "    yarn add mysql2\n" +
+        "    pnpm add mysql2\n" +
+        "    bun add mysql2",
     );
   }
 }

@@ -301,8 +301,11 @@ export class MongodbAdapter implements DatabaseAdapter {
       MongoClient = (await import("mongodb")).MongoClient;
     } catch {
       throw new Error(
-        "The 'mongodb' package is required for MongoDB connections. " +
-        "Install: npm install mongodb",
+        "The 'mongodb' package is required for MongoDB connections. Install one of:\n" +
+          "    npm install mongodb\n" +
+          "    yarn add mongodb\n" +
+          "    pnpm add mongodb\n" +
+          "    bun add mongodb",
       );
     }
 

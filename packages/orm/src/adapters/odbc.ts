@@ -21,7 +21,11 @@ function requireOdbc(): any {
     return odbcModule;
   } catch {
     throw new Error(
-      "The 'odbc' package is required for ODBC connections. Install it with: npm install odbc",
+      "The 'odbc' package is required for ODBC connections. Install one of:\n" +
+        "    npm install odbc\n" +
+        "    yarn add odbc\n" +
+        "    pnpm add odbc\n" +
+        "    bun add odbc",
     );
   }
 }
