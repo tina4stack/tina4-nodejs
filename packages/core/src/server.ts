@@ -1278,7 +1278,31 @@ ${reset}
         res({ error: "Not Found", statusCode: 404, message: `No route found for ${req.method} ${pathname}` }, 404);
       }
     } catch (err) {
-      console.error("  Error:", err);
+      // v3.13.7: log structured + surface to observability BEFORE rendering.
+      // Listeners get the canonical {exception, request} payload mirrored
+      // by Python / PHP / Ruby. Listener errors are swallowed + warning-
+      // logged so a broken listener can't break the 500 page.
+      Log.error(`Route error: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`, {
+        method: req?.method,
+        path: req?.path,
+      });
+      try {
+        const { Events } = await import("./events.js");
+        Events.emit("tina4.request.error", { exception: err, request: req });
+      } catch (listenerErr) {
+        try {
+          Log.warn(
+            `Listener for tina4.request.error raised: ${
+              listenerErr instanceof Error
+                ? `${listenerErr.name}: ${listenerErr.message}`
+                : String(listenerErr)
+            }`
+          );
+        } catch {
+          // Log failures must never block the 500 render.
+        }
+      }
+
       if (!res.raw.writableEnded) {
         if (isDevMode() && err instanceof Error) {
           // Rich error overlay with stack trace, source context, and line numbers
@@ -1287,9 +1311,12 @@ ${reset}
           res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
           res.raw.end(overlayHtml);
         } else {
-          const errorMessage = !isTruthy(process.env.TINA4_DEBUG) ? "Internal Server Error" : String(err);
+          // v3.13.7 SECURITY (CWE-209): production response body must NOT
+          // contain the stack trace or exception message. Pass an empty
+          // error_message — the 500.twig template only renders the trace
+          // block when error_message is truthy.
           const html500 = await renderErrorPage(500, {
-            error_message: errorMessage,
+            error_message: "",
             request_id: `${Date.now().toString(36)}`,
             path: req.path,
           }, templatesDir);
@@ -1297,7 +1324,7 @@ ${reset}
             res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
             res.raw.end(html500);
           } else {
-            res({ error: "Internal Server Error", statusCode: 500, message: errorMessage }, 500);
+            res({ error: "Internal Server Error", statusCode: 500 }, 500);
           }
         }
       }
