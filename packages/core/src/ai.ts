@@ -149,6 +149,125 @@ export function installAll(root: string = "."): string[] {
   return installSelected(root, "all");
 }
 
+// \u2500\u2500 v3.13.9: non-destructive context-file writer \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+//
+// Pre-v3.13.9 the installer wrote a full developer guide to CLAUDE.md
+// (and the other context files) on every run, clobbering whatever the
+// user had put there. Now it writes only a marker-bracketed Tina4 skill
+// block \u2014 pointing the assistant at .claude/skills/tina4-*/SKILL.md \u2014
+// and leaves the rest of the file alone.
+
+/** Return [start, end] markers for a context file. */
+export function markersFor(contextFile: string): [string, string] {
+  if (contextFile.toLowerCase().endsWith(".md")) {
+    return ["<!-- tina4-skills:start -->", "<!-- tina4-skills:end -->"];
+  }
+  return ["# tina4-skills:start", "# tina4-skills:end"];
+}
+
+/** Return the marker-bracketed Tina4 skill registration block. */
+export function skillBlock(contextFile: string): string {
+  const [start, end] = markersFor(contextFile);
+  const isMd = contextFile.toLowerCase().endsWith(".md");
+  const body = isMd
+    ? [
+        "## Tina4 Skills",
+        "",
+        "When working on this Tina4 project, these skills give the assistant project-aware behaviour:",
+        "",
+        "- **tina4-developer** \u2014 Read `.claude/skills/tina4-developer/SKILL.md` before building features.",
+        "- **tina4-js** \u2014 Read `.claude/skills/tina4-js/SKILL.md` for frontend work.",
+        "- **tina4-maintainer** \u2014 Read `.claude/skills/tina4-maintainer/SKILL.md` for framework-level changes.",
+        "",
+        "See https://tina4.com for full docs.",
+      ].join("\n")
+    : [
+        "Tina4 Skills \u2014 read these files before working on this project:",
+        "  .claude/skills/tina4-developer/SKILL.md   (feature development)",
+        "  .claude/skills/tina4-js/SKILL.md          (frontend / tina4-js)",
+        "  .claude/skills/tina4-maintainer/SKILL.md  (framework-level changes)",
+        "Docs: https://tina4.com",
+      ].join("\n");
+  return `${start}\n${body}\n${end}`;
+}
+
+/** True iff both start and end markers appear in order. */
+export function hasMarkers(existing: string, start: string, end: string): boolean {
+  const sIdx = existing.indexOf(start);
+  if (sIdx === -1) return false;
+  return existing.indexOf(end, sIdx + start.length) !== -1;
+}
+
+/** Replace the bracketed block in `existing` with `block`. */
+export function replaceMarkerBlock(existing: string, block: string, start: string, end: string): string {
+  const sIdx = existing.indexOf(start);
+  if (sIdx === -1) return existing.replace(/\s+$/, "") + "\n\n" + block + "\n";
+  const eIdx = existing.indexOf(end, sIdx + start.length);
+  if (eIdx === -1) return existing.replace(/\s+$/, "") + "\n\n" + block + "\n";
+  const before = existing.slice(0, sIdx).replace(/\s+$/, "");
+  const after = existing.slice(eIdx + end.length).replace(/^\n+/, "");
+  const glueBefore = before ? "\n\n" : "";
+  const glueAfter = after ? "\n" + after : "\n";
+  return `${before}${glueBefore}${block}${glueAfter}`;
+}
+
+const OLD_FRAMEWORK_HEADERS = [
+  "# Tina4 Python",
+  "# Tina4 PHP",
+  "# Tina4 Ruby",
+  "# CLAUDE.md \u2014 AI Developer Guide for tina4-nodejs",
+  "# CLAUDE.md - AI Developer Guide for tina4-nodejs",
+];
+
+/**
+ * True if the file starts with a header the pre-v3.13.9 installer
+ * wrote. Used to migrate one-time off the old clobber-style install.
+ */
+export function looksLikeOldFrameworkInstall(existing: string): boolean {
+  const head = existing.replace(/^\s+/, "").slice(0, 400);
+  return OLD_FRAMEWORK_HEADERS.some((h) => head.startsWith(h));
+}
+
+/**
+ * Write the context file non-destructively. Returns a human-readable
+ * action verb for the caller's log line.
+ *
+ * Four branches:
+ *   1. Doesn't exist  \u2192 write framework guide + skill block
+ *   2. Has markers    \u2192 refresh just the skill block (idempotent)
+ *   3. Old header     \u2192 migrate: replace old dump with new guide + block
+ *   4. User content   \u2192 append the skill block, preserve everything else
+ */
+export function writeOrMerge(contextPath: string, contextFile: string, frameworkGuide: string): string {
+  const block = skillBlock(contextFile);
+  const [start, end] = markersFor(contextFile);
+
+  if (!existsSync(contextPath)) {
+    writeFileSync(contextPath, frameworkGuide.replace(/\s+$/, "") + "\n\n" + block + "\n", "utf-8");
+    return "Installed";
+  }
+
+  const existing = readFileSync(contextPath, "utf-8");
+
+  if (hasMarkers(existing, start, end)) {
+    writeFileSync(contextPath, replaceMarkerBlock(existing, block, start, end), "utf-8");
+    return "Refreshed skill block in";
+  }
+
+  if (looksLikeOldFrameworkInstall(existing)) {
+    const head = existing.replace(/^\s+/, "");
+    const preamble = existing.slice(0, existing.length - head.length);
+    const newContent =
+      (preamble.trim() ? preamble.replace(/\s+$/, "") + "\n\n" : "") +
+      frameworkGuide.replace(/\s+$/, "") + "\n\n" + block + "\n";
+    writeFileSync(contextPath, newContent, "utf-8");
+    return "Migrated (replaced old framework dump in)";
+  }
+
+  writeFileSync(contextPath, existing.replace(/\s+$/, "") + "\n\n" + block + "\n", "utf-8");
+  return "Appended skill block to";
+}
+
 /**
  * Install context file for a single tool.
  */
@@ -163,11 +282,11 @@ function installForTool(root: string, tool: AiTool, context: string): string[] {
   const parentDir = dirname(contextPath);
   mkdirSync(parentDir, { recursive: true });
 
-  // Always overwrite -- user chose to install
-  writeFileSync(contextPath, context, "utf-8");
+  // v3.13.9: non-destructive write \u2014 see writeOrMerge above.
+  const action = writeOrMerge(contextPath, tool.contextFile, context);
   const rel = relative(root, contextPath);
   created.push(rel);
-  console.log(`  ${GREEN}\u2713${RESET} Updated ${rel}`);
+  console.log(`  ${GREEN}\u2713${RESET} ${action} ${rel}`);
 
   // Claude-specific extras
   if (tool.name === "claude-code") {
