@@ -2,6 +2,26 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult } from "./types.js";
 import { DatabaseResult } from "./databaseResult.js";
 
+/**
+ * v3.13.12 — strip trailing `;` and whitespace from user-supplied SQL
+ * before the framework wraps it with COUNT(*) subqueries or appends
+ * LIMIT/OFFSET clauses. Without this, `"SELECT * FROM t;"` becomes
+ * `"SELECT * FROM t; LIMIT 100 OFFSET 0"` — a syntax error on every
+ * engine. Internal semicolons (in string literals, between meaningful
+ * statements) are left alone; drivers reject those if the engine
+ * doesn't support multi-statement.
+ *
+ * Exported so adapters and external tooling can compose it.
+ */
+export function stripTrailingSemicolons(sql: string): string {
+  if (!sql) return sql;
+  let stripped = sql.replace(/\s+$/, "");
+  while (stripped.endsWith(";")) {
+    stripped = stripped.slice(0, -1).replace(/\s+$/, "");
+  }
+  return stripped;
+}
+
 let activeAdapter: DatabaseAdapter | null = null;
 const namedAdapters: Map<string, DatabaseAdapter> = new Map();
 
@@ -404,6 +424,10 @@ export class Database {
 
   /** Query rows with optional pagination. Returns a DatabaseResult wrapper. */
   fetch(sql: string, params?: unknown[], limit?: number, offset?: number): DatabaseResult {
+    // v3.13.12: strip trailing `;` before the adapter wraps with COUNT(*)
+    // or appends LIMIT/OFFSET. Without this, `"SELECT * FROM t;"` becomes
+    // `"SELECT * FROM t; LIMIT 100 OFFSET 0"` — a syntax error.
+    sql = stripTrailingSemicolons(sql);
     const adapter = this.getNextAdapter();
     const rows = adapter.fetch<Record<string, unknown>>(sql, params, limit, offset);
     return new DatabaseResult(rows, undefined, undefined, limit, offset, adapter, sql);
@@ -411,6 +435,7 @@ export class Database {
 
   /** Fetch a single row or null. */
   fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | null {
+    sql = stripTrailingSemicolons(sql);
     return this.getNextAdapter().fetchOne<T>(sql, params);
   }
 
