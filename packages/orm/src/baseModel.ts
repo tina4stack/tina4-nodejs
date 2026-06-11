@@ -481,11 +481,36 @@ export class BaseModel {
     const pk = ModelClass.getPkField();
     const pkCol = ModelClass.getPkColumn();
     const pkValue = this[pk];
+    const pkField = (ModelClass.fields as Record<string, FieldDefinition>)[pk];
     this._relCache = {}; // Clear relationship cache on save
+
+    // v3.13.11 (issue #50.2): for non-auto-increment PKs (user-supplied
+    // string IDs like "GC-100"), decide INSERT vs UPDATE on row
+    // existence, not on whether the PK is set. Pre-v3.13.11 a
+    // natural-key save() always chose UPDATE → matched zero rows →
+    // silently returned success without inserting anything.
+    //
+    // Auto-increment behaviour is unchanged: pkValue is null/undefined
+    // → INSERT, pkValue is set → UPDATE.
+    let isUpdate = false;
+    if (pkValue !== undefined && pkValue !== null) {
+      if (pkField?.autoIncrement) {
+        isUpdate = true;
+      } else {
+        try {
+          isUpdate = ModelClass.exists(pkValue);
+        } catch {
+          // If we can't tell (e.g. table doesn't exist yet), fall back
+          // to INSERT so the user sees the real driver error rather
+          // than a silent no-op.
+          isUpdate = false;
+        }
+      }
+    }
 
     db.startTransaction();
     try {
-      if (pkValue !== undefined && pkValue !== null) {
+      if (isUpdate) {
         // Update
         const updateFields = Object.entries(ModelClass.fields).filter(
           ([name, def]) => !def.primaryKey && this[name] !== undefined,
@@ -511,7 +536,12 @@ export class BaseModel {
           values,
         ) as { lastInsertRowid?: number };
 
-        if (result.lastInsertRowid) {
+        // v3.13.11 (issue #50.2): only adopt the engine-assigned ID
+        // for auto-increment PKs. A natural-key PK was already set by
+        // the caller; don't overwrite it with the driver's last_id
+        // (which on PG would be a sequence value that doesn't apply
+        // to this row).
+        if (result.lastInsertRowid && pkField?.autoIncrement) {
           this[pk] = result.lastInsertRowid;
         }
       }
