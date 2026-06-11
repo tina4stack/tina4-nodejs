@@ -82,5 +82,50 @@ try {
   rmSync(tmp, { recursive: true, force: true });
 }
 
+// ── v3.13.12: fetchAll returns ALL rows (no silent truncation) ────
+console.log("\n--- fetchAll returns ALL rows by default ---");
+const tmpAll = mkdtempSync(join(tmpdir(), "tina4-fetch-all-"));
+const dbAllPath = join(tmpAll, "big.db");
+
+try {
+  const db = await initDatabase({ url: `sqlite:///${dbAllPath}` });
+  db.execute("CREATE TABLE rows (id INTEGER PRIMARY KEY AUTOINCREMENT, n INTEGER)");
+  // 150 rows — bigger than any silent-truncation default
+  for (let i = 0; i < 150; i++) {
+    db.execute("INSERT INTO rows (n) VALUES (?)", [i]);
+  }
+
+  {
+    const rows = db.fetchAll("SELECT * FROM rows ORDER BY n");
+    assert(
+      "fetchAll returns ALL 150 rows by default",
+      rows.length === 150,
+      `(got ${rows.length})`,
+    );
+  }
+
+  {
+    const rows = db.fetchAll("SELECT * FROM rows ORDER BY n", undefined, 10);
+    assert("fetchAll with explicit limit=10 caps to 10", rows.length === 10);
+  }
+
+  {
+    const rows = db.fetchAll("SELECT * FROM rows ORDER BY n", undefined, 5, 20);
+    assert(
+      "fetchAll with limit=5, offset=20 returns slice",
+      rows.length === 5 && (rows[0] as any).n === 20 && (rows[4] as any).n === 24,
+    );
+  }
+
+  {
+    // Composes with the trailing-; strip — fetchAll with both features in play
+    const rows = db.fetchAll("SELECT * FROM rows ORDER BY n;");
+    assert("fetchAll + trailing ; → all 150 rows", rows.length === 150);
+  }
+} finally {
+  try { await closeDatabase(); } catch {}
+  rmSync(tmpAll, { recursive: true, force: true });
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);
 process.exit(fail > 0 ? 1 : 0);
