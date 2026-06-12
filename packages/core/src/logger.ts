@@ -190,7 +190,9 @@ export class Log {
       rotateKeep = isNaN(n) || n < 1 ? DEFAULT_ROTATE_KEEP : n;
     }
 
-    const levelEnv = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
+    // v3.13.14: default level INFO (was DEBUG) — parity with Python/PHP/Ruby;
+    // surfaces request/startup/warn/error without debug noise in deploys.
+    const levelEnv = (process.env.TINA4_LOG_LEVEL ?? "INFO").toUpperCase();
     const minLevel = LEVEL_PRIORITY[levelEnv as LogLevel] ?? 0;
 
     const fmt = (process.env.TINA4_LOG_FORMAT ?? "text").trim().toLowerCase();
@@ -385,16 +387,27 @@ export class Log {
     const dataPart = data !== undefined ? ` ${JSON.stringify(data)}` : "";
     const humanLine = `${entry.timestamp} [${paddedLevel}]${reqPart}${fnPart} ${message}${dataPart}`;
 
-    // Build the file-format line based on TINA4_LOG_FORMAT
-    const fileLine = cfg.format === "json" ? JSON.stringify(entry) : humanLine;
+    // Build the file-format line. v3.13.14: production always emits JSON
+    // (parity with Python/Ruby) so log aggregators get structured lines;
+    // TINA4_LOG_FORMAT=json forces it in dev too.
+    const fileLine =
+      cfg.format === "json" || Log.isProduction() ? JSON.stringify(entry) : humanLine;
 
     const shouldLog = (LEVEL_PRIORITY[level] ?? 0) >= cfg.minLevel;
 
-    // Console output. TINA4_LOG_OUTPUT="file" disables stdout entirely;
-    // anything else (stdout, both) prints to console in dev, suppresses in prod.
-    if (shouldLog && cfg.output !== "file" && !Log.isProduction()) {
-      const color = COLORS[level];
-      console.log(`${color}${humanLine}${RESET}`);
+    // Console output. v3.13.14: stdout is NOT suppressed in production —
+    // containers read PID 1 stdout (docker logs / k8s) and the old
+    // `!isProduction()` gate meant deployed apps logged nothing. In
+    // production we print the clean structured line (JSON, no ANSI) so it
+    // stays parseable; in dev we keep the coloured human-readable line.
+    // TINA4_LOG_OUTPUT="file" still opts out of stdout entirely.
+    if (shouldLog && cfg.output !== "file") {
+      if (Log.isProduction()) {
+        console.log(fileLine);
+      } else {
+        const color = COLORS[level];
+        console.log(`${color}${humanLine}${RESET}`);
+      }
     }
 
     // File output: always teed for dev (legacy behaviour), and either always

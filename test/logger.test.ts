@@ -67,9 +67,12 @@ Log.configure({ logDir: TEST_LOG_DIR, logFile: "test.log" });
 // --- Basic logging ---
 console.log("--- Development Mode Logging ---");
 
-// Ensure we're not in production
+// Ensure we're genuinely in DEV mode: isProduction() is !TINA4_DEBUG, so
+// dev requires TINA4_DEBUG truthy. Dev → human-readable text in the file
+// (parseLogLine parses the text format); production would write JSON.
 delete process.env.TINA4_ENV;
 delete process.env.NODE_ENV;
+process.env.TINA4_DEBUG = "true";
 
 Log.info("Test info message");
 Log.debug("Test debug message");
@@ -136,7 +139,9 @@ Log.configure({ logDir: TEST_LOG_DIR, logFile: "prod.log" });
 const savedDebug = process.env.TINA4_DEBUG;
 delete process.env.TINA4_DEBUG;
 
-// Capture stdout to verify no console output in production
+// v3.13.14: production MUST write to stdout — containers read PID 1 stdout
+// (docker logs / k8s). Capture stdout and verify the line is present AND
+// is clean structured JSON (no ANSI colour codes) so aggregators can parse it.
 const originalLog = console.log;
 let consoleOutput = "";
 console.log = (...args: unknown[]) => {
@@ -147,13 +152,21 @@ Log.info("Production log message");
 
 console.log = originalLog;
 
-assert("No stdout output in production", consoleOutput === "");
+assert("Production writes to stdout (docker logs)", consoleOutput.includes("Production log message"));
+assert("Production stdout has no ANSI colour codes", !consoleOutput.includes("\x1b["));
+{
+  // Production stdout is structured JSON (parity with Python/Ruby).
+  const stdoutEntry = JSON.parse(consoleOutput.trim());
+  assert("Production stdout is JSON with level INFO", stdoutEntry.level === "INFO");
+  assert("Production stdout JSON carries the message", stdoutEntry.message === "Production log message");
+}
 
 const prodLogPath = join(TEST_LOG_DIR, "prod.log");
 assert("Production log file created", existsSync(prodLogPath));
 
 const prodContent = readFileSync(prodLogPath, "utf-8");
-const prodEntry = parseLogLine(prodContent.trim());
+// Production file is JSON too (parity with Python/Ruby — was text pre-v3.13.14).
+const prodEntry = JSON.parse(prodContent.trim());
 assert("Production log has level INFO", prodEntry.level === "INFO");
 
 // Restore
