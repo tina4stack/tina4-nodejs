@@ -199,6 +199,56 @@ const loggerMw = requestLogger();
 assert("requestLogger returns a middleware", typeof loggerMw === "function");
 assert("Logger middleware has 3 params", loggerMw.length === 3);
 
+// --- requestLogger behaviour (v3.13.14) ---
+// On by default in dev, gated by TINA4_LOG_REQUESTS, routed through Tina4
+// Log with the cross-framework line format: METHOD /path -> STATUS (Nms).
+console.log("\n--- Request Logger behaviour ---");
+{
+  const { EventEmitter } = await import("node:events");
+
+  function runOnce(envReq: string | undefined, debug: string | undefined): string {
+    const savedReq = process.env.TINA4_LOG_REQUESTS;
+    const savedDebug = process.env.TINA4_DEBUG;
+    if (envReq === undefined) delete process.env.TINA4_LOG_REQUESTS;
+    else process.env.TINA4_LOG_REQUESTS = envReq;
+    if (debug === undefined) delete process.env.TINA4_DEBUG;
+    else process.env.TINA4_DEBUG = debug;
+
+    const raw: any = new EventEmitter();
+    raw.statusCode = 200;
+    const req: any = { method: "GET", url: "/widgets" };
+    const res: any = { raw };
+
+    let captured = "";
+    const orig = console.log;
+    console.log = (...a: unknown[]) => { captured += a.join(" ") + "\n"; };
+    try {
+      requestLogger()(req, res, () => {});
+      raw.emit("finish");
+    } finally {
+      console.log = orig;
+      if (savedReq === undefined) delete process.env.TINA4_LOG_REQUESTS;
+      else process.env.TINA4_LOG_REQUESTS = savedReq;
+      if (savedDebug === undefined) delete process.env.TINA4_DEBUG;
+      else process.env.TINA4_DEBUG = savedDebug;
+    }
+    return captured;
+  }
+
+  const devOut = runOnce(undefined, "true");
+  assert("dev (unset) logs the request", devOut.includes("GET /widgets -> 200 ("));
+  assert("dev line has no [RequestLogger] prefix or bare status-first format", !devOut.includes("[RequestLogger]"));
+
+  const prodOut = runOnce(undefined, undefined);
+  assert("prod (unset) does NOT log", !prodOut.includes("GET /widgets"));
+
+  const forcedOut = runOnce("true", undefined);
+  assert("TINA4_LOG_REQUESTS=true logs even in prod", forcedOut.includes("GET /widgets -> 200 ("));
+
+  const offOut = runOnce("false", "true");
+  assert("TINA4_LOG_REQUESTS=false silences even in dev", !offOut.includes("GET /widgets"));
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

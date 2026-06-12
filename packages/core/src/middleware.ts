@@ -1,5 +1,19 @@
 import type { Tina4Request, Tina4Response, Middleware } from "./types.js";
 import { validToken, getPayload } from "./auth.js";
+import { Log } from "./logger.js";
+import { isTruthy } from "./dotenv.js";
+
+/**
+ * Whether to emit a per-request log line (v3.13.14). TINA4_LOG_REQUESTS is
+ * the explicit control (true/false); when unset, request logging follows
+ * dev mode (on under TINA4_DEBUG, off in production). Same contract across
+ * all four frameworks.
+ */
+function requestLoggingEnabled(): boolean {
+  const val = process.env.TINA4_LOG_REQUESTS;
+  if (val !== undefined && val !== "") return isTruthy(val);
+  return isTruthy(process.env.TINA4_DEBUG);
+}
 
 export class MiddlewareChain {
   private middlewares: Middleware[] = [];
@@ -588,18 +602,25 @@ export class CsrfMiddleware {
   }
 }
 
-// Built-in request logger middleware (function form — kept for backwards compat)
+// Built-in request logger middleware.
+//
+// v3.13.14: routes through the Tina4 Log (was a bare console.log) so the
+// line gets the same timestamp/level treatment as every other log — human
+// in dev, structured JSON in production — and is gated by
+// requestLoggingEnabled() (on by default in dev, opt-in in prod via
+// TINA4_LOG_REQUESTS). Line format matches Python/PHP/Ruby:
+//   METHOD /path -> STATUS (Nms)
 export function requestLogger(): Middleware {
   return (req, res, next) => {
     const start = Date.now();
 
     res.raw.on("finish", () => {
+      if (!requestLoggingEnabled()) return;
       const duration = Date.now() - start;
       const status = res.raw.statusCode;
       const method = req.method ?? "?";
       const url = req.url ?? "/";
-      const color = status >= 400 ? "\x1b[31m" : status >= 300 ? "\x1b[33m" : "\x1b[32m";
-      console.log(`  ${color}${status}\x1b[0m ${method} ${url} \x1b[90m${duration}ms\x1b[0m`);
+      Log.info(`${method} ${url} -> ${status} (${duration}ms)`);
     });
 
     next();
