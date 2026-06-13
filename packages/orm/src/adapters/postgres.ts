@@ -249,10 +249,16 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async tablesAsync(): Promise<string[]> {
-    const rows = await this.queryAsync<{ tablename: string }>(
-      "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
+    // v3.13.14 (#48): list every user schema; public tables stay bare, others
+    // are returned schema-qualified.
+    const rows = await this.queryAsync<{ schemaname: string; tablename: string }>(
+      "SELECT schemaname, tablename FROM pg_tables " +
+        "WHERE schemaname NOT IN ('pg_catalog', 'information_schema') " +
+        "ORDER BY schemaname, tablename",
     );
-    return rows.map((r) => r.tablename);
+    return rows.map((r) =>
+      r.schemaname === "public" ? r.tablename : `${r.schemaname}.${r.tablename}`,
+    );
   }
 
   columns(table: string): ColumnInfo[] {
@@ -260,14 +266,16 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async columnsAsync(table: string): Promise<ColumnInfo[]> {
+    // v3.13.14 (#48): honour a schema-qualified name; default to public.
+    const [schema, tbl] = SQLTranslator.splitSchema(table);
     const rows = await this.queryAsync<{
       column_name: string;
       data_type: string;
       is_nullable: string;
       column_default: string | null;
     }>(
-      "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1",
-      [table],
+      "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1 AND table_schema = $2",
+      [tbl, schema ?? "public"],
     );
     return rows.map((r) => ({
       name: r.column_name,
@@ -294,11 +302,13 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async tableExistsAsync(name: string): Promise<boolean> {
-    const row = await this.fetchOneAsync<{ exists: boolean }>(
-      "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1) AS exists",
+    // v3.13.14 (#48): to_regclass resolves a (possibly schema-qualified)
+    // relation name and search_path like a FROM clause; null if absent.
+    const row = await this.fetchOneAsync<{ oid: string | null }>(
+      "SELECT to_regclass($1) AS oid",
       [name],
     );
-    return row?.exists ?? false;
+    return (row?.oid ?? null) !== null;
   }
 
   createTable(name: string, columns: Record<string, FieldDefinition>): void {

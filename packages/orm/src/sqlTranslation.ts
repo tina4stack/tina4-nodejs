@@ -156,6 +156,22 @@ export class SQLTranslator {
       columns,
     };
   }
+
+  /**
+   * v3.13.14 (#48): split a possibly-qualified table name into [schema, table].
+   *
+   * A model whose table name is qualified — PostgreSQL "gift_cards.gift_card",
+   * MSSQL "dbo.widget", MySQL "otherdb.table", SQLite "attached.table" — lives
+   * in that schema/catalog, not the default. Adapters use this so tableExists /
+   * getColumns query the right namespace instead of matching the whole dotted
+   * string as one flat name. Returns [null, name] for a bare name. Splits on the
+   * first dot. Firebird has no schemas, so its adapter ignores this.
+   */
+  static splitSchema(name: string): [string | null, string] {
+    const idx = name.indexOf(".");
+    if (idx === -1) return [null, name];
+    return [name.slice(0, idx), name.slice(idx + 1)];
+  }
 }
 
 // ── Query Cache ──────────────────────────────────────────────

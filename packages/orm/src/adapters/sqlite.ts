@@ -2,6 +2,12 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
+import { SQLTranslator } from "../sqlTranslation.js";
+
+/** A safe-to-interpolate SQL identifier (no quoting/escaping needed). */
+function isIdentifier(str: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(str);
+}
 
 /**
  * Resolve a SQLite path argument against the project root (cwd).
@@ -209,7 +215,14 @@ export class SQLiteAdapter implements DatabaseAdapter {
   }
 
   columns(table: string): ColumnInfo[] {
-    const rows = this.db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{
+    // v3.13.14 (#48): a SQLite "schema" is an ATTACH alias ("extra.widget").
+    // PRAGMA accepts a schema prefix when both parts are plain identifiers.
+    const [schema, tbl] = SQLTranslator.splitSchema(table);
+    const pragma =
+      schema && isIdentifier(schema) && isIdentifier(tbl)
+        ? `PRAGMA ${schema}.table_info("${tbl}")`
+        : `PRAGMA table_info("${table}")`;
+    const rows = this.db.prepare(pragma).all() as Array<{
       name: string; type: string; notnull: number; dflt_value: unknown; pk: number;
     }>;
     return rows.map((r) => ({
@@ -221,7 +234,14 @@ export class SQLiteAdapter implements DatabaseAdapter {
   close(): void { this.db.close(); }
 
   tableExists(name: string): boolean {
-    const result = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name);
+    // v3.13.14 (#48): a SQLite "schema" is an ATTACH alias ("extra.widget").
+    // Query that database's own sqlite_master when the prefix is a plain
+    // identifier; otherwise treat the whole string as a bare table name.
+    const [schema, tbl] = SQLTranslator.splitSchema(name);
+    const master = schema && isIdentifier(schema) ? `${schema}.sqlite_master` : "sqlite_master";
+    const result = this.db
+      .prepare(`SELECT name FROM ${master} WHERE type='table' AND name=?`)
+      .get(tbl);
     return !!result;
   }
 

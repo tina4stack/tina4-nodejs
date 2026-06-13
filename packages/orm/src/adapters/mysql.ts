@@ -262,13 +262,17 @@ export class MysqlAdapter implements DatabaseAdapter {
   }
 
   async columnsAsync(table: string): Promise<ColumnInfo[]> {
+    // v3.13.14 (#48): a qualified name ("db.table") must back-quote each part
+    // separately, otherwise the dot is read as part of one identifier.
+    const [schema, tbl] = SQLTranslator.splitSchema(table);
+    const target = schema ? `\`${schema}\`.\`${tbl}\`` : `\`${tbl}\``;
     const rows = await this.queryAsync<{
       Field: string;
       Type: string;
       Null: string;
       Default: string | null;
       Key: string;
-    }>(`DESCRIBE \`${table}\``);
+    }>(`DESCRIBE ${target}`);
     return rows.map((r) => ({
       name: r.Field,
       type: r.Type,
@@ -294,9 +298,14 @@ export class MysqlAdapter implements DatabaseAdapter {
   }
 
   async tableExistsAsync(name: string): Promise<boolean> {
-    const rows = await this.queryAsync<Record<string, string>>(
-      `SHOW TABLES LIKE ?`,
-      [name],
+    // v3.13.14 (#48): MySQL's "schema" is the database. A qualified name
+    // ("otherdb.table") checks that catalog; a bare name defaults to the
+    // connection's current database via DATABASE().
+    const [schema, tbl] = SQLTranslator.splitSchema(name);
+    const rows = await this.queryAsync<Record<string, unknown>>(
+      "SELECT 1 FROM information_schema.tables " +
+        "WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ?",
+      [schema, tbl],
     );
     return rows.length > 0;
   }

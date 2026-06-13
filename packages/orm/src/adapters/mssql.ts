@@ -344,14 +344,18 @@ export class MssqlAdapter implements DatabaseAdapter {
   }
 
   async columnsAsync(table: string): Promise<ColumnInfo[]> {
+    // v3.13.14 (#48): honour a schema-qualified name ("dbo.widget"); a bare
+    // name matches in any schema (NULL guard skips the schema filter).
+    const [schema, tbl] = SQLTranslator.splitSchema(table);
     const rows = await this.queryAsync<{
       COLUMN_NAME: string;
       DATA_TYPE: string;
       IS_NULLABLE: string;
       COLUMN_DEFAULT: string | null;
     }>(
-      "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ?",
-      [table],
+      "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS " +
+        "WHERE TABLE_NAME = ? AND (? IS NULL OR TABLE_SCHEMA = ?)",
+      [tbl, schema, schema],
     );
     return rows.map((r) => ({
       name: r.COLUMN_NAME,
@@ -378,9 +382,13 @@ export class MssqlAdapter implements DatabaseAdapter {
   }
 
   async tableExistsAsync(name: string): Promise<boolean> {
+    // v3.13.14 (#48): honour a schema-qualified name ("dbo.widget"); a bare
+    // name matches in any schema (NULL guard skips the schema filter).
+    const [schema, tbl] = SQLTranslator.splitSchema(name);
     const rows = await this.queryAsync<{ cnt: number }>(
-      "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ?",
-      [name],
+      "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.TABLES " +
+        "WHERE TABLE_NAME = ? AND (? IS NULL OR TABLE_SCHEMA = ?)",
+      [tbl, schema, schema],
     );
     return (rows[0]?.cnt ?? 0) > 0;
   }
