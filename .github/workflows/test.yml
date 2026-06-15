@@ -32,21 +32,6 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-      redis-auth:
-        # Bitnami honours REDIS_PASSWORD → requirepass; the official redis image
-        # has no env switch for auth and GH service containers can't override the
-        # command, so Bitnami is the portable way to get a password-protected
-        # Redis as a service.
-        image: bitnami/redis:7.2
-        ports:
-          - 6381:6379
-        env:
-          REDIS_PASSWORD: s3cret
-        options: >-
-          --health-cmd "redis-cli -a s3cret ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
       memcached:
         image: memcached:1.6
         ports:
@@ -63,6 +48,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # Password-protected Redis (requirepass s3cret) on 6381 for the credential
+      # tests. GH service containers can't override the command, so run it as a
+      # plain container (mirrors PHP/Ruby CI). The auth tests self-skip if absent.
+      - name: Start password-protected Redis (redis-auth)
+        run: |
+          docker run -d --name redis-auth -p 6381:6379 redis:7 redis-server --requirepass s3cret
+          for i in $(seq 1 15); do
+            if docker exec redis-auth redis-cli -a s3cret ping 2>/dev/null | grep -q PONG; then
+              echo "redis-auth ready"; break
+            fi
+            sleep 1
+          done
 
       # Node 22+ is required — packages/orm/src/adapters/sqlite.ts uses
       # `node:sqlite` (introduced in Node 22, stable in Node 24).
