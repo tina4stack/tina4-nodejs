@@ -53,7 +53,7 @@ tina4-nodejs/
         seeder.ts        # Database seeding (seedTable, seedOrm)
         sqlTranslation.ts # Cross-engine SQL translator + query cache
     swagger/    # OpenAPI spec generator, Swagger UI
-    twig/       # Optional Twig template engine
+    frond/      # Zero-dependency Twig-compatible template engine
   test/
     run-all.ts       # Test runner — executes all 43 test files
     integration.ts   # Full integration test
@@ -70,7 +70,7 @@ This is an **npm workspaces monorepo**. All packages are in `packages/*`.
 - **Runtime:** Node.js 20+ (ESM only, `"type": "module"` everywhere)
 - **HTTP:** Native `node:http` — no Express, no Fastify
 - **Database:** SQLite via `node:sqlite` (default), with adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird
-- **Templates:** Twig via `twig` npm package (optional)
+- **Templates:** Frond — built-in zero-dependency Twig-compatible engine (`@tina4/frond`)
 - **Dev tooling:** `tsx` for runtime TS execution, `esbuild` for builds
 - **Testing:** 43 test files via `tsx test/run-all.ts`
 
@@ -110,10 +110,10 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `static.ts` — Serves files from `public/` with MIME type detection
 - `types.ts` — All shared type definitions (`Tina4Request`, `Tina4Response`, `RouteHandler`, etc.)
 - `events.ts` — Observer-pattern event system (`Events.on`, `emit`, `once`, `off`, `clear`)
-- `ai.ts` — AI coding tool detection and context scaffolding (`detectAi`, `installAiContext`, `aiStatusReport`)
+- `ai.ts` — AI coding tool context installer (`AI_TOOLS`, `isInstalled`, `showMenu`, `installSelected`, `installAll`, `generateContext`)
 - `errorOverlay.ts` — Rich debug error page for dev mode (`renderErrorOverlay`, `renderProductionError`, `isDebugMode`)
 - `htmlElement.ts` — Programmatic HTML builder (`HtmlElement`, `htmlElement`, `addHtmlHelpers`)
-- `testing.ts` — Inline testing framework (`tests`, `assertEqual`, `assertThrows`, `runAllTests`)
+- `testing.ts` — Inline testing framework (`tests`, `assertEqual`, `assertRaises`, `runAll`)
 - `fakeData.ts` — Core fake data generator (names, emails, addresses, UUIDs, etc.)
 - `constants.ts` — HTTP status codes (`HTTP_OK`, `HTTP_NOT_FOUND`, etc.) and content types (`APPLICATION_JSON`, `TEXT_HTML`, etc.)
 - `devAdmin.ts` — Dev toolbar (fixed bottom bar injected into HTML pages) and admin dashboard at `/_dev/`
@@ -152,7 +152,7 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 - `fakeData.ts` — ORM-aware fake data extending core (adds `forField()` with column-name heuristics)
 - `seeder.ts` — Database seeding (`seedTable` for raw SQL, `seedOrm` for model-based)
 - `sqlTranslation.ts` — Cross-engine SQL translator (`SQLTranslator`) and TTL query cache (`QueryCache`)
-- **Instance methods:** `save(): this|null` (fluent, null on failure), `delete()`, `forceDelete()`, `restore()`, `load(sql, params?, include?): boolean`, `validate(): string[]`, `toDict(include?)`, `toAssoc(include?)`, `toObject()`, `toArray(): unknown[]`, `toList()`, `toJson(include?)`, `hasOne(class, fk)`, `hasMany(class, fk, limit?, offset?)`, `belongsTo(class, fk)`
+- **Instance methods:** `save(): this|false` (fluent, false on failure), `delete()`, `forceDelete()`, `restore()`, `load(sql, params?, include?): boolean`, `validate(): string[]`, `toDict(include?)`, `toAssoc(include?)`, `toObject()`, `toArray(): unknown[]`, `toList()`, `toJson(include?)`, `hasOne(class, fk)`, `hasMany(class, fk, limit?, offset?)`, `belongsTo(class, fk)`
 - **Static methods:** `find(id, include?)`, `findById(id, include?)`, `findOrFail(id)`, `create(data)`, `all(where?, params?, include?)`, `select(sql, params?)`, `selectOne(sql, params?, include?)`, `where(conditions, params?, limit?, offset?, include?)`, `count(conditions?, params?)`, `withTrashed(conditions?, params?, limit?, offset?)`, `scope(name, filterSql, params?)` (registers reusable method), `createTable()`, `query()`, `_processForeignKeys()`, `_applyFkRegistry()`
 - **Foreign key auto-wire:** Declare a field with `type: "foreignKey"` and `references: "ModelName"` to auto-wire both `belongsTo` on the declaring model and `hasMany` on the referenced model. Optional `relatedName` overrides the has-many key. Models must be registered via `BaseModel.registerModel(name, class)` for name-based resolution. Example: `user_id: { type: "foreignKey", references: "User" }` → `post.belongsTo(User, "user_id")` and `user.hasMany(Post, "user_id")` both resolve without extra wiring.
 - QueryBuilder supports `toMongo()` for generating MongoDB query documents from the same fluent API
@@ -240,7 +240,7 @@ req.cookies: Record<string, string>       // parsed from Cookie header
 req.contentType: string                   // from content-type header
 req.query: Record<string, string>         // query string params
 response.xml(content, status?): Tina4Response
-response.stream(generator, contentType?: string, status?: number): void  // SSE/streaming
+response.stream(source: AsyncIterable<string | Buffer>, contentType?: string): Promise<Tina4Response>  // SSE/streaming
 ```
 
 ### Queue
@@ -258,12 +258,11 @@ Auto-generates OpenAPI 3.0 docs.
 - `generator.ts` — Produces OpenAPI spec from route table + model definitions
 - `ui.ts` — Serves Swagger UI HTML (CDN-based) at `/swagger` and spec at `/swagger/openapi.json`
 
-### @tina4/twig (`packages/twig/`)
-Optional server-side template rendering.
+### @tina4/frond (`packages/frond/`)
+Built-in zero-dependency Twig-compatible template engine (the only template engine; there is no `twig` npm dependency).
 
 **Key files:**
-- `engine.ts` — Wraps the `twig` npm package, `renderTemplate(path, data)`
-- `middleware.ts` — Adds `res.render(template, data)` to response objects
+- `engine.ts` — The `Frond` class: `render(path, data)`, `renderString(template, data)`, filters/globals/tests, sandbox mode
 
 ### tina4 CLI (`packages/cli/`)
 Developer-facing CLI commands.
@@ -305,26 +304,29 @@ Events.clear();
 
 ## Module: AI (`packages/core/src/ai.ts`)
 
-Detects AI coding tools (Claude Code, Cursor, Copilot, Windsurf, Aider, Cline, Codex) by checking for their config files/directories. Can scaffold a universal Tina4 context document into each tool's expected location.
+Installs Tina4 context files for AI coding tools (Claude Code, Cursor, Copilot, Windsurf, Aider, Cline, Codex). `AI_TOOLS` is the ordered list of known tools; the installer writes a marker-bracketed Tina4 skill block into each tool's context file, preserving existing content.
 
 ```typescript
-import { detectAi, installAiContext, aiStatusReport } from "@tina4/core";
+import { AI_TOOLS, isInstalled, showMenu, installSelected, installAll, generateContext } from "@tina4/core";
 
-// Detect which AI tools are present in a project directory
-const tools = detectAi(".");
-// → [{ name: "claude-code", description: "Claude Code (Anthropic CLI)",
-//       configFile: "CLAUDE.md", status: "detected" }, ...]
+// The known tools (name, description, contextFile, configDir)
+AI_TOOLS;  // → [{ name: "claude-code", description: "Claude Code", contextFile: "CLAUDE.md", configDir: ".claude" }, ...]
 
-// Install context files for all detected tools (creates CLAUDE.md, .cursorules, etc.)
-const created = installAiContext(".", { force: false });
-// → ["CLAUDE.md", ".cursorules"]
+// Check whether a tool's context file already exists in a project directory
+isInstalled(".", AI_TOOLS[0]);  // → boolean
 
-// Install for ALL known tools, not just detected ones
-import { installAllAiContext } from "@tina4/core";
-installAllAiContext(".", true);  // force overwrite
+// Show the interactive numbered menu and read the user's selection (returns a Promise)
+const selection = await showMenu(".");
 
-// Print a human-readable status report
-console.log(aiStatusReport("."));
+// Install context files for a selection ("1,2,3" or "all") — returns created/updated paths
+const created = installSelected(".", selection);
+// → ["CLAUDE.md", ".cursorules", ...]
+
+// Install for ALL known tools, non-interactive
+installAll(".");
+
+// Generate the context document string for a specific tool (defaults to "claude-code")
+const doc = generateContext("cursor");
 ```
 
 ## Module: Error Overlay (`packages/core/src/errorOverlay.ts`)
@@ -384,16 +386,16 @@ Void tags (`br`, `hr`, `img`, `input`, `meta`, etc.) render without closing tags
 
 ## Module: Inline Testing (`packages/core/src/testing.ts`)
 
-Attach test assertions directly to functions. Tests are registered globally and run with `runAllTests()`. No external test runner needed.
+Attach test assertions directly to functions. Tests are registered globally and run with `runAll()`. No external test runner needed.
 
 ```typescript
-import { tests, assertEqual, assertThrows, assertTrue, assertFalse, runAllTests, resetTests } from "@tina4/core";
+import { tests, assertEqual, assertRaises, assertTrue, assertFalse, runAll, reset } from "@tina4/core";
 
 // Decorate a function with inline tests
 const add = tests(
   assertEqual([5, 3], 8),        // add(5, 3) === 8
   assertEqual([0, 0], 0),        // add(0, 0) === 0
-  assertThrows(Error, [null]),   // add(null) throws Error
+  assertRaises(Error, [null]),   // add(null) throws Error
 )(function add(a: number, b: number | null = null): number {
   if (b === null) throw new Error("b required");
   return a + b;
@@ -403,7 +405,7 @@ const add = tests(
 add(2, 3);  // 5
 
 // Run all registered tests
-const results = runAllTests({ quiet: false, failfast: false });
+const results = runAll({ quiet: false, failfast: false });
 // → { passed: 3, failed: 0, errors: 0, details: [...] }
 
 // Additional assertion types
@@ -411,7 +413,7 @@ assertTrue([someArgs]);   // result is truthy
 assertFalse([someArgs]);  // result is falsy
 
 // Reset registry between test runs
-resetTests();
+reset();
 ```
 
 ## Module: Seeder / FakeData (`packages/orm/src/seeder.ts`, `packages/orm/src/fakeData.ts`)
@@ -600,7 +602,7 @@ db.pool
 Active-Record base class. Models live in `src/models/` and are auto-discovered. Use `static fields` (not decorators) — same convention across all four frameworks.
 
 ```typescript
-import { BaseModel, ormBind } from "@tina4/orm";
+import { BaseModel, initDatabase, setAdapter } from "@tina4/orm";
 
 export default class User extends BaseModel {
   static tableName = "users";
@@ -614,7 +616,7 @@ export default class User extends BaseModel {
 
 // Instance methods (chainable where it makes sense)
 const user = new User({ email: "alice@example.com" });
-user.save();              // returns this on success, null on failure
+user.save();              // returns this on success, false on failure
 user.delete();            // soft-delete if enabled, otherwise hard
 user.forceDelete();       // bypasses soft-delete
 user.restore();           // clears soft-delete marker
@@ -643,7 +645,11 @@ User.createTable();
 User.query(): QueryBuilder;
 BaseModel.registerModel(name, class);     // for foreignKey name resolution
 
-ormBind(db);   // bind a Database instance for all models in the registry
+// Models bind to the active adapter, not a Database wrapper. initDatabase() sets it
+// automatically; setAdapter() lets you bind one explicitly. Models read it via getAdapter().
+await initDatabase({ url: "sqlite:///app.db" });   // sets the active adapter for all models
+// or, with an adapter you constructed yourself:
+setAdapter(adapter);
 ```
 
 **Soft delete:** set `static softDelete = true`. Adds an `is_deleted` INTEGER column (0/1). `delete()` flips the flag, `forceDelete()` removes the row, `restore()` clears it.
@@ -726,7 +732,7 @@ frond.sandbox(["upper"], ["if"], ["x"]);   // allowed: filters, tags, vars
 frond.unsandbox();
 ```
 
-- **SafeString** — filters can return `new SafeString(value)` to bypass auto-escaping.
+- **Safe output** — Frond's built-in `raw`/`safe`-style filters (and the `{% autoescape %}` controls) mark output as already-escaped so it bypasses auto-escaping. The internal `SafeString` wrapper backing this is not exported from `@tina4/frond` (only `Frond`, `FilterFn`, `TestFn` are public).
 - **Fragment caching** — `{% cache "key" 300 %}...{% endcache %}` caches block output for TTL seconds.
 - **Raw blocks** — `{% raw %}...{% endraw %}` outputs literal template syntax.
 - **Pre-compiled regexes** + token caching (cleared on file mtime change in dev mode) for ~2.8x render improvement over the naive path.
