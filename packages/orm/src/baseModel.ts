@@ -95,7 +95,21 @@ export class BaseModel {
   /** Relationship cache for lazy loading */
   private _relCache: Record<string, unknown> = {};
 
-  constructor(data?: Record<string, unknown>) {
+  constructor(data?: Record<string, unknown> | string) {
+    // Accept a JSON object string (parity with Python/PHP/Ruby):
+    //   new Widget('{"id":1,"name":"alpha"}')
+    if (typeof data === "string") {
+      data = JSON.parse(data) as Record<string, unknown>;
+    }
+    // A single model is one record — reject an array with a clear message
+    // (previously an array silently produced an empty model).
+    if (Array.isArray(data)) {
+      throw new TypeError(
+        `${(this.constructor as typeof BaseModel).name} expects an object, keyword data, ` +
+          `or a JSON object string for one record — got an array. ` +
+          `Map over the list to build many records.`,
+      );
+    }
     if (data) {
       const ModelClass = this.constructor as typeof BaseModel;
       // If autoMap is on, auto-generate fieldMapping from camelCase fields
