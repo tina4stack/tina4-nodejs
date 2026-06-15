@@ -901,7 +901,7 @@ cacheStats();   // { hits, misses, size, backend }
 Environment:
 - `TINA4_CACHE_BACKEND` — `memory` | `redis` | `file` (default: `memory`)
 - `TINA4_CACHE_URL` — `redis://localhost:6379` (redis backend only)
-- `TINA4_CACHE_TTL` — default TTL seconds (default: `0` = disabled)
+- `TINA4_CACHE_TTL` — default TTL seconds (default: `60`)
 - `TINA4_CACHE_MAX_ENTRIES` — max entries (default: `1000`)
 
 ## Firebird-Specific Rules

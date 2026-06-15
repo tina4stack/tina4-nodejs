@@ -22,7 +22,7 @@
  * Environment:
  *   TINA4_CACHE_BACKEND      — memory | redis | file  (default: memory)
  *   TINA4_CACHE_URL           — redis://localhost:6379  (redis only)
- *   TINA4_CACHE_TTL           — default TTL in seconds  (default: 0 = disabled)
+ *   TINA4_CACHE_TTL           — default TTL in seconds  (default: 60)
  *   TINA4_CACHE_MAX_ENTRIES   — max entries              (default: 1000)
  */
 
@@ -455,9 +455,13 @@ export function clearCache(): void {
   store.clear();
 }
 
-/** Get cache stats (middleware store) */
-export function cacheStats(): { size: number; keys: string[]; backend: string } {
-  return { size: store.size, keys: [...store.keys()], backend: _getBackend().name() };
+/**
+ * Get KV cache stats — reports the same backend that cacheGet/cacheSet/cacheDelete use,
+ * so a value stored via cacheSet() is reflected here. Mirrors cache_stats() in the
+ * Python / PHP / Ruby frameworks. (Identical to cacheBackendStats(), kept for parity naming.)
+ */
+export function cacheStats(): { hits: number; misses: number; size: number; backend: string } {
+  return _getBackend().stats();
 }
 
 // ── Module-level direct cache API (backend-aware) ─────────────────

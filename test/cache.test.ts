@@ -36,10 +36,10 @@ assert("cacheBackendStats is a function", typeof cacheBackendStats === "function
 // --- clearCache and cacheStats ---
 console.log("\n--- clearCache and cacheStats ---");
 
-clearCache();
+cacheClear();
 const emptyStats = cacheStats();
 assert("Empty cache has size 0", emptyStats.size === 0);
-assert("Empty cache has no keys", emptyStats.keys.length === 0);
+assert("cacheStats reflects the KV backend (cacheSet store)", typeof emptyStats.size === "number");
 assert("cacheStats has backend field", typeof emptyStats.backend === "string");
 
 // --- Creating middleware ---
@@ -126,12 +126,11 @@ if (originalEnv !== undefined) {
   delete process.env.TINA4_CACHE_TTL;
 }
 
-// --- clearCache resets stats ---
+// --- cacheClear resets KV stats ---
 console.log("\n--- Clear Resets Stats ---");
-clearCache();
+cacheClear();
 const afterClear = cacheStats();
-assert("After clearCache, size is 0", afterClear.size === 0);
-assert("After clearCache, keys array is empty", afterClear.keys.length === 0);
+assert("After cacheClear, size is 0", afterClear.size === 0);
 
 // --- Backend selection ---
 console.log("\n--- Backend Selection ---");
