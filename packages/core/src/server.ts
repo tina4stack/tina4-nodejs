@@ -12,7 +12,7 @@ import { validToken, getPayload, refreshToken } from "./auth.js";
 import { discoverRoutes } from "./routeDiscovery.js";
 import { createRequest } from "./request.js";
 import { createResponse, setDefaultTemplatesDir } from "./response.js";
-import { MiddlewareChain, cors, requestLogger } from "./middleware.js";
+import { MiddlewareChain, MiddlewareRunner, cors, requestLogger } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
 import { loadEnv, isTruthy } from "./dotenv.js";
 import { createHealthRoutes } from "./health.js";
@@ -1108,6 +1108,19 @@ ${reset}
         req.params = match.params;
         matchedPattern = match.pattern;
 
+        // Global class-based middleware registered via Router.use(...) /
+        // MiddlewareRunner.use(...) — run the beforeX hooks before the handler.
+        // beforeX may set response headers (they persist through the handler's
+        // write), mutate the request, or short-circuit on a >= 400 status.
+        // (Parity with Python/PHP/Ruby, whose Router.use class middleware runs.)
+        const globalMiddleware = [
+          ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
+        ];
+        if (globalMiddleware.length > 0) {
+          const [, , proceed] = MiddlewareRunner.runBefore(globalMiddleware, req, res);
+          if (!proceed || res.raw.writableEnded) return;
+        }
+
         // Run per-route middlewares if any
         if (match.middlewares && match.middlewares.length > 0) {
           const proceed = await runRouteMiddlewares(match.middlewares, req, res);
@@ -1196,6 +1209,13 @@ ${reset}
           !Buffer.isBuffer(result)
         ) {
           await res.render(match.template, result as Record<string, unknown>);
+        }
+
+        // Global class-based middleware afterX hooks (logging / post-processing).
+        // Header mutations here are no-ops once the response is flushed (Node
+        // sends headers with the body) — set response headers in beforeX.
+        if (globalMiddleware.length > 0) {
+          MiddlewareRunner.runAfter(globalMiddleware, req, res);
         }
 
         if (!res.raw.writableEnded) {
