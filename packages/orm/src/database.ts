@@ -835,7 +835,7 @@ export class Database {
    * we read the live counters + size + mode from it. Mirrors Python's
    * `Database.cache_stats()`: `{ enabled, mode, hits, misses, size, ttl }`.
    */
-  cacheStats(): { enabled: boolean; mode: "persistent" | "request" | "off"; hits: number; misses: number; size: number; ttl: number } {
+  cacheStats(): { enabled: boolean; mode: "persistent" | "request" | "off"; hits: number; misses: number; size: number; ttl: number; backend?: string } {
     const adapter = this.getNextAdapter();
     if (adapter instanceof CachedDatabaseAdapter) {
       return adapter.cacheStats();

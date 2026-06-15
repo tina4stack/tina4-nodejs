@@ -9,6 +9,58 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # Cache backends — the unified CacheBackend tests (test/cache-backends.test.ts)
+    # exercise these for real; without them those checks self-skip. Ports mirror
+    # the local docker harness. redis-auth uses requirepass s3cret.
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      valkey:
+        image: valkey/valkey:8
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis-auth:
+        # Bitnami honours REDIS_PASSWORD → requirepass; the official redis image
+        # has no env switch for auth and GH service containers can't override the
+        # command, so Bitnami is the portable way to get a password-protected
+        # Redis as a service.
+        image: bitnami/redis:7.2
+        ports:
+          - 6381:6379
+        env:
+          REDIS_PASSWORD: s3cret
+        options: >-
+          --health-cmd "redis-cli -a s3cret ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      memcached:
+        image: memcached:1.6
+        ports:
+          - 11211:11211
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand({ ping: 1 })' --quiet"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 

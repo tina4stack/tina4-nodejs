@@ -16,5 +16,8 @@
   },
   "dependencies": {
     "pg": "^8.20.0"
+  },
+  "optionalDependencies": {
+    "mongodb": "^6.0.0"
   }
 }

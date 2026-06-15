@@ -30,6 +30,7 @@
  */
 
 import { QueryCache } from "./sqlTranslation.js";
+import { createBackend, type CacheBackend } from "@tina4/core";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "./types.js";
 
 function isTruthy(val: string | undefined): boolean {
@@ -70,6 +71,17 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   private ttl: number;
   private hits: number = 0;
   private misses: number = 0;
+  /**
+   * Shared unified cache backend for persistent mode. When TINA4_DB_CACHE=true
+   * AND TINA4_DB_CACHE_BACKEND selects a SHARED backend (redis/valkey/memcached/
+   * mongodb/database/file), persistent reads/writes route through it so multiple
+   * Database instances/processes share one cache with global write-invalidation.
+   * The cached value is a serialized records array (JSON-friendly), reconstructed
+   * on read. Request-scoped mode always uses the in-process QueryCache above
+   * (ephemeral, fastest, never serialized). Mirrors the Python master's
+   * `Database._cache_backend`.
+   */
+  private cacheBackend: CacheBackend | null = null;
 
   constructor(adapter: DatabaseAdapter, options: CachedAdapterOptions = {}) {
     this.adapter = adapter;
@@ -87,7 +99,50 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     }
 
     this.cache = options.sharedCache ?? new QueryCache({ defaultTtl: this.ttl, maxSize: 10000 });
+
+    // Persistent mode → route through the unified CacheBackend when configured
+    // via TINA4_DB_CACHE_BACKEND + TINA4_DB_CACHE_URL. "memory" keeps the
+    // in-process QueryCache (no serialization cost). Any other backend (or an
+    // explicit "memory" that the operator opted into) is built here; if it's a
+    // shared/persistent backend we serialize through it.
+    if (this.cachePersistent) {
+      const backendName = (process.env.TINA4_DB_CACHE_BACKEND ?? "memory").toLowerCase().trim();
+      if (backendName !== "memory") {
+        try {
+          this.cacheBackend = createBackend({
+            backend: backendName,
+            cacheUrl: process.env.TINA4_DB_CACHE_URL,
+          });
+        } catch {
+          this.cacheBackend = null; // fall back to the in-process QueryCache
+        }
+      }
+    }
+
     CachedDatabaseAdapter.instances.add(this);
+  }
+
+  // ── Persistent shared-backend serialization helpers ──────────
+  //
+  // The shared backends store JSON, so a records array round-trips directly.
+  // We tag the payload so a null/empty result is distinguishable from a miss.
+
+  /** True when a shared unified backend is wired (persistent mode). */
+  private usesSharedBackend(): boolean {
+    return this.cacheBackend !== null;
+  }
+
+  private backendGet<T>(key: string): { hit: boolean; value: T } {
+    const raw = this.cacheBackend!.get(key);
+    if (raw === undefined || raw === null || typeof raw !== "object") {
+      return { hit: false, value: undefined as unknown as T };
+    }
+    const wrapped = raw as { v: T };
+    return { hit: true, value: wrapped.v };
+  }
+
+  private backendSet<T>(key: string, value: T): void {
+    this.cacheBackend!.set(key, { v: value }, this.ttl);
   }
 
   // ── Cache mode helpers ────────────────────────────────────
@@ -134,8 +189,20 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
 
   cacheStats(): {
     enabled: boolean; mode: "persistent" | "request" | "off";
-    hits: number; misses: number; size: number; ttl: number;
+    hits: number; misses: number; size: number; ttl: number; backend?: string;
   } {
+    if (this.usesSharedBackend()) {
+      const bs = this.cacheBackend!.stats();
+      return {
+        enabled: this.enabled,
+        mode: this.cacheMode(),
+        hits: this.hits,
+        misses: this.misses,
+        size: bs.size,
+        ttl: this.ttl,
+        backend: bs.backend,
+      };
+    }
     return {
       enabled: this.enabled,
       mode: this.cacheMode(),
@@ -148,6 +215,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
 
   /** Flush the query cache and reset counters. Mirrors Python `cache_clear()`. */
   cacheClear(): void {
+    if (this.usesSharedBackend()) this.cacheBackend!.clear();
     this.cache.clear();
     this.hits = 0;
     this.misses = 0;
@@ -155,6 +223,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
 
   /** Clear the entire query cache (called on writes). */
   private invalidate(): void {
+    if (this.usesSharedBackend()) this.cacheBackend!.clear();
     this.cache.clear();
   }
 
@@ -177,6 +246,14 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     // counters, flushed on writes.
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":Q", params as unknown[] | undefined);
+      if (this.usesSharedBackend()) {
+        const { hit, value } = this.backendGet<T[]>(key);
+        if (hit) { this.hits++; return value; }
+        const result = this.adapter.query<T>(sql, params);
+        this.backendSet(key, result);
+        this.misses++;
+        return result;
+      }
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -193,6 +270,14 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): T[] {
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined);
+      if (this.usesSharedBackend()) {
+        const { hit, value } = this.backendGet<T[]>(key);
+        if (hit) { this.hits++; return value; }
+        const result = this.adapter.fetch<T>(sql, params, limit, skip);
+        this.backendSet(key, result);
+        this.misses++;
+        return result;
+      }
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -209,6 +294,14 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | null {
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined);
+      if (this.usesSharedBackend()) {
+        const { hit, value } = this.backendGet<T | null>(key);
+        if (hit) { this.hits++; return value; }
+        const result = this.adapter.fetchOne<T>(sql, params);
+        this.backendSet(key, result);
+        this.misses++;
+        return result;
+      }
       const cached = this.cache.get<T | null>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -291,63 +384,84 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   // cache sits in front of the async path too. Reads cache; writes flush.
 
   async fetchAsync<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): Promise<T[]> {
+    const run = async (): Promise<T[]> => (this.adapter as any).fetchAsync
+      ? await (this.adapter as any).fetchAsync(sql, params, limit, skip)
+      : this.adapter.fetch<T>(sql, params, limit, skip);
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined);
+      if (this.usesSharedBackend()) {
+        const { hit, value } = this.backendGet<T[]>(key);
+        if (hit) { this.hits++; return value; }
+        const result = await run();
+        this.backendSet(key, result);
+        this.misses++;
+        return result;
+      }
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;
         return cached;
       }
-      const result = (this.adapter as any).fetchAsync
-        ? await (this.adapter as any).fetchAsync(sql, params, limit, skip)
-        : this.adapter.fetch<T>(sql, params, limit, skip);
+      const result = await run();
       this.cache.set(key, result, this.ttl);
       this.misses++;
       return result;
     }
-    return (this.adapter as any).fetchAsync
-      ? await (this.adapter as any).fetchAsync(sql, params, limit, skip)
-      : this.adapter.fetch<T>(sql, params, limit, skip);
+    return run();
   }
 
   async fetchOneAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | null> {
+    const run = async (): Promise<T | null> => (this.adapter as any).fetchOneAsync
+      ? await (this.adapter as any).fetchOneAsync(sql, params)
+      : this.adapter.fetchOne<T>(sql, params);
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined);
+      if (this.usesSharedBackend()) {
+        const { hit, value } = this.backendGet<T | null>(key);
+        if (hit) { this.hits++; return value; }
+        const result = await run();
+        this.backendSet(key, result);
+        this.misses++;
+        return result;
+      }
       const cached = this.cache.get<T | null>(key);
       if (cached !== undefined) {
         this.hits++;
         return cached;
       }
-      const result = (this.adapter as any).fetchOneAsync
-        ? await (this.adapter as any).fetchOneAsync(sql, params)
-        : this.adapter.fetchOne<T>(sql, params);
+      const result = await run();
       this.cache.set(key, result, this.ttl);
       this.misses++;
       return result;
     }
-    return (this.adapter as any).fetchOneAsync
-      ? await (this.adapter as any).fetchOneAsync(sql, params)
-      : this.adapter.fetchOne<T>(sql, params);
+    return run();
   }
 
   async queryAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
+    const run = async (): Promise<T[]> => (this.adapter as any).queryAsync
+      ? await (this.adapter as any).queryAsync(sql, params)
+      : this.adapter.query<T>(sql, params);
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":Q", params as unknown[] | undefined);
+      if (this.usesSharedBackend()) {
+        const { hit, value } = this.backendGet<T[]>(key);
+        if (hit) { this.hits++; return value; }
+        const result = await run();
+        this.backendSet(key, result);
+        this.misses++;
+        return result;
+      }
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;
         return cached;
       }
-      const result = (this.adapter as any).queryAsync
-        ? await (this.adapter as any).queryAsync(sql, params)
-        : this.adapter.query<T>(sql, params);
+      const result = await run();
       this.cache.set(key, result, this.ttl);
       this.misses++;
       return result;
     }
-    return (this.adapter as any).queryAsync
-      ? await (this.adapter as any).queryAsync(sql, params)
-      : this.adapter.query<T>(sql, params);
+    return run();
   }
 
   async executeAsync(sql: string, params?: unknown[]): Promise<unknown> {
