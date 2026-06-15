@@ -81,6 +81,38 @@ export function setFrond(engine: InstanceType<any>): void {
  *   return response.json(data, 201);                   // Method
  *   return response.redirect("/login");                // Special
  */
+/**
+ * Normalise domain objects into JSON-serialisable values so handlers can
+ * `return response(model)` / `res.json(model)` without calling .toDict() by hand:
+ *
+ *   return response(user);               // ORM model       -> object
+ *   return response(await User.all());   // model[]          -> object[]
+ *   return response(await db.fetch(sql));// DatabaseResult   -> object[]
+ *
+ * Duck-typed (no @tina4/orm import — avoids a package cycle): a callable
+ * `toDict` marks a model; a `records` array plus a `toArray` method marks a
+ * query result. Plain objects / arrays / scalars pass through unchanged.
+ */
+function toJsonable(data: unknown): unknown {
+  if (data === null || typeof data !== "object" || Buffer.isBuffer(data)) {
+    return data;
+  }
+  const obj = data as Record<string, unknown>;
+  // Query result (DatabaseResult-like): records array + toArray method.
+  if (Array.isArray(obj.records) && typeof obj.toArray === "function") {
+    return obj.records;
+  }
+  // ORM model: callable toDict().
+  if (typeof obj.toDict === "function") {
+    return (obj.toDict as () => unknown)();
+  }
+  // Collections: normalise each element (array of models -> array of objects).
+  if (Array.isArray(data)) {
+    return data.map((item) => toJsonable(item));
+  }
+  return data;
+}
+
 export function createResponse(res: ServerResponse): Tina4Response {
 
   // ── Guard: prevent writing after headers are sent ──
@@ -94,6 +126,10 @@ export function createResponse(res: ServerResponse): Tina4Response {
   // ── The callable: response(data, status, contentType) ──
   const response = function (data?: unknown, statusCode?: number, contentType?: string): Tina4Response {
     if (res.headersSent) return response;
+
+    // Normalise ORM models / collections / query results so handlers can
+    // `return response(model)` without serialising by hand.
+    data = toJsonable(data);
 
     if (statusCode !== undefined) {
       res.statusCode = statusCode;
@@ -143,7 +179,7 @@ export function createResponse(res: ServerResponse): Tina4Response {
     if (res.headersSent) return response;
     if (status !== undefined) res.statusCode = status;
     safeSetHeader("Content-Type", "application/json");
-    safeEnd(JSON.stringify(data));
+    safeEnd(JSON.stringify(toJsonable(data)));
     return response;
   };
 
