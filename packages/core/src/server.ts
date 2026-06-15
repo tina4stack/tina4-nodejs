@@ -975,7 +975,7 @@ ${reset}
       } as typeof rawRes.end;
     }
 
-    // res.render() / res.template() are handled natively by response.ts via Frond
+    // res.render() is handled natively by response.ts via Frond
 
     try {
       // Run middleware chain
