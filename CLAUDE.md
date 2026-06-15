@@ -1,10 +1,10 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.13.21)
+# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.13.23)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.13.21 — The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.13.23 — The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -589,8 +589,12 @@ db.getColumns(table): { name, type, nullable?, default?, primaryKey? }[]
 // auto-creates Postgres sequences, and uses native Firebird generators.
 db.getNextId(table, pkColumn?, generatorName?): number
 
-// Query cache (TINA4_DB_CACHE=true)
-db.cacheStats(): { enabled, size, ttl }
+// DB query cache — request-scoped auto cache is ON by default (TINA4_AUTO_CACHING=true,
+// TTL TINA4_AUTO_CACHING_TTL=5s): dedupes identical db.fetch()/ORM reads within a request,
+// flushed on any write. Persistent cross-request cache opt-in via TINA4_DB_CACHE=true
+// (TTL TINA4_DB_CACHE_TTL=30s). cacheStats()/cacheClear() are now real (the DB query cache
+// is wired — previously db.cacheStats() hardcoded size:0 and db.cacheClear() was a no-op).
+db.cacheStats(): { enabled, size, ttl, mode }   // mode: "request" | "persistent" | "off"
 db.cacheClear(): void
 
 // Connection pool access (null when pooling disabled)
@@ -895,7 +899,8 @@ const u = cacheGet("user:1");
 cacheDelete("user:1");
 cacheClear();
 
-cacheStats();   // { hits, misses, size, backend }
+cacheStats();   // { hits, misses, size, backend } — now reflects the real KV backend
+                // (previously it wrongly read the response-cache middleware store)
 ```
 
 Environment:
@@ -1098,12 +1103,12 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 ## v3 Features Summary
 
 - **45 built-in features**, zero third-party dependencies
-- **3,684 tests** passing across all modules
+- **3,708 tests** passing across all modules
 - **Race-safe `getNextId()`** with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
 - **`npx tina4nodejs generate`**: model, route, migration, middleware scaffolding
-- **Database**: 5 engines (SQLite, PostgreSQL, MySQL, MSSQL, Firebird), query caching (`TINA4_DB_CACHE=true`)
+- **Database**: 5 engines (SQLite, PostgreSQL, MySQL, MSSQL, Firebird), DB query caching — request-scoped auto cache **on by default** (`TINA4_AUTO_CACHING=true`, TTL `TINA4_AUTO_CACHING_TTL=5`s) dedupes identical `db.fetch()`/ORM reads within a request and flushes on writes; persistent cross-request cache opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s). `db.cacheStats()`/`db.cacheClear()` are now real (the DB query cache is wired; was dead code)
 - **Sessions**: file backend (default). `TINA4_SESSION_SAMESITE` env var (default: Lax)
 - **Queue**: file/RabbitMQ/Kafka/MongoDB backends, configured via env vars
 - **Cache**: memory/Redis/file backends

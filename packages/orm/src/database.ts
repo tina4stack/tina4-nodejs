@@ -140,8 +140,8 @@ const namedAdapters: Map<string, DatabaseAdapter> = new Map();
  * double-wraps. `options.sharedCache` backs all pooled connections with one
  * store so a write on any connection invalidates reads cached by all of them.
  *
- * Caching is ON by default (request-scoped, TINA4_QUERY_CACHE) and additionally
- * persistent when TINA4_DB_CACHE=true. Off-switch: TINA4_QUERY_CACHE=false (and
+ * Caching is ON by default (request-scoped, TINA4_AUTO_CACHING) and additionally
+ * persistent when TINA4_DB_CACHE=true. Off-switch: TINA4_AUTO_CACHING=false (and
  * TINA4_DB_CACHE unset) — then the wrapper passes everything straight through.
  */
 export function wrapWithCache(adapter: DatabaseAdapter, options?: CachedAdapterOptions): DatabaseAdapter {

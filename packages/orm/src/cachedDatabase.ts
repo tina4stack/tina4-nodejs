@@ -7,10 +7,10 @@
  *
  * One store, two layers (mirrors the Python master — tina4_python/database/connection.py):
  *
- *   • request-scoped (DEFAULT ON, off-switch TINA4_QUERY_CACHE=false) — dedupes
+ *   • request-scoped (DEFAULT ON, off-switch TINA4_AUTO_CACHING=false) — dedupes
  *     identical SELECTs to protect the DB from rapid repeat reads. Cleared at the
  *     START of every HTTP request (via Database.resetRequestCaches()) AND on any
- *     write, with a short safety TTL (TINA4_QUERY_CACHE_TTL, default 5s) for
+ *     write, with a short safety TTL (TINA4_AUTO_CACHING_TTL, default 5s) for
  *     non-request contexts (scripts/workers).
  *   • persistent (opt-in, TINA4_DB_CACHE=true) — cross-request TTL cache that is
  *     NOT cleared per request; entries expire by TINA4_DB_CACHE_TTL (default 30s).
@@ -44,7 +44,7 @@ function isTruthy(val: string | undefined): boolean {
 export interface CachedAdapterOptions {
   /** Force-enable the persistent (cross-request) layer. Defaults to TINA4_DB_CACHE. */
   persistent?: boolean;
-  /** Force-enable the request-scoped layer. Defaults to TINA4_QUERY_CACHE (default true). */
+  /** Force-enable the request-scoped layer. Defaults to TINA4_AUTO_CACHING (default true). */
   requestScoped?: boolean;
   /** Override the effective TTL (seconds). Defaults to the mode-appropriate env var. */
   ttl?: number;
@@ -64,7 +64,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   private cache: QueryCache;
   /** Persistent (cross-request) layer — TINA4_DB_CACHE. */
   private cachePersistent: boolean;
-  /** Request-scoped layer — TINA4_QUERY_CACHE (default ON). */
+  /** Request-scoped layer — TINA4_AUTO_CACHING (default ON). */
   private cacheRequestScoped: boolean;
   private enabled: boolean;
   private ttl: number;
@@ -75,7 +75,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     this.adapter = adapter;
     this.cachePersistent = options.persistent ?? isTruthy(process.env.TINA4_DB_CACHE);
     this.cacheRequestScoped = options.requestScoped
-      ?? (process.env.TINA4_QUERY_CACHE === undefined ? true : isTruthy(process.env.TINA4_QUERY_CACHE));
+      ?? (process.env.TINA4_AUTO_CACHING === undefined ? true : isTruthy(process.env.TINA4_AUTO_CACHING));
     this.enabled = this.cachePersistent || this.cacheRequestScoped;
 
     if (options.ttl !== undefined) {
@@ -83,7 +83,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     } else if (this.cachePersistent) {
       this.ttl = parseInt(process.env.TINA4_DB_CACHE_TTL ?? "30", 10);
     } else {
-      this.ttl = parseInt(process.env.TINA4_QUERY_CACHE_TTL ?? "5", 10);
+      this.ttl = parseInt(process.env.TINA4_AUTO_CACHING_TTL ?? "5", 10);
     }
 
     this.cache = options.sharedCache ?? new QueryCache({ defaultTtl: this.ttl, maxSize: 10000 });

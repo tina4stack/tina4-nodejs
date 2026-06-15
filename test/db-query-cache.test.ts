@@ -3,7 +3,7 @@
  * identical reads. Mirrors tina4_python/tests/test_db_query_cache.py.
  *
  * Layers (see packages/orm/src/cachedDatabase.ts):
- *   • request-scoped (DEFAULT ON, off-switch TINA4_QUERY_CACHE=false) — dedupes
+ *   • request-scoped (DEFAULT ON, off-switch TINA4_AUTO_CACHING=false) — dedupes
  *     identical SELECTs, cleared per request + on writes, short safety TTL.
  *   • persistent (opt-in TINA4_DB_CACHE=true) — cross-request TTL cache, NOT
  *     cleared per request.
@@ -34,14 +34,14 @@ function assert(name: string, condition: boolean, detail = "") {
 /**
  * Build a fresh in-memory DB. Each call resets the env knobs the caller set,
  * closes any prior connection, and constructs a Database. `env` lets a test
- * pin TINA4_DB_CACHE / TINA4_QUERY_CACHE before the adapter is wrapped (the
+ * pin TINA4_DB_CACHE / TINA4_AUTO_CACHING before the adapter is wrapped (the
  * mode is decided at wrap time, exactly like Python decides it in __init__).
  */
 async function makeDb(env: Record<string, string | undefined> = {}): Promise<Database> {
   delete process.env.TINA4_DB_CACHE;
-  delete process.env.TINA4_QUERY_CACHE;
+  delete process.env.TINA4_AUTO_CACHING;
   delete process.env.TINA4_DB_CACHE_TTL;
-  delete process.env.TINA4_QUERY_CACHE_TTL;
+  delete process.env.TINA4_AUTO_CACHING_TTL;
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -113,9 +113,9 @@ async function main() {
   }
 
   // ── Off-switch ──────────────────────────────────────────
-  console.log("\n--- Off-switch (TINA4_QUERY_CACHE=false) ---");
+  console.log("\n--- Off-switch (TINA4_AUTO_CACHING=false) ---");
   {
-    const db = await makeDb({ TINA4_QUERY_CACHE: "false" });
+    const db = await makeDb({ TINA4_AUTO_CACHING: "false" });
     let stats = db.cacheStats();
     assert("query cache false disables: enabled false", stats.enabled === false, JSON.stringify(stats));
     assert("query cache false disables: mode 'off'", stats.mode === "off", JSON.stringify(stats));
