@@ -10,12 +10,14 @@ import { SQLTranslator } from "../sqlTranslation.js";
 import { createRequire } from "node:module";
 
 let pg: typeof import("pg") | null = null;
+let typeParsersRegistered = false;
 
 function requirePg(): typeof import("pg") {
   if (pg) return pg;
   try {
     const req = createRequire(import.meta.url);
     pg = req("pg");
+    registerTypeParsers(pg!);
     return pg!;
   } catch {
     throw new Error(
@@ -26,6 +28,33 @@ function requirePg(): typeof import("pg") {
         "    bun add pg",
     );
   }
+}
+
+/**
+ * Register global pg type parsers so int8 and numeric/decimal columns decode to
+ * JS numbers instead of strings. node-postgres returns int8 (OID 20) and
+ * numeric (OID 1700) as strings by default to preserve full precision; Python,
+ * Ruby and PHP all return native numerics for aggregates (SUM, AVG, COUNT, …),
+ * so this brings Node to cross-framework parity. count() and getNextId() already
+ * coerce via Number(), so this is purely additive for them.
+ *
+ * PRECISION CAVEAT: values beyond Number.MAX_SAFE_INTEGER (2^53 - 1) lose
+ * precision when coerced to a JS double. That is the accepted trade-off for
+ * parity — Python and Ruby return native numerics (and lose precision the same
+ * way for floats) too. Applications that need exact 64-bit/arbitrary-precision
+ * values should select the column with an explicit ::text cast.
+ *
+ * Idempotent — registration runs once per process.
+ */
+function registerTypeParsers(pgModule: typeof import("pg")): void {
+  if (typeParsersRegistered) return;
+  const types = pgModule.types ?? (pgModule as any).default?.types;
+  if (!types?.setTypeParser) return;
+  // OID 20  = int8 (bigint)  → Number  (NULL passes through untouched by pg)
+  types.setTypeParser(20, (v: string) => Number(v));
+  // OID 1700 = numeric / decimal → parseFloat
+  types.setTypeParser(1700, (v: string) => parseFloat(v));
+  typeParsersRegistered = true;
 }
 
 export interface PostgresConfig {

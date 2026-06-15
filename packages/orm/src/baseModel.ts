@@ -8,6 +8,7 @@ import { validate as validateFields } from "./validation.js";
 import { QueryBuilder } from "./queryBuilder.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
 import { QueryCache } from "./sqlTranslation.js";
+import { Log } from "@tina4/core";
 import type { DatabaseAdapter, FieldDefinition, RelationshipDefinition } from "./types.js";
 
 /**
@@ -1149,6 +1150,28 @@ export class BaseModel {
 
   static registerModel(name: string, modelClass: typeof BaseModel): void {
     BaseModel._modelRegistry[name] = modelClass;
+    // Eagerly process this model's foreignKey fields so the cross-model
+    // _fkRegistry is populated as soon as the model is known — not only when
+    // the *declaring* model happens to be touched first. This is what makes
+    // eager loading work standalone (without server-boot auto-discovery):
+    // a parent's hasMany is registered by the child's _processForeignKeys(),
+    // so we must run it for every registered model proactively.
+    modelClass._processForeignKeys();
+  }
+
+  /**
+   * Process foreignKey fields on every registered model so the cross-model
+   * _fkRegistry (and each model's belongsTo/hasMany) is fully wired regardless
+   * of which model was used first. Idempotent — _processForeignKeys() and
+   * _applyFkRegistry() both guard against duplicates.
+   */
+  private static _processAllForeignKeys(): void {
+    for (const modelClass of Object.values(BaseModel._modelRegistry)) {
+      modelClass._processForeignKeys();
+    }
+    for (const modelClass of Object.values(BaseModel._modelRegistry)) {
+      modelClass._applyFkRegistry();
+    }
   }
 
   /**
@@ -1168,9 +1191,13 @@ export class BaseModel {
 
     const ModelClass = instances[0].constructor as typeof BaseModel;
 
-    // Apply FK registry so foreignKey fields auto-wire hasMany on referenced models
-    ModelClass._processForeignKeys();
-    ModelClass._applyFkRegistry();
+    // Wire FK relationships across ALL registered models, not just the parent.
+    // A parent's hasMany is declared by the CHILD's foreignKey field, so we must
+    // process every registered model's FKs before resolving includes — otherwise
+    // a standalone Author.findById(id, ["posts"]) silently finds nothing because
+    // Post._processForeignKeys() never ran. _applyFkRegistry() then merges the
+    // registered hasMany entries onto each model.
+    BaseModel._processAllForeignKeys();
 
     // Group includes: top-level and nested
     const topLevel: Record<string, string[]> = {};
@@ -1186,28 +1213,54 @@ export class BaseModel {
     }
 
     for (const [relName, nested] of Object.entries(topLevel)) {
-      // Find the relationship definition
+      // Find the relationship definition.
+      //
+      // Include names are resolved case-insensitively against each candidate
+      // relation. Accepted forms (for a relation to model "Post" on table "posts"):
+      //   - the model name           → "Post" / "post"
+      //   - the auto/related key     → "post" (singular) or "posts" (when
+      //                                 TINA4_ORM_PLURAL_TABLE_NAMES is enabled)
+      //   - the table name           → "posts"
+      // All matching is lower-cased so "Post", "post" and "posts" all resolve.
+      const want = relName.toLowerCase();
       let relDef: RelationshipDefinition | undefined;
       let relType: "hasOne" | "hasMany" | "belongsTo" | null = null;
 
+      const matchesModel = (r: RelationshipDefinition): boolean => {
+        const base = r.model.toLowerCase();
+        const related = BaseModel._modelRegistry[r.model];
+        const table = related?.tableName?.toLowerCase();
+        return (
+          base === want ||
+          base + "s" === want ||
+          (table !== undefined && table === want)
+        );
+      };
+
       if (ModelClass.hasOne) {
-        relDef = ModelClass.hasOne.find((r) => r.model.toLowerCase() === relName || r.model === relName);
+        relDef = ModelClass.hasOne.find(matchesModel);
         if (relDef) relType = "hasOne";
       }
       if (!relDef && ModelClass.hasMany) {
-        relDef = ModelClass.hasMany.find((r) => {
-          const base = r.model.toLowerCase();
-          const key = _pluralRelKeys() ? base + "s" : base;
-          return key === relName || base === relName || r.model === relName;
-        });
+        relDef = ModelClass.hasMany.find(matchesModel);
         if (relDef) relType = "hasMany";
       }
       if (!relDef && ModelClass.belongsTo) {
-        relDef = ModelClass.belongsTo.find((r) => r.model.toLowerCase() === relName || r.model === relName);
+        relDef = ModelClass.belongsTo.find(matchesModel);
         if (relDef) relType = "belongsTo";
       }
 
-      if (!relDef || !relType) continue;
+      if (!relDef || !relType) {
+        // Don't silently skip — a typo'd or unknown include name is almost
+        // always a developer mistake. Surface it so it's visible.
+        Log.warn(
+          `eager-load: include "${relName}" did not match any relationship on ` +
+            `${ModelClass.name} (table "${ModelClass.tableName}"). ` +
+            `Accepted forms are the related model name, its singular/plural ` +
+            `key, or the related table name (case-insensitive).`,
+        );
+        continue;
+      }
 
       const relatedClass = BaseModel._modelRegistry[relDef.model];
       if (!relatedClass) continue;
