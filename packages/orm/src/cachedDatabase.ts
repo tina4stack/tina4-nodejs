@@ -30,12 +30,17 @@
  */
 
 import { QueryCache } from "./sqlTranslation.js";
-import { createBackend, type CacheBackend } from "@tina4/core";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "./types.js";
 
 function isTruthy(val: string | undefined): boolean {
   return ["true", "1", "yes", "on"].includes((val ?? "").trim().toLowerCase());
 }
+
+/** Network backends that cannot serve a SYNCHRONOUS db.fetch() path. */
+const NETWORK_DB_CACHE_BACKENDS = new Set(["redis", "valkey", "memcached", "memcache", "mongodb", "mongo"]);
+
+/** One-time guard so the distributed-DB-cache warning logs once per process. */
+let _warnedNetworkDbCache = false;
 
 /**
  * Options for wrapping an adapter with a query cache. When several pooled
@@ -71,17 +76,6 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   private ttl: number;
   private hits: number = 0;
   private misses: number = 0;
-  /**
-   * Shared unified cache backend for persistent mode. When TINA4_DB_CACHE=true
-   * AND TINA4_DB_CACHE_BACKEND selects a SHARED backend (redis/valkey/memcached/
-   * mongodb/database/file), persistent reads/writes route through it so multiple
-   * Database instances/processes share one cache with global write-invalidation.
-   * The cached value is a serialized records array (JSON-friendly), reconstructed
-   * on read. Request-scoped mode always uses the in-process QueryCache above
-   * (ephemeral, fastest, never serialized). Mirrors the Python master's
-   * `Database._cache_backend`.
-   */
-  private cacheBackend: CacheBackend | null = null;
 
   constructor(adapter: DatabaseAdapter, options: CachedAdapterOptions = {}) {
     this.adapter = adapter;
@@ -100,49 +94,30 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
 
     this.cache = options.sharedCache ?? new QueryCache({ defaultTtl: this.ttl, maxSize: 10000 });
 
-    // Persistent mode → route through the unified CacheBackend when configured
-    // via TINA4_DB_CACHE_BACKEND + TINA4_DB_CACHE_URL. "memory" keeps the
-    // in-process QueryCache (no serialization cost). Any other backend (or an
-    // explicit "memory" that the operator opted into) is built here; if it's a
-    // shared/persistent backend we serialize through it.
+    // Persistent mode runs on the SYNCHRONOUS db.fetch() path, which cannot
+    // await an async cache backend. So the persistent DB-query cache is always
+    // the in-process QueryCache above (synchronous, no serialization-over-the-
+    // wire). If the operator selects a NETWORK backend via TINA4_DB_CACHE_BACKEND
+    // (redis/valkey/memcached/mongodb), warn once and fall back to in-process
+    // memory — distributed DB-query caching isn't available on Node's sync
+    // fetch path; use the response cache (cacheGet/cacheSet) for distributed
+    // caching. (File/database/memory selections also resolve to the in-process
+    // store here — the unified network backends live behind the async KV API.)
     if (this.cachePersistent) {
       const backendName = (process.env.TINA4_DB_CACHE_BACKEND ?? "memory").toLowerCase().trim();
-      if (backendName !== "memory") {
-        try {
-          this.cacheBackend = createBackend({
-            backend: backendName,
-            cacheUrl: process.env.TINA4_DB_CACHE_URL,
-          });
-        } catch {
-          this.cacheBackend = null; // fall back to the in-process QueryCache
-        }
+      if (NETWORK_DB_CACHE_BACKENDS.has(backendName) && !_warnedNetworkDbCache) {
+        _warnedNetworkDbCache = true;
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[tina4] TINA4_DB_CACHE_BACKEND='${backendName}' selects a distributed cache, ` +
+          `but Node's db.fetch() is synchronous so distributed DB-query caching is not ` +
+          `available on that path — falling back to the in-process memory store. ` +
+          `For distributed caching use the response cache (cacheGet/cacheSet).`,
+        );
       }
     }
 
     CachedDatabaseAdapter.instances.add(this);
-  }
-
-  // ── Persistent shared-backend serialization helpers ──────────
-  //
-  // The shared backends store JSON, so a records array round-trips directly.
-  // We tag the payload so a null/empty result is distinguishable from a miss.
-
-  /** True when a shared unified backend is wired (persistent mode). */
-  private usesSharedBackend(): boolean {
-    return this.cacheBackend !== null;
-  }
-
-  private backendGet<T>(key: string): { hit: boolean; value: T } {
-    const raw = this.cacheBackend!.get(key);
-    if (raw === undefined || raw === null || typeof raw !== "object") {
-      return { hit: false, value: undefined as unknown as T };
-    }
-    const wrapped = raw as { v: T };
-    return { hit: true, value: wrapped.v };
-  }
-
-  private backendSet<T>(key: string, value: T): void {
-    this.cacheBackend!.set(key, { v: value }, this.ttl);
   }
 
   // ── Cache mode helpers ────────────────────────────────────
@@ -191,18 +166,6 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     enabled: boolean; mode: "persistent" | "request" | "off";
     hits: number; misses: number; size: number; ttl: number; backend?: string;
   } {
-    if (this.usesSharedBackend()) {
-      const bs = this.cacheBackend!.stats();
-      return {
-        enabled: this.enabled,
-        mode: this.cacheMode(),
-        hits: this.hits,
-        misses: this.misses,
-        size: bs.size,
-        ttl: this.ttl,
-        backend: bs.backend,
-      };
-    }
     return {
       enabled: this.enabled,
       mode: this.cacheMode(),
@@ -210,12 +173,12 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       misses: this.misses,
       size: this.cache.size(),
       ttl: this.ttl,
+      backend: "memory",
     };
   }
 
   /** Flush the query cache and reset counters. Mirrors Python `cache_clear()`. */
   cacheClear(): void {
-    if (this.usesSharedBackend()) this.cacheBackend!.clear();
     this.cache.clear();
     this.hits = 0;
     this.misses = 0;
@@ -223,7 +186,6 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
 
   /** Clear the entire query cache (called on writes). */
   private invalidate(): void {
-    if (this.usesSharedBackend()) this.cacheBackend!.clear();
     this.cache.clear();
   }
 
@@ -246,14 +208,6 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     // counters, flushed on writes.
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":Q", params as unknown[] | undefined);
-      if (this.usesSharedBackend()) {
-        const { hit, value } = this.backendGet<T[]>(key);
-        if (hit) { this.hits++; return value; }
-        const result = this.adapter.query<T>(sql, params);
-        this.backendSet(key, result);
-        this.misses++;
-        return result;
-      }
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -270,14 +224,6 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): T[] {
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined);
-      if (this.usesSharedBackend()) {
-        const { hit, value } = this.backendGet<T[]>(key);
-        if (hit) { this.hits++; return value; }
-        const result = this.adapter.fetch<T>(sql, params, limit, skip);
-        this.backendSet(key, result);
-        this.misses++;
-        return result;
-      }
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -294,14 +240,6 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | null {
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined);
-      if (this.usesSharedBackend()) {
-        const { hit, value } = this.backendGet<T | null>(key);
-        if (hit) { this.hits++; return value; }
-        const result = this.adapter.fetchOne<T>(sql, params);
-        this.backendSet(key, result);
-        this.misses++;
-        return result;
-      }
       const cached = this.cache.get<T | null>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -389,14 +327,6 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       : this.adapter.fetch<T>(sql, params, limit, skip);
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined);
-      if (this.usesSharedBackend()) {
-        const { hit, value } = this.backendGet<T[]>(key);
-        if (hit) { this.hits++; return value; }
-        const result = await run();
-        this.backendSet(key, result);
-        this.misses++;
-        return result;
-      }
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -416,14 +346,6 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       : this.adapter.fetchOne<T>(sql, params);
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined);
-      if (this.usesSharedBackend()) {
-        const { hit, value } = this.backendGet<T | null>(key);
-        if (hit) { this.hits++; return value; }
-        const result = await run();
-        this.backendSet(key, result);
-        this.misses++;
-        return result;
-      }
       const cached = this.cache.get<T | null>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -443,14 +365,6 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       : this.adapter.query<T>(sql, params);
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":Q", params as unknown[] | undefined);
-      if (this.usesSharedBackend()) {
-        const { hit, value } = this.backendGet<T[]>(key);
-        if (hit) { this.hits++; return value; }
-        const result = await run();
-        this.backendSet(key, result);
-        this.misses++;
-        return result;
-      }
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;

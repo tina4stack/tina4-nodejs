@@ -774,6 +774,9 @@ function verifyNodeSyntax(absPath: string, relPath: string): string | null {
   return stripPath(lines[0]);
 }
 
+/** Latest resolved KV cache stats snapshot (the async API resolves into this). */
+let _lastCacheStats: Record<string, unknown> | null = null;
+
 /**
  * Register all 24 built-in dev tools on the given McpServer.
  */
@@ -1158,9 +1161,18 @@ export function registerDevTools(server: McpServer): void {
   server.registerTool(
     "cache_stats",
     (_args) => {
+      // The KV cache API is async on Node (cacheStats() returns a Promise) and
+      // the MCP dispatch is synchronous, so we resolve the stats and return the
+      // latest snapshot once available. The very first call may report the
+      // pending placeholder; subsequent calls return live figures.
       try {
-        const { cacheStats } = require("@tina4/core");
-        return cacheStats?.() ?? {};
+        const mod = require("@tina4/core");
+        const stats = mod.cacheStats?.();
+        if (stats && typeof stats.then === "function") {
+          stats.then((s: unknown) => { _lastCacheStats = s as Record<string, unknown>; }).catch(() => {});
+          return _lastCacheStats ?? { hits: 0, misses: 0, size: 0, backend: "pending" };
+        }
+        return stats ?? {};
       } catch (e) {
         return { error: (e as Error).message };
       }
