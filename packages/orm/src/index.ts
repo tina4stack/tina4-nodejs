@@ -14,7 +14,7 @@ export { FetchResult } from "./types.js";
 
 export { DatabaseResult } from "./databaseResult.js";
 export type { ColumnInfoResult } from "./databaseResult.js";
-export { Database, initDatabase, getAdapter, setAdapter, closeDatabase, parseDatabaseUrl, setNamedAdapter, getNamedAdapter, resolveDbPool, stripTrailingSemicolons } from "./database.js";
+export { Database, initDatabase, getAdapter, setAdapter, bindDatabase, createAdapterFromUrl, closeDatabase, parseDatabaseUrl, setNamedAdapter, getNamedAdapter, resolveDbPool, stripTrailingSemicolons } from "./database.js";
 export {
   adapterFetch, adapterQuery, adapterFetchOne, adapterExecute,
   adapterStartTransaction, adapterCommit, adapterRollback,

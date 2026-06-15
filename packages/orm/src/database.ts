@@ -132,6 +132,39 @@ export function setAdapter(adapter: DatabaseAdapter): void {
   activeAdapter = adapter;
 }
 
+/**
+ * Public, user-facing API to bind a database connection.
+ *
+ * - No `name`  → registers `adapter` as the global default connection
+ *   (what `getAdapter()` returns and what every model resolves to unless it
+ *   declares `static _db`). This is the manual equivalent of the auto-binding
+ *   that `initDatabase()` performs from `.env`/`TINA4_DATABASE_URL`.
+ * - With `name` → registers `adapter` in the named registry. A model with
+ *   `static _db = name` resolves to it via `getNamedAdapter(name)`.
+ *
+ * Mirrors the Python master `bind_database(db, name=None)`.
+ *
+ *     import { bindDatabase, createAdapterFromUrl } from "@tina4/orm";
+ *
+ *     // Default connection
+ *     bindDatabase(adapter);
+ *
+ *     // Named secondary connection built from a URL (kept synchronous —
+ *     // build the adapter first, then bind it)
+ *     bindDatabase(await createAdapterFromUrl(url, user, pass), "analytics");
+ *
+ * `bindDatabase` itself is synchronous: it takes an already-constructed
+ * adapter. Use `createAdapterFromUrl()` to build a named secondary adapter
+ * from a URL without making it the default.
+ */
+export function bindDatabase(adapter: DatabaseAdapter, name?: string): void {
+  if (name === undefined) {
+    setAdapter(adapter);
+  } else {
+    namedAdapters.set(name, adapter);
+  }
+}
+
 export function getAdapter(): DatabaseAdapter {
   if (!activeAdapter) {
     throw new Error("No database adapter configured. Call setAdapter() first.");
@@ -148,13 +181,24 @@ export function setNamedAdapter(name: string, adapter: DatabaseAdapter): void {
 }
 
 /**
- * Get a named adapter. Falls back to the default adapter if name not found.
+ * Get a named adapter previously registered via `bindDatabase(adapter, name)`
+ * (or the lower-level `setNamedAdapter(name, adapter)`).
+ *
+ * Throws a clear error if the name isn't registered — a model that declares
+ * `static _db = "name"` resolves through here, so a missing name means the
+ * connection was never bound. The message tells the developer exactly how to
+ * fix it rather than silently falling back to the default connection (which
+ * would hide the mistake and write to the wrong database).
  */
 export function getNamedAdapter(name: string): DatabaseAdapter {
   const adapter = namedAdapters.get(name);
   if (adapter) return adapter;
-  // Fall back to default
-  return getAdapter();
+  throw new Error(
+    `No database adapter registered under the name "${name}". ` +
+    `Call bindDatabase(adapter, "${name}") before using a model with ` +
+    `static _db = "${name}" (build a secondary adapter with ` +
+    `createAdapterFromUrl(url, user, pass) if you need one from a URL).`,
+  );
 }
 
 export function closeDatabase(): void {
@@ -908,10 +952,19 @@ export class Database {
 }
 
 /**
- * Internal helper: create a DatabaseAdapter from a parsed URL.
- * Extracted from initDatabase so Database.create() can reuse it.
+ * Build a connected `DatabaseAdapter` from a connection URL.
+ *
+ * Used internally by `initDatabase()` and `Database.create()`, and exported so
+ * users can construct a NAMED secondary adapter without making it the default:
+ *
+ *     bindDatabase(await createAdapterFromUrl(url, user, pass), "analytics");
+ *
+ * Unlike `initDatabase()`, this does NOT call `setAdapter()` — it returns a
+ * standalone adapter that the caller decides what to do with. For async engines
+ * (Postgres/MySQL/MSSQL/Firebird/Mongo) the returned adapter is already
+ * connected; SQLite connects lazily.
  */
-async function createAdapterFromUrl(url: string, username?: string, password?: string): Promise<DatabaseAdapter> {
+export async function createAdapterFromUrl(url: string, username?: string, password?: string): Promise<DatabaseAdapter> {
   const parsed = parseDatabaseUrl(url, username, password);
 
   switch (parsed.type) {
