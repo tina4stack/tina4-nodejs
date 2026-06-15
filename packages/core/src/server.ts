@@ -832,7 +832,7 @@ ${reset}
       }
       if (models.length > 0) {
         console.log(`\n  Models discovered:`);
-        orm.syncModels(models);
+        await orm.syncModels(models);
         for (const { definition } of models) {
           console.log(`    \x1b[35m${definition.tableName}\x1b[0m (${Object.keys(definition.fields).length} fields)`);
         }

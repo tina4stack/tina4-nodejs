@@ -1,4 +1,9 @@
-import { getAdapter, getNamedAdapter, setAdapter, parseDatabaseUrl } from "./database.js";
+import {
+  getAdapter, getNamedAdapter, setAdapter, parseDatabaseUrl,
+  adapterQuery, adapterFetch, adapterExecute, adapterFetchOne,
+  adapterStartTransaction, adapterCommit, adapterRollback,
+  adapterTableExists, adapterCreateTable, extractLastInsertId,
+} from "./database.js";
 import { validate as validateFields } from "./validation.js";
 import { QueryBuilder } from "./queryBuilder.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -258,7 +263,7 @@ export class BaseModel {
    * @param id Primary key value.
    * @param include Optional array of relationship names to eager-load.
    */
-  static findById<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown, include?: string[]): T | null {
+  static async findById<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown, include?: string[]): Promise<T | null> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const pkCol = ModelClass.getPkColumn();
     let sql = `SELECT * FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`;
@@ -270,9 +275,9 @@ export class BaseModel {
       sql += ` AND ${ModelClass.tableFilter}`;
     }
 
-    const instance = ModelClass.selectOne<T>(sql, [id]);
+    const instance = await ModelClass.selectOne<T>(sql, [id]);
     if (instance && include) {
-      ModelClass._eagerLoad([instance], include);
+      await ModelClass._eagerLoad([instance], include);
     }
     return instance;
   }
@@ -283,12 +288,12 @@ export class BaseModel {
    * Usage:
    *   const user = User.create({ name: "Alice", email: "alice@example.com" });
    */
-  static create<T extends BaseModel>(
+  static async create<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     data: Record<string, unknown> = {},
-  ): T {
+  ): Promise<T> {
     const instance = new this(data) as T;
-    instance.save();
+    await instance.save();
     return instance;
   }
 
@@ -303,14 +308,14 @@ export class BaseModel {
    *
    * Use findById(id) for single-record primary key lookup.
    */
-  static find<T extends BaseModel>(
+  static async find<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     filter?: Record<string, unknown>,
     limit = 100,
     offset = 0,
     orderBy?: string,
     include?: string[],
-  ): T[] {
+  ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
     const conditions: string[] = [];
@@ -336,7 +341,7 @@ export class BaseModel {
       sql += ` ORDER BY ${orderBy}`;
     }
 
-    const rows = db.fetch(sql, params, limit, offset);
+    const rows = await adapterFetch(db, sql, params, limit, offset);
     const data = (rows as any)?.data ?? rows;
     const instances = (Array.isArray(data) ? data : []).map((row: Record<string, unknown>) => {
       const inst = new this(row) as T;
@@ -345,7 +350,7 @@ export class BaseModel {
     });
 
     if (include) {
-      ModelClass._eagerLoad(instances as BaseModel[], include);
+      await ModelClass._eagerLoad(instances as BaseModel[], include);
     }
 
     return instances;
@@ -365,7 +370,7 @@ export class BaseModel {
    *
    * Returns true if found, false otherwise.
    */
-  load(filter?: string, params?: unknown[], include?: string[]): boolean {
+  async load(filter?: string, params?: unknown[], include?: string[]): Promise<boolean> {
     const ModelClass = this.constructor as typeof BaseModel & (new (data?: Record<string, unknown>) => BaseModel);
     const table = (ModelClass as any).tableName ?? (this as any).tableName;
 
@@ -381,7 +386,7 @@ export class BaseModel {
       sql = `SELECT * FROM ${table} WHERE ${filter}`;
     }
 
-    const result = ModelClass.selectOne(sql, params, include);
+    const result = await ModelClass.selectOne(sql, params, include);
     if (!result) return false;
     const data = (result as any).toJSON ? (result as any).toJSON() : result;
     for (const [key, value] of Object.entries(data)) {
@@ -398,13 +403,13 @@ export class BaseModel {
    * @param params Optional query parameters.
    * @param include Optional array of relationship names to eager-load.
    */
-  static all<T extends BaseModel>(
+  static async all<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     where?: string,
     params?: unknown[],
     include?: string[],
     orderBy?: string,
-  ): T[] {
+  ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
 
@@ -423,10 +428,10 @@ export class BaseModel {
     const orderClause = orderBy ? ` ORDER BY ${orderBy}` : "";
     const sql = `SELECT * FROM "${ModelClass.tableName}"${whereClause}${orderClause}`;
 
-    const rows = db.query(sql, params);
+    const rows = await adapterQuery(db, sql, params);
     const instances = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
     if (include) {
-      ModelClass._eagerLoad(instances, include);
+      await ModelClass._eagerLoad(instances, include);
     }
     return instances;
   }
@@ -441,14 +446,14 @@ export class BaseModel {
    * @param offset     Skip records (default 0)
    * @param include    Relationship names to eager-load
    */
-  static where<T extends BaseModel>(
+  static async where<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     conditions: string,
     params?: unknown[],
     limit: number = 20,
     offset: number = 0,
     include?: string[],
-  ): T[] {
+  ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
 
@@ -463,10 +468,10 @@ export class BaseModel {
 
     const sql = `SELECT * FROM "${ModelClass.tableName}" WHERE ${parts.join(" AND ")} LIMIT ${limit} OFFSET ${offset}`;
 
-    const rows = db.query(sql, params);
+    const rows = await adapterQuery(db, sql, params);
     const instances = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
     if (include) {
-      ModelClass._eagerLoad(instances, include);
+      await ModelClass._eagerLoad(instances, include);
     }
     return instances;
   }
@@ -475,7 +480,7 @@ export class BaseModel {
    * Save this instance (insert or update).
    * Returns this on success (fluent), null on failure.
    */
-  save(): this | false {
+  async save(): Promise<this | false> {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
@@ -498,7 +503,7 @@ export class BaseModel {
         isUpdate = true;
       } else {
         try {
-          isUpdate = ModelClass.exists(pkValue);
+          isUpdate = await ModelClass.exists(pkValue);
         } catch {
           // If we can't tell (e.g. table doesn't exist yet), fall back
           // to INSERT so the user sees the real driver error rather
@@ -508,19 +513,19 @@ export class BaseModel {
       }
     }
 
-    db.startTransaction();
+    await adapterStartTransaction(db);
     try {
       if (isUpdate) {
         // Update
         const updateFields = Object.entries(ModelClass.fields).filter(
           ([name, def]) => !def.primaryKey && this[name] !== undefined,
         );
-        if (updateFields.length === 0) { db.commit(); return; }
+        if (updateFields.length === 0) { await adapterCommit(db); return this; }
 
         const setClause = updateFields.map(([k]) => `"${ModelClass.getDbColumn(k)}" = ?`).join(", ");
         const values = [...updateFields.map(([k]) => this[k]), pkValue];
 
-        db.execute(`UPDATE "${ModelClass.tableName}" SET ${setClause} WHERE "${pkCol}" = ?`, values);
+        await adapterExecute(db, `UPDATE "${ModelClass.tableName}" SET ${setClause} WHERE "${pkCol}" = ?`, values);
       } else {
         // Insert
         const insertFields = Object.entries(ModelClass.fields).filter(
@@ -531,23 +536,42 @@ export class BaseModel {
         const placeholders = insertFields.map(() => "?").join(", ");
         const values = insertFields.map(([k]) => this[k]);
 
-        const result = db.execute(
-          `INSERT INTO "${ModelClass.tableName}" (${columns}) VALUES (${placeholders})`,
-          values,
-        ) as { lastInsertRowid?: number };
+        // For auto-increment PKs on engines that need it (PostgreSQL),
+        // RETURNING the PK column lets us read the engine-assigned id back.
+        // SQLite ignores the RETURNING clause harmlessly (it supports it
+        // since 3.35) and we still prefer its lastInsertRowid; for other
+        // engines extractLastInsertId() reads rows[0].id.
+        const wantReturning = pkField?.autoIncrement && db.constructor.name !== "SQLiteAdapter";
+        const insertSql =
+          `INSERT INTO "${ModelClass.tableName}" (${columns}) VALUES (${placeholders})` +
+          (wantReturning ? ` RETURNING "${pkCol}"` : "");
+
+        const result = await adapterExecute(db, insertSql, values);
 
         // v3.13.11 (issue #50.2): only adopt the engine-assigned ID
         // for auto-increment PKs. A natural-key PK was already set by
-        // the caller; don't overwrite it with the driver's last_id
-        // (which on PG would be a sequence value that doesn't apply
-        // to this row).
-        if (result.lastInsertRowid && pkField?.autoIncrement) {
-          this[pk] = result.lastInsertRowid;
+        // the caller; don't overwrite it with the driver's last_id.
+        if (pkField?.autoIncrement) {
+          // RETURNING result: pg puts it in rows[0][pkCol]; normalise here.
+          let newId = extractLastInsertId(result);
+          if (newId === null && result && typeof result === "object") {
+            const rows = (result as any).rows;
+            if (Array.isArray(rows) && rows[0]) {
+              newId = rows[0][pkCol] ?? rows[0].id ?? null;
+            }
+          }
+          if (newId === null) {
+            // Fall back to the adapter's tracked last id (MySQL/MSSQL).
+            newId = db.lastInsertId();
+          }
+          if (newId !== null && newId !== undefined) {
+            this[pk] = newId;
+          }
         }
       }
-      db.commit();
+      await adapterCommit(db);
     } catch (e) {
-      db.rollback();
+      await adapterRollback(db);
       return false;
     }
     (this as any)._exists = true;
@@ -557,7 +581,7 @@ export class BaseModel {
   /**
    * Delete this instance. Uses soft delete if configured.
    */
-  delete(): boolean {
+  async delete(): Promise<boolean> {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
@@ -568,23 +592,23 @@ export class BaseModel {
       throw new Error("Cannot delete a model without a primary key value");
     }
 
-    db.startTransaction();
+    await adapterStartTransaction(db);
     try {
       if (ModelClass.softDelete) {
-        db.execute(
+        await adapterExecute(db,
           `UPDATE "${ModelClass.tableName}" SET is_deleted = 1 WHERE "${pkCol}" = ?`,
           [pkValue],
         );
         this.is_deleted = 1;
       } else {
-        db.execute(
+        await adapterExecute(db,
           `DELETE FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`,
           [pkValue],
         );
       }
-      db.commit();
+      await adapterCommit(db);
     } catch (e) {
-      db.rollback();
+      await adapterRollback(db);
       throw e;
     }
     return true;
@@ -624,14 +648,13 @@ export class BaseModel {
       }
 
       for (const [relName, nested] of Object.entries(topLevel)) {
-        const cached = this._relCache[relName];
-        if (cached === undefined) {
-          // Try lazy load via instance methods
-          const related = this._lazyLoadRelationship(relName);
-          if (related === undefined) continue;
-          this._relCache[relName] = related;
-        }
+        // toDict stays synchronous (used in routes, templates, serialization).
+        // Relationships must be eager-loaded first (await Model._eagerLoad / the
+        // include arg on find/all/where) which fills _relCache. A relation that
+        // isn't cached is simply skipped here — async lazy-load on a sync
+        // serializer is not possible after the Option A async refactor.
         const data = this._relCache[relName];
+        if (data === undefined) continue;
         if (data === null || data === undefined) {
           result[relName] = null;
         } else if (Array.isArray(data)) {
@@ -722,54 +745,59 @@ export class BaseModel {
    * Generate and execute CREATE TABLE DDL from the model's field definitions.
    * Uses the adapter's createTable method if available, otherwise builds SQL directly.
    */
-  static createTable(): boolean {
+  static async createTable(): Promise<boolean> {
     const db = this.getDb();
-    if (db.tableExists(this.tableName)) return true;
+    if (await adapterTableExists(db, this.tableName)) return true;
 
-    if (typeof db.createTable === "function") {
-      // Remap field keys to DB column names if fieldMapping is defined
+    // Prefer the adapter's createTable — every adapter implements it and the
+    // async variants (PostgreSQL/MySQL/MSSQL/Firebird) emit engine-aware DDL
+    // (datetime → TIMESTAMP, boolean → native BOOLEAN, auto-increment → SERIAL
+    // etc. on PG). Remap field keys to DB column names if fieldMapping exists.
+    if (typeof db.createTable === "function" || typeof (db as any).createTableAsync === "function") {
       const mappedFields: Record<string, FieldDefinition> = {};
       for (const [fieldName, def] of Object.entries(this.fields)) {
         const dbCol = this.getDbColumn(fieldName);
         mappedFields[dbCol] = def;
       }
-      db.createTable(this.tableName, mappedFields);
-    } else {
-      // Fallback: build SQL manually
-      const typeMap: Record<string, string> = {
-        integer: "INTEGER",
-        string: "TEXT",
-        text: "TEXT",
-        number: "REAL",
-        numeric: "REAL",
-        boolean: "INTEGER",
-        datetime: "TEXT",
-      };
+      await adapterCreateTable(db, this.tableName, mappedFields);
+      return true;
+    }
 
-      const colDefs: string[] = [];
-      for (const [fieldName, def] of Object.entries(this.fields)) {
-        const dbCol = this.getDbColumn(fieldName);
-        const sqlType = typeMap[def.type] || "TEXT";
-        const parts = [`"${dbCol}" ${sqlType}`];
-        if (def.primaryKey) parts.push("PRIMARY KEY");
-        if (def.autoIncrement) parts.push("AUTOINCREMENT");
-        if (def.required && !def.primaryKey) parts.push("NOT NULL");
-        if (def.default !== undefined) {
-          const dv = typeof def.default === "string" ? `'${def.default}'` : String(def.default);
-          parts.push(`DEFAULT ${dv}`);
-        }
-        colDefs.push(parts.join(" "));
-      }
+    // Fallback: build SQL manually (SQLite-only dialect — used only when an
+    // adapter lacks createTable, which none currently do).
+    const typeMap: Record<string, string> = {
+      integer: "INTEGER",
+      string: "TEXT",
+      text: "TEXT",
+      number: "REAL",
+      numeric: "REAL",
+      boolean: "INTEGER",
+      datetime: "TEXT",
+    };
 
-      const sql = `CREATE TABLE IF NOT EXISTS "${this.tableName}" (${colDefs.join(", ")})`;
-      db.startTransaction();
-      try {
-        db.execute(sql);
-        db.commit();
-      } catch (e) {
-        db.rollback();
-        throw e;
+    const colDefs: string[] = [];
+    for (const [fieldName, def] of Object.entries(this.fields)) {
+      const dbCol = this.getDbColumn(fieldName);
+      const sqlType = typeMap[def.type] || "TEXT";
+      const parts = [`"${dbCol}" ${sqlType}`];
+      if (def.primaryKey) parts.push("PRIMARY KEY");
+      if (def.autoIncrement) parts.push("AUTOINCREMENT");
+      if (def.required && !def.primaryKey) parts.push("NOT NULL");
+      if (def.default !== undefined) {
+        const dv = typeof def.default === "string" ? `'${def.default}'` : String(def.default);
+        parts.push(`DEFAULT ${dv}`);
       }
+      colDefs.push(parts.join(" "));
+    }
+
+    const sql = `CREATE TABLE IF NOT EXISTS "${this.tableName}" (${colDefs.join(", ")})`;
+    await adapterStartTransaction(db);
+    try {
+      await adapterExecute(db, sql);
+      await adapterCommit(db);
+    } catch (e) {
+      await adapterRollback(db);
+      throw e;
     }
     return true;
   }
@@ -777,9 +805,9 @@ export class BaseModel {
   /**
    * Find a record by primary key or throw an error if not found.
    */
-  static findOrFail<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown): T {
+  static async findOrFail<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown): Promise<T> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
-    const result = ModelClass.findById(id) as T | null;
+    const result = (await ModelClass.findById(id)) as T | null;
     if (result === null) {
       throw new Error(`${ModelClass.tableName}: record with id ${id} not found`);
     }
@@ -789,9 +817,9 @@ export class BaseModel {
   /**
    * Return true if a record with the given primary key exists.
    */
-  static exists(pkValue: unknown): boolean {
+  static async exists(pkValue: unknown): Promise<boolean> {
     const ModelClass = this as unknown as typeof BaseModel;
-    return ModelClass.findById(pkValue) !== null;
+    return (await ModelClass.findById(pkValue)) !== null;
   }
 
   /**
@@ -804,7 +832,7 @@ export class BaseModel {
    * @param offset  Records to skip (default 0).
    * @param include Relationship names to eager-load on cache miss.
    */
-  static cached<T extends BaseModel>(
+  static async cached<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     sql: string,
     params?: unknown[],
@@ -812,7 +840,7 @@ export class BaseModel {
     limit = 20,
     offset = 0,
     include?: string[],
-  ): T[] {
+  ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     if (!ModelClass._queryCache) {
       ModelClass._queryCache = new QueryCache({ defaultTtl: ttl, maxSize: 500 });
@@ -824,10 +852,10 @@ export class BaseModel {
 
     const db = ModelClass.getDb();
     const querySql = `${sql} LIMIT ${limit} OFFSET ${offset}`;
-    const rows = db.query(querySql, params);
+    const rows = await adapterQuery(db, querySql, params);
     const results = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
     if (include && results.length > 0) {
-      ModelClass._eagerLoad(results as BaseModel[], include);
+      await ModelClass._eagerLoad(results as BaseModel[], include);
     }
     ModelClass._queryCache.set(key, results, ttl);
     return results;
@@ -846,28 +874,28 @@ export class BaseModel {
   /**
    * Execute a raw SQL SELECT and return results as model instances.
    */
-  static select<T extends BaseModel>(
+  static async select<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     sql: string,
     params?: unknown[],
-  ): T[] {
+  ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
-    const rows = db.query(sql, params);
+    const rows = await adapterQuery(db, sql, params);
     return rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
   }
 
-  static selectOne<T extends BaseModel>(
+  static async selectOne<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     sql: string,
     params?: unknown[],
     include?: string[],
-  ): T | null {
+  ): Promise<T | null> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
-    const results = ModelClass.select<T>(sql, params);
+    const results = await ModelClass.select<T>(sql, params);
     const instance = results[0] ?? null;
     if (instance && include) {
-      ModelClass._eagerLoad([instance], include);
+      await ModelClass._eagerLoad([instance], include);
     }
     return instance;
   }
@@ -875,7 +903,7 @@ export class BaseModel {
   /**
    * Permanently delete this instance, bypassing soft delete.
    */
-  forceDelete(): boolean {
+  async forceDelete(): Promise<boolean> {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
@@ -886,15 +914,15 @@ export class BaseModel {
       throw new Error("Cannot delete a model without a primary key value");
     }
 
-    db.startTransaction();
+    await adapterStartTransaction(db);
     try {
-      db.execute(
+      await adapterExecute(db,
         `DELETE FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`,
         [pkValue],
       );
-      db.commit();
+      await adapterCommit(db);
     } catch (e) {
-      db.rollback();
+      await adapterRollback(db);
       throw e;
     }
     return true;
@@ -903,7 +931,7 @@ export class BaseModel {
   /**
    * Restore a soft-deleted record.
    */
-  restore(): boolean {
+  async restore(): Promise<boolean> {
     const ModelClass = this.constructor as typeof BaseModel;
     if (!ModelClass.softDelete) {
       throw new Error("restore() is only available on models with softDelete enabled");
@@ -918,15 +946,15 @@ export class BaseModel {
       throw new Error("Cannot restore a model without a primary key value");
     }
 
-    db.startTransaction();
+    await adapterStartTransaction(db);
     try {
-      db.execute(
+      await adapterExecute(db,
         `UPDATE "${ModelClass.tableName}" SET is_deleted = 0 WHERE "${pkCol}" = ?`,
         [pkValue],
       );
-      db.commit();
+      await adapterCommit(db);
     } catch (e) {
-      db.rollback();
+      await adapterRollback(db);
       throw e;
     }
     this.is_deleted = 0;
@@ -936,13 +964,13 @@ export class BaseModel {
   /**
    * Find records including soft-deleted ones.
    */
-  static withTrashed<T extends BaseModel>(
+  static async withTrashed<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     conditions?: string,
     params?: unknown[],
     limit?: number,
     offset?: number,
-  ): T[] {
+  ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
 
@@ -965,14 +993,14 @@ export class BaseModel {
       sql += ` OFFSET ${offset}`;
     }
 
-    const rows = db.query(sql, params);
+    const rows = await adapterQuery(db, sql, params);
     return rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
   }
 
   /**
    * Count records matching conditions (respects soft delete and table filter).
    */
-  static count(conditions?: string, params?: unknown[]): number {
+  static async count(conditions?: string, params?: unknown[]): Promise<number> {
     const db = this.getDb();
     const parts: string[] = [];
     if (this.softDelete) {
@@ -986,8 +1014,14 @@ export class BaseModel {
     }
     const whereClause = parts.length > 0 ? ` WHERE ${parts.join(" AND ")}` : "";
     const sql = `SELECT COUNT(*) as cnt FROM "${this.tableName}"${whereClause}`;
-    const rows = db.query(sql, params);
-    return rows.length > 0 ? (rows[0] as any).cnt : 0;
+    const rows = await adapterQuery(db, sql, params);
+    if (rows.length === 0) return 0;
+    // PostgreSQL returns COUNT(*) as a bigint, which the `pg` driver hands
+    // back as a string ("2"); Firebird upper-cases the alias. Coerce to a
+    // Number and tolerate case so count() returns a real number on every engine.
+    const row = rows[0] as Record<string, unknown>;
+    const cnt = row.cnt ?? row.CNT ?? 0;
+    return Number(cnt);
   }
 
   /**
@@ -1012,11 +1046,11 @@ export class BaseModel {
   /**
    * Load a has-one related model instance.
    */
-  hasOne<T extends BaseModel, R extends BaseModel>(
+  async hasOne<T extends BaseModel, R extends BaseModel>(
     this: T,
     relatedClass: typeof BaseModel & (new (data?: Record<string, unknown>) => R),
     foreignKey: string,
-  ): R | null {
+  ): Promise<R | null> {
     const ModelClass = this.constructor as typeof BaseModel;
     const pk = ModelClass.getPkField();
     const pkValue = this[pk];
@@ -1032,7 +1066,7 @@ export class BaseModel {
     }
     sql += ` LIMIT 1`;
 
-    const rows = db.query(sql, [pkValue]);
+    const rows = await adapterQuery(db, sql, [pkValue]);
     if (rows.length === 0) return null;
 
     const related = new relatedClass(rows[0] as Record<string, unknown>) as R;
@@ -1044,13 +1078,13 @@ export class BaseModel {
   /**
    * Load has-many related model instances.
    */
-  hasMany<T extends BaseModel, R extends BaseModel>(
+  async hasMany<T extends BaseModel, R extends BaseModel>(
     this: T,
     relatedClass: typeof BaseModel & (new (data?: Record<string, unknown>) => R),
     foreignKey: string,
     limit: number = 100,
     offset: number = 0,
-  ): R[] {
+  ): Promise<R[]> {
     const ModelClass = this.constructor as typeof BaseModel;
     const pk = ModelClass.getPkField();
     const pkValue = this[pk];
@@ -1066,7 +1100,7 @@ export class BaseModel {
     }
     sql += ` LIMIT ${limit} OFFSET ${offset}`;
 
-    const rows = db.query(sql, [pkValue]);
+    const rows = await adapterQuery(db, sql, [pkValue]);
     const related = rows.map((row) => new relatedClass(row as Record<string, unknown>) as R);
     const relKey = relatedClass.tableName.toLowerCase();
     this[relKey] = related;
@@ -1076,11 +1110,11 @@ export class BaseModel {
   /**
    * Load the parent model this instance belongs to.
    */
-  belongsTo<T extends BaseModel, R extends BaseModel>(
+  async belongsTo<T extends BaseModel, R extends BaseModel>(
     this: T,
     relatedClass: typeof BaseModel & (new (data?: Record<string, unknown>) => R),
     foreignKey: string,
-  ): R | null {
+  ): Promise<R | null> {
     // foreignKey is a DB column name — resolve to JS property name on this model
     const ModelClass = this.constructor as typeof BaseModel;
     const reverseMap = ModelClass.getReverseMapping();
@@ -1099,7 +1133,7 @@ export class BaseModel {
     }
     sql += ` LIMIT 1`;
 
-    const rows = db.query(sql, [fkValue]);
+    const rows = await adapterQuery(db, sql, [fkValue]);
     if (rows.length === 0) return null;
 
     const related = new relatedClass(rows[0] as Record<string, unknown>) as R;
@@ -1125,61 +1159,11 @@ export class BaseModel {
   }
 
   /**
-   * Lazy-load a single relationship by name (used by toDict with include).
-   */
-  private _lazyLoadRelationship(relName: string): unknown {
-    const ModelClass = this.constructor as typeof BaseModel;
-
-    // Apply FK registry so foreignKey fields auto-wire relationships
-    ModelClass._processForeignKeys();
-    ModelClass._applyFkRegistry();
-
-    // Check hasOne
-    if (ModelClass.hasOne) {
-      const rel = ModelClass.hasOne.find((r) => r.model.toLowerCase() === relName || r.model === relName);
-      if (rel) {
-        const relatedClass = BaseModel._modelRegistry[rel.model];
-        if (relatedClass) {
-          return this.hasOne(relatedClass as any, rel.foreignKey);
-        }
-      }
-    }
-
-    // Check hasMany
-    if (ModelClass.hasMany) {
-      const rel = ModelClass.hasMany.find((r) => {
-        const base = r.model.toLowerCase();
-        const key = _pluralRelKeys() ? base + "s" : base;
-        return key === relName || base === relName || r.model === relName;
-      });
-      if (rel) {
-        const relatedClass = BaseModel._modelRegistry[rel.model];
-        if (relatedClass) {
-          return this.hasMany(relatedClass as any, rel.foreignKey);
-        }
-      }
-    }
-
-    // Check belongsTo
-    if (ModelClass.belongsTo) {
-      const rel = ModelClass.belongsTo.find((r) => r.model.toLowerCase() === relName || r.model === relName);
-      if (rel) {
-        const relatedClass = BaseModel._modelRegistry[rel.model];
-        if (relatedClass) {
-          return this.belongsTo(relatedClass as any, rel.foreignKey);
-        }
-      }
-    }
-
-    return undefined;
-  }
-
-  /**
    * Eager load relationships for a collection of instances (prevents N+1).
    * @param instances Array of model instances.
    * @param include Array of relationship names (supports dot notation for nesting).
    */
-  static _eagerLoad(instances: BaseModel[], include: string[]): void {
+  static async _eagerLoad(instances: BaseModel[], include: string[]): Promise<void> {
     if (instances.length === 0) return;
 
     const ModelClass = instances[0].constructor as typeof BaseModel;
@@ -1244,12 +1228,12 @@ export class BaseModel {
           sql += ` AND is_deleted = 0`;
         }
 
-        const rows = db.query(sql, pkValues);
+        const rows = await adapterQuery(db, sql, pkValues);
         const related = rows.map((row) => new relatedClass(row as Record<string, unknown>));
 
         // Eager load nested
         if (nested.length > 0 && related.length > 0) {
-          relatedClass._eagerLoad(related, nested);
+          await relatedClass._eagerLoad(related, nested);
         }
 
         // Group by FK — fk is a DB column name, resolve to JS property name on the related model
@@ -1290,11 +1274,11 @@ export class BaseModel {
           sql += ` AND is_deleted = 0`;
         }
 
-        const rows = db.query(sql, fkValues);
+        const rows = await adapterQuery(db, sql, fkValues);
         const related = rows.map((row) => new relatedClass(row as Record<string, unknown>));
 
         if (nested.length > 0 && related.length > 0) {
-          relatedClass._eagerLoad(related, nested);
+          await relatedClass._eagerLoad(related, nested);
         }
 
         const lookup: Record<string, BaseModel> = {};
@@ -1323,10 +1307,9 @@ export class BaseModel {
    * @param instances  Array of model instances to load relationships onto.
    * @param includeList Array of relationship names (supports dot notation for nesting).
    */
-  static eagerLoad(instances: BaseModel[], includeList: string[]): Promise<void> {
+  static async eagerLoad(instances: BaseModel[], includeList: string[]): Promise<void> {
     const ModelClass = this as unknown as typeof BaseModel;
-    ModelClass._eagerLoad(instances, includeList);
-    return Promise.resolve();
+    await ModelClass._eagerLoad(instances, includeList);
   }
 
   /**

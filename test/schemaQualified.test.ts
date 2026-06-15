@@ -50,15 +50,15 @@ const attPath = join(tmp, "extra.db");
 
 try {
   const db = await initDatabase({ url: `sqlite:///${mainPath}` });
-  db.execute(`ATTACH DATABASE '${attPath}' AS extra`);
-  db.execute("CREATE TABLE extra.widget (id INTEGER PRIMARY KEY, name TEXT, is_deleted INTEGER DEFAULT 0)");
-  db.execute("CREATE TABLE local_only (id INTEGER PRIMARY KEY)");
+  await db.execute(`ATTACH DATABASE '${attPath}' AS extra`);
+  await db.execute("CREATE TABLE extra.widget (id INTEGER PRIMARY KEY, name TEXT, is_deleted INTEGER DEFAULT 0)");
+  await db.execute("CREATE TABLE local_only (id INTEGER PRIMARY KEY)");
 
-  assert("tableExists finds attached-schema table", db.tableExists("extra.widget") === true);
-  assert("tableExists false for absent attached table", db.tableExists("extra.nope") === false);
-  assert("tableExists still finds bare main-schema table", db.tableExists("local_only") === true);
+  assert("tableExists finds attached-schema table", (await db.tableExists("extra.widget")) === true);
+  assert("tableExists false for absent attached table", (await db.tableExists("extra.nope")) === false);
+  assert("tableExists still finds bare main-schema table", (await db.tableExists("local_only")) === true);
 
-  const cols = db.getColumns("extra.widget");
+  const cols = await db.getColumns("extra.widget");
   const names = cols.map((c) => c.name);
   assert("getColumns reads attached-schema columns", eqArr(names, ["id", "name", "is_deleted"]), `(got ${names.join(",")})`);
   const idCol = cols.find((c) => c.name === "id");

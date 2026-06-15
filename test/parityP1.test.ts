@@ -31,10 +31,10 @@ async function run(): Promise<void> {
   // ─── db.fetchAll ────────────────────────────────────────────────
   await it("fetchAll returns records array directly", async () => {
     const db = await initDatabase({ url: "sqlite::memory:" });
-    db.execute("CREATE TABLE u (id INTEGER, name TEXT)");
-    db.insert("u", { id: 1, name: "Alice" });
-    db.insert("u", { id: 2, name: "Bob" });
-    const rows = db.fetchAll<{ id: number; name: string }>("SELECT * FROM u ORDER BY id");
+    await db.execute("CREATE TABLE u (id INTEGER, name TEXT)");
+    await db.insert("u", { id: 1, name: "Alice" });
+    await db.insert("u", { id: 2, name: "Bob" });
+    const rows = await db.fetchAll<{ id: number; name: string }>("SELECT * FROM u ORDER BY id");
     assert.ok(Array.isArray(rows));
     assert.equal(rows.length, 2);
     assert.equal(rows[0].name, "Alice");
@@ -42,15 +42,15 @@ async function run(): Promise<void> {
 
   await it("fetchAll returns empty array when no rows", async () => {
     const db = await initDatabase({ url: "sqlite::memory:" });
-    db.execute("CREATE TABLE u (id INTEGER)");
-    assert.deepEqual(db.fetchAll("SELECT * FROM u"), []);
+    await db.execute("CREATE TABLE u (id INTEGER)");
+    assert.deepEqual(await db.fetchAll("SELECT * FROM u"), []);
   });
 
   await it("fetchAll supports params and pagination", async () => {
     const db = await initDatabase({ url: "sqlite::memory:" });
-    db.execute("CREATE TABLE p (id INTEGER, active INTEGER)");
-    for (let i = 0; i < 10; i++) db.insert("p", { id: i, active: i % 2 });
-    const active = db.fetchAll<{ id: number }>("SELECT id FROM p WHERE active = ? ORDER BY id", [1], 3);
+    await db.execute("CREATE TABLE p (id INTEGER, active INTEGER)");
+    for (let i = 0; i < 10; i++) await db.insert("p", { id: i, active: i % 2 });
+    const active = await db.fetchAll<{ id: number }>("SELECT id FROM p WHERE active = ? ORDER BY id", [1], 3);
     assert.deepEqual(active.map((r) => r.id), [1, 3, 5]);
   });
 

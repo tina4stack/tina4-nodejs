@@ -18,7 +18,7 @@
  */
 
 import type { DatabaseAdapter } from "./types.js";
-import { getAdapter } from "./database.js";
+import { getAdapter, adapterFetch, adapterFetchOne } from "./database.js";
 
 export class QueryBuilder {
   private table: string;
@@ -202,12 +202,13 @@ export class QueryBuilder {
    *
    * @returns Array of row objects.
    */
-  get<T = Record<string, unknown>>(): T[] {
+  async get<T = Record<string, unknown>>(): Promise<T[]> {
     this.ensureDb();
     const sql = this.toSql();
     const allParams = [...this.params, ...this.havingParams];
 
-    return this.db!.fetch<T>(
+    return adapterFetch<T>(
+      this.db!,
       sql,
       allParams.length > 0 ? allParams : undefined,
       this.limitVal,
@@ -220,12 +221,13 @@ export class QueryBuilder {
    *
    * @returns A single row object, or null.
    */
-  first<T = Record<string, unknown>>(): T | null {
+  async first<T = Record<string, unknown>>(): Promise<T | null> {
     this.ensureDb();
     const sql = this.toSql();
     const allParams = [...this.params, ...this.havingParams];
 
-    return this.db!.fetchOne<T>(
+    return adapterFetchOne<T>(
+      this.db!,
       sql,
       allParams.length > 0 ? allParams : undefined,
     );
@@ -236,7 +238,7 @@ export class QueryBuilder {
    *
    * @returns Number of matching rows.
    */
-  count(): number {
+  async count(): Promise<number> {
     this.ensureDb();
 
     // Build a count query by replacing columns
@@ -247,7 +249,8 @@ export class QueryBuilder {
 
     const allParams = [...this.params, ...this.havingParams];
 
-    const row = this.db!.fetchOne<Record<string, unknown>>(
+    const row = await adapterFetchOne<Record<string, unknown>>(
+      this.db!,
       sql,
       allParams.length > 0 ? allParams : undefined,
     );
@@ -264,8 +267,8 @@ export class QueryBuilder {
    *
    * @returns True if at least one row matches.
    */
-  exists(): boolean {
-    return this.count() > 0;
+  async exists(): Promise<boolean> {
+    return (await this.count()) > 0;
   }
 
   /**

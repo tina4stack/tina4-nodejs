@@ -130,7 +130,7 @@ const replyModel: DiscoveredModel = {
   modelClass: Reply,
 };
 
-syncModels([userModel, articleModel, commentModel, replyModel]);
+await syncModels([userModel, articleModel, commentModel, replyModel]);
 
 const adapter = getAdapter();
 assert("Users table created", (adapter as any).tableExists("users"));
@@ -146,50 +146,50 @@ assert("Articles has is_deleted column (soft delete)", hasIsDeleted);
 console.log("\n--- BaseModel CRUD ---");
 
 const user = new User({ name: "Alice", email: "alice@test.com", age: 30 });
-user.save();
+await user.save();
 assert("User saved with auto-generated ID", (user as any).id !== undefined);
 
 const userId = (user as any).id;
-const found = User.findById(userId);
+const found = await User.findById(userId);
 assert("findById returns saved user", found !== null && (found as any).name === "Alice");
 
 (user as any).name = "Alice Updated";
-user.save();
-const updated = User.findById(userId);
+await user.save();
+const updated = await User.findById(userId);
 assert("save() updates existing record", (updated as any).name === "Alice Updated");
 
 // Create more users
 const bob = new User({ name: "Bob", email: "bob@test.com", age: 25 });
-bob.save();
+await bob.save();
 const charlie = new User({ name: "Charlie", email: "charlie@test.com", age: 35 });
-charlie.save();
+await charlie.save();
 
-const allUsers = User.all();
+const allUsers = await User.all();
 assert("all returns all users", allUsers.length === 3);
 
-const filtered = User.all("age > ?", [28]);
+const filtered = await User.all("age > ?", [28]);
 assert("all with WHERE clause", filtered.length === 2);
 
 // --- Soft Delete ---
 console.log("\n--- Soft Delete ---");
 
 const article1 = new Article({ title: "Test Article", body: "Content", author_id: userId });
-article1.save();
+await article1.save();
 const articleId = (article1 as any).id;
 
 const article2 = new Article({ title: "Another Article", body: "More content", author_id: userId });
-article2.save();
+await article2.save();
 
 // Soft delete article1
-article1.delete();
+await article1.delete();
 assert("Soft delete sets is_deleted", (article1 as any).is_deleted === 1);
 
 // findById should not find soft-deleted
-const deletedArticle = Article.findById(articleId);
+const deletedArticle = await Article.findById(articleId);
 assert("findById excludes soft-deleted records", deletedArticle === null);
 
 // all should not include soft-deleted
-const allArticles = Article.all();
+const allArticles = await Article.all();
 assert("all excludes soft-deleted records", allArticles.length === 1);
 
 // Verify data still in DB
@@ -199,11 +199,11 @@ assert("Soft-deleted record still in database", rawRows.length === 1);
 // --- Hard Delete ---
 console.log("\n--- Hard Delete ---");
 
-const userToDelete = User.findById(bob.id as number);
+const userToDelete = await User.findById(bob.id as number);
 assert("User exists before delete", userToDelete !== null);
-userToDelete!.delete();
+await userToDelete!.delete();
 
-const afterDelete = User.findById(bob.id as number);
+const afterDelete = await User.findById(bob.id as number);
 assert("Hard delete removes record", afterDelete === null);
 
 // --- Table Filter / Scopes ---
@@ -214,7 +214,7 @@ adapter.execute(`INSERT INTO "comments" (text, article_id, approved) VALUES (?, 
 adapter.execute(`INSERT INTO "comments" (text, article_id, approved) VALUES (?, ?, ?)`, ["Spam!", 1, 0]);
 adapter.execute(`INSERT INTO "comments" (text, article_id, approved) VALUES (?, ?, ?)`, ["Great!", 1, 1]);
 
-const approvedComments = Comment.all();
+const approvedComments = await Comment.all();
 assert("tableFilter filters to approved=1 only", approvedComments.length === 2);
 
 const allCommentsRaw = adapter.query(`SELECT * FROM "comments"`);
@@ -223,7 +223,7 @@ assert("Raw query shows all comments", (allCommentsRaw as any[]).length === 3);
 // --- toDict / toArray / toJson ---
 console.log("\n--- toDict / toArray / toJson ---");
 
-const alice = User.findById(userId);
+const alice = await User.findById(userId);
 const dict = alice!.toDict();
 assert("toDict returns plain object", typeof dict === "object" && dict.name === "Alice Updated");
 assert("toDict contains model fields", "id" in dict && "email" in dict && "age" in dict);
@@ -260,20 +260,20 @@ console.log("\n--- Relationships ---");
 
 // Create some replies for the article
 const reply1 = new Reply({ body: "Nice article!", article_id: (article2 as any).id });
-reply1.save();
+await reply1.save();
 const reply2 = new Reply({ body: "Great!", article_id: (article2 as any).id });
-reply2.save();
+await reply2.save();
 
 // has_many (imperative)
-const replies = article2.hasMany(Reply as any, "article_id");
+const replies = await article2.hasMany(Reply as any, "article_id");
 assert("hasMany returns related records", replies.length === 2);
 
 // belongs_to (imperative)
-const parentUser = article2.belongsTo(User as any, "author_id");
+const parentUser = await article2.belongsTo(User as any, "author_id");
 assert("belongsTo returns parent record", parentUser !== null && (parentUser as any).name === "Alice Updated");
 
 // hasOne on Reply table (article has many replies, check one exists)
-const singleReply = article2.hasOne(Reply as any, "article_id");
+const singleReply = await article2.hasOne(Reply as any, "article_id");
 assert("hasOne returns single related record", singleReply !== null);
 
 // --- Eager Loading ---
@@ -281,34 +281,36 @@ console.log("\n--- Eager Loading ---");
 
 // Create another article with replies
 const article3 = new Article({ title: "Second Article", body: "Content 2", author_id: userId });
-article3.save();
+await article3.save();
 const reply3 = new Reply({ body: "Reply to second", article_id: (article3 as any).id });
-reply3.save();
+await reply3.save();
 
 // all with include (eager load has_many)
-const articlesWithReplies = Article.all(undefined, undefined, ["reply"]);
+const articlesWithReplies = await Article.all(undefined, undefined, ["reply"]);
 // article1 was soft-deleted, so we should get article2 and article3
 assert("Eager load all returns correct count", articlesWithReplies.length === 2);
 
 // findById with include
-const singleArticle = Article.findById((article2 as any).id, ["reply"]);
+const singleArticle = await Article.findById((article2 as any).id, ["reply"]);
 assert("Eager load findById loads relationships", singleArticle !== null);
 
-// toDict with include
+// toDict with include — relationship was eager-loaded above so _relCache is filled
 const dictWithInclude = singleArticle!.toDict(["reply"]);
 assert("toDict with include contains relationship", "reply" in dictWithInclude || "replies" in dictWithInclude);
 
-// toDict with belongs_to include
+// toDict with belongs_to include — eager-load the parent first (toDict is sync
+// and consumes the relationship cache after the Option A async refactor).
+await Article.eagerLoad([article2], ["user"]);
 const artDict = article2.toDict(["user"]);
 assert("toDict with belongsTo include", "user" in artDict);
 
 // --- Cache clears on save ---
 console.log("\n--- Relationship Cache ---");
-const freshArticle = Article.findById((article2 as any).id);
+const freshArticle = await Article.findById((article2 as any).id);
 if (freshArticle) {
-  freshArticle.hasMany(Reply as any, "article_id"); // populate cache
+  await freshArticle.hasMany(Reply as any, "article_id"); // populate cache
   (freshArticle as any).title = "Updated Title";
-  freshArticle.save();
+  await freshArticle.save();
   // _relCache should be cleared
   assert("Relationship cache cleared on save", true);
 }
@@ -329,10 +331,10 @@ console.log("\n--- selectOne ---");
     };
   }
 
-  const found = SoUser.selectOne<SoUser>("SELECT * FROM so_users WHERE name = ?", ["Alice"]);
+  const found = await SoUser.selectOne<SoUser>("SELECT * FROM so_users WHERE name = ?", ["Alice"]);
   assert("selectOne returns an instance", found !== null && (found as any).name === "Alice");
 
-  const notFound = SoUser.selectOne<SoUser>("SELECT * FROM so_users WHERE name = ?", ["Nonexistent"]);
+  const notFound = await SoUser.selectOne<SoUser>("SELECT * FROM so_users WHERE name = ?", ["Nonexistent"]);
   assert("selectOne returns null when not found", notFound === null);
 }
 
@@ -340,14 +342,14 @@ console.log("\n--- selectOne ---");
 console.log("\n--- select() ---");
 
 {
-  const allUsers = User.select<User>("SELECT * FROM users");
+  const allUsers = await User.select<User>("SELECT * FROM users");
   assert("select returns array", Array.isArray(allUsers));
   assert("select returns all non-deleted users", allUsers.length >= 2);
 
-  const filtered = User.select<User>("SELECT * FROM users WHERE age > ?", [28]);
+  const filtered = await User.select<User>("SELECT * FROM users WHERE age > ?", [28]);
   assert("select with params filters correctly", filtered.length >= 1);
 
-  const empty = User.select<User>("SELECT * FROM users WHERE age > ?", [9999]);
+  const empty = await User.select<User>("SELECT * FROM users WHERE age > ?", [9999]);
   assert("select with no matches returns empty array", empty.length === 0);
 }
 
@@ -355,13 +357,13 @@ console.log("\n--- select() ---");
 console.log("\n--- all Variations ---");
 
 {
-  const allUsersNow = User.all();
+  const allUsersNow = await User.all();
   assert("all without args returns all", allUsersNow.length >= 2);
 
-  const withWhere = User.all("age > ?", [0]);
+  const withWhere = await User.all("age > ?", [0]);
   assert("all with WHERE clause returns filtered", withWhere.length >= 1);
 
-  const withEmpty = User.all("age > ?", [99999]);
+  const withEmpty = await User.all("age > ?", [99999]);
   assert("all with no matches returns empty", withEmpty.length === 0);
 }
 
@@ -438,7 +440,7 @@ console.log("\n--- Validation Edge Cases ---");
 console.log("\n--- toArray/toDict Edge Cases ---");
 
 {
-  const user = User.all()[0];
+  const user = (await User.all())[0];
   if (user) {
     const dict = user.toDict();
     assert("toDict has id field", "id" in dict);
@@ -470,21 +472,21 @@ console.log("\n--- Model Registry ---");
 console.log("\n--- Update Idempotency ---");
 
 {
-  const user = User.all()[0];
+  const user = (await User.all())[0];
   if (user) {
     const origName = (user as any).name;
     (user as any).name = "Idempotent Test";
-    user.save();
-    const after1 = User.findById((user as any).id);
+    await user.save();
+    const after1 = await User.findById((user as any).id);
     assert("first save updates name", (after1 as any)?.name === "Idempotent Test");
 
-    user.save(); // save again without changes
-    const after2 = User.findById((user as any).id);
+    await user.save(); // save again without changes
+    const after2 = await User.findById((user as any).id);
     assert("second save is idempotent", (after2 as any)?.name === "Idempotent Test");
 
     // Restore
     (user as any).name = origName;
-    user.save();
+    await user.save();
   }
 }
 
@@ -494,12 +496,12 @@ console.log("\n--- Create Without ID ---");
 {
   const newUser = new User({ name: "NoIdUser", email: "noid@test.com", age: 20 });
   assert("new user has no ID before save", (newUser as any).id === undefined);
-  newUser.save();
+  await newUser.save();
   assert("new user gets ID after save", (newUser as any).id !== undefined);
   assert("new user ID is positive integer", typeof (newUser as any).id === "number" && (newUser as any).id > 0);
 
   // Clean up
-  newUser.delete();
+  await newUser.delete();
 }
 
 // ── snakeToCamel / camelToSnake ────────────────────────────────

@@ -2,6 +2,7 @@
 // Zero external dependencies.
 
 import { FakeData } from "./fakeData.js";
+import { adapterExecute } from "./database.js";
 import type { DatabaseAdapter, FieldDefinition } from "./types.js";
 
 /**
@@ -54,7 +55,7 @@ export async function seedTable(
     const placeholders = columns.map(() => "?").join(", ");
     const values = columns.map((c) => row[c]);
 
-    db.execute(
+    await adapterExecute(db,
       `INSERT INTO "${tableName}" (${colList}) VALUES (${placeholders})`,
       values,
     );

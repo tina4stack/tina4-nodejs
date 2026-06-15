@@ -154,7 +154,7 @@ console.log("\n--- 10. limit() sets LIMIT and OFFSET ---");
   assert("limit() does not append to SQL (passed to fetch)", sql === "SELECT * FROM users");
 
   // Verify limit actually works via get()
-  const rows = qb.get();
+  const rows = await qb.get();
   assert("limit(3, 1) returns 3 rows skipping 1", rows.length === 3);
 }
 
@@ -198,16 +198,16 @@ console.log("\n--- 12. Method chaining returns this ---");
 // ---------- 13. get() returns results ----------
 console.log("\n--- 13. get() returns results ---");
 {
-  const rows = QueryBuilder.fromTable("users", db).get();
+  const rows = await QueryBuilder.fromTable("users", db).get();
   assert("get() returns all 5 users", rows.length === 5);
   assert("get() returns objects with name", (rows[0] as any).name === "Alice");
 
-  const filtered = QueryBuilder.fromTable("users", db)
+  const filtered = await QueryBuilder.fromTable("users", db)
     .where("role = ?", ["admin"])
     .get();
   assert("get() with where returns filtered rows", filtered.length === 2);
 
-  const selected = QueryBuilder.fromTable("users", db)
+  const selected = await QueryBuilder.fromTable("users", db)
     .select("name", "email")
     .where("id = ?", [1])
     .get();
@@ -218,13 +218,13 @@ console.log("\n--- 13. get() returns results ---");
 // ---------- 14. first() returns single record or null ----------
 console.log("\n--- 14. first() returns single record or null ---");
 {
-  const row = QueryBuilder.fromTable("users", db)
+  const row = await QueryBuilder.fromTable("users", db)
     .where("id = ?", [1])
     .first();
   assert("first() returns a record", row !== null);
   assert("first() returns correct record", (row as any).name === "Alice");
 
-  const noRow = QueryBuilder.fromTable("users", db)
+  const noRow = await QueryBuilder.fromTable("users", db)
     .where("id = ?", [999])
     .first();
   assert("first() returns null for no match", noRow === null);
@@ -233,15 +233,15 @@ console.log("\n--- 14. first() returns single record or null ---");
 // ---------- 15. count() returns number ----------
 console.log("\n--- 15. count() returns number ---");
 {
-  const total = QueryBuilder.fromTable("users", db).count();
+  const total = await QueryBuilder.fromTable("users", db).count();
   assert("count() returns total rows", total === 5);
 
-  const adminCount = QueryBuilder.fromTable("users", db)
+  const adminCount = await QueryBuilder.fromTable("users", db)
     .where("role = ?", ["admin"])
     .count();
   assert("count() with where returns filtered count", adminCount === 2);
 
-  const userCount = QueryBuilder.fromTable("users", db)
+  const userCount = await QueryBuilder.fromTable("users", db)
     .where("role = ?", ["user"])
     .count();
   assert("count() user role returns 3", userCount === 3);
@@ -250,10 +250,10 @@ console.log("\n--- 15. count() returns number ---");
 // ---------- 16. exists() returns boolean ----------
 console.log("\n--- 16. exists() returns boolean ---");
 {
-  const hasUsers = QueryBuilder.fromTable("users", db).exists();
+  const hasUsers = await QueryBuilder.fromTable("users", db).exists();
   assert("exists() returns true when rows exist", hasUsers === true);
 
-  const hasNone = QueryBuilder.fromTable("users", db)
+  const hasNone = await QueryBuilder.fromTable("users", db)
     .where("age > ?", [100])
     .exists();
   assert("exists() returns false when no rows match", hasNone === false);
@@ -264,7 +264,7 @@ console.log("\n--- 17. No database throws error ---");
 {
   let threw = false;
   try {
-    QueryBuilder.fromTable("users").get();
+    await QueryBuilder.fromTable("users").get();
   } catch (e: any) {
     threw = true;
     assert("error message mentions no adapter", e.message.includes("No database adapter"));
@@ -273,7 +273,7 @@ console.log("\n--- 17. No database throws error ---");
 
   let threwFirst = false;
   try {
-    QueryBuilder.fromTable("users").first();
+    await QueryBuilder.fromTable("users").first();
   } catch {
     threwFirst = true;
   }
@@ -281,7 +281,7 @@ console.log("\n--- 17. No database throws error ---");
 
   let threwCount = false;
   try {
-    QueryBuilder.fromTable("users").count();
+    await QueryBuilder.fromTable("users").count();
   } catch {
     threwCount = true;
   }
@@ -289,7 +289,7 @@ console.log("\n--- 17. No database throws error ---");
 
   let threwExists = false;
   try {
-    QueryBuilder.fromTable("users").exists();
+    await QueryBuilder.fromTable("users").exists();
   } catch {
     threwExists = true;
   }
@@ -320,7 +320,7 @@ console.log("\n--- 18. Complex multi-clause query ---");
   assert("complex SQL is correct", sql === expected, `got: ${sql}`);
 
   // Execute the complex query
-  const rows = QueryBuilder.fromTable("users", db)
+  const rows = await QueryBuilder.fromTable("users", db)
     .select("users.name", "SUM(orders.amount) as total")
     .join("orders", "orders.user_id = users.id")
     .where("users.age >= ?", [25])
@@ -335,22 +335,22 @@ console.log("\n--- 18. Complex multi-clause query ---");
 // ---------- 19. Empty results ----------
 console.log("\n--- 19. Empty results ---");
 {
-  const rows = QueryBuilder.fromTable("users", db)
+  const rows = await QueryBuilder.fromTable("users", db)
     .where("age > ?", [200])
     .get();
   assert("get() returns empty array for no matches", Array.isArray(rows) && rows.length === 0);
 
-  const first = QueryBuilder.fromTable("users", db)
+  const first = await QueryBuilder.fromTable("users", db)
     .where("age > ?", [200])
     .first();
   assert("first() returns null for no matches", first === null);
 
-  const cnt = QueryBuilder.fromTable("users", db)
+  const cnt = await QueryBuilder.fromTable("users", db)
     .where("age > ?", [200])
     .count();
   assert("count() returns 0 for no matches", cnt === 0);
 
-  const exists = QueryBuilder.fromTable("users", db)
+  const exists = await QueryBuilder.fromTable("users", db)
     .where("age > ?", [200])
     .exists();
   assert("exists() returns false for no matches", exists === false);
@@ -359,7 +359,7 @@ console.log("\n--- 19. Empty results ---");
 // ---------- Bonus: left join with null rows ----------
 console.log("\n--- Bonus: LEFT JOIN includes unmatched rows ---");
 {
-  const rows = QueryBuilder.fromTable("users", db)
+  const rows = await QueryBuilder.fromTable("users", db)
     .select("users.name", "orders.amount")
     .leftJoin("orders", "orders.user_id = users.id")
     .orderBy("users.name ASC")

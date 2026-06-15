@@ -26,6 +26,9 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
   private readonly _sql?: string;
   private _columnInfoCache?: ColumnInfoResult[];
 
+  // Index signature so `result[0]` type-checks; the Proxy below makes it work.
+  [index: number]: Record<string, unknown> | undefined;
+
   constructor(
     records?: Record<string, unknown>[],
     columns?: string[],
@@ -43,6 +46,27 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
     this.offset = offset ?? 0;
     this._adapter = adapter;
     this._sql = sql;
+
+    // Array-like numeric index access: `result[0]` returns records[0].
+    // A Proxy forwards integer-string keys to the backing records array so the
+    // documented `const first = result[0]` works, while every method/property
+    // on the instance still resolves normally. Mirrors Python's __getitem__ and
+    // PHP's ArrayAccess on DatabaseResult.
+    return new Proxy(this, {
+      get(target, prop, receiver) {
+        if (typeof prop === "string" && /^-?\d+$/.test(prop)) {
+          const i = Number(prop);
+          return target.records[i < 0 ? target.records.length + i : i];
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+      has(target, prop) {
+        if (typeof prop === "string" && /^\d+$/.test(prop)) {
+          return Number(prop) < target.records.length;
+        }
+        return Reflect.has(target, prop);
+      },
+    });
   }
 
   /** JSON string of records. */

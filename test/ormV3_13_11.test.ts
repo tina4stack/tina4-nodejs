@@ -52,15 +52,15 @@ try {
     declare gift_card_number?: string;
     declare owner?: string;
   }
-  GiftCard.createTable();
+  await GiftCard.createTable();
 
   {
     const gc = new GiftCard();
     gc.gift_card_number = "GC-100";
     gc.owner = "alice@example.com";
-    const result = gc.save();
+    const result = await gc.save();
     assert("first save inserts a natural-key row", result !== false);
-    const found = GiftCard.find<GiftCard>({ gift_card_number: "GC-100" })[0];
+    const found = (await GiftCard.find<GiftCard>({ gift_card_number: "GC-100" }))[0];
     assert("row is retrievable after natural-key INSERT", found != null && found.owner === "alice@example.com");
   }
 
@@ -68,12 +68,12 @@ try {
     const gc = new GiftCard();
     gc.gift_card_number = "GC-200";
     gc.owner = "first@example.com";
-    gc.save();
+    await gc.save();
     // Second save with the same PK must UPDATE, not duplicate-INSERT.
     gc.owner = "second@example.com";
-    const result = gc.save();
+    const result = await gc.save();
     assert("second save on same PK does not duplicate", result !== false);
-    const rows = GiftCard.find<GiftCard>({ gift_card_number: "GC-200" });
+    const rows = await GiftCard.find<GiftCard>({ gift_card_number: "GC-200" });
     assert("only one row exists after two saves", rows.length === 1);
     assert("UPDATE applied the new owner", rows[0]?.owner === "second@example.com");
   }
@@ -90,20 +90,20 @@ try {
     declare id?: number;
     declare name?: string;
   }
-  User.createTable();
+  await User.createTable();
 
   {
     const u = new User();
     u.name = "Alice";
-    u.save();
+    await u.save();
     const firstId = u.id;
     assert("auto-increment PK set after save", typeof firstId === "number" && firstId > 0);
 
     u.name = "Alice Wonder";
-    u.save();
+    await u.save();
     assert("auto-increment PK unchanged on update", u.id === firstId);
 
-    const rows = User.find<User>();
+    const rows = await User.find<User>();
     assert("only one row after re-save", rows.length === 1);
     assert("UPDATE applied", rows[0]?.name === "Alice Wonder");
   }
@@ -123,7 +123,7 @@ try {
     declare id?: number;
     declare active?: boolean;
   }
-  Flag.createTable();
+  await Flag.createTable();
   const adapter = getAdapter();
   const row = adapter.fetchOne(
     "SELECT sql FROM sqlite_master WHERE type='table' AND name='flag'",

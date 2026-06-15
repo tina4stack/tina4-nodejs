@@ -108,7 +108,7 @@ const smokeModel: DiscoveredModel = {
   filePath: "test",
   modelClass: SmokeUser,
 };
-syncModels([smokeModel]);
+await syncModels([smokeModel]);
 
 const adapter = getAdapter();
 assert("smoke_users table created", (adapter as any).tableExists("smoke_users"));
@@ -122,13 +122,13 @@ assert("validate passes valid data", vOk.length === 0);
 
 // BaseModel CRUD
 const u = new SmokeUser({ name: "Alice", email: "alice@test.com" });
-u.save();
+await u.save();
 assert("BaseModel.save assigns id", (u as any).id !== undefined);
 
-const found = SmokeUser.findById((u as any).id);
+const found = await SmokeUser.findById((u as any).id);
 assert("BaseModel.findById retrieves record", found !== null && (found as any).name === "Alice");
 
-const all = SmokeUser.all();
+const all = await SmokeUser.all();
 assert("BaseModel.all returns array", Array.isArray(all) && all.length === 1);
 
 const dict = found!.toDict();
@@ -376,10 +376,10 @@ assert("email contains @", fake.email().includes("@"));
 
 console.log("\n=== 14. Migrations ===\n");
 
-ensureMigrationTable();
+await ensureMigrationTable();
 const adapter2 = getAdapter();
 assert("ensureMigrationTable creates table", (adapter2 as any).tableExists("tina4_migration"));
-assert("isMigrationApplied returns false for new", !isMigrationApplied("nonexistent_migration"));
+assert("isMigrationApplied returns false for new", !(await isMigrationApplied("nonexistent_migration")));
 
 closeDatabase();
 

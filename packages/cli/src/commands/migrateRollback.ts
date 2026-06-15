@@ -44,9 +44,9 @@ export async function migrateRollback(migrationDir?: string): Promise<void> {
     process.exit(1);
   }
 
-  ensureMigrationTable();
+  await ensureMigrationTable();
 
-  const lastBatch = getLastBatchMigrations();
+  const lastBatch = await getLastBatchMigrations();
   if (lastBatch.length === 0) {
     console.log("  Nothing to rollback — no migrations have been applied.");
     return;
@@ -54,7 +54,7 @@ export async function migrateRollback(migrationDir?: string): Promise<void> {
 
   console.log(`  Rolling back batch ${lastBatch[0].batch} (${lastBatch.length} migration(s))...`);
 
-  const rolledBack = rollbackFn(dir);
+  const rolledBack = await rollbackFn(dir);
 
   if (rolledBack.length === 0) {
     console.log("  Nothing was rolled back.");

@@ -32,6 +32,7 @@ export async function runMigrations(migrationDir?: string): Promise<void> {
   let recordMigration: typeof import("../../../orm/src/index.js").recordMigration;
   let getNextBatch: typeof import("../../../orm/src/index.js").getNextBatch;
   let getAdapter: typeof import("../../../orm/src/index.js").getAdapter;
+  let adapterExecute: typeof import("../../../orm/src/index.js").adapterExecute;
 
   try {
     const orm = await import("../../../orm/src/index.js");
@@ -41,6 +42,7 @@ export async function runMigrations(migrationDir?: string): Promise<void> {
     recordMigration = orm.recordMigration;
     getNextBatch = orm.getNextBatch;
     getAdapter = orm.getAdapter;
+    adapterExecute = orm.adapterExecute;
   } catch {
     console.error("  Error: @tina4/orm is required to run migrations.");
     process.exit(1);
@@ -57,7 +59,7 @@ export async function runMigrations(migrationDir?: string): Promise<void> {
     process.exit(1);
   }
 
-  ensureMigrationTable();
+  await ensureMigrationTable();
 
   // Collect .sql files, excluding .down.sql, sorted by numeric prefix
   const files = readdirSync(dir)
@@ -79,13 +81,13 @@ export async function runMigrations(migrationDir?: string): Promise<void> {
     return;
   }
 
-  const batch = getNextBatch();
+  const batch = await getNextBatch();
   let applied = 0;
 
   for (const file of files) {
     const name = file.replace(/\.sql$/, "");
 
-    if (isMigrationApplied(name)) {
+    if (await isMigrationApplied(name)) {
       continue;
     }
 
@@ -100,7 +102,7 @@ export async function runMigrations(migrationDir?: string): Promise<void> {
 
     for (const stmt of statements) {
       try {
-        adapter.execute(stmt);
+        await adapterExecute(adapter, stmt);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`  Error in ${file}: ${msg}`);
@@ -108,7 +110,7 @@ export async function runMigrations(migrationDir?: string): Promise<void> {
       }
     }
 
-    recordMigration(name, batch);
+    await recordMigration(name, batch);
     applied++;
   }
 

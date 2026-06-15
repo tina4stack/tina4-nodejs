@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult } from "./types.js";
+import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult, ColumnInfo, FieldDefinition } from "./types.js";
 import { DatabaseResult } from "./databaseResult.js";
 
 /**
@@ -20,6 +20,109 @@ export function stripTrailingSemicolons(sql: string): string {
     stripped = stripped.slice(0, -1).replace(/\s+$/, "");
   }
   return stripped;
+}
+
+/**
+ * Adapter bridge helpers (v3.14.0, Option A).
+ *
+ * The public Database/BaseModel/QueryBuilder API is async so it works on the
+ * async adapters (PostgreSQL/MySQL/MSSQL/Firebird/Mongo). SQLite implements
+ * only the synchronous methods (`node:sqlite` is sync); the async adapters
+ * implement only the `*Async` variants and make the sync methods throw.
+ *
+ * Each helper prefers the adapter's `*Async` method when present and awaits it,
+ * otherwise falls back to the sync method. For SQLite the fallback resolves
+ * instantly; for async adapters the awaited promise does the real work. This is
+ * the single chokepoint every public read/write flows through.
+ */
+export async function adapterFetch<T = Record<string, unknown>>(
+  adapter: DatabaseAdapter, sql: string, params?: unknown[], limit?: number, skip?: number,
+): Promise<T[]> {
+  return (adapter as any).fetchAsync
+    ? await (adapter as any).fetchAsync(sql, params, limit, skip)
+    : adapter.fetch<T>(sql, params, limit, skip);
+}
+
+export async function adapterQuery<T = Record<string, unknown>>(
+  adapter: DatabaseAdapter, sql: string, params?: unknown[],
+): Promise<T[]> {
+  return (adapter as any).queryAsync
+    ? await (adapter as any).queryAsync(sql, params)
+    : adapter.query<T>(sql, params);
+}
+
+export async function adapterFetchOne<T = Record<string, unknown>>(
+  adapter: DatabaseAdapter, sql: string, params?: unknown[],
+): Promise<T | null> {
+  return (adapter as any).fetchOneAsync
+    ? await (adapter as any).fetchOneAsync(sql, params)
+    : adapter.fetchOne<T>(sql, params);
+}
+
+export async function adapterExecute(
+  adapter: DatabaseAdapter, sql: string, params?: unknown[],
+): Promise<unknown> {
+  return (adapter as any).executeAsync
+    ? await (adapter as any).executeAsync(sql, params)
+    : adapter.execute(sql, params);
+}
+
+export async function adapterStartTransaction(adapter: DatabaseAdapter): Promise<void> {
+  if ((adapter as any).startTransactionAsync) await (adapter as any).startTransactionAsync();
+  else adapter.startTransaction();
+}
+
+export async function adapterCommit(adapter: DatabaseAdapter): Promise<void> {
+  if ((adapter as any).commitAsync) await (adapter as any).commitAsync();
+  else adapter.commit();
+}
+
+export async function adapterRollback(adapter: DatabaseAdapter): Promise<void> {
+  if ((adapter as any).rollbackAsync) await (adapter as any).rollbackAsync();
+  else adapter.rollback();
+}
+
+export async function adapterTableExists(adapter: DatabaseAdapter, name: string): Promise<boolean> {
+  return (adapter as any).tableExistsAsync
+    ? await (adapter as any).tableExistsAsync(name)
+    : adapter.tableExists(name);
+}
+
+export async function adapterTables(adapter: DatabaseAdapter): Promise<string[]> {
+  return (adapter as any).tablesAsync
+    ? await (adapter as any).tablesAsync()
+    : adapter.tables();
+}
+
+export async function adapterColumns(adapter: DatabaseAdapter, table: string): Promise<ColumnInfo[]> {
+  return (adapter as any).columnsAsync
+    ? await (adapter as any).columnsAsync(table)
+    : adapter.columns(table);
+}
+
+export async function adapterCreateTable(
+  adapter: DatabaseAdapter, name: string, columns: Record<string, FieldDefinition>,
+): Promise<void> {
+  if ((adapter as any).createTableAsync) await (adapter as any).createTableAsync(name, columns);
+  else adapter.createTable(name, columns);
+}
+
+/**
+ * Extract the engine-assigned auto-increment id from an `execute()` result.
+ *
+ * SQLite returns `{ lastInsertRowid }`. PostgreSQL (pg) returns a result whose
+ * `rows[0].id` holds the value when the statement had a `RETURNING` clause
+ * (insertAsync adds one). MySQL/MSSQL adapters set the adapter's lastInsertId,
+ * so callers fall back to `adapter.lastInsertId()` when the result has neither.
+ */
+export function extractLastInsertId(result: unknown): number | bigint | null {
+  if (result && typeof result === "object") {
+    const r = result as any;
+    if (r.lastInsertRowid !== undefined && r.lastInsertRowid !== null) return r.lastInsertRowid;
+    if (r.rows?.[0]?.id !== undefined && r.rows[0].id !== null) return r.rows[0].id;
+    if (r.lastInsertId !== undefined && r.lastInsertId !== null) return r.lastInsertId;
+  }
+  return null;
 }
 
 let activeAdapter: DatabaseAdapter | null = null;
@@ -422,21 +525,38 @@ export class Database {
     this.close();
   }
 
-  /** Query rows with optional pagination. Returns a DatabaseResult wrapper. */
-  fetch(sql: string, params?: unknown[], limit?: number, offset?: number): DatabaseResult {
+  /** Query rows with optional pagination. Returns a DatabaseResult wrapper.
+   *
+   * Async since v3.14.0 (Option A): the public API awaits the adapter's
+   * `*Async` method when present (PostgreSQL/MySQL/MSSQL/Firebird/Mongo) and
+   * falls back to the synchronous method for SQLite (`node:sqlite` is sync, so
+   * the fallback resolves instantly). This is the breaking change that makes
+   * the wrapper work uniformly across every engine.
+   */
+  async fetch(sql: string, params?: unknown[], limit?: number, offset?: number): Promise<DatabaseResult> {
     // v3.13.12: strip trailing `;` before the adapter wraps with COUNT(*)
     // or appends LIMIT/OFFSET. Without this, `"SELECT * FROM t;"` becomes
     // `"SELECT * FROM t; LIMIT 100 OFFSET 0"` — a syntax error.
     sql = stripTrailingSemicolons(sql);
     const adapter = this.getNextAdapter();
-    const rows = adapter.fetch<Record<string, unknown>>(sql, params, limit, offset);
-    return new DatabaseResult(rows, undefined, undefined, limit, offset, adapter, sql);
+    try {
+      const rows = await adapterFetch(adapter, sql, params, limit, offset);
+      this.lastError = null;
+      return new DatabaseResult(rows, undefined, undefined, limit, offset, adapter, sql);
+    } catch (e: any) {
+      // v3.13.11 #49.2: fetch() records last_error like execute() does.
+      this.lastError = e?.message ?? String(e);
+      throw e;
+    }
   }
 
   /** Fetch a single row or null. */
-  fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | null {
+  async fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | null> {
     sql = stripTrailingSemicolons(sql);
-    return this.getNextAdapter().fetchOne<T>(sql, params);
+    const adapter = this.getNextAdapter();
+    return (adapter as any).fetchOneAsync
+      ? await (adapter as any).fetchOneAsync<T>(sql, params)
+      : adapter.fetchOne<T>(sql, params);
   }
 
   /**
@@ -452,20 +572,20 @@ export class Database {
    * Returns `[]` (not `null`) when no rows match. Cross-framework parity
    * with Python `db.fetch_all()`, PHP `$db->fetchAll()`, and Ruby `db.fetch_all`.
    */
-  fetchAll<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, offset?: number): T[] {
-    return this.fetch(sql, params, limit, offset).records as T[];
+  async fetchAll<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, offset?: number): Promise<T[]> {
+    return (await this.fetch(sql, params, limit, offset)).records as T[];
   }
 
   /**
    * Execute a write statement. Returns true/false for simple writes.
    * If SQL contains RETURNING, CALL, EXEC, or SELECT, returns the result set.
    */
-  execute(sql: string, params?: unknown[]): boolean | unknown {
+  async execute(sql: string, params?: unknown[]): Promise<boolean | unknown> {
     try {
       const adapter = this.getNextAdapter();
-      const result = adapter.execute(sql, params);
+      const result = await adapterExecute(adapter, sql, params);
       if (this.autoCommit) {
-        try { adapter.commit(); } catch { /* no active transaction */ }
+        try { await adapterCommit(adapter); } catch { /* no active transaction */ }
       }
       this.lastError = null;
       const upper = sql.trim().toUpperCase();
@@ -481,31 +601,37 @@ export class Database {
   }
 
   /** Insert a row into a table. */
-  insert(table: string, data: Record<string, unknown>): DatabaseWriteResult {
+  async insert(table: string, data: Record<string, unknown>): Promise<DatabaseWriteResult> {
     const adapter = this.getNextAdapter();
-    const result = adapter.insert(table, data);
+    const result = (adapter as any).insertAsync
+      ? await (adapter as any).insertAsync(table, data)
+      : adapter.insert(table, data);
     if (this.autoCommit) {
-      try { adapter.commit(); } catch { /* no active transaction */ }
+      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     }
     return result;
   }
 
   /** Update rows in a table matching filter. */
-  update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown>, params?: unknown[]): DatabaseWriteResult {
+  async update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown>, params?: unknown[]): Promise<DatabaseWriteResult> {
     const adapter = this.getNextAdapter();
-    const result = adapter.update(table, data, filter ?? {}, params);
+    const result = (adapter as any).updateAsync
+      ? await (adapter as any).updateAsync(table, data, filter ?? {}, params)
+      : adapter.update(table, data, filter ?? {}, params);
     if (this.autoCommit) {
-      try { adapter.commit(); } catch { /* no active transaction */ }
+      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     }
     return result;
   }
 
   /** Delete rows from a table matching filter. */
-  delete(table: string, filter?: Record<string, unknown>, params?: unknown[]): DatabaseWriteResult {
+  async delete(table: string, filter?: Record<string, unknown>, params?: unknown[]): Promise<DatabaseWriteResult> {
     const adapter = this.getNextAdapter();
-    const result = adapter.delete(table, filter ?? {}, params);
+    const result = (adapter as any).deleteAsync
+      ? await (adapter as any).deleteAsync(table, filter ?? {}, params)
+      : adapter.delete(table, filter ?? {}, params);
     if (this.autoCommit) {
-      try { adapter.commit(); } catch { /* no active transaction */ }
+      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     }
     return result;
   }
@@ -529,7 +655,7 @@ export class Database {
    * the whole transaction so executes and the final commit/rollback all run
    * on the same connection (critical when pool > 0).
    */
-  startTransaction(): void {
+  async startTransaction(): Promise<void> {
     // Pick an adapter using the normal selection logic, then pin it.
     const adapter = this.getNextAdapter();
     let store = this.txStore.getStore();
@@ -538,33 +664,33 @@ export class Database {
     } else {
       this.txStore.enterWith({ adapter });
     }
-    adapter.startTransaction();
+    await adapterStartTransaction(adapter);
   }
 
   /** Commit the current transaction and release the adapter pin. */
-  commit(): void {
+  async commit(): Promise<void> {
     const adapter = this.getNextAdapter();
-    adapter.commit();
+    await adapterCommit(adapter);
     const store = this.txStore.getStore();
     if (store) store.adapter = null;
   }
 
   /** Rollback the current transaction and release the adapter pin. */
-  rollback(): void {
+  async rollback(): Promise<void> {
     const adapter = this.getNextAdapter();
-    adapter.rollback();
+    await adapterRollback(adapter);
     const store = this.txStore.getStore();
     if (store) store.adapter = null;
   }
 
   /** Check if a table exists. */
-  tableExists(name: string): boolean {
-    return this.getNextAdapter().tableExists(name);
+  async tableExists(name: string): Promise<boolean> {
+    return adapterTableExists(this.getNextAdapter(), name);
   }
 
   /** List all tables in the database. */
-  getTables(): string[] {
-    return this.getNextAdapter().tables();
+  async getTables(): Promise<string[]> {
+    return adapterTables(this.getNextAdapter());
   }
 
   /**
@@ -575,8 +701,8 @@ export class Database {
    * @param tableName - Name of the table to inspect.
    * @returns Array of column info objects: { name, type, nullable, default, primaryKey }.
    */
-  getColumns(tableName: string): { name: string; type: string; nullable?: boolean; default?: unknown; primaryKey?: boolean }[] {
-    return this.getNextAdapter().columns(tableName);
+  async getColumns(tableName: string): Promise<{ name: string; type: string; nullable?: boolean; default?: unknown; primaryKey?: boolean }[]> {
+    return adapterColumns(this.getNextAdapter(), tableName);
   }
 
   /**
@@ -587,18 +713,18 @@ export class Database {
    * @param paramSets - Array of parameter arrays, one per execution.
    * @returns Array of results from each execution.
    */
-  executeMany(sql: string, paramSets: unknown[][] = []): unknown[] {
+  async executeMany(sql: string, paramSets: unknown[][] = []): Promise<unknown[]> {
     const adapter = this.getNextAdapter();
     const results: unknown[] = [];
 
-    adapter.startTransaction();
+    await adapterStartTransaction(adapter);
     try {
       for (const params of paramSets) {
-        results.push(adapter.execute(sql, params));
+        results.push(await adapterExecute(adapter, sql, params));
       }
-      adapter.commit();
+      await adapterCommit(adapter);
     } catch (e) {
-      adapter.rollback();
+      await adapterRollback(adapter);
       throw e;
     }
 
@@ -639,24 +765,24 @@ export class Database {
    * Used by sequenceNext() for race-safe ID generation on
    * SQLite, MySQL, MSSQL, and as a PostgreSQL fallback.
    */
-  private ensureSequenceTable(): void {
+  private async ensureSequenceTable(): Promise<void> {
     const adapter = this.getNextAdapter();
 
-    if (!adapter.tableExists("tina4_sequences")) {
+    if (!(await adapterTableExists(adapter, "tina4_sequences"))) {
       if (this.dbType === "mssql") {
-        adapter.execute(
+        await adapterExecute(adapter,
           "CREATE TABLE tina4_sequences (" +
           "seq_name VARCHAR(200) NOT NULL PRIMARY KEY, " +
           "current_value INTEGER NOT NULL DEFAULT 0)"
         );
       } else {
-        adapter.execute(
+        await adapterExecute(adapter,
           "CREATE TABLE IF NOT EXISTS tina4_sequences (" +
           "seq_name VARCHAR(200) NOT NULL PRIMARY KEY, " +
           "current_value INTEGER NOT NULL DEFAULT 0)"
         );
       }
-      try { adapter.commit(); } catch { /* no active transaction */ }
+      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     }
   }
 
@@ -666,12 +792,12 @@ export class Database {
    * If the sequence row doesn't exist yet, seeds it from MAX(pkColumn)
    * of the given table (or 0 if the table is empty/missing).
    */
-  private sequenceNext(seqName: string, table?: string, pkColumn = "id"): number {
-    this.ensureSequenceTable();
+  private async sequenceNext(seqName: string, table?: string, pkColumn = "id"): Promise<number> {
+    await this.ensureSequenceTable();
     const adapter = this.getNextAdapter();
 
     // Check if the sequence row exists
-    const existing = adapter.fetchOne<Record<string, unknown>>(
+    const existing = await adapterFetchOne<Record<string, unknown>>(adapter,
       "SELECT current_value FROM tina4_sequences WHERE seq_name = ?",
       [seqName]
     );
@@ -681,7 +807,7 @@ export class Database {
       let seedValue = 0;
       if (table) {
         try {
-          const maxRow = adapter.fetchOne<Record<string, unknown>>(
+          const maxRow = await adapterFetchOne<Record<string, unknown>>(adapter,
             `SELECT MAX(${pkColumn}) AS max_id FROM ${table}`
           );
           if (maxRow?.max_id != null) {
@@ -692,22 +818,22 @@ export class Database {
         }
       }
 
-      adapter.execute(
+      await adapterExecute(adapter,
         "INSERT INTO tina4_sequences (seq_name, current_value) VALUES (?, ?)",
         [seqName, seedValue]
       );
-      try { adapter.commit(); } catch { /* no active transaction */ }
+      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     }
 
     // Atomic increment
-    adapter.execute(
+    await adapterExecute(adapter,
       "UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ?",
       [seqName]
     );
-    try { adapter.commit(); } catch { /* no active transaction */ }
+    try { await adapterCommit(adapter); } catch { /* no active transaction */ }
 
     // Read the new value
-    const row = adapter.fetchOne<Record<string, unknown>>(
+    const row = await adapterFetchOne<Record<string, unknown>>(adapter,
       "SELECT current_value FROM tina4_sequences WHERE seq_name = ?",
       [seqName]
     );
@@ -724,19 +850,12 @@ export class Database {
    *   (race-safe, replaces old MAX+1).
    * - Returns 1 if the table is empty or does not exist.
    */
-  getNextId(table: string, pkColumn = "id", generatorName?: string): number {
+  async getNextId(table: string, pkColumn = "id", generatorName?: string): Promise<number> {
     const adapter = this.getNextAdapter();
 
-    // MongoDB — getNextId() is not supported synchronously.
-    // MongoDB uses ObjectId for primary keys by default.
-    // For integer sequences, use getNextIdAsync() instead.
-    if (this.dbType === "mongodb") {
-      throw new Error(
-        "getNextId() is not supported for MongoDB (async adapter). " +
-        "MongoDB uses ObjectId for _id by default. " +
-        "For integer sequences, use getNextIdAsync() or let MongoDB generate _id automatically.",
-      );
-    }
+    // MongoDB uses ObjectId for _id by default; integer sequences fall through
+    // to the tina4_sequences table strategy below (which works on Mongo too
+    // because the adapter implements the SQL-ish methods over collections).
 
     // Firebird — use generators (atomic)
     if (this.dbType === "firebird") {
@@ -744,12 +863,12 @@ export class Database {
 
       // Auto-create the generator if it does not exist
       try {
-        adapter.execute(`CREATE GENERATOR ${genName}`);
+        await adapterExecute(adapter, `CREATE GENERATOR ${genName}`);
       } catch {
         // Generator already exists — ignore
       }
 
-      const row = adapter.fetchOne<Record<string, unknown>>(`SELECT GEN_ID(${genName}, 1) AS NEXT_ID FROM RDB$DATABASE`);
+      const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT GEN_ID(${genName}, 1) AS NEXT_ID FROM RDB$DATABASE`);
       return Number(row?.NEXT_ID ?? row?.next_id ?? 1);
     }
 
@@ -757,7 +876,7 @@ export class Database {
     if (this.dbType === "postgres") {
       const seqName = generatorName ?? `${table.toLowerCase()}_${pkColumn.toLowerCase()}_seq`;
       try {
-        const row = adapter.fetchOne<Record<string, unknown>>(`SELECT nextval('${seqName}') AS next_id`);
+        const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT nextval('${seqName}') AS next_id`);
         if (row?.next_id != null) {
           return Number(row.next_id);
         }
@@ -767,13 +886,13 @@ export class Database {
 
       // Auto-create sequence seeded from MAX
       try {
-        const maxRow = adapter.fetchOne<Record<string, unknown>>(
+        const maxRow = await adapterFetchOne<Record<string, unknown>>(adapter,
           `SELECT COALESCE(MAX(${pkColumn}), 0) AS max_id FROM ${table}`
         );
         const start = maxRow?.max_id != null ? Number(maxRow.max_id) + 1 : 1;
-        adapter.execute(`CREATE SEQUENCE ${seqName} START WITH ${start}`);
-        try { adapter.commit(); } catch { /* no active transaction */ }
-        const row = adapter.fetchOne<Record<string, unknown>>(`SELECT nextval('${seqName}') AS next_id`);
+        await adapterExecute(adapter, `CREATE SEQUENCE ${seqName} START WITH ${start}`);
+        try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+        const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT nextval('${seqName}') AS next_id`);
         if (row?.next_id != null) {
           return Number(row.next_id);
         }

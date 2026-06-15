@@ -50,31 +50,31 @@ const dbPath = join(tmp, "test.db");
 
 try {
   const db = await initDatabase({ url: `sqlite:///${dbPath}` });
-  db.execute("CREATE TABLE widgets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)");
+  await db.execute("CREATE TABLE widgets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)");
   for (let i = 0; i < 5; i++) {
-    db.execute("INSERT INTO widgets (name) VALUES (?)", [`widget-${i}`]);
+    await db.execute("INSERT INTO widgets (name) VALUES (?)", [`widget-${i}`]);
   }
 
   {
     // Pre-v3.13.12: SQLite throws "near ';': syntax error" because
     // fetch appends ` LIMIT N OFFSET M` after the user SQL.
-    const result = db.fetch("SELECT * FROM widgets;");
+    const result = await db.fetch("SELECT * FROM widgets;");
     assert("fetch returns 5 rows for trailing ;", result.records.length === 5);
   }
 
   {
-    const result = db.fetch("SELECT * FROM widgets;;");
+    const result = await db.fetch("SELECT * FROM widgets;;");
     assert("fetch returns 5 rows for double ;;", result.records.length === 5);
   }
 
   {
-    const row = db.fetchOne("SELECT * FROM widgets WHERE id = ?;", [1]);
+    const row = await db.fetchOne("SELECT * FROM widgets WHERE id = ?;", [1]);
     assert("fetchOne returns row for trailing ;", row !== null && (row as any).name === "widget-0");
   }
 
   {
     // Clean SQL still works
-    const result = db.fetch("SELECT * FROM widgets WHERE name = ?", ["widget-2"]);
+    const result = await db.fetch("SELECT * FROM widgets WHERE name = ?", ["widget-2"]);
     assert("clean SQL unchanged", result.records.length === 1);
   }
 } finally {
@@ -89,14 +89,14 @@ const dbAllPath = join(tmpAll, "big.db");
 
 try {
   const db = await initDatabase({ url: `sqlite:///${dbAllPath}` });
-  db.execute("CREATE TABLE rows (id INTEGER PRIMARY KEY AUTOINCREMENT, n INTEGER)");
+  await db.execute("CREATE TABLE rows (id INTEGER PRIMARY KEY AUTOINCREMENT, n INTEGER)");
   // 150 rows — bigger than any silent-truncation default
   for (let i = 0; i < 150; i++) {
-    db.execute("INSERT INTO rows (n) VALUES (?)", [i]);
+    await db.execute("INSERT INTO rows (n) VALUES (?)", [i]);
   }
 
   {
-    const rows = db.fetchAll("SELECT * FROM rows ORDER BY n");
+    const rows = await db.fetchAll("SELECT * FROM rows ORDER BY n");
     assert(
       "fetchAll returns ALL 150 rows by default",
       rows.length === 150,
@@ -105,12 +105,12 @@ try {
   }
 
   {
-    const rows = db.fetchAll("SELECT * FROM rows ORDER BY n", undefined, 10);
+    const rows = await db.fetchAll("SELECT * FROM rows ORDER BY n", undefined, 10);
     assert("fetchAll with explicit limit=10 caps to 10", rows.length === 10);
   }
 
   {
-    const rows = db.fetchAll("SELECT * FROM rows ORDER BY n", undefined, 5, 20);
+    const rows = await db.fetchAll("SELECT * FROM rows ORDER BY n", undefined, 5, 20);
     assert(
       "fetchAll with limit=5, offset=20 returns slice",
       rows.length === 5 && (rows[0] as any).n === 20 && (rows[4] as any).n === 24,
@@ -119,7 +119,7 @@ try {
 
   {
     // Composes with the trailing-; strip — fetchAll with both features in play
-    const rows = db.fetchAll("SELECT * FROM rows ORDER BY n;");
+    const rows = await db.fetchAll("SELECT * FROM rows ORDER BY n;");
     assert("fetchAll + trailing ; → all 150 rows", rows.length === 150);
   }
 } finally {

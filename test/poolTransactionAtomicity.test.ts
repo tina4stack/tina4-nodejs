@@ -42,7 +42,7 @@ async function makePool(name: string, pool: number): Promise<Database> {
   const path = join(tmpDir, name);
   rmSync(path, { force: true });
   const db = await Database.create(`sqlite:///${path}`, undefined, undefined, pool);
-  db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+  await db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
   return db;
 }
 
@@ -51,13 +51,13 @@ async function makePool(name: string, pool: number): Promise<Database> {
   console.log("--- rollback() must undo all inserts under pool=4 ---");
   const db = await makePool("rollback.db", 4);
 
-  db.startTransaction();
-  db.execute("INSERT INTO t (id, val) VALUES (1, 'a')");
-  db.execute("INSERT INTO t (id, val) VALUES (2, 'b')");
-  db.execute("INSERT INTO t (id, val) VALUES (3, 'c')");
-  db.rollback();
+  await db.startTransaction();
+  await db.execute("INSERT INTO t (id, val) VALUES (1, 'a')");
+  await db.execute("INSERT INTO t (id, val) VALUES (2, 'b')");
+  await db.execute("INSERT INTO t (id, val) VALUES (3, 'c')");
+  await db.rollback();
 
-  const row = db.fetchOne<{ n: number }>("SELECT count(*) AS n FROM t");
+  const row = await db.fetchOne<{ n: number }>("SELECT count(*) AS n FROM t");
   const n = Number(row?.n ?? -1);
   assert(
     "rollback() under pool=4 leaks zero rows",
@@ -72,13 +72,13 @@ async function makePool(name: string, pool: number): Promise<Database> {
   console.log("\n--- commit() must persist all inserts under pool=4 ---");
   const db = await makePool("commit.db", 4);
 
-  db.startTransaction();
-  db.execute("INSERT INTO t (id, val) VALUES (10, 'x')");
-  db.execute("INSERT INTO t (id, val) VALUES (20, 'y')");
-  db.execute("INSERT INTO t (id, val) VALUES (30, 'z')");
-  db.commit();
+  await db.startTransaction();
+  await db.execute("INSERT INTO t (id, val) VALUES (10, 'x')");
+  await db.execute("INSERT INTO t (id, val) VALUES (20, 'y')");
+  await db.execute("INSERT INTO t (id, val) VALUES (30, 'z')");
+  await db.commit();
 
-  const row = db.fetchOne<{ n: number }>("SELECT count(*) AS n FROM t");
+  const row = await db.fetchOne<{ n: number }>("SELECT count(*) AS n FROM t");
   const n = Number(row?.n ?? -1);
   assert(
     "commit() under pool=4 persists all 3 rows",
@@ -93,8 +93,8 @@ async function makePool(name: string, pool: number): Promise<Database> {
   console.log("\n--- pin released after commit (round-robin resumes) ---");
   const db = await makePool("releaseCommit.db", 4);
 
-  db.startTransaction();
-  db.commit();
+  await db.startTransaction();
+  await db.commit();
 
   // After commit, getAdapter() should rotate again. Sample a few times
   // and confirm we see more than one distinct adapter.
@@ -115,8 +115,8 @@ async function makePool(name: string, pool: number): Promise<Database> {
   console.log("\n--- pin released after rollback (round-robin resumes) ---");
   const db = await makePool("releaseRollback.db", 4);
 
-  db.startTransaction();
-  db.rollback();
+  await db.startTransaction();
+  await db.rollback();
 
   const seen = new Set<unknown>();
   for (let i = 0; i < 8; i++) {
@@ -135,11 +135,11 @@ async function makePool(name: string, pool: number): Promise<Database> {
   console.log("\n--- pool=0 single-connection mode still works ---");
   const db = await makePool("nopool.db", 0);
 
-  db.startTransaction();
-  db.execute("INSERT INTO t (id, val) VALUES (1, 'r')");
-  db.rollback();
+  await db.startTransaction();
+  await db.execute("INSERT INTO t (id, val) VALUES (1, 'r')");
+  await db.rollback();
 
-  const row = db.fetchOne<{ n: number }>("SELECT count(*) AS n FROM t");
+  const row = await db.fetchOne<{ n: number }>("SELECT count(*) AS n FROM t");
   const n = Number(row?.n ?? -1);
   assert(
     "pool=0 rollback still works (no regression)",

@@ -3,7 +3,12 @@ import { join, resolve } from "node:path";
 import type { FieldDefinition, DatabaseAdapter } from "./types.js";
 import type { SQLiteAdapter } from "./adapters/sqlite.js";
 import type { DiscoveredModel } from "./model.js";
-import { getAdapter } from "./database.js";
+import {
+  getAdapter,
+  adapterQuery, adapterExecute, adapterTableExists,
+  adapterCreateTable, adapterColumns,
+  adapterStartTransaction, adapterCommit, adapterRollback,
+} from "./database.js";
 
 // ---------------------------------------------------------------------------
 // Firebird ALTER TABLE ADD idempotency check
@@ -74,8 +79,8 @@ async function shouldSkipForFirebird(
 /**
  * Sync model definitions to the database (create tables, add columns).
  */
-export function syncModels(models: DiscoveredModel[]): void {
-  const adapter = getAdapter() as SQLiteAdapter;
+export async function syncModels(models: DiscoveredModel[]): Promise<void> {
+  const adapter = getAdapter();
 
   for (const { definition } of models) {
     const { tableName, fields, softDelete, fieldMapping } = definition;
@@ -100,22 +105,60 @@ export function syncModels(models: DiscoveredModel[]): void {
       dbFields[dbCol] = def;
     }
 
-    if (!adapter.tableExists(tableName)) {
-      adapter.createTable(tableName, dbFields);
+    if (!(await adapterTableExists(adapter, tableName))) {
+      // adapterCreateTable prefers createTableAsync — engine-aware DDL on
+      // PostgreSQL/MySQL/MSSQL/Firebird (TIMESTAMP/BOOLEAN/SERIAL etc.).
+      await adapterCreateTable(adapter, tableName, dbFields);
       console.log(`    Created table: ${tableName}`);
     } else {
-      // Check for new columns
-      const existing = adapter.getTableColumns(tableName);
-      const existingNames = new Set(existing.map((c) => c.name));
+      // Check for new columns. SQLite exposes the legacy getTableColumns/
+      // addColumn helpers; other engines use columns()/ALTER TABLE.
+      const existingCols = (adapter as any).getTableColumns
+        ? (adapter as SQLiteAdapter).getTableColumns(tableName)
+        : await adapterColumns(adapter, tableName);
+      const existingNames = new Set(existingCols.map((c) => c.name.toLowerCase()));
 
       for (const [colName, def] of Object.entries(dbFields)) {
-        if (!existingNames.has(colName)) {
-          adapter.addColumn(tableName, colName, def);
+        if (!existingNames.has(colName.toLowerCase())) {
+          if ((adapter as any).addColumn) {
+            (adapter as any).addColumn(tableName, colName, def);
+          } else {
+            await adapterExecute(adapter, buildAddColumnSql(adapter, tableName, colName, def));
+          }
           console.log(`    Added column: ${tableName}.${colName}`);
         }
       }
     }
   }
+}
+
+/**
+ * Build an engine-aware `ALTER TABLE ... ADD COLUMN` statement for adapters
+ * that don't expose the SQLite-style addColumn() helper.
+ */
+function buildAddColumnSql(
+  adapter: DatabaseAdapter,
+  table: string,
+  colName: string,
+  def: FieldDefinition,
+): string {
+  const engine = adapter.constructor.name;
+  const isPg = engine === "PostgresAdapter";
+  const typeMap: Record<string, string> = isPg
+    ? { integer: "INTEGER", string: def.maxLength ? `VARCHAR(${def.maxLength})` : "VARCHAR(255)", text: "TEXT", number: "DOUBLE PRECISION", numeric: "DOUBLE PRECISION", boolean: "BOOLEAN", datetime: "TIMESTAMP" }
+    : { integer: "INTEGER", string: def.maxLength ? `VARCHAR(${def.maxLength})` : "VARCHAR(255)", text: "TEXT", number: "DOUBLE PRECISION", numeric: "DOUBLE PRECISION", boolean: "INTEGER", datetime: "TIMESTAMP" };
+  const sqlType = typeMap[def.type] ?? "TEXT";
+  let sql = `ALTER TABLE "${table}" ADD COLUMN "${colName}" ${sqlType}`;
+  if (def.default !== undefined && def.default !== "now") {
+    const dv =
+      typeof def.default === "string" ? `'${def.default}'`
+      : typeof def.default === "boolean" ? (isPg ? (def.default ? "TRUE" : "FALSE") : (def.default ? "1" : "0"))
+      : String(def.default);
+    sql += ` DEFAULT ${dv}`;
+  } else if (def.default === "now") {
+    sql += " DEFAULT CURRENT_TIMESTAMP";
+  }
+  return sql;
 }
 
 /**
@@ -126,25 +169,25 @@ const MIGRATION_TABLE = "tina4_migration";
 /**
  * Ensure the migration tracking table exists with batch support.
  */
-export function ensureMigrationTable(): void {
+export async function ensureMigrationTable(): Promise<void> {
   const adapter = getAdapter();
-  if (!adapter.tableExists(MIGRATION_TABLE)) {
+  if (!(await adapterTableExists(adapter, MIGRATION_TABLE))) {
     if (isFirebirdAdapter(adapter)) {
       // Firebird: no AUTOINCREMENT, no TEXT type, use generator for IDs
       try {
-        adapter.execute("CREATE GENERATOR GEN_TINA4_MIGRATION_ID");
-        try { adapter.execute("COMMIT"); } catch { /* ignore */ }
+        await adapterExecute(adapter, "CREATE GENERATOR GEN_TINA4_MIGRATION_ID");
+        try { await adapterExecute(adapter, "COMMIT"); } catch { /* ignore */ }
       } catch {
         // Generator may already exist
       }
-      adapter.execute(`CREATE TABLE "${MIGRATION_TABLE}" (
+      await adapterExecute(adapter, `CREATE TABLE "${MIGRATION_TABLE}" (
         id INTEGER NOT NULL PRIMARY KEY,
         name VARCHAR(500) NOT NULL,
         batch INTEGER NOT NULL DEFAULT 1,
         applied_at VARCHAR(50) NOT NULL
       )`);
     } else {
-      (adapter as SQLiteAdapter).createTable(MIGRATION_TABLE, {
+      await adapterCreateTable(adapter, MIGRATION_TABLE, {
         id: { type: "integer", primaryKey: true, autoIncrement: true },
         name: { type: "string", required: true },
         batch: { type: "integer", required: true },
@@ -154,10 +197,12 @@ export function ensureMigrationTable(): void {
   } else {
     // Ensure batch column exists on older tables that only had passed/description
     try {
-      const cols = (adapter as SQLiteAdapter).getTableColumns(MIGRATION_TABLE);
-      const colNames = new Set(cols.map((c) => c.name));
+      const cols = (adapter as any).getTableColumns
+        ? (adapter as SQLiteAdapter).getTableColumns(MIGRATION_TABLE)
+        : await adapterColumns(adapter, MIGRATION_TABLE);
+      const colNames = new Set(cols.map((c) => c.name.toLowerCase()));
       if (!colNames.has("batch")) {
-        adapter.execute(`ALTER TABLE "${MIGRATION_TABLE}" ADD COLUMN batch INTEGER NOT NULL DEFAULT 1`);
+        await adapterExecute(adapter, `ALTER TABLE "${MIGRATION_TABLE}" ADD COLUMN batch INTEGER NOT NULL DEFAULT 1`);
       }
     } catch {
       // ignore — column may already exist
@@ -168,9 +213,9 @@ export function ensureMigrationTable(): void {
 /**
  * Get the current batch number (max batch + 1).
  */
-export function getNextBatch(): number {
+export async function getNextBatch(): Promise<number> {
   const adapter = getAdapter();
-  const rows = adapter.query<{ max_batch: number | null }>(
+  const rows = await adapterQuery<{ max_batch: number | null }>(adapter,
     `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}"`,
   );
   return (rows[0]?.max_batch ?? 0) + 1;
@@ -179,9 +224,9 @@ export function getNextBatch(): number {
 /**
  * Check if a migration has already been applied.
  */
-export function isMigrationApplied(name: string): boolean {
+export async function isMigrationApplied(name: string): Promise<boolean> {
   const adapter = getAdapter();
-  const rows = adapter.query(
+  const rows = await adapterQuery(adapter,
     `SELECT id FROM "${MIGRATION_TABLE}" WHERE name = ?`,
     [name],
   );
@@ -191,20 +236,20 @@ export function isMigrationApplied(name: string): boolean {
 /**
  * Record a migration as applied.
  */
-export function recordMigration(name: string, batch: number, passed: number = 1): void {
+export async function recordMigration(name: string, batch: number, passed: number = 1): Promise<void> {
   const adapter = getAdapter();
   if (isFirebirdAdapter(adapter)) {
     // Firebird: generate ID from sequence
-    const rows = adapter.query<{ NEXT_ID: number }>(
+    const rows = await adapterQuery<{ NEXT_ID: number }>(adapter,
       "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB$DATABASE",
     );
     const nextId = rows[0]?.NEXT_ID ?? 1;
-    adapter.execute(
+    await adapterExecute(adapter,
       `INSERT INTO "${MIGRATION_TABLE}" (id, name, batch) VALUES (?, ?, ?)`,
       [nextId, name, batch],
     );
   } else {
-    adapter.execute(
+    await adapterExecute(adapter,
       `INSERT INTO "${MIGRATION_TABLE}" (name, batch) VALUES (?, ?)`,
       [name, batch],
     );
@@ -214,30 +259,30 @@ export function recordMigration(name: string, batch: number, passed: number = 1)
 /**
  * Apply a migration (run its up function and record it).
  */
-export function applyMigration(
+export async function applyMigration(
   name: string,
-  up: () => void,
+  up: () => void | Promise<void>,
   batch: number,
-): void {
-  if (isMigrationApplied(name)) {
+): Promise<void> {
+  if (await isMigrationApplied(name)) {
     return;
   }
-  up();
-  recordMigration(name, batch);
+  await up();
+  await recordMigration(name, batch);
 }
 
 /**
  * Get all migrations from the last batch.
  */
-export function getLastBatchMigrations(): Array<{ id: number; name: string; batch: number }> {
+export async function getLastBatchMigrations(): Promise<Array<{ id: number; name: string; batch: number }>> {
   const adapter = getAdapter();
-  const rows = adapter.query<{ max_batch: number | null }>(
+  const rows = await adapterQuery<{ max_batch: number | null }>(adapter,
     `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}"`,
   );
   const lastBatch = rows[0]?.max_batch;
   if (lastBatch === null || lastBatch === undefined) return [];
 
-  return adapter.query<{ id: number; name: string; batch: number }>(
+  return adapterQuery<{ id: number; name: string; batch: number }>(adapter,
     `SELECT id, name, batch FROM "${MIGRATION_TABLE}" WHERE batch = ? ORDER BY id DESC`,
     [lastBatch],
   );
@@ -246,9 +291,9 @@ export function getLastBatchMigrations(): Array<{ id: number; name: string; batc
 /**
  * Remove a migration record (used during rollback).
  */
-export function removeMigrationRecord(name: string): void {
+export async function removeMigrationRecord(name: string): Promise<void> {
   const adapter = getAdapter();
-  adapter.execute(
+  await adapterExecute(adapter,
     `DELETE FROM "${MIGRATION_TABLE}" WHERE name = ?`,
     [name],
   );
@@ -267,21 +312,21 @@ export function removeMigrationRecord(name: string): void {
  * @param delimiter - SQL statement delimiter (default: ";")
  * @returns Array of rolled-back migration names
  */
-export function rollback(
-  migrationsDir?: string | Map<string, () => void>,
+export async function rollback(
+  migrationsDir?: string | Map<string, () => void | Promise<void>>,
   delimiter?: string,
-): string[] {
+): Promise<string[]> {
   // Handle legacy API: if first arg is a Map, use old behaviour
   if (migrationsDir instanceof Map) {
     const downFunctions = migrationsDir;
-    const migrations = getLastBatchMigrations();
+    const migrations = await getLastBatchMigrations();
     const rolledBack: string[] = [];
     for (const migration of migrations) {
       const down = downFunctions.get(migration.name);
       if (down) {
-        down();
+        await down();
       }
-      removeMigrationRecord(migration.name);
+      await removeMigrationRecord(migration.name);
       rolledBack.push(migration.name);
     }
     return rolledBack;
@@ -290,7 +335,7 @@ export function rollback(
   const dir = resolve(migrationsDir ?? "migrations");
   const delim = delimiter ?? ";";
   const db = getAdapter();
-  const migrations = getLastBatchMigrations();
+  const migrations = await getLastBatchMigrations();
   const rolledBack: string[] = [];
 
   for (const migration of migrations) {
@@ -303,14 +348,14 @@ export function rollback(
       if (sqlContent) {
         const statements = splitStatements(sqlContent, delim);
         try {
-          db.startTransaction();
+          await adapterStartTransaction(db);
           for (const stmt of statements) {
-            db.execute(stmt);
+            await adapterExecute(db, stmt);
           }
-          db.commit();
+          await adapterCommit(db);
         } catch (err) {
           try {
-            db.rollback();
+            await adapterRollback(db);
           } catch {
             // rollback may fail if auto-rolled-back
           }
@@ -323,7 +368,7 @@ export function rollback(
       console.warn(`  Warning: No .down.sql file found for ${migration.name} — skipping SQL execution`);
     }
 
-    removeMigrationRecord(migration.name);
+    await removeMigrationRecord(migration.name);
     rolledBack.push(migration.name);
   }
 
@@ -333,9 +378,9 @@ export function rollback(
 /**
  * Get all applied migrations.
  */
-export function getAppliedMigrations(): Array<{ id: number; name: string; batch: number; applied_at: string }> {
+export async function getAppliedMigrations(): Promise<Array<{ id: number; name: string; batch: number; applied_at: string }>> {
   const adapter = getAdapter();
-  return adapter.query<{ id: number; name: string; batch: number; applied_at: string }>(
+  return adapterQuery<{ id: number; name: string; batch: number; applied_at: string }>(adapter,
     `SELECT * FROM "${MIGRATION_TABLE}" ORDER BY id ASC`,
   );
 }
@@ -465,23 +510,31 @@ export async function migrate(
   }
 
   // Ensure tracking table with batch support
-  if (!db.tableExists(MIGRATION_TABLE)) {
+  if (!(await adapterTableExists(db, MIGRATION_TABLE))) {
     if (isFirebirdAdapter(db)) {
       // Firebird: no AUTOINCREMENT, no TEXT type, use generator for IDs
       try {
-        db.execute("CREATE GENERATOR GEN_TINA4_MIGRATION_ID");
-        try { db.execute("COMMIT"); } catch { /* ignore */ }
+        await adapterExecute(db, "CREATE GENERATOR GEN_TINA4_MIGRATION_ID");
+        try { await adapterExecute(db, "COMMIT"); } catch { /* ignore */ }
       } catch {
         // Generator may already exist
       }
-      db.execute(`CREATE TABLE "${MIGRATION_TABLE}" (
+      await adapterExecute(db, `CREATE TABLE "${MIGRATION_TABLE}" (
         id INTEGER NOT NULL PRIMARY KEY,
         name VARCHAR(500) NOT NULL,
         batch INTEGER NOT NULL DEFAULT 1,
         applied_at VARCHAR(50) NOT NULL
       )`);
+    } else if (db.constructor.name === "PostgresAdapter") {
+      // PostgreSQL: SERIAL + TIMESTAMP (not AUTOINCREMENT/TEXT).
+      await adapterExecute(db, `CREATE TABLE IF NOT EXISTS "${MIGRATION_TABLE}" (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        batch INTEGER NOT NULL DEFAULT 1,
+        applied_at TEXT NOT NULL
+      )`);
     } else {
-      db.execute(`CREATE TABLE IF NOT EXISTS "${MIGRATION_TABLE}" (
+      await adapterExecute(db, `CREATE TABLE IF NOT EXISTS "${MIGRATION_TABLE}" (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         batch INTEGER NOT NULL DEFAULT 1,
@@ -491,7 +544,7 @@ export async function migrate(
   } else {
     // Migrate old schema: if table has 'description' + 'passed' columns, migrate data
     try {
-      const testRows = db.query<Record<string, unknown>>(
+      await adapterQuery<Record<string, unknown>>(db,
         `SELECT * FROM "${MIGRATION_TABLE}" LIMIT 0`,
       );
       // Check column names by querying pragma or just try adding batch
@@ -510,7 +563,7 @@ export async function migrate(
   // Determine the batch number for this run
   let currentBatch = 1;
   try {
-    const batchRows = db.query<{ max_batch: number | null }>(
+    const batchRows = await adapterQuery<{ max_batch: number | null }>(db,
       `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}"`,
     );
     currentBatch = (batchRows[0]?.max_batch ?? 0) + 1;
@@ -525,7 +578,7 @@ export async function migrate(
     // Check if already applied — support both 'name' and legacy 'description' column
     let alreadyApplied = false;
     try {
-      const existing = db.query<{ id: number }>(
+      const existing = await adapterQuery<{ id: number }>(db,
         `SELECT id FROM "${MIGRATION_TABLE}" WHERE name = ?`,
         [migrationId],
       );
@@ -533,7 +586,7 @@ export async function migrate(
     } catch {
       // Might be old schema with 'description' column instead of 'name'
       try {
-        const existing = db.query<{ id: number; passed: number }>(
+        const existing = await adapterQuery<{ id: number; passed: number }>(db,
           `SELECT id, passed FROM "${MIGRATION_TABLE}" WHERE description = ?`,
           [migrationId],
         );
@@ -541,7 +594,7 @@ export async function migrate(
           alreadyApplied = true;
         } else if (existing.length > 0 && existing[0].passed === 0) {
           // Failed record from old schema — remove to retry
-          db.execute(
+          await adapterExecute(db,
             `DELETE FROM "${MIGRATION_TABLE}" WHERE description = ?`,
             [migrationId],
           );
@@ -565,7 +618,7 @@ export async function migrate(
     const statements = splitStatements(sqlContent, delimiter);
 
     try {
-      db.startTransaction();
+      await adapterStartTransaction(db);
 
       for (const stmt of statements) {
         // Firebird lacks IF NOT EXISTS for ALTER TABLE ADD.
@@ -576,7 +629,7 @@ export async function migrate(
           console.log(`  Migration ${file}: ${skipReason}`);
           continue;
         }
-        db.execute(stmt);
+        await adapterExecute(db, stmt);
       }
 
       // Record as applied with batch number
@@ -584,33 +637,33 @@ export async function migrate(
       try {
         if (isFirebirdAdapter(db)) {
           // Firebird: generate ID from sequence
-          const idRows = db.query<{ NEXT_ID: number }>(
+          const idRows = await adapterQuery<{ NEXT_ID: number }>(db,
             "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB$DATABASE",
           );
           const nextId = idRows[0]?.NEXT_ID ?? 1;
-          db.execute(
+          await adapterExecute(db,
             `INSERT INTO "${MIGRATION_TABLE}" (id, name, batch, applied_at) VALUES (?, ?, ?, ?)`,
             [nextId, migrationId, currentBatch, now],
           );
         } else {
-          db.execute(
+          await adapterExecute(db,
             `INSERT INTO "${MIGRATION_TABLE}" (name, batch, applied_at) VALUES (?, ?, ?)`,
             [migrationId, currentBatch, now],
           );
         }
       } catch {
         // Old schema fallback — try description/content/passed columns
-        db.execute(
+        await adapterExecute(db,
           `INSERT INTO "${MIGRATION_TABLE}" (description, content, passed, run_at) VALUES (?, ?, 1, ?)`,
           [migrationId, sqlContent, now],
         );
       }
 
-      db.commit();
+      await adapterCommit(db);
       result.applied.push(file);
     } catch (err) {
       try {
-        db.rollback();
+        await adapterRollback(db);
       } catch {
         // rollback may fail if transaction was auto-rolled-back
       }
@@ -646,7 +699,7 @@ export async function status(
   }
 
   // Ensure tracking table exists
-  if (!db.tableExists(MIGRATION_TABLE)) {
+  if (!(await adapterTableExists(db, MIGRATION_TABLE))) {
     // No table means nothing has been run — all files are pending
     const files = sortMigrationFiles(
       readdirSync(dir).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql")),
@@ -663,7 +716,7 @@ export async function status(
   // Get all applied migration names from the DB
   const appliedNames = new Set<string>();
   try {
-    const rows = db.query<{ name: string }>(
+    const rows = await adapterQuery<{ name: string }>(db,
       `SELECT name FROM "${MIGRATION_TABLE}"`,
     );
     for (const row of rows) {
@@ -672,7 +725,7 @@ export async function status(
   } catch {
     // Old schema with 'description' column
     try {
-      const rows = db.query<{ description: string; passed: number }>(
+      const rows = await adapterQuery<{ description: string; passed: number }>(db,
         `SELECT description, passed FROM "${MIGRATION_TABLE}" WHERE passed = 1`,
       );
       for (const row of rows) {
@@ -848,10 +901,10 @@ export class Migration {
   async rollback(steps = 1): Promise<string[]> {
     const db = this.db ?? (await import("./database.js")).getAdapter();
     // If tracking table doesn't exist yet there's nothing to roll back
-    if (!db.tableExists(MIGRATION_TABLE)) return [];
+    if (!(await adapterTableExists(db, MIGRATION_TABLE))) return [];
     const rolled: string[] = [];
     for (let i = 0; i < steps; i++) {
-      const batch = rollback(this.dir, this.delimiter);
+      const batch = await rollback(this.dir, this.delimiter);
       if (batch.length === 0) break;
       rolled.push(...batch);
     }

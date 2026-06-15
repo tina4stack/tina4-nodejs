@@ -1,6 +1,6 @@
 import type { RouteDefinition, Tina4Request, Tina4Response } from "@tina4/core";
 import type { DiscoveredModel } from "./model.js";
-import { getAdapter } from "./database.js";
+import { getAdapter, adapterQuery, adapterExecute } from "./database.js";
 import { buildQuery, parseQueryString } from "./query.js";
 import { validate } from "./validation.js";
 
@@ -109,9 +109,9 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
 
         // params includes limit and offset at the end; countSql doesn't need them
         const countParams = params.slice(0, -2);
-        const rows = adapter.query(sql, params);
+        const rows = await adapterQuery(adapter, sql, params);
 
-        const countRow = adapter.query(countSql, countParams);
+        const countRow = await adapterQuery(adapter, countSql, countParams);
         const total = Number(countRow[0]?.total ?? 0);
         const limit = qp.limit ?? 100;
         const page = qp.page ?? 1;
@@ -140,7 +140,7 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
         const adapter = getAdapter();
 
         const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
-        const rows = adapter.query(
+        const rows = await adapterQuery(adapter,
           `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
           [req.params.id],
         );
@@ -183,14 +183,30 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
         const values = Object.values(dbBody);
         const placeholders = columns.map(() => "?").join(", ");
 
-        adapter.execute(
-          `INSERT INTO "${tableName}" (${columns.map((c) => `"${c}"`).join(", ")}) VALUES (${placeholders})`,
-          values,
-        );
+        // Non-SQLite engines can't read a plain INSERT's auto-id back via
+        // lastInsertId(); RETURNING the PK column lets us recover it. SQLite
+        // tolerates RETURNING but we still prefer its lastInsertId below.
+        const isSqlite = adapter.constructor.name === "SQLiteAdapter";
+        const insertSql =
+          `INSERT INTO "${tableName}" (${columns.map((c) => `"${c}"`).join(", ")}) VALUES (${placeholders})` +
+          (isSqlite ? "" : ` RETURNING "${pkColumn}"`);
+
+        const insertResult = await adapterExecute(adapter, insertSql, values);
+
+        // Recover the new PK: SQLite via lastInsertId(); others via RETURNING.
+        let lastId: unknown = isSqlite ? adapter.lastInsertId() : null;
+        if (lastId === null && insertResult && typeof insertResult === "object") {
+          const rrows = (insertResult as any).rows;
+          if (Array.isArray(rrows) && rrows[0]) {
+            lastId = rrows[0][pkColumn] ?? rrows[0].id ?? null;
+          }
+        }
+        if (lastId === null || lastId === undefined) {
+          lastId = adapter.lastInsertId();
+        }
 
         // Fetch the created record to include auto-generated fields (e.g. id)
-        const lastId = adapter.lastInsertId();
-        const created = adapter.query(
+        const created = await adapterQuery(adapter,
           `SELECT * FROM "${tableName}" WHERE "${pkColumn}" = ?`,
           [lastId],
         );
@@ -212,7 +228,7 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
         const body = req.body as Record<string, unknown>;
 
         const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
-        const existing = adapter.query(
+        const existing = await adapterQuery(adapter,
           `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
           [req.params.id],
         );
@@ -232,12 +248,12 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
           .join(", ");
         const values = [...Object.values(dbBody), req.params.id];
 
-        adapter.execute(
+        await adapterExecute(adapter,
           `UPDATE "${tableName}" SET ${setClauses} WHERE "${pkColumn}" = ?`,
           values,
         );
 
-        const updated = adapter.query(
+        const updated = await adapterQuery(adapter,
           `SELECT * FROM "${tableName}" WHERE "${pkColumn}" = ?`,
           [req.params.id],
         );
@@ -258,7 +274,7 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
         const adapter = getAdapter();
 
         const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
-        const existing = adapter.query(
+        const existing = await adapterQuery(adapter,
           `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
           [req.params.id],
         );
@@ -268,13 +284,13 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
         }
 
         if (softDelete) {
-          adapter.execute(
+          await adapterExecute(adapter,
             `UPDATE "${tableName}" SET is_deleted = 1 WHERE "${pkColumn}" = ?`,
             [req.params.id],
           );
           res.json({ message: "Deleted (soft)", data: existing[0] });
         } else {
-          adapter.execute(
+          await adapterExecute(adapter,
             `DELETE FROM "${tableName}" WHERE "${pkColumn}" = ?`,
             [req.params.id],
           );

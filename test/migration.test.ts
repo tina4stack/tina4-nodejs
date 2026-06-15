@@ -47,23 +47,23 @@ const adapter = getAdapter();
 // --- Migration Table Creation ---
 console.log("--- Migration Table ---");
 
-ensureMigrationTable();
+await ensureMigrationTable();
 assert("Migration table created", (adapter as any).tableExists("tina4_migration"));
 
 // Calling again should be idempotent
-ensureMigrationTable();
+await ensureMigrationTable();
 assert("ensureMigrationTable is idempotent", (adapter as any).tableExists("tina4_migration"));
 
 // --- Batch Tracking ---
 console.log("\n--- Batch Tracking ---");
 
-const batch1 = getNextBatch();
+const batch1 = await getNextBatch();
 assert("First batch is 1", batch1 === 1);
 
 // --- Apply Migrations ---
 console.log("\n--- Apply Migrations ---");
 
-applyMigration("20250101120000_create_users", () => {
+await applyMigration("20250101120000_create_users", () => {
   adapter.execute(`CREATE TABLE IF NOT EXISTS "test_users" (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -71,10 +71,10 @@ applyMigration("20250101120000_create_users", () => {
   )`);
 }, batch1);
 
-assert("Migration recorded", isMigrationApplied("20250101120000_create_users"));
+assert("Migration recorded", await isMigrationApplied("20250101120000_create_users"));
 assert("test_users table created", (adapter as any).tableExists("test_users"));
 
-applyMigration("20250101120100_create_posts", () => {
+await applyMigration("20250101120100_create_posts", () => {
   adapter.execute(`CREATE TABLE IF NOT EXISTS "test_posts" (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
@@ -82,14 +82,14 @@ applyMigration("20250101120100_create_posts", () => {
   )`);
 }, batch1);
 
-assert("Second migration in same batch", isMigrationApplied("20250101120100_create_posts"));
+assert("Second migration in same batch", await isMigrationApplied("20250101120100_create_posts"));
 assert("test_posts table created", (adapter as any).tableExists("test_posts"));
 
 // --- Duplicate Migration Prevention ---
 console.log("\n--- Duplicate Prevention ---");
 
 let duplicateRan = false;
-applyMigration("20250101120000_create_users", () => {
+await applyMigration("20250101120000_create_users", () => {
   duplicateRan = true;
 }, batch1);
 assert("Duplicate migration skipped", !duplicateRan);
@@ -97,19 +97,19 @@ assert("Duplicate migration skipped", !duplicateRan);
 // --- Second Batch ---
 console.log("\n--- Second Batch ---");
 
-const batch2 = getNextBatch();
+const batch2 = await getNextBatch();
 assert("Second batch is 2", batch2 === 2);
 
-applyMigration("20250201120000_add_age_column", () => {
+await applyMigration("20250201120000_add_age_column", () => {
   adapter.execute(`ALTER TABLE "test_users" ADD COLUMN age INTEGER DEFAULT 0`);
 }, batch2);
 
-assert("Batch 2 migration applied", isMigrationApplied("20250201120000_add_age_column"));
+assert("Batch 2 migration applied", await isMigrationApplied("20250201120000_add_age_column"));
 
 // --- Get Applied Migrations ---
 console.log("\n--- Applied Migrations List ---");
 
-const applied = getAppliedMigrations();
+const applied = await getAppliedMigrations();
 assert("All 3 migrations recorded", applied.length === 3);
 assert("Correct batch numbers", applied[0].batch === 1 && applied[2].batch === 2);
 assert("Migration names stored", applied[0].name === "20250101120000_create_users");
@@ -117,7 +117,7 @@ assert("Migration names stored", applied[0].name === "20250101120000_create_user
 // --- Last Batch Migrations ---
 console.log("\n--- Last Batch ---");
 
-const lastBatch = getLastBatchMigrations();
+const lastBatch = await getLastBatchMigrations();
 assert("Last batch has 1 migration", lastBatch.length === 1);
 assert("Last batch is batch 2", lastBatch[0].batch === 2);
 
@@ -129,19 +129,19 @@ downFunctions.set("20250201120000_add_age_column", () => {
   adapter.execute(`CREATE TABLE IF NOT EXISTS "_rollback_marker" (id INTEGER)`);
 });
 
-const rolledBack = rollback(downFunctions);
+const rolledBack = await rollback(downFunctions);
 assert("Rollback returns rolled-back migration names", rolledBack.length === 1);
 assert("Correct migration rolled back", rolledBack[0] === "20250201120000_add_age_column");
 assert("Down function executed", (adapter as any).tableExists("_rollback_marker"));
-assert("Migration record removed", !isMigrationApplied("20250201120000_add_age_column"));
+assert("Migration record removed", !(await isMigrationApplied("20250201120000_add_age_column")));
 
 // --- Verify batch 1 still intact ---
 console.log("\n--- Post-Rollback State ---");
 
-const remaining = getAppliedMigrations();
+const remaining = await getAppliedMigrations();
 assert("Batch 1 migrations still applied", remaining.length === 2);
-assert("Still applied: create_users", isMigrationApplied("20250101120000_create_users"));
-assert("Still applied: create_posts", isMigrationApplied("20250101120100_create_posts"));
+assert("Still applied: create_users", await isMigrationApplied("20250101120000_create_users"));
+assert("Still applied: create_posts", await isMigrationApplied("20250101120100_create_posts"));
 
 // --- Rollback batch 1 ---
 console.log("\n--- Rollback Batch 1 ---");
@@ -154,18 +154,18 @@ batch1Downs.set("20250101120000_create_users", () => {
   adapter.execute(`DROP TABLE IF EXISTS "test_users"`);
 });
 
-const rolledBack2 = rollback(batch1Downs);
+const rolledBack2 = await rollback(batch1Downs);
 assert("Batch 1 rollback: 2 migrations", rolledBack2.length === 2);
 assert("test_posts table dropped", !(adapter as any).tableExists("test_posts"));
 assert("test_users table dropped", !(adapter as any).tableExists("test_users"));
 
-const afterFullRollback = getAppliedMigrations();
+const afterFullRollback = await getAppliedMigrations();
 assert("No migrations remain after full rollback", afterFullRollback.length === 0);
 
 // --- Rollback with no migrations ---
 console.log("\n--- Empty Rollback ---");
 
-const emptyRollback = rollback(new Map());
+const emptyRollback = await rollback(new Map());
 assert("Rollback on empty state returns empty array", emptyRollback.length === 0);
 
 // ========================================================================
@@ -284,7 +284,7 @@ console.log("\n--- .down.sql Rollback ---");
 writeFileSync(result3Create.downPath, `DROP TABLE IF EXISTS test_sql_orders;`, "utf-8");
 
 // Rollback using directory-based .down.sql files
-const rolledBackSql = rollback(MIGRATIONS_DIR);
+const rolledBackSql = await rollback(MIGRATIONS_DIR);
 assert("SQL rollback rolled back migrations", rolledBackSql.length > 0);
 assert("test_sql_orders table dropped after rollback", !adapter2.tableExists("test_sql_orders"));
 
