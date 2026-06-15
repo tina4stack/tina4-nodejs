@@ -14,7 +14,7 @@ export { FetchResult } from "./types.js";
 
 export { DatabaseResult } from "./databaseResult.js";
 export type { ColumnInfoResult } from "./databaseResult.js";
-export { Database, initDatabase, getAdapter, setAdapter, bindDatabase, createAdapterFromUrl, closeDatabase, parseDatabaseUrl, setNamedAdapter, getNamedAdapter, resolveDbPool, stripTrailingSemicolons } from "./database.js";
+export { Database, initDatabase, getAdapter, setAdapter, bindDatabase, createAdapterFromUrl, closeDatabase, parseDatabaseUrl, setNamedAdapter, getNamedAdapter, resolveDbPool, stripTrailingSemicolons, wrapWithCache, resetRequestCaches } from "./database.js";
 export {
   adapterFetch, adapterQuery, adapterFetchOne, adapterExecute,
   adapterStartTransaction, adapterCommit, adapterRollback,
@@ -49,6 +49,7 @@ export { BaseModel, snakeToCamel, camelToSnake } from "./baseModel.js";
 export { QueryBuilder } from "./queryBuilder.js";
 export { SQLTranslator, QueryCache } from "./sqlTranslation.js";
 export { CachedDatabaseAdapter } from "./cachedDatabase.js";
+export type { CachedAdapterOptions } from "./cachedDatabase.js";
 export { FakeData } from "./fakeData.js";
 export { seedTable, seedOrm } from "./seeder.js";
 

@@ -610,6 +610,12 @@ function deployGallery(name) {
 // Allows handle() to route requests without requiring a reference to the server.
 let _dispatchFn: ((rawReq: IncomingMessage, rawRes: ServerResponse) => Promise<void>) | null = null;
 
+// Lazily-resolved Database.resetRequestCaches binding (or null if the ORM is
+// not installed). Memoised so the dynamic import happens once, then every
+// request reuses the resolved function — see the request-scoped cache boundary
+// in dispatch().
+let _resetRequestCaches: Promise<(() => void) | null> | undefined;
+
 /** Module-level server handle for start()/stop() parity. */
 let _serverHandle: { close: () => void; router: Router; port: number } | null = null;
 
@@ -913,6 +919,25 @@ ${reset}
   async function dispatch(rawReq: IncomingMessage, rawRes: ServerResponse): Promise<void> {
     const req = createRequest(rawReq);
     const res = createResponse(rawRes);
+
+    // Request-scoped DB query cache boundary: clear the request-scoped cache on
+    // every live connection at the START of each request so it never serves
+    // rows across requests (persistent-mode connections are left alone). The
+    // ORM is loaded lazily and may be absent — failures here must never break a
+    // request, so this is best-effort. Mirrors Python's dispatcher calling
+    // Database.reset_request_caches(). The cached() promise resolves once on
+    // first use; subsequent requests reuse the resolved module.
+    if (_resetRequestCaches === undefined) {
+      _resetRequestCaches = import("../../orm/src/index.js")
+        .then((orm) => orm.resetRequestCaches as () => void)
+        .catch(() => null);
+    }
+    try {
+      const reset = await _resetRequestCaches;
+      if (reset) reset();
+    } catch {
+      /* ORM not installed / cache unavailable — non-fatal */
+    }
 
     // RFC 9110 §9.3.2: the server MUST NOT send content in a HEAD response.
     // Intercept rawRes.write / rawRes.end so every code path — explicit

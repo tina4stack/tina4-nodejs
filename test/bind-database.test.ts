@@ -31,9 +31,20 @@ import {
   BaseModel,
 } from "../packages/orm/src/index.ts";
 import { SQLiteAdapter } from "../packages/orm/src/adapters/sqlite.ts";
+import { CachedDatabaseAdapter } from "../packages/orm/src/index.ts";
 
 let pass = 0;
 let fail = 0;
+
+/**
+ * Resolve an adapter to its underlying raw adapter. Since v3.13.23 the bind
+ * path wraps every adapter with CachedDatabaseAdapter (request-scoped query
+ * cache, ON by default), so getAdapter()/getNamedAdapter() return the WRAPPER.
+ * Unwrap one level to compare against the raw adapter the test created.
+ */
+function raw(adapter: unknown): unknown {
+  return adapter instanceof CachedDatabaseAdapter ? adapter.getAdapter() : adapter;
+}
 
 function assert(name: string, condition: boolean, detail = ""): void {
   if (condition) {
@@ -56,7 +67,7 @@ function summaryAndExit(code = 0): never {
 {
   const adapter = new SQLiteAdapter(":memory:");
   bindDatabase(adapter);
-  assert("bindDatabase(adapter) makes getAdapter() return it", getAdapter() === adapter);
+  assert("bindDatabase(adapter) makes getAdapter() return it (cache-wrapped)", raw(getAdapter()) === adapter);
 }
 
 // ── 2. bindDatabase(adapter2, "analytics") → named connection ────────
@@ -64,13 +75,13 @@ function summaryAndExit(code = 0): never {
   const adapter2 = new SQLiteAdapter(":memory:");
   bindDatabase(adapter2, "analytics");
   assert(
-    'bindDatabase(adapter2, "analytics") registers a named adapter',
-    getNamedAdapter("analytics") === adapter2,
+    'bindDatabase(adapter2, "analytics") registers a named adapter (cache-wrapped)',
+    raw(getNamedAdapter("analytics")) === adapter2,
   );
   // The default must be untouched by a named bind.
   assert(
     "named bind does not clobber the default connection",
-    getAdapter() !== adapter2,
+    raw(getAdapter()) !== adapter2,
   );
 
   // ── 3. a model with static _db = "analytics" resolves to adapter2 ──
@@ -82,7 +93,7 @@ function summaryAndExit(code = 0): never {
   }
   assert(
     'model with static _db = "analytics" resolves to adapter2 via getDb()',
-    (AnalyticsModel as any).resolveDb() === adapter2,
+    raw((AnalyticsModel as any).resolveDb()) === adapter2,
   );
 }
 

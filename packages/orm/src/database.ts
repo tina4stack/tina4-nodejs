@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult, ColumnInfo, FieldDefinition } from "./types.js";
 import { DatabaseResult } from "./databaseResult.js";
+import { CachedDatabaseAdapter, type CachedAdapterOptions } from "./cachedDatabase.js";
+import { QueryCache } from "./sqlTranslation.js";
 
 /**
  * v3.13.12 — strip trailing `;` and whitespace from user-supplied SQL
@@ -128,8 +130,45 @@ export function extractLastInsertId(result: unknown): number | bigint | null {
 let activeAdapter: DatabaseAdapter | null = null;
 const namedAdapters: Map<string, DatabaseAdapter> = new Map();
 
-export function setAdapter(adapter: DatabaseAdapter): void {
-  activeAdapter = adapter;
+/**
+ * Wrap a raw adapter with the query cache so BOTH `db.fetch()` (via the
+ * Database wrapper) AND ORM reads (via `getAdapter()` / `getNamedAdapter()`)
+ * are cached through the same store and counters.
+ *
+ * Idempotent: an already-wrapped adapter is returned as-is, so re-binding the
+ * same adapter (or binding the adapter a Database wrapper already holds) never
+ * double-wraps. `options.sharedCache` backs all pooled connections with one
+ * store so a write on any connection invalidates reads cached by all of them.
+ *
+ * Caching is ON by default (request-scoped, TINA4_QUERY_CACHE) and additionally
+ * persistent when TINA4_DB_CACHE=true. Off-switch: TINA4_QUERY_CACHE=false (and
+ * TINA4_DB_CACHE unset) — then the wrapper passes everything straight through.
+ */
+export function wrapWithCache(adapter: DatabaseAdapter, options?: CachedAdapterOptions): DatabaseAdapter {
+  if (adapter instanceof CachedDatabaseAdapter) return adapter;
+  return new CachedDatabaseAdapter(adapter, options);
+}
+
+/**
+ * Resolve the underlying wrapped adapter for a given raw adapter — used so the
+ * Database wrapper and `getAdapter()` end up holding the SAME
+ * CachedDatabaseAdapter instance (one cache, one set of counters).
+ */
+export function setAdapter(adapter: DatabaseAdapter): DatabaseAdapter {
+  activeAdapter = wrapWithCache(adapter);
+  return activeAdapter;
+}
+
+/**
+ * Clear the request-scoped query cache on every live connection at the start of
+ * each HTTP request, so request-scoped caching never serves rows across
+ * requests. Persistent-mode connections (TINA4_DB_CACHE=true) are untouched.
+ *
+ * The request dispatcher calls this. Mirrors Python's
+ * `Database.reset_request_caches()`.
+ */
+export function resetRequestCaches(): void {
+  CachedDatabaseAdapter.resetRequestCaches();
 }
 
 /**
@@ -161,7 +200,9 @@ export function bindDatabase(adapter: DatabaseAdapter, name?: string): void {
   if (name === undefined) {
     setAdapter(adapter);
   } else {
-    namedAdapters.set(name, adapter);
+    // Named connections are cached too, so ORM models pointed at them with
+    // `static _db = name` get the same request-scoped/persistent caching.
+    namedAdapters.set(name, wrapWithCache(adapter));
   }
 }
 
@@ -177,7 +218,7 @@ export function getAdapter(): DatabaseAdapter {
  * Models reference it via `static _db = 'name'`.
  */
 export function setNamedAdapter(name: string, adapter: DatabaseAdapter): void {
-  namedAdapters.set(name, adapter);
+  namedAdapters.set(name, wrapWithCache(adapter));
 }
 
 /**
@@ -463,29 +504,35 @@ export class Database {
     const parsed = parseDatabaseUrl(url, username, password);
 
     if (pool > 0) {
-      // Pooled mode — create all adapters eagerly
+      // Pooled mode — create all adapters eagerly, then wrap each with the
+      // query cache backed by ONE shared store so a write on any pooled
+      // connection invalidates reads cached by all of them.
+      const sharedCache = new QueryCache({ maxSize: 10000 });
       const adapters: DatabaseAdapter[] = [];
       for (let i = 0; i < pool; i++) {
-        adapters.push(await createAdapterFromUrl(url, username, password));
+        const raw = await createAdapterFromUrl(url, username, password);
+        adapters.push(wrapWithCache(raw, { sharedCache }));
       }
 
-      // Set the first adapter as the global default
-      setAdapter(adapters[0]);
+      // Set the first adapter as the global default (already cache-wrapped).
+      activeAdapter = adapters[0];
 
       const db = new Database(adapters[0]);
       db._poolSize = pool;
       db.pool = adapters;
       db.poolIndex = 0;
       db.adapter = null;  // Don't use single-adapter path
-      db.adapterFactory = () => createAdapterFromUrl(url, username, password);
+      db.adapterFactory = async () => wrapWithCache(await createAdapterFromUrl(url, username, password), { sharedCache });
       db.dbType = parsed.type;
       return db;
     }
 
-    // Single-connection mode — current behavior
+    // Single-connection mode — wrap once and share the SAME wrapped adapter
+    // between getAdapter() (ORM reads) and the Database wrapper (db.fetch()),
+    // so both hit one cache + one set of counters.
     const adapter = await createAdapterFromUrl(url, username, password);
-    setAdapter(adapter);
-    const db = new Database(adapter);
+    const wrapped = setAdapter(adapter);
+    const db = new Database(wrapped);
     db.dbType = parsed.type;
     return db;
   }
@@ -780,21 +827,42 @@ export class Database {
     return this.lastError ?? null;
   }
 
-  /** Return query cache statistics. */
-  cacheStats(): { enabled: boolean; size: number; ttl: number } {
-    return {
-      enabled: process.env.TINA4_DB_CACHE === "true",
-      size: 0,
-      ttl: parseInt(process.env.TINA4_DB_CACHE_TTL ?? "30", 10),
-    };
+  /**
+   * Return query cache statistics from the REAL cache backing this connection.
+   *
+   * The bound adapter is a CachedDatabaseAdapter (caching is ON by default —
+   * request-scoped — and additionally persistent when TINA4_DB_CACHE=true), so
+   * we read the live counters + size + mode from it. Mirrors Python's
+   * `Database.cache_stats()`: `{ enabled, mode, hits, misses, size, ttl }`.
+   */
+  cacheStats(): { enabled: boolean; mode: "persistent" | "request" | "off"; hits: number; misses: number; size: number; ttl: number } {
+    const adapter = this.getNextAdapter();
+    if (adapter instanceof CachedDatabaseAdapter) {
+      return adapter.cacheStats();
+    }
+    // Adapter isn't cache-wrapped (shouldn't happen via initDatabase/create) —
+    // report a disabled cache truthfully rather than lying about size.
+    return { enabled: false, mode: "off", hits: 0, misses: 0, size: 0, ttl: 0 };
   }
 
-  /** Clear the query result cache. */
+  /** Flush the query cache and reset counters (mirrors Python `cache_clear()`). */
   cacheClear(): void {
-    // Node database layer does not maintain an internal query cache at this
-    // level (caching lives in the SQLTranslation layer). This method exists
-    // for API parity with PHP, Python, and Ruby.
-    // To clear the SQLTranslation query cache use: QueryCache.clear()
+    const adapter = this.getNextAdapter();
+    if (adapter instanceof CachedDatabaseAdapter) {
+      adapter.cacheClear();
+    }
+  }
+
+  /**
+   * Clear the request-scoped cache at the START of an HTTP request on this
+   * connection (no-op in persistent mode). Mirrors Python's
+   * `Database.cache_new_request()`.
+   */
+  cacheNewRequest(): void {
+    const adapter = this.getNextAdapter();
+    if (adapter instanceof CachedDatabaseAdapter) {
+      adapter.cacheNewRequest();
+    }
   }
 
   /** Get the last auto-increment id. */
@@ -1088,6 +1156,18 @@ export namespace Database {
       password: opts.password,
     });
   }
+
+  /**
+   * Clear the request-scoped query cache on every live connection.
+   *
+   * Static convenience mirroring Python's `Database.reset_request_caches()`
+   * classmethod. The request dispatcher calls this at the start of each HTTP
+   * request so request-scoped caching never serves rows across requests.
+   * Persistent-mode connections (TINA4_DB_CACHE=true) are left alone.
+   */
+  export function resetRequestCaches(): void {
+    CachedDatabaseAdapter.resetRequestCaches();
+  }
 }
 
 export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
@@ -1106,8 +1186,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
       return Database.create(url, resolvedUser, resolvedPassword, pool);
     }
     const adapter = await createAdapterFromUrl(url, resolvedUser, resolvedPassword);
-    setAdapter(adapter);
-    return new Database(adapter);
+    return new Database(setAdapter(adapter));
   }
 
   // Legacy config path — normalize "sqlserver" to "mssql"
@@ -1132,8 +1211,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
     case "sqlite": {
       const { SQLiteAdapter } = await import("./adapters/sqlite.js");
       const adapter = new SQLiteAdapter(config?.path ?? "./data/tina4.db");
-      setAdapter(adapter);
-      return new Database(adapter);
+      return new Database(setAdapter(adapter));
     }
     case "postgres": {
       const { PostgresAdapter } = await import("./adapters/postgres.js");
@@ -1145,8 +1223,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      setAdapter(adapter);
-      return new Database(adapter);
+      return new Database(setAdapter(adapter));
     }
     case "mysql": {
       const { MysqlAdapter } = await import("./adapters/mysql.js");
@@ -1158,8 +1235,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      setAdapter(adapter);
-      return new Database(adapter);
+      return new Database(setAdapter(adapter));
     }
     case "mssql": {
       const { MssqlAdapter } = await import("./adapters/mssql.js");
@@ -1171,8 +1247,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      setAdapter(adapter);
-      return new Database(adapter);
+      return new Database(setAdapter(adapter));
     }
     case "firebird": {
       const { FirebirdAdapter } = await import("./adapters/firebird.js");
@@ -1184,8 +1259,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      setAdapter(adapter);
-      return new Database(adapter);
+      return new Database(setAdapter(adapter));
     }
     case "mongodb": {
       const { MongodbAdapter } = await import("./adapters/mongodb.js");
@@ -1198,16 +1272,14 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
       const connectionString = `mongodb://${creds}${host}:${port}/${database}`;
       const adapter = new MongodbAdapter(connectionString);
       await adapter.connect();
-      setAdapter(adapter);
-      return new Database(adapter);
+      return new Database(setAdapter(adapter));
     }
     case "odbc": {
       const { OdbcAdapter } = await import("./adapters/odbc.js");
       const connStr = config?.connectionString ?? config?.url?.replace(/^odbc:\/\/\//, "") ?? "";
       const adapter = new OdbcAdapter({ connectionString: connStr });
       await adapter.connect();
-      setAdapter(adapter);
-      return new Database(adapter);
+      return new Database(setAdapter(adapter));
     }
     default:
       throw new Error(`Unknown database type: ${type}`);

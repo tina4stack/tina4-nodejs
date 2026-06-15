@@ -4,7 +4,7 @@
  *
  * Tests that need running databases are skipped by default.
  */
-import { parseDatabaseUrl, setAdapter, getAdapter, closeDatabase, SQLTranslator } from "../packages/orm/src/index.ts";
+import { parseDatabaseUrl, setAdapter, getAdapter, closeDatabase, SQLTranslator, CachedDatabaseAdapter } from "../packages/orm/src/index.ts";
 import { SQLiteAdapter } from "../packages/orm/src/adapters/sqlite.ts";
 import { PostgresAdapter } from "../packages/orm/src/adapters/postgres.ts";
 import { MysqlAdapter } from "../packages/orm/src/adapters/mysql.ts";
@@ -42,7 +42,12 @@ mkdirSync("/tmp/tina4-driver-test", { recursive: true });
 
 const sqlite = new SQLiteAdapter(testDbPath);
 setAdapter(sqlite);
-assert("SQLiteAdapter registered as default", getAdapter() === sqlite);
+// Since v3.13.23 setAdapter() wraps the adapter with the query cache
+// (CachedDatabaseAdapter, ON by default), so getAdapter() returns the wrapper.
+// Unwrap one level to compare against the raw adapter we created.
+const registered = getAdapter();
+const unwrapped = registered instanceof CachedDatabaseAdapter ? registered.getAdapter() : registered;
+assert("SQLiteAdapter registered as default (cache-wrapped)", unwrapped === sqlite);
 
 // Test the expanded interface methods on SQLite
 sqlite.createTable("driver_test", {
