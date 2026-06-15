@@ -1,10 +1,10 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.13.18)
+# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.13.19)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.13.18 — The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.13.19 — The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -105,7 +105,7 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `router.ts` — Pattern matching with `{id}` dynamic params and `{...slug}` catch-all
 - `routeDiscovery.ts` — Scans `src/routes/` recursively, maps files to endpoints (converts `[id]` dirs to `{id}` URL patterns)
 - `request.ts` — Wraps `IncomingMessage`, adds `.params`, `.query`, `.body`
-- `response.ts` — Wraps `ServerResponse`, adds `.json()`, `.html()`, `.status()`, `.send()`, `.redirect()`
+- `response.ts` — Wraps `ServerResponse`, adds `.json()`, `.html()`, `.status()`, `.send()`, `.redirect()`. `res.json(...)` / `response(...)` auto-serialize an ORM model (→ JSON object), an array of models, or a `DatabaseResult` (→ JSON array) — no manual `toDict()`/`toJson()`. Plain objects, arrays and strings behave exactly as before (purely additive).
 - `middleware.ts` — Chain runner, built-in CORS and request logger
 - `static.ts` — Serves files from `public/` with MIME type detection
 - `types.ts` — All shared type definitions (`Tina4Request`, `Tina4Response`, `RouteHandler`, etc.)
@@ -242,6 +242,8 @@ req.query: Record<string, string>         // query string params
 response.xml(content, status?): Tina4Response
 response.stream(source: AsyncIterable<string | Buffer>, contentType?: string): Promise<Tina4Response>  // SSE/streaming
 ```
+
+`res.json(model)`, `res.json(arrayOfModels)`, and `res.json(db.fetch(...))` auto-serialize to JSON — a single model becomes a JSON object, an array of models or a `DatabaseResult` becomes a JSON array. No manual `toDict()`/`toJson()` needed.
 
 ### Queue
 
@@ -553,7 +555,7 @@ r.group("/api/v1", (g) => {
 Full Database API. The same instance covers all five drivers (sqlite, postgres, mysql, mssql, firebird) — pick the driver via `TINA4_DATABASE_URL` or pass a `DatabaseConfig` to `initDatabase()`.
 
 ```typescript
-import { initDatabase, Database, DatabaseResult } from "@tina4/orm";
+import { initDatabase, bindDatabase, createAdapterFromUrl, Database, DatabaseResult } from "@tina4/orm";
 
 const db = await initDatabase({ url: "sqlite:///app.db" });
 // Connection pooling: pass `pool: 4` for round-robin connections.
@@ -595,6 +597,30 @@ db.cacheClear(): void
 db.pool
 ```
 
+### Binding adapters: `bindDatabase` / `createAdapterFromUrl`
+
+There are three ways models get an adapter, in increasing order of explicitness:
+
+```typescript
+import { initDatabase, bindDatabase, createAdapterFromUrl } from "@tina4/orm";
+
+// (a) .env auto-default (unchanged) — initDatabase() auto-binds the default at boot.
+//     Most apps need nothing more than TINA4_DATABASE_URL in .env.
+const db = await initDatabase({ url: "sqlite:///app.db" });
+
+// (b) Set or override the default explicitly with bindDatabase(adapter).
+bindDatabase(adapter);
+
+// (c) Register a NAMED / secondary connection and point a model at it.
+bindDatabase(await createAdapterFromUrl("postgres://localhost:5432/analytics"), "analytics");
+// then a model selects it:
+//   class Visit extends BaseModel { static _db = "analytics"; }
+```
+
+- `bindDatabase(adapter, name?)` — public binder. With no `name` it sets/overrides the **default** connection; with a `name` it registers a **named** connection. `initDatabase()` (auto-binds the `.env` default) and the internal `setAdapter()` are unchanged — `bindDatabase` is additive and non-breaking.
+- `createAdapterFromUrl(url, user?, pass?)` — now exported. Builds a `DatabaseAdapter` from a connection URL (and optional credentials), ready to pass to `bindDatabase`.
+- A model selects a named connection via `static _db = "analytics"`. A mistyped/missing named connection (e.g. `static _db = "typo"`) now **throws** a clear error instead of silently falling back to the default.
+
 **`tina4_sequences` table** — Auto-created by `getNextId()` on first use for SQLite, MySQL, and MSSQL. Stores the current sequence value per table. Do not modify this table manually.
 
 ## Module: ORM (`packages/orm/src/baseModel.ts`)
@@ -602,7 +628,7 @@ db.pool
 Active-Record base class. Models live in `src/models/` and are auto-discovered. Use `static fields` (not decorators) — same convention across all four frameworks.
 
 ```typescript
-import { BaseModel, initDatabase, setAdapter } from "@tina4/orm";
+import { BaseModel, initDatabase, bindDatabase, createAdapterFromUrl } from "@tina4/orm";
 
 export default class User extends BaseModel {
   static tableName = "users";
@@ -612,10 +638,15 @@ export default class User extends BaseModel {
     author_id: { type: "foreignKey" as const, references: "Author" }, // auto-wires belongsTo + hasMany
   };
   static softDelete = true;   // optional — toggles is_deleted column
+  // static _db = "analytics";  // optional — bind this model to a named connection
 }
 
+// Constructor accepts an object OR a JSON object string. Passing an array throws TypeError.
+const user  = new User({ email: "alice@example.com" });
+const user2 = new User('{"email":"bob@example.com"}');  // JSON object string -> one record
+// new User([{ ... }]);  // throws TypeError — map over the list to build many records
+
 // Instance methods (chainable where it makes sense)
-const user = new User({ email: "alice@example.com" });
 user.save();              // returns this on success, false on failure
 user.delete();            // soft-delete if enabled, otherwise hard
 user.forceDelete();       // bypasses soft-delete
@@ -645,11 +676,16 @@ User.createTable();
 User.query(): QueryBuilder;
 BaseModel.registerModel(name, class);     // for foreignKey name resolution
 
-// Models bind to the active adapter, not a Database wrapper. initDatabase() sets it
-// automatically; setAdapter() lets you bind one explicitly. Models read it via getAdapter().
-await initDatabase({ url: "sqlite:///app.db" });   // sets the active adapter for all models
-// or, with an adapter you constructed yourself:
-setAdapter(adapter);
+// Models bind to the active adapter, not a Database wrapper. There are three ways:
+// (a) .env auto-default (unchanged) — initDatabase() auto-binds the default at boot:
+await initDatabase({ url: "sqlite:///app.db" });   // sets the default adapter for all models
+// (b) set/override the default explicitly:
+bindDatabase(adapter);
+// (c) register a NAMED/secondary connection, then point a model at it with `static _db`:
+bindDatabase(await createAdapterFromUrl("postgres://localhost:5432/analytics"), "analytics");
+//   class Visit extends BaseModel { static _db = "analytics"; }
+// A mistyped/missing named connection (e.g. static _db = "typo") now throws instead of
+// silently falling back to the default. (initDatabase / the internal setAdapter are unchanged.)
 ```
 
 **Soft delete:** set `static softDelete = true`. Adds an `is_deleted` INTEGER column (0/1). `delete()` flips the flag, `forceDelete()` removes the row, `restore()` clears it.
@@ -1062,7 +1098,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 ## v3 Features Summary
 
 - **45 built-in features**, zero third-party dependencies
-- **3,653 tests** passing across all modules
+- **3,679 tests** passing across all modules
 - **Race-safe `getNextId()`** with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
