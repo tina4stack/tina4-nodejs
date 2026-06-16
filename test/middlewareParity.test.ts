@@ -337,11 +337,11 @@ console.log("\n--- Class-based middleware via MiddlewareRunner ---");
   const req = mockReq();
   const res = mockRes();
 
-  const [, , shouldContinue] = MiddlewareRunner.runBefore([LogMw], req, res);
+  const [, , shouldContinue] = await MiddlewareRunner.runBefore([LogMw], req, res);
   assert("Class beforeLog ran", trace.includes("class.beforeLog"));
   assert("Class middleware allows handler to continue", shouldContinue === true);
 
-  MiddlewareRunner.runAfter([LogMw], req, res);
+  await MiddlewareRunner.runAfter([LogMw], req, res);
   assert("Class afterLog ran", trace.includes("class.afterLog"));
 }
 
@@ -356,7 +356,7 @@ console.log("\n--- Class-based middleware via MiddlewareRunner ---");
 
   const req = mockReq();
   const res = mockRes();
-  const [, , shouldContinue] = MiddlewareRunner.runBefore([GateMw], req, res);
+  const [, , shouldContinue] = await MiddlewareRunner.runBefore([GateMw], req, res);
 
   assert(
     "Class middleware short-circuits on 4xx status",

@@ -2,16 +2,31 @@
  * Unit tests for the response cache (cache.ts) — multi-backend.
  * The KV/module API (cacheGet/cacheSet/cacheDelete/cacheClear/cacheStats/
  * cacheBackendStats) is ASYNC on Node — callers await it. The responseCache
- * middleware keeps its own synchronous in-process store (clearCache() stays sync).
+ * middleware is ASYNC too (it routes through the unified backend so cached GET
+ * responses distribute via redis/etc.); clearCache() is async (backend-aware).
  * Run with: npx tsx test/cache.test.ts
  */
 import { responseCache, clearCache, cacheStats, cacheGet, cacheSet, cacheDelete, cacheClear, cacheBackendStats, _resetBackend } from "../packages/core/src/index.ts";
 import type { Tina4Request, Tina4Response, Middleware } from "../packages/core/src/index.ts";
 import * as fs from "node:fs";
-import * as path from "node:path";
+import * as net from "node:net";
 
 let pass = 0;
 let fail = 0;
+
+/** True if a redis/valkey server answers PING on localhost:6379 (RESP over TCP). */
+function redisReachable(host = "localhost", port = 6379, timeoutMs = 800): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host, port });
+    let settled = false;
+    const done = (ok: boolean) => { if (!settled) { settled = true; try { sock.destroy(); } catch {} resolve(ok); } };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    if (timer.unref) timer.unref();
+    sock.once("error", () => done(false));
+    sock.once("connect", () => { sock.write("PING\r\n"); });
+    sock.once("data", (d) => done(d.toString().startsWith("+PONG")));
+  });
+}
 
 function assert(name: string, condition: boolean, detail = "") {
   if (condition) {
@@ -60,37 +75,37 @@ async function main() {
   let nextCalled = false;
   const mockReq = { method: "GET", url: "/test" } as Tina4Request;
   const mockRes = { raw: { writableEnded: false } } as Tina4Response;
-  disabledMw(mockReq, mockRes, () => { nextCalled = true; });
+  await disabledMw(mockReq, mockRes, () => { nextCalled = true; });
   assert("TTL 0 calls next() immediately", nextCalled);
 
   // --- Non-GET requests pass through ---
   console.log("\n--- Non-GET Passthrough ---");
 
-  clearCache();
+  await clearCache();
   const cacheMw = responseCache({ ttl: 60 });
 
   let postNextCalled = false;
   const postReq = { method: "POST", url: "/api/data" } as Tina4Request;
   const postRes = { raw: { writableEnded: false } } as Tina4Response;
-  cacheMw(postReq, postRes, () => { postNextCalled = true; });
+  await cacheMw(postReq, postRes, () => { postNextCalled = true; });
   assert("POST request calls next()", postNextCalled);
 
   let putNextCalled = false;
   const putReq = { method: "PUT", url: "/api/data/1" } as Tina4Request;
   const putRes = { raw: { writableEnded: false } } as Tina4Response;
-  cacheMw(putReq, putRes, () => { putNextCalled = true; });
+  await cacheMw(putReq, putRes, () => { putNextCalled = true; });
   assert("PUT request calls next()", putNextCalled);
 
   let deleteNextCalled = false;
   const deleteReq = { method: "DELETE", url: "/api/data/1" } as Tina4Request;
   const deleteRes = { raw: { writableEnded: false } } as Tina4Response;
-  cacheMw(deleteReq, deleteRes, () => { deleteNextCalled = true; });
+  await cacheMw(deleteReq, deleteRes, () => { deleteNextCalled = true; });
   assert("DELETE request calls next()", deleteNextCalled);
 
   // --- GET request cache miss calls next ---
   console.log("\n--- GET Cache Miss ---");
 
-  clearCache();
+  await clearCache();
   const cacheMw2 = responseCache({ ttl: 60 });
   let getNextCalled = false;
   const headers: Record<string, string> = {};
@@ -105,7 +120,7 @@ async function main() {
     header: (name: string, value: string) => { headers[name.toLowerCase()] = value; },
   } as unknown as Tina4Response;
 
-  cacheMw2(getReq, getRes, () => { getNextCalled = true; });
+  await cacheMw2(getReq, getRes, () => { getNextCalled = true; });
   assert("GET cache miss calls next()", getNextCalled);
 
   // --- Config options ---
@@ -352,6 +367,130 @@ async function main() {
   {
     const noArgMw = responseCache({ ttl: 60 });
     assert("Middleware with ttl-only option", typeof noArgMw === "function");
+  }
+
+  // --- responseCache distributes through the backend (memory default) ---
+  // A SECOND middleware instance serves the response a FIRST instance stored,
+  // proving they share the unified backend (in-process for memory, cross-
+  // instance for redis/etc.). This is the parity behaviour with Python/PHP/Ruby.
+  console.log("\n--- responseCache shared backend (memory default) ---");
+  {
+    delete process.env.TINA4_CACHE_BACKEND;
+    _resetBackend();
+    await clearCache();
+
+    const url = "/api/shared-memory";
+    const body = JSON.stringify({ value: 42 });
+
+    // Instance A — MISS, captures + stores on end().
+    const mwA = responseCache({ ttl: 60 });
+    const headersA: Record<string, string> = {};
+    const reqA = { method: "GET", url } as Tina4Request;
+    const resA = {
+      raw: {
+        writableEnded: false, statusCode: 200,
+        end(_chunk: any) { return this; },
+        getHeader: (n: string) => headersA[n.toLowerCase()] || "application/json",
+      },
+      header: (n: string, v: string) => { headersA[n.toLowerCase()] = v; },
+    } as unknown as Tina4Response;
+    let aNext = false;
+    await mwA(reqA, resA, () => { aNext = true; });
+    assert("instance A: GET miss calls next()", aNext);
+    // Trigger the capture (server calls res.raw.end with the body).
+    (resA.raw.end as any)(body);
+    // Let the fire-and-forget backend.set settle.
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Instance B (fresh middleware) — should serve the HIT from the shared backend.
+    const mwB = responseCache({ ttl: 60 });
+    const headersB: Record<string, string> = {};
+    let servedBody: string | null = null;
+    let servedStatus = 0;
+    const reqB = { method: "GET", url } as Tina4Request;
+    const resB = Object.assign(
+      function (b: any, status?: number) { servedBody = b; servedStatus = status ?? 200; },
+      {
+        raw: {
+          writableEnded: false, statusCode: 200,
+          end(_chunk: any) { return this; },
+          getHeader: (n: string) => headersB[n.toLowerCase()] || "application/json",
+        },
+        header: (n: string, v: string) => { headersB[n.toLowerCase()] = v; },
+      },
+    ) as unknown as Tina4Response;
+    let bNext = false;
+    await mwB(reqB, resB, () => { bNext = true; });
+    assert("instance B serves HIT from shared backend (no next)", !bNext && servedBody === body, `body=${servedBody} status=${servedStatus}`);
+    assert("instance B HIT sets X-Cache: HIT header", headersB["x-cache"] === "HIT");
+
+    await clearCache();
+    _resetBackend();
+  }
+
+  // --- responseCache distributes cross-instance via redis (self-skip) ---
+  console.log("\n--- responseCache cross-instance via redis (db 3) ---");
+  {
+    const reachable = await redisReachable();
+    if (!reachable) {
+      console.log("  \x1b[33mSKIP\x1b[0m redis unreachable on localhost:6379 — skipping cross-instance redis test");
+    } else {
+      const prevBackend = process.env.TINA4_CACHE_BACKEND;
+      const prevUrl = process.env.TINA4_CACHE_URL;
+      process.env.TINA4_CACHE_BACKEND = "redis";
+      process.env.TINA4_CACHE_URL = "redis://localhost:6379/3";
+      _resetBackend();
+      await clearCache();
+
+      const url = "/api/shared-redis?x=" + Date.now();
+      const body = JSON.stringify({ via: "redis", n: 7 });
+
+      // Producer middleware instance — MISS then store.
+      const mwProducer = responseCache({ ttl: 60 });
+      const hP: Record<string, string> = {};
+      const reqP = { method: "GET", url } as Tina4Request;
+      const resP = {
+        raw: {
+          writableEnded: false, statusCode: 200,
+          end(_chunk: any) { return this; },
+          getHeader: (n: string) => hP[n.toLowerCase()] || "application/json",
+        },
+        header: (n: string, v: string) => { hP[n.toLowerCase()] = v; },
+      } as unknown as Tina4Response;
+      await mwProducer(reqP, resP, () => {});
+      (resP.raw.end as any)(body);
+      await new Promise((r) => setTimeout(r, 60));
+
+      // Simulate a SEPARATE instance: reset the module backend so the consumer
+      // builds a brand-new redis connection (no in-process state shared).
+      _resetBackend();
+
+      const mwConsumer = responseCache({ ttl: 60 });
+      const hC: Record<string, string> = {};
+      let servedBody: string | null = null;
+      const reqC = { method: "GET", url } as Tina4Request;
+      const resC = Object.assign(
+        function (b: any) { servedBody = b; },
+        {
+          raw: {
+            writableEnded: false, statusCode: 200,
+            end(_chunk: any) { return this; },
+            getHeader: (n: string) => hC[n.toLowerCase()] || "application/json",
+          },
+          header: (n: string, v: string) => { hC[n.toLowerCase()] = v; },
+        },
+      ) as unknown as Tina4Response;
+      let cNext = false;
+      await mwConsumer(reqC, resC, () => { cNext = true; });
+      assert("redis cross-instance: consumer serves producer's response", !cNext && servedBody === body, `body=${servedBody}`);
+      assert("redis cross-instance: HIT header set", hC["x-cache"] === "HIT");
+
+      await clearCache();
+      _resetBackend();
+      if (prevBackend === undefined) delete process.env.TINA4_CACHE_BACKEND; else process.env.TINA4_CACHE_BACKEND = prevBackend;
+      if (prevUrl === undefined) delete process.env.TINA4_CACHE_URL; else process.env.TINA4_CACHE_URL = prevUrl;
+      _resetBackend();
+    }
   }
 
   // Summary

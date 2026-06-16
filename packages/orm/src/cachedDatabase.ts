@@ -31,16 +31,11 @@
 
 import { QueryCache } from "./sqlTranslation.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "./types.js";
+import type { CacheBackend } from "@tina4/core";
 
 function isTruthy(val: string | undefined): boolean {
   return ["true", "1", "yes", "on"].includes((val ?? "").trim().toLowerCase());
 }
-
-/** Network backends that cannot serve a SYNCHRONOUS db.fetch() path. */
-const NETWORK_DB_CACHE_BACKENDS = new Set(["redis", "valkey", "memcached", "memcache", "mongodb", "mongo"]);
-
-/** One-time guard so the distributed-DB-cache warning logs once per process. */
-let _warnedNetworkDbCache = false;
 
 /**
  * Options for wrapping an adapter with a query cache. When several pooled
@@ -77,6 +72,25 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   private hits: number = 0;
   private misses: number = 0;
 
+  /**
+   * Persistent-mode distributed backend (TINA4_DB_CACHE=true). Built lazily from
+   * the SAME unified `createBackend()` factory the response/KV cache uses, so
+   * multiple Database instances share one cache with global write-invalidation
+   * (parity with Python's connection.py, which routes the persistent DB cache
+   * through `_create_backend`). The read path (`fetchAsync`/`fetchOneAsync`/
+   * `queryAsync`) is async, so the backend's async get/set work directly — no
+   * sync-path restriction. Request-scoped mode keeps the in-process QueryCache
+   * above (ephemeral, fastest, never serialized).
+   *
+   * `null` until the first async read builds it; a `memory` backend (the
+   * default) means the persistent layer behaves in-process exactly as before, so
+   * default behaviour is unchanged and only an explicit redis/etc. backend
+   * distributes.
+   */
+  private backend: CacheBackend | null = null;
+  private backendPromise: Promise<CacheBackend | null> | null = null;
+  private backendName: string;
+
   constructor(adapter: DatabaseAdapter, options: CachedAdapterOptions = {}) {
     this.adapter = adapter;
     this.cachePersistent = options.persistent ?? isTruthy(process.env.TINA4_DB_CACHE);
@@ -94,30 +108,50 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
 
     this.cache = options.sharedCache ?? new QueryCache({ defaultTtl: this.ttl, maxSize: 10000 });
 
-    // Persistent mode runs on the SYNCHRONOUS db.fetch() path, which cannot
-    // await an async cache backend. So the persistent DB-query cache is always
-    // the in-process QueryCache above (synchronous, no serialization-over-the-
-    // wire). If the operator selects a NETWORK backend via TINA4_DB_CACHE_BACKEND
-    // (redis/valkey/memcached/mongodb), warn once and fall back to in-process
-    // memory — distributed DB-query caching isn't available on Node's sync
-    // fetch path; use the response cache (cacheGet/cacheSet) for distributed
-    // caching. (File/database/memory selections also resolve to the in-process
-    // store here — the unified network backends live behind the async KV API.)
-    if (this.cachePersistent) {
-      const backendName = (process.env.TINA4_DB_CACHE_BACKEND ?? "memory").toLowerCase().trim();
-      if (NETWORK_DB_CACHE_BACKENDS.has(backendName) && !_warnedNetworkDbCache) {
-        _warnedNetworkDbCache = true;
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[tina4] TINA4_DB_CACHE_BACKEND='${backendName}' selects a distributed cache, ` +
-          `but Node's db.fetch() is synchronous so distributed DB-query caching is not ` +
-          `available on that path — falling back to the in-process memory store. ` +
-          `For distributed caching use the response cache (cacheGet/cacheSet).`,
-        );
-      }
-    }
+    // Persistent mode now routes through the unified async backend (the read
+    // path — fetchAsync/fetchOneAsync/queryAsync — is async, so the backend's
+    // async get/set work directly). TINA4_DB_CACHE_BACKEND + TINA4_DB_CACHE_URL
+    // select the backend (default `memory` = in-process, unchanged behaviour).
+    // The backend is built lazily on first async read so an unreachable network
+    // backend degrades to `file` (via createBackend's own fallback) without
+    // blocking construction.
+    this.backendName = (process.env.TINA4_DB_CACHE_BACKEND ?? "memory").toLowerCase().trim();
 
     CachedDatabaseAdapter.instances.add(this);
+  }
+
+  /**
+   * Whether the persistent layer should use a distributed/serialised backend.
+   * For the default `memory` backend we keep the in-process QueryCache (fast,
+   * no serialisation) so behaviour is identical to before; only an explicit
+   * non-memory backend (redis/valkey/memcached/mongodb/database/file) routes
+   * through the unified async backend for cross-instance sharing.
+   */
+  private usesPersistentBackend(): boolean {
+    return this.cachePersistent && this.backendName !== "memory";
+  }
+
+  /** Lazily build (and memoise) the persistent backend via createBackend(). */
+  private async getBackend(): Promise<CacheBackend | null> {
+    if (this.backend) return this.backend;
+    if (!this.backendPromise) {
+      this.backendPromise = (async () => {
+        try {
+          // Dynamic import keeps @tina4/orm free of an import-time cycle with
+          // @tina4/core (whose `database` backend dynamically imports @tina4/orm).
+          const core: any = await import("@tina4/core");
+          const b: CacheBackend = await core.createBackend({
+            backend: this.backendName,
+            cacheUrl: process.env.TINA4_DB_CACHE_URL,
+          });
+          this.backend = b;
+          return b;
+        } catch {
+          return null; // fall back to the in-process QueryCache
+        }
+      })();
+    }
+    return this.backendPromise;
   }
 
   // ── Cache mode helpers ────────────────────────────────────
@@ -171,9 +205,14 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       mode: this.cacheMode(),
       hits: this.hits,
       misses: this.misses,
+      // `size` is the in-process figure. When a distributed persistent backend
+      // is active the authoritative size lives in redis/etc.; the hit/miss
+      // counters here are still real (tracked locally per the read path).
       size: this.cache.size(),
       ttl: this.ttl,
-      backend: "memory",
+      // Report the actually-configured persistent backend so the operator sees
+      // where cross-instance entries land (parity with Python's cache_stats).
+      backend: this.usesPersistentBackend() ? this.backendName : "memory",
     };
   }
 
@@ -182,11 +221,68 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     this.cache.clear();
     this.hits = 0;
     this.misses = 0;
+    // Best-effort flush of the distributed backend too (fire-and-forget — this
+    // method is synchronous to keep db.cacheClear() ergonomic).
+    if (this.usesPersistentBackend()) {
+      void this.getBackend().then((b) => b?.clear()).catch(() => { /* best effort */ });
+    }
   }
 
   /** Clear the entire query cache (called on writes). */
   private invalidate(): void {
     this.cache.clear();
+    // Persistent distributed backend: clear it too so a write on ANY instance
+    // invalidates entries cached by ALL instances (global write-invalidation,
+    // parity with Python's _cache_invalidate → backend.clear()). Fire-and-forget
+    // on the sync write path (execute/insert/...); the async write methods below
+    // await invalidateAsync() instead for deterministic ordering.
+    if (this.usesPersistentBackend()) {
+      void this.getBackend().then((b) => b?.clear()).catch(() => { /* best effort */ });
+    }
+  }
+
+  /** Async write-invalidation — awaits the distributed backend clear. */
+  private async invalidateAsync(): Promise<void> {
+    this.cache.clear();
+    if (this.usesPersistentBackend()) {
+      const b = await this.getBackend();
+      if (b) { try { await b.clear(); } catch { /* best effort */ } }
+    }
+  }
+
+  // ── Persistent-backend get/set helpers (serialised rows) ──
+  //
+  // The persistent backend stores the adapter's row payload (T[] for fetch/
+  // query, {row:T|null} for fetchOne) as plain JSON — every backend (redis
+  // SETEX, mongo doc, db row) round-trips it. fetchOne is wrapped in an object
+  // so a genuine `null` row is distinguishable from a cache miss (the backend
+  // returns undefined on miss).
+
+  private async backendGetRows<T>(key: string): Promise<T[] | undefined> {
+    const b = await this.getBackend();
+    if (!b) return undefined;
+    const raw = await b.get(key);
+    return Array.isArray(raw) ? (raw as T[]) : undefined;
+  }
+
+  private async backendSetRows<T>(key: string, rows: T[]): Promise<void> {
+    const b = await this.getBackend();
+    if (b) { try { await b.set(key, rows, this.ttl); } catch { /* best effort */ } }
+  }
+
+  private async backendGetOne<T>(key: string): Promise<{ row: T | null } | undefined> {
+    const b = await this.getBackend();
+    if (!b) return undefined;
+    const raw = await b.get(key);
+    if (raw && typeof raw === "object" && "row" in (raw as object)) {
+      return raw as { row: T | null };
+    }
+    return undefined;
+  }
+
+  private async backendSetOne<T>(key: string, row: T | null): Promise<void> {
+    const b = await this.getBackend();
+    if (b) { try { await b.set(key, { row }, this.ttl); } catch { /* best effort */ } }
   }
 
   // ── DatabaseAdapter interface — writes flush, reads cache ──
@@ -327,6 +423,18 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       : this.adapter.fetch<T>(sql, params, limit, skip);
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined);
+      // Persistent distributed backend is AUTHORITATIVE (mirrors Python, where a
+      // configured _cache_backend bypasses the in-process dict). This keeps
+      // cross-instance write-invalidation deterministic: a write clears the
+      // shared backend, so every instance misses on its next read.
+      if (this.usesPersistentBackend()) {
+        const shared = await this.backendGetRows<T>(key);
+        if (shared !== undefined) { this.hits++; return shared; }
+        const result = await run();
+        await this.backendSetRows(key, result);
+        this.misses++;
+        return result;
+      }
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -346,6 +454,14 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       : this.adapter.fetchOne<T>(sql, params);
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined);
+      if (this.usesPersistentBackend()) {
+        const shared = await this.backendGetOne<T>(key);
+        if (shared !== undefined) { this.hits++; return shared.row; }
+        const result = await run();
+        await this.backendSetOne(key, result);
+        this.misses++;
+        return result;
+      }
       const cached = this.cache.get<T | null>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -365,6 +481,14 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       : this.adapter.query<T>(sql, params);
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":Q", params as unknown[] | undefined);
+      if (this.usesPersistentBackend()) {
+        const shared = await this.backendGetRows<T>(key);
+        if (shared !== undefined) { this.hits++; return shared; }
+        const result = await run();
+        await this.backendSetRows(key, result);
+        this.misses++;
+        return result;
+      }
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -379,28 +503,28 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   }
 
   async executeAsync(sql: string, params?: unknown[]): Promise<unknown> {
-    if (this.enabled) this.invalidate();
+    if (this.enabled) await this.invalidateAsync();
     return (this.adapter as any).executeAsync
       ? await (this.adapter as any).executeAsync(sql, params)
       : this.adapter.execute(sql, params);
   }
 
   async insertAsync(table: string, data: Record<string, unknown> | Record<string, unknown>[]): Promise<DatabaseResult> {
-    if (this.enabled) this.invalidate();
+    if (this.enabled) await this.invalidateAsync();
     return (this.adapter as any).insertAsync
       ? await (this.adapter as any).insertAsync(table, data)
       : this.adapter.insert(table, data);
   }
 
   async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown>, params?: unknown[]): Promise<DatabaseResult> {
-    if (this.enabled) this.invalidate();
+    if (this.enabled) await this.invalidateAsync();
     return (this.adapter as any).updateAsync
       ? await (this.adapter as any).updateAsync(table, data, filter, params)
       : this.adapter.update(table, data, filter);
   }
 
   async deleteAsync(table: string, filter: Record<string, unknown> | string | Record<string, unknown>[], params?: unknown[]): Promise<DatabaseResult> {
-    if (this.enabled) this.invalidate();
+    if (this.enabled) await this.invalidateAsync();
     return (this.adapter as any).deleteAsync
       ? await (this.adapter as any).deleteAsync(table, filter, params)
       : this.adapter.delete(table, filter as Record<string, unknown>);

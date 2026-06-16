@@ -1142,7 +1142,7 @@ ${reset}
           ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
         ];
         if (globalMiddleware.length > 0) {
-          const [, , proceed] = MiddlewareRunner.runBefore(globalMiddleware, req, res);
+          const [, , proceed] = await MiddlewareRunner.runBefore(globalMiddleware, req, res);
           if (!proceed || res.raw.writableEnded) return;
         }
 
@@ -1240,7 +1240,7 @@ ${reset}
         // Header mutations here are no-ops once the response is flushed (Node
         // sends headers with the body) — set response headers in beforeX.
         if (globalMiddleware.length > 0) {
-          MiddlewareRunner.runAfter(globalMiddleware, req, res);
+          await MiddlewareRunner.runAfter(globalMiddleware, req, res);
         }
 
         if (!res.raw.writableEnded) {

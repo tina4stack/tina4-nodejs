@@ -95,18 +95,23 @@ export class MiddlewareRunner {
    * boolean indicating whether the route handler should still run.
    *
    * Short-circuits when a before method sets a status >= 400.
+   *
+   * ASYNC — each hook is awaited so middleware can perform async work (e.g.
+   * the distributed responseCache before-hook awaiting `backend.get`). Awaiting
+   * a synchronous hook that returns an array is harmless (the array resolves
+   * immediately), so existing sync hooks keep working unchanged.
    */
-  static runBefore(
+  static async runBefore(
     classes: any[],
     req: Tina4Request,
     res: Tina4Response,
-  ): [Tina4Request, Tina4Response, boolean] {
+  ): Promise<[Tina4Request, Tina4Response, boolean]> {
     for (const cls of classes) {
       const methods = Object.getOwnPropertyNames(cls).filter(
         (name) => typeof cls[name] === "function" && name.startsWith("before"),
       );
       for (const method of methods) {
-        const result = cls[method](req, res);
+        const result = await cls[method](req, res);
         if (Array.isArray(result)) {
           [req, res] = result as [Tina4Request, Tina4Response];
         }
@@ -122,18 +127,22 @@ export class MiddlewareRunner {
   /**
    * Execute every afterX static method found on the supplied classes,
    * in order. Returns the (possibly mutated) request and response pair.
+   *
+   * ASYNC — each hook is awaited (e.g. the responseCache after-hook awaiting
+   * `backend.set`). Awaiting a synchronous hook is harmless, so existing sync
+   * after-hooks keep working unchanged.
    */
-  static runAfter(
+  static async runAfter(
     classes: any[],
     req: Tina4Request,
     res: Tina4Response,
-  ): [Tina4Request, Tina4Response] {
+  ): Promise<[Tina4Request, Tina4Response]> {
     for (const cls of classes) {
       const methods = Object.getOwnPropertyNames(cls).filter(
         (name) => typeof cls[name] === "function" && name.startsWith("after"),
       );
       for (const method of methods) {
-        const result = cls[method](req, res);
+        const result = await cls[method](req, res);
         if (Array.isArray(result)) {
           [req, res] = result as [Tina4Request, Tina4Response];
         }

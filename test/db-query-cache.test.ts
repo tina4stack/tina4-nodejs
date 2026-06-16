@@ -16,10 +16,29 @@ import {
   resetRequestCaches,
   Database,
   CachedDatabaseAdapter,
+  createAdapterFromUrl,
 } from "../packages/orm/src/index.ts";
+import * as net from "node:net";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 let pass = 0;
 let fail = 0;
+
+/** True if a redis/valkey server answers PING on localhost:6379 (RESP over TCP). */
+function redisReachable(host = "localhost", port = 6379, timeoutMs = 800): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host, port });
+    let settled = false;
+    const done = (ok: boolean) => { if (!settled) { settled = true; try { sock.destroy(); } catch {} resolve(ok); } };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    if (timer.unref) timer.unref();
+    sock.once("error", () => done(false));
+    sock.once("connect", () => { sock.write("PING\r\n"); });
+    sock.once("data", (d) => done(d.toString().startsWith("+PONG")));
+  });
+}
 
 function assert(name: string, condition: boolean, detail = "") {
   if (condition) {
@@ -171,6 +190,95 @@ async function main() {
   }
 
   closeDatabase();
+
+  // ── Persistent DB cache via redis: cross-instance sharing ───────
+  // TINA4_DB_CACHE_BACKEND=redis routes the persistent DB query cache through
+  // the unified async backend, so two SEPARATE Database instances (own
+  // connections, own in-process caches) over the SAME data share results via
+  // redis. A write on either instance invalidates the shared backend. Uses
+  // redis db index 3 for isolation; self-skips if redis is unreachable.
+  console.log("\n--- Persistent DB cache cross-instance via redis (db 3) ---");
+  {
+    const { wrapWithCache } = await import("../packages/orm/src/index.ts");
+    const reachable = await redisReachable();
+    if (!reachable) {
+      console.log("  \x1b[33mSKIP\x1b[0m redis unreachable on localhost:6379 — skipping cross-instance DB cache test");
+    } else {
+      // Reset the env knobs and pin persistent + redis before wrapping.
+      delete process.env.TINA4_AUTO_CACHING;
+      const prev = {
+        DB_CACHE: process.env.TINA4_DB_CACHE,
+        BACKEND: process.env.TINA4_DB_CACHE_BACKEND,
+        URL: process.env.TINA4_DB_CACHE_URL,
+      };
+      process.env.TINA4_DB_CACHE = "true";
+      process.env.TINA4_DB_CACHE_BACKEND = "redis";
+      process.env.TINA4_DB_CACHE_URL = "redis://localhost:6379/3";
+
+      // A shared sqlite FILE so two independent connections see the same data.
+      const dbFile = path.join(os.tmpdir(), `tina4_dbcache_${Date.now()}.db`);
+      const url = `sqlite:///${dbFile}`;
+
+      // Two separate Database instances over the same file (own adapters, own
+      // in-process caches, same redis backend).
+      const dbA = new Database(wrapWithCache(await createAdapterFromUrl(url)));
+      const dbB = new Database(wrapWithCache(await createAdapterFromUrl(url)));
+
+      await dbA.execute("CREATE TABLE IF NOT EXISTS shared (id INTEGER PRIMARY KEY, n TEXT)");
+      await dbA.execute("DELETE FROM shared");
+      await dbA.execute("INSERT INTO shared (n) VALUES ('alpha'), ('beta')");
+
+      // Clear any stale redis state from a previous run for this exact query.
+      // (A.fetch will MISS the DB, store in redis.)
+      const sql = "SELECT * FROM shared ORDER BY id";
+      const aResult = await dbA.fetch(sql);
+      assert("redis DB cache: A reads 2 rows", aResult.records.length === 2, JSON.stringify(aResult.records));
+      const aStats = dbA.cacheStats();
+      assert("redis DB cache: A reports backend redis", aStats.backend === "redis", JSON.stringify(aStats));
+
+      // Let A's async backend.set settle.
+      await new Promise((r) => setTimeout(r, 60));
+
+      // B has a COLD in-process cache. Its fetch should HIT redis (populated by
+      // A), not the DB — proving cross-instance sharing.
+      const bHitsBefore = dbB.cacheStats().hits;
+      const bResult = await dbB.fetch(sql);
+      const bStats = dbB.cacheStats();
+      assert("redis DB cache: B reads same 2 rows", bResult.records.length === 2, JSON.stringify(bResult.records));
+      assert(
+        "redis DB cache: B served from shared redis (hits grew, never queried DB itself first)",
+        bStats.hits > bHitsBefore,
+        JSON.stringify(bStats),
+      );
+      assert(
+        "redis DB cache: B's first read was a HIT (misses still 0)",
+        bStats.misses === 0,
+        JSON.stringify(bStats),
+      );
+
+      // A write on A must invalidate the SHARED redis backend so B no longer
+      // serves the stale row set.
+      await dbA.execute("INSERT INTO shared (n) VALUES ('gamma')");
+      await new Promise((r) => setTimeout(r, 60));
+      const bAfterWrite = await dbB.fetch(sql);
+      assert(
+        "redis DB cache: write on A invalidates B's shared cache (B now sees 3 rows)",
+        bAfterWrite.records.length === 3,
+        JSON.stringify(bAfterWrite.records),
+      );
+
+      dbA.close();
+      dbB.close();
+      try { fs.rmSync(dbFile, { force: true }); } catch {}
+
+      // Restore env.
+      const restore = (k: string, v: string | undefined) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; };
+      restore("TINA4_DB_CACHE", prev.DB_CACHE);
+      restore("TINA4_DB_CACHE_BACKEND", prev.BACKEND);
+      restore("TINA4_DB_CACHE_URL", prev.URL);
+      closeDatabase();
+    }
+  }
 
   console.log(`\n  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
   process.exit(fail > 0 ? 1 : 0);

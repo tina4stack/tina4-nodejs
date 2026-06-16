@@ -1199,17 +1199,55 @@ export async function createBackend(config?: {
 
 // ── Response cache store (for middleware) ──────────────────────────
 
-const store = new Map<string, CacheEntry>();
+/**
+ * The responseCache middleware's backend. Built lazily (and memoised) from the
+ * SAME unified `createBackend()` factory as the KV API, so cached GET responses
+ * distribute across instances via redis/valkey/memcached/mongodb/database
+ * (parity with Python's ResponseCache, which routes through `_create_backend`).
+ *
+ * The default backend is `memory` (in-process), so the DEFAULT behaviour is
+ * unchanged — only an explicit redis/etc. backend distributes. Each middleware
+ * instance resolves the shared module-level backend; a fresh middleware
+ * instance therefore serves hits stored by an earlier one (cross-instance via a
+ * network backend, same-process via memory).
+ *
+ * Response entries are stored as a plain JSON-serialisable object so every
+ * backend (redis SETEX, mongo doc, etc.) can round-trip them.
+ */
+let _responseBackend: CacheBackend | null = null;
+let _responseBackendPromise: Promise<CacheBackend> | null = null;
+
+function _getResponseBackend(config?: ResponseCacheConfig): Promise<CacheBackend> {
+  if (_responseBackend) return Promise.resolve(_responseBackend);
+  if (!_responseBackendPromise) {
+    _responseBackendPromise = createBackend({
+      backend: config?.backend,
+      cacheUrl: config?.cacheUrl,
+      cacheDir: config?.cacheDir,
+      maxEntries: config?.maxEntries,
+    }).then((b) => {
+      _responseBackend = b;
+      return b;
+    });
+  }
+  return _responseBackendPromise;
+}
 
 /**
  * Response cache middleware for GET requests.
- * Caches the full response body, content-type, and status code.
- * Cache key is method + url (including query string).
+ * Caches the full response body, content-type, and status code through the
+ * unified async backend. Cache key is method + url (including query string).
+ *
+ * The middleware is ASYNC: the before-path awaits `backend.get` (serve hit) and
+ * the after-path awaits `backend.set` (store on the captured `res.raw.end`).
+ * The framework's middleware chain (`runRouteMiddlewares` / `MiddlewareChain`)
+ * already awaits middleware, so async is transparent. Honors ttl/statusCodes/
+ * maxEntries. With the default `memory` backend behaviour is unchanged; a
+ * redis/etc. backend distributes cross-instance.
  */
 export function responseCache(config?: ResponseCacheConfig): Middleware {
   const ttl = config?.ttl
     ?? (process.env.TINA4_CACHE_TTL ? parseInt(process.env.TINA4_CACHE_TTL, 10) : 60);
-  const maxEntries = config?.maxEntries ?? 1000;
   const allowedCodes = new Set(config?.statusCodes ?? [200]);
 
   if (ttl <= 0) {
@@ -1217,34 +1255,26 @@ export function responseCache(config?: ResponseCacheConfig): Middleware {
     return (_req, _res, next) => next();
   }
 
-  // Periodic cleanup
-  const cleanupTimer = setInterval(() => {
-    const now = Date.now();
-    for (const [key, entry] of store) {
-      if (now > entry.expiresAt) store.delete(key);
-    }
-  }, 30_000);
-  if (cleanupTimer.unref) cleanupTimer.unref();
-
-  return (req, res, next) => {
+  return async (req, res, next) => {
     // Only cache GET requests
     if (req.method !== "GET") {
       next();
       return;
     }
 
-    const cacheKey = `GET:${req.url}`;
-    const cached = store.get(cacheKey);
+    const backend = await _getResponseBackend(config);
+    const cacheKey = `response:GET:${req.url}`;
+    const cached = (await backend.get(cacheKey)) as CacheEntry | undefined;
 
-    if (cached && Date.now() < cached.expiresAt) {
-      // Cache HIT
+    if (cached && typeof cached === "object" && typeof cached.body === "string") {
+      // Cache HIT — serve from the (possibly distributed) backend.
       res.header("X-Cache", "HIT");
       res.header("Content-Type", cached.contentType);
       res(cached.body, cached.statusCode, cached.contentType);
       return;
     }
 
-    // Cache MISS — intercept the response to capture it
+    // Cache MISS — intercept the response to capture and store it.
     const originalEnd = res.raw.end.bind(res.raw);
     let captured = false;
 
@@ -1254,18 +1284,16 @@ export function responseCache(config?: ResponseCacheConfig): Middleware {
         const body = typeof chunk === "string" ? chunk : chunk?.toString() ?? "";
         const contentType = String(res.raw.getHeader("Content-Type") ?? "application/octet-stream");
 
-        // Evict oldest if at capacity
-        if (store.size >= maxEntries) {
-          const firstKey = store.keys().next().value;
-          if (firstKey) store.delete(firstKey);
-        }
-
-        store.set(cacheKey, {
+        // backend.set is async; the captured end() must stay synchronous (Node
+        // flushes the body here), so fire-and-forget the store. The backend's
+        // TTL + maxEntries handle expiry/eviction. Errors are swallowed so a
+        // cache write can never break the response.
+        void backend.set(cacheKey, {
           body,
           contentType,
           statusCode: res.raw.statusCode,
           expiresAt: Date.now() + ttl * 1000,
-        });
+        } as CacheEntry, ttl).catch(() => { /* best effort */ });
       }
 
       res.header("X-Cache", "MISS");
@@ -1276,9 +1304,20 @@ export function responseCache(config?: ResponseCacheConfig): Middleware {
   };
 }
 
-/** Clear all cached responses (middleware store) */
-export function clearCache(): void {
-  store.clear();
+/**
+ * Clear all cached responses (the responseCache middleware backend).
+ * ASYNC on Node — callers `await clearCache()` — because the backend may be a
+ * network backend (redis/etc.). Resets the backend's namespace; mirrors the
+ * Python ResponseCache.clear_cache() which clears its backend.
+ */
+export async function clearCache(): Promise<void> {
+  if (!_responseBackend && !_responseBackendPromise) {
+    // Nothing built yet — build the default so a clear before first use still
+    // resolves to a real (empty) backend rather than silently no-op'ing.
+    await _getResponseBackend();
+  }
+  const backend = await _getResponseBackend();
+  await backend.clear();
 }
 
 /**
@@ -1358,10 +1397,13 @@ export async function cacheBackendStats(): Promise<{ hits: number; misses: numbe
 
 /** Reset the default backend (for testing). Closes any pooled connection. */
 export function _resetBackend(): void {
-  const b = _defaultBackend as any;
-  if (b && typeof b.client?.close === "function") { try { b.client.close(); } catch { /* noop */ } }
-  if (b && typeof b.client?.close !== "function" && typeof b.db?.close === "function") { /* leave shared ORM db */ }
+  for (const b of [_defaultBackend, _responseBackend] as any[]) {
+    if (b && typeof b.client?.close === "function") { try { b.client.close(); } catch { /* noop */ } }
+    if (b && typeof b.client?.close !== "function" && typeof b.db?.close === "function") { /* leave shared ORM db */ }
+  }
   _defaultBackend = null;
   _defaultBackendPromise = null;
+  _responseBackend = null;
+  _responseBackendPromise = null;
   _defaultTtl = null;
 }

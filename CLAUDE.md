@@ -1,10 +1,10 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.13.24)
+# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.13.25)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.13.24 — The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.13.25 — The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -591,13 +591,15 @@ db.getNextId(table, pkColumn?, generatorName?): number
 
 // DB query cache — request-scoped auto cache is ON by default (TINA4_AUTO_CACHING=true,
 // TTL TINA4_AUTO_CACHING_TTL=5s): dedupes identical db.fetch()/ORM reads within a request,
-// flushed on any write. Persistent cross-request cache opt-in via TINA4_DB_CACHE=true
-// (TTL TINA4_DB_CACHE_TTL=30s), configured via TINA4_DB_CACHE_BACKEND + TINA4_DB_CACHE_URL.
-// NODE CHARACTERISTIC: because db.fetch() is synchronous, Node's persistent DB query cache
-// runs IN-PROCESS (per-instance), not distributed. For cross-instance caching in Node, use
-// the async KV API (await cacheGet/cacheSet). The other three frameworks route this through
-// the backend (distributed). cacheStats()/cacheClear() are real (the DB query cache is wired).
-db.cacheStats(): { enabled, size, ttl, mode }   // mode: "request" | "persistent" | "off"
+// flushed on any write (always in-process, fastest). Persistent cross-request cache opt-in
+// via TINA4_DB_CACHE=true (TTL TINA4_DB_CACHE_TTL=30s), configured via TINA4_DB_CACHE_BACKEND
+// + TINA4_DB_CACHE_URL. The persistent layer routes through the SAME unified async backend
+// set (memory default = in-process; redis/valkey/memcached/mongodb/database distribute), so
+// multiple instances share one cache with global write-invalidation — full parity with
+// Python/PHP/Ruby. (Node's read path — db.fetch → fetchAsync — is async, so the backend's
+// async get/set work directly; the KV/middleware API is async, await it.) cacheStats() reports
+// mode + backend; cacheClear() is real.
+db.cacheStats(): { enabled, size, ttl, mode, backend }   // mode: "request" | "persistent" | "off"
 db.cacheClear(): void
 
 // Connection pool access (null when pooling disabled)
@@ -906,7 +908,7 @@ await cacheClear();
 await cacheStats();   // { hits, misses, size, backend } — reflects the real KV backend
 ```
 
-**Node characteristic (by design, not a bug):** the async KV API supports all 7 backends with native async clients. Because Node's middleware runner and `db.fetch()` are synchronous, the **`responseCache` middleware and the persistent DB query cache run in-process (per-instance) in Node** — distributed/cross-instance caching in Node is done via the async KV API (`await cacheGet`/`await cacheSet`). The other three frameworks route those auto-paths through the configured backend (distributed). A full async middleware/DB pipeline is a future-major item.
+**Async everywhere (full parity):** the KV API, the `responseCache` middleware, and the persistent DB query cache all route through the same unified async backend set with native async clients (no child processes). The `responseCache` middleware and persistent DB cache distribute cross-instance when a network backend (redis/valkey/memcached/mongodb/database) is selected — exactly like Python/PHP/Ruby. The default `memory` backend keeps both in-process (fastest), so default behaviour is unchanged. Because the KV/middleware API is async, **`await` it** (`await cacheGet`/`await cacheSet`/`await clearCache`; the middleware runner and `db.fetch` are async). Request-scoped DB caching (`TINA4_AUTO_CACHING`) always stays in-process.
 
 **Graceful fallback**: if a configured backend's driver is missing or the service/credentials are unreachable or wrong, the cache logs a warning and falls back to the **file** backend — a real persistent cache, never a silent no-op.
 
@@ -1112,13 +1114,13 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 ## v3 Features Summary
 
 - **45 built-in features**, zero third-party dependencies
-- **3,787 tests** passing across all modules
+- **3,804 tests** passing across all modules
 - **Race-safe `getNextId()`** with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
 - **`npx tina4nodejs generate`**: model, route, migration, middleware scaffolding
-- **Database**: 5 engines (SQLite, PostgreSQL, MySQL, MSSQL, Firebird), DB query caching — request-scoped auto cache **on by default** (`TINA4_AUTO_CACHING=true`, TTL `TINA4_AUTO_CACHING_TTL=5`s) dedupes identical `db.fetch()`/ORM reads within a request and flushes on writes; persistent cross-request cache opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s) configured via `TINA4_DB_CACHE_BACKEND` + `TINA4_DB_CACHE_URL`. `db.cacheStats()` reports `mode` (request/persistent/off). **Node characteristic**: `db.fetch()` is synchronous, so the persistent DB query cache runs in-process (per-instance) in Node — cross-instance caching uses the async KV API (`await cacheGet`/`cacheSet`)
-- **Cache**: unified backend set — `memory` (default), `file`, `redis`, `valkey`, `memcached`, `mongodb`, `database` — via `TINA4_CACHE_BACKEND` (+ `TINA4_CACHE_URL`/credentials); file-backend fallback if a backend is unreachable. KV API is async (`await cacheGet`/`cacheSet`) with native async clients; the `responseCache` middleware runs in-process (per-instance) since Node's middleware runner is synchronous
+- **Database**: 5 engines (SQLite, PostgreSQL, MySQL, MSSQL, Firebird), DB query caching — request-scoped auto cache **on by default** (`TINA4_AUTO_CACHING=true`, TTL `TINA4_AUTO_CACHING_TTL=5`s) dedupes identical `db.fetch()`/ORM reads within a request and flushes on writes (always in-process); persistent cross-request cache opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s) routed through the unified async backend set via `TINA4_DB_CACHE_BACKEND` (memory/file/redis/valkey/memcached/mongodb/database) + `TINA4_DB_CACHE_URL`, so instances share one cache with global write-invalidation (full parity with Python/PHP/Ruby). `db.cacheStats()` reports `mode` (request/persistent/off) + `backend`
+- **Cache**: unified backend set — `memory` (default), `file`, `redis`, `valkey`, `memcached`, `mongodb`, `database` — via `TINA4_CACHE_BACKEND` (+ `TINA4_CACHE_URL`/credentials); file-backend fallback if a backend is unreachable. The KV API, the `responseCache` middleware, and the persistent DB query cache all route through this async backend set (native async clients, no child processes) — a network backend distributes them cross-instance, full parity with Python/PHP/Ruby; `memory` (default) keeps them in-process. `await` the async API (`cacheGet`/`cacheSet`/`clearCache`)
 - **Sessions**: file backend (default). `TINA4_SESSION_SAMESITE` env var (default: Lax)
 - **Queue**: file/RabbitMQ/Kafka/MongoDB backends, configured via env vars
 - **Cache**: memory/Redis/file backends

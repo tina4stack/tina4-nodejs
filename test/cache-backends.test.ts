@@ -202,15 +202,15 @@ async function main() {
     skip("authenticated redis", "redis-auth not running on 6381");
   }
 
-  // ── Persistent DB cache → in-process memory on the sync fetch path ──
-  // Node's db.fetch() is SYNCHRONOUS and the persistent DB-query cache is
-  // consulted inside it, so it CANNOT await an async network backend. Therefore
-  // persistent mode always uses the in-process memory store, and selecting a
-  // NETWORK backend via TINA4_DB_CACHE_BACKEND warns once and falls back to
-  // memory (use the async response cache for distributed caching).
-  console.log("\n--- Persistent DB cache → in-process memory (sync fetch path) ---");
+  // ── Persistent DB cache → unified async backend (distributed) ──
+  // Node's read path (db.fetch → fetchAsync) is ASYNC, so the persistent
+  // DB-query cache now routes through the unified backend: TINA4_DB_CACHE_BACKEND
+  // selects memory (default, in-process) / file / redis / valkey / memcached /
+  // mongodb / database. A network backend distributes cross-instance with global
+  // write-invalidation (full parity with Python/PHP/Ruby).
+  console.log("\n--- Persistent DB cache → unified async backend (distributed) ---");
 
-  await persistentInProcess();
+  await persistentBackendDistributed();
 
   console.log(`\n${"=".repeat(50)}`);
   console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m, \x1b[33m${skipped} skipped\x1b[0m`);
@@ -218,7 +218,7 @@ async function main() {
   process.exit(fail > 0 ? 1 : 0);
 }
 
-async function persistentInProcess() {
+async function persistentBackendDistributed() {
   const { initDatabase, closeDatabase, CachedDatabaseAdapter } = await import("../packages/orm/src/index.ts");
 
   // Save + pin env: persistent mode + a NETWORK DB-cache backend selection.
@@ -228,17 +228,16 @@ async function persistentInProcess() {
     TINA4_DB_CACHE_BACKEND: process.env.TINA4_DB_CACHE_BACKEND,
     TINA4_DB_CACHE_URL: process.env.TINA4_DB_CACHE_URL,
   };
+
+  // ── (a) Default memory backend: persistent layer stays in-process ──
+  // No backend env set → memory → behaviour unchanged (in-process, fast).
   process.env.TINA4_DB_CACHE = "true";
   delete process.env.TINA4_AUTO_CACHING;
-  // Select a distributed backend on purpose — the sync fetch path must ignore it
-  // (warn once) and use the in-process memory store instead.
-  process.env.TINA4_DB_CACHE_BACKEND = "redis";
-  process.env.TINA4_DB_CACHE_URL = "redis://localhost:6379/3";
-
+  delete process.env.TINA4_DB_CACHE_BACKEND;
+  delete process.env.TINA4_DB_CACHE_URL;
   try {
-    const dbFile = `/tmp/tina4_cache_node_persist_${Date.now()}.db`;
+    const dbFile = `/tmp/tina4_cache_node_persist_mem_${Date.now()}.db`;
     const url = `sqlite:///${dbFile}`;
-
     closeDatabase();
     const db = await initDatabase({ url });
     await db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n TEXT)");
@@ -246,26 +245,67 @@ async function persistentInProcess() {
     db.cacheClear();
 
     const adapter = (db as any).getNextAdapter?.() ?? null;
-    assert("persistent: wrapped adapter present", adapter instanceof CachedDatabaseAdapter);
-    assert("persistent: mode is 'persistent'", db.cacheStats().mode === "persistent", JSON.stringify(db.cacheStats()));
-    // Network backend selection falls back to the in-process memory store on the
-    // synchronous fetch path — stats report 'memory', never 'redis'.
-    assert("persistent: network backend falls back to in-process memory", db.cacheStats().backend === "memory", JSON.stringify(db.cacheStats()));
+    assert("persistent(memory): wrapped adapter present", adapter instanceof CachedDatabaseAdapter);
+    assert("persistent(memory): mode is 'persistent'", db.cacheStats().mode === "persistent", JSON.stringify(db.cacheStats()));
+    assert("persistent(memory): default backend reports 'memory'", db.cacheStats().backend === "memory", JSON.stringify(db.cacheStats()));
 
-    // First read populates the in-process cache (miss), second read hits it.
     const r1 = await db.fetch("SELECT * FROM t ORDER BY id");
     const rows1 = (r1 as any[]) ?? [];
-    assert("persistent: first read returns rows", rows1.length === 2 && rows1[0].n === "x" && rows1[1].n === "y", JSON.stringify(rows1));
-    const sizeAfterFirst = db.cacheStats().size;
-    assert("persistent: in-process cache populated after read", sizeAfterFirst >= 1, JSON.stringify(db.cacheStats()));
-
-    await db.fetch("SELECT * FROM t ORDER BY id"); // same query → in-process hit
-    const stats = db.cacheStats();
-    assert("persistent: second read is an in-process hit (hits >= 1)", stats.hits >= 1, JSON.stringify(stats));
-
-    // A write flushes the in-process cache.
+    assert("persistent(memory): first read returns rows", rows1.length === 2 && rows1[0].n === "x" && rows1[1].n === "y", JSON.stringify(rows1));
+    assert("persistent(memory): in-process cache populated after read", db.cacheStats().size >= 1, JSON.stringify(db.cacheStats()));
+    await db.fetch("SELECT * FROM t ORDER BY id");
+    assert("persistent(memory): second read is an in-process hit", db.cacheStats().hits >= 1, JSON.stringify(db.cacheStats()));
     await db.execute("INSERT INTO t (n) VALUES ('z')");
-    assert("persistent: write flushes in-process cache (size 0)", db.cacheStats().size === 0, JSON.stringify(db.cacheStats()));
+    assert("persistent(memory): write flushes in-process cache (size 0)", db.cacheStats().size === 0, JSON.stringify(db.cacheStats()));
+
+    db.cacheClear();
+    closeDatabase();
+    try { fs.rmSync(dbFile); } catch {}
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+
+  // ── (b) Redis backend: persistent layer routes through the backend ──
+  // Now that the read path is async, a network backend is the AUTHORITATIVE
+  // store — db.cacheStats() reports 'redis' and the read flows through it.
+  // Self-skip when redis is unreachable.
+  if (!(await reachable("localhost", 6379))) {
+    skip("persistent DB cache via redis", "redis not running on 6379");
+    return;
+  }
+  process.env.TINA4_DB_CACHE = "true";
+  delete process.env.TINA4_AUTO_CACHING;
+  process.env.TINA4_DB_CACHE_BACKEND = "redis";
+  process.env.TINA4_DB_CACHE_URL = "redis://localhost:6379/3";
+  try {
+    const dbFile = `/tmp/tina4_cache_node_persist_redis_${Date.now()}.db`;
+    const url = `sqlite:///${dbFile}`;
+    closeDatabase();
+    const db = await initDatabase({ url });
+    await db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n TEXT)");
+    await db.execute("INSERT INTO t (n) VALUES ('x'), ('y')");
+    db.cacheClear();
+    await new Promise((r) => setTimeout(r, 40)); // let the async clear settle
+
+    assert("persistent(redis): mode is 'persistent'", db.cacheStats().mode === "persistent", JSON.stringify(db.cacheStats()));
+    assert("persistent(redis): reports backend 'redis' (distributed)", db.cacheStats().backend === "redis", JSON.stringify(db.cacheStats()));
+
+    const sql = "SELECT * FROM t ORDER BY id";
+    const r1 = await db.fetch(sql); // MISS → query DB, store in redis
+    const rows1 = (r1 as any[]) ?? [];
+    assert("persistent(redis): first read returns rows", rows1.length === 2 && rows1[0].n === "x" && rows1[1].n === "y", JSON.stringify(rows1));
+    await new Promise((r) => setTimeout(r, 40));
+    const r2 = await db.fetch(sql); // HIT from redis
+    assert("persistent(redis): second read still returns rows", ((r2 as any[]) ?? []).length === 2);
+    assert("persistent(redis): second read is a redis HIT (hits >= 1)", db.cacheStats().hits >= 1, JSON.stringify(db.cacheStats()));
+
+    // A write invalidates the shared redis backend, so the next read re-queries.
+    await db.execute("INSERT INTO t (n) VALUES ('z')");
+    await new Promise((r) => setTimeout(r, 40));
+    const r3 = await db.fetch(sql);
+    assert("persistent(redis): write invalidates shared backend (3 rows)", ((r3 as any[]) ?? []).length === 3, JSON.stringify(r3));
 
     db.cacheClear();
     closeDatabase();

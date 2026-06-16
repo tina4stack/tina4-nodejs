@@ -391,7 +391,7 @@ console.log("\n=== 15. Response Cache ===\n");
 
 const cacheMw = responseCache({ ttl: 60 });
 assert("responseCache returns middleware function", typeof cacheMw === "function");
-clearCache();
+await clearCache();
 assert("clearCache does not throw", true);
 
 // ═══════════════════════════════════════════════════════════════════
