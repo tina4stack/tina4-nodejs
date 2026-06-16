@@ -149,6 +149,29 @@ async function makePool(name: string, pool: number): Promise<Database> {
   db.close();
 }
 
+// ── 6. Standalone write auto-commits and is visible across pool ──
+{
+  console.log("\n--- standalone write auto-commits, visible across pool ---");
+  const db = await makePool("standalone.db", 3);
+
+  // No startTransaction() — these are standalone writes that must commit
+  // on their own connection so any round-robin connection sees them.
+  await db.execute("INSERT INTO t (id, val) VALUES (100, 'p')");
+  await db.execute("INSERT INTO t (id, val) VALUES (200, 'q')");
+
+  let allVisible = true;
+  for (let i = 0; i < 8; i++) {
+    const row = await db.fetchOne<{ n: number }>("SELECT count(*) AS n FROM t");
+    if (Number(row?.n ?? -1) !== 2) allVisible = false;
+  }
+  assert(
+    "standalone writes visible across pooled connections (autocommit on)",
+    allVisible,
+    "a standalone write was not visible from a round-robin connection",
+  );
+  db.close();
+}
+
 // ── Cleanup ──────────────────────────────────────────────────────
 rmSync(tmpDir, { recursive: true, force: true });
 

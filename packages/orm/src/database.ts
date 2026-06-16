@@ -458,8 +458,17 @@ export class Database {
   /** Factory for creating new adapters (used by pool) */
   private adapterFactory: (() => Promise<DatabaseAdapter>) | null = null;
 
-  /** Whether to automatically commit after each write operation */
-  private autoCommit: boolean = process.env.TINA4_AUTOCOMMIT === "true";
+  /**
+   * Whether a standalone write auto-commits. ON by default — a write made
+   * outside an explicit transaction commits on its own connection before
+   * returning (so it's durable and visible across pooled connections). Inside
+   * startTransaction()/commit()/rollback() the per-statement commit is
+   * suppressed, so explicit transactions stay atomic. Set TINA4_AUTOCOMMIT=false
+   * for strict manual-commit mode.
+   */
+  private autoCommit: boolean = ["true", "1", "yes"].includes(
+    (process.env.TINA4_AUTOCOMMIT ?? "true").toLowerCase(),
+  );
   private lastError: string | null = null;
 
   /** Database engine type (sqlite, postgres, mysql, mssql, firebird) */
@@ -675,7 +684,7 @@ export class Database {
     try {
       const adapter = this.getNextAdapter();
       const result = await adapterExecute(adapter, sql, params);
-      if (this.autoCommit) {
+      if (this.autoCommit && !this.inExplicitTransaction()) {
         try { await adapterCommit(adapter); } catch { /* no active transaction */ }
       }
       this.lastError = null;
@@ -697,7 +706,7 @@ export class Database {
     const result = (adapter as any).insertAsync
       ? await (adapter as any).insertAsync(table, data)
       : adapter.insert(table, data);
-    if (this.autoCommit) {
+    if (this.autoCommit && !this.inExplicitTransaction()) {
       try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     }
     return result;
@@ -709,7 +718,7 @@ export class Database {
     const result = (adapter as any).updateAsync
       ? await (adapter as any).updateAsync(table, data, filter ?? {}, params)
       : adapter.update(table, data, filter ?? {}, params);
-    if (this.autoCommit) {
+    if (this.autoCommit && !this.inExplicitTransaction()) {
       try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     }
     return result;
@@ -721,7 +730,7 @@ export class Database {
     const result = (adapter as any).deleteAsync
       ? await (adapter as any).deleteAsync(table, filter ?? {}, params)
       : adapter.delete(table, filter ?? {}, params);
-    if (this.autoCommit) {
+    if (this.autoCommit && !this.inExplicitTransaction()) {
       try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     }
     return result;
@@ -739,6 +748,16 @@ export class Database {
     } else if (this.adapter) {
       this.adapter.close();
     }
+  }
+
+  /**
+   * True while an explicit transaction is active on the current async context.
+   * startTransaction() pins an adapter into txStore; commit()/rollback() clear
+   * it. Standalone writes only auto-commit when this is false, so per-statement
+   * commits never break the atomicity of an explicit transaction.
+   */
+  private inExplicitTransaction(): boolean {
+    return !!this.txStore.getStore()?.adapter;
   }
 
   /**
