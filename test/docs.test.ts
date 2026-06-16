@@ -309,6 +309,70 @@ test("test_no_vendor_third_party_in_results", () => {
   }
 });
 
+// ── 17 ───────────────────────────────────────────────────────────────
+test("test_dynamic_methods_are_indexed", () => {
+  // Frond's addFilter/addGlobal/addTest are public, documented API. In Node
+  // they are normal class methods (static + instance), so the TS reflector
+  // already indexes them — they must resolve via methodSpec with a usable
+  // signature that leads with the method name.
+  const docs = makeDocs();
+  for (const name of ["addFilter", "addGlobal", "addTest"]) {
+    const spec = docs.methodSpec("Frond", name);
+    assert(spec !== null, `Frond.${name} must be indexed`);
+    assert(
+      spec!.signature.startsWith(`${name}(`),
+      `signature should lead with the name; got ${JSON.stringify(spec!.signature)}`,
+    );
+  }
+});
+
+// ── 18 ───────────────────────────────────────────────────────────────
+test("test_class_qualified_search_ranks_the_owning_method", () => {
+  // A "Class.method" / "Class method" / bare "method" query must rank that
+  // class's method first — the class qualifier has to steer ranking.
+  const docs = makeDocs();
+  for (const query of ["Frond.addTest", "Frond addTest", "addTest"]) {
+    const hits = docs.search(query, 3);
+    assert(hits.length > 0, `no hits for ${JSON.stringify(query)}`);
+    eq(
+      hits[0].fqn,
+      "Frond.addTest",
+      `${JSON.stringify(query)} should rank Frond.addTest #1; got ${JSON.stringify(hits.map((h) => h.fqn))}`,
+    );
+  }
+});
+
+// ── 19 ───────────────────────────────────────────────────────────────
+test("test_lookup_resolves_public_import_path", () => {
+  // The documented public import path (@tina4/orm.Database) must resolve even
+  // though the index stores the bare class name (Database).
+  const docs = makeDocs();
+  const bare = "Database";
+  const publicPath = "@tina4/orm.Database";
+  assert(docs.classSpec(bare) !== null, "precondition: bare class name resolves");
+  assert(docs.classSpec(publicPath) !== null, "public import path must resolve");
+  assert(
+    docs.methodSpec(publicPath, "execute") !== null,
+    "methodSpec must resolve via the public import path",
+  );
+  // Both paths point at the same class.
+  eq(docs.classSpec(publicPath)!.fqn, docs.classSpec(bare)!.fqn, "paths must resolve to the same class");
+});
+
+// ── 20 ───────────────────────────────────────────────────────────────
+test("test_lookup_resolves_bare_class_name", () => {
+  // A bare class name (Database) resolves to the one matching class; a truly
+  // unknown name still returns null (no false positives).
+  const docs = makeDocs();
+  const spec = docs.classSpec("Database");
+  assert(spec !== null, "bare class name must resolve");
+  assert(spec!.fqn.endsWith("Database"), `fqn should end with Database; got ${spec!.fqn}`);
+  assert(docs.methodSpec("Database", "execute") !== null, "method via bare name must resolve");
+  // A truly unknown name still returns null.
+  assert(docs.classSpec("DefinitelyNotAClass") === null, "unknown class must stay null");
+  assert(docs.methodSpec("DefinitelyNotAClass", "execute") === null, "unknown method must stay null");
+});
+
 // ── Cleanup + summary ──────────────────────────────────────────────
 
 teardownFixture();

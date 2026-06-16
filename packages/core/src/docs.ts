@@ -932,11 +932,58 @@ export class Docs {
   }
 
   /**
+   * Resolve a class by exact FQN, documented public import path, or bare name.
+   *
+   * Node stores the bare class name as the FQN (`Database`), but a developer
+   * reading the docs may type the published path (`@tina4/orm.Database`,
+   * `orm/Database`) or just `Database`. Match exactly first, then by class
+   * name (last path segment), disambiguating by requiring the given segments
+   * to appear in the stored FQN/file (framework + shortest wins). Unknown
+   * names stay `null` — no false positives.
+   */
+  private resolveClassEntry(given: string): InternalEntry | null {
+    // 1. exact stored key.
+    const exact = this.indexCache!.get(given);
+    if (exact && exact.kind === "class") return exact;
+
+    // Split the request on path/namespace separators (`.`, `/`, `\`), dropping
+    // a leading scope marker like `@tina4`.
+    const gsegs = given.split(/[./\\]+/).filter((s) => s && s !== "@tina4" && !s.startsWith("@"));
+    const gname = (gsegs.length ? gsegs[gsegs.length - 1] : given).toLowerCase();
+
+    const classes: InternalEntry[] = [];
+    for (const e of this.indexCache!.values()) {
+      if (e.kind === "class") classes.push(e);
+    }
+    const cands = classes.filter((e) => e.name.toLowerCase() === gname);
+    if (cands.length === 1) return cands[0]; // 2a. unique class-name match
+    if (cands.length === 0) return null;
+
+    // 2b. disambiguate by segment subset — the given dotted/slashed segments
+    // must all appear in the stored fqn or file path. Prefer framework, then
+    // the shortest fqn, then lexical order.
+    const lowSegs = gsegs.map((s) => s.toLowerCase());
+    const subset = cands.filter((e) => {
+      const hay = `${e.fqn} ${e.file}`.toLowerCase().split(/[./\\\s]+/).filter(Boolean);
+      return lowSegs.every((s) => hay.includes(s));
+    });
+    const pool = subset.length ? subset : cands;
+    pool.sort((a, b) => {
+      const fa = a.source === "framework" ? 0 : 1;
+      const fb = b.source === "framework" ? 0 : 1;
+      if (fa !== fb) return fa - fb;
+      if (a.fqn.length !== b.fqn.length) return a.fqn.length - b.fqn.length;
+      return a.fqn.localeCompare(b.fqn);
+    });
+    return pool[0];
+  }
+
+  /**
    * Return the full spec for a single class, or `null` if not found.
    */
   classSpec(fqn: string): ClassSpec | null {
     this.ensureIndex();
-    const cls = this.indexCache!.get(fqn);
+    const cls = this.resolveClassEntry(fqn);
     if (!cls || cls.kind !== "class") return null;
     const methods: ClassSpec["methods"] = [];
     const prefix = `${cls.fqn}.`;
@@ -980,7 +1027,7 @@ export class Docs {
    */
   methodSpec(classFqn: string, methodName: string): MethodSpec | null {
     this.ensureIndex();
-    const cls = this.indexCache!.get(classFqn);
+    const cls = this.resolveClassEntry(classFqn);
     if (!cls) return null;
     const key = `${cls.fqn}.${methodName}`;
     const entry = this.indexCache!.get(key);
@@ -1183,6 +1230,26 @@ export class Docs {
     }
     for (const tk of tokens) {
       if (tk && doc.includes(tk)) score += 1;
+    }
+    // Class-qualified queries ("Frond.addTest" / "Frond addTest"): score the
+    // owning class so the qualifier steers ranking instead of being dead weight.
+    const parent = (entry.class ?? "").toLowerCase();
+    if (parent) {
+      // Normalise `.`/`:`/whitespace in the joined query to a single `.` so
+      // "frond.addtest", "frond:addtest" and "frondaddtest" all compare alike.
+      const qNorm = joined.replace(/[:.]+/g, ".");
+      if (qNorm === `${parent}.${name}` || qNorm === `${parent}.${stripped}`) {
+        score += 6; // exact "Class.method" intent — the strongest signal
+      }
+      for (const tk of tokens) {
+        if (tk === parent) score += 2.5;
+        else if (tk && parent.startsWith(tk)) score += 1;
+      }
+    }
+    // Any token that is a whole segment of the fqn (module / class / name).
+    const fqnSegs = new Set(entry.fqn.toLowerCase().split(/[.\s:]+/).filter(Boolean));
+    for (const tk of tokens) {
+      if (tk && fqnSegs.has(tk)) score += 1;
     }
     if (joined && score === 0 && name.includes(joined)) score += 2;
     return score;
