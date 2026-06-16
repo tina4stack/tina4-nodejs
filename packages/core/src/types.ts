@@ -18,7 +18,12 @@ export interface Tina4Session {
 }
 
 export interface Tina4Request extends IncomingMessage {
-  params: Record<string, string>;
+  /**
+   * Path params. Typed params arrive coerced: `{id:int}`/`{id:integer}` and
+   * `{p:float}`/`{p:number}` are JS `number`s; every other type and untyped
+   * `{id}` stay `string` (parity with Python/PHP/Ruby).
+   */
+  params: Record<string, string | number>;
   query: Record<string, string>;
   /**
    * Request path only — no query string. Matches `request.path` in
@@ -49,8 +54,11 @@ export interface Tina4Request extends IncomingMessage {
   header(name: string): string | undefined;
   /** Extract the Bearer token from the Authorization header. */
   bearerToken(): string | null;
-  /** Get a parameter by key from merged params (route + query). */
-  param(key: string, defaultValue?: string): string | undefined;
+  /**
+   * Get a parameter by key from merged params (route + query). Route params
+   * may be coerced numbers (e.g. `{id:int}`); query params are always strings.
+   */
+  param(key: string, defaultValue?: string | number): string | number | undefined;
   /** Parse the request body based on content type. */
   parseBody(): Promise<void>;
 }

@@ -101,7 +101,7 @@ export function createRequest(req: IncomingMessage): Tina4Request {
     return null;
   };
 
-  tReq.param = function (key: string, defaultValue?: string): string | undefined {
+  tReq.param = function (key: string, defaultValue?: string | number): string | number | undefined {
     return tReq.params[key] ?? tReq.query[key] ?? defaultValue;
   };
 

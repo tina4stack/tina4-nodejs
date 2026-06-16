@@ -275,6 +275,71 @@ console.log("\n--- Typed parameters ---");
   }
 }
 
+// --- Typed-parameter VALUE coercion (int/float → number) ---
+// Parity with Python/PHP/Ruby: a typed {id:int} constrains matching AND the
+// value arrives coerced — req.params.id is the number 42, not the string "42".
+// Untyped {id} and all string-ish types stay strings.
+console.log("\n--- Typed parameter coercion ---");
+{
+  const r = new Router();
+  const h = async (_req: any, _res: any) => {};
+
+  r.get("/users/{id:int}", h);
+  const intMatch = r.match("GET", "/users/42");
+  assert("{id:int} value is a number", typeof intMatch?.params.id === "number");
+  assert("{id:int} value equals 42", intMatch?.params.id === 42);
+
+  r.clear();
+  r.get("/users/{id:integer}", h);
+  const integerMatch = r.match("GET", "/users/7");
+  assert("{id:integer} value is a number", typeof integerMatch?.params.id === "number");
+  assert("{id:integer} value equals 7", integerMatch?.params.id === 7);
+
+  r.clear();
+  r.get("/products/{price:float}", h);
+  const floatMatch = r.match("GET", "/products/19.99");
+  assert("{price:float} value is a number", typeof floatMatch?.params.price === "number");
+  assert("{price:float} value equals 19.99", floatMatch?.params.price === 19.99);
+
+  r.clear();
+  r.get("/products/{qty:number}", h);
+  const numberMatch = r.match("GET", "/products/3.5");
+  assert("{qty:number} value is a number", typeof numberMatch?.params.qty === "number");
+  assert("{qty:number} value equals 3.5", numberMatch?.params.qty === 3.5);
+
+  // String-ish types stay strings
+  r.clear();
+  r.get("/u/{name:alpha}", h);
+  const alphaMatch = r.match("GET", "/u/Alice");
+  assert("{name:alpha} value stays a string", typeof alphaMatch?.params.name === "string" && alphaMatch?.params.name === "Alice");
+
+  r.clear();
+  r.get("/api/{id:uuid}", h);
+  const uuidMatch = r.match("GET", "/api/550e8400-e29b-41d4-a716-446655440000");
+  assert("{id:uuid} value stays a string", typeof uuidMatch?.params.id === "string");
+
+  r.clear();
+  r.get("/files/{p:path}", h);
+  const pathMatch = r.match("GET", "/files/a/b/c.txt");
+  assert("{p:path} value stays a string", typeof pathMatch?.params.p === "string" && pathMatch?.params.p === "a/b/c.txt");
+
+  r.clear();
+  r.get("/a/{name:string}", h);
+  const strMatch = r.match("GET", "/a/42");
+  assert("{name:string} numeric-looking value stays a string", typeof strMatch?.params.name === "string" && strMatch?.params.name === "42");
+
+  // Untyped param stays a string even when it looks numeric
+  r.clear();
+  r.get("/x/{id}", h);
+  const untypedMatch = r.match("GET", "/x/42");
+  assert("untyped {id} value stays the string '42'", typeof untypedMatch?.params.id === "string" && untypedMatch?.params.id === "42");
+
+  // Non-numeric never reaches an int route (regex rejects → 404 / null)
+  r.clear();
+  r.get("/n/{id:int}", h);
+  assert("{id:int} non-numeric does not match (404)", r.match("GET", "/n/abc") === null);
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

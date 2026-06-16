@@ -193,7 +193,7 @@ Max upload size: `TINA4_MAX_UPLOAD_SIZE` env var (default 10MB).
 getToken(payload, secret?, expiresIn=60): string
 validToken(token, secret?): Record | null
 getPayload(token): Record | null
-refreshToken(token, secret?, expiresIn=60): string | null
+refreshToken(token, expiresIn=60): string | null  // reads SECRET from env
 hashPassword(password, salt?, iterations=260000): string  // PBKDF2-SHA256, $ delimiter
 checkPassword(password, hash): boolean  // timing-safe
 validateApiKey(provided, expected?): boolean  // reads TINA4_API_KEY from env

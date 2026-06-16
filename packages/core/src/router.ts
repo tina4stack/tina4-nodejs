@@ -12,9 +12,35 @@ export function isTrailingSlashRedirectEnabled(): boolean {
   return isTruthy(process.env.TINA4_TRAILING_SLASH_REDIRECT);
 }
 
+/**
+ * Coerce a matched path param to its declared type. Mirrors Python/PHP/Ruby:
+ * `{id:int}`/`{id:integer}` arrive as a JS integer `number`, `{p:float}`/
+ * `{p:number}` as a float `number`, and every other type (string/alpha/alnum/
+ * slug/uuid/path) plus untyped `{id}` stay the decoded string. The URL regex
+ * already constrains what reaches here (`int` only matches `\d+`), so a cast
+ * should never fail — but we never throw: a NaN result falls back to the raw
+ * string so a malformed value can't take the router down.
+ */
+function coerceParam(raw: string, type: string | undefined): string | number {
+  switch (type) {
+    case "int":
+    case "integer": {
+      const n = parseInt(raw, 10);
+      return Number.isNaN(n) ? raw : n;
+    }
+    case "float":
+    case "number": {
+      const n = parseFloat(raw);
+      return Number.isNaN(n) ? raw : n;
+    }
+    default:
+      return raw;
+  }
+}
+
 interface MatchResult {
   handler: RouteHandler;
-  params: Record<string, string>;
+  params: Record<string, string | number>;
   pattern: string;
   meta?: RouteMeta;
   middlewares?: Middleware[];
@@ -28,6 +54,7 @@ interface CompiledRoute {
   pattern: string;
   regex: RegExp;
   paramNames: string[];
+  paramTypes: string[];
   handler: RouteHandler;
   meta?: RouteMeta;
   filePath?: string;
@@ -117,7 +144,7 @@ export class Router {
    */
   addRoute(definition: RouteDefinition): RouteRef {
     const method = definition.method.toUpperCase();
-    const { regex, paramNames } = this.compilePattern(definition.pattern);
+    const { regex, paramNames, paramTypes } = this.compilePattern(definition.pattern);
 
     if (!this.routes.has(method)) {
       this.routes.set(method, []);
@@ -143,6 +170,7 @@ export class Router {
       pattern: definition.pattern,
       regex,
       paramNames,
+      paramTypes,
       handler: definition.handler,
       meta: definition.meta,
       filePath: definition.filePath,
@@ -309,9 +337,10 @@ export class Router {
     for (const route of routes) {
       const match = route.regex.exec(path);
       if (match) {
-        const params: Record<string, string> = {};
+        const params: Record<string, string | number> = {};
         for (let i = 0; i < route.paramNames.length; i++) {
-          params[route.paramNames[i]] = decodeURIComponent(match[i + 1]);
+          const raw = decodeURIComponent(match[i + 1]);
+          params[route.paramNames[i]] = coerceParam(raw, route.paramTypes[i]);
         }
         return {
           handler: route.handler,
@@ -505,8 +534,13 @@ export class Router {
     ".*": ".+",
   };
 
-  private compilePattern(pattern: string): { regex: RegExp; paramNames: string[] } {
+  private compilePattern(pattern: string): { regex: RegExp; paramNames: string[]; paramTypes: string[] } {
     const paramNames: string[] = [];
+    // Declared type per capture group, parallel to paramNames. Drives value
+    // coercion at match time (int/integer/float/number → JS number). Every
+    // capture below pushes a type so the two arrays stay index-aligned; only
+    // {name:type} carries a non-"string" type — all other forms are "string".
+    const paramTypes: string[] = [];
 
     // Supports {id} (primary, matches Python), [id] (file-based dirs), and :id (Express-style)
     const regexStr = pattern
@@ -519,6 +553,7 @@ export class Router {
         ) {
           const name = segment.startsWith("{") ? segment.slice(4, -1) : segment.slice(4, -1);
           paramNames.push(name);
+          paramTypes.push("string");
           return "(.+)";
         }
         // Dynamic param: {id}, {id:int}, {id:float}, {id:path} (matching Python/Ruby)
@@ -528,6 +563,7 @@ export class Router {
           const name = colonIdx >= 0 ? inner.slice(0, colonIdx) : inner;
           const type = colonIdx >= 0 ? inner.slice(colonIdx + 1) : "string";
           paramNames.push(name);
+          paramTypes.push(type);
           const table = Router.PARAM_TYPE_PATTERNS;
           if (!Object.prototype.hasOwnProperty.call(table, type)) {
             const valid = Object.keys(table).filter((k) => k !== ".*").sort().join(", ");
@@ -541,17 +577,20 @@ export class Router {
         if (segment.startsWith("[") && segment.endsWith("]")) {
           const name = segment.slice(1, -1);
           paramNames.push(name);
+          paramTypes.push("string");
           return "([^/]+)";
         }
         // Express-style param: :id
         if (segment.startsWith(":")) {
           const name = segment.slice(1);
           paramNames.push(name);
+          paramTypes.push("string");
           return "([^/]+)";
         }
         // Wildcard: * (catch-all, param key is "*")
         if (segment === "*") {
           paramNames.push("*");
+          paramTypes.push("string");
           return "(.+)";
         }
         return segment;
@@ -561,6 +600,7 @@ export class Router {
     return {
       regex: new RegExp(`^${regexStr}$`),
       paramNames,
+      paramTypes,
     };
   }
 }

@@ -67,6 +67,24 @@ assert("Token with expiresIn=0 is valid", validToken(noExpToken) !== null);
 const noExpPayload = getPayload(noExpToken);
 assert("Token with expiresIn=0 has no exp claim", noExpPayload !== null && !("exp" in noExpPayload));
 
+// expiresIn is in MINUTES (parity with Python/PHP/Ruby): exp == iat + expiresIn*60.
+{
+  const minutesToken = getToken({ userId: 1 }, 5); // 5 minutes
+  const p = getPayload(minutesToken)!;
+  assert("expiresIn=5 → exp is iat + 5*60 (minutes, not seconds)", (p.exp as number) - (p.iat as number) === 5 * 60);
+}
+{
+  const defaultToken = getToken({ userId: 1 }); // default 60 minutes
+  const p = getPayload(defaultToken)!;
+  assert("default expiry is 60 minutes (exp == iat + 3600)", (p.exp as number) - (p.iat as number) === 60 * 60);
+}
+{
+  // Back-compat: numeric 2nd positional arg is the expiry, now in minutes.
+  const backCompat = getToken({ userId: 1 }, 30); // 30 minutes
+  const p = getPayload(backCompat)!;
+  assert("back-compat numeric expiry is minutes (30 → 1800s)", (p.exp as number) - (p.iat as number) === 30 * 60);
+}
+
 // ── JWT Invalid Signature ─────────────────────────────────────────
 
 console.log("\n-- JWT Invalid Signature --");
@@ -244,6 +262,16 @@ console.log("\n-- Token Refresh --");
   assert("refreshed token preserves userId", refreshedPayload?.userId === 42);
   assert("refreshed token preserves role", refreshedPayload?.role === "admin");
   assert("refreshed token has new iat", refreshedPayload?.iat !== undefined);
+  // expiresIn is in MINUTES: 7200 minutes → exp == iat + 7200*60.
+  assert("refreshed token expiry is in minutes (7200 → exp == iat + 432000)", (refreshedPayload!.exp as number) - (refreshedPayload!.iat as number) === 7200 * 60);
+}
+
+{
+  // refreshToken default lifetime is 60 minutes.
+  const original = getToken({ userId: 9 }, 0); // non-expiring source token
+  const refreshed = refreshToken(original);
+  const p = getPayload(refreshed!)!;
+  assert("refreshToken default expiry is 60 minutes (exp == iat + 3600)", (p.exp as number) - (p.iat as number) === 60 * 60);
 }
 
 {

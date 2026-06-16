@@ -36,17 +36,17 @@ function base64urlDecode(str: string): Buffer {
  * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
  *
  * @param payload          - Claims to encode (e.g. `{ userId: 1, role: "admin" }`)
- * @param secretOrExpiresIn - Signing secret string, OR expiresIn number (back-compat with old 2-arg form)
- * @param expiresIn         - Lifetime in seconds (default 3600). Only used when secret is a string.
+ * @param secretOrExpiresIn - Signing secret string, OR expiresIn number in MINUTES (back-compat with old 2-arg form)
+ * @param expiresIn         - Lifetime in MINUTES (default 60). `0` ⇒ no `exp` claim (non-expiring). Only used when secret is a string.
  * @returns Signed JWT string: header.payload.signature
  */
 export function getToken(
   payload: Record<string, unknown>,
   secretOrExpiresIn?: string | number,
-  expiresIn: number = 3600,
+  expiresIn: number = 60,
   algorithm?: string,
 ): string {
-  // Back-compat: if second arg is a number, treat it as expiresIn (old 2-arg form)
+  // Back-compat: if second arg is a number, treat it as expiresIn in minutes (old 2-arg form)
   let resolvedSecret: string;
   let resolvedExpiresIn: number;
   if (typeof secretOrExpiresIn === "number") {
@@ -66,8 +66,9 @@ export function getToken(
   const now = Math.floor(Date.now() / 1000);
 
   const claims: Record<string, unknown> = { ...payload, iat: now };
+  // expiresIn is in MINUTES (parity with Python/PHP/Ruby); 0 ⇒ non-expiring.
   if (resolvedExpiresIn !== 0) {
-    claims.exp = now + resolvedExpiresIn;
+    claims.exp = now + resolvedExpiresIn * 60;
   }
 
   const h = base64urlEncode(Buffer.from(JSON.stringify(header)));
@@ -173,7 +174,7 @@ function verifySignature(input: string, sig: string, secret: string, algorithm: 
  *
  * @param password   - Plaintext password
  * @param salt       - Hex-encoded salt (auto-generated if omitted)
- * @param iterations - PBKDF2 iterations (default 100000)
+ * @param iterations - PBKDF2 iterations (default 260000)
  * @returns Format: `pbkdf2_sha256$iterations$salt$hash` (all hex-encoded)
  */
 export function hashPassword(
@@ -250,12 +251,12 @@ export function authMiddleware(secret?: string, algorithm: string = "HS256"): Mi
  * Secret is always read from `process.env.TINA4_SECRET`.
  *
  * @param token     - Existing JWT to refresh
- * @param expiresIn - New lifetime in seconds (default 3600)
+ * @param expiresIn - New lifetime in MINUTES (default 60)
  * @returns New signed JWT string, or null if the input token is invalid/expired
  */
 export function refreshToken(
   token: string,
-  expiresIn: number = 3600,
+  expiresIn: number = 60,
 ): string | null {
   if (!validToken(token)) return null;
 
