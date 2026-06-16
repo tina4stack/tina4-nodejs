@@ -156,7 +156,10 @@ const FILTER_WITH_ARGS_RE = /^(\w+)\s*\(([\s\S]*)\)$/;
 const FILTER_COMPARISON_RE = /^(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)$/;
 const TITLE_WORD_RE = /\b\w/g;
 const STRIP_TAGS_RE = /<[^>]+>/g;
-const FORMAT_RE = /%[sd]/g;
+// printf-style conversions: %%, plus %[flags][width][.precision]type for the
+// common types. Matches PHP sprintf / Python % / Ruby format so the `format`
+// filter renders e.g. `{{ '%.2f' | format(n) }}` as "3.14" across all engines.
+const FORMAT_RE = /%%|%([-+ 0]*)(\d+)?(?:\.(\d+))?([sdifFeEgGxXob])/g;
 const LEADING_WS_RE = /^\s+/;
 const TRAILING_WS_RE = /\s+$/;
 const THOUSANDS_RE = /\B(?=(\d{3})+(?!\d))/g;
@@ -164,7 +167,7 @@ const THOUSANDS_RE = /\B(?=(\d{3})+(?!\d))/g;
 // ── Caches (module level) ─────────────────────────────────────
 
 /** Cache for parsed filter chains: expr string -> [variable, filters] */
-const filterChainCache = new Map<string, [string, [string, string[]][]]>();
+const filterChainCache = new Map<string, [string, [string, unknown[]][]]>();
 
 /** Cache for parsed dotted/bracket paths: expr string -> [parts, fromBracket] */
 const pathParseCache = new Map<string, [string[], boolean[]]>();
@@ -896,7 +899,7 @@ function splitFilterNameAndPath(fname: string): [string, string] {
   return [fname, ""];
 }
 
-function parseFilterChain(expr: string): [string, [string, string[]][]] {
+function parseFilterChain(expr: string): [string, [string, unknown[]][]] {
   // Check cache first
   const cached = filterChainCache.get(expr);
   if (cached) return cached;
@@ -931,7 +934,7 @@ function parseFilterChain(expr: string): [string, [string, string[]][]] {
   if (current) parts.push(current);
 
   const variable = parts[0].trim();
-  const filters: [string, string[]][] = [];
+  const filters: [string, unknown[]][] = [];
 
   for (let i = 1; i < parts.length; i++) {
     const f = parts[i].trim();
@@ -946,17 +949,47 @@ function parseFilterChain(expr: string): [string, [string, string[]][]] {
     }
   }
 
-  const result: [string, [string, string[]][]] = [variable, filters];
+  const result: [string, [string, unknown[]][]] = [variable, filters];
   filterChainCache.set(expr, result);
   return result;
 }
 
-function parseArgs(raw: string): string[] {
-  const args: string[] = [];
+/**
+ * An UNQUOTED bareword filter argument — a variable reference (or dotted/bracket
+ * path), not a literal. Resolved against the render context at apply-time so
+ * `{{ '%.2f' | format(price) }}` binds `price` to its value. Quoted literals
+ * (`default('fb')`) stay plain strings and are never resolved.
+ */
+class VarRef {
+  constructor(public name: string) {}
+}
+
+/** Coerce an unquoted arg token to a typed value, or a VarRef if it's a name. */
+function coerceArg(t: string): unknown {
+  if (/^-?\d+$/.test(t)) return parseInt(t, 10);
+  if (/^-?\d*\.\d+$/.test(t)) return parseFloat(t);
+  if (t === "true") return true;
+  if (t === "false") return false;
+  if (t === "null" || t === "none" || t === "nil") return null;
+  if ((t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"))) {
+    try { return JSON.parse(t); } catch { /* not JSON — fall through */ }
+  }
+  return new VarRef(t); // bareword / path → resolve at apply-time
+}
+
+function parseArgs(raw: string): unknown[] {
+  const args: unknown[] = [];
   let current = "";
   let inQuote: string | null = null;
   let wasQuoted = false;
   let depth = 0;
+
+  const flush = (): void => {
+    if (wasQuoted) args.push(current);
+    else { const t = current.trim(); if (t !== "") args.push(coerceArg(t)); }
+    current = "";
+    wasQuoted = false;
+  };
 
   for (const ch of raw) {
     if (inQuote) {
@@ -976,19 +1009,10 @@ function parseArgs(raw: string): string[] {
     }
     if (ch === "(") { depth++; current += ch; continue; }
     if (ch === ")") { depth--; current += ch; continue; }
-    if (ch === "," && depth === 0) {
-      args.push(wasQuoted ? current : current.trim());
-      current = "";
-      wasQuoted = false;
-      continue;
-    }
+    if (ch === "," && depth === 0) { flush(); continue; }
     current += ch;
   }
-
-  const final = wasQuoted ? current : current.trim();
-  if (final !== "" || wasQuoted) {
-    args.push(final);
-  }
+  flush();
 
   return args;
 }
@@ -1134,7 +1158,7 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   escape: (v) => htmlEscape(String(v)),
   e: (v) => htmlEscape(String(v)),
   striptags: (v) => String(v).replace(STRIP_TAGS_RE, ""),
-  nl2br: (v) => String(v).replace(/\n/g, "<br>\n"),
+  nl2br: (v) => new SafeString(htmlEscape(String(v)).replace(/\n/g, "<br />\n")),
   abs: (v) => typeof v === "number" ? Math.abs(v) : v,
   round: (v, decimals) => {
     const d = decimals !== undefined ? parseInt(String(decimals), 10) : 0;
@@ -1221,15 +1245,38 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   },
   url_encode: (v) => encodeURIComponent(String(v)),
   format: (v, ...args) => {
-    let s = String(v);
-    // Simple %s / %d replacement like Python's % operator
     let idx = 0;
-    s = s.replace(FORMAT_RE, () => {
-      const val = idx < args.length ? String(args[idx]) : "";
-      idx++;
-      return val;
+    return String(v).replace(FORMAT_RE, (m, flags, width, prec, type) => {
+      if (m === "%%") return "%";
+      const arg = args[idx++];
+      const p = prec !== undefined ? parseInt(String(prec), 10) : undefined;
+      let out: string;
+      switch (type) {
+        case "s": out = String(arg ?? ""); break;
+        case "d": case "i": out = String(Math.trunc(Number(arg) || 0)); break;
+        case "f": case "F": out = Number(arg).toFixed(p !== undefined ? p : 6); break;
+        case "e": case "E": {
+          out = Number(arg).toExponential(p !== undefined ? p : 6);
+          if (type === "E") out = out.toUpperCase();
+          break;
+        }
+        case "g": case "G": out = String(Number(arg)); break;
+        case "x": out = Math.trunc(Number(arg) || 0).toString(16); break;
+        case "X": out = Math.trunc(Number(arg) || 0).toString(16).toUpperCase(); break;
+        case "o": out = Math.trunc(Number(arg) || 0).toString(8); break;
+        case "b": out = Math.trunc(Number(arg) || 0).toString(2); break;
+        default:  out = String(arg ?? "");
+      }
+      if (width) {
+        const w = parseInt(String(width), 10);
+        if (out.length < w) {
+          const f = String(flags || "");
+          if (f.includes("-")) out = out.padEnd(w, " ");
+          else out = out.padStart(w, f.includes("0") ? "0" : " ");
+        }
+      }
+      return out;
     });
-    return s;
   },
   dump: (v) => JSON.stringify(v),
   formToken: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
@@ -1868,7 +1915,8 @@ export class Frond {
   private evalVarRaw(expr: string, context: Record<string, unknown>): unknown {
     const [varName, filters] = parseFilterChain(expr);
     let value = evalExpr(varName, context);
-    for (const [fname, args] of filters) {
+    for (const [fname, rawArgs] of filters) {
+      const args = rawArgs.map((a) => (a instanceof VarRef ? evalExpr(a.name, context) : a));
       if (fname === "raw" || fname === "safe") continue;
 
       // Filter + property-access chain: `first.groupSummary` — apply
@@ -1944,7 +1992,8 @@ export class Frond {
     let value = evalExpr(varName, context);
 
     let isSafe = false;
-    for (const [fname, args] of filters) {
+    for (const [fname, rawArgs] of filters) {
+      const args = rawArgs.map((a) => (a instanceof VarRef ? evalExpr(a.name, context) : a));
       if (fname === "raw" || fname === "safe") {
         isSafe = true;
         continue;
@@ -2020,7 +2069,7 @@ export class Frond {
             // In production this emits an empty SafeString (no leaked state).
             value = renderDump(value);
             continue;
-          case "nl2br":      value = String(value).replace(/\n/g, "<br>\n"); continue;
+          case "nl2br":      value = new SafeString(htmlEscape(String(value)).replace(/\n/g, "<br />\n")); continue;
           case "unique":     value = Array.isArray(value) ? [...new Set(value)] : value; continue;
           case "sort":       value = Array.isArray(value) ? [...value].sort() : value; continue;
           case "reverse":    value = Array.isArray(value) ? [...value].reverse() : String(value).split("").reverse().join(""); continue;

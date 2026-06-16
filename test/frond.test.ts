@@ -99,7 +99,8 @@ assert("json_encode", engine.renderString("{{ data | json_encode | safe }}", { d
 assert("escape filter", engine.renderString("{{ html | escape }}", { html: "<b>hi</b>" }) === "&lt;b&gt;hi&lt;/b&gt;");
 assert("slug", engine.renderString("{{ title | slug }}", { title: "Hello World!" }) === "hello-world");
 assert("truncate", engine.renderString('{{ text | truncate(5) }}', { text: "Hello World" }) === "Hello...");
-assert("nl2br", engine.renderString("{{ text | nl2br | safe }}", { text: "a\nb" }) === "a<br>\nb");
+// Twig/PHP parity: nl2br escapes, inserts <br />, and is safe (no re-escape)
+assert("nl2br", engine.renderString("{{ text | nl2br }}", { text: "a\nb" }) === "a<br />\nb");
 assert("number_format", engine.renderString("{{ num | number_format(2) }}", { num: 1234.5 }) === "1,234.50");
 assert("base64_encode", engine.renderString("{{ text | base64_encode }}", { text: "hello" }) === "aGVsbG8=");
 assert("base64_decode", engine.renderString("{{ text | base64_decode }}", { text: "aGVsbG8=" }) === "hello");
@@ -1038,6 +1039,15 @@ console.log("\n--- filter + property chain (issue #113) ---");
     engine.renderString('{{ stamp|replace(".", "-") }}', { stamp: "2026.05.05" })
       === "2026-05-05",
   );
+}
+
+// ── Twig parity fixes (cross-engine audit regressions) ─────────
+{
+  const e = new Frond(tmpDir);
+  assert("parity: escape single not double", e.renderString("{{ h | e }}", { h: "<b>x</b>" }) === "&lt;b&gt;x&lt;/b&gt;");
+  assert("parity: format resolves variable arg", e.renderString("{{ '%.2f' | format(n) }}", { n: 3.14159 }) === "3.14");
+  assert("parity: format literal precision", e.renderString("{{ '%.2f' | format(3.14159) }}", {}) === "3.14");
+  assert("parity: nl2br escapes + br/ + safe", e.renderString("{{ t | nl2br }}", { t: "a\nb" }) === "a<br />\nb");
 }
 
 // ── Summary ────────────────────────────────────────────────────
