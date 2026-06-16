@@ -1,6 +1,6 @@
 {
   "name": "tina4nodejs",
-  "version": "3.13.29",
+  "version": "3.13.30",
   "description": "Tina4 CLI — The Intelligent Native Application 4ramework",
   "type": "module",
   "bin": {
