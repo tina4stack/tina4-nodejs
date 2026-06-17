@@ -61,6 +61,7 @@ export { GraphQL, ParseError, graphqlEndpoint, graphqlAutoSchemaEnabled } from "
 export type { GraphQLField, ResolverFn, GraphQLResult } from "./graphql.js";
 export {
   WebSocketServer,
+  devReloadWs,
   computeAcceptKey, parseUpgradeHeaders, buildFrame, parseFrame,
   OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG,
   CLOSE_NORMAL, CLOSE_PROTOCOL_ERROR,

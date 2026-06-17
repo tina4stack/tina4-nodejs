@@ -775,6 +775,47 @@ console.log("\n--- supervisor proxy (chat + threads) ---");
   else process.env.TINA4_SUPERVISOR_URL = prevSupervisor;
 }
 
+// --- file browser (/__dev/api/files) ---
+// Locks the SPA contract that broke once: every entry MUST carry `is_dir`
+// (boolean) so the dashboard can render folders, plus `has_children`,
+// `git_status` and `size`; the payload carries the git `branch`. Mirrors the
+// tina4-python / tina4-php / tina4-ruby files endpoint 1:1.
+console.log("\n--- file browser ---");
+
+const filesHandler = findHandler("GET", "/__dev/api/files");
+assert("files handler is registered", filesHandler !== undefined);
+
+if (filesHandler) {
+  const res = mockRes();
+  await filesHandler(mockReq("/__dev/api/files?path=."), res);
+  const data = res.result;
+
+  assert("files returns path", typeof data?.path === "string");
+  assert("files returns branch (string)", typeof data?.branch === "string");
+  assert("files returns entries array", Array.isArray(data?.entries) && data.entries.length > 0);
+
+  const entry = data.entries[0];
+  assert("entry has is_dir (boolean)", typeof entry?.is_dir === "boolean");
+  assert("entry has has_children field", "has_children" in entry);
+  assert("entry has git_status (string)", typeof entry?.git_status === "string");
+  assert("entry has size field", "size" in entry);
+  assert("entry has name + path", typeof entry?.name === "string" && typeof entry?.path === "string");
+  // The legacy `type` field is gone — canonical shape is is_dir, not type.
+  assert("no legacy `type` field on entries", data.entries.every((e: any) => !("type" in e)));
+
+  const dir = data.entries.find((e: any) => e.is_dir === true);
+  const file = data.entries.find((e: any) => e.is_dir === false);
+  assert("at least one directory (is_dir true, size null)", dir !== undefined && dir.size === null);
+  assert("directory reports has_children boolean", dir === undefined || typeof dir.has_children === "boolean");
+  assert("at least one file (is_dir false, has_children null)", file !== undefined && file.has_children === null);
+
+  // Missing / invalid path: empty-but-valid shape, never a throwing 404.
+  const resMissing = mockRes();
+  await filesHandler(mockReq("/__dev/api/files?path=__does_not_exist__"), resMissing);
+  assert("missing path returns entries: []", Array.isArray(resMissing.result?.entries) && resMissing.result.entries.length === 0);
+  assert("missing path still returns branch", typeof resMissing.result?.branch === "string");
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

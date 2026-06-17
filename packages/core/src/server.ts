@@ -18,7 +18,8 @@ import { loadEnv, isTruthy } from "./dotenv.js";
 import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
-import { DevAdmin, RequestInspector } from "./devAdmin.js";
+import { DevAdmin, RequestInspector, WsTracker } from "./devAdmin.js";
+import { devReloadWs } from "./websocket.js";
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
 import { stopAllBackgroundTasks } from "./background.js";
@@ -1392,6 +1393,32 @@ ${reset}
   // posts /__dev/api/reload to the MAIN port. Matches Python (master).
   const server = createServer(dispatch);
 
+  // WebSocket-primary DevReload: accept and hold /__dev_reload upgrades on the
+  // MAIN port (debug only) so POST /__dev/api/reload can push an instant reload.
+  // Mirrors Python's _register_dev_reload_ws + _ws_manager.broadcast(path=…).
+  // Without this the handshake 404s and the whole stack silently falls back to
+  // polling. Track connections in WsTracker so they appear in the dev-admin list.
+  if (isDevMode()) {
+    devReloadWs.setTracker(
+      (remoteAddress, p) => WsTracker.add(remoteAddress, p),
+      (id) => { WsTracker.remove(id); },
+    );
+    server.on("upgrade", (req: IncomingMessage, socket, head) => {
+      const upPath = (req.url ?? "/").split("?")[0];
+      if (upPath === "/__dev_reload") {
+        devReloadWs.handleUpgrade(req, socket, head);
+        return;
+      }
+      // Not a dev-reload upgrade — refuse cleanly rather than leaving it hanging.
+      try {
+        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+        socket.destroy();
+      } catch {
+        /* socket already gone */
+      }
+    });
+  }
+
   return new Promise((resolvePromise) => {
     server.listen(port, host, () => {
       const displayHost = host === "0.0.0.0" ? "localhost" : host;
@@ -1418,6 +1445,17 @@ ${reset}
         aiServer = createServer(async (req, res) => {
           (req as any)._tina4AiPort = true;
           await dispatch(req, res);
+        });
+
+        // Stable AI port never accepts /__dev_reload (or any) WS upgrade — an AI
+        // tool driving it must never get a reload channel that its own edits trip.
+        aiServer.on("upgrade", (_req: IncomingMessage, socket) => {
+          try {
+            socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+            socket.destroy();
+          } catch {
+            /* socket already gone */
+          }
         });
 
         aiServer.on("error", (err: any) => {

@@ -1,4 +1,4 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.13.35)
+# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.13.36)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
@@ -935,16 +935,19 @@ When using Firebird as the database engine:
 - **BLOB handling** — `db.fetch()` and `db.fetchOne()` auto-convert memoryview/Buffer BLOB columns to `Buffer` (raw bytes, not base64).
 - **No triggers, no foreign keys** in migrations on Firebird-targeted projects — relationships are wired in the ORM layer instead.
 
-## How DevReload works
+## How DevReload works (WebSocket-primary)
 
-The `tina4` Rust CLI is the sole file watcher for the Tina4 stack — there is no framework-side watcher. The flow:
+DevReload is **WebSocket-primary** — the reload is instant, not polled. The `tina4` Rust CLI is the sole file watcher for the Tina4 stack; there is no framework-side watcher. The flow:
 
-1. Rust CLI (`npx tina4nodejs serve`) watches `src/`, `migrations/`, `.env`. Noise is filtered (Access/Metadata events, `node_modules`, `.git`, `dist`, `logs`, `.log`/`.db*`/`.swp` files) and a real mtime check defeats overlayfs spurious events.
+1. Rust CLI (`npx tina4nodejs serve`) watches `src/`, `migrations/`, `.env`. Noise is filtered (Access/Metadata events, `node_modules`, `.git`, `dist`, `logs`, `.log`/`.db*`/`.swp` files) and a real mtime check defeats overlayfs spurious events. The CLI does **not** restart the worker process.
 2. On a real change, the CLI POSTs `/__dev/api/reload` to the running server.
-3. The framework bumps its in-memory reload counter and (a) broadcasts `{type: 'reload'}` over WebSocket at `/__dev_reload`, and (b) exposes the counter at `GET /__dev/api/mtime` for the polling fallback.
-4. The browser's dev toolbar JS listens on the WS (primary) and polls `/__dev/api/mtime` every 3s (fallback). On a change it reloads the page, or swaps the stylesheet if the change was CSS.
+3. The server re-runs route discovery — re-importing changed `src/routes/` files **in-process** (mtime-tracked; `addRoute()` replaces the same-pattern route so the fresh handler wins) so the worker keeps the same PID — then bumps its reload counter.
+4. The server **broadcasts** a JSON message `{type, file, mtime}` to every browser connected on the `/__dev_reload` WebSocket (`type` is `"css"` for `.css`/`.scss` changes, else `"reload"`). The `/__dev_reload` route is registered (debug-only) on the main server's HTTP `upgrade` event and held open by the dev-reload connection manager (`devReloadWs` in `websocket.ts`). The broadcast is wrapped so a failure (or zero clients) never breaks the endpoint. The counter is also exposed at `GET /__dev/api/mtime` for the polling fallback.
+5. The injected dev-toolbar client is **WebSocket-primary**: it opens a WebSocket to `/__dev_reload` (`ws`/`wss` by page protocol); on a `{type: reload|change|css}` message it swaps `<link rel=stylesheet>` hrefs with a cache-bust query for CSS, else does a full `location.reload()`. It **stops** the fallback poll the moment the socket connects, and only **starts** the `/__dev/api/mtime` poll (every 3 s) when the socket drops — reconnecting after ~2 s. The poll initialises its last-seen mtime to a `null` sentinel (not `0`) and reloads when the polled mtime *differs* (`!==`, not `>`), so the first change after load isn't swallowed and a counter reset on restart still triggers. **In normal operation there is no polling.**
 
-No configuration needed — set `TINA4_DEBUG=true` to enable. If you're running without the Rust CLI (e.g. Docker), there is no automatic reload; the production path is unaffected.
+No configuration needed — set `TINA4_DEBUG=true` to enable. If you're running without the Rust CLI (e.g. Docker, `TINA4_OVERRIDE_CLIENT=true`), there is no automatic reload; the production path is unaffected.
+
+> **Dev caveat (`.ts` routes under `tsx`):** the in-process re-import (step 3) cache-busts the dynamic `import()` by file mtime. This is reliable for `.js` routes under Node's native ESM loader (built/production path). Under `tsx` (the default dev runner), `tsx`'s ESM loader caches compiled `.ts` modules and ignores the cache-bust, so an edited **`.ts` route body** is re-broadcast (browser reloads) but the new handler is only picked up after a full restart. The WebSocket broadcast, CSS hot-reload, new-file registration, and no-respawn behaviour all work under `tsx`.
 
 **AI dual-port mode:** when `TINA4_DEBUG=true` and `TINA4_NO_AI_PORT` is unset, the **main port** provides the normal hot-reload experience (dev toolbar + `/__dev_reload` injected) for the human dev, and a second server on `port+1000` is the **stable AI port** — it suppresses reload/toolbar injection (and returns 404 for `/__dev_reload`) so an AI tool can drive it without its own edits triggering a refresh. The `tina4` client posts `/__dev/api/reload` to the **main port**. Matches Python (master), PHP, and Ruby.
 

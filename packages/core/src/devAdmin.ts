@@ -665,12 +665,35 @@ const handleReload: RouteHandler = async (req, res) => {
     const { rediscoverRoutes } = await import("./routeDiscovery.js");
     const newRoutes = await rediscoverRoutes();
     if (newRoutes.length > 0) {
-      const { defaultRouter } = await import("./router.js");
-      for (const route of newRoutes) defaultRouter.addRoute(route);
-      console.log(`  Re-discovered ${newRoutes.length} new route(s) on reload`);
+      // Add to the LIVE server router — startServer() builds a fresh Router and
+      // exposes it as globalThis.__tina4_router; that's the instance dispatch
+      // matches against. Adding to defaultRouter would land the re-imported
+      // handler in a table nobody serves from, so the stale route keeps winning
+      // (an edited route would never hot-reload). addRoute() replaces by pattern,
+      // so the fresh handler overwrites the old one in place. Fall back to
+      // defaultRouter when no server is running (e.g. unit tests).
+      const liveRouter = (globalThis as any).__tina4_router;
+      const target = liveRouter ?? (await import("./router.js")).defaultRouter;
+      for (const route of newRoutes) target.addRoute(route);
+      console.log(`  Re-discovered ${newRoutes.length} route(s) on reload`);
     }
   } catch (err) {
     console.error(`  Re-discover on reload failed:`, err);
+  }
+
+  // WebSocket-primary reload: push an instant message to every browser
+  // connected on /__dev_reload. The toolbar client (and the dev-admin
+  // dashboard) act on this immediately — the mtime poll is only a fallback for
+  // when the socket is down. CSS changes swap stylesheets; everything else
+  // triggers a full page reload, so we normalise the wire `type` to
+  // "css"/"reload". The HTTP response still echoes the caller's original type.
+  // Wrapped so a broadcast failure (or zero clients) never 500s the endpoint.
+  const wsType = reloadType === "css" ? "css" : "reload";
+  try {
+    const { devReloadWs } = await import("./websocket.js");
+    devReloadWs.broadcast(JSON.stringify({ type: wsType, file: _reloadFile, mtime: _reloadMtime }));
+  } catch (err) {
+    console.error(`  Dev-reload WebSocket broadcast failed:`, err);
   }
 
   res.json({ ok: true, type: reloadType });
@@ -1734,35 +1757,151 @@ const handleExecute: RouteHandler = async (req, res) => {
   }
 };
 
-const handleFiles: RouteHandler = (req, res) => {
+// --- file-browser noise filter + git decoration (mirrors PHP/Python dev-admin) ---
+const DEV_FILES_IGNORED = new Set([
+  "__pycache__", "node_modules", "vendor", ".git",
+  "venv", ".venv", "dist", "target", ".tina4",
+]);
+
+// Hidden dot-entries are filtered too, except the env files.
+function devFilesHidden(name: string): boolean {
+  if (DEV_FILES_IGNORED.has(name)) return true;
+  return name.startsWith(".") && name !== ".env" && name !== ".env.example";
+}
+
+// Same 4-status mapping Python/PHP use for a porcelain code.
+function devGitStatusLabel(code: string): string {
+  if (code === "??") return "untracked";
+  if (code.includes("M")) return "modified";
+  if (code.includes("A")) return "added";
+  if (code.includes("D")) return "deleted";
+  return "clean";
+}
+
+/**
+ * Branch + porcelain status map for the file browser, mirroring PHP's
+ * devAdminGit* helpers 1:1. Paths git reports are relative to the repo
+ * root (always forward-slash); the project root may sit inside a larger
+ * repo (monorepo), so the toplevel is returned too for rebasing. Degrades
+ * to empty (every entry "clean") on any error / no git.
+ */
+async function devGitInfo(root: string): Promise<{ branch: string; gitRoot: string | null; status: Map<string, string> }> {
+  const empty = { branch: "", gitRoot: null as string | null, status: new Map<string, string>() };
+  try {
+    const { execFileSync } = await import("node:child_process");
+    const git = (args: string[]): string | null => {
+      try {
+        return execFileSync("git", args, { cwd: root, timeout: 3000, encoding: "utf-8" }).toString();
+      } catch {
+        return null;
+      }
+    };
+    const inside = git(["rev-parse", "--is-inside-work-tree"]);
+    if (!inside || inside.trim() !== "true") return empty;
+    const branch = (git(["rev-parse", "--abbrev-ref", "HEAD"]) ?? "").trim();
+    const topRaw = git(["rev-parse", "--show-toplevel"]);
+    const gitRoot = topRaw && topRaw.trim() !== ""
+      ? topRaw.trim().replace(/\\/g, "/").replace(/\/+$/, "")
+      : null;
+    const status = new Map<string, string>();
+    const porcelain = git(["status", "--porcelain", "-uall"]);
+    if (porcelain) {
+      for (const line of porcelain.split(/\r?\n/)) {
+        if (line.length < 4) continue;
+        const code = line.slice(0, 2).trim();
+        let p = line.slice(3).trim();
+        const arrow = p.indexOf(" -> ");      // rename/copy — keep destination
+        if (arrow !== -1) p = p.slice(arrow + 4);
+        if (p === "") continue;
+        status.set(p, code);
+      }
+    }
+    return { branch, gitRoot, status };
+  } catch {
+    return empty;
+  }
+}
+
+const handleFiles: RouteHandler = async (req, res) => {
+  // Response shape matches tina4-python / tina4-php 1:1 so the dev-admin SPA
+  // works against every framework with no branching: each entry carries
+  // `is_dir`, `has_children`, `git_status` and `size`; the payload carries the
+  // git `branch`. Noise dirs + hidden dot-files (except .env/.env.example) are
+  // filtered out.
   const url = new URL(req.url ?? "/", "http://localhost");
   const rel = url.searchParams.get("path") ?? ".";
   const root = resolve(process.cwd());
   const target = safeJoin(root, rel);
-  if (!target || !existsSync(target)) {
-    res.json({ error: `Path not found: ${rel}` }, 404);
+  const { branch, gitRoot, status: gitStatus } = await devGitInfo(root);
+
+  // Missing/invalid paths return an empty-but-valid shape (not 404): the SPA
+  // restores expanded-folder state from localStorage, and folders that don't
+  // exist in this harness would otherwise spam the console with red 404s.
+  if (!target || !existsSync(target) || !statSync(target).isDirectory()) {
+    res.json({ path: rel, branch, entries: [], error: "not a directory" });
     return;
   }
-  const stat = statSync(target);
-  if (!stat.isDirectory()) {
-    res.json({ error: `Not a directory: ${rel}` }, 400);
-    return;
+
+  // Rebase entry paths onto the git repo root when the project sits inside a
+  // larger repo. Everything runs in forward-slash form.
+  const rootFwd = root.replace(/\\/g, "/");
+  let cwdInGit = "";
+  if (gitRoot && gitRoot !== rootFwd && rootFwd.startsWith(gitRoot)) {
+    cwdInGit = rootFwd.slice(gitRoot.length).replace(/^\/+/, "");
+    if (cwdInGit !== "") cwdInGit += "/";
   }
-  const entries = readdirSync(target, { withFileTypes: true })
-    .filter((e) => !e.name.startsWith(".") || e.name === ".env")
-    .map((e) => {
-      const full = join(target, e.name);
-      let size = 0;
-      try { size = e.isFile() ? statSync(full).size : 0; } catch { /* ignore */ }
-      return {
-        name: e.name,
-        type: e.isDirectory() ? "dir" : "file",
-        size,
-        path: relative(root, full),
-      };
-    })
-    .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1));
-  res.json({ path: relative(root, target) || ".", entries });
+
+  const entries: Array<Record<string, unknown>> = [];
+  for (const name of readdirSync(target).sort()) {   // alphabetical; no re-sort by type
+    if (devFilesHidden(name)) continue;
+    const full = join(target, name);
+    const entryRel = relative(root, full).replace(/\\/g, "/");
+
+    let isDir = false;
+    let size: number | null = null;
+    try {
+      const st = statSync(full);
+      isDir = st.isDirectory();
+      if (!isDir) size = st.size;
+    } catch { /* unreadable entry */ }
+
+    // git status for this entry (same mapping PHP/Python use)
+    const gitPath = cwdInGit + entryRel;
+    let gitLabel = "clean";
+    const code = gitStatus.get(gitPath);
+    if (code !== undefined) {
+      gitLabel = devGitStatusLabel(code);
+    } else if (isDir) {
+      const prefix = gitPath + "/";          // propagate dirty status from any child
+      for (const [gf, gc] of gitStatus) {
+        if (gf.startsWith(prefix)) { gitLabel = gc === "??" ? "untracked" : "modified"; break; }
+      }
+    }
+
+    // has_children: does the dir contain anything visible?
+    let hasChildren: boolean | null = null;
+    if (isDir) {
+      hasChildren = false;
+      try {
+        for (const c of readdirSync(full)) {
+          if (devFilesHidden(c)) continue;
+          hasChildren = true;
+          break;
+        }
+      } catch { /* ignore */ }
+    }
+
+    entries.push({
+      name,
+      path: entryRel,
+      is_dir: isDir,
+      has_children: hasChildren,
+      git_status: gitLabel,
+      size,
+    });
+  }
+
+  res.json({ path: relative(root, target).replace(/\\/g, "/") || ".", branch, entries });
 };
 
 const handleFileRead: RouteHandler = (req, res) => {
@@ -2397,5 +2536,68 @@ function tina4VersionModal(){
         el.style.color='#f38ba8';
     });
 }
+</script>
+<script>
+(function(){
+    // WebSocket-primary dev reloader. The running server re-imports changed
+    // src/ routes in-process and pushes a {type,file,mtime} message over
+    // /__dev_reload — no respawn, instant refresh. The mtime poll below is a
+    // FALLBACK only, started when the socket is down and stopped on connect.
+    var _t4_css_exts=['.css','.scss'],_t4_debounce=null;
+    var _t4_interval=3000;
+    var _t4_ws=null,_t4_poll_timer=null,_t4_mtime=null;
+    function _t4_apply(d){
+        d=d||{};
+        var f=d.file||'',t=d.type||'';
+        var isCss=t==='css'||_t4_css_exts.some(function(e){return f.endsWith(e)});
+        if(isCss){
+            var links=document.querySelectorAll('link[rel="stylesheet"]');
+            links.forEach(function(l){
+                var href=l.getAttribute('href');
+                if(href){l.setAttribute('href',href.split('?')[0]+'?_t4='+(d.mtime||Date.now()))}
+            });
+        }else{
+            location.reload();
+        }
+    }
+    function _t4_poll(){
+        fetch('/__dev/api/mtime').then(function(r){return r.json()}).then(function(d){
+            // Sentinel: first poll only records the baseline. Use !== (not >) so
+            // the first change after load is not swallowed and a counter reset on
+            // server restart still triggers a reload.
+            if(_t4_mtime===null){_t4_mtime=d.mtime;return;}
+            if(d.mtime!==_t4_mtime){
+                _t4_mtime=d.mtime;
+                if(_t4_debounce)clearTimeout(_t4_debounce);
+                _t4_debounce=setTimeout(function(){_t4_apply(d);},500);
+            }
+        }).catch(function(){});
+    }
+    function _t4_startPoll(){
+        if(_t4_poll_timer)return;
+        _t4_mtime=null;
+        _t4_poll_timer=setInterval(_t4_poll,_t4_interval);
+    }
+    function _t4_stopPoll(){
+        if(_t4_poll_timer){clearInterval(_t4_poll_timer);_t4_poll_timer=null;}
+    }
+    function _t4_connect(){
+        var url=(location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/__dev_reload';
+        try{_t4_ws=new WebSocket(url);}catch(_){_t4_startPoll();return;}
+        _t4_ws.addEventListener('open',function(){_t4_stopPoll();});
+        _t4_ws.addEventListener('message',function(ev){
+            var d=null;
+            try{d=typeof ev.data==='string'?JSON.parse(ev.data):null;}catch(_){}
+            if(!d)return;
+            if(d.type==='reload'||d.type==='change'||d.type==='css'){
+                if(_t4_debounce)clearTimeout(_t4_debounce);
+                _t4_debounce=setTimeout(function(){_t4_apply(d);},150);
+            }
+        });
+        _t4_ws.addEventListener('close',function(){_t4_ws=null;_t4_startPoll();setTimeout(_t4_connect,2000);});
+        _t4_ws.addEventListener('error',function(){try{_t4_ws&&_t4_ws.close();}catch(_){}});
+    }
+    _t4_connect();
+})();
 </script>`;
 }

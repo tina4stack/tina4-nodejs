@@ -562,3 +562,142 @@ export class WebSocketServer {
     this.clientRooms.delete(clientId);
   }
 }
+
+// ── Dev-reload WebSocket manager ─────────────────────────────
+
+/** A single accepted /__dev_reload socket plus its dashboard tracker id. */
+interface DevReloadClient {
+  socket: Socket;
+  /** WsTracker id, so the connection shows in the dev-admin /__dev/api/websockets list. */
+  trackerId?: string;
+}
+
+/**
+ * Connection manager for the dev-reload channel (`/__dev_reload`).
+ *
+ * Mirrors Python's `_ws_manager` scoped to `/__dev_reload`: it accepts the
+ * RFC 6455 handshake on the *main* dev server's HTTP `upgrade` event, holds the
+ * raw sockets open, and lets `POST /__dev/api/reload` push an instant reload to
+ * every connected browser via {@link broadcast}. The framework never reads from
+ * the client — the open socket is the whole point. This restores the documented
+ * WebSocket-primary DevReload design (the dev toolbar and dev-admin dashboard
+ * both connect here). Registered only when `TINA4_DEBUG` is on, and never on the
+ * stable AI port.
+ */
+class DevReloadWsManager {
+  private clients: Set<DevReloadClient> = new Set();
+  /** Optional hooks (add/remove) so the dev-admin connection list stays in sync. */
+  private onAdd?: (remoteAddress: string, path: string) => string;
+  private onRemove?: (id: string) => void;
+
+  /** Wire dev-admin tracking callbacks (WsTracker.add / WsTracker.remove). */
+  setTracker(onAdd: (remoteAddress: string, path: string) => string, onRemove: (id: string) => void): void {
+    this.onAdd = onAdd;
+    this.onRemove = onRemove;
+  }
+
+  /** Number of currently-open dev-reload sockets (test/diagnostic helper). */
+  get size(): number {
+    return this.clients.size;
+  }
+
+  /**
+   * Accept a WebSocket upgrade on `/__dev_reload` and hold the socket open.
+   *
+   * Completes the RFC 6455 handshake, registers the connection, and drains
+   * inbound frames — responding to pings and cleaning up on close — without
+   * ever interpreting client data. Returns true if the handshake was accepted.
+   */
+  handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): boolean {
+    const wsKey = req.headers["sec-websocket-key"];
+    if (!wsKey || (typeof wsKey === "string" && wsKey.length === 0)) {
+      try {
+        socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+        socket.destroy();
+      } catch {
+        /* socket already gone */
+      }
+      return false;
+    }
+
+    const acceptKey = computeAcceptKey(Array.isArray(wsKey) ? wsKey[0] : wsKey);
+    const response = [
+      "HTTP/1.1 101 Switching Protocols",
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      `Sec-WebSocket-Accept: ${acceptKey}`,
+      "",
+      "",
+    ].join("\r\n");
+    try {
+      socket.write(response);
+    } catch {
+      return false;
+    }
+
+    const client: DevReloadClient = { socket };
+    if (this.onAdd) {
+      client.trackerId = this.onAdd(socket.remoteAddress ?? "unknown", "/__dev_reload");
+    }
+    this.clients.add(client);
+
+    const cleanup = () => {
+      if (!this.clients.has(client)) return;
+      this.clients.delete(client);
+      if (client.trackerId && this.onRemove) this.onRemove(client.trackerId);
+    };
+
+    // We don't act on client data, but we must still drain frames so the OS
+    // buffer doesn't stall, answer pings, and notice a client-side close.
+    let buffer = head && head.length > 0 ? Buffer.from(head) : Buffer.alloc(0);
+    socket.on("data", (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (buffer.length > 0) {
+        const frame = parseFrame(buffer);
+        if (!frame) break;
+        buffer = buffer.subarray(frame.bytesConsumed);
+        if (frame.opcode === OP_PING) {
+          try {
+            socket.write(buildFrame(OP_PONG, frame.payload));
+          } catch {
+            /* client disconnected */
+          }
+        } else if (frame.opcode === OP_CLOSE) {
+          try {
+            socket.write(buildFrame(OP_CLOSE, Buffer.from([0x03, 0xe8])));
+            socket.end();
+          } catch {
+            /* already closed */
+          }
+          cleanup();
+          return;
+        }
+      }
+    });
+    socket.on("close", cleanup);
+    socket.on("error", cleanup);
+    return true;
+  }
+
+  /**
+   * Broadcast a text frame to every connected dev-reload client.
+   *
+   * Best-effort: a dead socket is dropped silently. Never throws — the caller
+   * (`POST /__dev/api/reload`) must not 500 because a browser tab went away.
+   */
+  broadcast(message: string): void {
+    if (this.clients.size === 0) return;
+    const frame = buildFrame(OP_TEXT, Buffer.from(message, "utf-8"));
+    for (const client of Array.from(this.clients)) {
+      try {
+        client.socket.write(frame);
+      } catch {
+        this.clients.delete(client);
+        if (client.trackerId && this.onRemove) this.onRemove(client.trackerId);
+      }
+    }
+  }
+}
+
+/** Process-wide dev-reload manager (one channel: `/__dev_reload`). */
+export const devReloadWs = new DevReloadWsManager();

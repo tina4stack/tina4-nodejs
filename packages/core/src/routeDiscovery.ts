@@ -11,6 +11,15 @@ const VALID_METHODS = new Set(["get", "post", "put", "delete", "patch"]);
  */
 const _seenFiles = new Set<string>();
 
+/**
+ * Last-seen mtime (ms) per route file. A file is (re)imported when it is new
+ * OR its mtime has increased since the previous scan — so editing an existing
+ * route file hot-reloads its handler instead of serving the stale one. The
+ * mtime also drives the import cache-bust query, so unchanged files don't
+ * needlessly re-execute.
+ */
+const _seenMtimes = new Map<string, number>();
+
 /** The last directory passed to discoverRoutes() — used by rediscoverRoutes(). */
 let _lastRoutesDir = "";
 
@@ -31,15 +40,20 @@ export async function discoverRoutes(routesDir: string): Promise<RouteDefinition
 
     routeFileCount++;
 
-    if (_seenFiles.has(filePath)) continue;
+    // Skip ONLY if we've already imported this exact file at its current mtime.
+    // A new file (not in _seenFiles) or an edited one (mtime increased) falls
+    // through and gets re-imported, so a hot-reload picks up the new handler.
+    const currentMtime = statSync(filePath).mtimeMs;
+    if (_seenFiles.has(filePath) && _seenMtimes.get(filePath) === currentMtime) continue;
 
     const method = name.toUpperCase();
     const relativePath = relative(routesDir, filePath);
     const pattern = filePathToPattern(relativePath);
 
     try {
-      // Cache-bust for hot-reload
-      const moduleUrl = `file://${filePath}?t=${Date.now()}`;
+      // Cache-bust for hot-reload, keyed on mtime: identical content reuses the
+      // same module URL (no needless re-import), an edit produces a fresh URL.
+      const moduleUrl = `file://${filePath}?t=${currentMtime}`;
       const mod = await import(moduleUrl);
 
       const handler: RouteHandler = mod.default ?? mod.handler;
@@ -53,6 +67,7 @@ export async function discoverRoutes(routesDir: string): Promise<RouteDefinition
 
       definitions.push({ method, pattern, handler, filePath, meta, template });
       _seenFiles.add(filePath);
+      _seenMtimes.set(filePath, currentMtime);
       registeredFromThisScan++;
     } catch (err) {
       console.error(`  Error loading route ${relativePath}:`, err);
@@ -76,8 +91,10 @@ export async function discoverRoutes(routesDir: string): Promise<RouteDefinition
 
 /**
  * Re-run the most recent route scan — called by POST /__dev/api/reload so a
- * newly-added file in src/routes/ registers without a server restart. Already
- * loaded files are skipped. No-op if discoverRoutes() has never been called.
+ * newly-added OR edited file in src/routes/ registers without a server restart.
+ * A file is re-imported when it's new or its mtime increased; unchanged files
+ * are skipped. The router replaces routes by pattern, so a re-imported route
+ * overwrites the stale handler. No-op if discoverRoutes() has never been called.
  */
 export async function rediscoverRoutes(): Promise<RouteDefinition[]> {
   if (!_lastRoutesDir) return [];
@@ -87,6 +104,7 @@ export async function rediscoverRoutes(): Promise<RouteDefinition[]> {
 /** Test-only: reset the seen-files state so tests can replay the same dir. */
 export function _resetRouteDiscovery(): void {
   _seenFiles.clear();
+  _seenMtimes.clear();
   _lastRoutesDir = "";
 }
 
