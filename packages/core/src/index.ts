@@ -96,7 +96,7 @@ export { AI_TOOLS, isInstalled, showMenu, installSelected, installAll, generateC
 export type { AiTool } from "./ai.js";
 export type { ImapMessage, ImapFullMessage } from "./messenger.js";
 export { LiteBackend } from "./queueBackends/liteBackend.js";
-export { RabbitMQBackend } from "./queueBackends/rabbitmqBackend.js";
+export { RabbitMQBackend, parseAmqpUrl } from "./queueBackends/rabbitmqBackend.js";
 export type { RabbitMQConfig } from "./queueBackends/rabbitmqBackend.js";
 export { KafkaBackend } from "./queueBackends/kafkaBackend.js";
 export type { KafkaConfig } from "./queueBackends/kafkaBackend.js";

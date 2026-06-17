@@ -5,8 +5,12 @@
  * for message storage and delivery.
  *
  * Configure via environment variables:
- *   TINA4_KAFKA_BROKERS   (default: "localhost:9092")
+ *   TINA4_QUEUE_URL       — broker list (strips a leading kafka:// if present)
+ *   TINA4_KAFKA_BROKERS   (override; default: "localhost:9092")
  *   TINA4_KAFKA_GROUP_ID  (default: "tina4_consumer_group")
+ *
+ * Precedence for brokers: specific TINA4_KAFKA_BROKERS var (if set)
+ *   > value derived from TINA4_QUEUE_URL > existing default.
  */
 import net from "node:net";
 import { execFileSync } from "node:child_process";
@@ -54,8 +58,23 @@ export class KafkaBackend implements QueueBackend {
   private groupId: string;
 
   constructor(config?: KafkaConfig) {
-    this.brokers = config?.brokers ?? process.env.TINA4_KAFKA_BROKERS ?? "localhost:9092";
+    // Base layer: brokers derived from TINA4_QUEUE_URL (strip a leading
+    // kafka:// scheme if present; otherwise use the value as-is, e.g.
+    // "localhost:9092").
+    const url = process.env.TINA4_QUEUE_URL;
+    const fromUrl = url ? url.replace(/^kafka:\/\//, "") : undefined;
+
+    // Precedence: explicit config arg > specific TINA4_KAFKA_BROKERS var
+    // > value from TINA4_QUEUE_URL > existing default.
+    this.brokers = config?.brokers ?? process.env.TINA4_KAFKA_BROKERS ?? fromUrl ?? "localhost:9092";
     this.groupId = config?.groupId ?? process.env.TINA4_KAFKA_GROUP_ID ?? "tina4_consumer_group";
+  }
+
+  /**
+   * Resolved connection config — exposed for testing/introspection.
+   */
+  getConfig(): Required<KafkaConfig> {
+    return { brokers: this.brokers, groupId: this.groupId };
   }
 
   /**

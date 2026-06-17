@@ -5,13 +5,18 @@
  * for message storage and delivery. Atomic pop via findOneAndUpdate.
  *
  * Configure via environment variables:
+ *   TINA4_QUEUE_URL        — connection URI (mongodb://...)
+ *   TINA4_MONGO_URI        (override; wins over TINA4_QUEUE_URL)
  *   TINA4_MONGO_HOST       (default: "localhost")
  *   TINA4_MONGO_PORT       (default: 27017)
- *   TINA4_MONGO_URI        (overrides host/port/username/password)
  *   TINA4_MONGO_USERNAME   (optional)
  *   TINA4_MONGO_PASSWORD   (optional)
  *   TINA4_MONGO_DB         (default: "tina4")
  *   TINA4_MONGO_COLLECTION (default: "tina4_queue")
+ *
+ * Precedence for the connection URI: explicit config.uri
+ *   > TINA4_MONGO_URI > TINA4_QUEUE_URL > a URI built from the
+ *   TINA4_MONGO_HOST/PORT/USERNAME/PASSWORD field vars (existing defaults).
  */
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -63,15 +68,24 @@ export class MongoBackend implements QueueBackend {
     this.database = config?.database ?? process.env.TINA4_MONGO_DB ?? "tina4";
     this.collection = config?.collection ?? process.env.TINA4_MONGO_COLLECTION ?? "tina4_queue";
 
-    // URI overrides individual host/port/auth settings
-    if (config?.uri ?? process.env.TINA4_MONGO_URI) {
-      this.uri = config?.uri ?? process.env.TINA4_MONGO_URI!;
+    // Connection URI precedence: explicit config.uri > TINA4_MONGO_URI
+    // > TINA4_QUEUE_URL > a URI built from the host/port/auth field vars.
+    const explicitUri = config?.uri ?? process.env.TINA4_MONGO_URI ?? process.env.TINA4_QUEUE_URL;
+    if (explicitUri) {
+      this.uri = explicitUri;
     } else {
       const auth = this.username
         ? `${encodeURIComponent(this.username)}:${encodeURIComponent(this.password)}@`
         : "";
       this.uri = `mongodb://${auth}${this.host}:${this.port}`;
     }
+  }
+
+  /**
+   * Resolved connection config — exposed for testing/introspection.
+   */
+  getConfig(): { uri: string; database: string; collection: string } {
+    return { uri: this.uri, database: this.database, collection: this.collection };
   }
 
   /**

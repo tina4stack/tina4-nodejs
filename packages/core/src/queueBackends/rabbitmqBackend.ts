@@ -5,11 +5,15 @@
  * for message storage and delivery.
  *
  * Configure via environment variables:
- *   TINA4_RABBITMQ_HOST     (default: "localhost")
- *   TINA4_RABBITMQ_PORT     (default: 5672)
- *   TINA4_RABBITMQ_USERNAME (default: "guest")
- *   TINA4_RABBITMQ_PASSWORD (default: "guest")
- *   TINA4_RABBITMQ_VHOST    (default: "/")
+ *   TINA4_QUEUE_URL         — AMQP URL (amqp://[user:pass@]host:port[/vhost])
+ *   TINA4_RABBITMQ_HOST     (override; default: "localhost")
+ *   TINA4_RABBITMQ_PORT     (override; default: 5672)
+ *   TINA4_RABBITMQ_USERNAME (override; default: "guest")
+ *   TINA4_RABBITMQ_PASSWORD (override; default: "guest")
+ *   TINA4_RABBITMQ_VHOST    (override; default: "/")
+ *
+ * Precedence per field: specific TINA4_RABBITMQ_* var (if set)
+ *   > value derived from TINA4_QUEUE_URL > existing default.
  */
 import net from "node:net";
 import { execFileSync } from "node:child_process";
@@ -24,6 +28,51 @@ export interface RabbitMQConfig {
   username?: string;
   password?: string;
   vhost?: string;
+}
+
+/**
+ * Parse an AMQP URL (amqp://[user:pass@]host[:port][/vhost]) into a partial
+ * RabbitMQConfig. Mirrors the Python/PHP/Ruby `parse_amqp_url` semantics:
+ * strips a leading amqp:// or amqps:// scheme, splits optional credentials,
+ * and prepends a leading "/" to the vhost when missing. Only fields present
+ * in the URL are populated.
+ */
+export function parseAmqpUrl(url: string): RabbitMQConfig {
+  const config: RabbitMQConfig = {};
+  let rest = url.replace(/^amqps:\/\//, "").replace(/^amqp:\/\//, "");
+
+  const atIndex = rest.indexOf("@");
+  if (atIndex !== -1) {
+    const creds = rest.slice(0, atIndex);
+    rest = rest.slice(atIndex + 1);
+    const colonIndex = creds.indexOf(":");
+    if (colonIndex !== -1) {
+      config.username = creds.slice(0, colonIndex);
+      config.password = creds.slice(colonIndex + 1);
+    } else {
+      config.username = creds;
+    }
+  }
+
+  let hostport = rest;
+  const slashIndex = rest.indexOf("/");
+  if (slashIndex !== -1) {
+    hostport = rest.slice(0, slashIndex);
+    const vhost = rest.slice(slashIndex + 1);
+    if (vhost) {
+      config.vhost = vhost.startsWith("/") ? vhost : "/" + vhost;
+    }
+  }
+
+  const portColon = hostport.indexOf(":");
+  if (portColon !== -1) {
+    config.host = hostport.slice(0, portColon);
+    config.port = parseInt(hostport.slice(portColon + 1), 10);
+  } else if (hostport) {
+    config.host = hostport;
+  }
+
+  return config;
 }
 
 export interface QueueBackend {
@@ -133,12 +182,32 @@ export class RabbitMQBackend implements QueueBackend {
   private vhost: string;
 
   constructor(config?: RabbitMQConfig) {
-    this.host = config?.host ?? process.env.TINA4_RABBITMQ_HOST ?? "localhost";
+    // Base layer: values derived from TINA4_QUEUE_URL (parsed as an AMQP URL).
+    const url = process.env.TINA4_QUEUE_URL;
+    const fromUrl = url ? parseAmqpUrl(url) : {};
+
+    // Precedence per field: explicit config arg > specific TINA4_RABBITMQ_* var
+    // > value from TINA4_QUEUE_URL > existing default.
+    this.host = config?.host ?? process.env.TINA4_RABBITMQ_HOST ?? fromUrl.host ?? "localhost";
     this.port = config?.port
-      ?? (process.env.TINA4_RABBITMQ_PORT ? parseInt(process.env.TINA4_RABBITMQ_PORT, 10) : 5672);
-    this.username = config?.username ?? process.env.TINA4_RABBITMQ_USERNAME ?? "guest";
-    this.password = config?.password ?? process.env.TINA4_RABBITMQ_PASSWORD ?? "guest";
-    this.vhost = config?.vhost ?? process.env.TINA4_RABBITMQ_VHOST ?? "/";
+      ?? (process.env.TINA4_RABBITMQ_PORT ? parseInt(process.env.TINA4_RABBITMQ_PORT, 10) : undefined)
+      ?? fromUrl.port ?? 5672;
+    this.username = config?.username ?? process.env.TINA4_RABBITMQ_USERNAME ?? fromUrl.username ?? "guest";
+    this.password = config?.password ?? process.env.TINA4_RABBITMQ_PASSWORD ?? fromUrl.password ?? "guest";
+    this.vhost = config?.vhost ?? process.env.TINA4_RABBITMQ_VHOST ?? fromUrl.vhost ?? "/";
+  }
+
+  /**
+   * Resolved connection config — exposed for testing/introspection.
+   */
+  getConfig(): Required<RabbitMQConfig> {
+    return {
+      host: this.host,
+      port: this.port,
+      username: this.username,
+      password: this.password,
+      vhost: this.vhost,
+    };
   }
 
   /**
