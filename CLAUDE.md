@@ -946,7 +946,7 @@ The `tina4` Rust CLI is the sole file watcher for the Tina4 stack — there is n
 
 No configuration needed — set `TINA4_DEBUG=true` to enable. If you're running without the Rust CLI (e.g. Docker), there is no automatic reload; the production path is unaffected.
 
-**AI dual-port mode:** when `TINA4_DEBUG=true` and `TINA4_NO_AI_PORT` is unset, the main port suppresses reload/toolbar injection (so AI tools never trigger a refresh) and a second server on `port+1000` provides the normal hot-reload experience for browser testing.
+**AI dual-port mode:** when `TINA4_DEBUG=true` and `TINA4_NO_AI_PORT` is unset, the **main port** provides the normal hot-reload experience (dev toolbar + `/__dev_reload` injected) for the human dev, and a second server on `port+1000` is the **stable AI port** — it suppresses reload/toolbar injection (and returns 404 for `/__dev_reload`) so an AI tool can drive it without its own edits triggering a refresh. The `tina4` client posts `/__dev/api/reload` to the **main port**. Matches Python (master), PHP, and Ruby.
 
 ## Conventions You Must Follow
 
