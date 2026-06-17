@@ -162,6 +162,21 @@ export function setAdapter(adapter: DatabaseAdapter): DatabaseAdapter {
 }
 
 /**
+ * Publish the live Database wrapper on `globalThis.__tina4_db` so framework
+ * tooling that runs outside the request/ORM path can reach it. The built-in
+ * MCP dev-tool handlers (database_query/execute/tables/columns, migration_*,
+ * seed_table, project_overview in `@tina4/core`'s mcp.ts) read this global; it
+ * is the single chokepoint every `initDatabase()` / `Database.create()` return
+ * path flows through, so the global is always set once a connection exists.
+ *
+ * Returns the same instance so it composes cleanly around a `return`.
+ */
+function exposeDb(db: Database): Database {
+  (globalThis as any).__tina4_db = db;
+  return db;
+}
+
+/**
  * Clear the request-scoped query cache on every live connection at the start of
  * each HTTP request, so request-scoped caching never serves rows across
  * requests. Persistent-mode connections (TINA4_DB_CACHE=true) are untouched.
@@ -535,7 +550,7 @@ export class Database {
       db.adapter = null;  // Don't use single-adapter path
       db.adapterFactory = async () => wrapWithCache(await createAdapterFromUrl(url, username, password), { sharedCache });
       db.dbType = parsed.type;
-      return db;
+      return exposeDb(db);
     }
 
     // Single-connection mode — wrap once and share the SAME wrapped adapter
@@ -545,7 +560,7 @@ export class Database {
     const wrapped = setAdapter(adapter);
     const db = new Database(wrapped);
     db.dbType = parsed.type;
-    return db;
+    return exposeDb(db);
   }
 
   /**
@@ -1217,10 +1232,11 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
     if (pool > 0) {
       // Pool-aware path — delegate to Database.create which manages
       // round-robin adapter rotation and async-local-storage transaction pinning.
-      return Database.create(url, resolvedUser, resolvedPassword, pool);
+      // Database.create already exposes the global; exposeDb here is idempotent.
+      return exposeDb(await Database.create(url, resolvedUser, resolvedPassword, pool));
     }
     const adapter = await createAdapterFromUrl(url, resolvedUser, resolvedPassword);
-    return new Database(setAdapter(adapter));
+    return exposeDb(new Database(setAdapter(adapter)));
   }
 
   // Legacy config path — normalize "sqlserver" to "mssql"
@@ -1245,7 +1261,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
     case "sqlite": {
       const { SQLiteAdapter } = await import("./adapters/sqlite.js");
       const adapter = new SQLiteAdapter(config?.path ?? "./data/tina4.db");
-      return new Database(setAdapter(adapter));
+      return exposeDb(new Database(setAdapter(adapter)));
     }
     case "postgres": {
       const { PostgresAdapter } = await import("./adapters/postgres.js");
@@ -1257,7 +1273,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      return new Database(setAdapter(adapter));
+      return exposeDb(new Database(setAdapter(adapter)));
     }
     case "mysql": {
       const { MysqlAdapter } = await import("./adapters/mysql.js");
@@ -1269,7 +1285,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      return new Database(setAdapter(adapter));
+      return exposeDb(new Database(setAdapter(adapter)));
     }
     case "mssql": {
       const { MssqlAdapter } = await import("./adapters/mssql.js");
@@ -1281,7 +1297,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      return new Database(setAdapter(adapter));
+      return exposeDb(new Database(setAdapter(adapter)));
     }
     case "firebird": {
       const { FirebirdAdapter } = await import("./adapters/firebird.js");
@@ -1293,7 +1309,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      return new Database(setAdapter(adapter));
+      return exposeDb(new Database(setAdapter(adapter)));
     }
     case "mongodb": {
       const { MongodbAdapter } = await import("./adapters/mongodb.js");
@@ -1306,14 +1322,14 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
       const connectionString = `mongodb://${creds}${host}:${port}/${database}`;
       const adapter = new MongodbAdapter(connectionString);
       await adapter.connect();
-      return new Database(setAdapter(adapter));
+      return exposeDb(new Database(setAdapter(adapter)));
     }
     case "odbc": {
       const { OdbcAdapter } = await import("./adapters/odbc.js");
       const connStr = config?.connectionString ?? config?.url?.replace(/^odbc:\/\/\//, "") ?? "";
       const adapter = new OdbcAdapter({ connectionString: connStr });
       await adapter.connect();
-      return new Database(setAdapter(adapter));
+      return exposeDb(new Database(setAdapter(adapter)));
     }
     default:
       throw new Error(`Unknown database type: ${type}`);

@@ -2008,7 +2008,7 @@ const handleMcpMessage: RouteHandler = async (req, res) => {
     } else {
       raw = typeof body === "string" ? body : String(body ?? "");
     }
-    const result = server.handleMessage(raw);
+    const result = await server.handleMessage(raw);
     if (!result) {
       // Notification / no id — nothing to return.
       res.send("", 204);

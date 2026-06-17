@@ -60,7 +60,11 @@ export interface McpToolDefinition {
   name: string;
   description: string;
   inputSchema: JsonSchema;
-  handler: (args: Record<string, unknown>) => unknown;
+  // Handlers may be sync or async — the dispatch (`_handleToolsCall`) awaits the
+  // return value, so DB tools that hit the async Database wrapper resolve before
+  // the result is formatted. A sync handler's plain return passes through awaiting
+  // unchanged.
+  handler: (args: Record<string, unknown>) => unknown | Promise<unknown>;
 }
 
 export interface McpResourceDefinition {
@@ -277,7 +281,13 @@ export class McpServer {
     });
   }
 
-  handleMessage(rawData: string | Record<string, unknown>): string {
+  // Async since the DB dev-tool handlers (database_query/execute/tables/columns,
+  // migration_*, seed_table, project_overview) reach the Database wrapper on
+  // `globalThis.__tina4_db`, whose read/write methods are async. The handler is
+  // awaited below; sync handlers (the file/plan/route tools) are unaffected
+  // because awaiting a non-Promise resolves immediately. Returns a
+  // Promise<string> — every caller must await it.
+  async handleMessage(rawData: string | Record<string, unknown>): Promise<string> {
     let method: string;
     let params: Record<string, unknown>;
     let requestId: number | string | null;
@@ -304,7 +314,7 @@ export class McpServer {
     }
 
     try {
-      const result = handler(params);
+      const result = await handler(params);
       if (requestId === null) {
         return ""; // Notification — no response
       }
@@ -349,7 +359,7 @@ export class McpServer {
     return { tools };
   }
 
-  private _handleToolsCall(params: Record<string, unknown>): Record<string, unknown> {
+  private async _handleToolsCall(params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const toolName = params.name as string | undefined;
     if (!toolName) {
       throw new Error("Missing tool name");
@@ -361,7 +371,9 @@ export class McpServer {
     }
 
     const args = (params.arguments as Record<string, unknown>) || {};
-    const result = tool.handler(args);
+    // Tool handlers may be async (the DB tools await the Database wrapper); a
+    // sync handler's plain return value passes through `await` unchanged.
+    const result = await tool.handler(args);
 
     // Format result as MCP content
     let content: { type: string; text: string }[];
@@ -438,7 +450,7 @@ export class McpServer {
     const ssePath = `${this.path}/sse`;
 
     router
-      .post(msgPath, (req: unknown, res: unknown) => {
+      .post(msgPath, async (req: unknown, res: unknown) => {
         const request = req as { body: unknown; url?: string };
         const response = res as ((data: unknown, status?: number, contentType?: string) => unknown);
         const body = request.body;
@@ -448,7 +460,7 @@ export class McpServer {
         } else {
           raw = typeof body === "string" ? body : String(body);
         }
-        const result = server.handleMessage(raw);
+        const result = await server.handleMessage(raw);
         if (!result) {
           return response("", 204);
         }
@@ -832,12 +844,12 @@ export function registerDevTools(server: McpServer): void {
 
   server.registerTool(
     "database_query",
-    (args) => {
+    async (args) => {
       try {
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
         const params = typeof args.params === "string" ? JSON.parse(args.params as string) : (args.params || []);
-        const result = db.fetch(args.sql as string, params);
+        const result = await db.fetch(args.sql as string, params);
         return { records: result.records || [], count: result.count || 0 };
       } catch (e) {
         return { error: (e as Error).message };
@@ -852,14 +864,14 @@ export function registerDevTools(server: McpServer): void {
 
   server.registerTool(
     "database_execute",
-    (args) => {
+    async (args) => {
       try {
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
         const params = typeof args.params === "string" ? JSON.parse(args.params as string) : (args.params || []);
-        const result = db.execute(args.sql as string, params);
-        db.commit?.();
-        return { success: true, affected_rows: result?.count ?? 0 };
+        const result = await db.execute(args.sql as string, params);
+        await db.commit?.();
+        return { success: true, affected_rows: (result as any)?.count ?? 0 };
       } catch (e) {
         return { error: (e as Error).message };
       }
@@ -873,11 +885,11 @@ export function registerDevTools(server: McpServer): void {
 
   server.registerTool(
     "database_tables",
-    (_args) => {
+    async (_args) => {
       try {
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
-        return db.getTables?.() ?? [];
+        return (await db.getTables?.()) ?? [];
       } catch (e) {
         return { error: (e as Error).message };
       }
@@ -888,11 +900,11 @@ export function registerDevTools(server: McpServer): void {
 
   server.registerTool(
     "database_columns",
-    (args) => {
+    async (args) => {
       try {
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
-        return db.getColumns?.(args.table as string) ?? [];
+        return (await db.getColumns?.(args.table as string)) ?? [];
       } catch (e) {
         return { error: (e as Error).message };
       }
@@ -1122,7 +1134,7 @@ export function registerDevTools(server: McpServer): void {
 
   server.registerTool(
     "migration_status",
-    (_args) => {
+    async (_args) => {
       try {
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
@@ -1155,7 +1167,7 @@ export function registerDevTools(server: McpServer): void {
 
   server.registerTool(
     "migration_run",
-    (_args) => {
+    async (_args) => {
       try {
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
@@ -1309,13 +1321,13 @@ export function registerDevTools(server: McpServer): void {
 
   server.registerTool(
     "seed_table",
-    (args) => {
+    async (args) => {
       try {
-        const { seedTable } = reqSibling("orm") as { seedTable?: (db: unknown, table: string, count: number) => number };
+        const { seedTable } = reqSibling("orm") as { seedTable?: (db: unknown, table: string, count: number) => number | Promise<number> };
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
         const count = (args.count as number) || 10;
-        const inserted = seedTable?.(db, args.table as string, count) ?? 0;
+        const inserted = (await seedTable?.(db, args.table as string, count)) ?? 0;
         return { table: args.table, inserted };
       } catch (e) {
         return { error: (e as Error).message };
@@ -1482,14 +1494,14 @@ export function registerDevTools(server: McpServer): void {
 
   server.registerTool(
     "project_overview",
-    () => {
+    async () => {
       const out: Record<string, unknown> = {};
       try { out.index = loadIndex().overview(); } catch (e) { out.index = { error: (e as Error).message }; }
       try { out.plans = loadPlan().listPlans(); } catch (e) { out.plans = { error: (e as Error).message }; }
       try { out.current_plan = loadPlan().current(); } catch (e) { out.current_plan = { error: (e as Error).message }; }
       try {
         const db = (globalThis as any).__tina4_db;
-        out.tables = db?.getTables?.() ?? [];
+        out.tables = (await db?.getTables?.()) ?? [];
       } catch (e) { out.tables = { error: (e as Error).message }; }
       return out;
     },

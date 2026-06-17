@@ -116,7 +116,7 @@ console.log("\nMcpServer Core");
 {
   McpServer._instances = [];
   const server = new McpServer("/test-mcp", "Test Server", "0.1.0");
-  const resp = JSON.parse(server.handleMessage({
+  const resp = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 1, method: "initialize",
     params: {
       protocolVersion: "2024-11-05", capabilities: {},
@@ -131,7 +131,7 @@ console.log("\nMcpServer Core");
 {
   McpServer._instances = [];
   const server = new McpServer("/test-mcp", "Test Server");
-  const resp = JSON.parse(server.handleMessage({
+  const resp = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 2, method: "ping", params: {},
   }));
   assert("ping — result empty", JSON.stringify(resp.result) === "{}");
@@ -140,7 +140,7 @@ console.log("\nMcpServer Core");
 {
   McpServer._instances = [];
   const server = new McpServer("/test-mcp", "Test Server");
-  const resp = JSON.parse(server.handleMessage({
+  const resp = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 3, method: "nonexistent", params: {},
   }));
   assert("method not found — code", resp.error.code === -32601);
@@ -149,7 +149,7 @@ console.log("\nMcpServer Core");
 {
   McpServer._instances = [];
   const server = new McpServer("/test-mcp", "Test Server");
-  const resp = server.handleMessage({
+  const resp = await server.handleMessage({
     jsonrpc: "2.0", method: "notifications/initialized",
   });
   assert("notification — empty response", resp === "");
@@ -169,7 +169,7 @@ console.log("\nTool Registration and Call");
     schemaFromParams([{ name: "name", type: "string" }]),
   );
 
-  const resp = JSON.parse(server.handleMessage({
+  const resp = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 1, method: "tools/list", params: {},
   }));
   const tools = resp.result.tools;
@@ -189,7 +189,7 @@ console.log("\nTool Registration and Call");
     schemaFromParams([{ name: "a", type: "integer" }, { name: "b", type: "integer" }]),
   );
 
-  const resp = JSON.parse(server.handleMessage({
+  const resp = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 2, method: "tools/call",
     params: { name: "add", arguments: { a: 3, b: 5 } },
   }));
@@ -202,7 +202,7 @@ console.log("\nTool Registration and Call");
 {
   McpServer._instances = [];
   const server = new McpServer("/test-tools", "Tool Test");
-  const resp = JSON.parse(server.handleMessage({
+  const resp = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 3, method: "tools/call",
     params: { name: "missing", arguments: {} },
   }));
@@ -215,7 +215,7 @@ console.log("\nTool Registration and Call");
   server.registerTool("echo", (args) => args.msg as string, "Echo",
     schemaFromParams([{ name: "msg", type: "string" }]));
 
-  const resp = JSON.parse(server.handleMessage({
+  const resp = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 4, method: "tools/call",
     params: { name: "echo", arguments: { msg: "hello" } },
   }));
@@ -227,7 +227,7 @@ console.log("\nTool Registration and Call");
   const server = new McpServer("/test-tools", "Tool Test");
   server.registerTool("data", () => ({ a: 1, b: 2 }), "Return data");
 
-  const resp = JSON.parse(server.handleMessage({
+  const resp = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 5, method: "tools/call",
     params: { name: "data", arguments: {} },
   }));
@@ -262,7 +262,7 @@ console.log("\nResource Registration and Read");
   const server = new McpServer("/test-resources", "Resource Test");
   server.registerResource("app://tables", () => ["users", "products"], "Database tables");
 
-  const resp = JSON.parse(server.handleMessage({
+  const resp = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 1, method: "resources/list", params: {},
   }));
   const resources = resp.result.resources;
@@ -275,7 +275,7 @@ console.log("\nResource Registration and Read");
   const server = new McpServer("/test-resources", "Resource Test");
   server.registerResource("app://info", () => ({ version: "1.0", name: "Test App" }), "App info");
 
-  const resp = JSON.parse(server.handleMessage({
+  const resp = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 2, method: "resources/read",
     params: { uri: "app://info" },
   }));
@@ -288,7 +288,7 @@ console.log("\nResource Registration and Read");
 {
   McpServer._instances = [];
   const server = new McpServer("/test-resources", "Resource Test");
-  const resp = JSON.parse(server.handleMessage({
+  const resp = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 3, method: "resources/read",
     params: { uri: "app://missing" },
   }));
@@ -335,7 +335,7 @@ console.log("\nFile Sandbox");
     const server = new McpServer("/test-sandbox", "Sandbox Test");
     registerDevTools(server);
 
-    const resp = JSON.parse(server.handleMessage({
+    const resp = JSON.parse(await server.handleMessage({
       jsonrpc: "2.0", id: 1, method: "tools/call",
       params: { name: "file_read", arguments: { path: "../../../etc/passwd" } },
     }));
@@ -361,7 +361,7 @@ console.log("\nFile Sandbox");
     const server = new McpServer("/test-sandbox2", "Sandbox Test 2");
     registerDevTools(server);
 
-    const resp = JSON.parse(server.handleMessage({
+    const resp = JSON.parse(await server.handleMessage({
       jsonrpc: "2.0", id: 1, method: "tools/call",
       params: { name: "file_write", arguments: { path: "../../evil.txt", content: "hacked" } },
     }));
@@ -401,11 +401,11 @@ console.log("\nDefensive Write Helpers");
  * For string returns the inner text is the raw string; for object returns
  * it is JSON-encoded — try to parse it back, fall through to the raw text.
  */
-function callTool(server: McpServer, name: string, args: Record<string, unknown>): {
+async function callTool(server: McpServer, name: string, args: Record<string, unknown>): Promise<{
   rpc: { jsonrpc?: string; id?: unknown; result?: unknown; error?: { code: number; message: string } };
   result: Record<string, unknown> | string | null;
-} {
-  const rpc = JSON.parse(server.handleMessage({
+}> {
+  const rpc = JSON.parse(await server.handleMessage({
     jsonrpc: "2.0", id: 1, method: "tools/call",
     params: { name, arguments: args },
   }));
@@ -431,7 +431,7 @@ function callTool(server: McpServer, name: string, args: Record<string, unknown>
   try {
     const server = new McpServer("/test-prose", "Prose Test");
     registerDevTools(server);
-    const { result } = callTool(server, "file_write", {
+    const { result } = await callTool(server, "file_write", {
       path: "The plan requires implementing a new feature for users.ts",
       content: "x",
     });
@@ -455,7 +455,7 @@ function callTool(server: McpServer, name: string, args: Record<string, unknown>
   try {
     const server = new McpServer("/test-normalize", "Normalize Test");
     registerDevTools(server);
-    const { result } = callTool(server, "file_write", {
+    const { result } = await callTool(server, "file_write", {
       path: "routes/foo.ts",
       content: "export default async function (req, res) {}\n",
     });
@@ -492,7 +492,7 @@ function callTool(server: McpServer, name: string, args: Record<string, unknown>
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, "original content\n", "utf-8");
 
-    const { result } = callTool(server, "file_write", {
+    const { result } = await callTool(server, "file_write", {
       path: "src/routes/foo.ts",
       content: "new content that is reasonably similar in length to the old one\n",
     });
@@ -531,7 +531,7 @@ function callTool(server: McpServer, name: string, args: Record<string, unknown>
     fs.writeFileSync(target, original, "utf-8");
 
     // Overwrite with 50 bytes — should be REFUSED (50/500 = 10% < 30%)
-    const { result } = callTool(server, "file_write", {
+    const { result } = await callTool(server, "file_write", {
       path: "src/routes/big.ts",
       content: "y".repeat(50),
     });
@@ -562,7 +562,7 @@ function callTool(server: McpServer, name: string, args: Record<string, unknown>
   try {
     const server = new McpServer("/test-passthrough", "Passthrough Test");
     registerDevTools(server);
-    const { result } = callTool(server, "file_write", {
+    const { result } = await callTool(server, "file_write", {
       path: "src/routes/foo.ts",
       content: "export default async function (req, res) {}\n",
     });
@@ -602,7 +602,7 @@ function callTool(server: McpServer, name: string, args: Record<string, unknown>
   try {
     const server = new McpServer("/test-verify-js", "Verify JS");
     registerDevTools(server);
-    const { result } = callTool(server, "file_write", {
+    const { result } = await callTool(server, "file_write", {
       path: "src/routes/broken.js",
       content: "const x = ;\n",
     });
@@ -635,7 +635,7 @@ function callTool(server: McpServer, name: string, args: Record<string, unknown>
     const server = new McpServer("/test-verify-skip-ext", "Verify Skip Ext");
     registerDevTools(server);
     // .twig content that would obviously fail any JS parser
-    const { result } = callTool(server, "file_write", {
+    const { result } = await callTool(server, "file_write", {
       path: "src/templates/page.twig",
       content: "{% if not valid js %}<h1>Hi</h1>{% endif %}\n",
     });
@@ -668,7 +668,7 @@ function callTool(server: McpServer, name: string, args: Record<string, unknown>
     const server = new McpServer("/test-verify-skip-outside", "Verify Skip Outside");
     registerDevTools(server);
     // Broken JS placed under tests/ — must NOT be checked
-    const { result } = callTool(server, "file_write", {
+    const { result } = await callTool(server, "file_write", {
       path: "tests/foo.js",
       content: "const x = ;\n",
     });

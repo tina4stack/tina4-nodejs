@@ -188,7 +188,7 @@ assert("SSE body announces the message endpoint", sse.raw.includes("data: /__dev
 console.log("\n--- getDefaultDevServer() registry ---");
 const def = getDefaultDevServer();
 assert("getDefaultDevServer() path is /__dev/mcp", def.path === "/__dev/mcp");
-const defList = JSON.parse(def.handleMessage(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/list", params: {} })));
+const defList = JSON.parse(await def.handleMessage(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/list", params: {} })));
 assert("default server exposes the same tool count over its registry",
   Array.isArray(defList?.result?.tools) && defList.result.tools.length === tools.length,
   `default=${defList?.result?.tools?.length} http=${tools.length}`);

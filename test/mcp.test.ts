@@ -23,6 +23,7 @@ import {
   INVALID_PARAMS,
   INTERNAL_ERROR,
 } from "../packages/core/src/mcp.js";
+import { initDatabase, closeDatabase } from "../packages/orm/src/index.js";
 
 let pass = 0;
 let fail = 0;
@@ -144,7 +145,7 @@ console.log("\n=== McpServer Tests ===\n");
 {
   const server = new McpServer("/test-mcp", "Test Server", "0.1.0");
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0",
       id: 1,
       method: "initialize",
@@ -164,7 +165,7 @@ console.log("\n=== McpServer Tests ===\n");
 {
   const server = new McpServer("/test-ping", "Ping Test");
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0",
       id: 2,
       method: "ping",
@@ -178,7 +179,7 @@ console.log("\n=== McpServer Tests ===\n");
 {
   const server = new McpServer("/test-404", "404 Test");
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0",
       id: 3,
       method: "nonexistent",
@@ -191,7 +192,7 @@ console.log("\n=== McpServer Tests ===\n");
 // test_notification_no_response
 {
   const server = new McpServer("/test-notif", "Notif Test");
-  const resp = server.handleMessage({
+  const resp = await server.handleMessage({
     jsonrpc: "2.0",
     method: "notifications/initialized",
   });
@@ -201,7 +202,7 @@ console.log("\n=== McpServer Tests ===\n");
 // test_parse_error
 {
   const server = new McpServer("/test-parse", "Parse Test");
-  const resp = JSON.parse(server.handleMessage("invalid json {{{"));
+  const resp = JSON.parse(await server.handleMessage("invalid json {{{"));
   assert("parse error code", resp.error.code === PARSE_ERROR);
 }
 
@@ -221,7 +222,7 @@ console.log("\n=== Tool Registration Tests ===\n");
   );
 
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0",
       id: 1,
       method: "tools/list",
@@ -249,7 +250,7 @@ console.log("\n=== Tool Registration Tests ===\n");
   );
 
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0",
       id: 2,
       method: "tools/call",
@@ -266,7 +267,7 @@ console.log("\n=== Tool Registration Tests ===\n");
 {
   const server = new McpServer("/test-unknown", "Unknown Test");
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0",
       id: 3,
       method: "tools/call",
@@ -297,7 +298,7 @@ console.log("\n=== Tool Registration Tests ===\n");
     schemaFromParams([{ name: "msg", type: "string" }]));
 
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0", id: 5, method: "tools/call",
       params: { name: "echo", arguments: { msg: "hello" } },
     }),
@@ -312,7 +313,7 @@ console.log("\n=== Tool Registration Tests ===\n");
     schemaFromParams([]));
 
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0", id: 6, method: "tools/call",
       params: { name: "info", arguments: {} },
     }),
@@ -333,7 +334,7 @@ console.log("\n=== Resource Registration Tests ===\n");
   server.registerResource("app://tables", () => ["users", "products"], "Database tables");
 
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0",
       id: 1,
       method: "resources/list",
@@ -351,7 +352,7 @@ console.log("\n=== Resource Registration Tests ===\n");
   server.registerResource("app://info", () => ({ version: "1.0", name: "Test App" }), "App info");
 
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0",
       id: 2,
       method: "resources/read",
@@ -368,7 +369,7 @@ console.log("\n=== Resource Registration Tests ===\n");
 {
   const server = new McpServer("/test-unknown-res", "Unknown Resource Test");
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0",
       id: 3,
       method: "resources/read",
@@ -384,7 +385,7 @@ console.log("\n=== Resource Registration Tests ===\n");
   server.registerResource("app://readme", () => "Hello World", "Readme", "text/plain");
 
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0", id: 4, method: "resources/read",
       params: { uri: "app://readme" },
     }),
@@ -409,7 +410,7 @@ console.log("\n=== Decorator API Tests ===\n");
   assert("mcpTool sets _mcpToolName", hello._mcpToolName === "hello");
 
   const resp = JSON.parse(
-    server.handleMessage({
+    await server.handleMessage({
       jsonrpc: "2.0",
       id: 1,
       method: "tools/call",
@@ -470,7 +471,7 @@ console.log("\n=== Security Tests ===\n");
 
     // Try to read a file outside project dir
     const resp = JSON.parse(
-      server.handleMessage({
+      await server.handleMessage({
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
@@ -499,7 +500,7 @@ console.log("\n=== Security Tests ===\n");
     registerDevTools(server);
 
     const resp = JSON.parse(
-      server.handleMessage({
+      await server.handleMessage({
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
@@ -527,7 +528,7 @@ console.log("\n=== Security Tests ===\n");
     registerDevTools(server);
 
     const resp = JSON.parse(
-      server.handleMessage({
+      await server.handleMessage({
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
@@ -551,7 +552,7 @@ console.log("\n=== Security Tests ===\n");
     registerDevTools(server);
 
     const resp = JSON.parse(
-      server.handleMessage({
+      await server.handleMessage({
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
@@ -610,7 +611,7 @@ console.log("\n=== Dev Tools Registration Tests ===\n");
     registerDevTools(server);
 
     const resp = JSON.parse(
-      server.handleMessage({
+      await server.handleMessage({
         jsonrpc: "2.0",
         id: 1,
         method: "tools/list",
@@ -685,6 +686,100 @@ console.log("\n=== Dev Tools Registration Tests ===\n");
   } finally {
     process.chdir(origCwd);
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// TestDatabaseTools — end-to-end DB tools over a live SQLite connection
+//
+// Regression for the two bugs that made the MCP DB tools dead:
+//   1. globalThis.__tina4_db was never set — initDatabase() now exposes it.
+//   2. The tool dispatch was sync while Database is async — handleMessage and
+//      the DB tool handlers now await the Database wrapper.
+// This drives `tools/call database_query` and `database_tables` through the
+// server exactly like a real MCP client and asserts real rows come back (not
+// `{error:"No database connection"}`, not an empty/Promise result).
+// ══════════════════════════════════════════════════════════════
+console.log("\n=== Database Tools (live SQLite) Tests ===\n");
+
+{
+  // In-memory SQLite: single-connection mode shares one adapter between the
+  // Database wrapper and the global the MCP tools read, so the CREATE/INSERT
+  // below and the tool's SELECT/getTables hit the same connection.
+  const db = await initDatabase({ url: "sqlite::memory:" });
+  try {
+    await db.execute("CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT)");
+    await db.execute("INSERT INTO widgets (id, name) VALUES (1, 'sprocket')");
+
+    assert(
+      "initDatabase exposes globalThis.__tina4_db",
+      (globalThis as any).__tina4_db === db,
+    );
+
+    const server = new McpServer("/test-db-tools", "DB Tools Test");
+    registerDevTools(server);
+
+    // ── database_query returns real records (not "No database connection") ──
+    const qResp = JSON.parse(
+      await server.handleMessage({
+        jsonrpc: "2.0", id: 1, method: "tools/call",
+        params: { name: "database_query", arguments: { sql: "SELECT id, name FROM widgets ORDER BY id" } },
+      }),
+    );
+    const qText = qResp.result?.content?.[0]?.text;
+    assert("database_query returns content text", typeof qText === "string", JSON.stringify(qResp).slice(0, 160));
+    const qParsed = JSON.parse(qText);
+    assert(
+      "database_query did NOT return 'No database connection'",
+      qParsed?.error !== "No database connection",
+      JSON.stringify(qParsed).slice(0, 160),
+    );
+    assert(
+      "database_query returns a non-empty records array",
+      Array.isArray(qParsed?.records) && qParsed.records.length === 1,
+      JSON.stringify(qParsed).slice(0, 160),
+    );
+    assert(
+      "database_query record has the real row data",
+      qParsed?.records?.[0]?.id === 1 && qParsed?.records?.[0]?.name === "sprocket",
+      JSON.stringify(qParsed?.records).slice(0, 160),
+    );
+
+    // ── database_query with bound params (JSON string, as MCP clients send) ──
+    const qParamResp = JSON.parse(
+      await server.handleMessage({
+        jsonrpc: "2.0", id: 2, method: "tools/call",
+        params: { name: "database_query", arguments: { sql: "SELECT name FROM widgets WHERE id = ?", params: "[1]" } },
+      }),
+    );
+    const qParamParsed = JSON.parse(qParamResp.result.content[0].text);
+    assert(
+      "database_query honours JSON-string params",
+      Array.isArray(qParamParsed?.records) && qParamParsed.records[0]?.name === "sprocket",
+      JSON.stringify(qParamParsed).slice(0, 160),
+    );
+
+    // ── database_tables lists the table ─────────────────────────
+    const tResp = JSON.parse(
+      await server.handleMessage({
+        jsonrpc: "2.0", id: 3, method: "tools/call",
+        params: { name: "database_tables", arguments: {} },
+      }),
+    );
+    const tParsed = JSON.parse(tResp.result.content[0].text);
+    assert(
+      "database_tables returns an array (not an error)",
+      Array.isArray(tParsed),
+      JSON.stringify(tParsed).slice(0, 160),
+    );
+    assert(
+      "database_tables lists the created table",
+      Array.isArray(tParsed) && tParsed.includes("widgets"),
+      JSON.stringify(tParsed).slice(0, 160),
+    );
+  } finally {
+    closeDatabase();
+    delete (globalThis as any).__tina4_db;
   }
 }
 
