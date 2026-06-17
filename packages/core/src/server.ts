@@ -756,6 +756,13 @@ ${reset}
   const router = new Router();
   const middleware = new MiddlewareChain();
 
+  // Expose the active server router globally so dev tools (e.g. the MCP
+  // route_list tool) can introspect the real, fully-populated route table —
+  // startServer builds a fresh Router rather than using defaultRouter, so
+  // file-discovered routes only live here. Mirrors the globalThis.__tina4_db
+  // hook other dev tools read.
+  (globalThis as any).__tina4_router = router;
+
   // Merge routes registered via top-level get(), post(), etc.
   for (const route of defaultRouter.getRoutes()) {
     router.addRoute(route);

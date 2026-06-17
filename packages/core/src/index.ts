@@ -121,7 +121,7 @@ export type { WebSocketConnection } from "./websocketConnection.js";
 export { RedisBackplane, NATSBackplane, createBackplane } from "./websocketBackplane.js";
 export type { WebSocketBackplane } from "./websocketBackplane.js";
 export {
-  McpServer, mcpTool, mcpResource, registerDevTools,
+  McpServer, mcpTool, mcpResource, registerDevTools, getDefaultDevServer,
   encodeResponse, encodeError, encodeNotification, decodeRequest,
   schemaFromParams, isLocalhost, mcpEnabled, mcpPort,
   PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR,

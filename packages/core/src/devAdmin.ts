@@ -19,6 +19,7 @@ import { DevMailbox } from "./devMailbox.js";
 import { isTruthy } from "./dotenv.js";
 import { quickMetrics, fullAnalysis, fileDetail } from "./metrics.js";
 import { registerFeedbackRoutes } from "./feedback.js";
+import { getDefaultDevServer } from "./mcp.js";
 
 const cpuCount = osCpus().length;
 
@@ -560,9 +561,18 @@ export class DevAdmin {
       { method: "POST", pattern: "/__dev/api/deps/install", handler: handleDepsInstall },
       // Git status
       { method: "GET", pattern: "/__dev/api/git/status", handler: handleGitStatus },
-      // MCP tool introspection over the built-in MCP server
+      // MCP tool introspection over the built-in MCP server (browser dev-admin REST shim)
       { method: "GET", pattern: "/__dev/api/mcp/tools", handler: handleMcpTools },
       { method: "POST", pattern: "/__dev/api/mcp/call", handler: handleMcpCall },
+      // MCP JSON-RPC + SSE endpoints that REAL MCP clients (Claude Code/Desktop)
+      // speak. POST /__dev/mcp[/message] -> JSON-RPC handleMessage; GET
+      // /__dev/mcp/sse -> SSE handshake announcing the message endpoint. Mounted
+      // through the same dispatch as the REST shim above and gated by the same
+      // /__dev public-route rule. Mirrors the Python v3 fix (POST /__dev/mcp +
+      // /__dev/mcp/message, GET /__dev/mcp/sse).
+      { method: "POST", pattern: "/__dev/mcp", handler: handleMcpMessage },
+      { method: "POST", pattern: "/__dev/mcp/message", handler: handleMcpMessage },
+      { method: "GET", pattern: "/__dev/mcp/sse", handler: handleMcpSse },
       // Scaffolding
       { method: "GET", pattern: "/__dev/api/scaffold", handler: handleScaffoldList },
       { method: "POST", pattern: "/__dev/api/scaffold/run", handler: handleScaffoldRun },
@@ -599,6 +609,13 @@ export class DevAdmin {
         handler: route.handler,
       });
     }
+
+    // Ensure the default /__dev/mcp MCP server exists with its dev tools
+    // registered. This is the single shared instance behind both the REST shim
+    // and the JSON-RPC + SSE endpoints registered above. Doing it here (gated by
+    // the same TINA4_DEBUG check that gates DevAdmin.register) means tools/list
+    // and the REST shim return tools immediately, before any first call.
+    getDefaultDevServer();
   }
 
   /**
@@ -1931,7 +1948,11 @@ const handleGitStatus: RouteHandler = async (_req, res) => {
 
 const handleMcpTools: RouteHandler = async (_req, res) => {
   try {
-    const { McpServer } = await import("./mcp.js");
+    // Ensure the default /__dev/mcp server exists with its dev tools registered,
+    // then enumerate every registered MCP server instance (app-defined servers
+    // register themselves on construction too).
+    const { McpServer, getDefaultDevServer } = await import("./mcp.js");
+    getDefaultDevServer();
     const instances = (McpServer as unknown as { _instances: Array<any> })._instances || [];
     const tools: Array<{ server: string; name: string; description: string; inputSchema: unknown }> = [];
     for (const s of instances) {
@@ -1950,7 +1971,8 @@ const handleMcpCall: RouteHandler = async (req, res) => {
   const name = (body.name as string) || "";
   const args = (body.arguments as Record<string, unknown>) || {};
   try {
-    const { McpServer } = await import("./mcp.js");
+    const { McpServer, getDefaultDevServer } = await import("./mcp.js");
+    getDefaultDevServer();
     const instances = (McpServer as unknown as { _instances: Array<any> })._instances || [];
     for (const s of instances) {
       const tool = ((s as any)._tools as Map<string, any>).get(name);
@@ -1964,6 +1986,59 @@ const handleMcpCall: RouteHandler = async (req, res) => {
   } catch (e) {
     res.json({ error: (e as Error).message }, 500);
   }
+};
+
+/**
+ * JSON-RPC message endpoint for real MCP clients.
+ *
+ * Mounted at POST /__dev/mcp and POST /__dev/mcp/message. Forwards the request
+ * body to the default dev MCP server's handleMessage() and returns the JSON-RPC
+ * response. Notifications / id-less requests yield an empty 204. Mirrors the
+ * Python v3 fix. The /__dev path is always public (auth-bypassed), so MCP
+ * clients connect without a token.
+ */
+const handleMcpMessage: RouteHandler = async (req, res) => {
+  try {
+    const { getDefaultDevServer } = await import("./mcp.js");
+    const server = getDefaultDevServer();
+    const body = req.body;
+    let raw: string | Record<string, unknown>;
+    if (typeof body === "object" && body !== null) {
+      raw = body as Record<string, unknown>;
+    } else {
+      raw = typeof body === "string" ? body : String(body ?? "");
+    }
+    const result = server.handleMessage(raw);
+    if (!result) {
+      // Notification / no id — nothing to return.
+      res.send("", 204);
+      return;
+    }
+    res.json(JSON.parse(result));
+  } catch (e) {
+    res.json({ error: (e as Error).message }, 500);
+  }
+};
+
+/**
+ * SSE handshake endpoint for real MCP clients.
+ *
+ * Mounted at GET /__dev/mcp/sse. Announces the JSON-RPC message endpoint via an
+ * `endpoint` event, exactly like the canonical McpServer.registerRoutes() and
+ * the Python v3 fix. Content-Type text/event-stream, status 200.
+ */
+const handleMcpSse: RouteHandler = async (req, res) => {
+  // req.path is the path only (no query); turn /__dev/mcp/sse into the message
+  // endpoint /__dev/mcp/message that the client should POST to.
+  const reqPath = req.path || "/__dev/mcp/sse";
+  const endpointUrl = reqPath.replace(/\/sse$/, "/message");
+  const sseData = `event: endpoint\ndata: ${endpointUrl}\n\n`;
+  res.raw.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.raw.end(sseData);
 };
 
 const handleScaffoldList: RouteHandler = (_req, res) => {

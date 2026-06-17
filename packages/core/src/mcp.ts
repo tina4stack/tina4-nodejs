@@ -18,6 +18,32 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+
+// Synchronous CommonJS-style require that works under real ESM (where the
+// bare `require` global is undefined). Dev-tool handlers are synchronous, so
+// they can't `await import()` — this gives them a working require. Mirrors the
+// pattern already used by the ORM adapters (mysql.ts, postgres.ts, etc.).
+const req = createRequire(import.meta.url);
+
+/**
+ * Require a sibling @tina4 workspace package (orm / swagger / frond) in a way
+ * that works whether we're running from source (monorepo, where the package's
+ * `exports` only exposes the TS `import` condition that `require()` can't see)
+ * or as an installed dependency (where the package name resolves directly).
+ *
+ * Tries the package name first; on failure falls back to the in-repo source
+ * path relative to this file (packages/core/src → packages/<name>/src). This
+ * is why `route_list`, `database_query`, `swagger_spec`, etc. work when a real
+ * MCP client hits /__dev/mcp from a from-source dev server.
+ */
+function reqSibling(pkg: "orm" | "swagger" | "frond"): Record<string, unknown> {
+  try {
+    return req(`@tina4/${pkg}`) as Record<string, unknown>;
+  } catch {
+    return req(`../../${pkg}/src/index.ts`) as Record<string, unknown>;
+  }
+}
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -484,12 +510,31 @@ export class McpServer {
 // ── Decorator API ──────────────────────────────────────────────
 
 let _defaultServer: McpServer | null = null;
+let _defaultToolsRegistered = false;
 
 function _getDefaultServer(): McpServer {
   if (_defaultServer === null) {
     _defaultServer = new McpServer("/__dev/mcp", "Tina4 Dev Tools");
   }
   return _defaultServer;
+}
+
+/**
+ * The default `/__dev/mcp` MCP server with the built-in dev tools registered.
+ *
+ * This is the single shared instance backing BOTH the browser REST shim
+ * (`/__dev/api/mcp/tools` + `/__dev/api/mcp/call`) and the JSON-RPC + SSE
+ * endpoints (`/__dev/mcp[/message]` + `/__dev/mcp/sse`) that real MCP clients
+ * (Claude Code/Desktop) speak. Tools are registered exactly once (idempotent).
+ * Mirrors Python's default MCP server used by `get_api_handlers()`.
+ */
+export function getDefaultDevServer(): McpServer {
+  const server = _getDefaultServer();
+  if (!_defaultToolsRegistered) {
+    registerDevTools(server);
+    _defaultToolsRegistered = true;
+  }
+  return server;
 }
 
 /**
@@ -789,7 +834,6 @@ export function registerDevTools(server: McpServer): void {
     "database_query",
     (args) => {
       try {
-        const { initDatabase } = require("@tina4/orm");
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
         const params = typeof args.params === "string" ? JSON.parse(args.params as string) : (args.params || []);
@@ -863,8 +907,16 @@ export function registerDevTools(server: McpServer): void {
     "route_list",
     (_args) => {
       try {
-        const { defaultRouter } = require("@tina4/core");
-        const routes = defaultRouter?.listRoutes?.() ?? [];
+        // Prefer the active server router (set by startServer) so file-discovered
+        // routes are included; startServer builds a fresh Router rather than using
+        // defaultRouter. Fall back to defaultRouter when no server is running.
+        // route_list lives inside @tina4/core, so reach the router via the local
+        // module — req("@tina4/core") depends on a built dist/ and fails under a
+        // from-source ESM runtime (the real MCP-client code path).
+        const { defaultRouter } = req("./router.js") as typeof import("./router.js");
+        const activeRouter = (globalThis as any).__tina4_router;
+        const router = activeRouter ?? defaultRouter;
+        const routes = router?.listRoutes?.() ?? [];
         return routes.map((r: any) => ({
           method: r.method || "",
           path: r.pattern || r.path || "",
@@ -901,10 +953,12 @@ export function registerDevTools(server: McpServer): void {
     "swagger_spec",
     (_args) => {
       try {
-        const { generateSpec } = require("@tina4/swagger");
-        return generateSpec?.() ?? { info: "Swagger not available" };
-      } catch {
-        return { info: "Swagger package not loaded" };
+        const { generate } = reqSibling("swagger") as { generate?: (routes: unknown[], models?: unknown) => unknown };
+        const { defaultRouter } = req("./router.js") as typeof import("./router.js");
+        const routes = defaultRouter?.getRoutes?.() ?? [];
+        return generate?.(routes, []) ?? { info: "Swagger not available" };
+      } catch (e) {
+        return { error: (e as Error).message };
       }
     },
     "Return the OpenAPI 3.0.3 JSON spec",
@@ -917,9 +971,11 @@ export function registerDevTools(server: McpServer): void {
     "template_render",
     (args) => {
       try {
-        const { renderTemplate } = require("@tina4/twig");
+        const { Frond } = reqSibling("frond") as { Frond?: new (dir?: string) => { renderString: (s: string, d?: Record<string, unknown>) => string } };
+        if (!Frond) return "Template engine not available";
         const data = typeof args.data === "string" ? JSON.parse(args.data as string) : (args.data || {});
-        return renderTemplate?.(args.template as string, data) ?? "Template engine not available";
+        const frond = new Frond(path.join(projectRoot, "src", "templates"));
+        return frond.renderString(args.template as string, data as Record<string, unknown>);
       } catch (e) {
         return { error: (e as Error).message };
       }
@@ -1118,7 +1174,7 @@ export function registerDevTools(server: McpServer): void {
     "queue_status",
     (args) => {
       try {
-        const { Queue } = require("@tina4/core");
+        const { Queue } = req("./queue.js") as typeof import("./queue.js");
         const topic = (args.topic as string) || "default";
         const q = new Queue({ topic });
         return {
@@ -1166,7 +1222,7 @@ export function registerDevTools(server: McpServer): void {
       // latest snapshot once available. The very first call may report the
       // pending placeholder; subsequent calls return live figures.
       try {
-        const mod = require("@tina4/core");
+        const mod = req("./cache.js") as typeof import("./cache.js");
         const stats = mod.cacheStats?.();
         if (stats && typeof stats.then === "function") {
           stats.then((s: unknown) => { _lastCacheStats = s as Record<string, unknown>; }).catch(() => {});
@@ -1222,12 +1278,9 @@ export function registerDevTools(server: McpServer): void {
     "error_log",
     (args) => {
       try {
-        const { DevAdmin } = require("@tina4/core");
-        const tracker = DevAdmin?.errorTracker;
-        if (tracker?.get) {
-          return tracker.get(args.limit || 20);
-        }
-        return [];
+        const { ErrorTracker } = req("./devAdmin.js") as typeof import("./devAdmin.js");
+        const limit = (args.limit as number) || 20;
+        return ErrorTracker.get().slice(0, limit);
       } catch {
         return [];
       }
@@ -1258,7 +1311,7 @@ export function registerDevTools(server: McpServer): void {
     "seed_table",
     (args) => {
       try {
-        const { seedTable } = require("@tina4/orm");
+        const { seedTable } = reqSibling("orm") as { seedTable?: (db: unknown, table: string, count: number) => number };
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
         const count = (args.count as number) || 10;
@@ -1305,9 +1358,9 @@ export function registerDevTools(server: McpServer): void {
   // Ported from Python's tina4_python.mcp.tools — names match exactly.
   // The Plan storage format is byte-for-byte compatible across frameworks.
 
-  const loadPlan = () => require("./plan.js").Plan as typeof import("./plan.js").Plan;
+  const loadPlan = () => req("./plan.js").Plan as typeof import("./plan.js").Plan;
   const loadIndex = () =>
-    require("./projectIndex.js").ProjectIndex as typeof import("./projectIndex.js").ProjectIndex;
+    req("./projectIndex.js").ProjectIndex as typeof import("./projectIndex.js").ProjectIndex;
 
   server.registerTool(
     "plan_current",
@@ -1633,7 +1686,7 @@ export function registerDevTools(server: McpServer): void {
     "git_status",
     () => {
       try {
-        const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+        const { execFileSync } = req("node:child_process") as typeof import("node:child_process");
         const cwd = path.resolve(process.cwd());
         const run = (args: string[]): string => {
           return execFileSync("git", args, { cwd, timeout: 3000, encoding: "utf-8" }).toString().trim();
@@ -1685,7 +1738,7 @@ export function registerDevTools(server: McpServer): void {
     (args) => {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { Docs } = require("./docs.js") as typeof import("./docs.js");
+        const { Docs } = req("./docs.js") as typeof import("./docs.js");
         return Docs.mcpSearch(
           (args.query as string) || "",
           parseInt(String(args.k ?? 5), 10) || 5,
@@ -1711,7 +1764,7 @@ export function registerDevTools(server: McpServer): void {
     (args) => {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { Docs } = require("./docs.js") as typeof import("./docs.js");
+        const { Docs } = req("./docs.js") as typeof import("./docs.js");
         const spec = Docs.mcpClass((args.name as string) || "");
         return spec ?? { error: `class not found: ${args.name}` };
       } catch (e) {
@@ -1727,7 +1780,7 @@ export function registerDevTools(server: McpServer): void {
     (args) => {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { Docs } = require("./docs.js") as typeof import("./docs.js");
+        const { Docs } = req("./docs.js") as typeof import("./docs.js");
         // PHP names the param `class`, Python names it `class_` — Node.js MCP
         // accepts the raw `class` field from the JSON-RPC payload.
         const cls = (args.class as string) || (args.class_name as string) || "";
