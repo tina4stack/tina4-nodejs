@@ -1379,17 +1379,11 @@ ${reset}
   // Assign to module-level so handle() can dispatch without a server reference
   _dispatchFn = dispatch;
 
-  // When dual-port is active (debug mode + no TINA4_NO_AI_PORT), tag main port requests
-  // as AI port to suppress reload/toolbar injection. Test port (port+1000) gets full reload.
-  const _dualPortActive = isTruthy(process.env.TINA4_DEBUG ?? "") &&
-    !isTruthy(process.env.TINA4_NO_AI_PORT ?? "");
-  const mainPortDispatch = _dualPortActive
-    ? async (req: IncomingMessage, res: ServerResponse) => {
-        (req as any)._tina4AiPort = true;
-        await dispatch(req, res);
-      }
-    : dispatch;
-  const server = createServer(mainPortDispatch);
+  // Dual-port (debug + no TINA4_NO_AI_PORT): the MAIN port hot-reloads for the human
+  // dev; the stable AI port (port+1000, created below) suppresses reload/toolbar so an
+  // AI tool can drive it without its own edits triggering refreshes. The tina4 client
+  // posts /__dev/api/reload to the MAIN port. Matches Python (master).
+  const server = createServer(dispatch);
 
   return new Promise((resolvePromise) => {
     server.listen(port, host, () => {
@@ -1405,16 +1399,17 @@ ${reset}
       // Determine server mode label
       const serverMode = isDebug ? "single" : (cluster.isWorker ? "cluster-worker" : "single");
 
-      // AI dual-port: main port = AI dev port (no reload), port+1000 = user testing port (hot-reload)
-      // When TINA4_DEBUG=true and TINA4_NO_AI_PORT is not set, main server suppresses reload/toolbar
-      // and a second server on port+1000 provides the normal hot-reload experience.
+      // AI dual-port: main port = hot-reload (human dev); port+1000 = stable AI port
+      // (reload/toolbar suppressed) so an AI tool can drive it without its edits
+      // triggering refreshes. The tina4 client fires reloads at the MAIN port. Matches Python.
       const noAiPort = isTruthy(process.env.TINA4_NO_AI_PORT ?? "");
       let aiServer: ReturnType<typeof createServer> | null = null;
       let testPort = port + 1000;
 
       if (isDebug && !noAiPort) {
-        // Test port (port+1000): normal dispatch with full hot-reload
+        // Stable AI port (port+1000): tag requests so /__dev_reload + toolbar are suppressed.
         aiServer = createServer(async (req, res) => {
+          (req as any)._tina4AiPort = true;
           await dispatch(req, res);
         });
 
@@ -1451,11 +1446,8 @@ ${reset}
       }
       const noBrowser = isTruthy(process.env.TINA4_NO_BROWSER);
       if (!noBrowser) {
-        // Open browser on test port (hot-reload) if available, otherwise main port
-        const browserTarget = (isDebug && !noAiPort && aiServer)
-          ? `http://${displayHost}:${testPort}`
-          : `http://${displayHost}:${port}`;
-        openBrowser(browserTarget);
+        // Open the browser on the MAIN port — that's the hot-reload port.
+        openBrowser(`http://${displayHost}:${port}`);
       }
       resolvePromise({
         close: () => {
