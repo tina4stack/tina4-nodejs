@@ -816,6 +816,71 @@ if (filesHandler) {
   assert("missing path still returns branch", typeof resMissing.result?.branch === "string");
 }
 
+// --- file read language detection (/__dev/api/file) ---
+// Locks the SPA contract that the editor needs to syntax-highlight: the
+// file-read endpoint MUST return a `language` string derived from the file
+// extension, identical in coverage to the Python master lang_map. This was the
+// "ts not highlighting on Node" bug — the endpoint returned no language at all.
+console.log("\n--- file read language detection ---");
+
+const fileReadHandler = findHandler("GET", "/__dev/api/file");
+assert("file read handler is registered", fileReadHandler !== undefined);
+
+if (fileReadHandler) {
+  const fsmod = await import("node:fs");
+  const pathmod = await import("node:path");
+  const root = process.cwd();
+
+  // Write two tiny real files under the repo so the handler reads them through
+  // its normal safeJoin/readFileSync path (path is repo-relative).
+  const tsRel = pathmod.join("data", "__lang_probe.ts");
+  const rbRel = pathmod.join("data", "__lang_probe.rb");
+  const tsAbs = pathmod.join(root, tsRel);
+  const rbAbs = pathmod.join(root, rbRel);
+  fsmod.mkdirSync(pathmod.dirname(tsAbs), { recursive: true });
+  fsmod.writeFileSync(tsAbs, "export const x: number = 1;\n", "utf-8");
+  fsmod.writeFileSync(rbAbs, "x = 1\n", "utf-8");
+
+  try {
+    const tsRes = mockRes();
+    await fileReadHandler(mockReq(`/__dev/api/file?path=${encodeURIComponent(tsRel)}`), tsRes);
+    assert("file read returns content", typeof tsRes.result?.content === "string");
+    assert("file read keeps path/bytes", typeof tsRes.result?.path === "string" && typeof tsRes.result?.bytes === "number");
+    assert(".ts yields language typescript", tsRes.result?.language === "typescript", `got ${tsRes.result?.language}`);
+
+    const rbRes = mockRes();
+    await fileReadHandler(mockReq(`/__dev/api/file?path=${encodeURIComponent(rbRel)}`), rbRes);
+    assert(".rb yields language ruby", rbRes.result?.language === "ruby", `got ${rbRes.result?.language}`);
+  } finally {
+    try { fsmod.unlinkSync(tsAbs); } catch { /* ignore */ }
+    try { fsmod.unlinkSync(rbAbs); } catch { /* ignore */ }
+  }
+}
+
+// Also exercise the helper directly across the full canonical map coverage,
+// including the no-extension Dockerfile detection and the .env / .env.example
+// two-part cases.
+import { devAdminLanguage } from "../packages/core/src/index.ts";
+
+assert("helper: .ts → typescript", devAdminLanguage("src/routes/get.ts") === "typescript");
+assert("helper: .rb → ruby", devAdminLanguage("lib/foo.rb") === "ruby");
+assert("helper: .py → python", devAdminLanguage("app.py") === "python");
+assert("helper: .tsx → typescript", devAdminLanguage("App.tsx") === "typescript");
+assert("helper: .jsx → javascript", devAdminLanguage("App.jsx") === "javascript");
+assert("helper: .twig → html", devAdminLanguage("page.twig") === "html");
+assert("helper: .xml → html", devAdminLanguage("pom.xml") === "html");
+assert("helper: .scss → css", devAdminLanguage("a.scss") === "css");
+assert("helper: .yml → yaml", devAdminLanguage("ci.yml") === "yaml");
+assert("helper: .gemspec → ruby", devAdminLanguage("foo.gemspec") === "ruby");
+assert("helper: .svg → svg", devAdminLanguage("logo.svg") === "svg");
+assert("helper: .env → env", devAdminLanguage(".env") === "env");
+assert("helper: .env.example → env", devAdminLanguage("config/.env.example") === "env");
+assert("helper: Dockerfile → dockerfile", devAdminLanguage("Dockerfile") === "dockerfile");
+assert("helper: Dockerfile.dev → dockerfile", devAdminLanguage("Dockerfile.dev") === "dockerfile");
+assert("helper: Dockerfile.prod → dockerfile", devAdminLanguage("ops/Dockerfile.prod") === "dockerfile");
+assert("helper: unknown ext → text", devAdminLanguage("weird.qzx") === "text");
+assert("helper: no extension → text", devAdminLanguage("LICENSE") === "text");
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

@@ -1904,6 +1904,49 @@ const handleFiles: RouteHandler = async (req, res) => {
   res.json({ path: relative(root, target).replace(/\\/g, "/") || ".", branch, entries });
 };
 
+// Canonical extension→language map. Kept identical in coverage to the Python
+// master (tina4_python/tina4_python/dev_admin/__init__.py `lang_map`) and the
+// PHP/Ruby file-read endpoints. The dev-admin SPA maps the returned "language"
+// string to a CodeMirror grammar for syntax highlighting.
+const DEV_ADMIN_LANG_MAP: Record<string, string> = {
+  ".py": "python", ".php": "php", ".rb": "ruby",
+  ".ts": "typescript", ".js": "javascript", ".jsx": "javascript",
+  ".tsx": "typescript", ".json": "json", ".html": "html",
+  ".twig": "html", ".css": "css", ".scss": "css",
+  ".md": "markdown", ".sql": "sql", ".yaml": "yaml",
+  ".yml": "yaml", ".toml": "toml", ".xml": "html",
+  ".env": "env", ".env.example": "env",
+  ".sh": "shell", ".bash": "shell",
+  ".bat": "shell", ".cmd": "shell", ".ps1": "shell",
+  ".rs": "rust", ".go": "go", ".java": "java",
+  ".txt": "text", ".csv": "text", ".log": "text",
+  ".gemspec": "ruby", ".rake": "ruby",
+  ".svg": "svg",
+};
+
+/**
+ * Resolve a CodeMirror-friendly language id from a file path's basename.
+ *
+ * - `Dockerfile` / `Dockerfile.dev` / `Dockerfile.prod` (no extension) → "dockerfile"
+ * - `.env.example` (two-part) and `.env` → "env"
+ * - otherwise the file extension is looked up in DEV_ADMIN_LANG_MAP
+ * - anything unknown → "text"
+ */
+export function devAdminLanguage(rel: string): string {
+  const base = (rel.split(/[\\/]/).pop() ?? "").toLowerCase();
+  if (base === "dockerfile" || base === "dockerfile.dev" || base === "dockerfile.prod") {
+    return "dockerfile";
+  }
+  // Two-part extension first (e.g. ".env.example"), then the single extension.
+  if (base.endsWith(".env.example")) return DEV_ADMIN_LANG_MAP[".env.example"];
+  const dot = base.lastIndexOf(".");
+  // A leading dot with no other dot is a dotfile name, not an extension
+  // (e.g. ".env" → ext ".env"); only treat as "no extension" when there's no dot.
+  if (dot < 0) return "text";
+  const ext = base.slice(dot);
+  return DEV_ADMIN_LANG_MAP[ext] ?? "text";
+}
+
 const handleFileRead: RouteHandler = (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const rel = url.searchParams.get("path") ?? "";
@@ -1915,7 +1958,8 @@ const handleFileRead: RouteHandler = (req, res) => {
   }
   try {
     const content = readFileSync(target, "utf-8");
-    res.json({ path: relative(root, target), content, bytes: Buffer.byteLength(content, "utf-8") });
+    const path = relative(root, target);
+    res.json({ path, content, language: devAdminLanguage(path), bytes: Buffer.byteLength(content, "utf-8") });
   } catch (e) {
     res.json({ error: (e as Error).message }, 500);
   }

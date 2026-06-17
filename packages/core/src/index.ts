@@ -74,7 +74,7 @@ export type { ResponseCacheConfig, CacheBackend } from "./cache.js";
 export { Api } from "./api.js";
 export type { ApiResult } from "./api.js";
 export { Events } from "./events.js";
-export { DevAdmin, MessageLog, RequestInspector, ErrorTracker, DevMailboxStore, DevQueue, WsTracker, supervisorBaseUrl } from "./devAdmin.js";
+export { DevAdmin, MessageLog, RequestInspector, ErrorTracker, DevMailboxStore, DevQueue, WsTracker, supervisorBaseUrl, devAdminLanguage } from "./devAdmin.js";
 export {
   feedbackEnabled,
   feedbackWhitelist,
