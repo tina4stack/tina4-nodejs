@@ -48,12 +48,17 @@ export function createJob(data: JobData, queue: JobQueueBridge): QueueJob {
   const job: QueueJob = {
     ...data,
     complete() {
+      // Terminal — the job was already removed from the queue on pop().
       job.status = "completed";
     },
     fail(reason = "") {
+      // Record a failed attempt. `attempts` is incremented exactly once, inside
+      // the backend's failJob() — NOT here — so a persistently-failing job runs
+      // exactly maxRetries times before it is dead-lettered. The backend decides
+      // whether to re-enqueue (attempts < maxRetries) or dead-letter
+      // (attempts >= maxRetries).
       job.status = "failed";
       job.error = reason;
-      job.attempts = (job.attempts || 0) + 1;
       queue._failJob(job.topic, job, reason, queue.getMaxRetries());
     },
     reject(reason = "") {

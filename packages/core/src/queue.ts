@@ -45,6 +45,12 @@ export interface QueueConfig {
   path?: string;
   topic?: string;
   maxRetries?: number;
+  /**
+   * Seconds to delay a failed job's automatic re-enqueue. 0 (the default)
+   * means retry immediately — the next pop()/consume() iteration picks it up
+   * straight away. Parity with Python's retry_backoff.
+   */
+  retryBackoff?: number;
 }
 
 export interface ProcessOptions {
@@ -75,6 +81,7 @@ export class Queue {
   private basePath: string;
   private topic: string;
   private _maxRetries: number;
+  private _retryBackoff: number;
   private externalBackend: QueueBackendInterface | null = null;
   private liteBackend!: LiteBackend;
 
@@ -104,6 +111,7 @@ export class Queue {
       ?? "data/queue";
     this.topic = resolvedConfig.topic ?? "default";
     this._maxRetries = resolvedConfig.maxRetries ?? 3;
+    this._retryBackoff = resolvedConfig.retryBackoff ?? 0;
     this.liteBackend = new LiteBackend(this.basePath);
 
     // Initialize external backends
@@ -234,10 +242,12 @@ export class Queue {
   }
 
   /**
-   * Get all failed jobs for this queue's topic.
+   * Get jobs that failed at least once but are still being retried
+   * (0 < attempts < maxRetries). These live in the pending queue under the
+   * auto-retry lifecycle; dead-lettered jobs are returned by deadLetters().
    */
   failed(): QueueJob[] {
-    return this.liteBackend.failed(this.topic);
+    return this.liteBackend.failed(this.topic, this._maxRetries);
   }
 
   /**
@@ -396,11 +406,17 @@ export class Queue {
     return this._maxRetries;
   }
 
+  getRetryBackoff(): number {
+    return this._retryBackoff;
+  }
+
   /**
-   * Move a job to the failed directory.
+   * Record a failed attempt for a job. The backend increments `attempts`
+   * exactly once and decides whether to re-enqueue (attempts < maxRetries,
+   * after retryBackoff seconds) or dead-letter (attempts >= maxRetries).
    */
   _failJob(queue: string, job: QueueJob, error: string, maxRetries: number): void {
-    this.liteBackend.failJob(queue, job, error, maxRetries);
+    this.liteBackend.failJob(queue, job, error, maxRetries, this._retryBackoff);
   }
 
   /**

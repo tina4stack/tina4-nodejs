@@ -79,22 +79,27 @@ assert("size is 0 after clear", qTasks.size() === 0);
 const afterClear = qTasks.pop();
 assert("pop returns null after clear", afterClear === null);
 
-// --- Failed Jobs ---
+// --- Failed Jobs (still-retrying) ---
 console.log("\n--- Failed Jobs ---");
 
-const qWork = new Queue({ topic: "work", path: TEST_PATH });
+// Under the auto-retry lifecycle, a failed-but-retryable job (0 < attempts <
+// maxRetries) stays in the PENDING queue and is surfaced by failed(). With
+// maxRetries=3, one fail() leaves attempts=1 → still retrying.
+const qWork = new Queue({ topic: "work", path: TEST_PATH, maxRetries: 3 });
 qWork.push({ item: 1 });
 qWork.push({ item: 2 });
 
-// Process with a handler that fails
-qWork.process((job: QueueJob) => {
-  throw new Error("intentional failure");
-}, { maxRetries: 3 });
+// Fail each job exactly once (attempts=1 < 3 → re-enqueued, not dead-lettered).
+const w1 = qWork.pop();
+w1?.fail("intentional failure");
+const w2 = qWork.pop();
+w2?.fail("intentional failure");
 
 const failedJobs = qWork.failed();
-assert("failed returns failed jobs", failedJobs.length === 2);
+assert("failed returns still-retrying jobs", failedJobs.length === 2);
 assert("failed job has error message", failedJobs[0].error === "intentional failure");
-assert("failed job has status 'failed'", failedJobs[0].status === "failed");
+assert("failed-but-retrying job has attempts === 1", failedJobs[0].attempts === 1);
+assert("failed-but-retrying job is not dead-lettered", qWork.deadLetters().length === 0);
 
 // --- Retry (instance-scoped dead letter retry) ---
 console.log("\n--- Retry ---");
@@ -135,6 +140,172 @@ const o3 = qOrdered.pop();
 assert("FIFO: first push is first pop", o1 !== null && (o1.payload as any).seq === 1);
 assert("FIFO: second push is second pop", o2 !== null && (o2.payload as any).seq === 2);
 assert("FIFO: third push is third pop", o3 !== null && (o3.payload as any).seq === 3);
+
+// --- Priority Ordering ---
+console.log("\n--- Priority Ordering ---");
+
+{
+  // (a) Higher-priority job pops before an OLDER lower-priority job.
+  const qp = new Queue({ topic: "prio", path: TEST_PATH });
+  qp.push({ t: "old_low" }, 0, 1);   // pushed first, priority 1
+  qp.push({ t: "mid" }, 0, 5);       // priority 5
+  qp.push({ t: "new_high" }, 0, 10); // pushed last, priority 10
+
+  const p1 = qp.pop();
+  const p2 = qp.pop();
+  const p3 = qp.pop();
+  assert("priority: highest pops first despite being newest", p1 !== null && (p1.payload as any).t === "new_high");
+  assert("priority: mid pops second", p2 !== null && (p2.payload as any).t === "mid");
+  assert("priority: oldest-lowest pops last", p3 !== null && (p3.payload as any).t === "old_low");
+}
+
+{
+  // Ties broken oldest-first by createdAt (same priority → insertion order).
+  const qt = new Queue({ topic: "prio_tie", path: TEST_PATH });
+  qt.push({ n: 1 }, 0, 5);
+  qt.push({ n: 2 }, 0, 5);
+  qt.push({ n: 3 }, 0, 5);
+  const t1 = qt.pop(), t2 = qt.pop(), t3 = qt.pop();
+  assert("priority tie broken oldest-first",
+    (t1?.payload as any).n === 1 && (t2?.payload as any).n === 2 && (t3?.payload as any).n === 3);
+}
+
+{
+  // popBatch is priority-ordered too.
+  const qb = new Queue({ topic: "prio_batch", path: TEST_PATH });
+  qb.push({ t: "low" }, 0, 0);
+  qb.push({ t: "high" }, 0, 10);
+  qb.push({ t: "mid" }, 0, 5);
+  const jobs = qb.popBatch(3);
+  assert("popBatch orders by priority DESC",
+    jobs.map(j => (j.payload as any).t).join(",") === "high,mid,low");
+}
+
+{
+  // A delayed high-priority job must NOT jump ahead while still delayed;
+  // an available lower-priority job pops first.
+  const qd = new Queue({ topic: "prio_delay", path: TEST_PATH });
+  qd.push({ t: "delayed_high" }, 3600, 100); // delayed 1h, priority 100
+  qd.push({ t: "available_low" }, 0, 0);
+  const job = qd.pop();
+  assert("delayed high-priority job is skipped while delayed", job !== null && (job.payload as any).t === "available_low");
+  assert("delayed job not yet available", qd.pop() === null);
+}
+
+// --- Auto Retry → Dead Letter (no manual retryFailed) ---
+console.log("\n--- Auto Retry to Dead Letter ---");
+
+{
+  // (b) A job that fails on EVERY attempt is retried exactly maxRetries times
+  // via a for-await consume() loop with job.fail() — then lands in deadLetters().
+  // No manual retryFailed() call.
+  const qr = new Queue({ topic: "auto_dl", path: TEST_PATH, maxRetries: 3 });
+  qr.push({ task: "always_fails" });
+
+  let executions = 0;
+  // pollInterval=0 → single-pass drain that also re-drains re-enqueued jobs,
+  // so the whole retry sequence runs in one for-await loop.
+  for await (const j of qr.consume("auto_dl", undefined, 0)) {
+    executions++;
+    (j as QueueJob).fail(`boom ${executions}`);
+  }
+
+  assert("persistent failure executed exactly maxRetries (3) times", executions === 3);
+  assert("nothing left pending after dead-lettering", qr.size("pending") === 0);
+  const dead = qr.deadLetters();
+  assert("failing job ends in deadLetters", dead.length === 1);
+  assert("dead job carries attempts === maxRetries", dead[0].attempts === 3);
+  assert("dead job carries last error", dead[0].error === "boom 3");
+  assert("dead job payload preserved", (dead[0].payload as any).task === "always_fails");
+}
+
+{
+  // (c) Success on the 2nd attempt is NOT dead-lettered.
+  const qf = new Queue({ topic: "flaky", path: TEST_PATH, maxRetries: 3 });
+  qf.push({ task: "flaky" });
+
+  let executions = 0;
+  for await (const j of qf.consume("flaky", undefined, 0)) {
+    executions++;
+    if (executions === 1) {
+      (j as QueueJob).fail("transient error"); // re-enqueued
+    } else {
+      (j as QueueJob).complete();               // succeeds on 2nd attempt
+      break;
+    }
+  }
+
+  assert("flaky job executed twice", executions === 2);
+  assert("flaky job not left pending", qf.size("pending") === 0);
+  assert("flaky job not dead-lettered", qf.deadLetters().length === 0);
+}
+
+{
+  // (d) attempts increments EXACTLY ONCE per fail() (double-increment fix).
+  const qi = new Queue({ topic: "increment", path: TEST_PATH, maxRetries: 10 });
+  qi.push({ task: "count" });
+
+  const j1 = qi.pop();
+  assert("fresh job starts at attempts === 0", j1 !== null && j1.attempts === 0);
+  j1?.fail("first");
+  const j2 = qi.pop();
+  assert("after one fail attempts === 1 (single increment)", j2 !== null && j2.attempts === 1);
+  j2?.fail("second");
+  const j3 = qi.pop();
+  assert("after two fails attempts === 2 (single increment each)", j3 !== null && j3.attempts === 2);
+  assert("re-enqueued job carries prior error", j3 !== null && j3.error === "second");
+  qi.clear();
+}
+
+{
+  // maxRetries=2: fails twice then dead-lettered, attempts increments once each.
+  const qm = new Queue({ topic: "two_retries", path: TEST_PATH, maxRetries: 2 });
+  qm.push({ task: "doomed" });
+
+  const m1 = qm.pop();
+  m1?.fail("attempt 1");                 // attempts=1 < 2 → re-enqueued
+  assert("maxRetries=2: still pending after 1st fail", qm.size("pending") === 1);
+  assert("maxRetries=2: not dead after 1st fail", qm.deadLetters().length === 0);
+
+  const m2 = qm.pop();
+  assert("maxRetries=2: 2nd pop carries attempts === 1", m2 !== null && m2.attempts === 1);
+  m2?.fail("attempt 2");                 // attempts=2 >= 2 → dead-lettered
+  assert("maxRetries=2: nothing pending after 2nd fail", qm.size("pending") === 0);
+  const deadM = qm.deadLetters();
+  assert("maxRetries=2: dead-lettered after 2nd fail", deadM.length === 1 && deadM[0].attempts === 2);
+}
+
+{
+  // reject() is an alias for fail() — same retry→dead-letter path.
+  const qj = new Queue({ topic: "reject_alias", path: TEST_PATH, maxRetries: 1 });
+  qj.push({ task: "bad" });
+  const rj = qj.pop();
+  rj?.reject("invalid");                 // attempts=1 >= 1 → dead-lettered
+  const deadJ = qj.deadLetters();
+  assert("reject() dead-letters like fail()", deadJ.length === 1 && deadJ[0].error === "invalid");
+}
+
+{
+  // retryBackoff delays the automatic re-enqueue: an immediate pop sees nothing.
+  const qbk = new Queue({ topic: "backoff", path: TEST_PATH, maxRetries: 3, retryBackoff: 3600 });
+  qbk.push({ task: "slow_retry" });
+  const bj = qbk.pop();
+  bj?.fail("needs backoff");
+  // Re-enqueued (still pending) but delayed → not yet poppable.
+  assert("retryBackoff: job re-enqueued to pending", qbk.size("pending") === 1);
+  assert("retryBackoff: job not immediately poppable", qbk.pop() === null);
+}
+
+{
+  // job.retry() always re-queues (manual override) and increments attempts once.
+  const qov = new Queue({ topic: "manual_retry", path: TEST_PATH, maxRetries: 1 });
+  qov.push({ task: "again" });
+  const ov = qov.pop();
+  ov?.retry();
+  assert("job.retry() re-queues to pending", qov.size("pending") === 1);
+  const ov2 = qov.pop();
+  assert("job.retry() increments attempts once", ov2 !== null && ov2.attempts === 1);
+}
 
 // --- Delayed Jobs ---
 console.log("\n--- Delayed Jobs ---");
@@ -244,15 +415,20 @@ console.log("\n--- Topic Dead Letters ---");
 }
 
 {
-  const qt5 = new Queue({ topic: "retrytest", path: TEST_PATH_TOPIC, maxRetries: 3 });
+  // retryFailed() revives dead-letters under a RAISED limit. With maxRetries=1
+  // a single fail() dead-letters the job (attempts=1 >= 1); at the original
+  // limit nothing is revived, but a raised limit re-queues it to pending.
+  const qt5 = new Queue({ topic: "retrytest", path: TEST_PATH_TOPIC, maxRetries: 1 });
   qt5.push({ x: 1 });
 
-  qt5.process((job: QueueJob) => {
-    throw new Error("fail");
-  });
+  const r5 = qt5.pop();
+  r5?.fail("fail");                       // attempts=1 >= 1 → dead-lettered
+  assert("topic dead letter before retryFailed", qt5.deadLetters().length === 1);
 
-  const retried = qt5.retryFailed();
-  assert("topic retryFailed returns 1", retried === 1);
+  assert("topic retryFailed at original limit revives nothing", qt5.retryFailed() === 0);
+
+  const retried = qt5.retryFailed(5);     // raised limit → revive
+  assert("topic retryFailed under raised limit returns 1", retried === 1);
   assert("topic size after retryFailed is 1", qt5.size() === 1);
 }
 
