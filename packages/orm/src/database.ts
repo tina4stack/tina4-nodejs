@@ -38,11 +38,13 @@ export function stripTrailingSemicolons(sql: string): string {
  * the single chokepoint every public read/write flows through.
  */
 export async function adapterFetch<T = Record<string, unknown>>(
-  adapter: DatabaseAdapter, sql: string, params?: unknown[], limit?: number, skip?: number,
+  adapter: DatabaseAdapter, sql: string, params?: unknown[], limit?: number, skip?: number, noCache?: boolean,
 ): Promise<T[]> {
+  // `noCache` is forwarded to the CachedDatabaseAdapter so a single read can
+  // bypass the query cache; raw adapters ignore the extra trailing arg.
   return (adapter as any).fetchAsync
-    ? await (adapter as any).fetchAsync(sql, params, limit, skip)
-    : adapter.fetch<T>(sql, params, limit, skip);
+    ? await (adapter as any).fetchAsync(sql, params, limit, skip, noCache)
+    : adapter.fetch<T>(sql, params, limit, skip, noCache);
 }
 
 export async function adapterQuery<T = Record<string, unknown>>(
@@ -633,14 +635,16 @@ export class Database {
    * the fallback resolves instantly). This is the breaking change that makes
    * the wrapper work uniformly across every engine.
    */
-  async fetch(sql: string, params?: unknown[], limit?: number, offset?: number): Promise<DatabaseResult> {
+  async fetch(sql: string, params?: unknown[], limit?: number, offset?: number, opts?: { noCache?: boolean }): Promise<DatabaseResult> {
     // v3.13.12: strip trailing `;` before the adapter wraps with COUNT(*)
     // or appends LIMIT/OFFSET. Without this, `"SELECT * FROM t;"` becomes
     // `"SELECT * FROM t; LIMIT 100 OFFSET 0"` — a syntax error.
     sql = stripTrailingSemicolons(sql);
     const adapter = this.getNextAdapter();
     try {
-      const rows = await adapterFetch(adapter, sql, params, limit, offset);
+      // `opts.noCache` bypasses the query cache for this one call — no lookup,
+      // no store, run directly (mirrors the Python master's `no_cache`).
+      const rows = await adapterFetch(adapter, sql, params, limit, offset, opts?.noCache);
       this.lastError = null;
       return new DatabaseResult(rows, undefined, undefined, limit, offset, adapter, sql);
     } catch (e: any) {
@@ -650,13 +654,19 @@ export class Database {
     }
   }
 
-  /** Fetch a single row or null. */
-  async fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | null> {
+  /**
+   * Fetch a single row or null.
+   *
+   * Pass `{ noCache: true }` as the trailing options object to bypass the
+   * query cache for this one call — no lookup, no store, run directly
+   * (mirrors the Python master's `no_cache`). Default preserves caching.
+   */
+  async fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[], opts?: { noCache?: boolean }): Promise<T | null> {
     sql = stripTrailingSemicolons(sql);
     const adapter = this.getNextAdapter();
     return (adapter as any).fetchOneAsync
-      ? await (adapter as any).fetchOneAsync<T>(sql, params)
-      : adapter.fetchOne<T>(sql, params);
+      ? await (adapter as any).fetchOneAsync<T>(sql, params, opts?.noCache)
+      : adapter.fetchOne<T>(sql, params, opts?.noCache);
   }
 
   /**
@@ -671,9 +681,14 @@ export class Database {
    *
    * Returns `[]` (not `null`) when no rows match. Cross-framework parity
    * with Python `db.fetch_all()`, PHP `$db->fetchAll()`, and Ruby `db.fetch_all`.
+   *
+   * Pass `{ noCache: true }` as the trailing options object to bypass the
+   * query cache for this one call — no lookup, no store, run directly
+   * (mirrors the Python master's `no_cache`). The options object is a
+   * SEPARATE trailing argument, never the params array.
    */
-  async fetchAll<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, offset?: number): Promise<T[]> {
-    return (await this.fetch(sql, params, limit, offset)).records as T[];
+  async fetchAll<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, offset?: number, opts?: { noCache?: boolean }): Promise<T[]> {
+    return (await this.fetch(sql, params, limit, offset, opts)).records as T[];
   }
 
   /**

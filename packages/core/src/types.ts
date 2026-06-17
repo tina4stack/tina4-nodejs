@@ -117,7 +117,8 @@ export interface RouteDefinition {
   handler: RouteHandler;
   filePath?: string;
   meta?: RouteMeta;
-  middlewares?: Middleware[];
+  /** Middleware functions and/or string specs (e.g. "ResponseCache:300"). */
+  middlewares?: MiddlewareSpec[];
   /** Template file to render when handler returns a plain object */
   template?: string;
   /** Whether this route requires bearer-token authentication */
@@ -157,6 +158,20 @@ export type Middleware = (
   res: Tina4Response,
   next: () => void
 ) => void | Promise<void>;
+
+/**
+ * A route middleware entry: either a middleware function, or a string spec
+ * resolved by the router to a built-in middleware.
+ *
+ * String forms (parity with Python/PHP/Ruby):
+ *   "ResponseCache"      → responseCache() with the default/env TTL
+ *   "ResponseCache:300"  → responseCache({ ttl: 300 })
+ *
+ * The router resolves string specs to middleware functions when the route
+ * runs, so callers can register a response-cache middleware without importing
+ * `responseCache`.
+ */
+export type MiddlewareSpec = Middleware | string;
 
 /**
  * Handler for WebSocket routes.

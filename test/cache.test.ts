@@ -423,6 +423,11 @@ async function main() {
     await mwB(reqB, resB, () => { bNext = true; });
     assert("instance B serves HIT from shared backend (no next)", !bNext && servedBody === body, `body=${servedBody} status=${servedStatus}`);
     assert("instance B HIT sets X-Cache: HIT header", headersB["x-cache"] === "HIT");
+    // X-Cache-TTL advertises the configured lifetime in seconds (parity with
+    // Python/PHP/Ruby). ttl: 60 here → header "60".
+    assert("instance B HIT sets X-Cache-TTL: 60 header", headersB["x-cache-ttl"] === "60", JSON.stringify(headersB));
+    // The MISS path (instance A) sets X-Cache-TTL too.
+    assert("instance A MISS sets X-Cache-TTL: 60 header", headersA["x-cache-ttl"] === "60", JSON.stringify(headersA));
 
     await clearCache();
     _resetBackend();

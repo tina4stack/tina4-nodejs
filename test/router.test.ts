@@ -2,7 +2,7 @@
  * Unit tests for the Router enhancements (Phase 2).
  * Run with: npx tsx test/router.test.ts
  */
-import { Router, RouteGroup, runRouteMiddlewares } from "../packages/core/src/index.ts";
+import { Router, RouteGroup, runRouteMiddlewares, resolveStringMiddleware, clearCache, _resetBackend } from "../packages/core/src/index.ts";
 import type { Tina4Request, Tina4Response, Middleware } from "../packages/core/src/index.ts";
 
 let pass = 0;
@@ -339,6 +339,88 @@ console.log("\n--- Typed parameter coercion ---");
   r.get("/n/{id:int}", h);
   assert("{id:int} non-numeric does not match (404)", r.match("GET", "/n/abc") === null);
 }
+
+// --- String middleware specs ("ResponseCache" / "ResponseCache:300") ---
+// The router resolves a string middleware spec to the response-cache
+// middleware (parity with Python/PHP/Ruby). A route registered with the
+// string middleware caches the GET response and sets the X-Cache header.
+async function stringMiddlewareTests() {
+  console.log("\n--- String Middleware Specs ---");
+
+  // Resolution: string → middleware function (3-arg signature).
+  const mw = await resolveStringMiddleware("ResponseCache:300");
+  assert("'ResponseCache:300' resolves to a middleware function", typeof mw === "function" && mw.length === 3);
+  const mwNoTtl = await resolveStringMiddleware("ResponseCache");
+  assert("'ResponseCache' (no ttl) resolves to a middleware function", typeof mwNoTtl === "function");
+
+  // Unknown spec throws so a typo surfaces.
+  let threw = false;
+  try { await resolveStringMiddleware("Nope"); } catch { threw = true; }
+  assert("unknown string middleware throws", threw);
+
+  // A route registered with the string middleware caches + sets X-Cache.
+  // Drive it through runRouteMiddlewares exactly as the dispatcher does, so
+  // the spec is resolved at run time.
+  _resetBackend();
+  await clearCache();
+
+  const url = "/api/string-mw?x=" + Date.now();
+  const body = JSON.stringify({ ok: true });
+  const r = new Router();
+  // String spec in the middleware list — never imported responseCache here.
+  const mwHandler = async (_req: Tina4Request, _res: Tina4Response) => {};
+  r.get("/api/string-mw", mwHandler, ["ResponseCache:300"]);
+  const m = r.match("GET", "/api/string-mw");
+  assert("route registered with string middleware matches", m !== null && (m!.middlewares?.length ?? 0) === 1);
+
+  // First request — MISS. runRouteMiddlewares resolves the string, runs the
+  // cache middleware, calls next(); we then emit the body via res.raw.end so
+  // the middleware captures + stores it (and sets X-Cache: MISS + X-Cache-TTL).
+  const h1: Record<string, string> = {};
+  const req1 = { method: "GET", url } as Tina4Request;
+  const res1 = {
+    raw: {
+      writableEnded: false, statusCode: 200,
+      end(_chunk: any) { return this; },
+      getHeader: (n: string) => h1[n.toLowerCase()] || "application/json",
+    },
+    header: (n: string, v: string) => { h1[n.toLowerCase()] = v; },
+  } as unknown as Tina4Response;
+  const proceed1 = await runRouteMiddlewares(m!.middlewares!, req1, res1);
+  assert("string-mw first request proceeds (MISS → next)", proceed1 === true);
+  (res1.raw.end as any)(body);
+  assert("string-mw MISS sets X-Cache: MISS", h1["x-cache"] === "MISS", JSON.stringify(h1));
+  assert("string-mw MISS sets X-Cache-TTL: 300", h1["x-cache-ttl"] === "300", JSON.stringify(h1));
+  // Let the fire-and-forget backend.set settle.
+  await new Promise((res) => setTimeout(res, 30));
+
+  // Second request — HIT, served from cache (next NOT called) with X-Cache: HIT.
+  const h2: Record<string, string> = {};
+  let servedBody: string | null = null;
+  const req2 = { method: "GET", url } as Tina4Request;
+  const res2 = Object.assign(
+    function (b: any) { servedBody = b; },
+    {
+      raw: {
+        writableEnded: false, statusCode: 200,
+        end(_chunk: any) { return this; },
+        getHeader: (n: string) => h2[n.toLowerCase()] || "application/json",
+      },
+      header: (n: string, v: string) => { h2[n.toLowerCase()] = v; },
+    },
+  ) as unknown as Tina4Response;
+  await runRouteMiddlewares(m!.middlewares!, req2, res2);
+  // runRouteMiddlewares returns false on a HIT because the cache mw doesn't
+  // call next() — it serves directly. Verify by the served body + header.
+  assert("string-mw second request is a cache HIT (body served)", servedBody === body, `served=${servedBody}`);
+  assert("string-mw HIT sets X-Cache: HIT", h2["x-cache"] === "HIT", JSON.stringify(h2));
+  assert("string-mw HIT sets X-Cache-TTL: 300", h2["x-cache-ttl"] === "300", JSON.stringify(h2));
+
+  await clearCache();
+  _resetBackend();
+}
+
+await stringMiddlewareTests();
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

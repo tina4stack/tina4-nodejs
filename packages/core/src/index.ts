@@ -6,6 +6,7 @@ export type {
   RouteMeta,
   Tina4Config,
   Middleware,
+  MiddlewareSpec,
   UploadedFile,
   CookieOptions,
   WebSocketRouteHandler,
@@ -14,7 +15,7 @@ export type {
 
 export { startServer, resolvePortAndHost, handle, start, stop, httpReason, resolveTemplate, resetTemplateCache, templateAutoRoutingEnabled, isBannerSuppressed } from "./server.js";
 export { background, stopAllBackgroundTasks, backgroundTaskCount } from "./background.js";
-export { Router, RouteGroup, RouteRef, defaultRouter, runRouteMiddlewares, isTrailingSlashRedirectEnabled } from "./router.js";
+export { Router, RouteGroup, RouteRef, defaultRouter, runRouteMiddlewares, resolveStringMiddleware, isTrailingSlashRedirectEnabled } from "./router.js";
 export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";
 export { discoverRoutes } from "./routeDiscovery.js";

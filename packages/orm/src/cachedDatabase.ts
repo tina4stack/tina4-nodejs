@@ -317,8 +317,12 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     return this.adapter.query(sql, params);
   }
 
-  fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): T[] {
-    if (this.enabled) {
+  fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number, noCache?: boolean): T[] {
+    // `noCache` bypasses the query cache for this one call — no lookup, no
+    // store, run straight against the underlying adapter (mirrors the Python
+    // master's `no_cache`). Counters are left untouched so a bypass read isn't
+    // misreported as a hit or a miss.
+    if (this.enabled && !noCache) {
       const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined);
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
@@ -333,8 +337,8 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     return this.adapter.fetch(sql, params, limit, skip);
   }
 
-  fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | null {
-    if (this.enabled) {
+  fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[], noCache?: boolean): T | null {
+    if (this.enabled && !noCache) {
       const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined);
       const cached = this.cache.get<T | null>(key);
       if (cached !== undefined) {
@@ -417,11 +421,13 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   // ORM read/write path prefer those when present. We mirror them here so the
   // cache sits in front of the async path too. Reads cache; writes flush.
 
-  async fetchAsync<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): Promise<T[]> {
+  async fetchAsync<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number, noCache?: boolean): Promise<T[]> {
     const run = async (): Promise<T[]> => (this.adapter as any).fetchAsync
       ? await (this.adapter as any).fetchAsync(sql, params, limit, skip)
       : this.adapter.fetch<T>(sql, params, limit, skip);
-    if (this.enabled) {
+    // `noCache` bypasses both cache layers for this one call — no lookup, no
+    // store, run directly (mirrors the Python master's `no_cache`).
+    if (this.enabled && !noCache) {
       const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined);
       // Persistent distributed backend is AUTHORITATIVE (mirrors Python, where a
       // configured _cache_backend bypasses the in-process dict). This keeps
@@ -448,11 +454,12 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     return run();
   }
 
-  async fetchOneAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | null> {
+  async fetchOneAsync<T = Record<string, unknown>>(sql: string, params?: unknown[], noCache?: boolean): Promise<T | null> {
     const run = async (): Promise<T | null> => (this.adapter as any).fetchOneAsync
       ? await (this.adapter as any).fetchOneAsync(sql, params)
       : this.adapter.fetchOne<T>(sql, params);
-    if (this.enabled) {
+    // `noCache` bypasses both cache layers for this one call (see fetchAsync).
+    if (this.enabled && !noCache) {
       const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined);
       if (this.usesPersistentBackend()) {
         const shared = await this.backendGetOne<T>(key);

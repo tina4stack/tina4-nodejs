@@ -1269,6 +1269,9 @@ export function responseCache(config?: ResponseCacheConfig): Middleware {
     if (cached && typeof cached === "object" && typeof cached.body === "string") {
       // Cache HIT — serve from the (possibly distributed) backend.
       res.header("X-Cache", "HIT");
+      // X-Cache-TTL advertises the configured cache lifetime in seconds
+      // (parity with Python/PHP/Ruby, which set it alongside X-Cache).
+      res.header("X-Cache-TTL", String(ttl));
       res.header("Content-Type", cached.contentType);
       res(cached.body, cached.statusCode, cached.contentType);
       return;
@@ -1297,6 +1300,7 @@ export function responseCache(config?: ResponseCacheConfig): Middleware {
       }
 
       res.header("X-Cache", "MISS");
+      res.header("X-Cache-TTL", String(ttl));
       return originalEnd(chunk, ...args);
     } as any;
 

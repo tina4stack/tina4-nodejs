@@ -189,6 +189,68 @@ async function main() {
     assert("ORM-cached rows flushed on write", db.cacheStats().size === 0);
   }
 
+  // ── Per-query cache bypass: { noCache: true } ───────────
+  // A single read can bypass the query cache: no lookup, no store, run
+  // directly (mirrors the Python master's no_cache). The option is a SEPARATE
+  // trailing argument, never the params array.
+  console.log("\n--- Per-query cache bypass (noCache) ---");
+  {
+    // noCache read does NOT populate the cache.
+    const db = await makeDb();
+    assert("noCache: cache empty to start", db.cacheStats().size === 0);
+    const rows = await db.fetchAll("SELECT * FROM t", [], undefined, undefined, { noCache: true });
+    assert("noCache fetchAll still returns rows", rows.length === 2, JSON.stringify(rows));
+    const stats = db.cacheStats();
+    assert("noCache read does NOT populate the cache (size 0)", stats.size === 0, JSON.stringify(stats));
+    assert("noCache read is not counted as a hit or miss", stats.hits === 0 && stats.misses === 0, JSON.stringify(stats));
+  }
+
+  {
+    // noCache does NOT return a previously-cached value — it runs live and
+    // sees a row a normal cached read would have missed inside the same request.
+    const db = await makeDb();
+    await db.fetchAll("SELECT * FROM t");            // miss -> caches 2 rows
+    assert("noCache: 2 rows cached before write", db.cacheStats().size === 1);
+    // Insert directly on the raw adapter so the cache is NOT invalidated
+    // (db.insert would flush). This leaves a stale 2-row entry in the cache.
+    const { getAdapter } = await import("../packages/orm/src/index.ts");
+    const raw = (getAdapter() as any).getAdapter();   // unwrap CachedDatabaseAdapter
+    raw.execute("INSERT INTO t (n) VALUES ('bypass')");
+    // A normal cached read returns the STALE 2 rows (served from cache).
+    const cached = await db.fetchAll("SELECT * FROM t");
+    assert("normal cached read returns stale 2 rows", cached.length === 2, JSON.stringify(cached));
+    // A noCache read bypasses the cache and sees all 3 rows live.
+    const live = await db.fetchAll("SELECT * FROM t", [], undefined, undefined, { noCache: true });
+    assert("noCache read bypasses cache and sees 3 live rows", live.length === 3, JSON.stringify(live));
+    // The noCache read also did not overwrite the cached entry.
+    const after = await db.fetchAll("SELECT * FROM t");
+    assert("noCache read left the cache untouched (still stale 2)", after.length === 2, JSON.stringify(after));
+  }
+
+  {
+    // fetchOne honours noCache the same way.
+    const db = await makeDb();
+    await db.fetchOne("SELECT * FROM t WHERE id = ?", [1]);   // miss -> caches
+    const sizeAfterCachedOne = db.cacheStats().size;
+    assert("fetchOne cached a row", sizeAfterCachedOne === 1);
+    const hitsBefore = db.cacheStats().hits;
+    const one = await db.fetchOne("SELECT * FROM t WHERE id = ?", [1], { noCache: true });
+    assert("noCache fetchOne returns the row", one !== null && (one as any).id === 1, JSON.stringify(one));
+    const stats = db.cacheStats();
+    assert("noCache fetchOne did not add a hit", stats.hits === hitsBefore, JSON.stringify(stats));
+    assert("noCache fetchOne did not grow the cache", stats.size === sizeAfterCachedOne, JSON.stringify(stats));
+  }
+
+  {
+    // Default (no opts) preserves today's caching behaviour.
+    const db = await makeDb();
+    await db.fetchAll("SELECT * FROM t");   // miss
+    await db.fetchAll("SELECT * FROM t");   // hit
+    const stats = db.cacheStats();
+    assert("default fetchAll still caches (hits >= 1)", stats.hits >= 1, JSON.stringify(stats));
+    assert("default fetchAll still caches (size 1)", stats.size === 1, JSON.stringify(stats));
+  }
+
   closeDatabase();
 
   // ── Persistent DB cache via redis: cross-instance sharing ───────
