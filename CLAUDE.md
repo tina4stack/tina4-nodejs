@@ -1133,7 +1133,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 - **QueryBuilder** with NoSQL/MongoDB support (`toMongo()`)
 - **WebSocket backplane** (Redis pub/sub) for horizontal scaling
 - **SameSite=Lax** default on session cookies (`TINA4_SESSION_SAMESITE`)
-- **`tina4 init`** generates Dockerfile and .dockerignore
+- **`tina4 deploy docker`** generates Dockerfile and .dockerignore
 - **Gallery**: 7 interactive examples with Try It deploy at `/_dev/`
 - **SSE/Streaming**: `response.stream()` for Server-Sent Events — pass an async generator, framework handles chunked transfer encoding and keep-alive
 
