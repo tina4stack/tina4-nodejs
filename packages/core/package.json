@@ -1,6 +1,6 @@
 {
   "name": "@tina4/core",
-  "version": "3.13.30",
+  "version": "3.13.31",
   "description": "Tina4 core — HTTP server, router, route discovery",
   "type": "module",
   "main": "./dist/index.js",
