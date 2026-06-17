@@ -63,11 +63,11 @@ export async function initProject(name: string): Promise<void> {
         private: true,
         type: "module",
         scripts: {
-          dev: "tina4 serve",
-          serve: "tina4 serve",
+          dev: "npx tina4nodejs serve",
+          serve: "npx tina4nodejs serve",
         },
         dependencies: {
-          "tina4-nodejs": "^0.0.1",
+          "tina4-nodejs": "^3.0.0",
         },
         devDependencies: {
           typescript: "^5.7.0",
