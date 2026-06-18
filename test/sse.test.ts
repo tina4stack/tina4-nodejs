@@ -213,6 +213,142 @@ console.log("\n--- Empty generator ---");
   assert("empty generator still calls end()", state.ended === true);
 }
 
+// --- Hardening: generator raises mid-stream ---
+console.log("\n--- Hardening: generator error mid-stream ---");
+
+{
+  // Disable the heartbeat so it doesn't interleave extra chunks into the test.
+  process.env.TINA4_SSE_HEARTBEAT = "0";
+  const { res, state } = mockStreamResponse();
+  const response = createResponse(res);
+
+  async function* boom() {
+    yield "data: one\n\n";
+    throw new Error("generator blew up");
+  }
+
+  let threw = false;
+  try {
+    await (response as any).stream(boom());
+  } catch {
+    threw = true;
+  }
+
+  assert("generator error does not crash the handler (no rethrow)", !threw);
+  assert("first chunk was delivered before the error", state.chunks[0] === "data: one\n\n");
+  assert("stream ended cleanly after the error", state.ended === true);
+}
+
+// --- Hardening: closeSource called on generator error ---
+console.log("\n--- Hardening: source cleanup on error ---");
+
+{
+  process.env.TINA4_SSE_HEARTBEAT = "0";
+  const { res } = mockStreamResponse();
+  const response = createResponse(res);
+
+  let returned = false;
+  // An async iterable whose .return() (cleanup hook) we can observe.
+  const source: AsyncIterable<string> & { return: () => Promise<{ done: true; value: undefined }> } = {
+    _yielded: false,
+    [Symbol.asyncIterator]() {
+      return {
+        next: async () => {
+          if (!(source as any)._yielded) {
+            (source as any)._yielded = true;
+            return { done: false, value: "data: start\n\n" };
+          }
+          throw new Error("source failure");
+        },
+        return: source.return,
+      } as AsyncIterator<string>;
+    },
+    return: async () => {
+      returned = true;
+      return { done: true as const, value: undefined };
+    },
+  };
+
+  await (response as any).stream(source);
+  assert("source cleanup (.return) invoked on mid-stream error", returned === true);
+}
+
+// --- Hardening: client disconnect bails out cleanly ---
+console.log("\n--- Hardening: client disconnect mid-stream ---");
+
+{
+  process.env.TINA4_SSE_HEARTBEAT = "0";
+  // Mock response whose socket reports destroyed after the first chunk, and
+  // whose writableEnded flips to true once we end — mirrors a client hangup.
+  const chunks: string[] = [];
+  let ended = false;
+  const fakeSocket = { destroyed: false };
+  const res = {
+    statusCode: 200,
+    headersSent: false,
+    get writableEnded() {
+      return ended;
+    },
+    socket: fakeSocket,
+    setHeader() {},
+    getHeader() {
+      return undefined;
+    },
+    writeHead() {
+      (res as any).headersSent = true;
+    },
+    write(data: string) {
+      chunks.push(data);
+      // Simulate the client going away right after the first chunk.
+      fakeSocket.destroyed = true;
+      return true;
+    },
+    end() {
+      ended = true;
+    },
+  } as unknown as ServerResponse;
+
+  const response = createResponse(res);
+
+  let closed = false;
+  async function* infinite(): AsyncGenerator<string> {
+    try {
+      let i = 0;
+      while (true) {
+        yield `data: ${i++}\n\n`;
+      }
+    } finally {
+      closed = true; // the for-await loop calls .return() → runs this finally
+    }
+  }
+
+  await (response as any).stream(infinite());
+
+  assert("disconnect: only the pre-disconnect chunk was written", chunks.length === 1 && chunks[0] === "data: 0\n\n");
+  assert("disconnect: generator was closed (finally ran)", closed === true);
+  assert("disconnect: stream did not error out", true);
+  delete process.env.TINA4_SSE_HEARTBEAT;
+}
+
+// --- Hardening: heartbeat opt-out ---
+console.log("\n--- Hardening: heartbeat ---");
+
+{
+  // With a positive interval the heartbeat timer is created but unref'd; with
+  // a short generator the stream completes before it ever fires, so the chunk
+  // count must equal exactly the yielded chunks (no injected keep-alive).
+  process.env.TINA4_SSE_HEARTBEAT = "0";
+  const { res, state } = mockStreamResponse();
+  const response = createResponse(res);
+  async function* gen() {
+    yield "data: a\n\n";
+    yield "data: b\n\n";
+  }
+  await (response as any).stream(gen());
+  assert("heartbeat disabled (=0): no extra keep-alive chunks", state.chunks.length === 2);
+  delete process.env.TINA4_SSE_HEARTBEAT;
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

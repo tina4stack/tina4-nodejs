@@ -63,9 +63,9 @@ export type { GraphQLField, ResolverFn, GraphQLResult } from "./graphql.js";
 export {
   WebSocketServer,
   devReloadWs,
-  computeAcceptKey, parseUpgradeHeaders, buildFrame, parseFrame,
+  computeAcceptKey, parseUpgradeHeaders, buildFrame, parseFrame, originAllowed,
   OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG,
-  CLOSE_NORMAL, CLOSE_PROTOCOL_ERROR,
+  CLOSE_NORMAL, CLOSE_GOING_AWAY, CLOSE_PROTOCOL_ERROR, CLOSE_POLICY_VIOLATION,
 } from "./websocket.js";
 export type { WebSocketClient } from "./websocket.js";
 export { ServiceRunner, Tina4Service, matchCronField, matchesCron } from "./service.js";
@@ -120,8 +120,13 @@ export { Container, container } from "./container.js";
 export { Validator } from "./validator.js";
 export type { ValidationError } from "./validator.js";
 export type { WebSocketConnection } from "./websocketConnection.js";
-export { RedisBackplane, NATSBackplane, createBackplane } from "./websocketBackplane.js";
-export type { WebSocketBackplane } from "./websocketBackplane.js";
+export {
+  RedisBackplane, NATSBackplane, createBackplane,
+  WsBackplaneManager, buildEnvelope, WS_BACKPLANE_CHANNEL,
+} from "./websocketBackplane.js";
+export type {
+  WebSocketBackplane, WsEnvelope, WsEnvelopeKind, WsBackplaneLogger,
+} from "./websocketBackplane.js";
 export {
   McpServer, mcpTool, mcpResource, registerDevTools, getDefaultDevServer,
   encodeResponse, encodeError, encodeNotification, decodeRequest,

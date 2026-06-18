@@ -120,7 +120,7 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `auth.ts` — Authentication helpers
 - `cache.ts` — In-memory caching
 - `session.ts` — Session management with pluggable handlers. `TINA4_SESSION_SAMESITE` env var (default: Lax)
-- `websocket.ts` — WebSocket support with backplane for scaling via Redis pub/sub (`TINA4_WS_BACKPLANE`, `TINA4_WS_BACKPLANE_URL`). Rooms API: `wss.joinRoom(clientId, room)`, `wss.leaveRoom(clientId, room)`, `wss.broadcastToRoom(room, msg, excludeIds?)`, `wss.getRoomConnections(room)`, `wss.roomCount(room)`, `wss.getClientRooms(clientId)`
+- `websocket.ts` — WebSocket support with backplane for scaling via Redis/NATS pub/sub (`TINA4_WS_BACKPLANE`, `TINA4_WS_BACKPLANE_URL`). The backplane is wired for real: `broadcast`/`broadcastToRoom`/`sendTo` deliver to LOCAL connections first (resiliently — a dead/slow client is pruned, never aborting the loop) then publish an envelope `{src,kind,exclude,room,path,text|b64}` to the shared channel `tina4:ws` (identical wire shape across all 4 frameworks). The subscribe callback relays directly on the event loop with an origin guard (drop our own `src` echo — no double-delivery) and never re-publishes (no cluster loop); binary messages ride as base64. Security/ops knobs (all opt-in, non-breaking): `TINA4_WS_ALLOWED_ORIGINS` (comma-separated origin allow-list enforced on upgrade — empty/unset = allow all), `TINA4_WS_IDLE_TIMEOUT` (seconds; 0/unset disables the idle-connection reaper), `TINA4_WS_MAX_BACKLOG` (bytes; a slow client whose socket write backlog exceeds this is dropped rather than buffered without bound). Rooms API: `wss.joinRoom(clientId, room)`, `wss.leaveRoom(clientId, room)`, `wss.broadcastToRoom(room, msg, excludeIds?)`, `wss.getRoomConnections(room)`, `wss.roomCount(room)`, `wss.getClientRooms(clientId)`. `originAllowed(headers)` is exported for upgrade-path checks.
 - `queue.ts` — Queue system with pluggable backends
 - `graphql.ts` — GraphQL engine
 - `i18n.ts` — Internationalization / localization
@@ -244,6 +244,8 @@ req.query: Record<string, string>         // query string params
 response.xml(content, status?): Tina4Response
 response.stream(source: AsyncIterable<string | Buffer>, contentType?: string): Promise<Tina4Response>  // SSE/streaming
 ```
+
+`response.stream()` is hardened: it bails cleanly when the client disconnects mid-stream (`res.writableEnded`/`res.socket.destroyed`), catches a generator/source error (logs via `Log.error`, ends the stream cleanly — never crashes the handler), applies slow-client backpressure (awaits `drain` when `res.write()` returns false rather than buffering ahead of a stalled client), and writes a periodic `:` keep-alive comment every `TINA4_SSE_HEARTBEAT` seconds (default 15; set `0` to opt out). On disconnect/error it best-effort closes the source (`.return()`/`.close()`/`.aclose()`).
 
 `res.json(model)`, `res.json(arrayOfModels)`, and `res.json(db.fetch(...))` auto-serialize to JSON — a single model becomes a JSON object, an array of models or a `DatabaseResult` becomes a JSON array. No manual `toDict()`/`toJson()` needed.
 
@@ -1164,11 +1166,11 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 - **ORM relationships**: `hasMany`, `hasOne`, `belongsTo` with eager loading (`include`)
 - **Frond pre-compilation**: 2.8x template render improvement
 - **QueryBuilder** with NoSQL/MongoDB support (`toMongo()`)
-- **WebSocket backplane** (Redis pub/sub) for horizontal scaling
+- **WebSocket backplane** (Redis/NATS pub/sub) for horizontal scaling — wired for real: local-first resilient delivery, then publish a `{src,kind,exclude,room,path,text|b64}` envelope to the `tina4:ws` channel (cross-framework wire shape); subscribe relays directly with an origin guard (no own-echo) and never re-publishes. Origin allow-list (`TINA4_WS_ALLOWED_ORIGINS`), idle reaper (`TINA4_WS_IDLE_TIMEOUT`), and slow-client drop (`TINA4_WS_MAX_BACKLOG`) — all opt-in/non-breaking
 - **SameSite=Lax** default on session cookies (`TINA4_SESSION_SAMESITE`)
 - **`tina4 deploy docker`** generates Dockerfile and .dockerignore
 - **Gallery**: 7 interactive examples with Try It deploy at `/_dev/`
-- **SSE/Streaming**: `response.stream()` for Server-Sent Events — pass an async generator, framework handles chunked transfer encoding and keep-alive
+- **SSE/Streaming**: `response.stream()` for Server-Sent Events — pass an async generator; framework handles chunked transfer encoding plus a periodic keep-alive heartbeat (`TINA4_SSE_HEARTBEAT`, default 15s, `0` to disable). Hardened against client disconnect (bails when the socket is gone), a generator error mid-stream (logs + ends cleanly, never crashes the worker), and slow clients (awaits socket drain instead of unbounded buffering)
 
 ## Don'ts
 

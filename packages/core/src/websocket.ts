@@ -29,6 +29,8 @@ import type { Server } from "node:http";
 import type { WebSocketConnection } from "./websocketConnection.js";
 import type { WebSocketRouteHandler } from "./types.js";
 import { Router } from "./router.js";
+import { Log } from "./logger.js";
+import { WsBackplaneManager, type WsEnvelope } from "./websocketBackplane.js";
 
 // ── Constants ────────────────────────────────────────────────
 
@@ -46,6 +48,7 @@ export const OP_PONG = 0xa;
 export const CLOSE_NORMAL = 1000;
 export const CLOSE_GOING_AWAY = 1001;
 export const CLOSE_PROTOCOL_ERROR = 1002;
+export const CLOSE_POLICY_VIOLATION = 1008;
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -57,6 +60,12 @@ export interface WebSocketClient {
   closed: boolean;
   /** The URL path this client connected on (e.g. "/chat", "/notifications"). */
   path: string;
+  /**
+   * Epoch ms of the last inbound frame. Updated on every frame; the idle
+   * reaper closes connections silent longer than `TINA4_WS_IDLE_TIMEOUT`
+   * (opt-in). Optional so externally-injected/legacy client objects still fit.
+   */
+  lastActivity?: number;
 }
 
 type EventHandler = (...args: unknown[]) => void;
@@ -70,6 +79,30 @@ export function computeAcceptKey(key: string): string {
   return createHash("sha1")
     .update(key + MAGIC_STRING)
     .digest("base64");
+}
+
+/**
+ * Return true if the upgrade request's `Origin` is permitted.
+ *
+ * Controlled by `TINA4_WS_ALLOWED_ORIGINS` (comma-separated list of exact
+ * origins, e.g. `https://app.example.com,https://admin.example.com`).
+ *
+ * Empty/unset = allow ALL origins (current behaviour, non-breaking). When set,
+ * only requests whose `Origin` header exactly matches a listed value are
+ * allowed; a missing `Origin` header is rejected once the allow-list is active.
+ * Header lookup is case-insensitive on the key (Node lowercases header keys,
+ * but the helper also checks an exact `Origin` so it works with raw maps too).
+ */
+export function originAllowed(headers: Record<string, string | string[] | undefined>): boolean {
+  const raw = (process.env.TINA4_WS_ALLOWED_ORIGINS ?? "").trim();
+  if (!raw) return true; // No allow-list configured — permit everything.
+  const allowed = new Set(
+    raw.split(",").map((o) => o.trim()).filter((o) => o.length > 0),
+  );
+  if (allowed.size === 0) return true;
+  const rawOrigin = headers["origin"] ?? headers["Origin"];
+  const origin = Array.isArray(rawOrigin) ? rawOrigin[0] : rawOrigin;
+  return origin !== undefined && allowed.has(origin);
 }
 
 /**
@@ -179,9 +212,24 @@ export class WebSocketServer {
   private clientRooms: Map<string, Set<string>> = new Map();
   /** Route-style handlers registered via route(), keyed by path */
   private _routeHandlers: Map<string, (conn: WebSocketConnection) => void | Promise<void>> = new Map();
+  /**
+   * Backplane (multi-instance scaling). Lazily wired on the first broadcast
+   * via {@link ensureBackplane}. Each instance owns a stable id so it can
+   * ignore its own echoes coming back over the shared pub/sub channel.
+   */
+  private backplane: WsBackplaneManager = new WsBackplaneManager();
+  /** Set once ensureBackplane() has fired so we only attempt the wiring once. */
+  private backplaneStarted = false;
+  /** Idle-connection reaper timer (opt-in via TINA4_WS_IDLE_TIMEOUT). */
+  private reaperTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options?: { port?: number }) {
     this.port = options?.port ?? parseInt(process.env.TINA4_WS_PORT ?? "8080", 10);
+  }
+
+  /** Test/diagnostic helper: this instance's stable backplane id. */
+  get instanceId(): string {
+    return this.backplane.instanceId;
   }
 
   /**
@@ -242,35 +290,34 @@ export class WebSocketServer {
    * When `path` is omitted/undefined, all clients receive the message
    * (backward compatible).
    */
-  broadcast(message: string, excludeIds?: string[], path?: string): void {
-    const frame = buildFrame(OP_TEXT, Buffer.from(message, "utf-8"));
+  broadcast(message: string | Buffer, excludeIds?: string[], path?: string): void {
+    this.ensureBackplane();
     const exclude = new Set(excludeIds ?? []);
-
-    for (const [id, client] of this.clients) {
+    // Deliver to LOCAL connections first (resilient — a dead client is pruned,
+    // never aborts the loop), then fan out to sibling instances.
+    for (const [id, client] of Array.from(this.clients)) {
       if (exclude.has(id)) continue;
-      if (client.closed) continue;
       if (path !== undefined && client.path !== path) continue;
-      try {
-        client.socket.write(frame);
-      } catch {
-        // client disconnected
-      }
+      this.safeSend(client, message);
     }
+    this.backplane.publish(
+      path !== undefined ? "path" : "all",
+      message,
+      { path: path ?? null, exclude: excludeIds?.[0] ?? null },
+      Log,
+    );
   }
 
   /**
    * Send a message to a specific client by ID.
+   *
+   * Local-only: a connection lives on exactly one instance, so there is
+   * nothing to fan out over the backplane.
    */
-  sendTo(clientId: string, message: string): void {
+  sendTo(clientId: string, message: string | Buffer): void {
     const client = this.clients.get(clientId);
-    if (!client || client.closed) return;
-
-    const frame = buildFrame(OP_TEXT, Buffer.from(message, "utf-8"));
-    try {
-      client.socket.write(frame);
-    } catch {
-      // client disconnected
-    }
+    if (!client) return;
+    this.safeSend(client, message);
   }
 
   /**
@@ -288,6 +335,7 @@ export class WebSocketServer {
       });
 
       this.server.listen(this.port, () => {
+        this.startIdleReaper();
         resolve();
       });
 
@@ -302,6 +350,11 @@ export class WebSocketServer {
    * Stop the server and disconnect all clients.
    */
   stop(): void {
+    // Cancel the idle reaper if it was started.
+    if (this.reaperTimer !== null) {
+      clearInterval(this.reaperTimer);
+      this.reaperTimer = null;
+    }
     // Close all client connections
     for (const [id, client] of this.clients) {
       if (!client.closed) {
@@ -395,24 +448,26 @@ export class WebSocketServer {
 
   /**
    * Broadcast a message to all clients in a room.
+   *
+   * Resilient to dead clients (a failed send prunes the client, never aborts
+   * the loop) and fans out to sibling instances over the backplane when
+   * configured — a room can span instances, so each one delivers to its own
+   * members.
    */
-  broadcastToRoom(roomName: string, message: string, excludeIds?: string[]): void {
+  broadcastToRoom(roomName: string, message: string | Buffer, excludeIds?: string[]): void {
+    this.ensureBackplane();
     const members = this.rooms.get(roomName);
-    if (!members) return;
-
-    const frame = buildFrame(OP_TEXT, Buffer.from(message, "utf-8"));
     const exclude = new Set(excludeIds ?? []);
 
-    for (const clientId of members) {
-      if (exclude.has(clientId)) continue;
-      const client = this.clients.get(clientId);
-      if (!client || client.closed) continue;
-      try {
-        client.socket.write(frame);
-      } catch {
-        // client disconnected
+    if (members) {
+      for (const clientId of Array.from(members)) {
+        if (exclude.has(clientId)) continue;
+        const client = this.clients.get(clientId);
+        if (!client) continue;
+        this.safeSend(client, message);
       }
     }
+    this.backplane.publish("room", message, { room: roomName, exclude: excludeIds?.[0] ?? null }, Log);
   }
 
   // ── Private ────────────────────────────────────────────────
@@ -422,6 +477,155 @@ export class WebSocketServer {
     for (const handler of handlers) {
       handler(...args);
     }
+  }
+
+  // ── Backplane (multi-instance scaling) ─────────────────────
+  //
+  // When TINA4_WS_BACKPLANE is configured, every broadcast is ALSO published
+  // to a shared pub/sub channel so sibling server instances can relay it to
+  // their own local connections. Node is single-threaded async, so the
+  // subscribe callback relays directly on the event loop (no thread bridge) —
+  // it still applies the origin guard (drop our own echo) and never
+  // re-publishes (which would loop the cluster). The wiring is best-effort: a
+  // backplane failure logs and degrades to local-only, never crashing a
+  // broadcast.
+
+  /** Lazily wire the backplane on the first broadcast. Idempotent. */
+  private ensureBackplane(): void {
+    if (this.backplaneStarted) return;
+    this.backplaneStarted = true;
+    // Fire-and-forget: ensure() is async (connecting to the bus), but the
+    // local delivery that just happened must not wait on it. Any failure is
+    // logged inside ensure() and degrades to local-only.
+    void this.backplane.ensure((env) => this.relayLocal(env), Log);
+  }
+
+  /**
+   * Deliver a remote-originated envelope to LOCAL connections only. NEVER
+   * re-publishes (that would loop the message around the cluster). Dispatches
+   * by `kind`: room / path / all.
+   */
+  private relayLocal(env: WsEnvelope): void {
+    const message = WsBackplaneManager.decodeMessage(env);
+    if (message === null) return;
+    const exclude = env.exclude ?? null;
+
+    let targets: WebSocketClient[];
+    if (env.kind === "room") {
+      const members = env.room ? this.rooms.get(env.room) : undefined;
+      targets = members
+        ? Array.from(members).map((id) => this.clients.get(id)).filter((c): c is WebSocketClient => !!c)
+        : [];
+    } else if (env.kind === "path") {
+      targets = env.path
+        ? Array.from(this.clients.values()).filter((c) => c.path === env.path)
+        : [];
+    } else {
+      // "all" (and anything unknown) → every local connection
+      targets = Array.from(this.clients.values());
+    }
+
+    for (const client of targets) {
+      if (exclude && client.id === exclude) continue;
+      this.safeSend(client, message);
+    }
+  }
+
+  /**
+   * Send to ONE client without letting a single dead/slow client abort a
+   * broadcast loop. A write failure (or an already-closed client) is logged
+   * and the client is pruned. Returns true if the frame was handed to the
+   * socket.
+   *
+   * Slow-client backpressure: `socket.write()` returns false when the kernel
+   * send buffer is full. We don't unboundedly buffer — a client whose backlog
+   * has blown past TINA4_WS_MAX_BACKLOG bytes is hopelessly behind, so we drop
+   * and close it rather than let it grow the process heap without bound.
+   */
+  private safeSend(client: WebSocketClient, message: string | Buffer): boolean {
+    if (client.closed) {
+      this.pruneClient(client);
+      return false;
+    }
+    const payload = typeof message === "string" ? Buffer.from(message, "utf-8") : message;
+    const opcode = typeof message === "string" ? OP_TEXT : OP_BINARY;
+    const frame = buildFrame(opcode, payload);
+    try {
+      // A saturated socket buffer means the client can't keep up. write()
+      // still queues the frame and returns false; if the queued backlog is
+      // hopeless, close the client rather than buffer without bound.
+      client.socket.write(frame);
+      const backlog = client.socket.writableLength ?? 0;
+      const maxBacklog = parseInt(process.env.TINA4_WS_MAX_BACKLOG ?? "1048576", 10);
+      if (maxBacklog > 0 && backlog > maxBacklog) {
+        Log.warn(`WebSocket client ${client.id} backlog ${backlog}B exceeds limit, dropping slow client`);
+        this.pruneClient(client);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      Log.warn(`WebSocket send to ${client.id} failed, pruning: ${(err as Error).message}`);
+      this.pruneClient(client);
+      return false;
+    }
+  }
+
+  /** Remove a client from the manager, rooms, and close its socket. */
+  private pruneClient(client: WebSocketClient): void {
+    client.closed = true;
+    this.clients.delete(client.id);
+    this.removeClientFromAllRooms(client.id);
+    try {
+      client.socket.destroy();
+    } catch {
+      /* already gone */
+    }
+  }
+
+  // ── Idle reaper (opt-in via TINA4_WS_IDLE_TIMEOUT) ──────────
+
+  /**
+   * Close connections whose last inbound frame is older than `timeoutSeconds`.
+   * Returns the number reaped. `timeoutSeconds <= 0` is a no-op (the reaper is
+   * opt-in via TINA4_WS_IDLE_TIMEOUT).
+   */
+  reapIdle(timeoutSeconds: number): number {
+    if (timeoutSeconds <= 0) return 0;
+    const now = Date.now();
+    const cutoff = timeoutSeconds * 1000;
+    const stale = Array.from(this.clients.values()).filter(
+      (c) => now - (c.lastActivity ?? c.connectedAt ?? now) > cutoff,
+    );
+    for (const client of stale) {
+      this.close(client.id, CLOSE_GOING_AWAY, "idle timeout");
+    }
+    if (stale.length > 0) {
+      Log.info(`WebSocket idle reaper closed ${stale.length} connection(s)`);
+    }
+    return stale.length;
+  }
+
+  /**
+   * Spin up the idle-connection reaper when TINA4_WS_IDLE_TIMEOUT is a
+   * positive number of seconds. Opt-in and non-breaking — unset/0 means no
+   * timer is created at all (current behaviour). Called from start().
+   */
+  private startIdleReaper(): void {
+    const raw = process.env.TINA4_WS_IDLE_TIMEOUT ?? "0";
+    const timeout = parseFloat(raw);
+    if (!Number.isFinite(timeout) || timeout <= 0 || this.reaperTimer !== null) return;
+    // Sweep at a fraction of the timeout (min 1s) so an idle conn is closed
+    // within roughly one timeout window of going silent.
+    const intervalMs = Math.max(1000, (timeout / 2) * 1000);
+    this.reaperTimer = setInterval(() => {
+      try {
+        this.reapIdle(timeout);
+      } catch (err) {
+        Log.error(`WebSocket idle reaper sweep failed: ${(err as Error).message}`);
+      }
+    }, intervalMs);
+    // Don't keep the event loop alive just for the reaper.
+    this.reaperTimer.unref?.();
   }
 
   private handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): void {
@@ -439,8 +643,16 @@ export class WebSocketServer {
       return;
     }
 
+    // Origin allow-list (opt-in via TINA4_WS_ALLOWED_ORIGINS). Unset = allow
+    // all, so this never breaks an existing deployment.
+    if (!originAllowed(req.headers)) {
+      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
     // Compute accept key and send upgrade response
-    const acceptKey = computeAcceptKey(wsKey);
+    const acceptKey = computeAcceptKey(Array.isArray(wsKey) ? wsKey[0] : wsKey);
     const response = [
       "HTTP/1.1 101 Switching Protocols",
       "Upgrade: websocket",
@@ -461,6 +673,7 @@ export class WebSocketServer {
       connectedAt: Date.now(),
       closed: false,
       path: req.url ?? "/",
+      lastActivity: Date.now(),
     };
 
     this.clients.set(clientId, client);
@@ -506,6 +719,7 @@ export class WebSocketServer {
       if (!frame) break;
 
       remaining = remaining.subarray(frame.bytesConsumed);
+      client.lastActivity = Date.now(); // mark activity for the idle reaper
 
       switch (frame.opcode) {
         case OP_TEXT:

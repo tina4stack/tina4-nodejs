@@ -1,7 +1,28 @@
 import type { ServerResponse } from "node:http";
 import fs from "node:fs";
 import nodePath from "node:path";
+import { once } from "node:events";
 import type { Tina4Response, CookieOptions } from "./types.js";
+
+/**
+ * Best-effort close of a streaming source on client disconnect or a mid-stream
+ * error. Async generators expose `.return()`; some custom iterables expose
+ * `.close()`/`.aclose()`. Any failure here is swallowed — cleanup is advisory.
+ */
+async function closeSource(source: AsyncIterable<unknown>): Promise<void> {
+  const s = source as {
+    return?: () => unknown;
+    close?: () => unknown;
+    aclose?: () => unknown;
+  };
+  try {
+    if (typeof s.return === "function") await s.return();
+    else if (typeof s.aclose === "function") await s.aclose();
+    else if (typeof s.close === "function") await s.close();
+  } catch {
+    /* cleanup is best-effort */
+  }
+}
 
 /** Cache Frond instances by template directory to avoid repeated instantiation. */
 const _frondCache = new Map<string, InstanceType<any>>();
@@ -361,12 +382,68 @@ export function createResponse(res: ServerResponse): Tina4Response {
       "X-Accel-Buffering": "no",
     });
 
-    for await (const chunk of source) {
-      const data = typeof chunk === "string" ? chunk : chunk.toString();
-      res.write(data);
+    // True once the client has gone away (socket destroyed) or the response
+    // has been finished — keep checking so we bail cleanly mid-stream rather
+    // than writing into a dead socket or buffering forever.
+    const streamClosed = (): boolean =>
+      res.writableEnded || (res.socket?.destroyed ?? false);
+
+    // Keep-alive heartbeat: periodically write a ':' SSE comment line on a
+    // long-lived stream so proxies/load-balancers don't reap an idle but
+    // healthy connection. Opt-out via TINA4_SSE_HEARTBEAT=0 (any non-positive
+    // value disables it). The interval is unref'd so it never holds the
+    // process open on its own.
+    const heartbeatSeconds = parseFloat(process.env.TINA4_SSE_HEARTBEAT ?? "15");
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
+    if (Number.isFinite(heartbeatSeconds) && heartbeatSeconds > 0) {
+      heartbeat = setInterval(() => {
+        if (streamClosed()) return;
+        try {
+          res.write(": keep-alive\n\n");
+        } catch {
+          /* write race with a closing socket — the loop's guard handles it */
+        }
+      }, heartbeatSeconds * 1000);
+      heartbeat.unref?.();
     }
 
-    res.end();
+    const stopHeartbeat = (): void => {
+      if (heartbeat !== null) {
+        clearInterval(heartbeat);
+        heartbeat = null;
+      }
+    };
+
+    try {
+      for await (const chunk of source) {
+        // Client disconnected mid-stream — stop cleanly. Closing the source
+        // (best-effort) lets the producer release resources.
+        if (streamClosed()) {
+          await closeSource(source);
+          break;
+        }
+        const data = typeof chunk === "string" ? chunk : chunk.toString();
+        const ok = res.write(data);
+        // Slow-client backpressure: when write() returns false the kernel
+        // buffer is full. Wait for it to drain before pulling the next chunk
+        // so we don't unboundedly buffer ahead of a client that can't keep up.
+        if (!ok && !streamClosed()) {
+          await once(res, "drain").catch(() => {
+            /* socket errored/closed while waiting — loop guard handles it */
+          });
+        }
+      }
+    } catch (err) {
+      // The generator/source itself raised mid-stream. Log and stop cleanly —
+      // end the stream rather than crashing the request handler/worker.
+      const { Log } = await import("./logger.js");
+      Log.error(`SSE/stream source error: ${err instanceof Error ? err.message : String(err)}`);
+      await closeSource(source);
+    } finally {
+      stopHeartbeat();
+    }
+
+    if (!res.writableEnded) res.end();
     return response;
   };
 
