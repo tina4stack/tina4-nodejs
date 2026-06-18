@@ -10,6 +10,31 @@ function isIdentifier(str: string): boolean {
 }
 
 /**
+ * Whether the linked SQLite library is at least the given version.
+ *
+ * Used to gate `UPDATE ... RETURNING` (SQLite >= 3.35) in the atomic
+ * sequence path. Memoised — the version never changes at runtime.
+ */
+let _sqliteVersionInfo: [number, number, number] | null = null;
+function sqliteVersionAtLeast(major: number, minor: number, patch: number): boolean {
+  if (_sqliteVersionInfo === null) {
+    try {
+      const probe = new DatabaseSync(":memory:");
+      const row = probe.prepare("SELECT sqlite_version() AS v").get() as { v?: string };
+      probe.close();
+      const parts = String(row?.v ?? "0.0.0").split(".").map((n) => parseInt(n, 10) || 0);
+      _sqliteVersionInfo = [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
+    } catch {
+      _sqliteVersionInfo = [0, 0, 0];
+    }
+  }
+  const [ma, mi, pa] = _sqliteVersionInfo;
+  if (ma !== major) return ma > major;
+  if (mi !== minor) return mi > minor;
+  return pa >= patch;
+}
+
+/**
  * Resolve a SQLite path argument against the project root (cwd).
  *
  * Matches the tina4-python + tina4-php convention:
@@ -232,6 +257,66 @@ export class SQLiteAdapter implements DatabaseAdapter {
 
   lastInsertId(): number | bigint | null { return this._lastInsertId; }
   close(): void { this.db.close(); }
+
+  /**
+   * Atomically increment and return the next value of a tina4_sequences row.
+   *
+   * DB-contract B (no duplicate primary keys under concurrency): the old
+   * read-increment-read path in Database.sequenceNext() yields at every `await`
+   * between the read and the write, so two concurrent async callers can read the
+   * same `current_value` and return the same id. This method runs the WHOLE
+   * operation — ensure-table, seed-if-absent, and the increment-and-return — as
+   * ONE synchronous burst on the single shared `node:sqlite` connection. Because
+   * `node:sqlite` is synchronous and JavaScript is single-threaded, no other
+   * async task can interleave between the statements (there is no `await`
+   * inside), so the increment is atomic and every caller gets a distinct id.
+   * This is the Node analog of the Python master holding SQLiteAdapter._write_lock
+   * across the whole op.
+   *
+   * On SQLite >= 3.35 a single `UPDATE ... SET current_value = current_value + 1
+   * ... RETURNING current_value` is itself atomic and returns the new value in
+   * one statement (read via prepare().all() — stmt.run() does not surface
+   * RETURNING rows). Older SQLite does `UPDATE ... + 1` then `SELECT`, still
+   * race-safe because both run in the same synchronous burst.
+   *
+   * @throws if the sequence row vanishes mid-increment (never silently returns 1).
+   */
+  sequenceNextSqlite(seqName: string, seedValue: number): number {
+    // Ensure the sequence table exists (idempotent).
+    this.db.exec(
+      "CREATE TABLE IF NOT EXISTS tina4_sequences (" +
+      "seq_name VARCHAR(200) NOT NULL PRIMARY KEY, " +
+      "current_value INTEGER NOT NULL DEFAULT 0)",
+    );
+    // Race-safe seed: INSERT OR IGNORE is a no-op if the row already exists, so
+    // there is never a read-then-insert gap.
+    this.db.prepare(
+      "INSERT OR IGNORE INTO tina4_sequences (seq_name, current_value) VALUES (?, ?)",
+    ).run(seqName, seedValue);
+
+    const supportsReturning = sqliteVersionAtLeast(3, 35, 0);
+    let row: { current_value?: number | bigint } | undefined;
+    if (supportsReturning) {
+      // One atomic increment-and-return.
+      row = this.db.prepare(
+        "UPDATE tina4_sequences SET current_value = current_value + 1 " +
+        "WHERE seq_name = ? RETURNING current_value",
+      ).get(seqName) as { current_value?: number | bigint } | undefined;
+    } else {
+      // Older SQLite (< 3.35, no RETURNING): increment then read. Still
+      // race-safe because both run in the same synchronous burst (no await).
+      this.db.prepare(
+        "UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ?",
+      ).run(seqName);
+      row = this.db.prepare(
+        "SELECT current_value FROM tina4_sequences WHERE seq_name = ?",
+      ).get(seqName) as { current_value?: number | bigint } | undefined;
+    }
+    if (!row || row.current_value == null) {
+      throw new Error(`getNextId: sequence row '${seqName}' vanished mid-increment`);
+    }
+    return Number(row.current_value);
+  }
 
   tableExists(name: string): boolean {
     // v3.13.14 (#48): a SQLite "schema" is an ATTACH alias ("extra.widget").

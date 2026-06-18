@@ -507,7 +507,7 @@ export class Database {
    * the same Database don't clobber each other. startTransaction() sets the
    * pin via .enterWith(); commit()/rollback() clear it.
    */
-  private txStore: AsyncLocalStorage<{ adapter: DatabaseAdapter | null }> = new AsyncLocalStorage();
+  private txStore: AsyncLocalStorage<{ adapter: DatabaseAdapter | null; depth?: number }> = new AsyncLocalStorage();
 
   /**
    * Create a Database wrapping an existing adapter.
@@ -680,9 +680,22 @@ export class Database {
   async fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[], opts?: { noCache?: boolean }): Promise<T | null> {
     sql = stripTrailingSemicolons(sql);
     const adapter = this.getNextAdapter();
-    return (adapter as any).fetchOneAsync
-      ? await (adapter as any).fetchOneAsync<T>(sql, params, opts?.noCache)
-      : adapter.fetchOne<T>(sql, params, opts?.noCache);
+    try {
+      // DB-contract A: route fetchOne through the SAME error-capturing path as
+      // fetch()/execute(). Pre-3.13.37 it called the adapter directly, so a SQL
+      // error raised (good) but db.getError() stayed null — the public API
+      // couldn't read the cause. Now it FAILS LOUD *and* populates lastError.
+      // The throw happens before the CachedDatabaseAdapter ever reaches its
+      // cache.set(), so a buried failure can never be cached either.
+      const row = (adapter as any).fetchOneAsync
+        ? await (adapter as any).fetchOneAsync<T>(sql, params, opts?.noCache)
+        : adapter.fetchOne<T>(sql, params, opts?.noCache);
+      this.lastError = null;
+      return row;
+    } catch (e: any) {
+      this.lastError = e?.message ?? String(e);
+      throw e;
+    }
   }
 
   /**
@@ -805,33 +818,93 @@ export class Database {
    * Start a transaction. Pins the adapter to the current async context for
    * the whole transaction so executes and the final commit/rollback all run
    * on the same connection (critical when pool > 0).
+   *
+   * Nested-begin guard (DB-contract C): a second startTransaction() on a
+   * context that already has a pinned adapter is a double-begin — the inner
+   * BEGIN silently commits or no-ops on most engines, leaving the connection
+   * mid-transaction with the caller none the wiser. We keep a depth counter and
+   * log a clear warning instead of silently re-beginning; the pin stays on the
+   * original adapter so the eventual commit/rollback still land on the right
+   * connection, and the matching inner commit just unwinds the depth.
    */
   async startTransaction(): Promise<void> {
+    const store = this.txStore.getStore();
+    if (store?.adapter) {
+      const depth = store.depth ?? 1;
+      console.warn(
+        "[tina4] startTransaction() called while a transaction is already open " +
+        `on this context (depth would become ${depth + 1}). Nested transactions ` +
+        "are not supported — the existing transaction stays open on its pinned " +
+        "connection and this nested begin is ignored. Commit or rollback the " +
+        "outer transaction first.",
+      );
+      store.depth = depth + 1;
+      return;
+    }
     // Pick an adapter using the normal selection logic, then pin it.
     const adapter = this.getNextAdapter();
-    let store = this.txStore.getStore();
     if (store) {
       store.adapter = adapter;
+      store.depth = 1;
     } else {
-      this.txStore.enterWith({ adapter });
+      this.txStore.enterWith({ adapter, depth: 1 });
     }
     await adapterStartTransaction(adapter);
   }
 
-  /** Commit the current transaction and release the adapter pin. */
+  /**
+   * Commit the current transaction.
+   *
+   * FAIL LOUD (DB-contract C): if the underlying commit raises, capture
+   * lastError and RE-THROW — never swallow. On failure the transaction pin is
+   * RETAINED so the caller's follow-up rollback() lands on the SAME connection
+   * (clearing it would leak a dirty connection back into the pool and route the
+   * rollback to a different one). The pin is cleared ONLY on a successful
+   * commit. An inner commit of an ignored nested begin (depth > 1) just unwinds
+   * the depth — the outer commit is the real one.
+   */
   async commit(): Promise<void> {
-    const adapter = this.getNextAdapter();
-    await adapterCommit(adapter);
     const store = this.txStore.getStore();
-    if (store) store.adapter = null;
+    const depth = store?.depth ?? 0;
+    if (depth > 1) {
+      // Inner commit of an ignored nested begin — just unwind the depth.
+      if (store) store.depth = depth - 1;
+      return;
+    }
+    const adapter = this.getNextAdapter();
+    try {
+      await adapterCommit(adapter);
+      this.lastError = null;
+    } catch (e: any) {
+      // Keep the pin so rollback() reaches this same connection.
+      this.lastError = e?.message ?? String(e);
+      throw e;
+    }
+    // Success — release the pin.
+    if (store) { store.adapter = null; store.depth = 0; }
   }
 
-  /** Rollback the current transaction and release the adapter pin. */
+  /**
+   * Rollback the current transaction — the terminal cleanup of a transaction,
+   * so it ALWAYS clears the pin (and the depth counter), even after a failed
+   * commit (it routes to the retained pinned connection and cleans it up). If
+   * the underlying rollback itself raises, lastError is captured and the error
+   * re-thrown, but the pin is still released so a poisoned connection doesn't
+   * stay pinned to this context forever.
+   */
   async rollback(): Promise<void> {
     const adapter = this.getNextAdapter();
-    await adapterRollback(adapter);
     const store = this.txStore.getStore();
-    if (store) store.adapter = null;
+    try {
+      await adapterRollback(adapter);
+      this.lastError = null;
+    } catch (e: any) {
+      this.lastError = e?.message ?? String(e);
+      throw e;
+    } finally {
+      // Terminal cleanup — always release the pin.
+      if (store) { store.adapter = null; store.depth = 0; }
+    }
   }
 
   /** Check if a table exists. */
@@ -959,57 +1032,174 @@ export class Database {
   }
 
   /**
+   * Best-effort MAX(pk) seed for a new sequence row. 0 if the table is
+   * missing/empty. Mirrors Python's `_sequence_seed_value`.
+   */
+  private async sequenceSeedValue(adapter: DatabaseAdapter, table: string | undefined, pkColumn: string): Promise<number> {
+    if (!table) return 0;
+    try {
+      const maxRow = await adapterFetchOne<Record<string, unknown>>(adapter,
+        `SELECT MAX(${pkColumn}) AS max_id FROM ${table}`,
+      );
+      if (maxRow?.max_id != null) return Number(maxRow.max_id);
+    } catch {
+      // Table doesn't exist — start at 0.
+    }
+    return 0;
+  }
+
+  /**
    * Atomically increment and return the next value from the sequence table.
    *
-   * If the sequence row doesn't exist yet, seeds it from MAX(pkColumn)
-   * of the given table (or 0 if the table is empty/missing).
+   * DB-contract B (no duplicate primary keys under concurrency): the old path
+   * was read-increment-read across several `await` points, so two concurrent
+   * async callers could read the same `current_value` and return the same id.
+   * This now uses a single atomic increment-and-return per engine, pinned to
+   * ONE adapter so the two statements (where two are needed) land on the same
+   * connection:
+   *
+   *   * SQLite:  the SQLiteAdapter does ensure-table + seed + the atomic
+   *     `UPDATE ... RETURNING current_value` (>= 3.35; else `+1` then `SELECT`)
+   *     as ONE synchronous burst — no `await` between read and write, so no
+   *     other async task can interleave (Node analog of Python's _write_lock).
+   *   * MySQL:  `UPDATE ... SET current_value = LAST_INSERT_ID(current_value + 1)`
+   *     then `SELECT LAST_INSERT_ID()` on the SAME pinned connection
+   *     (LAST_INSERT_ID is per-connection → race-safe).
+   *   * MSSQL:  `UPDATE ... SET current_value = current_value + 1 OUTPUT
+   *     inserted.current_value ...` — one atomic statement.
+   *
+   * Seeding is always a race-safe insert-if-absent (INSERT OR IGNORE /
+   * INSERT IGNORE / INSERT ... WHERE NOT EXISTS) seeded from MAX(pk), run
+   * BEFORE the increment — never a read-then-insert gap. On error we RAISE
+   * (never silently fall back to 1).
    */
   private async sequenceNext(seqName: string, table?: string, pkColumn = "id"): Promise<number> {
-    await this.ensureSequenceTable();
+    // Pin a single adapter for the whole sequence operation so seed +
+    // increment + read all hit the SAME connection. Inside an active
+    // transaction the adapter is already pinned; otherwise pin here and
+    // release in the finally so the pool can rotate afterwards.
+    const store = this.txStore.getStore();
+    const alreadyPinned = !!store?.adapter;
     const adapter = this.getNextAdapter();
-
-    // Check if the sequence row exists
-    const existing = await adapterFetchOne<Record<string, unknown>>(adapter,
-      "SELECT current_value FROM tina4_sequences WHERE seq_name = ?",
-      [seqName]
-    );
-
-    if (existing == null) {
-      // Seed from current MAX
-      let seedValue = 0;
-      if (table) {
-        try {
-          const maxRow = await adapterFetchOne<Record<string, unknown>>(adapter,
-            `SELECT MAX(${pkColumn}) AS max_id FROM ${table}`
-          );
-          if (maxRow?.max_id != null) {
-            seedValue = Number(maxRow.max_id);
-          }
-        } catch {
-          // Table doesn't exist — start at 0
-        }
-      }
-
-      await adapterExecute(adapter,
-        "INSERT INTO tina4_sequences (seq_name, current_value) VALUES (?, ?)",
-        [seqName, seedValue]
-      );
-      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+    if (!alreadyPinned) {
+      if (store) store.adapter = adapter;
+      else this.txStore.enterWith({ adapter });
     }
 
-    // Atomic increment
+    try {
+      if (this.dbType === "sqlite") {
+        // SQLite: the adapter does ensure-table + seed + atomic increment as one
+        // synchronous burst. We compute the seed first (its own read can yield,
+        // but that's fine — INSERT OR IGNORE makes the seed idempotent and the
+        // increment itself is the atomic step).
+        const seed = await this.sequenceSeedValue(adapter, table, pkColumn);
+        const raw = (adapter as any).getAdapter ? (adapter as any).getAdapter() : adapter;
+        if (typeof raw.sequenceNextSqlite === "function") {
+          return raw.sequenceNextSqlite(seqName, seed);
+        }
+        // Defensive fallback if the underlying adapter lacks the atomic helper.
+        return this.sequenceNextGeneric(adapter, seqName, seed);
+      }
+
+      await this.ensureSequenceTable();
+      if (this.dbType === "mysql") {
+        return this.sequenceNextMysql(adapter, seqName, table, pkColumn);
+      }
+      if (this.dbType === "mssql") {
+        return this.sequenceNextMssql(adapter, seqName, table, pkColumn);
+      }
+      // Any other engine routed here (defensive) — generic atomic-ish path.
+      const seed = await this.sequenceSeedValue(adapter, table, pkColumn);
+      return this.sequenceNextGeneric(adapter, seqName, seed);
+    } finally {
+      if (!alreadyPinned) {
+        const s = this.txStore.getStore();
+        if (s) s.adapter = null;
+      }
+    }
+  }
+
+  /**
+   * MySQL atomic sequence step. LAST_INSERT_ID(expr) stashes `expr` in this
+   * CONNECTION's session var and returns it, so the read-back is per-connection
+   * and race-safe. Runs on the pinned adapter.
+   */
+  private async sequenceNextMysql(adapter: DatabaseAdapter, seqName: string, table: string | undefined, pkColumn: string): Promise<number> {
+    const seed = await this.sequenceSeedValue(adapter, table, pkColumn);
+    // Race-safe seed: INSERT IGNORE is a no-op if the row exists.
     await adapterExecute(adapter,
-      "UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ?",
-      [seqName]
+      "INSERT IGNORE INTO tina4_sequences (seq_name, current_value) VALUES (?, ?)",
+      [seqName, seed],
     );
     try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+    await adapterExecute(adapter,
+      "UPDATE tina4_sequences SET current_value = LAST_INSERT_ID(current_value + 1) WHERE seq_name = ?",
+      [seqName],
+    );
+    try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+    const row = await adapterFetchOne<Record<string, unknown>>(adapter, "SELECT LAST_INSERT_ID() AS next_id");
+    if (!row) {
+      throw new Error(`getNextId: LAST_INSERT_ID() returned nothing for '${seqName}'`);
+    }
+    return Number(Object.values(row)[0]);
+  }
 
-    // Read the new value
+  /**
+   * MSSQL atomic sequence step. A single `UPDATE ... OUTPUT
+   * inserted.current_value` increments and returns the new value in one
+   * statement. Runs on the pinned adapter.
+   */
+  private async sequenceNextMssql(adapter: DatabaseAdapter, seqName: string, table: string | undefined, pkColumn: string): Promise<number> {
+    const seed = await this.sequenceSeedValue(adapter, table, pkColumn);
+    // Race-safe seed: INSERT only when absent (single statement).
+    await adapterExecute(adapter,
+      "INSERT INTO tina4_sequences (seq_name, current_value) " +
+      "SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM tina4_sequences WHERE seq_name = ?)",
+      [seqName, seed, seqName],
+    );
+    try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+    // Single atomic statement: increment + return the new value via OUTPUT.
+    const result = await adapterExecute(adapter,
+      "UPDATE tina4_sequences SET current_value = current_value + 1 " +
+      "OUTPUT inserted.current_value AS next_id WHERE seq_name = ?",
+      [seqName],
+    ) as any;
+    const rows = result?.rows ?? result?.records ?? null;
+    if (rows && rows.length > 0 && rows[0].next_id != null) {
+      return Number(rows[0].next_id);
+    }
+    throw new Error(`getNextId: OUTPUT produced no row for sequence '${seqName}'`);
+  }
+
+  /**
+   * Defensive generic atomic-ish path for any engine not otherwise special-cased
+   * (and the SQLite fallback if the adapter lacks the synchronous helper). Seeds
+   * if absent, then increments and reads on the pinned connection.
+   */
+  private async sequenceNextGeneric(adapter: DatabaseAdapter, seqName: string, seed: number): Promise<number> {
+    try {
+      await adapterExecute(adapter,
+        "INSERT INTO tina4_sequences (seq_name, current_value) VALUES (?, ?)",
+        [seqName, seed],
+      );
+      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+    } catch {
+      // Row likely already exists (PK conflict) — fine, keep going.
+      try { await adapterRollback(adapter); } catch { /* nothing to roll back */ }
+    }
+    await adapterExecute(adapter,
+      "UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ?",
+      [seqName],
+    );
+    try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     const row = await adapterFetchOne<Record<string, unknown>>(adapter,
       "SELECT current_value FROM tina4_sequences WHERE seq_name = ?",
-      [seqName]
+      [seqName],
     );
-    return row?.current_value != null ? Number(row.current_value) : 1;
+    if (!row || row.current_value == null) {
+      throw new Error(`getNextId: sequence row '${seqName}' missing`);
+    }
+    return Number(row.current_value);
   }
 
   /**
