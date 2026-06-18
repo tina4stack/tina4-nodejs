@@ -41,10 +41,11 @@ export async function adapterFetch<T = Record<string, unknown>>(
   adapter: DatabaseAdapter, sql: string, params?: unknown[], limit?: number, skip?: number, noCache?: boolean,
 ): Promise<T[]> {
   // `noCache` is forwarded to the CachedDatabaseAdapter so a single read can
-  // bypass the query cache; raw adapters ignore the extra trailing arg.
+  // bypass the query cache; raw adapters have no query cache and no `noCache`
+  // parameter, so it is simply not passed to the raw `fetch` path.
   return (adapter as any).fetchAsync
     ? await (adapter as any).fetchAsync(sql, params, limit, skip, noCache)
-    : adapter.fetch<T>(sql, params, limit, skip, noCache);
+    : adapter.fetch<T>(sql, params, limit, skip);
 }
 
 export async function adapterQuery<T = Record<string, unknown>>(
@@ -688,8 +689,8 @@ export class Database {
       // The throw happens before the CachedDatabaseAdapter ever reaches its
       // cache.set(), so a buried failure can never be cached either.
       const row = (adapter as any).fetchOneAsync
-        ? await (adapter as any).fetchOneAsync<T>(sql, params, opts?.noCache)
-        : adapter.fetchOne<T>(sql, params, opts?.noCache);
+        ? await (adapter as any).fetchOneAsync(sql, params, opts?.noCache)
+        : adapter.fetchOne<T>(sql, params);
       this.lastError = null;
       return row;
     } catch (e: any) {

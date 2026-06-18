@@ -528,21 +528,6 @@ export class GraphQL {
   }
 
   /**
-   * Return schema metadata for debugging.
-   */
-  introspect(): Record<string, unknown> {
-    const queries: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.queries)) {
-      queries[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    const mutations: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.mutations)) {
-      mutations[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    return { types: Object.keys(this.types), queries, mutations };
-  }
-
-  /**
    * Register a query resolver.
    */
   addQuery(
@@ -556,21 +541,6 @@ export class GraphQL {
   }
 
   /**
-   * Return schema metadata for debugging.
-   */
-  introspect(): Record<string, unknown> {
-    const queries: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.queries)) {
-      queries[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    const mutations: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.mutations)) {
-      mutations[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    return { types: Object.keys(this.types), queries, mutations };
-  }
-
-  /**
    * Register a mutation resolver.
    */
   addMutation(
@@ -581,21 +551,6 @@ export class GraphQL {
   ): GraphQL {
     this.mutations.set(name, { args, returnType, resolver });
     return this;
-  }
-
-  /**
-   * Return schema metadata for debugging.
-   */
-  introspect(): Record<string, unknown> {
-    const queries: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.queries)) {
-      queries[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    const mutations: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.mutations)) {
-      mutations[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    return { types: Object.keys(this.types), queries, mutations };
   }
 
   /**
@@ -650,55 +605,8 @@ export class GraphQL {
   }
 
   /**
-   * Return schema metadata for debugging.
-   */
-  introspect(): Record<string, unknown> {
-    const queries: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.queries)) {
-      queries[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    const mutations: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.mutations)) {
-      mutations[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    return { types: Object.keys(this.types), queries, mutations };
-  }
-
-
-  /**
-   * Return schema metadata for debugging.
-   */
-  introspect(): Record<string, unknown> {
-    const queries: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.queries)) {
-      queries[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    const mutations: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.mutations)) {
-      mutations[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    return { types: Object.keys(this.types), queries, mutations };
-  }
-
-  /**
    * Generate SDL schema string.
    */
-
-  /**
-   * Return schema metadata for debugging.
-   */
-  introspect(): Record<string, unknown> {
-    const queries: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.queries)) {
-      queries[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    const mutations: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.mutations)) {
-      mutations[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    return { types: Object.keys(this.types), queries, mutations };
-  }
-
   schemaSdl(): string {
     const lines: string[] = [];
 
@@ -735,21 +643,6 @@ export class GraphQL {
     }
 
     return lines.join("\n");
-  }
-
-  /**
-   * Return schema metadata for debugging.
-   */
-  introspect(): Record<string, unknown> {
-    const queries: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.queries)) {
-      queries[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    const mutations: Record<string, unknown> = {};
-    for (const [name, config] of Object.entries(this.mutations)) {
-      mutations[name] = { type: (config as any).type, args: (config as any).args ?? {} };
-    }
-    return { types: Object.keys(this.types), queries, mutations };
   }
 
   /**

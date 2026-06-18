@@ -22,6 +22,16 @@ interface SessionData {
 export interface DatabaseSessionConfig {
   /** SQLite database file path (default: extracted from TINA4_DATABASE_URL or "data/tina4_sessions.db") */
   dbPath?: string;
+  // Unified SessionConfig fields are tolerated (and ignored) so the central
+  // Session can forward its config object without a structural mismatch.
+  backend?: string;
+  path?: string;
+  ttl?: number;
+  redisHost?: string;
+  redisPort?: number;
+  redisPassword?: string;
+  redisPrefix?: string;
+  redisDb?: number;
 }
 
 /**

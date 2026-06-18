@@ -1086,7 +1086,10 @@ export class BaseModel {
 
     const related = new relatedClass(rows[0] as Record<string, unknown>) as R;
     const relKey = relatedClass.tableName.toLowerCase();
-    this[relKey] = related;
+    // Write through the BaseModel index signature: a generic `T` cannot be
+    // indexed for writing (TS2862), but `T extends BaseModel` guarantees `this`
+    // is a BaseModel, whose `[key: string]: unknown` signature is writable.
+    (this as BaseModel)[relKey] = related;
     return related;
   }
 
@@ -1118,7 +1121,8 @@ export class BaseModel {
     const rows = await adapterQuery(db, sql, [pkValue]);
     const related = rows.map((row) => new relatedClass(row as Record<string, unknown>) as R);
     const relKey = relatedClass.tableName.toLowerCase();
-    this[relKey] = related;
+    // See hasOne: write through BaseModel's writable index signature (TS2862).
+    (this as BaseModel)[relKey] = related;
     return related;
   }
 
@@ -1153,7 +1157,8 @@ export class BaseModel {
 
     const related = new relatedClass(rows[0] as Record<string, unknown>) as R;
     const relKey = relatedClass.tableName.toLowerCase();
-    this[relKey] = related;
+    // See hasOne: write through BaseModel's writable index signature (TS2862).
+    (this as BaseModel)[relKey] = related;
     return related;
   }
 

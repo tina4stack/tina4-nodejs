@@ -46,10 +46,10 @@ async function firebirdColumnExists(
   table: string,
   column: string,
 ): Promise<boolean> {
-  const rows = await (db as any).queryAsync<Record<string, unknown>>(
+  const rows = (await (db as any).queryAsync(
     "SELECT 1 FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = ? AND TRIM(RDB$FIELD_NAME) = ?",
     [table.toUpperCase(), column.toUpperCase()],
-  );
+  )) as unknown[];
   return rows.length > 0;
 }
 

@@ -487,7 +487,7 @@ export const Plan = {
         }),
         signal: AbortSignal.timeout(120_000),
       });
-      result = await resp.json();
+      result = (await resp.json()) as Record<string, unknown>;
     } catch (e) {
       return { ok: false, error: `AI backend unreachable: ${(e as Error).message}` };
     }

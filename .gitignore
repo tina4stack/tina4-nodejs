@@ -26,5 +26,7 @@ packages/*/src/**/*.js
 packages/*/src/**/*.js.map
 packages/*/src/**/*.d.ts
 packages/*/src/**/*.d.ts.map
-# ...except the one hand-written browser asset served by feedback.ts:
+# ...except hand-written source that lives under src/ (emitted artifacts have a
+# sibling .ts; these do not). Add any new hand-written ambient .d.ts here:
 !packages/core/src/__feedback/widget.js
+!packages/orm/src/adapters/pg-types.d.ts

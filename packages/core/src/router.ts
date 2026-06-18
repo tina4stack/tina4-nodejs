@@ -615,10 +615,10 @@ export class RouteGroup {
   constructor(
     private router: Router,
     private prefix: string,
-    private groupMiddlewares?: Middleware[],
+    private groupMiddlewares?: MiddlewareSpec[],
   ) {}
 
-  private mergeMiddlewares(routeMiddlewares?: Middleware[]): Middleware[] | undefined {
+  private mergeMiddlewares(routeMiddlewares?: MiddlewareSpec[]): MiddlewareSpec[] | undefined {
     const group = this.groupMiddlewares ?? [];
     const route = routeMiddlewares ?? [];
     const merged = [...group, ...route];

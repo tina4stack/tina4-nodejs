@@ -86,7 +86,13 @@ export class PostgresAdapter implements DatabaseAdapter {
     await this.client!.connect();
   }
 
-  private ensureConnected(): asserts this is { client: NonNullable<PostgresAdapter["client"]> } {
+  // NOTE: a plain runtime guard, not an `asserts this is ...` predicate. A
+  // type-narrowing predicate that re-declares the private `client` member
+  // intersects the class with a structural literal and collapses `this` to
+  // `never` (TS treats the private brand as unsatisfiable). The non-null
+  // `this.client!` assertions at the (already-guarded) call sites carry the
+  // narrowing instead, so behaviour is unchanged.
+  private ensureConnected(): void {
     if (!this.client) {
       throw new Error("PostgreSQL adapter not connected. Call connect() first.");
     }
@@ -105,6 +111,22 @@ export class PostgresAdapter implements DatabaseAdapter {
       count++;
       return `$${count}`;
     });
+  }
+
+  /**
+   * Normalise an `id` column value (typed `unknown` because pg row values are
+   * `unknown`) into the `number | bigint | null` shape `_lastInsertId` /
+   * `DatabaseResult.lastInsertId` expect. At runtime PG returns numeric PKs as
+   * number/bigint (the int8/numeric type parsers above coerce them to Number);
+   * a numeric string is coerced, anything else (null/undefined/non-numeric)
+   * becomes null.
+   */
+  private normalizeId(value: unknown): number | bigint | null {
+    if (typeof value === "number" || typeof value === "bigint") return value;
+    if (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value))) {
+      return Number(value);
+    }
+    return null;
   }
 
   execute(sql: string, params?: unknown[]): unknown {
@@ -139,7 +161,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     const convertedSql = this.convertPlaceholders(sql);
     const result = await this.client!.query(convertedSql, params);
     if (result.rows?.[0]?.id !== undefined) {
-      this._lastInsertId = result.rows[0].id;
+      this._lastInsertId = this.normalizeId(result.rows[0].id);
     }
     return result;
   }
@@ -194,12 +216,12 @@ export class PostgresAdapter implements DatabaseAdapter {
     try {
       const result = await this.client!.query(sql, values);
       const insertedRow = result.rows[0];
-      const id = insertedRow?.id ?? null;
+      const id = this.normalizeId(insertedRow?.id);
       if (id !== null) this._lastInsertId = id;
       return {
         success: true,
         rowsAffected: result.rowCount ?? 1,
-        lastInsertId: id,
+        lastInsertId: id ?? undefined,
       };
     } catch (e) {
       return { success: false, rowsAffected: 0, error: (e as Error).message };

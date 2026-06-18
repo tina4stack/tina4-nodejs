@@ -172,7 +172,7 @@ export class RateLimiter {
 
   /** Apply rate limiting to a request/response pair. Sets headers and 429 if exceeded. */
   apply(request: Tina4Request, response: Tina4Response): [Tina4Request, Tina4Response] {
-    const ip = (request as Record<string, unknown>).ip as string ?? "unknown";
+    const ip = request.ip ?? "unknown";
     const result = this.check(ip);
 
     response.header("X-RateLimit-Limit", String(result.limit));

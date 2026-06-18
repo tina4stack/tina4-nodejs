@@ -71,7 +71,7 @@ export interface QueueBackendInterface {
   push(queue: string, payload: unknown, delay?: number): string;
   pop(queue: string): QueueJob | null;
   size(queue: string): number;
-  clear(queue: string): number;
+  clear(queue: string): void;
 }
 
 // ── Queue ────────────────────────────────────────────────────

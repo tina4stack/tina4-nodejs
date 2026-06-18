@@ -44,7 +44,7 @@ export function swaggerEnabled(): boolean {
 }
 
 export function createSwaggerRoutes(
-  getSpec: () => Record<string, unknown>
+  getSpec: () => unknown
 ): RouteDefinition[] {
   return [
     {

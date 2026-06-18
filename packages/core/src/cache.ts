@@ -247,7 +247,7 @@ class RespClient {
   private username: string | null;
   private password: string | null;
   private sock: net.Socket | null = null;
-  private buffer = Buffer.alloc(0);
+  private buffer: Buffer = Buffer.alloc(0);
   private waiters: Array<{ resolve: (r: RespReply) => void; reject: (e: Error) => void }> = [];
   private connecting: Promise<void> | null = null;
   private connected = false;
@@ -662,7 +662,7 @@ class MemcachedClient {
   private host: string;
   private port: number;
   private sock: net.Socket | null = null;
-  private buffer = Buffer.alloc(0);
+  private buffer: Buffer = Buffer.alloc(0);
   private pending: { terminator: string; resolve: (s: string) => void } | null = null;
   private connecting: Promise<void> | null = null;
   private connected = false;

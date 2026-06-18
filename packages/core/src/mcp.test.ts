@@ -6,7 +6,7 @@ import {
   encodeResponse, encodeError, encodeNotification, decodeRequest,
   McpServer, isLocalhost, schemaFromParams, registerDevTools,
   PARSE_ERROR, METHOD_NOT_FOUND, INTERNAL_ERROR,
-} from "./mcp.ts";
+} from "./mcp.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";

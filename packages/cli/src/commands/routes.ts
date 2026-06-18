@@ -32,8 +32,8 @@ export async function listRoutes(): Promise<void> {
   }
 
   // Sort by path then method
-  routes.sort((a: { path: string; method: string }, b: { path: string; method: string }) => {
-    const pathCmp = a.path.localeCompare(b.path);
+  routes.sort((a, b) => {
+    const pathCmp = a.pattern.localeCompare(b.pattern);
     return pathCmp !== 0 ? pathCmp : a.method.localeCompare(b.method);
   });
 
@@ -50,7 +50,7 @@ export async function listRoutes(): Promise<void> {
 
   for (const route of routes) {
     const method = route.method.toUpperCase().padEnd(10);
-    const path = route.path.padEnd(40);
+    const path = route.pattern.padEnd(40);
     const summary = route.meta?.summary ?? "";
     console.log(`  ${method}${path}${summary}`);
   }

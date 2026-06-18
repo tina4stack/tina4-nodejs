@@ -51,12 +51,16 @@ export class RedisBackplane implements WebSocketBackplane {
   private ready: Promise<void>;
 
   constructor(url?: string) {
-    this.url = url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "redis://localhost:6379";
+    const resolvedUrl = url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "redis://localhost:6379";
+    this.url = resolvedUrl;
 
     this.ready = (async () => {
       let redis: any;
       try {
-        redis = await import("redis");
+        // Optional peer dependency — resolved via a string specifier so the
+        // module isn't required at type-check time when it isn't installed.
+        const redisModule: string = "redis";
+        redis = await import(redisModule);
       } catch {
         throw new Error(
           "The 'redis' package is required for RedisBackplane. " +
@@ -64,14 +68,14 @@ export class RedisBackplane implements WebSocketBackplane {
         );
       }
 
-      this.publisher = redis.createClient({ url: this.url });
+      this.publisher = redis.createClient({ url: resolvedUrl });
       this.subscriber = this.publisher.duplicate();
 
       await Promise.all([
         this.publisher.connect(),
         this.subscriber.connect(),
       ]);
-      console.log(`[Tina4] RedisBackplane connected to ${this.url}`);
+      console.log(`[Tina4] RedisBackplane connected to ${resolvedUrl}`);
     })();
   }
 
@@ -115,12 +119,16 @@ export class NATSBackplane implements WebSocketBackplane {
   private ready: Promise<void>;
 
   constructor(url?: string) {
-    this.url = url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "nats://localhost:4222";
+    const resolvedUrl = url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "nats://localhost:4222";
+    this.url = resolvedUrl;
 
     this.ready = (async () => {
       let nats: any;
       try {
-        nats = await import("nats");
+        // Optional peer dependency — resolved via a string specifier so the
+        // module isn't required at type-check time when it isn't installed.
+        const natsModule: string = "nats";
+        nats = await import(natsModule);
       } catch {
         throw new Error(
           "The 'nats' package is required for NATSBackplane. " +
@@ -128,21 +136,23 @@ export class NATSBackplane implements WebSocketBackplane {
         );
       }
 
-      this.nc = await nats.connect({ servers: this.url });
-      console.log(`[Tina4] NATSBackplane connected to ${this.url}`);
+      this.nc = await nats.connect({ servers: resolvedUrl });
+      console.log(`[Tina4] NATSBackplane connected to ${resolvedUrl}`);
     })();
   }
 
   async publish(channel: string, message: string): Promise<void> {
     await this.ready;
-    const { StringCodec } = await import("nats");
+    const natsModule: string = "nats";
+    const { StringCodec } = await import(natsModule);
     const sc = StringCodec();
     this.nc.publish(channel, sc.encode(message));
   }
 
   async subscribe(channel: string, callback: (message: string) => void): Promise<void> {
     await this.ready;
-    const { StringCodec } = await import("nats");
+    const natsModule: string = "nats";
+    const { StringCodec } = await import(natsModule);
     const sc = StringCodec();
     const sub = this.nc.subscribe(channel);
     this.subs.set(channel, sub);

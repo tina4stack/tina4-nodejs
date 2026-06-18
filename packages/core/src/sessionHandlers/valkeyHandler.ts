@@ -26,6 +26,16 @@ export interface ValkeySessionConfig {
   password?: string;
   prefix?: string;
   db?: number;
+  // Unified SessionConfig fields are tolerated (and ignored) so the central
+  // Session can forward its config object without a structural mismatch.
+  backend?: string;
+  path?: string;
+  ttl?: number;
+  redisHost?: string;
+  redisPort?: number;
+  redisPassword?: string;
+  redisPrefix?: string;
+  redisDb?: number;
 }
 
 /**

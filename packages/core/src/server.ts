@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync, exec } from "node:child_process";
 import cluster from "node:cluster";
 import os from "node:os";
+import type { Socket } from "node:net";
 import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
 import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
 import { validToken, getPayload, refreshToken } from "./auth.js";
@@ -986,8 +987,8 @@ ${reset}
           rawRes.setHeader("Content-Length", String(accumulated));
         }
         const realCb = typeof chunk === "function" ? chunk : cb;
-        return origEnd(undefined, undefined, realCb);
         void origWrite; // referenced to keep tsc happy
+        return typeof realCb === "function" ? origEnd(realCb) : origEnd();
       }) as typeof rawRes.end;
     }
 
@@ -1424,7 +1425,7 @@ ${reset}
       (remoteAddress, p) => WsTracker.add(remoteAddress, p),
       (id) => { WsTracker.remove(id); },
     );
-    server.on("upgrade", (req: IncomingMessage, socket, head) => {
+    server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
       const upPath = (req.url ?? "/").split("?")[0];
       if (upPath === "/__dev_reload") {
         devReloadWs.handleUpgrade(req, socket, head);

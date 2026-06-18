@@ -198,7 +198,7 @@ export class MongoBackend implements QueueBackend {
     const id = randomUUID();
     const now = new Date().toISOString();
 
-    const job: QueueJob = {
+    const job = {
       id,
       payload,
       status: "pending",

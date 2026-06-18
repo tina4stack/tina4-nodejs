@@ -467,7 +467,7 @@ export class WebSocketServer {
     this.emit("open", client);
 
     // Handle incoming data
-    let buffer = Buffer.alloc(0);
+    let buffer: Buffer = Buffer.alloc(0);
     if (head.length > 0) {
       buffer = Buffer.concat([buffer, head]);
     }

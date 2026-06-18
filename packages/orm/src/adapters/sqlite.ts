@@ -10,6 +10,20 @@ function isIdentifier(str: string): boolean {
 }
 
 /**
+ * The value shape `node:sqlite` binds as a statement parameter. Mirrors the
+ * module-internal `SQLInputValue` type (which is not exported from
+ * `node:sqlite`, so it cannot be imported). The DatabaseAdapter interface
+ * carries params as `unknown[]`; this narrows them to the bindable shape at the
+ * `.run()`/`.all()`/`.get()` call sites without an `any` cast.
+ */
+type SqlParam = null | number | bigint | string | NodeJS.ArrayBufferView;
+
+/** Narrow adapter-level `unknown[]` params to node:sqlite's bindable type. */
+function toSqlParams(params: readonly unknown[]): SqlParam[] {
+  return params as SqlParam[];
+}
+
+/**
  * Whether the linked SQLite library is at least the given version.
  *
  * Used to gate `UPDATE ... RETURNING` (SQLite >= 3.35) in the atomic
@@ -80,7 +94,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
 
   execute(sql: string, params?: unknown[]): unknown {
     const stmt = this.db.prepare(sql);
-    const result = params ? stmt.run(...params) : stmt.run();
+    const result = params ? stmt.run(...toSqlParams(params)) : stmt.run();
     if (result && typeof result === "object" && "lastInsertRowid" in result) {
       this._lastInsertId = result.lastInsertRowid as number | bigint;
     }
@@ -95,8 +109,8 @@ export class SQLiteAdapter implements DatabaseAdapter {
     this.db.exec("BEGIN TRANSACTION");
     try {
       for (const params of paramsList) {
-        const result = stmt.run(...params);
-        totalAffected += result.changes;
+        const result = stmt.run(...toSqlParams(params));
+        totalAffected += Number(result.changes);
         if (result.lastInsertRowid) {
           lastId = result.lastInsertRowid;
           this._lastInsertId = result.lastInsertRowid;
@@ -113,7 +127,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
 
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[] {
     const stmt = this.db.prepare(sql);
-    return (params ? stmt.all(...params) : stmt.all()) as T[];
+    return (params ? stmt.all(...toSqlParams(params)) : stmt.all()) as T[];
   }
 
   fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): T[] {
@@ -133,7 +147,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
 
   fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | null {
     const stmt = this.db.prepare(sql);
-    const row = params ? stmt.get(...params) : stmt.get();
+    const row = params ? stmt.get(...toSqlParams(params)) : stmt.get();
     return (row as T) ?? null;
   }
 
@@ -154,9 +168,9 @@ export class SQLiteAdapter implements DatabaseAdapter {
     const values = Object.values(data);
 
     try {
-      const result = this.db.prepare(sql).run(...values);
+      const result = this.db.prepare(sql).run(...toSqlParams(values));
       this._lastInsertId = result.lastInsertRowid;
-      return { success: true, rowsAffected: result.changes, lastInsertId: result.lastInsertRowid };
+      return { success: true, rowsAffected: Number(result.changes), lastInsertId: result.lastInsertRowid };
     } catch (e) {
       return { success: false, rowsAffected: 0, error: (e as Error).message };
     }
@@ -169,8 +183,8 @@ export class SQLiteAdapter implements DatabaseAdapter {
     const values = [...Object.values(data), ...Object.values(filter)];
 
     try {
-      const result = this.db.prepare(sql).run(...values);
-      return { success: true, rowsAffected: result.changes };
+      const result = this.db.prepare(sql).run(...toSqlParams(values));
+      return { success: true, rowsAffected: Number(result.changes) };
     } catch (e) {
       return { success: false, rowsAffected: 0, error: (e as Error).message };
     }
@@ -189,8 +203,8 @@ export class SQLiteAdapter implements DatabaseAdapter {
     if (typeof filter === "string") {
       const sql = filter ? `DELETE FROM "${table}" WHERE ${filter}` : `DELETE FROM "${table}"`;
       try {
-        const result = this.db.prepare(sql).run(...(params ?? []));
-        return { success: true, rowsAffected: result.changes };
+        const result = this.db.prepare(sql).run(...toSqlParams(params ?? []));
+        return { success: true, rowsAffected: Number(result.changes) };
       } catch (e) {
         return { success: false, rowsAffected: 0, error: (e as Error).message };
       }
@@ -201,8 +215,8 @@ export class SQLiteAdapter implements DatabaseAdapter {
     const values = Object.values(filter);
 
     try {
-      const result = this.db.prepare(sql).run(...values);
-      return { success: true, rowsAffected: result.changes };
+      const result = this.db.prepare(sql).run(...toSqlParams(values));
+      return { success: true, rowsAffected: Number(result.changes) };
     } catch (e) {
       return { success: false, rowsAffected: 0, error: (e as Error).message };
     }

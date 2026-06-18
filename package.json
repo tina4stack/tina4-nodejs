@@ -57,7 +57,8 @@
   "scripts": {
     "build": "npm run build --workspaces",
     "clean": "rm -rf packages/*/dist",
-    "test": "tsx test/run-all.ts"
+    "test": "tsx test/run-all.ts",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -67,6 +68,7 @@
     "typescript": "^5.7.0",
     "tsx": "^4.19.0",
     "esbuild": "^0.24.0",
-    "mongodb": "^6.0.0"
+    "mongodb": "^6.0.0",
+    "@types/node": "^22.10.0"
   }
 }

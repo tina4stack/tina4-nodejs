@@ -1,0 +1,38 @@
+{
+  "//": "Type-checking only (npm run typecheck). The repo builds via esbuild and runs tests via tsx — neither type-checks — so this flat, non-composite config is the single source of type truth. moduleResolution 'Bundler' matches esbuild/tsx (extensionless + .js->.ts), and the paths map the @tina4/* workspace imports to their SOURCE so no dist build is required. noEmit: nothing is written.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "baseUrl": ".",
+    "paths": {
+      "@tina4/core": ["packages/core/src/index.ts"],
+      "@tina4/core/*": ["packages/core/src/*"],
+      "@tina4/orm": ["packages/orm/src/index.ts"],
+      "@tina4/orm/*": ["packages/orm/src/*"],
+      "@tina4/swagger": ["packages/swagger/src/index.ts"],
+      "@tina4/swagger/*": ["packages/swagger/src/*"],
+      "@tina4/frond": ["packages/frond/src/engine.ts"],
+      "@tina4/frond/*": ["packages/frond/src/*"]
+    }
+  },
+  "include": [
+    "packages/core/src/**/*.ts",
+    "packages/orm/src/**/*.ts",
+    "packages/swagger/src/**/*.ts",
+    "packages/frond/src/**/*.ts",
+    "packages/cli/src/**/*.ts"
+  ]
+}

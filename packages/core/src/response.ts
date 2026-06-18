@@ -116,8 +116,15 @@ function toJsonable(data: unknown): unknown {
 export function createResponse(res: ServerResponse): Tina4Response {
 
   // ── Guard: prevent writing after headers are sent ──
-  const safeEnd = (...args: Parameters<typeof res.end>) => {
-    if (!res.headersSent) (res.end as Function)(...args);
+  const safeEnd = (chunk?: string | Buffer, encoding?: BufferEncoding) => {
+    if (res.headersSent) return;
+    if (chunk === undefined) {
+      res.end();
+    } else if (encoding === undefined) {
+      res.end(chunk);
+    } else {
+      res.end(chunk, encoding);
+    }
   };
   const safeSetHeader = (name: string, value: string | number | readonly string[]) => {
     if (!res.headersSent) res.setHeader(name, value);

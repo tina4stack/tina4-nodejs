@@ -100,7 +100,7 @@ const COLORS: Record<LogLevel, string> = {
 const RESET = "\x1b[0m";
 
 /** Regex to strip ANSI escape codes */
-const ANSI_RE = /\033\[[0-9;]*m/g;
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
 /** Default log directory */
 const DEFAULT_LOG_DIR = "logs";

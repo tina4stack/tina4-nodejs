@@ -1078,7 +1078,7 @@ const handleSeed: RouteHandler = async (req, res) => {
       else if (name.includes("address") || name.includes("city") || name.includes("country")) { fieldMap[col.name] = () => fake.address(); }
       else if (name.includes("url") || name.includes("website")) { fieldMap[col.name] = () => fake.url(); }
       else if (type.includes("int")) { fieldMap[col.name] = () => fake.integer(1, 1000); }
-      else if (type.includes("real") || type.includes("float") || type.includes("double") || type.includes("numeric") || type.includes("decimal")) { fieldMap[col.name] = () => fake.decimal(0, 1000, 2); }
+      else if (type.includes("real") || type.includes("float") || type.includes("double") || type.includes("numeric") || type.includes("decimal")) { fieldMap[col.name] = () => fake.numeric(0, 1000, 2); }
       else if (type.includes("bool")) { fieldMap[col.name] = () => fake.boolean(); }
       else if (type.includes("date") || type.includes("time")) { fieldMap[col.name] = () => fake.date(); }
       else { fieldMap[col.name] = () => fake.sentence(3); }
@@ -1496,20 +1496,24 @@ const handleConnectionsTest: RouteHandler = async (req, res) => {
     } catch { tableCount = 0; }
     try {
       const urlLower = url.toLowerCase();
+      // NOTE: db.execute() is async; these calls are intentionally left
+      // un-awaited to preserve the exact existing runtime behaviour during
+      // this type-only cleanup. `row` is therefore a Promise and the `as any`
+      // access below evaluates to the fallback string. See report open question.
       if (urlLower.includes("sqlite")) {
-        const row = db.execute("SELECT sqlite_version() as v") as Record<string, unknown>[] | undefined;
+        const row = db.execute("SELECT sqlite_version() as v");
         version = `SQLite ${(row as any)?.[0]?.v ?? ""}`;
       } else if (urlLower.includes("postgres")) {
-        const row = db.execute("SELECT version() as v") as Record<string, unknown>[] | undefined;
+        const row = db.execute("SELECT version() as v");
         version = ((row as any)?.[0]?.v ?? "PostgreSQL").toString().split(",")[0];
       } else if (urlLower.includes("mysql")) {
-        const row = db.execute("SELECT version() as v") as Record<string, unknown>[] | undefined;
+        const row = db.execute("SELECT version() as v");
         version = `MySQL ${(row as any)?.[0]?.v ?? ""}`;
       } else if (urlLower.includes("mssql")) {
-        const row = db.execute("SELECT @@VERSION as v") as Record<string, unknown>[] | undefined;
+        const row = db.execute("SELECT @@VERSION as v");
         version = ((row as any)?.[0]?.v ?? "MSSQL").toString().split("\n")[0];
       } else if (urlLower.includes("firebird")) {
-        const row = db.execute("SELECT rdb$get_context('SYSTEM', 'ENGINE_VERSION') as v FROM rdb$database") as Record<string, unknown>[] | undefined;
+        const row = db.execute("SELECT rdb$get_context('SYSTEM', 'ENGINE_VERSION') as v FROM rdb$database");
         version = `Firebird ${(row as any)?.[0]?.v ?? ""}`;
       }
     } catch { /* keep version as Connected */ }

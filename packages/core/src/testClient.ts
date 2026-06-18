@@ -53,7 +53,7 @@ export class TestResponse {
   }
 }
 
-interface RequestOptions {
+export interface RequestOptions {
   json?: Record<string, unknown> | unknown[];
   body?: string;
   headers?: Record<string, string>;
