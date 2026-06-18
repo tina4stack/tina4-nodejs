@@ -7,11 +7,14 @@
  *
  * One store, two layers (mirrors the Python master — tina4_python/database/connection.py):
  *
- *   • request-scoped (DEFAULT ON, off-switch TINA4_AUTO_CACHING=false) — dedupes
+ *   • request-scoped (DEFAULT OFF, opt-in TINA4_AUTO_CACHING=true) — dedupes
  *     identical SELECTs to protect the DB from rapid repeat reads. Cleared at the
  *     START of every HTTP request (via Database.resetRequestCaches()) AND on any
  *     write, with a short safety TTL (TINA4_AUTO_CACHING_TTL, default 5s) for
- *     non-request contexts (scripts/workers).
+ *     non-request contexts (scripts/workers). Default OFF because a request-scoped
+ *     cache defaulting ON is a footgun — a read-after-write in one request (e.g.
+ *     SELECT MAX(id) then INSERT) returns a cached pre-write value. Opt in for
+ *     read-heavy endpoints.
  *   • persistent (opt-in, TINA4_DB_CACHE=true) — cross-request TTL cache that is
  *     NOT cleared per request; entries expire by TINA4_DB_CACHE_TTL (default 30s).
  *
@@ -45,7 +48,7 @@ function isTruthy(val: string | undefined): boolean {
 export interface CachedAdapterOptions {
   /** Force-enable the persistent (cross-request) layer. Defaults to TINA4_DB_CACHE. */
   persistent?: boolean;
-  /** Force-enable the request-scoped layer. Defaults to TINA4_AUTO_CACHING (default true). */
+  /** Force-enable the request-scoped layer. Defaults to TINA4_AUTO_CACHING (default false / opt-in). */
   requestScoped?: boolean;
   /** Override the effective TTL (seconds). Defaults to the mode-appropriate env var. */
   ttl?: number;
@@ -65,7 +68,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   private cache: QueryCache;
   /** Persistent (cross-request) layer — TINA4_DB_CACHE. */
   private cachePersistent: boolean;
-  /** Request-scoped layer — TINA4_AUTO_CACHING (default ON). */
+  /** Request-scoped layer — TINA4_AUTO_CACHING (default OFF / opt-in). */
   private cacheRequestScoped: boolean;
   private enabled: boolean;
   private ttl: number;
@@ -94,8 +97,14 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   constructor(adapter: DatabaseAdapter, options: CachedAdapterOptions = {}) {
     this.adapter = adapter;
     this.cachePersistent = options.persistent ?? isTruthy(process.env.TINA4_DB_CACHE);
-    this.cacheRequestScoped = options.requestScoped
-      ?? (process.env.TINA4_AUTO_CACHING === undefined ? true : isTruthy(process.env.TINA4_AUTO_CACHING));
+    // Request-scoped cache defaults to OFF (opt-in). A request-scoped cache
+    // defaulting ON is a footgun: a `SELECT MAX(id)` (or generator read) right
+    // before an INSERT in the same request returns a cached pre-write value →
+    // duplicate primary keys; any read-after-write in one request shows stale
+    // state. So the DEFAULT is OFF; opt in for read-heavy endpoints with
+    // TINA4_AUTO_CACHING=true. Mirrors the Python master
+    // (tina4_python/database/connection.py: default literal "false").
+    this.cacheRequestScoped = options.requestScoped ?? isTruthy(process.env.TINA4_AUTO_CACHING);
     this.enabled = this.cachePersistent || this.cacheRequestScoped;
 
     if (options.ttl !== undefined) {

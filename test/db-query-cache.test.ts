@@ -1,10 +1,13 @@
 /**
- * Request-scoped DB query cache (default-on) — protects the DB from rapid
- * identical reads. Mirrors tina4_python/tests/test_db_query_cache.py.
+ * DB query cache — BOTH layers are opt-in / DEFAULT OFF. Protects the DB from
+ * rapid identical reads when enabled. Mirrors tina4_python/tests/test_db_query_cache.py.
  *
  * Layers (see packages/orm/src/cachedDatabase.ts):
- *   • request-scoped (DEFAULT ON, off-switch TINA4_AUTO_CACHING=false) — dedupes
+ *   • request-scoped (DEFAULT OFF, opt-in TINA4_AUTO_CACHING=true) — dedupes
  *     identical SELECTs, cleared per request + on writes, short safety TTL.
+ *     Default OFF because a request-scoped cache defaulting ON is a footgun: a
+ *     read-after-write in one request (e.g. SELECT MAX(id) then INSERT) returns
+ *     a cached pre-write value.
  *   • persistent (opt-in TINA4_DB_CACHE=true) — cross-request TTL cache, NOT
  *     cleared per request.
  *
@@ -75,17 +78,33 @@ async function makeDb(env: Record<string, string | undefined> = {}): Promise<Dat
 async function main() {
   console.log("=== DB Query Cache Tests ===\n");
 
-  // ── Request-scoped default ──────────────────────────────
-  console.log("--- Request-scoped (default ON) ---");
+  // ── Default OFF (opt-in) ────────────────────────────────
+  // The request-scoped cache now DEFAULTS OFF (opt-in) — a request-scoped cache
+  // defaulting ON is a footgun (cached read-after-write). With the env var unset
+  // the cache is OFF; tests below that exercise the request cache opt in via
+  // TINA4_AUTO_CACHING=true.
+  console.log("--- Request-scoped (default OFF / opt-in) ---");
   {
-    const db = await makeDb();
+    const db = await makeDb();   // TINA4_AUTO_CACHING unset
     const stats = db.cacheStats();
-    assert("on by default: enabled", stats.enabled === true, JSON.stringify(stats));
-    assert("on by default: mode === 'request'", stats.mode === "request", JSON.stringify(stats));
+    assert("off by default: enabled false", stats.enabled === false, JSON.stringify(stats));
+    assert("off by default: mode === 'off'", stats.mode === "off", JSON.stringify(stats));
+    await db.fetch("SELECT * FROM t");
+    await db.fetch("SELECT * FROM t");
+    const after = db.cacheStats();
+    assert("off by default: nothing cached (size 0)", after.size === 0, JSON.stringify(after));
+    assert("off by default: no hits", after.hits === 0, JSON.stringify(after));
   }
 
   {
-    const db = await makeDb();
+    const db = await makeDb({ TINA4_AUTO_CACHING: "true" });
+    const stats = db.cacheStats();
+    assert("opt-in true: enabled", stats.enabled === true, JSON.stringify(stats));
+    assert("opt-in true: mode === 'request'", stats.mode === "request", JSON.stringify(stats));
+  }
+
+  {
+    const db = await makeDb({ TINA4_AUTO_CACHING: "true" });
     await db.fetch("SELECT * FROM t"); // miss -> populates
     await db.fetch("SELECT * FROM t"); // hit
     const stats = db.cacheStats();
@@ -94,7 +113,7 @@ async function main() {
   }
 
   {
-    const db = await makeDb();
+    const db = await makeDb({ TINA4_AUTO_CACHING: "true" });
     await db.fetch("SELECT * FROM t");
     assert("write invalidates: size 1 before write", db.cacheStats().size === 1);
     await db.execute("INSERT INTO t (n) VALUES ('c')");
@@ -102,7 +121,7 @@ async function main() {
   }
 
   {
-    const db = await makeDb();
+    const db = await makeDb({ TINA4_AUTO_CACHING: "true" });
     await db.fetch("SELECT * FROM t");
     assert("insert helper invalidates: size 1 before", db.cacheStats().size === 1);
     await db.insert("t", { n: "d" });
@@ -112,7 +131,7 @@ async function main() {
   // ── Request boundary ────────────────────────────────────
   console.log("\n--- Request boundary ---");
   {
-    const db = await makeDb();
+    const db = await makeDb({ TINA4_AUTO_CACHING: "true" });
     await db.fetch("SELECT * FROM t");
     assert("reset clears request cache: size 1 before", db.cacheStats().size === 1);
     // Simulate the dispatcher firing at the start of the next request.
@@ -121,7 +140,7 @@ async function main() {
   }
 
   {
-    const db = await makeDb();
+    const db = await makeDb({ TINA4_AUTO_CACHING: "true" });
     await db.fetch("SELECT * FROM t");
     await db.fetch("SELECT * FROM t"); // one hit
     const hitsBefore = db.cacheStats().hits;
@@ -166,7 +185,7 @@ async function main() {
   // ── ORM reads are cached too (the dead-cache fix) ───────
   console.log("\n--- ORM reads share the same cache ---");
   {
-    const db = await makeDb();
+    const db = await makeDb({ TINA4_AUTO_CACHING: "true" });
     const { BaseModel, getAdapter } = await import("../packages/orm/src/index.ts");
     class T extends BaseModel {
       static tableName = "t";
@@ -196,7 +215,7 @@ async function main() {
   console.log("\n--- Per-query cache bypass (noCache) ---");
   {
     // noCache read does NOT populate the cache.
-    const db = await makeDb();
+    const db = await makeDb({ TINA4_AUTO_CACHING: "true" });
     assert("noCache: cache empty to start", db.cacheStats().size === 0);
     const rows = await db.fetchAll("SELECT * FROM t", [], undefined, undefined, { noCache: true });
     assert("noCache fetchAll still returns rows", rows.length === 2, JSON.stringify(rows));
@@ -208,7 +227,7 @@ async function main() {
   {
     // noCache does NOT return a previously-cached value — it runs live and
     // sees a row a normal cached read would have missed inside the same request.
-    const db = await makeDb();
+    const db = await makeDb({ TINA4_AUTO_CACHING: "true" });
     await db.fetchAll("SELECT * FROM t");            // miss -> caches 2 rows
     assert("noCache: 2 rows cached before write", db.cacheStats().size === 1);
     // Insert directly on the raw adapter so the cache is NOT invalidated
@@ -229,7 +248,7 @@ async function main() {
 
   {
     // fetchOne honours noCache the same way.
-    const db = await makeDb();
+    const db = await makeDb({ TINA4_AUTO_CACHING: "true" });
     await db.fetchOne("SELECT * FROM t WHERE id = ?", [1]);   // miss -> caches
     const sizeAfterCachedOne = db.cacheStats().size;
     assert("fetchOne cached a row", sizeAfterCachedOne === 1);
@@ -242,8 +261,8 @@ async function main() {
   }
 
   {
-    // Default (no opts) preserves today's caching behaviour.
-    const db = await makeDb();
+    // With the request cache opted in, default (no opts) reads still cache.
+    const db = await makeDb({ TINA4_AUTO_CACHING: "true" });
     await db.fetchAll("SELECT * FROM t");   // miss
     await db.fetchAll("SELECT * FROM t");   // hit
     const stats = db.cacheStats();

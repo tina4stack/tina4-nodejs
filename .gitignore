@@ -4,6 +4,8 @@ tmp/
 *.db
 *.sqlite
 .env
+/.env.local
+.env.local
 .DS_Store
 data/
 .claude/*

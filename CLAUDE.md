@@ -226,7 +226,7 @@ Backends: file, redis, redis-npm, valkey, mongodb, database.
 ### Database extras
 
 ```typescript
-db.execute(sql, params?): boolean | unknown  // bool for writes, result for RETURNING/CALL/EXEC
+db.execute(sql, params?): boolean | unknown  // RAISES on SQL error (never returns false; cause on getError()); on success: bool for writes, result for RETURNING/CALL/EXEC. try/catch — don't test the return.
 db.getLastId(): string | number
 db.getError(): string | null
 db.cacheStats(): { enabled, size, ttl }
@@ -564,7 +564,13 @@ const db = await initDatabase({ url: "sqlite:///app.db" });
 db.fetch(sql, params?, limit?, offset?): DatabaseResult           // .records, .count, .limit, .offset
 db.fetchOne<T>(sql, params?): T | null
 
-// Writes — return boolean for simple writes, result for RETURNING / CALL / EXEC / SELECT
+// Writes — execute() RAISES on a SQL error (bad SQL, constraint violation,
+// dead connection, missing driver): it records the cause on getError() then
+// re-throws — it never swallows and returns false (mirrors fetch()/fetchOne()).
+// On SUCCESS it returns boolean for simple writes, the result set for
+// RETURNING / CALL / EXEC / SELECT. Callers needing a bool (ORM save(),
+// createTable(), migration runner, dev-admin/MCP DB tools) try/catch and
+// convert — they must NOT test the return value for false.
 db.execute(sql, params?): boolean | unknown
 db.executeMany(sql, paramSets): unknown[]                         // wrapped in a transaction
 db.insert(table, data): DatabaseWriteResult
@@ -592,9 +598,13 @@ db.getColumns(table): { name, type, nullable?, default?, primaryKey? }[]
 // auto-creates Postgres sequences, and uses native Firebird generators.
 db.getNextId(table, pkColumn?, generatorName?): number
 
-// DB query cache — request-scoped auto cache is ON by default (TINA4_AUTO_CACHING=true,
-// TTL TINA4_AUTO_CACHING_TTL=5s): dedupes identical db.fetch()/ORM reads within a request,
-// flushed on any write (always in-process, fastest). Persistent cross-request cache opt-in
+// DB query cache — request-scoped auto cache is OFF by default (opt-in via
+// TINA4_AUTO_CACHING=true, TTL TINA4_AUTO_CACHING_TTL=5s): when enabled it dedupes
+// identical db.fetch()/ORM reads within a request, flushed on any write (always
+// in-process, fastest). Default OFF because a request-scoped cache defaulting ON is a
+// footgun — a read-after-write in one request (e.g. SELECT MAX(id) then INSERT) returns a
+// cached pre-write value (duplicate PKs / stale state); enable it for read-heavy endpoints.
+// Persistent cross-request cache opt-in
 // via TINA4_DB_CACHE=true (TTL TINA4_DB_CACHE_TTL=30s), configured via TINA4_DB_CACHE_BACKEND
 // + TINA4_DB_CACHE_URL. The persistent layer routes through the SAME unified async backend
 // set (memory default = in-process; redis/valkey/memcached/mongodb/database distribute), so
@@ -1125,7 +1135,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
 - **`npx tina4nodejs generate`**: model, route, migration, middleware scaffolding
-- **Database**: 5 engines (SQLite, PostgreSQL, MySQL, MSSQL, Firebird), DB query caching — request-scoped auto cache **on by default** (`TINA4_AUTO_CACHING=true`, TTL `TINA4_AUTO_CACHING_TTL=5`s) dedupes identical `db.fetch()`/ORM reads within a request and flushes on writes (always in-process); persistent cross-request cache opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s) routed through the unified async backend set via `TINA4_DB_CACHE_BACKEND` (memory/file/redis/valkey/memcached/mongodb/database) + `TINA4_DB_CACHE_URL`, so instances share one cache with global write-invalidation (full parity with Python/PHP/Ruby). `db.cacheStats()` reports `mode` (request/persistent/off) + `backend`
+- **Database**: 5 engines (SQLite, PostgreSQL, MySQL, MSSQL, Firebird), DB query caching — request-scoped auto cache **off by default — opt-in via `TINA4_AUTO_CACHING=true`** (TTL `TINA4_AUTO_CACHING_TTL=5`s) which dedupes identical `db.fetch()`/ORM reads within a request and flushes on writes (always in-process); default OFF because a request-scoped cache defaulting on is a read-after-write footgun (cached pre-write `SELECT MAX(id)` → duplicate PKs); persistent cross-request cache opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s) routed through the unified async backend set via `TINA4_DB_CACHE_BACKEND` (memory/file/redis/valkey/memcached/mongodb/database) + `TINA4_DB_CACHE_URL`, so instances share one cache with global write-invalidation (full parity with Python/PHP/Ruby). `db.cacheStats()` reports `mode` (request/persistent/off) + `backend`
 - **Cache**: unified backend set — `memory` (default), `file`, `redis`, `valkey`, `memcached`, `mongodb`, `database` — via `TINA4_CACHE_BACKEND` (+ `TINA4_CACHE_URL`/credentials); file-backend fallback if a backend is unreachable. The KV API, the `responseCache` middleware, and the persistent DB query cache all route through this async backend set (native async clients, no child processes) — a network backend distributes them cross-instance, full parity with Python/PHP/Ruby; `memory` (default) keeps them in-process. `await` the async API (`cacheGet`/`cacheSet`/`clearCache`)
 - **Sessions**: file backend (default). `TINA4_SESSION_SAMESITE` env var (default: Lax)
 - **Queue**: file/RabbitMQ/Kafka/MongoDB backends, configured via env vars

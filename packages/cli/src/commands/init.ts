@@ -109,6 +109,7 @@ dist/
 *.db
 *.sqlite
 .env
+.env.local
 .DS_Store
 data/
 `

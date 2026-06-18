@@ -142,9 +142,10 @@ const namedAdapters: Map<string, DatabaseAdapter> = new Map();
  * double-wraps. `options.sharedCache` backs all pooled connections with one
  * store so a write on any connection invalidates reads cached by all of them.
  *
- * Caching is ON by default (request-scoped, TINA4_AUTO_CACHING) and additionally
- * persistent when TINA4_DB_CACHE=true. Off-switch: TINA4_AUTO_CACHING=false (and
- * TINA4_DB_CACHE unset) — then the wrapper passes everything straight through.
+ * Caching is OFF by default — both layers are opt-in. Turn the request-scoped
+ * layer on with TINA4_AUTO_CACHING=true (for read-heavy endpoints) and/or the
+ * persistent cross-request layer with TINA4_DB_CACHE=true. With both unset the
+ * wrapper passes everything straight through (no cached read-after-write footgun).
  */
 export function wrapWithCache(adapter: DatabaseAdapter, options?: CachedAdapterOptions): DatabaseAdapter {
   if (adapter instanceof CachedDatabaseAdapter) return adapter;
@@ -707,8 +708,18 @@ export class Database {
   }
 
   /**
-   * Execute a write statement. Returns true/false for simple writes.
-   * If SQL contains RETURNING, CALL, EXEC, or SELECT, returns the result set.
+   * Execute a write statement.
+   *
+   * On SUCCESS returns `true` for simple writes, or the result set when the
+   * SQL contains RETURNING / CALL / EXEC / SELECT.
+   *
+   * On a SQL error (bad SQL, constraint violation, dead/aborted connection,
+   * missing driver) it FAILS LOUD: it records the cause on `lastError`
+   * (readable via `getError()`) and then RE-THROWS — it never swallows the
+   * error and returns `false`. This mirrors `fetch()`/`fetchOne()`, which
+   * already raise. Callers that need a boolean (e.g. ORM `save()`,
+   * `createTable()`, the migration runner, dev-admin/MCP DB tools) must
+   * `try/catch` and convert, rather than testing the return value.
    */
   async execute(sql: string, params?: unknown[]): Promise<boolean | unknown> {
     try {
@@ -726,7 +737,7 @@ export class Database {
       return true;
     } catch (e: any) {
       this.lastError = e?.message ?? String(e);
-      return false;
+      throw e;
     }
   }
 
@@ -879,10 +890,10 @@ export class Database {
   /**
    * Return query cache statistics from the REAL cache backing this connection.
    *
-   * The bound adapter is a CachedDatabaseAdapter (caching is ON by default —
-   * request-scoped — and additionally persistent when TINA4_DB_CACHE=true), so
-   * we read the live counters + size + mode from it. Mirrors Python's
-   * `Database.cache_stats()`: `{ enabled, mode, hits, misses, size, ttl }`.
+   * The bound adapter is a CachedDatabaseAdapter (caching is OFF by default —
+   * both layers opt-in: request-scoped via TINA4_AUTO_CACHING=true, persistent
+   * via TINA4_DB_CACHE=true), so we read the live counters + size + mode from it.
+   * Mirrors Python's `Database.cache_stats()`: `{ enabled, mode, hits, misses, size, ttl }`.
    */
   cacheStats(): { enabled: boolean; mode: "persistent" | "request" | "off"; hits: number; misses: number; size: number; ttl: number; backend?: string } {
     const adapter = this.getNextAdapter();

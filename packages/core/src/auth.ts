@@ -12,7 +12,117 @@
  *   checkPassword("secret123", hash);  // true
  */
 import { createHmac, createSign, createVerify, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Middleware, Tina4Request, Tina4Response } from "./types.js";
+import { isTruthy } from "./dotenv.js";
+
+// ── Blank-secret warning + dev-secret bootstrap ────────────────────
+//
+// Mirrors the Python master (tina4_python/auth/__init__.py):
+//   • The default signing secret stays BLANK — never a guessable built-in.
+//   • In DEV (not CI, not production) a blank secret is auto-generated once and
+//     persisted to a gitignored .env.local, so a local dev never has to be told
+//     what to set. INFO, not a warning.
+//   • In CI / production a blank secret keeps the loud, ACTIONABLE warning.
+
+/** Actionable blank-secret warning — emitted from both the bootstrap (CI/prod) and the lazy resolvers. */
+const BLANK_SECRET_WARNING =
+  "Auth: TINA4_SECRET is not set — JWT signing is insecure. Set TINA4_SECRET to a random " +
+  "value (e.g. `openssl rand -hex 32`) in your environment or .env before serving traffic.";
+
+/** True when running under CI — the de-facto `CI` env var (set by every major CI). */
+function _isCi(): boolean {
+  return isTruthy(process.env.CI);
+}
+
+/** True in development — the framework debug flag is truthy (e.g. TINA4_DEBUG=true). */
+function _isDev(): boolean {
+  return isTruthy(process.env.TINA4_DEBUG);
+}
+
+/** True when TINA4_ENV is explicitly "production". */
+function _isProduction(): boolean {
+  return (process.env.TINA4_ENV ?? "development") === "production";
+}
+
+/** INFO log via Tina4 Log when available, else stderr. (Local import avoids a load-time cycle.) */
+async function _logInfo(message: string): Promise<void> {
+  try {
+    const { Log } = await import("./logger.js");
+    Log.info(message);
+  } catch {
+    process.stderr.write(message + "\n");
+  }
+}
+
+/** WARNING log via Tina4 Log when available, else stderr. */
+async function _logWarning(message: string): Promise<void> {
+  try {
+    const { Log } = await import("./logger.js");
+    Log.warning(message);
+  } catch {
+    process.stderr.write(message + "\n");
+  }
+}
+
+/** Emit the shared, actionable blank-secret warning (used by CI/prod bootstrap + lazy resolvers). */
+function _warnBlankSecret(): void {
+  void _logWarning(BLANK_SECRET_WARNING);
+}
+
+/**
+ * Ensure a usable TINA4_SECRET exists. Run ONCE at server boot, after env load
+ * and before auth is used. Mirrors Python's `ensure_dev_secret()`.
+ *
+ * Order:
+ *   1. TINA4_SECRET already set → no-op (return null).
+ *   2. NOT dev, OR CI, OR production → emit the actionable warning, return null.
+ *      NEVER generates or persists a secret in CI / production / non-dev.
+ *   3. Otherwise (dev, not CI, not prod, blank secret) → generate a 32-byte hex
+ *      secret, set it in process.env for THIS run immediately, then try to append
+ *      it to <cwd>/.env.local (create if missing; never touch .env). On a write
+ *      failure keep the in-memory secret and warn — boot must never crash.
+ *
+ * @param cwd - Directory to write .env.local into. Tests pass a temp dir; production passes nothing.
+ * @returns The newly-generated secret, or null when nothing was generated.
+ */
+export function ensureDevSecret(cwd?: string): string | null {
+  if (process.env.TINA4_SECRET) return null; // already configured
+
+  // Only the dev-and-not-CI-and-not-production path may generate / persist.
+  if (!_isDev() || _isCi() || _isProduction()) {
+    _warnBlankSecret();
+    return null;
+  }
+
+  // 32 bytes hex = 64 hex chars (parity with Python's secrets.token_hex(32)).
+  const newSecret = randomBytes(32).toString("hex");
+  // Set immediately so it's available for this run even if the write fails.
+  process.env.TINA4_SECRET = newSecret;
+
+  const baseDir = cwd ?? process.cwd();
+  const envLocalPath = join(baseDir, ".env.local");
+  try {
+    // If the file exists and its content doesn't end in a newline, prepend one
+    // so the new key lands on its own line.
+    let prefix = "";
+    if (existsSync(envLocalPath)) {
+      const existing = readFileSync(envLocalPath, "utf-8");
+      if (existing.length > 0 && !existing.endsWith("\n")) prefix = "\n";
+    }
+    appendFileSync(envLocalPath, `${prefix}TINA4_SECRET=${newSecret}\n`);
+    void _logInfo("Auth: generated a development secret, saved to .env.local (gitignored)");
+  } catch {
+    // Keep the in-memory secret for this run; warn but never crash boot.
+    void _logWarning(
+      "Auth: generated a development secret but could not write .env.local — " +
+        "using it in-memory for this run only.",
+    );
+  }
+
+  return newSecret;
+}
 
 // ── Base64url helpers (RFC 7515) ──────────────────────────────────
 
@@ -58,7 +168,7 @@ export function getToken(
   }
 
   if (!resolvedSecret) {
-    console.warn("Auth: TINA4_SECRET not set in .env — using blank secret (insecure)");
+    _warnBlankSecret();
   }
   const resolvedAlgorithm = algorithm ?? process.env.TINA4_JWT_ALGORITHM ?? "HS256";
 
@@ -95,7 +205,7 @@ export function getToken(
 export function validToken(token: string, secret?: string, algorithm?: string): Record<string, unknown> | null {
   const resolvedSecret = secret ?? process.env.TINA4_SECRET ?? "";
   if (!resolvedSecret) {
-    console.warn("Auth: TINA4_SECRET not set in .env — using blank secret (insecure)");
+    _warnBlankSecret();
   }
   const resolvedAlgorithm = algorithm ?? process.env.TINA4_JWT_ALGORITHM ?? "HS256";
   try {

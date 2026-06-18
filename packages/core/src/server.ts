@@ -675,8 +675,18 @@ export async function startServer(config?: Tina4Config): Promise<{
   router: Router;
   port: number;
 }> {
-  // Load .env early so TINA4_DEBUG is available for cluster decision
+  // Load .env early so TINA4_DEBUG is available for cluster decision.
+  // Then re-load .env.local as an OVERRIDE (standard "local overrides,
+  // gitignored" pattern) so a previously-generated dev secret wins. .env loads
+  // first (no override — never clobbers real env), .env.local re-loads on top.
   loadEnv();
+  loadEnv(".env.local", true);
+
+  // Auto-generate a per-machine dev secret to a gitignored .env.local when one
+  // is missing (dev only, never CI/prod). Must run after env load and before
+  // any auth use. Local import avoids a load-time cycle through auth.
+  const { ensureDevSecret } = await import("./auth.js");
+  ensureDevSecret();
 
   // Refuse to boot with pre-3.12 un-prefixed env vars set.
   _checkLegacyEnvVars();

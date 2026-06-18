@@ -74,17 +74,24 @@ function parseEnvContent(content: string): Record<string, string> {
 
 /**
  * Load environment variables from a .env file into process.env.
- * Does not override existing process.env values unless they are undefined.
+ *
+ * By default does NOT override existing process.env values (so real env vars
+ * always win over `.env`). Pass `override: true` to overwrite existing keys —
+ * this is the standard "local overrides, gitignored" pattern: load `.env` first
+ * (override=false, never clobbers real env), then re-load `.env.local` with
+ * override=true so a previously-generated dev secret wins. Mirrors the Python
+ * master (`load_env(".env.local", override=True)`).
  *
  * Resolution order for the env file path:
  *   1. Explicit `path` argument
  *   2. `TINA4_ENV_FILE` env var (if set and non-empty)
  *   3. `.env` in the current working directory
  *
- * @param path - Path to the .env file. Optional override.
+ * @param path     - Path to the .env file. Optional override.
+ * @param override - When true, overwrite keys already present in process.env.
  * @returns The parsed key-value pairs, or an empty object if the file doesn't exist.
  */
-export function loadEnv(path?: string): Record<string, string> {
+export function loadEnv(path?: string, override = false): Record<string, string> {
   const fromEnv = (process.env.TINA4_ENV_FILE ?? "").trim();
   const target = path ?? (fromEnv.length > 0 ? fromEnv : ".env");
   const envPath = resolve(target);
@@ -97,7 +104,7 @@ export function loadEnv(path?: string): Record<string, string> {
   const parsed = parseEnvContent(content);
 
   for (const [key, value] of Object.entries(parsed)) {
-    if (process.env[key] === undefined) {
+    if (override || process.env[key] === undefined) {
       process.env[key] = value;
       _loadedKeys.push(key);
     }
