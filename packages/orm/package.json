@@ -14,10 +14,8 @@
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external"
   },
-  "dependencies": {
-    "pg": "^8.20.0"
-  },
   "optionalDependencies": {
-    "mongodb": "^6.0.0"
+    "mongodb": "^6.0.0",
+    "pg": "^8.20.0"
   }
 }
