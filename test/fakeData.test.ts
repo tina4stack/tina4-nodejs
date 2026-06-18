@@ -276,11 +276,11 @@ const mockDb: DatabaseAdapter = {
 };
 
 const seedFake = new FakeData(42);
-const seedCount = await seedTable(mockDb, "test_users", 5, {
+const seedCount = (await seedTable(mockDb, "test_users", 5, {
   name: () => seedFake.name(),
   email: () => seedFake.email(),
   age: () => seedFake.integer(18, 65),
-});
+})).seeded;
 
 assert("seedTable returns correct count",
   seedCount === 5);
@@ -296,10 +296,10 @@ assert("seedTable SQL has correct columns",
 
 // Test with overrides
 insertedRows.length = 0;
-const seedCountWithOverrides = await seedTable(mockDb, "test_users", 3, {
+const seedCountWithOverrides = (await seedTable(mockDb, "test_users", 3, {
   name: () => seedFake.name(),
   role: () => "user",
-}, { status: "active" });
+}, { status: "active" })).seeded;
 
 assert("seedTable with overrides returns correct count",
   seedCountWithOverrides === 3);
@@ -308,7 +308,7 @@ assert("seedTable override values are inserted (3 columns: name, role, status)",
   insertedRows[0].params.length === 3);
 
 // Test empty fieldMap
-const emptyResult = await seedTable(mockDb, "test_users", 10);
+const emptyResult = (await seedTable(mockDb, "test_users", 10)).seeded;
 assert("seedTable with no fieldMap returns 0",
   emptyResult === 0);
 

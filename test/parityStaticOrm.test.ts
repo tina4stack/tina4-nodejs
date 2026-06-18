@@ -166,12 +166,12 @@ const widgetModel: DiscoveredModel = {
 };
 await syncModels([widgetModel]);
 
-const inserted = await seedOrm(Widget as any, 7, undefined, 42);
+const inserted = (await seedOrm(Widget as any, 7, undefined, 42)).seeded;
 assert("seedOrm returns count inserted", inserted === 7);
 assert("seedOrm produced rows in the table", (await Widget.count()) === 7);
 
 // Overrides applied to every row
-const inserted2 = await seedOrm(Widget as any, 3, { name: "FixedName" }, 42);
+const inserted2 = (await seedOrm(Widget as any, 3, { name: "FixedName" }, 42)).seeded;
 assert("seedOrm with overrides returns count", inserted2 === 3);
 const fixed = await Widget.all('name = ?', ["FixedName"]);
 assert("seedOrm overrides land in the database", fixed.length === 3);

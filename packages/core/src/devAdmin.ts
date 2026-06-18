@@ -1041,8 +1041,16 @@ const handleTables: RouteHandler = async (_req, res) => {
 
 const handleSeed: RouteHandler = async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
-  const table = url.searchParams.get("table") ?? (req as any).body?.table ?? "";
-  const count = parseInt(String(url.searchParams.get("count") ?? (req as any).body?.count ?? "10"), 10) || 10;
+  const body = (req as any).body ?? {};
+  const table = url.searchParams.get("table") ?? body?.table ?? "";
+  const count = parseInt(String(url.searchParams.get("count") ?? body?.count ?? "10"), 10) || 10;
+  // P4b — accept seed/clear/strict; drop the previous hard-coded behaviour.
+  const seedRaw = url.searchParams.get("seed") ?? body?.seed;
+  const seed = seedRaw !== undefined && seedRaw !== null && String(seedRaw) !== ""
+    ? (Number.isNaN(parseInt(String(seedRaw), 10)) ? undefined : parseInt(String(seedRaw), 10))
+    : undefined;
+  const clear = String(url.searchParams.get("clear") ?? body?.clear ?? "") === "true" || body?.clear === true;
+  const strict = String(url.searchParams.get("strict") ?? body?.strict ?? "") === "true" || body?.strict === true;
   if (!table) {
     res.json({ error: "Missing table parameter" });
     return;
@@ -1051,18 +1059,19 @@ const handleSeed: RouteHandler = async (req, res) => {
     const orm = await import("@tina4/orm");
     const db = orm.getAdapter();
     const { seedTable } = orm;
-    const fake = new orm.FakeData();
+    // A shared FakeData seeds the RNG so a `seed` makes the run reproducible.
+    const fake = new orm.FakeData(seed);
     const columns = db.columns(table);
     if (!columns.length) {
       res.json({ error: `Table '${table}' not found or has no columns` });
       return;
     }
-    // Build a field map based on column info
+    // Build a field map based on column info (skip auto-increment/id PKs).
     const fieldMap: Record<string, () => unknown> = {};
     for (const col of columns) {
       const name = col.name.toLowerCase();
       const type = col.type.toLowerCase();
-      if (name === "id") continue; // skip primary key
+      if (name === "id" || (col as any).primaryKey === true) continue; // skip primary key
       if (name.includes("email")) { fieldMap[col.name] = () => fake.email(); }
       else if (name.includes("name")) { fieldMap[col.name] = () => fake.name(); }
       else if (name.includes("phone")) { fieldMap[col.name] = () => fake.phone(); }
@@ -1074,20 +1083,12 @@ const handleSeed: RouteHandler = async (req, res) => {
       else if (type.includes("date") || type.includes("time")) { fieldMap[col.name] = () => fake.date(); }
       else { fieldMap[col.name] = () => fake.sentence(3); }
     }
-    let inserted = 0;
-    for (let i = 0; i < count; i++) {
-      const row: Record<string, unknown> = {};
-      for (const [col, gen] of Object.entries(fieldMap)) {
-        row[col] = gen();
-      }
-      try {
-        db.insert(table, row);
-        inserted++;
-      } catch { /* skip failed rows */ }
-    }
-    res.json({ inserted, table });
-  } catch {
-    res.json({ error: "Database not connected" });
+    // P1 — delegate to the shared seedTable so each row is wrapped (no
+    // unhandled failure can crash the endpoint) and we get a summary back.
+    const summary = await seedTable(db, table, count, fieldMap, undefined, { clear, seed, strict });
+    res.json({ seeded: summary.seeded, failed: summary.failed, errors: summary.errors, table });
+  } catch (e) {
+    res.json({ error: (e as Error)?.message ?? "Database not connected" });
   }
 };
 

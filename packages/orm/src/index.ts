@@ -51,7 +51,8 @@ export { SQLTranslator, QueryCache } from "./sqlTranslation.js";
 export { CachedDatabaseAdapter } from "./cachedDatabase.js";
 export type { CachedAdapterOptions } from "./cachedDatabase.js";
 export { FakeData } from "./fakeData.js";
-export { seedTable, seedOrm } from "./seeder.js";
+export { seedTable, seedOrm, seedModels } from "./seeder.js";
+export type { SeedSummary, SeedOptions } from "./seeder.js";
 
 // Database adapters
 export { SQLiteAdapter } from "./adapters/sqlite.js";

@@ -58,10 +58,10 @@ console.log("\n--- seedTable Basic ---");
 
 const db1 = createMockDb();
 const fake = new FakeData(42);
-const count = await seedTable(db1, "users", 5, {
+const count = (await seedTable(db1, "users", 5, {
   name: () => fake.name(),
   email: () => fake.email(),
-});
+})).seeded;
 assert("seedTable returns inserted count", count === 5);
 assert("Database received 5 INSERT statements", db1._inserts.length === 5);
 assert("INSERT targets correct table", db1._inserts[0].sql.includes('"users"'));
@@ -73,10 +73,10 @@ assert("INSERT params have 2 values", db1._inserts[0].params.length === 2);
 console.log("\n--- seedTable Static Values ---");
 
 const db2 = createMockDb();
-const count2 = await seedTable(db2, "items", 3, {
+const count2 = (await seedTable(db2, "items", 3, {
   name: () => "dynamic",
   category: "static-value",
-});
+})).seeded;
 assert("Static values accepted in fieldMap", count2 === 3);
 assert("Params include static value", db2._inserts[0].params.includes("static-value"));
 
@@ -84,10 +84,10 @@ assert("Params include static value", db2._inserts[0].params.includes("static-va
 console.log("\n--- seedTable Overrides ---");
 
 const db3 = createMockDb();
-const count3 = await seedTable(db3, "users", 2, {
+const count3 = (await seedTable(db3, "users", 2, {
   name: () => "generated",
   role: () => "generated-role",
-}, { role: "admin" });
+}, { role: "admin" })).seeded;
 assert("Overrides applied", count3 === 2);
 assert("Override value in params", db3._inserts[0].params.includes("admin"));
 
@@ -95,21 +95,21 @@ assert("Override value in params", db3._inserts[0].params.includes("admin"));
 console.log("\n--- seedTable Empty ---");
 
 const db4 = createMockDb();
-const count4 = await seedTable(db4, "empty", 10);
+const count4 = (await seedTable(db4, "empty", 10)).seeded;
 assert("No fieldMap returns 0", count4 === 0);
 assert("No inserts executed", db4._inserts.length === 0);
 
 const db5 = createMockDb();
-const count5 = await seedTable(db5, "empty", 10, {});
+const count5 = (await seedTable(db5, "empty", 10, {})).seeded;
 assert("Empty fieldMap returns 0", count5 === 0);
 
 // --- seedTable default count ---
 console.log("\n--- seedTable Default Count ---");
 
 const db6 = createMockDb();
-const count6 = await seedTable(db6, "defaults", undefined, {
+const count6 = (await seedTable(db6, "defaults", undefined, {
   col: () => "val",
-});
+})).seeded;
 assert("Default count is 10", count6 === 10);
 assert("10 inserts executed", db6._inserts.length === 10);
 
@@ -130,7 +130,7 @@ const mockModel = {
   getDb: () => db7,
 };
 
-const ormCount = await seedOrm(mockModel, 5);
+const ormCount = (await seedOrm(mockModel, 5)).seeded;
 assert("seedOrm returns count", ormCount === 5);
 assert("seedOrm executed 5 inserts", db7._inserts.length === 5);
 assert("seedOrm skips auto-increment PK", !db7._inserts[0].sql.includes('"id"'));
@@ -151,7 +151,7 @@ const mockModel2 = {
   getDb: () => db8,
 };
 
-const ormCount2 = await seedOrm(mockModel2, 3, { role: "admin" });
+const ormCount2 = (await seedOrm(mockModel2, 3, { role: "admin" })).seeded;
 assert("seedOrm with override returns count", ormCount2 === 3);
 assert("Override field excluded from generated", !db8._inserts[0].sql.includes('"role"') || db8._inserts[0].params.includes("admin"));
 

@@ -50,7 +50,7 @@ tina4-nodejs/
           firebird.ts      # Firebird adapter
         baseModel.ts     # Base model class
         fakeData.ts      # ORM-aware fake data (extends core, field-type heuristics)
-        seeder.ts        # Database seeding (seedTable, seedOrm)
+        seeder.ts        # Database seeding (seedTable, seedOrm, seedModels)
         sqlTranslation.ts # Cross-engine SQL translator + query cache
     swagger/    # OpenAPI spec generator, Swagger UI
     frond/      # Zero-dependency Twig-compatible template engine
@@ -150,7 +150,7 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 - `validation.ts` — Validates request bodies against model field definitions
 - `types.ts` — `FieldDefinition`, `ModelDefinition`, `DatabaseAdapter`, `QueryOptions`
 - `fakeData.ts` — ORM-aware fake data extending core (adds `forField()` with column-name heuristics)
-- `seeder.ts` — Database seeding (`seedTable` for raw SQL, `seedOrm` for model-based)
+- `seeder.ts` — Database seeding (`seedTable` raw SQL, `seedOrm` model-based, `seedModels` FK-ordered batch). All return a `SeedSummary { seeded, failed, errors }`; per-row failures are logged + counted + skipped (`strict` re-raises). Options: `{ overrides, clear, seed, strict }`.
 - `sqlTranslation.ts` — Cross-engine SQL translator (`SQLTranslator`) and TTL query cache (`QueryCache`)
 - **Instance methods:** `save(): this|false` (fluent, false on failure), `delete()`, `forceDelete()`, `restore()`, `load(sql, params?, include?): boolean`, `validate(): string[]`, `toDict(include?)`, `toAssoc(include?)`, `toObject()`, `toArray(): unknown[]`, `toList()`, `toJson(include?)`, `hasOne(class, fk)`, `hasMany(class, fk, limit?, offset?)`, `belongsTo(class, fk)`
 - **Static methods:** `find(id, include?)`, `findById(id, include?)`, `findOrFail(id)`, `create(data)`, `all(where?, params?, include?)`, `select(sql, params?)`, `selectOne(sql, params?, include?)`, `where(conditions, params?, limit?, offset?, include?)`, `count(conditions?, params?)`, `withTrashed(conditions?, params?, limit?, offset?)`, `scope(name, filterSql, params?)` (registers reusable method), `createTable()`, `query()`, `_processForeignKeys()`, `_applyFkRegistry()`
@@ -423,7 +423,7 @@ reset();
 Database seeding with fake data generation. The ORM `FakeData` extends core `FakeData` (which provides names, emails, addresses, etc.) and adds `forField()` for auto-generating values based on ORM field definitions with column-name heuristics.
 
 ```typescript
-import { FakeData, seedTable, seedOrm } from "@tina4/orm";
+import { FakeData, seedTable, seedOrm, seedModels } from "@tina4/orm";
 
 // FakeData — deterministic with optional seed
 const fake = new FakeData(42);
@@ -445,17 +445,35 @@ fake.forField({ type: "string", maxLength: 50 }, "email");   // generates email
 fake.forField({ type: "integer", min: 0, max: 100 });        // random integer
 fake.forField({ type: "boolean" });                           // true/false
 
-// seedTable — raw SQL inserts with generator functions
-await seedTable(db, "users", 50, {
+// seedTable — raw SQL inserts with generator functions.
+// Returns a SeedSummary { seeded, failed, errors } (NOT a bare number).
+const summary = await seedTable(db, "users", 50, {
   name: () => fake.name(),
   email: () => fake.email(),
   role: "user",  // static values also accepted
-}, { active: true });  // overrides applied to every row
+}, undefined, { clear: true, seed: 42, strict: false });
+// summary.seeded / summary.failed / summary.errors[{ row, message }]
+// (legacy positional 5th arg overrides also still works: seedTable(..., { active: true }))
 
 // seedOrm — auto-seed from model field definitions
 import User from "./src/models/User.js";
-await seedOrm(User, 100, { role: "user" }, 42);  // optional seed for determinism
+await seedOrm(User, 100, { role: "user" }, 42);                  // legacy positional
+await seedOrm(User, 100, undefined, undefined, { clear: true, seed: 42, strict: true });
+
+// seedModels — batch-seed FK-related models in dependency order (parents first,
+// reverse-order clear, FK columns resolved to real parent PKs). Topo-sorts by the
+// `references` graph so the declared order doesn't matter.
+const results = await seedModels([Book, Author], 10, { clear: true, seed: 7 });
+// → { Author: SeedSummary, Book: SeedSummary }
 ```
+
+**Visible-but-resilient seeding (P1-P4).** Every row is wrapped: a failing row is
+logged (with its index + cause) and skipped, incrementing `summary.failed` — never
+silent, never a crash. `strict: true` re-raises on the first failure instead of
+skipping. `clear: true` truncates the target first (idempotent re-runs). `seed`
+makes a run reproducible. `seedModels()` orders by the foreignKey dependency graph.
+The dev-admin seed endpoint (`POST /__dev/api/seed`) routes through `seedTable`,
+accepts `seed`/`clear`/`strict`, and returns `{ seeded, failed, errors, table }`.
 
 Column-name heuristics in `forField()`: columns named `email`, `phone`, `name`, `address`, `city`, `country`, `company`, `url`, `uuid`, `ip`, `currency`, etc. get contextually appropriate fake data.
 
