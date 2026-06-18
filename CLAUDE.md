@@ -223,6 +223,8 @@ session.gc(): void
 
 Backends: file, redis, redis-npm, valkey, mongodb, database.
 
+**Backend-failure policy (all 4 frameworks): log-loud + degrade.** A backend (Redis/Valkey/Mongo/DB) that becomes unreachable mid-request is logged via `Log.error` and degraded rather than crashing the app or losing data silently. The external handlers now **throw** a transport error on an unreachable server (previously they swallowed it to an empty string — silent data loss); the `Session` boundary catches it: a read failure yields an empty session (the request still serves), and `save()` returns `false` (best-effort, dirty flag retained for a later retry). A genuine key/doc miss still returns empty **without** logging — empty is not a failure. Set `TINA4_SESSION_STRICT=true` to re-throw instead. Call `regenerate()` right after a successful login or privilege change to defeat session fixation.
+
 ### Database extras
 
 ```typescript

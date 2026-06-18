@@ -79,6 +79,11 @@ export class MongoSessionHandler implements SessionHandler {
    * Uses the MongoDB wire protocol (OP_MSG) to communicate with the server.
    * For simplicity, we use the `runCommand` approach with JSON serialization
    * of BSON documents using a minimal BSON encoder.
+   *
+   * Returns the command response string (or `__EMPTY__` for an absent doc).
+   * A transport/connection FAILURE (server unreachable, socket error, timeout)
+   * THROWS so the Session boundary can distinguish "not found" (silent) from
+   * "backend failed" (log-loud + degrade). Backend-failure policy parity.
    */
   private execSync(command: string, args: string): string {
     const script = `
@@ -226,14 +231,16 @@ export class MongoSessionHandler implements SessionHandler {
     `;
 
     try {
-      const result = execFileSync(process.execPath, ["-e", script], {
+      return execFileSync(process.execPath, ["-e", script], {
         encoding: "utf-8",
         timeout: 8000,
         stdio: ["pipe", "pipe", "pipe"],
       });
-      return result;
-    } catch {
-      return "";
+    } catch (err) {
+      // Non-zero exit = the child hit a socket error / timeout. That is a
+      // transport FAILURE, not an absent document — surface it so the Session
+      // boundary logs + degrades (or re-throws under strict mode).
+      throw new Error(`MongoDB command failed: ${(err as Error).message}`);
     }
   }
 

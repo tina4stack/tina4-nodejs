@@ -28,6 +28,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { Log } from "./logger.js";
+import { isTruthy } from "./dotenv.js";
 import { RedisNpmSessionHandler } from "./sessionHandlers/redisHandler.js";
 import { ValkeySessionHandler } from "./sessionHandlers/valkeyHandler.js";
 import { MongoSessionHandler } from "./sessionHandlers/mongoHandler.js";
@@ -196,7 +198,10 @@ export class RedisSessionHandler implements SessionHandler {
   /**
    * Execute a Redis command synchronously via a short-lived TCP connection.
    *
-   * Returns the raw RESP response string.
+   * Returns the command result string. A genuine key miss yields `""`. A
+   * transport/connection FAILURE (server unreachable, AUTH error, timeout)
+   * THROWS so the Session boundary can distinguish "not found" (silent) from
+   * "backend failed" (log-loud + degrade). Backend-failure policy parity.
    */
   private execSync(args: string[]): string {
     const script = `
@@ -270,18 +275,24 @@ export class RedisSessionHandler implements SessionHandler {
       setTimeout(() => { sock.destroy(); process.exit(1); }, 3000);
     `;
 
+    let result: string;
     try {
-      const result = execFileSync(process.execPath, ["-e", script], {
+      result = execFileSync(process.execPath, ["-e", script], {
         encoding: "utf-8",
         timeout: 5000,
         stdio: ["pipe", "pipe", "pipe"],
       });
-      if (result === "__NULL__") return "";
-      if (result.startsWith("__ERR__")) return "";
-      return result;
-    } catch {
-      return "";
+    } catch (err) {
+      // Non-zero exit = the child hit a socket error / AUTH failure / timeout.
+      // That is a transport FAILURE, not a key miss — surface it so the
+      // Session boundary logs + degrades (or re-throws under strict mode).
+      throw new Error(`Redis command failed: ${(err as Error).message}`);
     }
+    if (result === "__NULL__") return "";        // genuine key miss
+    if (result.startsWith("__ERR__")) {
+      throw new Error(`Redis error: ${result.slice("__ERR__".length)}`);
+    }
+    return result;
   }
 
   private key(sessionId: string): string {
@@ -290,7 +301,7 @@ export class RedisSessionHandler implements SessionHandler {
 
   read(sessionId: string): SessionData | null {
     const raw = this.execSync(["GET", this.key(sessionId)]);
-    if (!raw) return null;
+    if (!raw) return null;     // key miss — normal "no session yet", NOT an error
     try {
       return JSON.parse(raw) as SessionData;
     } catch {
@@ -323,6 +334,20 @@ export class Session {
   private ttl: number;
   private sessionId: string | null = null;
   private data: SessionData | null = null;
+  /**
+   * Dirty flag — set when data changes, cleared only on a successful write.
+   * Retained on a failed write so a later save() retries once the backend
+   * recovers (mirrors the Python `_dirty` semantics).
+   */
+  private dirty = false;
+  /**
+   * Backend-failure policy: log-loud + degrade (default), or re-raise when
+   * TINA4_SESSION_STRICT is truthy. A read failure logs + yields an empty
+   * session, a write failure logs + returns false (best-effort, dirty
+   * retained), destroy/gc failures log + swallow. Parity across all four
+   * frameworks. Strict mode is the escape hatch (same as events/seeding).
+   */
+  private strict: boolean;
 
   constructor(backend?: string, config?: SessionConfig) {
     const backendType = backend
@@ -332,6 +357,8 @@ export class Session {
 
     this.ttl = config?.ttl
       ?? (process.env.TINA4_SESSION_TTL ? parseInt(process.env.TINA4_SESSION_TTL, 10) : 3600);
+
+    this.strict = isTruthy(process.env.TINA4_SESSION_STRICT);
 
     // Select handler based on backend type
     switch (backendType) {
@@ -370,6 +397,57 @@ export class Session {
     this.handler = handler;
   }
 
+  // ── Backend-failure policy: log-loud + degrade ─────────────────────
+  //
+  // The handlers themselves stay honest — they raise when the backend
+  // (Redis/Valkey/Mongo/DB) is unreachable, and return null/empty WITHOUT
+  // raising for a genuine "no session yet" miss. The Session layer is the
+  // single place that decides the resilience policy so every backend behaves
+  // the same: a transient outage logs + degrades rather than 500-ing every
+  // request (cascade outage) or vanishing silently (data loss). A genuinely
+  // empty result is NOT an error and never reaches these logs.
+
+  private logBackendError(op: string, err: unknown): void {
+    const handlerName = (this.handler as object)?.constructor?.name ?? "SessionHandler";
+    const message = err instanceof Error ? err.message : String(err);
+    Log.error(`Session backend ${op} failed (${handlerName}): ${message}`);
+  }
+
+  /** Read through the backend; on FAILURE log + degrade to empty (or re-throw under strict). */
+  private safeRead(sessionId: string): SessionData | null {
+    try {
+      return this.handler.read(sessionId);
+    } catch (err) {
+      this.logBackendError("read", err);
+      if (this.strict) throw err;
+      return null;
+    }
+  }
+
+  /** Write through the backend; on FAILURE log + return false (or re-throw under strict). */
+  private safeWrite(sessionId: string, data: SessionData, ttl: number): boolean {
+    try {
+      this.handler.write(sessionId, data, ttl);
+      return true;
+    } catch (err) {
+      this.logBackendError("write", err);
+      if (this.strict) throw err;
+      return false;
+    }
+  }
+
+  /** Destroy through the backend; on FAILURE log + swallow (or re-throw under strict). */
+  private safeDestroy(sessionId: string): boolean {
+    try {
+      this.handler.destroy(sessionId);
+      return true;
+    } catch (err) {
+      this.logBackendError("destroy", err);
+      if (this.strict) throw err;
+      return false;
+    }
+  }
+
   /**
    * Start or resume a session.
    * @param sessionId - Existing session ID to resume (optional)
@@ -377,17 +455,20 @@ export class Session {
    */
   start(sessionId?: string): string {
     if (sessionId) {
-      const loaded = this.handler.read(sessionId);
+      const loaded = this.safeRead(sessionId);
       if (loaded) {
         // Check TTL for file backend (Redis handles TTL natively)
         const now = Math.floor(Date.now() / 1000);
         if (loaded._accessed && (now - loaded._accessed) > this.ttl) {
-          this.handler.destroy(sessionId);
+          this.safeDestroy(sessionId);
         } else {
           this.sessionId = sessionId;
           this.data = loaded;
           this.data._accessed = now;
-          this.handler.write(this.sessionId, this.data, this.ttl);
+          this.dirty = false;
+          // Refresh the accessed timestamp; a write failure here is logged but
+          // must not abort the resume — the request still serves.
+          this.safeWrite(this.sessionId, this.data, this.ttl);
           return sessionId;
         }
       }
@@ -397,7 +478,8 @@ export class Session {
     this.sessionId = randomBytes(16).toString("hex");
     const now = Math.floor(Date.now() / 1000);
     this.data = { _created: now, _accessed: now };
-    this.handler.write(this.sessionId, this.data, this.ttl);
+    this.dirty = false;
+    this.safeWrite(this.sessionId, this.data, this.ttl);
     return this.sessionId;
   }
 
@@ -418,6 +500,7 @@ export class Session {
   set(key: string, value: unknown): void {
     if (!this.data) return;
     this.data[key] = value;
+    this.dirty = true;
     this.save();
   }
 
@@ -427,18 +510,23 @@ export class Session {
   delete(key: string): void {
     if (!this.data) return;
     delete this.data[key];
+    this.dirty = true;
     this.save();
   }
 
   /**
    * Destroy the entire session.
+   *
+   * A backend failure is logged (never silent) but does not throw under the
+   * default policy — local state is cleared regardless so the request proceeds.
    */
   destroy(): void {
     if (this.sessionId) {
-      this.handler.destroy(this.sessionId);
+      this.safeDestroy(this.sessionId);
     }
     this.sessionId = null;
     this.data = null;
+    this.dirty = false;
   }
 
   /**
@@ -462,6 +550,7 @@ export class Session {
     if (!this.data) return;
     const now = Math.floor(Date.now() / 1000);
     this.data = { _created: this.data._created, _accessed: now };
+    this.dirty = true;
     this.save();
   }
 
@@ -475,6 +564,11 @@ export class Session {
 
   /**
    * Regenerate the session ID (keeps data, new ID).
+   *
+   * Call this right after a successful login or any privilege change to defeat
+   * session fixation — the pre-auth ID is destroyed and the data is carried
+   * onto a fresh, unguessable ID. A backend destroy/write failure is logged
+   * (never silent) but does not throw under the default policy.
    */
   regenerate(): string {
     const oldId = this.sessionId;
@@ -482,13 +576,14 @@ export class Session {
 
     // Remove old session
     if (oldId) {
-      this.handler.destroy(oldId);
+      this.safeDestroy(oldId);
     }
 
     // New ID, keep data
     this.sessionId = randomBytes(16).toString("hex");
     this.data = oldData ?? { _created: Math.floor(Date.now() / 1000), _accessed: Math.floor(Date.now() / 1000) };
     this.data._accessed = Math.floor(Date.now() / 1000);
+    this.dirty = true;
     this.save();
     return this.sessionId;
   }
@@ -510,6 +605,7 @@ export class Session {
     if (!this.data || !(flashKey in this.data)) return undefined;
     const stored = this.data[flashKey];
     delete this.data[flashKey];
+    this.dirty = true;
     this.save();
     return stored;
   }
@@ -545,19 +641,35 @@ export class Session {
   /**
    * Run garbage collection on the session backend.
    * Removes expired file/database sessions. Redis/Valkey/Mongo handle TTL natively.
+   *
+   * A backend failure is logged (never silent) but does not throw under the
+   * default policy (re-raises under TINA4_SESSION_STRICT=true).
    */
   gc(): void {
-    if (this.handler.gc) {
+    if (!this.handler.gc) return;
+    try {
       this.handler.gc(this.ttl);
+    } catch (err) {
+      this.logBackendError("gc", err);
+      if (this.strict) throw err;
     }
   }
 
   /**
    * Persist session data to the backend.
+   *
+   * Returns true on a successful persist, false if the backend was unreachable
+   * (logged). The dirty flag is cleared only on success so a later save()
+   * retries once the backend recovers. A nothing-to-persist call returns true.
    */
-  save(): void {
-    if (!this.sessionId || !this.data) return;
-    this.handler.write(this.sessionId, this.data, this.ttl);
+  save(): boolean {
+    if (!this.sessionId || !this.data) return true;
+    if (!this.dirty) return true;
+    if (this.safeWrite(this.sessionId, this.data, this.ttl)) {
+      this.dirty = false;
+      return true;
+    }
+    return false;  // write failed (logged); dirty RETAINED for retry
   }
 }
 

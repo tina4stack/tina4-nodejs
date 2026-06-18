@@ -47,9 +47,17 @@ assert("MongoSessionHandler default has read method", typeof mongoDefaults.read 
 const mongoUri = new MongoSessionHandler({ uri: "mongodb://myhost:27018/mydb" });
 assert("MongoSessionHandler works with URI config", mongoUri !== null);
 
-// read returns null when no MongoDB is running
-const readResult = mongo.read("nonexistent-session");
-assert("MongoSessionHandler.read returns null when server unavailable", readResult === null);
+// Backend-failure policy: an UNREACHABLE server is a transport FAILURE — the
+// handler must SURFACE it (throw) so the Session boundary can log-loud + degrade,
+// rather than swallowing it into a null (which is indistinguishable from a
+// genuine "no session yet" miss). Mirrors the all-backend policy in session.ts.
+let mongoThrew = false;
+try {
+  mongo.read("nonexistent-session");
+} catch {
+  mongoThrew = true;
+}
+assert("MongoSessionHandler.read THROWS when server unreachable (transport failure surfaced)", mongoThrew);
 
 // --- Valkey Handler ---
 console.log("\n--- Valkey Session Handler ---");
@@ -81,9 +89,15 @@ const valkeyWithAuth = new ValkeySessionHandler({
 });
 assert("ValkeySessionHandler works with password config", valkeyWithAuth !== null);
 
-// read returns null when no Valkey is running
-const valkeyRead = valkey.read("nonexistent-session");
-assert("ValkeySessionHandler.read returns null when server unavailable", valkeyRead === null);
+// Backend-failure policy: an unreachable Valkey is a transport FAILURE — the
+// handler must SURFACE it (throw), same contract as the Mongo handler above.
+let valkeyThrew = false;
+try {
+  valkey.read("nonexistent-session");
+} catch {
+  valkeyThrew = true;
+}
+assert("ValkeySessionHandler.read THROWS when server unreachable (transport failure surfaced)", valkeyThrew);
 
 // --- Interface Parity ---
 console.log("\n--- Interface Parity ---");

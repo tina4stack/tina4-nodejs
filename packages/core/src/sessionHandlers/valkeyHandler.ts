@@ -67,7 +67,10 @@ export class ValkeySessionHandler implements SessionHandler {
   /**
    * Execute a RESP command synchronously via a short-lived TCP connection.
    *
-   * Returns the raw RESP response string.
+   * Returns the command result string. A genuine key miss yields `""`. A
+   * transport/connection FAILURE (server unreachable, AUTH error, timeout)
+   * THROWS so the Session boundary can distinguish "not found" (silent) from
+   * "backend failed" (log-loud + degrade). Backend-failure policy parity.
    */
   private execSync(args: string[]): string {
     const script = `
@@ -141,18 +144,24 @@ export class ValkeySessionHandler implements SessionHandler {
       setTimeout(() => { sock.destroy(); process.exit(1); }, 3000);
     `;
 
+    let result: string;
     try {
-      const result = execFileSync(process.execPath, ["-e", script], {
+      result = execFileSync(process.execPath, ["-e", script], {
         encoding: "utf-8",
         timeout: 5000,
         stdio: ["pipe", "pipe", "pipe"],
       });
-      if (result === "__NULL__") return "";
-      if (result.startsWith("__ERR__")) return "";
-      return result;
-    } catch {
-      return "";
+    } catch (err) {
+      // Non-zero exit = the child hit a socket error / AUTH failure / timeout.
+      // That is a transport FAILURE, not a key miss — surface it so the
+      // Session boundary logs + degrades (or re-throws under strict mode).
+      throw new Error(`Valkey command failed: ${(err as Error).message}`);
     }
+    if (result === "__NULL__") return "";        // genuine key miss
+    if (result.startsWith("__ERR__")) {
+      throw new Error(`Valkey error: ${result.slice("__ERR__".length)}`);
+    }
+    return result;
   }
 
   private key(sessionId: string): string {
@@ -161,7 +170,7 @@ export class ValkeySessionHandler implements SessionHandler {
 
   read(sessionId: string): SessionData | null {
     const raw = this.execSync(["GET", this.key(sessionId)]);
-    if (!raw) return null;
+    if (!raw) return null;     // key miss — normal "no session yet", NOT an error
     try {
       return JSON.parse(raw) as SessionData;
     } catch {
