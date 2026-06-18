@@ -66,13 +66,25 @@ tina4js init    # Node.js
 
 Run the dev server:
 ```bash
-tina4py serve   # Python  (or: uv run tina4 serve)
+tina4 serve     # ALWAYS use this — handles SCSS compilation, file watching, hot reload
+```
+
+**IMPORTANT:** Always run the app with `tina4 serve`, not `python app.py` or `uv run python app.py`.
+The `tina4` binary is a Rust-based CLI that handles SCSS compilation, file watching, browser
+auto-open, and hot reload. Running `python app.py` directly skips all of this.
+
+The CLI passes `--managed` to the framework server. The framework refuses to start without it.
+To bypass (e.g. Docker, CI), set `TINA4_OVERRIDE_CLIENT=true` in `.env`.
+
+Language-specific aliases also work:
+```bash
+tina4py serve   # Python
 tina4php serve  # PHP
 tina4rb serve   # Ruby
 tina4js serve   # Node.js
 ```
 
-That's it. You get hot reload, debug overlay, and Swagger docs at `/swagger` automatically.
+That's it. You get SCSS compilation, hot reload, debug overlay, and Swagger docs at `/swagger` automatically.
 
 ## The Lazy Senior Developer Ladder
 
@@ -256,7 +268,6 @@ When helping a developer build with Tina4, always follow these:
 5. **Show, don't tell** — When a developer asks how to do something, give them working code
    they can drop into their project. Brief explanation, then the code.
 
-
 6. **Tina4CSS + frond.js are the default frontend stack** — For any server-rendered page,
    form, or AJAX interaction, use the framework's built-in **Tina4CSS** (a Bootstrap-compatible
    drop-in, ~24KB, ships in `src/public/css/`) and **frond.js** (`/js/frond.js` — AJAX, forms,
@@ -268,13 +279,15 @@ When helping a developer build with Tina4, always follow these:
    - Load a partial: `loadPage("/route", "targetId")`. Low-level call: `sendRequest(url, data, method, cb)`.
    - The reactive **tina4-js** frontend is the exception, not the rule — use it only for a decoupled SPA (see "Two Ways to Build"); for normal server-rendered apps, Tina4CSS + frond.js is the path.
 
-7. **Render a template with `res.render(name, data)` — there is NO `template()` function.**
-   A common hallucination is `res.html(template("login.twig"))`, which is undefined.
-   To render a page, use:
-   ```ts
-   return res.render("login.twig", { title: "Login" });   // renders + responds
+
+7. **Render a template with `response.render(name, data)` — there is NO `template()` function.**
+   This is the #1 hallucination: AI writes `response.html(template("login.twig"))` and gets
+   `NameError: name 'template' is not defined` at request time. `template` is not a callable —
+   it's the `@template` route DECORATOR. To render a page, use:
+   ```python
+   return response.render("login.twig", {"title": "Login"})   # renders + responds
    ```
-   Need the rendered HTML as a string? `frond.render("login.twig", data)`.
+   Need the rendered HTML as a string? `from tina4_python.frond import Frond; Frond.render("login.twig", data)`.
 
 ### @noauth Is a Last Resort — Not a Default
 
@@ -328,17 +341,21 @@ Read these when you need detailed patterns for a specific area:
 - **`references/auth-and-services.md`** — JWT authentication, sessions, queue system, email,
   GraphQL, WSDL, events, caching, i18n. Read this for auth or background services.
 
+- **`references/deployment.md`** — Docker base images, Dockerfile recipes for every database
+  driver, Docker Compose, environment variables, production checklist. Read this for ANY
+  deployment or Docker work. **Never guess at Docker configuration — use these exact recipes.**
+
 ## Environment Configuration
 
 All Tina4 apps use a `.env` file. The keys are identical across all four languages:
 
 ```env
 SECRET=your-jwt-secret-here
-DATABASE_NAME=sqlite3:data/app.db
+TINA4_DATABASE_URL=sqlite3:data/app.db
 TINA4_DEBUG=true
 TINA4_DEBUG_LEVEL=DEBUG
-TINA4_LANGUAGE=en
-TINA4_SESSION_HANDLER=file
+TINA4_LOCALE=en
+TINA4_SESSION_BACKEND=file
 SWAGGER_TITLE=My API
 ```
 
@@ -367,7 +384,60 @@ Encourage developers to write tests for their routes, models, and business logic
 
 ## Deployment
 
-Tina4 apps deploy easily via Docker. Images are small (40-80MB):
+Tina4 apps deploy via Docker using official base images from Docker Hub.
+
+**Read `references/deployment.md` for exact Dockerfile recipes** — never guess at Docker
+configuration. The reference contains copy-paste Dockerfiles for every database driver.
+
+### Base Images (Docker Hub)
+
+| Framework | Base Image | Port | Size |
+|-----------|-----------|------|------|
+| Python | `tina4stack/tina4-python:v3` | 7146 | ~56MB |
+| PHP | `tina4stack/tina4-php:v3` | 7145 | ~154MB |
+
+### Quick Deploy (Python)
+
+```dockerfile
+FROM tina4stack/tina4-python:v3
+WORKDIR /app
+COPY app.py .
+COPY .env .
+COPY migrations/ migrations/
+COPY src/ src/
+RUN mkdir -p data data/sessions data/queue data/mailbox
+EXPOSE 7146
+CMD ["python", "app.py"]
+```
+
+```bash
+docker build -t my-app .
+docker run -d -p 7146:7146 -v $(pwd)/data:/app/data my-app
+```
+
+### Quick Deploy (PHP)
+
+```dockerfile
+FROM tina4stack/tina4-php:v3
+WORKDIR /app
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+COPY composer.json composer.lock* ./
+RUN composer install --no-dev --optimize-autoloader --no-scripts && rm /usr/bin/composer
+COPY index.php .
+COPY .env .
+COPY migrations/ migrations/
+COPY src/ src/
+RUN mkdir -p data data/sessions data/queue data/mailbox
+EXPOSE 7145
+CMD ["php", "index.php", "0.0.0.0:7145"]
+```
+
+### Database Drivers
+
+Base images ship with **SQLite only**. To add PostgreSQL, MySQL, MSSQL, or Firebird,
+see `references/deployment.md` for exact Dockerfile recipes per driver per framework.
+
+### CLI Deploy
 
 ```bash
 tina4py build                           # Build Docker image
