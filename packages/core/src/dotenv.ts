@@ -75,12 +75,14 @@ function parseEnvContent(content: string): Record<string, string> {
 /**
  * Load environment variables from a .env file into process.env.
  *
- * By default does NOT override existing process.env values (so real env vars
- * always win over `.env`). Pass `override: true` to overwrite existing keys —
- * this is the standard "local overrides, gitignored" pattern: load `.env` first
- * (override=false, never clobbers real env), then re-load `.env.local` with
- * override=true so a previously-generated dev secret wins. Mirrors the Python
- * master (`load_env(".env.local", override=True)`).
+ * By default does NOT override existing process.env values — it is first-wins:
+ * a key is only set if it is not already present. This is how real env vars
+ * always win. To get the precedence real-env > `.env.local` > `.env`, load
+ * `.env.local` FIRST then `.env`, both with override=false (the default): the
+ * real env (already present) wins over both, `.env.local` fills local-only keys,
+ * and `.env` fills the rest. Do NOT load `.env.local` with override=true — that
+ * would let a stray gitignored `.env.local` clobber an explicitly set real env
+ * var (e.g. a production TINA4_SECRET).
  *
  * Resolution order for the env file path:
  *   1. Explicit `path` argument

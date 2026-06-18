@@ -675,12 +675,16 @@ export async function startServer(config?: Tina4Config): Promise<{
   router: Router;
   port: number;
 }> {
-  // Load .env early so TINA4_DEBUG is available for cluster decision.
-  // Then re-load .env.local as an OVERRIDE (standard "local overrides,
-  // gitignored" pattern) so a previously-generated dev secret wins. .env loads
-  // first (no override — never clobbers real env), .env.local re-loads on top.
+  // Load env early so TINA4_DEBUG is available for the cluster decision.
+  // Precedence MUST be: real environment (set before boot) > .env.local > .env.
+  // loadEnv(override=false) is first-wins (only sets a key not already present),
+  // so load .env.local BEFORE .env — both with override=false. A real env var
+  // set before boot is already present and wins over both; .env.local fills
+  // local-only keys; .env fills whatever neither set. Loading .env.local with
+  // override=true would let a stray gitignored .env.local clobber an explicitly
+  // set real env var (e.g. a production TINA4_SECRET) — never do that.
+  loadEnv(".env.local");
   loadEnv();
-  loadEnv(".env.local", true);
 
   // Auto-generate a per-machine dev secret to a gitignored .env.local when one
   // is missing (dev only, never CI/prod). Must run after env load and before
