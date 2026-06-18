@@ -16,3 +16,15 @@ example/.env
 .claude/worktrees/
 .tina4/
 logs/
+
+# Compiled TypeScript output belongs in dist/ (ignored above), never beside
+# src/. The build is esbuild → dist/ and tests run via tsx (no emit), but an
+# ad-hoc `tsc <file>` or an editor "compile on save" can still emit artifacts
+# next to the sources — ignore them so they can't be committed or clutter the
+# working tree.
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.d.ts.map
+# ...except the one hand-written browser asset served by feedback.ts:
+!packages/core/src/__feedback/widget.js

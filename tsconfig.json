@@ -13,11 +13,12 @@
     "resolveJsonModule": true,
     "composite": true
   },
+  "//": "Solution-style root: files:[] means `tsc -b` compiles NOTHING here and only builds the referenced packages to their own dist/. Without this, a root composite project with no outDir/include compiles the entire tree (test/, example/, gallery/, src/) IN PLACE — which is exactly what leaked .js/.d.ts beside the sources. Per-package builds use esbuild; tests run via tsx.",
+  "files": [],
   "references": [
     { "path": "packages/cli" },
     { "path": "packages/core" },
     { "path": "packages/orm" },
-    { "path": "packages/swagger" },
-    { "path": "packages/twig" }
+    { "path": "packages/swagger" }
   ]
 }
