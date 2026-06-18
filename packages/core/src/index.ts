@@ -87,12 +87,12 @@ export {
   handleFeedbackWidgetJs,
   registerFeedbackRoutes,
 } from "./feedback.js";
-export { Messenger } from "./messenger.js";
+export { Messenger, MessengerConnectionError } from "./messenger.js";
 export type { SendResult, EmailMessage } from "./messenger.js";
 export { DevMailbox, createMessenger } from "./devMailbox.js";
 export { WSDLService, WSDLOperation } from "./wsdl.js";
 export type { WSDLOperationMeta } from "./wsdl.js";
-export { HtmlElement, htmlElement, addHtmlHelpers } from "./htmlElement.js";
+export { HtmlElement, htmlElement, addHtmlHelpers, Raw, SafeString } from "./htmlElement.js";
 export { renderErrorOverlay, renderProductionError, isDebugMode } from "./errorOverlay.js";
 export { AI_TOOLS, isInstalled, showMenu, installSelected, installAll, generateContext } from "./ai.js";
 export type { AiTool } from "./ai.js";

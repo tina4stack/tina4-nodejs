@@ -28,6 +28,19 @@ import tls from "node:tls";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
+import { isTruthy } from "./dotenv.js";
+import { Log } from "./logger.js";
+
+/**
+ * TLS certificate validation defaults to SECURE (rejectUnauthorized: true).
+ * Set TINA4_MAIL_TLS_INSECURE=true to disable validation for dev / self-signed
+ * certificates ONLY — never in production. Previously this was hard-coded to
+ * `rejectUnauthorized: false`, silently disabling certificate validation for
+ * every TLS connection (a man-in-the-middle risk).
+ */
+function tlsRejectUnauthorized(): boolean {
+  return !isTruthy(process.env.TINA4_MAIL_TLS_INSECURE);
+}
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -35,6 +48,23 @@ export interface SendResult {
   success: boolean;
   message: string;
   id?: string;
+}
+
+/**
+ * Raised when an IMAP read fails to connect, authenticate, or speak the
+ * protocol (a `NO`/`BAD` tagged response, a refused/reset socket, a TLS or
+ * DNS failure). Distinct from a SUCCESSFUL fetch that simply has no messages —
+ * that still returns an empty result ([] / 0 / {}), NOT an error.
+ *
+ * inbox()/read()/unread()/search()/folders() LOG and then RAISE this on a
+ * connection/protocol failure so a dead mailbox is never silently mistaken for
+ * an empty one. send() is unchanged — it keeps returning { success, error }.
+ */
+export class MessengerConnectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MessengerConnectionError";
+  }
 }
 
 export interface EmailMessage {
@@ -402,7 +432,7 @@ export class Messenger {
 
       if (this.port === 465) {
         // Implicit TLS (SMTPS)
-        socket = tls.connect({ host: this.host, port: this.port, rejectUnauthorized: false });
+        socket = tls.connect({ host: this.host, port: this.port, rejectUnauthorized: tlsRejectUnauthorized() });
         await new Promise<void>((resolve, reject) => {
           socket.once("secureConnect", resolve);
           socket.once("error", reject);
@@ -440,7 +470,7 @@ export class Messenger {
         // Upgrade to TLS
         const plainSocket = socket as net.Socket;
         socket = tls.connect(
-          { socket: plainSocket, host: this.host, rejectUnauthorized: false },
+          { socket: plainSocket, host: this.host, rejectUnauthorized: tlsRejectUnauthorized() },
         );
         await new Promise<void>((resolve, reject) => {
           (socket as tls.TLSSocket).once("secureConnect", resolve);
@@ -541,7 +571,7 @@ export class Messenger {
       let socket: net.Socket | tls.TLSSocket;
 
       if (this.port === 465) {
-        socket = tls.connect({ host: this.host, port: this.port, rejectUnauthorized: false });
+        socket = tls.connect({ host: this.host, port: this.port, rejectUnauthorized: tlsRejectUnauthorized() });
         await new Promise<void>((resolve, reject) => {
           socket.once("secureConnect", resolve);
           socket.once("error", reject);
@@ -595,7 +625,7 @@ export class Messenger {
       || (this.imapEncryption === "" && this.imapPort === 993);
 
     if (useTls) {
-      socket = tls.connect({ host: this.imapHost, port: this.imapPort, rejectUnauthorized: false });
+      socket = tls.connect({ host: this.imapHost, port: this.imapPort, rejectUnauthorized: tlsRejectUnauthorized() });
       await new Promise<void>((resolve, reject) => {
         socket.once("secureConnect", resolve);
         socket.once("error", reject);
@@ -638,7 +668,12 @@ export class Messenger {
    * Returns list of message summaries.
    */
   async inbox(limit: number = 20, offset: number = 0, folder: string = "INBOX"): Promise<ImapMessage[]> {
-    const socket = await this.imapConnect();
+    let socket: net.Socket | tls.TLSSocket;
+    try {
+      socket = await this.imapConnect();
+    } catch (err) {
+      throw imapFail("inbox", err);
+    }
     try {
       // Select folder
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
@@ -660,6 +695,8 @@ export class Messenger {
       }
 
       return messages;
+    } catch (err) {
+      throw imapFail("inbox", err);
     } finally {
       await this.imapDisconnect(socket);
     }
@@ -669,15 +706,28 @@ export class Messenger {
    * Read a single message by sequence number or UID.
    */
   async read(uid: string, folder: string = "INBOX"): Promise<ImapFullMessage> {
-    const socket = await this.imapConnect();
+    let socket: net.Socket | tls.TLSSocket;
+    try {
+      socket = await this.imapConnect();
+    } catch (err) {
+      throw imapFail("read", err);
+    }
     try {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
       const fetchResp = await imapCommand(socket, `FETCH ${uid} (FLAGS BODY[])`);
+
+      // A genuinely missing UID is a tagged OK with no message body literal —
+      // that is NOT an error: return an empty message (parity with Python's {}).
+      if (!/\{\d+\}/.test(fetchResp)) {
+        return emptyFullMessage(uid);
+      }
 
       // Mark as seen
       await imapCommand(socket, `STORE ${uid} +FLAGS (\\Seen)`);
 
       return parseFullMessage(uid, fetchResp);
+    } catch (err) {
+      throw imapFail("read", err);
     } finally {
       await this.imapDisconnect(socket);
     }
@@ -704,7 +754,12 @@ export class Messenger {
     if (unseenOnly) criteria.push("UNSEEN");
 
     const query = criteria.join(" ");
-    const socket = await this.imapConnect();
+    let socket: net.Socket | tls.TLSSocket;
+    try {
+      socket = await this.imapConnect();
+    } catch (err) {
+      throw imapFail("search", err);
+    }
     try {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
       const searchResp = await imapCommand(socket, `SEARCH ${query}`);
@@ -718,6 +773,8 @@ export class Messenger {
         messages.push(parseHeaderResponse(uid, fetchResp));
       }
       return messages;
+    } catch (err) {
+      throw imapFail("search", err);
     } finally {
       await this.imapDisconnect(socket);
     }
@@ -754,11 +811,18 @@ export class Messenger {
    * Count unseen messages in a folder.
    */
   async unread(folder: string = "INBOX"): Promise<number> {
-    const socket = await this.imapConnect();
+    let socket: net.Socket | tls.TLSSocket;
+    try {
+      socket = await this.imapConnect();
+    } catch (err) {
+      throw imapFail("unread", err);
+    }
     try {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
       const searchResp = await imapCommand(socket, "SEARCH UNSEEN");
       return parseSearchResponse(searchResp).length;
+    } catch (err) {
+      throw imapFail("unread", err);
     } finally {
       await this.imapDisconnect(socket);
     }
@@ -768,7 +832,12 @@ export class Messenger {
    * List available IMAP folders/mailboxes.
    */
   async folders(): Promise<string[]> {
-    const socket = await this.imapConnect();
+    let socket: net.Socket | tls.TLSSocket;
+    try {
+      socket = await this.imapConnect();
+    } catch (err) {
+      throw imapFail("folders", err);
+    }
     try {
       const resp = await imapCommand(socket, 'LIST "" "*"');
       const result: string[] = [];
@@ -778,6 +847,8 @@ export class Messenger {
         if (m) result.push(m[1]);
       }
       return result;
+    } catch (err) {
+      throw imapFail("folders", err);
     } finally {
       await this.imapDisconnect(socket);
     }
@@ -840,11 +911,20 @@ function imapCommand(socket: net.Socket | tls.TLSSocket, command: string): Promi
     let buffer = "";
     const onData = (chunk: Buffer) => {
       buffer += chunk.toString("utf-8");
-      // Look for tagged response line indicating completion
-      if (buffer.includes(`${tag} OK`) || buffer.includes(`${tag} NO`) || buffer.includes(`${tag} BAD`)) {
+      // Tagged OK = success.
+      if (buffer.includes(`${tag} OK`)) {
         socket.removeListener("data", onData);
         socket.removeListener("error", onError);
         resolve(buffer);
+        return;
+      }
+      // Tagged NO / BAD = protocol failure — fail loud (mirrors Python's
+      // non-OK status raise). A genuinely empty mailbox is a tagged OK with an
+      // empty SEARCH result, which still resolves above.
+      if (buffer.includes(`${tag} NO`) || buffer.includes(`${tag} BAD`)) {
+        socket.removeListener("data", onData);
+        socket.removeListener("error", onError);
+        reject(new MessengerConnectionError(`IMAP command failed: ${command.split(" ")[0]} → ${buffer.trim()}`));
       }
     };
 
@@ -857,6 +937,17 @@ function imapCommand(socket: net.Socket | tls.TLSSocket, command: string): Promi
     socket.on("error", onError);
     socket.write(fullCommand, "utf-8");
   });
+}
+
+/**
+ * Log an IMAP connection/protocol failure and return the error to throw.
+ * A genuinely empty mailbox is NOT an error and never reaches here.
+ */
+function imapFail(method: string, err: unknown): MessengerConnectionError {
+  const e = err instanceof Error ? err : new Error(String(err));
+  Log.error(`Messenger IMAP ${method}() failed: ${e.name}: ${e.message}`);
+  if (e instanceof MessengerConnectionError) return e;
+  return new MessengerConnectionError(`IMAP ${method} failed: ${e.message}`);
 }
 
 function parseSearchResponse(response: string): string[] {
@@ -896,6 +987,15 @@ function parseHeaderResponse(uid: string, response: string): ImapMessage {
     snippet: "",
     seen,
   };
+}
+
+/**
+ * An empty full message — returned when a FETCH succeeds (tagged OK) but the
+ * UID does not exist, so there is no message body. Mirrors Python's {} return:
+ * a missing UID is NOT an error.
+ */
+function emptyFullMessage(uid: string): ImapFullMessage {
+  return { uid, subject: "", from: "", to: "", cc: "", date: "", bodyText: "", bodyHtml: "", headers: {} };
 }
 
 function parseFullMessage(uid: string, response: string): ImapFullMessage {

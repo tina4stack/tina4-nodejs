@@ -2,7 +2,7 @@
  * Unit tests for the HtmlElement module.
  * Run with: npx tsx test/htmlElement.test.ts
  */
-import { HtmlElement, htmlElement, addHtmlHelpers } from "../packages/core/src/index.ts";
+import { HtmlElement, htmlElement, addHtmlHelpers, Raw, SafeString } from "../packages/core/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -148,6 +148,83 @@ console.log("\n--- Helper functions ---");
     h._div({ class: "nav" }, h._a({ href: "/" }, "Home")).toString(),
     '<div class="nav"><a href="/">Home</a></div>',
   );
+}
+
+// --- XSS escaping + Raw opt-in (H1 lock-in) ---
+console.log("\n--- XSS escaping + Raw opt-in ---");
+
+{
+  // A plain string child must be HTML-ESCAPED (defeats stored/reflected XSS).
+  const html = new HtmlElement("div", {}, ["<script>alert(1)</script>"]).toString();
+  assert(
+    "string child is escaped (no live tag)",
+    html.includes("&lt;script&gt;") && !html.includes("<script>"),
+    `\n    actual: ${html}`,
+  );
+}
+
+{
+  const html = new HtmlElement("div", {}, ["<script>alert(1)</script>"]).toString();
+  assertEqual(
+    "string child escaped exact",
+    html,
+    "<div>&lt;script&gt;alert(1)&lt;/script&gt;</div>",
+  );
+}
+
+{
+  // A Raw() child renders UNESCAPED — explicit opt-in for trusted markup.
+  const html = new HtmlElement("div", {}, [new Raw("<b>x</b>")]).toString();
+  assertEqual("Raw child renders raw", html, "<div><b>x</b></div>");
+}
+
+{
+  // SafeString is an alias for Raw and also renders unescaped.
+  const html = new HtmlElement("div", {}, [new SafeString("<i>y</i>")]).toString();
+  assertEqual("SafeString alias renders raw", html, "<div><i>y</i></div>");
+}
+
+{
+  assert("SafeString === Raw", (SafeString as unknown) === (Raw as unknown));
+}
+
+{
+  // Nested HtmlElement renders as-is (already escapes its own children) — no double-escape.
+  const inner = new HtmlElement("span", {}, ["A & B"]);
+  const html = new HtmlElement("div", {}, [inner]).toString();
+  assertEqual("nested element no double-escape", html, "<div><span>A &amp; B</span></div>");
+}
+
+{
+  // Mixed children: escaped string + raw + nested element.
+  const html = new HtmlElement("div", {}, [
+    "<x>",
+    new Raw("<b>ok</b>"),
+    new HtmlElement("p", {}, ["c & d"]),
+  ]).toString();
+  assertEqual(
+    "mixed children render correctly",
+    html,
+    "<div>&lt;x&gt;<b>ok</b><p>c &amp; d</p></div>",
+  );
+}
+
+{
+  // Builder pattern children must still render verbatim (escaped by their own toString).
+  const html = htmlElement("div")(htmlElement("p")("<z>")).toString();
+  assertEqual("builder child escapes its own content", html, "<div><p>&lt;z&gt;</p></div>");
+}
+
+{
+  // Attribute value with a quote is escaped.
+  const html = new HtmlElement("a", { title: 'say "hi"' }).toString();
+  assert('attribute quote escaped', html.includes('title="say &quot;hi&quot;"'), `\n    actual: ${html}`);
+}
+
+{
+  // Attribute value with a < is escaped.
+  const html = new HtmlElement("div", { "data-x": "<bad>" }).toString();
+  assert("attribute < escaped", html.includes('data-x="&lt;bad&gt;"'), `\n    actual: ${html}`);
 }
 
 // --- Summary ---

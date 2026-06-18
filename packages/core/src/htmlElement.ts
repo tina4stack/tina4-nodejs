@@ -45,8 +45,35 @@ const HTML_TAGS: readonly string[] = [
   "wbr",
 ];
 
+/**
+ * Raw — marker for trusted, pre-sanitised HTML that must render UNESCAPED.
+ *
+ * String/scalar children of an HtmlElement are HTML-escaped by default to
+ * prevent stored/reflected XSS. Wrap a value in Raw to opt out of escaping
+ * when (and only when) you have already sanitised it yourself.
+ *
+ *   new HtmlElement("div", {}, ["<b>x</b>"]).toString()           // &lt;b&gt;x&lt;/b&gt;  (escaped)
+ *   new HtmlElement("div", {}, [new Raw("<b>x</b>")]).toString()  // <b>x</b>              (raw)
+ *
+ * Alias: SafeString.
+ */
+export class Raw {
+  readonly value: string;
+
+  constructor(value: string) {
+    this.value = String(value);
+  }
+
+  toString(): string {
+    return this.value;
+  }
+}
+
+// Alias — some callers/frameworks prefer the SafeString name (matches Frond/Python).
+export const SafeString = Raw;
+
 type Attrs = Record<string, string | number | boolean | null | undefined>;
-type Child = string | number | HtmlElement;
+type Child = string | number | HtmlElement | Raw;
 
 function escapeAttr(value: string): string {
   return value
@@ -56,8 +83,28 @@ function escapeAttr(value: string): string {
     .replace(/>/g, "&gt;");
 }
 
+/**
+ * Escape a plain string/scalar child so it cannot inject markup (defeats XSS).
+ */
+function escapeText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function isAttrs(arg: unknown): arg is Attrs {
-  return typeof arg === "object" && arg !== null && !(arg instanceof HtmlElement) && !Array.isArray(arg);
+  return typeof arg === "object" && arg !== null
+    && !(arg instanceof HtmlElement) && !(arg instanceof Raw) && !Array.isArray(arg);
+}
+
+/**
+ * A builder produced by htmlElement() is a callable function branded with
+ * `_isHtmlElement`. Its toString() already produces fully-escaped HTML, so it
+ * must render verbatim (not be escaped as a string).
+ */
+function isBuilderElement(arg: unknown): boolean {
+  return typeof arg === "function" && (arg as { _isHtmlElement?: boolean })._isHtmlElement === true;
 }
 
 /**
@@ -95,7 +142,19 @@ export class HtmlElement {
     html += ">";
 
     for (const child of this.children) {
-      html += String(child);
+      if (child instanceof HtmlElement) {
+        // Nested elements render themselves (already escape their own children).
+        html += child.toString();
+      } else if (child instanceof Raw) {
+        // Explicitly trusted markup — emit unescaped.
+        html += child.toString();
+      } else if (isBuilderElement(child)) {
+        // Callable builder produced by htmlElement() — render via its toString.
+        html += String(child);
+      } else {
+        // Plain string/scalar child — escape to defeat XSS.
+        html += escapeText(String(child));
+      }
     }
 
     html += `</${this.tag}>`;

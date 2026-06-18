@@ -296,6 +296,10 @@ export function createMessenger(): Messenger | DevMailbox {
   const debug = process.env.TINA4_DEBUG;
   const smtpHost = process.env.TINA4_MAIL_HOST;
 
+  // Production = NOT debug mode AND NODE_ENV is "production".
+  // Derived here (was previously referenced undefined → ReferenceError).
+  const isProd = !isTruthy(debug) && process.env.NODE_ENV === "production";
+
   // Force dev mode when TINA4_DEBUG is truthy
   if (isTruthy(debug)) {
     return new DevMailbox();
