@@ -1165,7 +1165,14 @@ ${reset}
         ];
         if (globalMiddleware.length > 0) {
           const [, , proceed] = await MiddlewareRunner.runBefore(globalMiddleware, req, res);
-          if (!proceed || res.raw.writableEnded) return;
+          if (!proceed || res.raw.writableEnded) {
+            // AFTER-ON-4xx RULE (M2): after_* ALWAYS run even when a before_*
+            // short-circuited (4xx / clean 500 / response ended), so they can
+            // still add headers / logging. Run them, then stop the handler.
+            await MiddlewareRunner.runAfter(globalMiddleware, req, res);
+            if (!res.raw.writableEnded) res.raw.end();
+            return;
+          }
         }
 
         // Run per-route middlewares if any

@@ -103,27 +103,47 @@ const result2 = await chain2.run(mockReq(), mockRes());
 assert("Single middleware runs", logs.includes("mw1"));
 assert("Single middleware returns true", result2 === true);
 
-// --- Multiple middlewares in order ---
-// Note: MiddlewareChain.run() uses a for-loop with index, and next() also
-// increments index. When next() is called, the for-loop increment causes
-// the chain to advance by 2 (skipping every other middleware). This is the
-// current implementation behavior — the chain iterates through all middlewares
-// regardless of whether next() is called, but next() causes an extra skip.
+// --- Multiple middlewares in order (M1 — index-skip bug fix) ---
+// Every registered middleware that calls next() must run EXACTLY ONCE, in
+// REGISTRATION order. The old runner double-advanced (for-loop index AND
+// next() both incremented) so every other middleware was silently skipped;
+// the chain is now driven purely by next().
 console.log("\n--- Multiple Middlewares ---");
 
 const chain3 = new MiddlewareChain();
 const order: string[] = [];
-// Don't call next() — the for loop advances automatically
 chain3.use((req, res, next) => { order.push("first"); next(); });
 chain3.use((req, res, next) => { order.push("second"); next(); });
 chain3.use((req, res, next) => { order.push("third"); next(); });
 chain3.use((req, res, next) => { order.push("fourth"); next(); });
 
 await chain3.run(mockReq(), mockRes());
-// With the current implementation, next() + for-loop increment = skip every other.
-// Middlewares at indices 0 and 2 run (first, third).
-assert("Middlewares run per implementation (even-indexed)", order[0] === "first" && order[1] === "third");
-assert("Chain processes middlewares", order.length >= 2);
+assert(
+  "All middlewares run exactly once in registration order (no skip)",
+  JSON.stringify(order) === JSON.stringify(["first", "second", "third", "fourth"]),
+  `order=${JSON.stringify(order)}`,
+);
+assert("Chain processes every middleware", order.length === 4);
+
+// --- N middleware all run exactly once in order (Node index-skip guard) ---
+console.log("\n--- N Middlewares (no skip) ---");
+{
+  const N = 5;
+  const chainN = new MiddlewareChain();
+  const trace: string[] = [];
+  const expected = Array.from({ length: N }, (_, i) => `mw${i}`);
+  for (let i = 0; i < N; i++) {
+    const label = `mw${i}`;
+    chainN.use((req, res, next) => { trace.push(label); next(); });
+  }
+  await chainN.run(mockReq(), mockRes());
+  assert(
+    `N=${N} middleware all run, in order`,
+    JSON.stringify(trace) === JSON.stringify(expected),
+    `trace=${JSON.stringify(trace)}`,
+  );
+  assert("N middleware each run exactly once", trace.length === new Set(trace).size && trace.length === N);
+}
 
 // --- Middleware that ends response ---
 console.log("\n--- Response Ending ---");

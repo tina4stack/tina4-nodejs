@@ -22,32 +22,45 @@ export class MiddlewareChain {
     this.middlewares.push(fn);
   }
 
+  /**
+   * Run the chain in REGISTRATION order — each middleware runs exactly once,
+   * in the order it was attached via use(). The chain advances from ONE
+   * source only: `next()`. (The old runner double-advanced — a for-loop index
+   * AND next() both incremented — so every other middleware was silently
+   * skipped. Fixed by driving the chain purely by next(), mirroring Python's
+   * _make_mw_continuation Russian-doll continuation.)
+   *
+   * A middleware may stop the chain by:
+   *   - not calling next() (it owns the response), or
+   *   - ending the response (res.raw.writableEnded).
+   * Returns true when the whole chain ran to completion (handler may proceed),
+   * false when it was short-circuited.
+   */
   async run(req: Tina4Request, res: Tina4Response): Promise<boolean> {
-    let index = 0;
-    let completed = true;
+    const dispatch = async (i: number): Promise<void> => {
+      if (i >= this.middlewares.length) return;
+      let advanced = false;
 
-    const next = (): void => {
-      index++;
+      const next = (): void => {
+        advanced = true;
+      };
+
+      await this.middlewares[i](req, res, next);
+
+      // The middleware owns the response — stop the chain.
+      if (res.raw.writableEnded) return;
+
+      // next() was called → advance to the following middleware (exactly one
+      // step). next() not called → the middleware short-circuited; stop here.
+      if (advanced) {
+        await dispatch(i + 1);
+      }
     };
 
-    for (index = 0; index < this.middlewares.length; index++) {
-      const prevIndex = index;
-      await this.middlewares[index](req, res, next);
+    await dispatch(0);
 
-      // If response was already sent, stop the chain
-      if (res.raw.writableEnded) {
-        completed = false;
-        break;
-      }
-
-      // If next() wasn't called, stop the chain
-      if (index === prevIndex) {
-        // next() increments index, so if it wasn't called, index stays the same
-        // But we increment in the for loop, so we need to check differently
-      }
-    }
-
-    return completed;
+    // Completed (handler may proceed) iff no middleware ended the response.
+    return !res.raw.writableEnded;
   }
 }
 
@@ -64,6 +77,39 @@ export class MiddlewareChain {
  * If a "before" method returns a response whose status code is >= 400
  * the chain short-circuits and runBefore returns shouldContinue = false.
  */
+/**
+ * Produce the deterministic clean 500 for a throwing class-based middleware
+ * (M2). Mirrors Python's _middleware_500: LOG via Log.error (class + method +
+ * error type + message — never silent) then return a 500 with the exact JSON
+ * body shape shared across all four frameworks. The worker never crashes and
+ * no unhandled exception leaks.
+ */
+function middleware500(
+  res: Tina4Response,
+  mwClass: any,
+  methodName: string,
+  error: unknown,
+): Tina4Response {
+  const clsName = mwClass?.name ?? mwClass?.constructor?.name ?? "Middleware";
+  const err = error as { name?: string; message?: string };
+  const type = err?.name ?? (error as object)?.constructor?.name ?? "Error";
+  const message = err?.message ?? String(error);
+  try {
+    Log.error(`Middleware ${clsName}.${methodName} raised ${type}: ${message}`);
+  } catch {
+    /* never let a broken logger swallow the 500 */
+  }
+  // res is callable (json) in real Response; tolerate either shape.
+  if (typeof (res as any).json === "function") {
+    (res as any).json({ error: "Internal Server Error", status: 500 }, 500);
+  } else if (typeof (res as any) === "function") {
+    (res as any)({ error: "Internal Server Error", status: 500 }, 500);
+  } else if (typeof (res as any).status === "function") {
+    (res as any).status(500);
+  }
+  return res;
+}
+
 export class MiddlewareRunner {
   /** Globally registered middleware classes (parity with PHP/Ruby/Python orchestrators). */
   private static globalMiddleware: any[] = [];
@@ -90,16 +136,43 @@ export class MiddlewareRunner {
   }
 
   /**
-   * Execute every beforeX static method found on the supplied classes,
-   * in order. Returns the (possibly mutated) request and response pair and a
-   * boolean indicating whether the route handler should still run.
+   * Discover the before-prefixed / after-prefixed method names on a
+   * middleware class in DEFINITION order (M1).
+   * `Object.getOwnPropertyNames` returns a class's own
+   * static method names in source-declaration order — we deliberately do NOT
+   * sort() them, so within a class the hooks run in the order they were
+   * written (parity with Python walking __dict__, PHP get_class_methods, Ruby
+   * instance_methods(false)). Cross-class order is the natural iteration of
+   * the registered classes = REGISTRATION order.
+   */
+  private static methodNames(cls: any, prefix: string): string[] {
+    return Object.getOwnPropertyNames(cls).filter(
+      (name) => typeof cls[name] === "function" && name.startsWith(prefix),
+    );
+  }
+
+  /**
+   * Execute every beforeX static method found on the supplied classes.
    *
-   * Short-circuits when a before method sets a status >= 400.
+   * ORDER (M1): cross-class = REGISTRATION order (the order classes were
+   * attached via Router.use / MiddlewareRunner.use); within a class =
+   * DEFINITION order (source order, never alphabetical). before_* run before
+   * the handler.
+   *
+   * THROW (M2): each before* call is wrapped — a throwing middleware is
+   * LOGGED and produces a deterministic clean 500 (it never crashes the
+   * worker / leaks an unhandled exception), and the chain short-circuits
+   * (skip = true, handler skipped).
+   *
+   * Short-circuits (skip = true, handler skipped) when a before* sets a
+   * status >= 400 or ends/500s the response.
    *
    * ASYNC — each hook is awaited so middleware can perform async work (e.g.
    * the distributed responseCache before-hook awaiting `backend.get`). Awaiting
    * a synchronous hook that returns an array is harmless (the array resolves
    * immediately), so existing sync hooks keep working unchanged.
+   *
+   * Returns [req, res, shouldContinue].
    */
   static async runBefore(
     classes: any[],
@@ -107,13 +180,16 @@ export class MiddlewareRunner {
     res: Tina4Response,
   ): Promise<[Tina4Request, Tina4Response, boolean]> {
     for (const cls of classes) {
-      const methods = Object.getOwnPropertyNames(cls).filter(
-        (name) => typeof cls[name] === "function" && name.startsWith("before"),
-      );
-      for (const method of methods) {
-        const result = await cls[method](req, res);
-        if (Array.isArray(result)) {
-          [req, res] = result as [Tina4Request, Tina4Response];
+      for (const method of MiddlewareRunner.methodNames(cls, "before")) {
+        try {
+          const result = await cls[method](req, res);
+          if (Array.isArray(result)) {
+            [req, res] = result as [Tina4Request, Tina4Response];
+          }
+        } catch (error) {
+          // Throw → logged clean 500, skip the handler (deterministic).
+          res = middleware500(res, cls, method, error);
+          return [req, res, false];
         }
         // Short-circuit if the middleware set an error status
         if (res.raw.statusCode >= 400 || res.raw.writableEnded) {
@@ -125,8 +201,19 @@ export class MiddlewareRunner {
   }
 
   /**
-   * Execute every afterX static method found on the supplied classes,
-   * in order. Returns the (possibly mutated) request and response pair.
+   * Execute every afterX static method found on the supplied classes.
+   *
+   * ORDER (M1): cross-class = REGISTRATION order; within a class = DEFINITION
+   * order. after_* run after the handler.
+   *
+   * THROW (M2): each after* call is wrapped — a throwing after middleware is
+   * LOGGED and produces a clean 500, then the remaining after* STILL run
+   * (they may add headers / logging). No unhandled exception leaks.
+   *
+   * AFTER-ON-4xx RULE (M2): after_* ALWAYS run, even when a before_*
+   * short-circuited with status >= 400 and the handler was skipped — so they
+   * can still add headers / logging. The dispatcher calls runAfter
+   * unconditionally after the before/handler block (see server.ts).
    *
    * ASYNC — each hook is awaited (e.g. the responseCache after-hook awaiting
    * `backend.set`). Awaiting a synchronous hook is harmless, so existing sync
@@ -138,13 +225,16 @@ export class MiddlewareRunner {
     res: Tina4Response,
   ): Promise<[Tina4Request, Tina4Response]> {
     for (const cls of classes) {
-      const methods = Object.getOwnPropertyNames(cls).filter(
-        (name) => typeof cls[name] === "function" && name.startsWith("after"),
-      );
-      for (const method of methods) {
-        const result = await cls[method](req, res);
-        if (Array.isArray(result)) {
-          [req, res] = result as [Tina4Request, Tina4Response];
+      for (const method of MiddlewareRunner.methodNames(cls, "after")) {
+        try {
+          const result = await cls[method](req, res);
+          if (Array.isArray(result)) {
+            [req, res] = result as [Tina4Request, Tina4Response];
+          }
+        } catch (error) {
+          // Throw → logged clean 500, but remaining after* STILL run.
+          res = middleware500(res, cls, method, error);
+          continue;
         }
       }
     }
