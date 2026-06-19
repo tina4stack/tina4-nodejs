@@ -8,6 +8,7 @@ import { listRoutes } from "./commands/routes.js";
 import { runTests } from "./commands/test.js";
 import { generate } from "./commands/generate.js";
 import { runSeeds } from "./commands/seed.js";
+import { runMetrics } from "./commands/metrics.js";
 import { execSync } from "node:child_process";
 
 const args = process.argv.slice(2);
@@ -26,6 +27,8 @@ const HELP = `
     tina4nodejs routes                List all registered routes
     tina4nodejs test [file]           Run project tests
     tina4nodejs seed [file]           Run database seed files from src/seeds/
+    tina4nodejs metrics [--top N] [--json] [--fail-on warn|error] [--path DIR]
+                                      Rank top code-quality offenders
     tina4nodejs console               Open an interactive REPL with the framework loaded
     tina4nodejs ai                    Install AI coding assistant context files
     tina4nodejs help                  Show this help message
@@ -130,6 +133,10 @@ async function main(): Promise<void> {
     case "seed": {
       await runSeeds(args[1]);
       break;
+    }
+    case "metrics": {
+      const code = runMetrics(args.slice(1));
+      process.exit(code);
     }
     case "console": {
       const repl = await import("node:repl");

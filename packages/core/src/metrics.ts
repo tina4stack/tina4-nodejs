@@ -59,20 +59,74 @@ let _lastScanRoot = "";
 
 // ── Test file detection ─────────────────────────────────────
 
-function hasMatchingTest(relPath: string): boolean {
-  const parts = relPath.split('/');
-  const basename = parts[parts.length - 1] || '';
-  const name = basename.replace(/\.(ts|js)$/, '');
-  const parentModule = parts.length > 1 ? parts[parts.length - 2] : '';
+/** Escape a string for safe embedding inside a RegExp source. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
-  // Search both CWD and the scan root (framework dir when in fallback mode)
+/**
+ * Top-level classes DEFINED in a source file. A test that references one of
+ * these genuinely exercises this file. Classes only (distinctive PascalCase,
+ * length > 3) — module-level function names like `get`/`run`/`init` are too
+ * generic to trust as a coverage signal.
+ */
+function definedClasses(source: string): Set<string> {
+  const names = new Set<string>();
+  const re = /(?:^|\n)\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(\w+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source)) !== null) {
+    const name = m[1];
+    if (name && !name.startsWith("_") && name.length > 3) {
+      names.add(name);
+    }
+  }
+  return names;
+}
+
+/**
+ * Whether a source file has a test that ACTUALLY exercises it.
+ *
+ * PRECISE detection — a bare word-mention of the module name is NOT enough
+ * (that over-reported badly: a default DB adapter looked "tested" because some
+ * test merely said the word "sqlite"). A file counts as covered only on a real,
+ * file-specific signal:
+ *
+ *   1. Filename — a dedicated test file named for THIS exact module
+ *      (`<m>.test.ts/.js`, `<m>.spec.ts/.js`, `test_<m>.*`, `<m>_test.*`,
+ *      `<m>_spec.*`) — NOT the parent directory (one `database.test.ts` must
+ *      not mark every file under `adapters/` tested).
+ *   2. Import — a test that actually IMPORTS this module by its path
+ *      (`import … from ".../<m>.js"`, `require(".../<m>")`).
+ *   3. Class reference — a test that references a top-level class DEFINED in
+ *      this file (distinctive PascalCase, length > 3). NO bare module-name word
+ *      match and NO guessed CamelCase-from-snake_case match.
+ *
+ * Returns true only on a real signal, so the "untested" offenders surfaced by
+ * `tina4 metrics` and the dashboard "T" badge are trustworthy.
+ */
+function hasMatchingTest(relPath: string): boolean {
+  const parts = relPath.split("/");
+  const basename = parts[parts.length - 1] || "";
+  const name = basename.replace(/\.(ts|js)$/, "");
+
+  // Classes defined in THIS file (read from the resolved on-disk file).
+  let symbols = new Set<string>();
+  const srcFile = _lastScanRoot ? path.join(_lastScanRoot, relPath) : relPath;
+  const srcText = readFileSafe(srcFile) ?? readFileSafe(relPath);
+  if (srcText !== null) {
+    symbols = definedClasses(srcText);
+  }
+
+  // Search CWD and (in framework-fallback mode) the repo root that owns test/.
   const searchRoots = [process.cwd()];
   if (_lastScanRoot && _lastScanRoot !== process.cwd()) {
-    // Go up from scan root to find the repo root (where test/ lives)
     let repoRoot = _lastScanRoot;
-    // Walk up until we find a test/ or tests/ dir, max 5 levels
     for (let i = 0; i < 5; i++) {
-      if (fs.existsSync(path.join(repoRoot, 'test')) || fs.existsSync(path.join(repoRoot, 'tests')) || fs.existsSync(path.join(repoRoot, 'spec'))) {
+      if (
+        fs.existsSync(path.join(repoRoot, "test")) ||
+        fs.existsSync(path.join(repoRoot, "tests")) ||
+        fs.existsSync(path.join(repoRoot, "spec"))
+      ) {
         searchRoots.push(repoRoot);
         break;
       }
@@ -82,10 +136,10 @@ function hasMatchingTest(relPath: string): boolean {
     }
   }
 
-  const testDirs = ['test', 'tests', 'spec'];
+  const testDirs = ["test", "tests", "spec"];
 
+  // Stage 1: a dedicated test FILE named for THIS module (no parent-dir blanket).
   for (const root of searchRoots) {
-    // Stage 1: Filename matching
     for (const td of testDirs) {
       const patterns = [
         path.join(root, td, `${name}.test.ts`),
@@ -94,39 +148,49 @@ function hasMatchingTest(relPath: string): boolean {
         path.join(root, td, `${name}.spec.js`),
         path.join(root, td, `test_${name}.ts`),
         path.join(root, td, `test_${name}.js`),
-        path.join(root, td, `test_${name}.py`),
-        path.join(root, td, `${name}_test.rb`),
-        path.join(root, td, `${name}_spec.rb`),
-        ...(parentModule && parentModule !== name ? [
-          path.join(root, td, `${parentModule}.test.ts`),
-          path.join(root, td, `${parentModule}.test.js`),
-          path.join(root, td, `${parentModule}.spec.ts`),
-        ] : []),
+        path.join(root, td, `${name}_test.ts`),
+        path.join(root, td, `${name}_test.js`),
+        path.join(root, td, `${name}_spec.ts`),
+        path.join(root, td, `${name}_spec.js`),
       ];
-      if (patterns.some(p => fs.existsSync(p))) return true;
+      if (patterns.some((p) => fs.existsSync(p))) return true;
     }
+  }
 
-    // Stage 2+3: Content scan
-    const pathWithoutExt = relPath.replace(/\.(ts|js|py|rb|php)$/, '');
-    const className = name
-      .replace(/[-_](.)/g, (_: string, c: string) => c.toUpperCase())
-      .replace(/^(.)/, (_: string, c: string) => c.toUpperCase());
+  // Stage 2+3: a test that actually IMPORTS this module (by path), or references
+  // a class DEFINED in it. NO bare word-of-the-module-name match.
+  // A module specifier whose final path segment is exactly this module name:
+  //   "./<name>", "../a/b/<name>.js", "@pkg/<name>" — but NOT "better-<name>"
+  //   (the segment boundary is the opening quote or a "/", never a hyphen/word
+  //   char). Optional .ts/.js extension.
+  const spec = `["'](?:[^"']*\\/)?${escapeRegExp(name)}(?:\\.(?:ts|js))?["']`;
+  const importRes: RegExp[] = [
+    // import ... from "<spec>"
+    new RegExp(`import\\b[^;\\n]*?from\\s*${spec}`),
+    // require("<spec>")
+    new RegExp(`require\\s*\\(\\s*${spec}\\s*\\)`),
+    // side-effect import "<spec>"
+    new RegExp(`import\\s*${spec}`),
+  ];
 
+  let classRe: RegExp | null = null;
+  if (symbols.size > 0) {
+    const alt = [...symbols].map(escapeRegExp).join("|");
+    classRe = new RegExp(`\\b(?:${alt})\\b`);
+  }
+
+  for (const root of searchRoots) {
     for (const td of testDirs) {
       const fullTd = path.join(root, td);
       if (!fs.existsSync(fullTd)) continue;
-      const testFiles = walkFiles(fullTd, ['.ts', '.js', '.py', '.rb']);
+      const testFiles = walkFiles(fullTd, [".ts", ".js"]);
       for (const testFile of testFiles) {
+        // Never let a file count as its own test.
+        if (path.resolve(testFile) === path.resolve(srcFile)) continue;
         const content = readFileSafe(testFile);
         if (content === null) continue;
-        if (content.includes(name) && (
-          content.includes(`"${name}"`) || content.includes(`'${name}'`) ||
-          content.includes(`/${name}"`) || content.includes(`/${name}'`) ||
-          content.includes(pathWithoutExt)
-        )) return true;
-        if (className !== name && new RegExp(`\\b${className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(content)) {
-          return true;
-        }
+        if (importRes.some((re) => re.test(content))) return true;
+        if (classRe && classRe.test(content)) return true;
       }
     }
   }
@@ -869,6 +933,141 @@ export function fullAnalysis(root: string = "src"): Record<string, any> {
 
   _fullCache = { hash: currentHash, data: result, time: now };
   return result;
+}
+
+// ── Top Offenders (CLI + dashboard) ──────────────────────────
+
+/** Severity ranking for sorting (higher = more severe). */
+export const SEVERITY_RANK: Record<string, number> = { error: 2, warn: 1, info: 0 };
+
+export interface Offender {
+  file: string;
+  line: number;
+  kind: string;
+  severity: "error" | "warn" | "info";
+  score: number;
+  detail: string;
+}
+
+export interface OffendersResult {
+  offenders: Offender[];
+  summary: Record<string, any>;
+}
+
+/**
+ * Rank the worst code-quality issues into a single "top offenders" list.
+ *
+ * Reuses {@link fullAnalysis} (does NOT re-analyze — the result is mtime-cached).
+ * Each offender is `{ file, line, kind, severity, score, detail }`.
+ *
+ * Rules (one offender per matching condition — SAME scoring as the master):
+ *   - function complexity > 10  → kind "complexity"
+ *         severity "error" if > 20 else "warn"; score = complexity
+ *   - file loc > 500            → kind "large_file" (warn); score = loc / 100
+ *   - file functions > 20       → kind "too_many_functions" (warn); score = functions / 4
+ *   - file maintainability < 40 → kind "low_maintainability"
+ *         severity "error" if < 20 else "warn"; score = 50 - mi
+ *   - file has_tests === false  → kind "untested" (info); score = loc / 100
+ *
+ * Sorted by (severity rank, score) DESCENDING and truncated to `top`.
+ *
+ * Returns `{ offenders, summary }` where summary carries the headline numbers
+ * the CLI prints (files_analyzed, total_functions, avg_complexity,
+ * avg_maintainability, scan_mode, scan_root, total_offenders).
+ */
+export function offenders(root: string = "src", top: number = 20): OffendersResult {
+  const analysis = fullAnalysis(root);
+  if (analysis.error) {
+    return { offenders: [], summary: { error: analysis.error } };
+  }
+
+  const items: Offender[] = [];
+
+  // Function-level: cyclomatic complexity.
+  for (const fn of analysis.most_complex_functions || []) {
+    const cc: number = fn.complexity;
+    if (cc > 10) {
+      items.push({
+        file: fn.file,
+        line: fn.line,
+        kind: "complexity",
+        severity: cc > 20 ? "error" : "warn",
+        score: cc,
+        detail: `${fn.name} — cyclomatic complexity ${cc}`,
+      });
+    }
+  }
+
+  // File-level rules.
+  for (const fm of analysis.file_metrics || []) {
+    const filePath: string = fm.path;
+    const loc: number = fm.loc;
+    const funcs: number = fm.functions;
+    const mi: number = fm.maintainability;
+
+    if (loc > 500) {
+      items.push({
+        file: filePath,
+        line: 1,
+        kind: "large_file",
+        severity: "warn",
+        score: loc / 100,
+        detail: `${loc} LOC (max 500)`,
+      });
+    }
+
+    if (funcs > 20) {
+      items.push({
+        file: filePath,
+        line: 1,
+        kind: "too_many_functions",
+        severity: "warn",
+        score: funcs / 4,
+        detail: `${funcs} functions (max 20)`,
+      });
+    }
+
+    if (mi < 40) {
+      items.push({
+        file: filePath,
+        line: 1,
+        kind: "low_maintainability",
+        severity: mi < 20 ? "error" : "warn",
+        score: 50 - mi,
+        detail: `maintainability index ${mi} (min 40)`,
+      });
+    }
+
+    if (fm.has_tests === false) {
+      items.push({
+        file: filePath,
+        line: 1,
+        kind: "untested",
+        severity: "info",
+        score: loc / 100,
+        detail: "no referencing test",
+      });
+    }
+  }
+
+  // Sort by (severity rank, score) DESCENDING.
+  items.sort((a, b) => {
+    const sevDiff = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
+    if (sevDiff !== 0) return sevDiff;
+    return b.score - a.score;
+  });
+
+  const summary = {
+    files_analyzed: analysis.files_analyzed,
+    total_functions: analysis.total_functions,
+    avg_complexity: analysis.avg_complexity,
+    avg_maintainability: analysis.avg_maintainability,
+    scan_mode: analysis.scan_mode,
+    scan_root: analysis.scan_root,
+    total_offenders: items.length,
+  };
+
+  return { offenders: items.slice(0, top), summary };
 }
 
 // ── File Detail ──────────────────────────────────────────────

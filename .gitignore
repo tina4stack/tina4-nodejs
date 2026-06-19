@@ -30,3 +30,10 @@ packages/*/src/**/*.d.ts.map
 # sibling .ts; these do not). Add any new hand-written ambient .d.ts here:
 !packages/core/src/__feedback/widget.js
 !packages/orm/src/adapters/pg-types.d.ts
+
+# Runtime artifacts — never commit. SQLite WAL/SHM sidecars (the .db itself is
+# already ignored above) and the auto-generated JWT RSA keypair (.keys/ holds
+# private.pem — a secret).
+*.db-wal
+*.db-shm
+.keys/
