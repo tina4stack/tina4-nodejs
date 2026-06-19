@@ -20,6 +20,9 @@
  *   - Error capture (resolver exceptions become GraphQL errors)
  */
 
+import { Log } from "./logger.js";
+import { isDebugMode } from "./errorOverlay.js";
+
 // ── Types ────────────────────────────────────────────────────
 
 export interface GraphQLField {
@@ -115,6 +118,19 @@ interface ParsedField {
   selections: ParsedSelection[] | null;
 }
 
+interface ParsedFragmentSpread {
+  kind: "fragment_spread";
+  name: string;
+  directives: ParsedDirective[];
+}
+
+interface ParsedInlineFragment {
+  kind: "inline_fragment";
+  on: string | null;
+  directives: ParsedDirective[];
+  selections: ParsedSelection[];
+}
+
 interface ParsedDirective {
   name: string;
   args: Record<string, unknown>;
@@ -129,13 +145,22 @@ interface ParsedOperation {
   selections: ParsedSelection[];
 }
 
+interface ParsedFragment {
+  kind: "fragment";
+  name: string;
+  on: string;
+  directives: ParsedDirective[];
+  selections: ParsedSelection[];
+}
+
 interface ParsedVariableDef {
   name: string;
   type: string;
   default: unknown;
 }
 
-type ParsedSelection = ParsedField;
+type ParsedSelection = ParsedField | ParsedFragmentSpread | ParsedInlineFragment;
+type ParsedDefinition = ParsedOperation | ParsedFragment;
 
 class Parser {
   private tokens: Token[];
@@ -174,12 +199,36 @@ class Parser {
     return null;
   }
 
-  parse(): { definitions: ParsedOperation[] } {
-    const doc: { definitions: ParsedOperation[] } = { definitions: [] };
+  parse(): { definitions: ParsedDefinition[] } {
+    const doc: { definitions: ParsedDefinition[] } = { definitions: [] };
     while (this.pos < this.tokens.length) {
-      doc.definitions.push(this.parseOperation());
+      doc.definitions.push(this.parseDefinition());
     }
     return doc;
+  }
+
+  private parseDefinition(): ParsedDefinition {
+    const t = this.peek();
+    if (t && t.type === "NAME" && t.value === "fragment") {
+      return this.parseFragment();
+    }
+    return this.parseOperation();
+  }
+
+  private parseFragment(): ParsedFragment {
+    this.expect("NAME", "fragment");
+    const name = this.expect("NAME").value;
+    this.expect("NAME", "on");
+    const typeName = this.expect("NAME").value;
+    const directives = this.parseDirectives();
+    const selections = this.parseSelectionSet();
+    return {
+      kind: "fragment",
+      name,
+      on: typeName,
+      directives,
+      selections,
+    };
   }
 
   private parseOperation(): ParsedOperation {
@@ -216,7 +265,29 @@ class Parser {
     this.expect("LBRACE");
     const selections: ParsedSelection[] = [];
     while (!this.match("RBRACE")) {
-      selections.push(this.parseField());
+      if (this.match("SPREAD")) {
+        const next = this.peek();
+        if (next && next.type === "NAME" && next.value === "on") {
+          // Inline fragment: ... on Type { ... }
+          this.advance();
+          const typeName = this.expect("NAME").value;
+          const directives = this.parseDirectives();
+          const sels = this.parseSelectionSet();
+          selections.push({ kind: "inline_fragment", on: typeName, directives, selections: sels });
+        } else if (next && next.type === "LBRACE") {
+          // Inline fragment without type condition: ... { ... }
+          const directives = this.parseDirectives();
+          const sels = this.parseSelectionSet();
+          selections.push({ kind: "inline_fragment", on: null, directives, selections: sels });
+        } else {
+          // Fragment spread: ...FragmentName
+          const name = this.expect("NAME").value;
+          const directives = this.parseDirectives();
+          selections.push({ kind: "fragment_spread", name, directives });
+        }
+      } else {
+        selections.push(this.parseField());
+      }
     }
     return selections;
   }
@@ -397,6 +468,18 @@ export function graphqlAutoSchemaEnabled(): boolean {
   return ["true", "1", "yes", "on"].includes(raw);
 }
 
+/**
+ * Maximum selection-set nesting depth. A deeply nested query (or a circular
+ * fragment) would otherwise recurse without bound — a classic GraphQL DoS /
+ * stack-overflow vector. `TINA4_GRAPHQL_MAX_DEPTH` overrides the default (50);
+ * set `<= 0` to disable the guard. A non-numeric value falls back to 50.
+ */
+export function graphqlMaxDepth(): number {
+  const raw = (process.env.TINA4_GRAPHQL_MAX_DEPTH ?? "50").trim();
+  const n = parseInt(raw, 10);
+  return Number.isNaN(n) ? 50 : n;
+}
+
 // ── GraphQL Engine ───────────────────────────────────────────
 
 export class GraphQL {
@@ -415,6 +498,14 @@ export class GraphQL {
   // Tina4::GraphQL.resolve.
   private static classResolvers = new Map<string, Map<string, ResolverFn>>();
   private static defaultInstance: GraphQL | null = null;
+
+  /**
+   * Maximum selection-set nesting depth (read from `TINA4_GRAPHQL_MAX_DEPTH`,
+   * default 50; `<= 0` disables the guard). Public so tests can set it and the
+   * dev app can introspect it. Counted per selection level AND per fragment
+   * spread / inline fragment, so circular fragments are caught too.
+   */
+  public maxDepth: number = graphqlMaxDepth();
 
   /**
    * Decorator-style resolver registration.
@@ -561,7 +652,7 @@ export class GraphQL {
     const ctx = context ?? {};
     const errors: Array<{ message: string; path?: string[] }> = [];
 
-    let doc: { definitions: ParsedOperation[] };
+    let doc: { definitions: ParsedDefinition[] };
     try {
       const tokens = tokenize(query);
       const parser = new Parser(tokens);
@@ -571,11 +662,23 @@ export class GraphQL {
       return { data: null, errors: [{ message }] };
     }
 
-    if (doc.definitions.length === 0) {
+    // Split definitions into operations and fragments (fragments are named
+    // and referenced by spreads, so collect them first).
+    const fragments: Map<string, ParsedFragment> = new Map();
+    const operations: ParsedOperation[] = [];
+    for (const defn of doc.definitions) {
+      if (defn.kind === "fragment") {
+        fragments.set(defn.name, defn);
+      } else {
+        operations.push(defn);
+      }
+    }
+
+    if (operations.length === 0) {
       return { data: null, errors: [{ message: "No operation found" }] };
     }
 
-    const op = doc.definitions[0];
+    const op = operations[0];
     const resolvers = op.operation === "query" ? this.queries : this.mutations;
 
     // Apply variable defaults
@@ -586,22 +689,75 @@ export class GraphQL {
     }
 
     const data: Record<string, unknown> = {};
-
-    for (const sel of op.selections) {
-      // Check directives (@skip, @include, @auth, @role, @guest)
-      if (!this.checkDirectives(sel.directives ?? [], vars, ctx)) continue;
-
-      const [value, errs] = this.resolveField(sel, resolvers, null, vars, ctx);
-      errors.push(...errs);
-      const key = sel.alias ?? sel.name;
-      data[key] = value;
-    }
+    // Top-level selections start at depth 1.
+    const errs = this.resolveSelectionsInto(op.selections, resolvers, null, vars, ctx, fragments, data, 1);
+    errors.push(...errs);
 
     const result: GraphQLResult = { data };
     if (errors.length > 0) {
       result.errors = errors;
     }
     return result;
+  }
+
+  /**
+   * Resolve a list of selections and merge results into the `target` dict.
+   * Fragment spreads and inline fragments are merged (not nested).
+   *
+   * `depth` is incremented on every recursive entry (field sub-selections,
+   * fragment spreads, inline fragments) and checked against `maxDepth` so an
+   * over-deep query or a circular fragment fails with a structured error
+   * instead of recursing until the interpreter stack overflows. Top-level
+   * starts at depth 1; `maxDepth <= 0` disables the guard.
+   */
+  private resolveSelectionsInto(
+    selections: ParsedSelection[],
+    resolvers: Map<string, QueryConfig>,
+    parent: unknown,
+    variables: Record<string, unknown>,
+    context: Record<string, unknown>,
+    fragments: Map<string, ParsedFragment>,
+    target: Record<string, unknown>,
+    depth: number,
+  ): Array<{ message: string; path?: string[] }> {
+    const errors: Array<{ message: string; path?: string[] }> = [];
+
+    if (this.maxDepth > 0 && depth > this.maxDepth) {
+      return [{ message: `Query exceeds maximum depth of ${this.maxDepth}` }];
+    }
+
+    for (const sel of selections) {
+      // Check directives (@skip, @include, @auth, @role, @guest)
+      if (!this.checkDirectives(sel.directives ?? [], variables, context)) continue;
+
+      if (sel.kind === "fragment_spread") {
+        const frag = fragments.get(sel.name);
+        if (!frag) {
+          errors.push({ message: `Fragment not found: ${sel.name}` });
+          continue;
+        }
+        const errs = this.resolveSelectionsInto(
+          frag.selections, resolvers, parent, variables, context, fragments, target, depth + 1,
+        );
+        errors.push(...errs);
+        continue;
+      }
+
+      if (sel.kind === "inline_fragment") {
+        const errs = this.resolveSelectionsInto(
+          sel.selections, resolvers, parent, variables, context, fragments, target, depth + 1,
+        );
+        errors.push(...errs);
+        continue;
+      }
+
+      const [value, errs] = this.resolveField(sel, resolvers, parent, variables, context, fragments, depth);
+      errors.push(...errs);
+      const key = sel.alias ?? sel.name;
+      target[key] = value;
+    }
+
+    return errors;
   }
 
   /**
@@ -860,6 +1016,8 @@ export class GraphQL {
     parent: unknown,
     variables: Record<string, unknown>,
     context: Record<string, unknown> = {},
+    fragments: Map<string, ParsedFragment> = new Map(),
+    depth: number = 1,
   ): [unknown, Array<{ message: string; path?: string[] }>] {
     const errors: Array<{ message: string; path?: string[] }> = [];
     const name = sel.name;
@@ -890,8 +1048,13 @@ export class GraphQL {
       try {
         value = config.resolver(null, args, ctx);
       } catch (e: unknown) {
+        // Log the real cause; only surface the detail to the client in debug
+        // mode — a resolver exception can carry internal state (DB errors,
+        // credentials) that must not leak. The path is always preserved.
         const message = e instanceof Error ? e.message : String(e);
-        errors.push({ message, path: [name] });
+        Log.error(`GraphQL resolver '${name}' failed: ${message}`);
+        const detail = isDebugMode() ? message : "Internal server error";
+        errors.push({ message: detail, path: [name] });
         return [null, errors];
       }
     }
@@ -904,11 +1067,10 @@ export class GraphQL {
       const result: Record<string, unknown>[] = [];
       for (const item of value) {
         const obj: Record<string, unknown> = {};
-        for (const subSel of sel.selections) {
-          const [subVal, subErrs] = this.resolveField(subSel, new Map(), item, variables, context);
-          errors.push(...subErrs);
-          obj[subSel.alias ?? subSel.name] = subVal;
-        }
+        const errs = this.resolveSelectionsInto(
+          sel.selections, new Map(), item, variables, context, fragments, obj, depth + 1,
+        );
+        errors.push(...errs);
         result.push(obj);
       }
       return [result, errors];
@@ -916,11 +1078,10 @@ export class GraphQL {
 
     if (value !== null && value !== undefined) {
       const obj: Record<string, unknown> = {};
-      for (const subSel of sel.selections) {
-        const [subVal, subErrs] = this.resolveField(subSel, new Map(), value, variables, context);
-        errors.push(...subErrs);
-        obj[subSel.alias ?? subSel.name] = subVal;
-      }
+      const errs = this.resolveSelectionsInto(
+        sel.selections, new Map(), value, variables, context, fragments, obj, depth + 1,
+      );
+      errors.push(...errs);
       return [obj, errors];
     }
 

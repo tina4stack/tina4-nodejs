@@ -231,6 +231,136 @@ console.log("\n--- WSDL default endpoint ---");
 const defaultWsdl = calc.generateWSDL();
 assert("default endpoint uses serviceUrl", defaultWsdl.includes('location="/api/calculator"'));
 
+// --- Security: DOCTYPE / XXE / billion-laughs rejection (item 1) ---
+console.log("\n--- WSDL DOCTYPE / XXE hardening ---");
+
+// A service that records whether its operation ever ran — proves the guard
+// short-circuits BEFORE the operation is dispatched.
+let addRan = false;
+class GuardCalc extends WSDLService {
+  serviceName = "GuardCalc";
+  serviceUrl = "/api/guard";
+  async Add(a: number, b: number): Promise<Record<string, unknown>> {
+    addRan = true;
+    return { Result: a + b };
+  }
+  async Divide(a: number, b: number): Promise<Record<string, unknown>> {
+    if (b === 0) throw new Error("Division by zero");
+    return { Result: a / b };
+  }
+}
+(GuardCalc.prototype.Add as any)._wsdlOp = {
+  name: "Add", input: { a: "int", b: "int" }, output: { Result: "int" },
+};
+(GuardCalc.prototype.Divide as any)._wsdlOp = {
+  name: "Divide", input: { a: "int", b: "int" }, output: { Result: "float" },
+};
+const guard = new GuardCalc();
+
+// NEGATIVE: classic XXE external-entity payload is rejected pre-parse.
+const xxeReq =
+  '<?xml version="1.0"?>'
+  + '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/hostname">]>'
+  + '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+  + '<soap:Body><Add><a>&xxe;</a><b>3</b></Add></soap:Body></soap:Envelope>';
+addRan = false;
+const xxeResp = await guard.handle(xxeReq);
+assert("XXE DOCTYPE returns Client fault", xxeResp.includes("<faultcode>Client</faultcode>"));
+assert("XXE fault message mentions DOCTYPE", xxeResp.includes("DOCTYPE"));
+assert("XXE operation never ran", addRan === false && !xxeResp.includes("AddResponse"));
+
+// NEGATIVE: billion-laughs (entity-expansion) payload is a DOCTYPE → rejected.
+const bombReq =
+  '<?xml version="1.0"?>'
+  + '<!DOCTYPE lolz [<!ENTITY a "AAAAAAAAAA">'
+  + '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]>'
+  + '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+  + '<soap:Body><Add><a>&b;</a><b>3</b></Add></soap:Body></soap:Envelope>';
+addRan = false;
+const bombResp = await guard.handle(bombReq);
+assert("billion-laughs DOCTYPE returns Client fault", bombResp.includes("<faultcode>Client</faultcode>"));
+assert("billion-laughs fault message mentions DOCTYPE", bombResp.includes("DOCTYPE"));
+assert("billion-laughs operation never ran", addRan === false);
+
+// Case-insensitive: lowercase <!doctype> is also rejected.
+const lowerDoctype =
+  '<?xml version="1.0"?><!doctype foo>'
+  + '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+  + '<soap:Body><Add><a>1</a><b>2</b></Add></soap:Body></soap:Envelope>';
+assert("lowercase doctype rejected", (await guard.handle(lowerDoctype)).includes("DOCTYPE"));
+
+// POSITIVE: a normal (DTD-free) SOAP request is unaffected by the guard.
+addRan = false;
+const guardOk = await guard.handle(
+  '<?xml version="1.0"?>'
+  + '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+  + '<soap:Body><Add><a>7</a><b>2</b></Add></soap:Body></soap:Envelope>',
+);
+assert("valid request still works after guard", guardOk.includes("<Result>9</Result>"));
+assert("valid request ran the operation", addRan === true);
+
+// --- Security: operation error masked in prod / detailed in debug (item 2) ---
+console.log("\n--- WSDL operation error masking ---");
+
+const divideReq =
+  '<?xml version="1.0"?>'
+  + '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+  + '<soap:Body><Divide><a>10</a><b>0</b></Divide></soap:Body></soap:Envelope>';
+
+const savedDebug = process.env.TINA4_DEBUG;
+const savedOut = process.env.TINA4_LOG_OUTPUT;
+process.env.TINA4_LOG_OUTPUT = "file"; // keep test stdout clean
+
+// NEGATIVE (prod): the real cause must NOT leak — generic Server fault.
+delete process.env.TINA4_DEBUG;
+const maskedResp = await guard.handle(divideReq);
+assert("op error returns Server fault", maskedResp.includes("<faultcode>Server</faultcode>"));
+assert("op error masked in prod", maskedResp.includes("Internal server error"));
+assert("op error detail not leaked in prod", !maskedResp.includes("Division by zero"));
+
+// POSITIVE (debug): the real cause is surfaced to aid local development.
+process.env.TINA4_DEBUG = "true";
+const debugResp = await guard.handle(divideReq);
+assert("op error detail surfaced in debug", debugResp.includes("Division by zero"));
+assert("op error still Server fault in debug", debugResp.includes("<faultcode>Server</faultcode>"));
+
+// --- convertValue NaN → Server fault (item 3) ---
+console.log("\n--- WSDL convertValue NaN guard ---");
+
+// NEGATIVE: a non-numeric value for an int param raises → Server fault.
+// (Run in debug so we can assert the detail; the masking is covered above.)
+process.env.TINA4_DEBUG = "true";
+const nanReq =
+  '<?xml version="1.0"?>'
+  + '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+  + '<soap:Body><Add><a>notanumber</a><b>3</b></Add></soap:Body></soap:Envelope>';
+const nanResp = await guard.handle(nanReq);
+assert("non-numeric int returns Server fault", nanResp.includes("<faultcode>Server</faultcode>"));
+assert("non-numeric int fault mentions invalid integer", nanResp.includes("invalid integer"));
+assert("non-numeric int did not return AddResponse", !nanResp.includes("<Result>"));
+
+// NEGATIVE: a non-numeric value for a float param also faults.
+const nanFloatReq =
+  '<?xml version="1.0"?>'
+  + '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+  + '<soap:Body><Divide><a>oops</a><b>2</b></Divide></soap:Body></soap:Envelope>';
+const nanFloatResp = await guard.handle(nanFloatReq);
+assert("non-numeric float returns Server fault", nanFloatResp.includes("<faultcode>Server</faultcode>"));
+
+// POSITIVE: a valid number still converts and works.
+const validNumResp = await guard.handle(
+  '<?xml version="1.0"?>'
+  + '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+  + '<soap:Body><Add><a>4</a><b>5</b></Add></soap:Body></soap:Envelope>',
+);
+assert("valid number still works", validNumResp.includes("<Result>9</Result>"));
+
+// restore env
+if (savedDebug === undefined) delete process.env.TINA4_DEBUG;
+else process.env.TINA4_DEBUG = savedDebug;
+if (savedOut === undefined) delete process.env.TINA4_LOG_OUTPUT;
+else process.env.TINA4_LOG_OUTPUT = savedOut;
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

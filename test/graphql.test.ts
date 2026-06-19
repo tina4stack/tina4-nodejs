@@ -147,15 +147,44 @@ assert("nested posts have titles", (r7.data as any)?.author?.posts?.[0]?.title =
 // --- Error Handling ---
 console.log("\n--- Error Handling ---");
 
+// NOTE (security hardening): a resolver exception is now MASKED in production
+// (TINA4_DEBUG unset/falsy) — the real cause is logged via Log.error, never
+// leaked to the client. The detail is only surfaced under TINA4_DEBUG. This
+// contract test was updated from asserting the leaked message to asserting the
+// masked message; a debug variant follows.
+const savedDebugGql = process.env.TINA4_DEBUG;
+const savedOutGql = process.env.TINA4_LOG_OUTPUT;
+process.env.TINA4_LOG_OUTPUT = "file"; // keep test stdout clean
+
 const gql3 = new GraphQL();
 gql3.addQuery("broken", {}, "String", () => {
   throw new Error("Something went wrong");
 });
 
+// NEGATIVE/prod: detail is masked, path preserved.
+delete process.env.TINA4_DEBUG;
 const r8 = gql3.execute("{ broken }");
 assert("error query has errors array", r8.errors !== undefined && r8.errors.length > 0);
-assert("error message is captured", r8.errors![0].message === "Something went wrong");
+assert("error message is masked in prod", r8.errors![0].message === "Internal server error");
+assert("error detail not leaked in prod", r8.errors![0].message !== "Something went wrong");
+assert("error path preserved", JSON.stringify(r8.errors![0].path) === JSON.stringify(["broken"]));
 assert("error field is null in data", (r8.data as any)?.broken === null);
+
+// POSITIVE/debug: the real cause is surfaced for local development.
+process.env.TINA4_DEBUG = "true";
+const gql3b = new GraphQL();
+gql3b.addQuery("broken", {}, "String", () => {
+  throw new Error("Something went wrong");
+});
+const r8b = gql3b.execute("{ broken }");
+assert("error detail surfaced under TINA4_DEBUG", r8b.errors![0].message === "Something went wrong");
+assert("error path preserved in debug", JSON.stringify(r8b.errors![0].path) === JSON.stringify(["broken"]));
+
+// restore env after the masking block
+if (savedDebugGql === undefined) delete process.env.TINA4_DEBUG;
+else process.env.TINA4_DEBUG = savedDebugGql;
+if (savedOutGql === undefined) delete process.env.TINA4_LOG_OUTPUT;
+else process.env.TINA4_LOG_OUTPUT = savedOutGql;
 
 // --- Parse Error ---
 console.log("\n--- Parse Error ---");
@@ -193,6 +222,67 @@ const sdl = gql5.schemaSdl();
 assert("SDL contains type definition", sdl.includes("type Product {"));
 assert("SDL contains query type", sdl.includes("type Query {"));
 assert("SDL contains mutation type", sdl.includes("type Mutation {"));
+
+// --- Recursion depth guard (item 4) ---
+console.log("\n--- Depth Guard ---");
+
+// Default maxDepth reads from TINA4_GRAPHQL_MAX_DEPTH (50 when unset).
+assert("default maxDepth is 50", new GraphQL().maxDepth === 50);
+
+// Build a self-referential tree resolver so we can drive arbitrary nesting.
+function makeTreeGql(maxDepth: number): GraphQL {
+  const g = new GraphQL();
+  g.addType("Tree", { id: { type: "ID" }, child: { type: "Tree" } });
+  g.addQuery("tree", {}, "Tree", () => ({
+    id: "1",
+    child: { id: "2", child: { id: "3", child: { id: "4", child: { id: "5" } } } },
+  }));
+  g.maxDepth = maxDepth;
+  return g;
+}
+
+// NEGATIVE: an over-deep query is rejected with the structured depth error.
+const deepGql = makeTreeGql(2);
+const deepRes = deepGql.execute("{ tree { child { child { id } } } }");
+assert(
+  "over-deep query rejected",
+  deepRes.errors !== undefined
+    && deepRes.errors.some((e) => e.message === "Query exceeds maximum depth of 2"),
+);
+
+// POSITIVE: a shallow query within the limit is allowed.
+const shallowRes = makeTreeGql(5).execute("{ tree { id } }");
+assert("shallow query allowed", shallowRes.errors === undefined && (shallowRes.data as any)?.tree?.id === "1");
+
+// NEGATIVE: a circular fragment (A spreads itself) is caught by the depth
+// guard — depth increments on every fragment spread, so it cannot loop forever.
+const circGql = new GraphQL();
+circGql.addType("Node", { id: { type: "ID" }, child: { type: "Node" } });
+circGql.addQuery("node", {}, "Node", () => ({
+  id: "1",
+  child: { id: "2", child: { id: "3", child: { id: "4" } } },
+}));
+circGql.maxDepth = 3;
+const circRes = circGql.execute("{ node { ...A } } fragment A on Node { id child { ...A } }");
+assert(
+  "circular fragment rejected",
+  circRes.errors !== undefined
+    && circRes.errors.some((e) => e.message === "Query exceeds maximum depth of 3"),
+);
+
+// maxDepth <= 0 disables the guard — even a deep query passes.
+const offGql = makeTreeGql(0);
+const offRes = offGql.execute("{ tree { child { child { child { id } } } } }");
+assert("maxDepth<=0 disables guard", offRes.errors === undefined);
+
+// Fragment spreads and inline fragments resolve normally within the limit.
+const fragGql = new GraphQL();
+fragGql.addType("User", { id: { type: "ID" }, name: { type: "String" } });
+fragGql.addQuery("user", { id: "ID!" }, "User", () => ({ id: "1", name: "Alice" }));
+const spreadRes = fragGql.execute('{ user(id: "1") { ...UF } } fragment UF on User { name }');
+assert("fragment spread resolves", (spreadRes.data as any)?.user?.name === "Alice");
+const inlineRes = fragGql.execute('{ user(id: "1") { ... on User { name } } }');
+assert("inline fragment resolves", (inlineRes.data as any)?.user?.name === "Alice");
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

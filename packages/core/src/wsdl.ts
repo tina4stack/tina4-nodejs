@@ -19,6 +19,9 @@
  *   }
  */
 
+import { Log } from "./logger.js";
+import { isDebugMode } from "./errorOverlay.js";
+
 // ── Types ────────────────────────────────────────────────────
 
 export interface WSDLOperationMeta {
@@ -261,13 +264,27 @@ export abstract class WSDLService {
   private convertValue(value: string, typeName: string): unknown {
     switch (typeName) {
       case "int":
-      case "integer":
-        return parseInt(value, 10);
+      case "integer": {
+        // Match Python's int(value) — a non-numeric value RAISES rather than
+        // silently yielding NaN. The thrown Error is caught in handle() and
+        // becomes a Server fault.
+        const n = parseInt(value, 10);
+        if (Number.isNaN(n)) {
+          throw new Error(`invalid integer value: ${JSON.stringify(value)}`);
+        }
+        return n;
+      }
       case "float":
       case "double":
       case "number":
-      case "numeric":
-        return parseFloat(value);
+      case "numeric": {
+        // Match Python's float(value) — non-numeric raises (→ Server fault).
+        const f = parseFloat(value);
+        if (Number.isNaN(f)) {
+          throw new Error(`invalid numeric value: ${JSON.stringify(value)}`);
+        }
+        return f;
+      }
       case "bool":
       case "boolean":
         return ["true", "1", "yes"].includes(value.toLowerCase());
@@ -389,6 +406,16 @@ export abstract class WSDLService {
   async handle(soapXml: string = ""): Promise<string> {
     const ops = this.discoverOperations();
 
+    // SOAP 1.1 (§3) forbids a Document Type Declaration in a SOAP message.
+    // Rejecting any DOCTYPE/DTD up front — BEFORE the body is parsed — also
+    // closes the XML entity-expansion (billion-laughs) and external-entity
+    // (XXE) attack surface regardless of parser internals. The operation
+    // never runs. (Node's parser is hand-rolled and already immune; this is
+    // defence in depth + consistent fault behaviour across all 4 frameworks.)
+    if (/<!DOCTYPE/i.test(soapXml)) {
+      return this.soapFault("Client", "DOCTYPE declarations are not allowed in SOAP messages");
+    }
+
     // Parse SOAP body
     const body = extractSoapBody(soapXml);
     if (!body) {
@@ -413,33 +440,40 @@ export abstract class WSDLService {
       return this.soapFault("Client", `Operation not implemented: ${opName}`);
     }
 
-    // Extract parameters from the operation element
-    const children = extractChildren(operation.content);
-    const params: unknown[] = [];
-
-    if (opMeta.input) {
-      for (const [paramName, paramType] of Object.entries(opMeta.input)) {
-        const child = children.find((c) => c.name === paramName);
-        if (child) {
-          params.push(this.convertValue(child.value, paramType));
-        } else {
-          params.push(null);
-        }
-      }
-    }
-
     // Lifecycle hook: before invocation
     this.onRequest(soapXml);
 
-    // Invoke the method
+    // Invoke the method. Parameter conversion runs INSIDE the try so a
+    // non-numeric value for an int/float param (convertValue throws, matching
+    // Python's int()/float() raise) becomes a Server fault — not a silent NaN.
     try {
+      // Extract parameters from the operation element
+      const children = extractChildren(operation.content);
+      const params: unknown[] = [];
+
+      if (opMeta.input) {
+        for (const [paramName, paramType] of Object.entries(opMeta.input)) {
+          const child = children.find((c) => c.name === paramName);
+          if (child) {
+            params.push(this.convertValue(child.value, paramType));
+          } else {
+            params.push(null);
+          }
+        }
+      }
+
       const rawResult = await (method as (...args: unknown[]) => Promise<unknown>).call(this, ...params);
       // Lifecycle hook: after invocation — allow result transformation
       const result = this.onResult(rawResult as Record<string, unknown>);
       return this.soapResponse(opName, result);
     } catch (err) {
+      // Log the real cause, but only leak the detail to the client in debug
+      // mode — a resolver exception can carry internal state (DB credentials,
+      // file paths) that must not reach a SOAP client.
       const errMsg = err instanceof Error ? err.message : String(err);
-      return this.soapFault("Server", errMsg);
+      Log.error(`WSDL operation '${opName}' failed: ${errMsg}`);
+      const detail = isDebugMode() ? errMsg : "Internal server error";
+      return this.soapFault("Server", detail);
     }
   }
 
