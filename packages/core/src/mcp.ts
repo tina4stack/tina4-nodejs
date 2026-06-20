@@ -202,18 +202,35 @@ function envTruthy(val: string | undefined): boolean {
 }
 
 /**
- * Whether the built-in MCP server should auto-start.
+ * Whether the built-in MCP dev tools / `/__dev/mcp` endpoint should be enabled.
  *
- * Default: `true` when `TINA4_DEBUG=true`, `false` otherwise. The `TINA4_MCP`
- * env var can force either state explicitly. Matches the Python framework
- * which only exposes MCP endpoints in dev mode by default.
+ * Resolution order (highest priority first), matching Python master
+ * `tina4_python.mcp.is_enabled()`:
+ *   1. `TINA4_MCP` — explicit on/off override, honoured on ANY host. An
+ *      explicit truthy value opts a remote / debug-disabled deployment in
+ *      (e.g. for a remote AI assistant); an explicit falsy value force-disables
+ *      it everywhere.
+ *   2. `TINA4_DEBUG=true` — implicit on for dev, but LOCALHOST-ONLY unless
+ *      `TINA4_MCP_REMOTE=true`. The MCP dev tools expose powerful operations
+ *      (DB query, file read/WRITE, route listing), so they never auto-expose on
+ *      a non-localhost host without an explicit opt-in.
+ *   3. Otherwise off.
+ *
+ * Wired in v3.13.39: previously this was `TINA4_MCP` else `TINA4_DEBUG`, with
+ * `isLocalhost()` unused for the gate and `TINA4_MCP_REMOTE` read by zero code
+ * — so the documented localhost guard was not actually enforced and a
+ * non-localhost `TINA4_DEBUG=true` deployment auto-exposed the dev tools.
  */
 export function mcpEnabled(): boolean {
-  const raw = process.env.TINA4_MCP;
-  if (raw === undefined || raw.trim() === "") {
-    return envTruthy(process.env.TINA4_DEBUG);
+  const explicit = process.env.TINA4_MCP;
+  if (explicit !== undefined && explicit.trim() !== "") {
+    return envTruthy(explicit);
   }
-  return envTruthy(raw);
+  if (!envTruthy(process.env.TINA4_DEBUG)) {
+    return false;
+  }
+  // Dev auto-enable: localhost only, unless explicitly opted into remote.
+  return isLocalhost() || envTruthy(process.env.TINA4_MCP_REMOTE);
 }
 
 /**

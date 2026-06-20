@@ -19,7 +19,7 @@ import { DevMailbox } from "./devMailbox.js";
 import { isTruthy } from "./dotenv.js";
 import { quickMetrics, fullAnalysis, fileDetail } from "./metrics.js";
 import { registerFeedbackRoutes } from "./feedback.js";
-import { getDefaultDevServer } from "./mcp.js";
+import { getDefaultDevServer, mcpEnabled } from "./mcp.js";
 
 const cpuCount = osCpus().length;
 
@@ -561,18 +561,6 @@ export class DevAdmin {
       { method: "POST", pattern: "/__dev/api/deps/install", handler: handleDepsInstall },
       // Git status
       { method: "GET", pattern: "/__dev/api/git/status", handler: handleGitStatus },
-      // MCP tool introspection over the built-in MCP server (browser dev-admin REST shim)
-      { method: "GET", pattern: "/__dev/api/mcp/tools", handler: handleMcpTools },
-      { method: "POST", pattern: "/__dev/api/mcp/call", handler: handleMcpCall },
-      // MCP JSON-RPC + SSE endpoints that REAL MCP clients (Claude Code/Desktop)
-      // speak. POST /__dev/mcp[/message] -> JSON-RPC handleMessage; GET
-      // /__dev/mcp/sse -> SSE handshake announcing the message endpoint. Mounted
-      // through the same dispatch as the REST shim above and gated by the same
-      // /__dev public-route rule. Mirrors the Python v3 fix (POST /__dev/mcp +
-      // /__dev/mcp/message, GET /__dev/mcp/sse).
-      { method: "POST", pattern: "/__dev/mcp", handler: handleMcpMessage },
-      { method: "POST", pattern: "/__dev/mcp/message", handler: handleMcpMessage },
-      { method: "GET", pattern: "/__dev/mcp/sse", handler: handleMcpSse },
       // Scaffolding
       { method: "GET", pattern: "/__dev/api/scaffold", handler: handleScaffoldList },
       { method: "POST", pattern: "/__dev/api/scaffold/run", handler: handleScaffoldRun },
@@ -610,12 +598,41 @@ export class DevAdmin {
       });
     }
 
-    // Ensure the default /__dev/mcp MCP server exists with its dev tools
-    // registered. This is the single shared instance behind both the REST shim
-    // and the JSON-RPC + SSE endpoints registered above. Doing it here (gated by
-    // the same TINA4_DEBUG check that gates DevAdmin.register) means tools/list
-    // and the REST shim return tools immediately, before any first call.
-    getDefaultDevServer();
+    // MCP exposure is gated SEPARATELY from the rest of the dev dashboard.
+    // The MCP dev tools expose powerful operations (DB query, file read/WRITE,
+    // route listing), so they must NOT auto-expose on a non-localhost
+    // TINA4_DEBUG=true deployment. mcpEnabled() honours an explicit TINA4_MCP on
+    // any host, else requires TINA4_DEBUG AND (localhost OR TINA4_MCP_REMOTE) —
+    // full parity with Python master tina4_python.mcp.is_enabled(). When the
+    // gate is closed, neither the REST shim, the JSON-RPC/SSE endpoints, nor the
+    // default dev MCP server (with its dev tools) are registered.
+    if (mcpEnabled()) {
+      const mcpRoutes: Array<{ method: string; pattern: string; handler: RouteHandler }> = [
+        // MCP tool introspection over the built-in MCP server (browser dev-admin REST shim)
+        { method: "GET", pattern: "/__dev/api/mcp/tools", handler: handleMcpTools },
+        { method: "POST", pattern: "/__dev/api/mcp/call", handler: handleMcpCall },
+        // MCP JSON-RPC + SSE endpoints that REAL MCP clients (Claude Code/Desktop)
+        // speak. POST /__dev/mcp[/message] -> JSON-RPC handleMessage; GET
+        // /__dev/mcp/sse -> SSE handshake announcing the message endpoint. Mirrors
+        // the Python v3 fix (POST /__dev/mcp + /__dev/mcp/message, GET /__dev/mcp/sse).
+        { method: "POST", pattern: "/__dev/mcp", handler: handleMcpMessage },
+        { method: "POST", pattern: "/__dev/mcp/message", handler: handleMcpMessage },
+        { method: "GET", pattern: "/__dev/mcp/sse", handler: handleMcpSse },
+      ];
+      for (const route of mcpRoutes) {
+        router.addRoute({
+          method: route.method,
+          pattern: route.pattern,
+          handler: route.handler,
+        });
+      }
+
+      // Ensure the default /__dev/mcp MCP server exists with its dev tools
+      // registered. This is the single shared instance behind both the REST shim
+      // and the JSON-RPC + SSE endpoints registered above, so tools/list and the
+      // REST shim return tools immediately, before any first call.
+      getDefaultDevServer();
+    }
   }
 
   /**
