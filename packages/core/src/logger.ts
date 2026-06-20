@@ -136,14 +136,20 @@ function resolveLogFilePath(logDir: string, logFile: string): string {
 /**
  * Structured logger for Tina4.
  *
- * Production (TINA4_DEBUG not truthy): JSON or text lines to logs/tina4.log
- * Development (TINA4_DEBUG=true): Colorized human-readable to stdout + file
+ * Development (TINA4_DEBUG=true): colorized human-readable to stdout + file.
+ * Production (TINA4_DEBUG not truthy): clean structured JSON to stdout ONLY —
+ *   no log file by default (writing logs/tina4.log inside a container bloats the
+ *   writable layer + disk; 12-factor wants logs on stdout). stdout is ALWAYS on.
+ *
+ * Default file-output rule (TINA4_LOG_OUTPUT unset): the log FILE is written
+ * only in development. An explicit TINA4_LOG_OUTPUT=file/both, OR an explicit
+ * TINA4_LOG_FILE path, always forces a file (explicit wins).
  *
  * Env vars:
- *   TINA4_LOG_FILE          — explicit log file (absolute or relative). Empty = use TINA4_LOG_DIR + tina4.log
+ *   TINA4_LOG_FILE          — explicit log file (absolute or relative). Setting it forces a file even in production. Empty = use TINA4_LOG_DIR + tina4.log
  *   TINA4_LOG_DIR           — directory for log files (default: "logs")
  *   TINA4_LOG_FORMAT        — "text" | "json" (default: "text")
- *   TINA4_LOG_OUTPUT        — "stdout" | "file" | "both" (default: "stdout")
+ *   TINA4_LOG_OUTPUT        — "stdout" | "file" | "both" (default: "stdout" → file only in dev)
  *   TINA4_LOG_ROTATE_SIZE   — bytes; 0 disables rotation (default: 10485760 = 10MB)
  *   TINA4_LOG_ROTATE_KEEP   — number of historical files to keep (default: 5)
  *   TINA4_LOG_LEVEL         — minimum console level: DEBUG | INFO | WARNING | ERROR | CRITICAL (default: "INFO")
@@ -170,9 +176,11 @@ export class Log {
     minLevel: number;
     format: "text" | "json";
     output: "stdout" | "file" | "both";
+    fileEnabled: boolean;
   } {
     const logDir = process.env.TINA4_LOG_DIR ?? DEFAULT_LOG_DIR;
-    const logFile = (process.env.TINA4_LOG_FILE ?? "").trim() || DEFAULT_LOG_FILE;
+    const explicitFile = (process.env.TINA4_LOG_FILE ?? "").trim();
+    const logFile = explicitFile || DEFAULT_LOG_FILE;
 
     const rawSize = process.env.TINA4_LOG_ROTATE_SIZE;
     let rotateSize = DEFAULT_ROTATE_SIZE;
@@ -201,7 +209,23 @@ export class Log {
     if (out === "file") output = "file";
     else if (out === "both") output = "both";
 
-    return { logDir, logFile, rotateSize, rotateKeep, minLevel, format, output };
+    // v3.13.39: dev/prod-aware default file output (Python master, 4c6d881).
+    // When TINA4_LOG_OUTPUT is unset (default "stdout"), the log FILE is written
+    // only in development (TINA4_DEBUG truthy). In production / containers the
+    // logger is stdout-only — writing logs/tina4.log inside a container just
+    // bloats the writable layer + disk, and 12-factor wants logs on stdout for
+    // the platform to capture. Explicit TINA4_LOG_OUTPUT=file/both OR an explicit
+    // TINA4_LOG_FILE path always wins (explicit forces a file regardless of env).
+    let fileEnabled: boolean;
+    if (output === "file" || output === "both") {
+      fileEnabled = true;
+    } else if (explicitFile !== "") {
+      fileEnabled = true;
+    } else {
+      fileEnabled = !Log.isProduction();
+    }
+
+    return { logDir, logFile, rotateSize, rotateKeep, minLevel, format, output, fileEnabled };
   }
 
   /**
@@ -440,17 +464,20 @@ export class Log {
       }
     }
 
-    // File output: always teed for dev (legacy behaviour), and either always
-    // (production default) or honoured per output mode.
+    // File output (v3.13.39 — Python master, 4c6d881): gated on cfg.fileEnabled.
     //
-    //   output=stdout (default): file in dev + prod (legacy parity)
-    //   output=file              file only — no console
-    //   output=both              file + console (already handled above)
+    //   output=stdout (default): file ONLY in dev (TINA4_DEBUG truthy);
+    //                            production / containers are stdout-only — no
+    //                            file to bloat the writable layer / disk.
+    //   output=file              file only — no console (always writes a file)
+    //   output=both              file + console (always writes a file)
+    //   explicit TINA4_LOG_FILE  always writes a file (explicit wins)
     //
-    // The "stdout-only without file" mode that some Python deployments want
-    // is gated on TINA4_LOG_OUTPUT=stdout combined with TINA4_LOG_FILE set
-    // explicitly to an empty string in env — we treat empty file as default.
-    const filePath = resolveLogFilePath(cfg.logDir, cfg.logFile);
-    Log.writeToFile(filePath, fileLine, cfg.rotateSize, cfg.rotateKeep);
+    // readEnv() resolves all of the above into cfg.fileEnabled, so flipping
+    // that one flag gates the whole file writer (the only persisted sink).
+    if (cfg.fileEnabled) {
+      const filePath = resolveLogFilePath(cfg.logDir, cfg.logFile);
+      Log.writeToFile(filePath, fileLine, cfg.rotateSize, cfg.rotateKeep);
+    }
   }
 }

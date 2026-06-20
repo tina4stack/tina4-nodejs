@@ -399,6 +399,157 @@ else delete process.env.TINA4_LOG_LEVEL;
 if (savedCritical !== undefined) process.env.TINA4_LOG_CRITICAL = savedCritical;
 else delete process.env.TINA4_LOG_CRITICAL;
 
+// --- Default file output: dev writes a file, prod is stdout-only (v3.13.39) ---
+// Mirrors Python master (4c6d881) TestLogDefaultFileOutput. When
+// TINA4_LOG_OUTPUT is unset (default), the log FILE is written ONLY in dev
+// (TINA4_DEBUG truthy). In production / containers the logger is stdout-only —
+// no file to bloat the writable layer / disk. Explicit TINA4_LOG_OUTPUT
+// (file/both) OR an explicit TINA4_LOG_FILE path always forces a file.
+//
+// IMPORTANT: these cases must NOT route through Log.configure({ logFile }) —
+// configure() SETS process.env.TINA4_LOG_FILE, which is itself an explicit
+// file override that would mask the dev/prod default. They set TINA4_LOG_DIR
+// directly and assert against logs/tina4.log under a fresh dir each time.
+console.log("\n--- Default file output (dev=file, prod=stdout-only) ---");
+
+const DEFAULT_OUT_DIR = "/tmp/tina4-logger-test/default-output";
+
+// Snapshot every env knob the default-output logic reads so this block can't
+// leak into anything that runs after it (logger.test runs as its own child
+// process, but be a good citizen).
+const savedDefaultEnv = {
+  output: process.env.TINA4_LOG_OUTPUT,
+  file: process.env.TINA4_LOG_FILE,
+  dir: process.env.TINA4_LOG_DIR,
+  debug: process.env.TINA4_DEBUG,
+  level: process.env.TINA4_LOG_LEVEL,
+  format: process.env.TINA4_LOG_FORMAT,
+};
+
+function resetDefaultOutputEnv(subdir: string): string {
+  delete process.env.TINA4_LOG_OUTPUT;
+  delete process.env.TINA4_LOG_FILE; // critical: no explicit file → exercise the default
+  delete process.env.TINA4_LOG_FORMAT;
+  process.env.TINA4_LOG_LEVEL = "INFO";
+  const dir = join(DEFAULT_OUT_DIR, subdir);
+  try { rmSync(dir, { recursive: true }); } catch {}
+  process.env.TINA4_LOG_DIR = dir;
+  return join(dir, "tina4.log");
+}
+
+// (a) Production (TINA4_DEBUG unset/falsy), default output → NO file written —
+//     neither the main tina4.log nor (for an error) an error.log. stdout only.
+{
+  const mainPath = resetDefaultOutputEnv("prod-no-file");
+  delete process.env.TINA4_DEBUG;
+  const dir = process.env.TINA4_LOG_DIR!;
+  // Capture stdout so the prod log line doesn't pollute test output.
+  const origLog = console.log;
+  console.log = () => {};
+  Log.error("prod default — no file");
+  console.log = origLog;
+  assert(
+    "default+prod: main tina4.log NOT written",
+    !existsSync(mainPath),
+    `unexpected file at ${mainPath}`,
+  );
+  // Node tees every level into one tina4.log (no split error.log), but assert
+  // the dir holds no log file at all — true stdout-only.
+  const wroteAnything = existsSync(dir) && existsSync(join(dir, "error.log"));
+  assert(
+    "default+prod: no error.log written either",
+    !wroteAnything,
+    `unexpected error.log under ${dir}`,
+  );
+}
+
+// (b) Development (TINA4_DEBUG truthy), default output → file IS written.
+{
+  const mainPath = resetDefaultOutputEnv("dev-file");
+  process.env.TINA4_DEBUG = "true";
+  Log.info("dev default — file written");
+  assert("default+dev: tina4.log IS written", existsSync(mainPath), `expected file at ${mainPath}`);
+  if (existsSync(mainPath)) {
+    assert(
+      "default+dev: file carries the message",
+      readFileSync(mainPath, "utf-8").includes("dev default — file written"),
+    );
+  }
+  delete process.env.TINA4_DEBUG;
+}
+
+// (c) Explicit TINA4_LOG_OUTPUT=both with TINA4_DEBUG off → file STILL written
+//     (explicit output always wins, regardless of dev/prod).
+{
+  const mainPath = resetDefaultOutputEnv("explicit-both");
+  process.env.TINA4_LOG_OUTPUT = "both";
+  delete process.env.TINA4_DEBUG;
+  // Suppress the stdout half of "both" so it doesn't pollute test output.
+  const origLog = console.log;
+  console.log = () => {};
+  Log.info("explicit both — file even in prod");
+  console.log = origLog;
+  assert(
+    "explicit output=both + prod: tina4.log STILL written (explicit wins)",
+    existsSync(mainPath),
+    `expected file at ${mainPath}`,
+  );
+  if (existsSync(mainPath)) {
+    assert(
+      "explicit output=both: file carries the message",
+      readFileSync(mainPath, "utf-8").includes("explicit both — file even in prod"),
+    );
+  }
+  delete process.env.TINA4_LOG_OUTPUT;
+}
+
+// (c2) Explicit TINA4_LOG_FILE path with TINA4_DEBUG off → file STILL written.
+{
+  const dir = join(DEFAULT_OUT_DIR, "explicit-file");
+  try { rmSync(dir, { recursive: true }); } catch {}
+  delete process.env.TINA4_LOG_OUTPUT;
+  delete process.env.TINA4_DEBUG;
+  process.env.TINA4_LOG_DIR = dir;
+  process.env.TINA4_LOG_FILE = "explicit.log";
+  process.env.TINA4_LOG_LEVEL = "INFO";
+  const explicitPath = join(dir, "explicit.log");
+  Log.info("explicit file path — prod");
+  assert(
+    "explicit TINA4_LOG_FILE + prod: file STILL written (explicit wins)",
+    existsSync(explicitPath),
+    `expected file at ${explicitPath}`,
+  );
+  delete process.env.TINA4_LOG_FILE;
+}
+
+// (d) stdout still receives logs in production (default output) — the platform
+//     captures PID 1 stdout; only the FILE is suppressed in prod, never stdout.
+{
+  resetDefaultOutputEnv("prod-stdout");
+  delete process.env.TINA4_DEBUG;
+  const origLog = console.log;
+  let captured = "";
+  console.log = (...args: unknown[]) => { captured += args.join(" "); };
+  Log.info("prod stdout still on");
+  console.log = origLog;
+  assert("default+prod: stdout still receives logs", captured.includes("prod stdout still on"));
+  // Prod stdout is clean structured JSON (no ANSI) so aggregators can parse it.
+  assert("default+prod: stdout line has no ANSI colour codes", !captured.includes("\x1b["));
+}
+
+// Restore the default-output env knobs.
+for (const [key, val] of Object.entries({
+  TINA4_LOG_OUTPUT: savedDefaultEnv.output,
+  TINA4_LOG_FILE: savedDefaultEnv.file,
+  TINA4_LOG_DIR: savedDefaultEnv.dir,
+  TINA4_DEBUG: savedDefaultEnv.debug,
+  TINA4_LOG_LEVEL: savedDefaultEnv.level,
+  TINA4_LOG_FORMAT: savedDefaultEnv.format,
+})) {
+  if (val !== undefined) process.env[key] = val;
+  else delete process.env[key];
+}
+
 // Cleanup
 rmSync("/tmp/tina4-logger-test", { recursive: true });
 
