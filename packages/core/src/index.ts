@@ -15,7 +15,7 @@ export type {
 
 export { startServer, resolvePortAndHost, handle, start, stop, httpReason, resolveTemplate, resetTemplateCache, templateAutoRoutingEnabled, isBannerSuppressed } from "./server.js";
 export { background, stopAllBackgroundTasks, backgroundTaskCount } from "./background.js";
-export { Router, RouteGroup, RouteRef, defaultRouter, runRouteMiddlewares, resolveStringMiddleware, isTrailingSlashRedirectEnabled } from "./router.js";
+export { Router, RouteGroup, RouteRef, WsRouteRef, defaultRouter, runRouteMiddlewares, resolveStringMiddleware, isTrailingSlashRedirectEnabled } from "./router.js";
 export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";
 export { discoverRoutes } from "./routeDiscovery.js";
@@ -64,6 +64,7 @@ export {
   WebSocketServer,
   devReloadWs,
   computeAcceptKey, parseUpgradeHeaders, buildFrame, parseFrame, originAllowed,
+  wsToken, wsAuthorized, offeredBearerSubprotocol, serveWebSocketRoute, wsRouteManager,
   OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG,
   CLOSE_NORMAL, CLOSE_GOING_AWAY, CLOSE_PROTOCOL_ERROR, CLOSE_POLICY_VIOLATION,
 } from "./websocket.js";

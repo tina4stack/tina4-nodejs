@@ -30,6 +30,7 @@ import type { WebSocketConnection } from "./websocketConnection.js";
 import type { WebSocketRouteHandler } from "./types.js";
 import { Router } from "./router.js";
 import { Log } from "./logger.js";
+import { validToken } from "./auth.js";
 import { WsBackplaneManager, type WsEnvelope } from "./websocketBackplane.js";
 
 // ── Constants ────────────────────────────────────────────────
@@ -66,6 +67,12 @@ export interface WebSocketClient {
    * (opt-in). Optional so externally-injected/legacy client objects still fit.
    */
   lastActivity?: number;
+  /**
+   * Verified JWT payload when this client connected on a secured WS route, or
+   * `null` on a public route. Mirrors Python's `connection.auth`. Optional so
+   * externally-injected/legacy client objects still fit.
+   */
+  auth?: Record<string, unknown> | null;
 }
 
 type EventHandler = (...args: unknown[]) => void;
@@ -103,6 +110,97 @@ export function originAllowed(headers: Record<string, string | string[] | undefi
   const rawOrigin = headers["origin"] ?? headers["Origin"];
   const origin = Array.isArray(rawOrigin) ? rawOrigin[0] : rawOrigin;
   return origin !== undefined && allowed.has(origin);
+}
+
+/** Read a (possibly array-valued) header case-insensitively, return a single string. */
+function headerValue(
+  headers: Record<string, string | string[] | undefined>,
+  name: string,
+): string {
+  const lower = name.toLowerCase();
+  // Node lowercases header keys, but a raw map (or a test) may carry any case —
+  // match case-insensitively on the key, like Python's helper.
+  let raw = headers[lower] ?? headers[name];
+  if (raw === undefined) {
+    for (const [k, v] of Object.entries(headers)) {
+      if (k.toLowerCase() === lower) {
+        raw = v;
+        break;
+      }
+    }
+  }
+  if (raw === undefined) return "";
+  return Array.isArray(raw) ? (raw[0] ?? "") : raw;
+}
+
+/**
+ * Extract a bearer token from a WebSocket upgrade handshake.
+ *
+ * Order (mirrors Python's `ws_token`): the `Authorization: Bearer` header (set
+ * by server/CLI/mobile clients), then the `Sec-WebSocket-Protocol` subprotocol
+ * in the form `"bearer, <token>"` (the only way a *browser* can pass a token,
+ * since `new WebSocket()` cannot set headers), then a `?token=` query param.
+ * Returns the token string or `null`.
+ *
+ * @param headers       - Upgrade-request headers (case-insensitive lookup).
+ * @param queryString   - Raw query string (without the leading `?`), e.g. `token=abc`.
+ * @param subprotocol   - The offered `Sec-WebSocket-Protocol` value, if already parsed out.
+ */
+export function wsToken(
+  headers: Record<string, string | string[] | undefined>,
+  queryString = "",
+  subprotocol = "",
+): string | null {
+  const auth = headerValue(headers, "authorization");
+  if (auth.slice(0, 7).toLowerCase() === "bearer ") {
+    return auth.slice(7).trim() || null;
+  }
+  const proto = subprotocol || headerValue(headers, "sec-websocket-protocol");
+  const parts = proto.split(",").map((p) => p.trim()).filter((p) => p.length > 0);
+  if (parts.length >= 2 && parts[0].toLowerCase() === "bearer") {
+    return parts[1] || null;
+  }
+  if (queryString) {
+    // WHATWG URLSearchParams handles decoding; a leading "?" is tolerated.
+    const tok = new URLSearchParams(queryString.replace(/^\?/, "")).get("token");
+    if (tok) return tok;
+  }
+  return null;
+}
+
+/**
+ * Per-route WebSocket authentication, checked on the upgrade.
+ *
+ * A route is secured when `authRequired` is truthy (set by `.secure()` /
+ * `{ secured: true }` on the WS route, or a `_secured` flag on the handler).
+ * Public routes (the default) always pass. A secured route needs a valid JWT
+ * via the Authorization header, the `bearer` subprotocol, or `?token=`.
+ *
+ * Returns `[payload, ok]` — the verified token payload (or `null`) and whether
+ * the upgrade may proceed. Mirrors Python's `ws_authorized`.
+ */
+export function wsAuthorized(
+  route: { authRequired?: boolean } | null | undefined,
+  headers: Record<string, string | string[] | undefined>,
+  queryString = "",
+  subprotocol = "",
+): [Record<string, unknown> | null, boolean] {
+  if (!route?.authRequired) return [null, true];
+  const token = wsToken(headers, queryString, subprotocol);
+  if (!token) return [null, false];
+  const payload = validToken(token);
+  return [payload, payload !== null];
+}
+
+/**
+ * Whether the client offered the `bearer` subprotocol — if so, the server MUST
+ * echo `bearer` back as the accepted `Sec-WebSocket-Protocol` in the handshake
+ * (RFC 6455 §1.3; browsers send the token as the second subprotocol token).
+ */
+export function offeredBearerSubprotocol(subprotocol: string): boolean {
+  return subprotocol
+    .split(",")
+    .some((p) => p.trim().toLowerCase() === "bearer");
 }
 
 /**
@@ -252,7 +350,11 @@ export class WebSocketServer {
    * to the Router's `(conn, event, data)` style and registers it via
    * `Router.websocket()`.
    */
-  route(path: string, handler: (conn: WebSocketConnection) => void | Promise<void>): void {
+  route(
+    path: string,
+    handler: (conn: WebSocketConnection) => void | Promise<void>,
+    options?: { secured?: boolean },
+  ): void {
     this._routeHandlers.set(path, handler);
 
     // Adapt to Router's (conn, event, data) style
@@ -279,7 +381,9 @@ export class WebSocketServer {
       }
     };
 
-    Router.websocket(path, adapter);
+    // Carry the secured flag through so the upgrade enforces auth. Public by
+    // default (mirrors GET); pass { secured: true } to require a valid JWT.
+    Router.websocket(path, adapter, options);
   }
 
   /**
@@ -651,18 +755,36 @@ export class WebSocketServer {
       return;
     }
 
-    // Compute accept key and send upgrade response
+    // Per-route auth — checked AFTER the origin allow-list, BEFORE accept.
+    // A WS route is public by default (mirrors GET); a secured route requires a
+    // valid JWT via the Authorization header, the `bearer` subprotocol, or
+    // `?token=`. Missing/invalid → reject the upgrade (HTTP 401, never accept).
+    // Public routes (and any path with no registered route) always pass —
+    // non-breaking. The verified payload is exposed as client.auth.
+    const [reqPath, reqQuery = ""] = (req.url ?? "/").split("?");
+    const wsRoute = Router.matchWebSocket(reqPath);
+    const offeredProto = (req.headers["sec-websocket-protocol"] as string | undefined) ?? "";
+    const [authPayload, authOk] = wsAuthorized(wsRoute, req.headers, reqQuery, offeredProto);
+    if (!authOk) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    // Compute accept key and send upgrade response. Echo the `bearer`
+    // subprotocol when the client offered it (the browser token transport).
     const acceptKey = computeAcceptKey(Array.isArray(wsKey) ? wsKey[0] : wsKey);
-    const response = [
+    const responseLines = [
       "HTTP/1.1 101 Switching Protocols",
       "Upgrade: websocket",
       "Connection: Upgrade",
       `Sec-WebSocket-Accept: ${acceptKey}`,
-      "",
-      "",
-    ].join("\r\n");
-
-    socket.write(response);
+    ];
+    if (offeredBearerSubprotocol(offeredProto)) {
+      responseLines.push("Sec-WebSocket-Protocol: bearer");
+    }
+    responseLines.push("", "");
+    socket.write(responseLines.join("\r\n"));
 
     // Create client — track the URL path for path-scoped broadcast
     const clientId = randomUUID().slice(0, 8);
@@ -674,6 +796,7 @@ export class WebSocketServer {
       closed: false,
       path: req.url ?? "/",
       lastActivity: Date.now(),
+      auth: authPayload,
     };
 
     this.clients.set(clientId, client);
@@ -775,6 +898,293 @@ export class WebSocketServer {
     }
     this.clientRooms.delete(clientId);
   }
+}
+
+// ── Integrated WebSocket route manager (server.ts upgrade path) ──
+//
+// The standalone WebSocketServer above owns its own HTTP server. The INTEGRATED
+// Tina4 server (server.ts) runs one HTTP server for everything, so user WS
+// routes registered via Router.websocket() / WebSocketServer.route() must be
+// driven from server.ts's `upgrade` handler. This module-level manager mirrors
+// Python's `_ws_manager`: it holds the live route connections, drives the
+// open/message/close lifecycle on the raw socket, and powers path-scoped
+// broadcast / rooms for those connections. Auth is enforced on the upgrade
+// BEFORE a connection is created (see serveWebSocketRoute).
+
+/** A live route connection in the integrated server. */
+interface RouteConnState {
+  conn: WebSocketConnection;
+  socket: Socket;
+  path: string;
+  rooms: Set<string>;
+  closed: boolean;
+  /** Optional dev-admin tracker id so the connection shows in the websockets list. */
+  trackerId?: string;
+}
+
+/**
+ * Process-wide manager for user WebSocket route connections served by the
+ * integrated server. Path-scoped broadcast + rooms mirror the standalone
+ * WebSocketServer semantics so a route handler behaves the same either way.
+ */
+class WsRouteManager {
+  private connections = new Map<string, RouteConnState>();
+  private rooms = new Map<string, Set<string>>();
+  private onAdd?: (remoteAddress: string, path: string) => string;
+  private onRemove?: (id: string) => void;
+
+  /** Wire dev-admin tracking callbacks (WsTracker.add / WsTracker.remove). */
+  setTracker(onAdd: (remoteAddress: string, path: string) => string, onRemove: (id: string) => void): void {
+    this.onAdd = onAdd;
+    this.onRemove = onRemove;
+  }
+
+  /** Currently-open route connections (test/diagnostic helper). */
+  get size(): number {
+    return this.connections.size;
+  }
+
+  add(state: RouteConnState): void {
+    if (this.onAdd) state.trackerId = this.onAdd(state.socket.remoteAddress ?? "unknown", state.path);
+    this.connections.set(state.conn.id, state);
+  }
+
+  remove(id: string): void {
+    const state = this.connections.get(id);
+    if (!state) return;
+    for (const room of state.rooms) this.rooms.get(room)?.delete(id);
+    this.connections.delete(id);
+    if (state.trackerId && this.onRemove) this.onRemove(state.trackerId);
+  }
+
+  /** Send a text frame to one connection (best-effort). */
+  sendTo(id: string, message: string): void {
+    const state = this.connections.get(id);
+    if (!state || state.closed) return;
+    try {
+      state.socket.write(buildFrame(OP_TEXT, Buffer.from(message, "utf-8")));
+    } catch {
+      /* dropped */
+    }
+  }
+
+  /** Broadcast a text frame to every connection on the same path. */
+  broadcastPath(path: string, message: string): void {
+    const frame = buildFrame(OP_TEXT, Buffer.from(message, "utf-8"));
+    for (const state of this.connections.values()) {
+      if (state.path !== path || state.closed) continue;
+      try {
+        state.socket.write(frame);
+      } catch {
+        /* dropped */
+      }
+    }
+  }
+
+  joinRoom(id: string, room: string): void {
+    const state = this.connections.get(id);
+    if (!state) return;
+    state.rooms.add(room);
+    if (!this.rooms.has(room)) this.rooms.set(room, new Set());
+    this.rooms.get(room)!.add(id);
+  }
+
+  leaveRoom(id: string, room: string): void {
+    this.connections.get(id)?.rooms.delete(room);
+    this.rooms.get(room)?.delete(id);
+  }
+}
+
+/** Process-wide manager for integrated-server user WS route connections. */
+export const wsRouteManager = new WsRouteManager();
+
+/**
+ * Build a concrete {@link WebSocketConnection} bound to a raw socket, for a
+ * route served by the integrated server.
+ */
+function createRouteConnection(
+  socket: Socket,
+  path: string,
+  headers: Record<string, string>,
+  params: Record<string, string>,
+  auth: Record<string, unknown> | null,
+): WebSocketConnection {
+  const id = randomUUID().slice(0, 8);
+  const send = (message: string): void => {
+    try {
+      socket.write(buildFrame(OP_TEXT, Buffer.from(message, "utf-8")));
+    } catch {
+      /* socket gone */
+    }
+  };
+  const conn: WebSocketConnection = {
+    id,
+    path,
+    ip: socket.remoteAddress ?? "unknown",
+    headers,
+    params,
+    auth,
+    send,
+    sendJson: (data: unknown) => send(JSON.stringify(data)),
+    broadcast: (message: string) => wsRouteManager.broadcastPath(path, message),
+    joinRoom: (room: string) => wsRouteManager.joinRoom(id, room),
+    leaveRoom: (room: string) => wsRouteManager.leaveRoom(id, room),
+    close: () => {
+      try {
+        socket.write(buildFrame(OP_CLOSE, Buffer.from([0x03, 0xe8]))); // 1000
+        socket.end();
+      } catch {
+        /* already closed */
+      }
+    },
+    _onMessage: null,
+    _onClose: null,
+    onMessage(handler) {
+      this._onMessage = handler;
+    },
+    onClose(handler) {
+      this._onClose = handler;
+    },
+  };
+  return conn;
+}
+
+/**
+ * Reject a WebSocket upgrade on the raw socket with an HTTP status line.
+ * Used before the handshake completes (origin/auth failures).
+ */
+function rejectUpgrade(socket: Socket, statusLine: string): void {
+  try {
+    socket.write(`HTTP/1.1 ${statusLine}\r\n\r\n`);
+    socket.destroy();
+  } catch {
+    /* socket already gone */
+  }
+}
+
+/**
+ * Serve a user WebSocket route on the integrated server's `upgrade` event.
+ *
+ * This is the second half of per-route WS auth in Node: it's the entry point
+ * that wires a user-registered WS route (the WS route table) into the integrated
+ * server so the route actually gets a live open/message/close lifecycle on a
+ * real connection — parity with Python/PHP/Ruby — AND enforces per-route auth.
+ *
+ * Order mirrors Python's `_handle_dev_websocket` / `_handle_asgi_websocket`:
+ *   1. require a Sec-WebSocket-Key (else 400);
+ *   2. origin allow-list (else 403) — TINA4_WS_ALLOWED_ORIGINS, unset = allow all;
+ *   3. per-route auth (else 401) — public by default, secured needs a valid JWT;
+ *   4. accept the handshake, echoing `bearer` when offered;
+ *   5. build the connection (conn.auth = payload), fire "open", then pump
+ *      frames into "message" / "close".
+ *
+ * Returns true if a matching route was found and handled (accepted OR rejected),
+ * false if no WS route matched this path (caller falls through to its 404).
+ */
+export function serveWebSocketRoute(req: IncomingMessage, socket: Socket, head: Buffer): boolean {
+  const [reqPath, reqQuery = ""] = (req.url ?? "/").split("?");
+  const route = Router.matchWebSocket(reqPath);
+  if (!route) return false;
+
+  const wsKey = req.headers["sec-websocket-key"];
+  if (!wsKey || (typeof wsKey === "string" && wsKey.length === 0)) {
+    rejectUpgrade(socket, "400 Bad Request");
+    return true;
+  }
+
+  // Origin allow-list (opt-in via TINA4_WS_ALLOWED_ORIGINS). Unset = allow all.
+  if (!originAllowed(req.headers)) {
+    rejectUpgrade(socket, "403 Forbidden");
+    return true;
+  }
+
+  // Per-route auth: AFTER the origin check, BEFORE accept. Public by default;
+  // a secured route requires a valid JWT (header / bearer subprotocol / ?token=).
+  const offeredProto = (req.headers["sec-websocket-protocol"] as string | undefined) ?? "";
+  const [authPayload, authOk] = wsAuthorized(route, req.headers, reqQuery, offeredProto);
+  if (!authOk) {
+    rejectUpgrade(socket, "401 Unauthorized");
+    return true;
+  }
+
+  // Accept — echo the `bearer` subprotocol when the client offered it.
+  const acceptKey = computeAcceptKey(Array.isArray(wsKey) ? wsKey[0] : wsKey);
+  const responseLines = [
+    "HTTP/1.1 101 Switching Protocols",
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    `Sec-WebSocket-Accept: ${acceptKey}`,
+  ];
+  if (offeredBearerSubprotocol(offeredProto)) {
+    responseLines.push("Sec-WebSocket-Protocol: bearer");
+  }
+  responseLines.push("", "");
+  try {
+    socket.write(responseLines.join("\r\n"));
+  } catch {
+    return true; // socket died during handshake
+  }
+
+  const headerMap: Record<string, string> = {};
+  for (const [k, v] of Object.entries(req.headers)) {
+    headerMap[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
+  }
+  const conn = createRouteConnection(socket, reqPath, headerMap, {}, authPayload);
+  const state: RouteConnState = { conn, socket, path: reqPath, rooms: new Set(), closed: false };
+  wsRouteManager.add(state);
+
+  const handler = route.handler;
+  // Fire "open" — may set conn._onMessage / conn._onClose (decorator style).
+  void Promise.resolve()
+    .then(() => handler(conn, "open", ""))
+    .catch((e) => Log.error(`WebSocket open handler error: ${(e as Error).message}`));
+
+  let buffer = head && head.length > 0 ? Buffer.from(head) : Buffer.alloc(0);
+  const fireClose = () => {
+    if (state.closed) return;
+    state.closed = true;
+    void Promise.resolve()
+      .then(() => (conn._onClose ? conn._onClose() : handler(conn, "close", "")))
+      .catch((e) => Log.error(`WebSocket close handler error: ${(e as Error).message}`))
+      .finally(() => wsRouteManager.remove(conn.id));
+  };
+
+  socket.on("data", (chunk: Buffer) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    while (buffer.length > 0) {
+      const frame = parseFrame(buffer);
+      if (!frame) break;
+      buffer = buffer.subarray(frame.bytesConsumed);
+      switch (frame.opcode) {
+        case OP_TEXT: {
+          const text = frame.payload.toString("utf-8");
+          void Promise.resolve()
+            .then(() => (conn._onMessage ? conn._onMessage(text) : handler(conn, "message", text)))
+            .catch((e) => Log.error(`WebSocket message handler error: ${(e as Error).message}`));
+          break;
+        }
+        case OP_PING:
+          try {
+            socket.write(buildFrame(OP_PONG, frame.payload));
+          } catch {
+            /* client gone */
+          }
+          break;
+        case OP_CLOSE:
+          try {
+            socket.write(buildFrame(OP_CLOSE, Buffer.from([0x03, 0xe8])));
+            socket.end();
+          } catch {
+            /* already closed */
+          }
+          fireClose();
+          return;
+      }
+    }
+  });
+  socket.on("close", fireClose);
+  socket.on("error", fireClose);
+  return true;
 }
 
 // ── Dev-reload WebSocket manager ─────────────────────────────

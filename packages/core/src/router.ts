@@ -68,6 +68,23 @@ interface CompiledRoute {
 }
 
 /**
+ * Thin reference to a registered WebSocket route, enabling chained modifiers
+ * — the WS analogue of {@link RouteRef}.
+ *
+ * Usage:
+ *   router.websocket("/ws/secure", handler).secure();
+ */
+export class WsRouteRef {
+  constructor(private route: WebSocketRouteDefinition) {}
+
+  /** Mark this WS route as requiring a valid JWT on the upgrade handshake. */
+  secure(): this {
+    this.route.authRequired = true;
+    return this;
+  }
+}
+
+/**
  * Thin reference to a registered route, enabling chained modifiers.
  *
  * Usage:
@@ -412,11 +429,29 @@ export class Router {
 
   /**
    * Register a WebSocket route.
+   *
+   * A WS route is PUBLIC by default (mirrors GET). It can be marked secured in
+   * EITHER way the HTTP routes support:
+   *   • imperatively — `websocket(path, fn, { secured: true })`, or chain the
+   *     returned ref: `websocket(path, fn).secure()`;
+   *   • decorator-style — a `_secured` flag on the handler function, set in
+   *     either order relative to registration (the ref keeps a back-reference
+   *     to the route so a later `.secure()` / `_secured` still flips it).
+   *
+   * When secured, the upgrade handshake requires a valid JWT (Authorization
+   * header / `bearer` subprotocol / `?token=`) or the upgrade is rejected.
    */
-  websocket(path: string, handler: WebSocketRouteHandler): void {
+  websocket(path: string, handler: WebSocketRouteHandler, options?: { secured?: boolean }): WsRouteRef {
     // Remove existing ws route with same pattern (for hot-reload)
     this.wsRoutes = this.wsRoutes.filter((r) => r.pattern !== path);
-    this.wsRoutes.push({ pattern: path, handler });
+    const route: WebSocketRouteDefinition = {
+      pattern: path,
+      handler,
+      // Public unless explicitly secured via options OR a handler `_secured` flag.
+      authRequired: Boolean(options?.secured ?? handler._secured ?? false),
+    };
+    this.wsRoutes.push(route);
+    return new WsRouteRef(route);
   }
 
   /**
@@ -503,8 +538,21 @@ export class Router {
   /**
    * Register a WebSocket route on the default global router.
    */
-  static websocket(path: string, handler: WebSocketRouteHandler): void {
-    defaultRouter.websocket(path, handler);
+  static websocket(path: string, handler: WebSocketRouteHandler, options?: { secured?: boolean }): WsRouteRef {
+    return defaultRouter.websocket(path, handler, options);
+  }
+
+  /**
+   * Match a WebSocket upgrade path against routes on the default global router.
+   * Returns the matched route definition (with its `authRequired` flag) or null.
+   */
+  static matchWebSocket(pathname: string): WebSocketRouteDefinition | null {
+    return defaultRouter.matchWebSocket(pathname);
+  }
+
+  /** All WebSocket route definitions on the default global router. */
+  static getWebSocketRoutes(): WebSocketRouteDefinition[] {
+    return defaultRouter.getWebSocketRoutes();
   }
 
   /**
@@ -816,8 +864,8 @@ export function any(path: string, handler: RouteHandler, middlewares?: Middlewar
   return defaultRouter.any(path, handler, middlewares, meta);
 }
 
-export function websocket(path: string, handler: WebSocketRouteHandler): void {
-  defaultRouter.websocket(path, handler);
+export function websocket(path: string, handler: WebSocketRouteHandler, options?: { secured?: boolean }): WsRouteRef {
+  return defaultRouter.websocket(path, handler, options);
 }
 
 // Re-export "del" as "delete" for developer convenience (use: import { delete as del } from "@tina4/core")

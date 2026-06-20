@@ -179,13 +179,28 @@ export type MiddlewareSpec = Middleware | string;
  * event — one of "open", "message", or "close".
  * data — the incoming text message (only present for "message" events).
  */
-export type WebSocketRouteHandler = (
+export type WebSocketRouteHandler = ((
   connection: import("./websocketConnection.js").WebSocketConnection,
   event: "open" | "message" | "close",
   data: string,
-) => void | Promise<void>;
+) => void | Promise<void>) & {
+  /**
+   * Decorator-style secured flag — mirrors Python's `handler._secured`. When
+   * truthy the WS route requires a valid JWT on the upgrade. `Router.websocket`
+   * reads this into the route's `authRequired`. Lets a handler be marked
+   * secured in EITHER order (before or after registration).
+   */
+  _secured?: boolean;
+};
 
 export interface WebSocketRouteDefinition {
   pattern: string;
   handler: WebSocketRouteHandler;
+  /**
+   * True when this WS route requires a valid JWT on the upgrade. Public by
+   * default (mirrors GET). Set imperatively via `Router.websocket(path, fn,
+   * { secured: true })` / the returned `.secure()`, or by a `_secured` flag on
+   * the handler (decorator style).
+   */
+  authRequired?: boolean;
 }

@@ -20,7 +20,7 @@ import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
 import { DevAdmin, RequestInspector, WsTracker } from "./devAdmin.js";
-import { devReloadWs } from "./websocket.js";
+import { devReloadWs, serveWebSocketRoute, wsRouteManager } from "./websocket.js";
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
 import { stopAllBackgroundTasks } from "./background.js";
@@ -1415,31 +1415,52 @@ ${reset}
   // posts /__dev/api/reload to the MAIN port. Matches Python (master).
   const server = createServer(dispatch);
 
-  // WebSocket-primary DevReload: accept and hold /__dev_reload upgrades on the
-  // MAIN port (debug only) so POST /__dev/api/reload can push an instant reload.
-  // Mirrors Python's _register_dev_reload_ws + _ws_manager.broadcast(path=…).
-  // Without this the handshake 404s and the whole stack silently falls back to
-  // polling. Track connections in WsTracker so they appear in the dev-admin list.
+  // WebSocket upgrade handling on the MAIN port. Two responsibilities:
+  //
+  //  1. WebSocket-primary DevReload (debug only): accept and hold /__dev_reload
+  //     upgrades so POST /__dev/api/reload can push an instant reload. Mirrors
+  //     Python's _register_dev_reload_ws + _ws_manager.broadcast(path=…).
+  //
+  //  2. USER WS ROUTES (always): a route registered via Router.websocket() /
+  //     WebSocketServer.route() is dispatched to a live open/message/close
+  //     lifecycle on the real connection — parity with Python/PHP/Ruby. Per-route
+  //     auth is enforced here on the upgrade (serveWebSocketRoute): a @secured /
+  //     .secure() route rejects a missing/invalid JWT before accepting; public
+  //     routes pass. Previously the integrated server only handled /__dev_reload,
+  //     so user WS routes never reached a live connection.
+  //
+  // Tracking goes through WsTracker so connections show in the dev-admin list.
   if (isDevMode()) {
     devReloadWs.setTracker(
       (remoteAddress, p) => WsTracker.add(remoteAddress, p),
       (id) => { WsTracker.remove(id); },
     );
-    server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
-      const upPath = (req.url ?? "/").split("?")[0];
-      if (upPath === "/__dev_reload") {
-        devReloadWs.handleUpgrade(req, socket, head);
-        return;
-      }
-      // Not a dev-reload upgrade — refuse cleanly rather than leaving it hanging.
-      try {
-        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
-        socket.destroy();
-      } catch {
-        /* socket already gone */
-      }
-    });
+    wsRouteManager.setTracker(
+      (remoteAddress, p) => WsTracker.add(remoteAddress, p),
+      (id) => { WsTracker.remove(id); },
+    );
   }
+  server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
+    const upPath = (req.url ?? "/").split("?")[0];
+    // Dev-reload channel (debug only).
+    if (isDevMode() && upPath === "/__dev_reload") {
+      devReloadWs.handleUpgrade(req, socket, head);
+      return;
+    }
+    // User-registered WS route — enforces per-route auth, then drives the
+    // open/message/close lifecycle on this connection. Returns false only when
+    // no WS route matches this path.
+    if (serveWebSocketRoute(req, socket, head)) {
+      return;
+    }
+    // No dev-reload and no matching user route — refuse cleanly.
+    try {
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+    } catch {
+      /* socket already gone */
+    }
+  });
 
   return new Promise((resolvePromise) => {
     server.listen(port, host, () => {
