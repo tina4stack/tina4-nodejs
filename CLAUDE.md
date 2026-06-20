@@ -775,6 +775,8 @@ const adults = User.query().where("age > ?", [18]).orderBy("name").get();
 
 SQL-file based migrations under `migrations/`. The framework runs pending migrations on startup; the helpers here are for programmatic control (CLI, scripts, tests).
 
+**Auto-run on startup (`TINA4_AUTO_MIGRATE`, default on).** `startServer()` calls `autoMigrateOnStartup()` (in `server.ts`) AFTER `initDatabase()`/model sync and BEFORE the server listens. When a `migrations/` folder with at least one `.sql` file exists, `TINA4_AUTO_MIGRATE` is not falsy (default `"true"`; `false`/`0`/`no`/`off` disable), and a DB adapter is resolvable, it runs the existing `migrate()` runner so the schema is current with no manual `tina4 migrate` step. It is **non-breaking**: a failure is logged via `Log.error` and the service still starts (a bad migration must never take the backend down). The runner is wrapped in try/catch and `autoMigrateOnStartup()` never rejects/throws out of the boot path. Set `TINA4_AUTO_MIGRATE=false` to disable (e.g. multi-instance production that migrates as a separate deploy step — concurrent first-apply can race). The explicit `tina4 migrate` CLI (`packages/cli/src/commands/migrate.ts`) is unaffected and stays **fail-fast** (`process.exit(1)` on a statement error) so CI keeps the non-zero exit code.
+
 ```typescript
 import {
   migrate, rollback, status, createMigration, syncModels,
