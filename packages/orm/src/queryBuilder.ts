@@ -428,8 +428,20 @@ export class QueryBuilder {
       return [{ [field]: { [mongoOp]: val } }, paramIndex + 1];
     }
 
-    // Fallback
-    return [{ $where: cond }, paramIndex];
+    // Canonical #5: no silent $where fallback. Previously an unparseable
+    // condition was wrapped as `{ $where: <raw condition string> }` — a raw-JS
+    // sink that is both injection-shaped (the WHERE string runs as JavaScript
+    // on the MongoDB server) and silently different semantics from the SQL the
+    // caller wrote. Fail loud instead: name the clause so the caller fixes it
+    // rather than shipping a surprise $where.
+    throw new Error(
+      `QueryBuilder.toMongo(): cannot translate WHERE clause to a MongoDB ` +
+        `filter: "${cond}". Supported forms: "<field> <op> ?" ` +
+        `(=, !=, <>, >, >=, <, <=), "<field> LIKE ?", ` +
+        `"<field> [NOT] IN (?)", "<field> IS [NOT] NULL". Rewrite the ` +
+        `condition in one of those forms (toMongo() will not silently emit a ` +
+        `raw $where JavaScript expression).`,
+    );
   }
 
   /**

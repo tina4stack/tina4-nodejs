@@ -95,6 +95,16 @@ export class BaseModel {
   /** Relationship cache for lazy loading */
   private _relCache: Record<string, unknown> = {};
 
+  /**
+   * Cause of the most recent failed save(). null when the last save()
+   * succeeded. Mirrors db.getError() so a caller that checks
+   * `if (!(await model.save()))` can still recover the real cause via
+   * `model.getError()` / `model.lastError` — the failure never vanishes
+   * silently. Set by save() (validation message or driver error), cleared
+   * to null on a successful save.
+   */
+  lastError: string | null = null;
+
   constructor(data?: Record<string, unknown> | string) {
     // Accept a JSON object string (parity with Python/PHP/Ruby):
     //   new Widget('{"id":1,"name":"alpha"}')
@@ -110,6 +120,21 @@ export class BaseModel {
           `Map over the list to build many records.`,
       );
     }
+    const ModelClass0 = this.constructor as typeof BaseModel;
+    // Set defaults from field definitions BEFORE populating from data.
+    // Outlier A (mirrors Python issue #50.1): a callable default is resolved
+    // to its called value PER INSTANCE, so per-row defaults (e.g.
+    // `default: () => new Date()`) actually differ and a function never
+    // reaches the driver. Static defaults are assigned verbatim. Data passed
+    // to the constructor overrides any default below.
+    const fields0 = ModelClass0.fields ?? {};
+    for (const [name, def] of Object.entries(fields0)) {
+      if (def.default === undefined) continue;
+      this[name] = typeof def.default === "function"
+        ? (def.default as () => unknown)()
+        : def.default;
+    }
+
     if (data) {
       const ModelClass = this.constructor as typeof BaseModel;
       // If autoMap is on, auto-generate fieldMapping from camelCase fields
@@ -188,8 +213,12 @@ export class BaseModel {
         this.belongsTo.push({ model: def.references, foreignKey: key });
       }
 
-      // Register hasMany on the referenced model via the module-level registry
-      const hasManyKey = def.relatedName ?? (this.tableName ?? this.name.toLowerCase());
+      // Register hasMany on the referenced model via the module-level registry.
+      // Outlier F: the has-many key defaults to the DECLARING class name
+      // lowercased + "s" (Python master: `name.lower() + "s"`), e.g. a Post
+      // with author_id → Author.posts. The relatedName override wins. The old
+      // default was the table name, which drifted from the documented rule.
+      const hasManyKey = def.relatedName ?? (this.name.toLowerCase() + "s");
       const existing = _fkRegistry.get(def.references) ?? [];
       if (!existing.find((r) => r.foreignKey === key && r.declaringModel === this.name)) {
         existing.push({ foreignKey: key, declaringModel: this.name, hasManyKey });
@@ -207,7 +236,10 @@ export class BaseModel {
     for (const entry of entries) {
       this.hasMany = this.hasMany ?? [];
       if (!this.hasMany.find((r) => r.foreignKey === entry.foreignKey && r.model === entry.declaringModel)) {
-        this.hasMany.push({ model: entry.declaringModel, foreignKey: entry.foreignKey });
+        // Outlier F: carry the derived has-many key (declaring class lowercased
+        // + "s", or the relatedName override) onto the relationship so an
+        // include: ["posts"] resolves to it — not the related table name.
+        this.hasMany.push({ model: entry.declaringModel, foreignKey: entry.foreignKey, relatedName: entry.hasManyKey });
       }
     }
   }
@@ -300,38 +332,83 @@ export class BaseModel {
   /**
    * Create a new instance from data, save it, and return the saved instance.
    *
+   * Canonical #3: if the underlying save() fails (validation errors or a
+   * driver error), create() returns `false` — it does NOT hand back a
+   * possibly-unsaved instance, so a failed insert can never masquerade as a
+   * success. The failure cause is logged and available on the (discarded)
+   * instance's getError() via the same path save() uses.
+   *
    * Usage:
    *   const user = User.create({ name: "Alice", email: "alice@example.com" });
+   *   if (!(await User.create({ name: null }))) { ... }   // save() failed -> false
    */
   static async create<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     data: Record<string, unknown> = {},
-  ): Promise<T> {
+  ): Promise<T | false> {
     const instance = new this(data) as T;
-    await instance.save();
+    if ((await instance.save()) === false) {
+      return false;
+    }
     return instance;
   }
 
   /**
-   * Find records by filter dict. Always returns an array.
+   * Find record(s) by primary key, filter object, or all.
+   *
+   * Outlier C — overloaded on the first argument (parity with
+   * Python/PHP/Ruby):
+   *   - number | string (scalar PK) → single instance (or null), like
+   *     findById(pk). `include` is accepted as the 2nd argument in this form.
+   *   - object (filter)             → array of instances (AND-ed conditions).
+   *   - omitted                     → array of all records.
    *
    * Usage:
-   *   User.find({ name: "Alice" })              → [User, ...]
-   *   User.find({ age: 18 }, 10)                → [User, ...] (limit 10)
-   *   User.find({}, 100, 0, "name ASC")         → [User, ...] (with orderBy)
-   *   User.find()                                → all records
-   *
-   * Use findById(id) for single-record primary key lookup.
+   *   User.find(1)                       → User | null   (PK lookup)
+   *   User.find(1, ["posts"])            → User | null   (PK lookup + eager)
+   *   User.find({ name: "Alice" })       → [User, ...]
+   *   User.find({ age: 18 }, 10)         → [User, ...]  (limit 10)
+   *   User.find({}, 100, 0, "name ASC")  → [User, ...]  (with orderBy)
+   *   User.find()                        → all records
    */
+  // Scalar PK → single instance | null.
+  static async find<T extends BaseModel>(
+    this: new (data?: Record<string, unknown>) => T,
+    pk: number | string,
+    include?: string[],
+  ): Promise<T | null>;
+  // Filter object / all → array.
   static async find<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     filter?: Record<string, unknown>,
-    limit = 100,
+    limit?: number,
+    offset?: number,
+    orderBy?: string,
+    include?: string[],
+  ): Promise<T[]>;
+  static async find<T extends BaseModel>(
+    this: new (data?: Record<string, unknown>) => T,
+    filter?: Record<string, unknown> | number | string,
+    limit: number | string[] = 100,
     offset = 0,
     orderBy?: string,
     include?: string[],
-  ): Promise<T[]> {
+  ): Promise<T[] | T | null> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
+
+    // Scalar PK lookup routes to findById. A number or a string (but NOT a
+    // boolean, and NOT an object) is a primary-key value — Active Record
+    // convention (Django Model.objects.get(pk), SQLAlchemy session.get(M, id),
+    // Ruby Model.find(1)). In the scalar form the 2nd arg is `include`.
+    if (typeof filter === "number" || typeof filter === "string") {
+      const inc = Array.isArray(limit) ? limit : undefined;
+      return (ModelClass.findById as (id: unknown, include?: string[]) => Promise<T | null>).call(
+        ModelClass, filter, inc,
+      );
+    }
+
+    // Array form — coerce `limit` back to a number for the list path.
+    const lim = typeof limit === "number" ? limit : 100;
     const db = ModelClass.getDb();
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -356,7 +433,7 @@ export class BaseModel {
       sql += ` ORDER BY ${orderBy}`;
     }
 
-    const rows = await adapterFetch(db, sql, params, limit, offset);
+    const rows = await adapterFetch(db, sql, params, lim, offset);
     const data = (rows as any)?.data ?? rows;
     const instances = (Array.isArray(data) ? data : []).map((row: Record<string, unknown>) => {
       const inst = new this(row) as T;
@@ -391,11 +468,16 @@ export class BaseModel {
 
     let sql: string;
     if (filter === undefined || filter === null) {
-      // No args — use PK already set
-      const pk = (ModelClass as any).primaryKey ?? (this as any).primaryKey ?? "id";
-      const pkValue = (this as any)[pk];
+      // No args — use the PK value already set. Outlier B: resolve the REAL
+      // primary key via getPkField()/getPkColumn() (a model has no
+      // `primaryKey` static — the old code referenced a non-existent field, so
+      // it always queried `WHERE undefined = ?` and never loaded). Use the JS
+      // property for the value and the DB column for the WHERE clause.
+      const pkProp = ModelClass.getPkField();
+      const pkCol = ModelClass.getPkColumn();
+      const pkValue = (this as any)[pkProp];
       if (pkValue === undefined || pkValue === null) return false;
-      sql = `SELECT * FROM ${table} WHERE ${pk} = ?`;
+      sql = `SELECT * FROM "${table}" WHERE "${pkCol}" = ?`;
       params = [pkValue];
     } else {
       sql = `SELECT * FROM ${table} WHERE ${filter}`;
@@ -492,11 +574,40 @@ export class BaseModel {
   }
 
   /**
-   * Save this instance (insert or update).
-   * Returns this on success (fluent), null on failure.
+   * Save this instance (insert or update). Returns this on success (fluent
+   * self), false on failure.
+   *
+   * Fails loud, never silent (the same principle db.execute() follows by
+   * raising). On ANY failure path save() returns `false` — keeping the
+   * contract callers rely on (`if (!(await model.save())) ...`) — but it also
+   * (a) logs the real cause via Log.error with model/table context and
+   * (b) records the cause on `this.lastError` so a caller can recover it after
+   * the fact via getError() / lastError. It never throws and never changes the
+   * `this | false` return shape.
+   *
+   * Two distinct failure paths, both loud:
+   *  - Validation (canonical #2): validate() runs FIRST. If it returns errors,
+   *    save() logs them, records them on lastError, and returns false WITHOUT
+   *    touching the database — an invalid model never reaches the driver.
+   *  - Database: a driver error (NOT NULL, duplicate PK, missing table, ...) is
+   *    rolled back, logged with the underlying cause, recorded on lastError,
+   *    and returns false — the cause is no longer swallowed silently.
    */
   async save(): Promise<this | false> {
     const ModelClass = this.constructor as typeof BaseModel;
+
+    // ── Canonical #2: validate() is enforced. An invalid model never reaches
+    // the driver — fail loud (log + lastError), return false. ──
+    const errors = this.validate();
+    if (errors.length > 0) {
+      this.lastError = errors.join("; ");
+      Log.error(
+        `${ModelClass.name}.save() refused: validation failed for table ` +
+          `'${ModelClass.tableName}' — ${this.lastError}`,
+      );
+      return false;
+    }
+
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
     const pkCol = ModelClass.getPkColumn();
@@ -585,12 +696,40 @@ export class BaseModel {
         }
       }
       await adapterCommit(db);
-    } catch (e) {
+    } catch (e: any) {
       await adapterRollback(db);
+      // ── Canonical #1: fail loud, never silent. Keep the false return
+      // contract, but capture the REAL cause (prefer the adapter's
+      // getError()/getLastError() when present, falling back to the exception
+      // text) on this.lastError so it survives, and log it with model/table
+      // context. ──
+      const adapterErr =
+        typeof (db as any).getError === "function" ? (db as any).getError() :
+        typeof (db as any).getLastError === "function" ? (db as any).getLastError() :
+        null;
+      this.lastError = adapterErr || e?.message || String(e);
+      Log.error(
+        `${ModelClass.name}.save() failed for table ` +
+          `'${ModelClass.tableName}': ${this.lastError}`,
+      );
       return false;
     }
+    // Success — clear any previously-recorded error.
+    this.lastError = null;
     (this as any)._exists = true;
     return this;
+  }
+
+  /**
+   * Return the cause of the most recent failed save(), or null.
+   *
+   * Mirrors db.getError(). After save() returns false — whether from
+   * validation or a driver error — the real cause is retrievable here (and on
+   * this.lastError) so a caller using the `if (!(await model.save()))`
+   * contract can still surface it. Cleared to null on a successful save.
+   */
+  getError(): string | null {
+    return this.lastError;
   }
 
   /**
@@ -1249,9 +1388,15 @@ export class BaseModel {
         const base = r.model.toLowerCase();
         const related = BaseModel._modelRegistry[r.model];
         const table = related?.tableName?.toLowerCase();
+        // Outlier F: an FK-auto-wired has-many carries its derived key
+        // (declaring class lowercased + "s", or relatedName) — match it so
+        // include: ["posts"] resolves to the wired relation regardless of the
+        // related table name.
+        const rel = r.relatedName?.toLowerCase();
         return (
           base === want ||
           base + "s" === want ||
+          (rel !== undefined && rel === want) ||
           (table !== undefined && table === want)
         );
       };
