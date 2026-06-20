@@ -40,6 +40,7 @@ export {
   status,
   Migration,
   splitStatements,
+  normalizeQuotes,
   sortMigrationFiles,
   shouldSkipCreateTable,
 } from "./migration.js";

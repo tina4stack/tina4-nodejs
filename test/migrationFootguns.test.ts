@@ -13,6 +13,7 @@ import { rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   splitStatements,
+  normalizeQuotes,
   sortMigrationFiles,
   shouldSkipCreateTable,
   initDatabase,
@@ -84,6 +85,33 @@ console.log("--- [10] slash-slash URL guard ---");
     stmts.some((s) => s.includes("BEGIN SELECT 1; SELECT 2; END")),
     JSON.stringify(stmts),
   );
+}
+
+// ── smart/curly quotes normalized so the SQL runs ───────────────────────
+console.log("\n--- smart/curly quote normalization ---");
+
+{
+  // Smart double quotes around an identifier + smart single quotes around a
+  // value — as an editor/doc would produce. They must become straight ASCII so
+  // the statement actually runs. Mirrors Python's
+  // test_smart_quotes_normalized_before_split.
+  const sql = "CREATE TABLE “users” (name TEXT DEFAULT ‘guest’);";
+  const joined = splitStatements(sql, ";").join(" ");
+  const smartQuotes = ["“", "”", "‘", "’", "′", "″"];
+  assert(
+    "no smart-quote code points survive splitting",
+    smartQuotes.every((q) => !joined.includes(q)),
+    JSON.stringify(joined),
+  );
+  assert('straight "users" present after normalization', joined.includes('"users"'), joined);
+  assert("straight 'guest' present after normalization", joined.includes("'guest'"), joined);
+}
+
+{
+  // Straight quotes and ordinary content are returned byte-for-byte unchanged.
+  // Mirrors Python's test_normalize_quotes_preserves_straight_and_content.
+  const sql = "INSERT INTO t (v) VALUES ('plain');";
+  assert("plain straight-quoted SQL returned unchanged", normalizeQuotes(sql) === sql, normalizeQuotes(sql));
 }
 
 // ── [8] numeric-aware discovery order ───────────────────────────────────

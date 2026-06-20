@@ -462,12 +462,43 @@ export interface MigrationStatus {
 }
 
 /**
+ * Smart/curly quotes — editors, word processors, docs and chat apps silently
+ * convert a straight " to “ ” and a straight ' to ‘ ’ (plus primes ′ ″). Those
+ * characters are NOT valid SQL string/identifier delimiters, so a pasted-in
+ * migration fails to run ("syntax error near …"). Map them back to straight
+ * ASCII quotes. (Real string CONTENTS are unaffected by intent — we only swap
+ * the lookalike code points for their ASCII equivalents.)
+ */
+const SMART_QUOTES: Record<string, string> = {
+  // Double-quote lookalikes → straight " (U+0022)
+  "“": '"', "”": '"', "„": '"', "‟": '"', "″": '"',
+  // Single-quote / apostrophe lookalikes → straight ' (U+0027)
+  "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'",
+};
+const SMART_QUOTE_RE = new RegExp(`[${Object.keys(SMART_QUOTES).join("")}]`, "g");
+
+/**
+ * Replace smart/curly quotes with straight ASCII quotes so migration SQL
+ * authored or pasted from an editor/doc actually runs (those code points are
+ * not valid SQL delimiters). Already-straight quotes and ordinary string
+ * content are returned byte-for-byte unchanged.
+ */
+export function normalizeQuotes(sql: string): string {
+  return sql.replace(SMART_QUOTE_RE, (ch) => SMART_QUOTES[ch]);
+}
+
+/**
  * Split SQL text into individual statements on the given delimiter.
  *
  * Strips line comments (`-- ...`) and block comments, handles stored
  * procedure blocks delimited by `$$` or `//`.
  */
 export function splitStatements(sql: string, delimiter = ";"): string[] {
+  // Normalize smart/curly quotes to straight ASCII first, so SQL pasted from
+  // an editor/doc (which converts " → “ ” and ' → ‘ ’) actually runs. Mirrors
+  // Python's _split_statements applying _normalize_quotes as its first line.
+  sql = normalizeQuotes(sql);
+
   // Extract blocks delimited by $$ or // first, replacing with placeholders
   const blocks: string[] = [];
   const saveBlock = (_match: string, _p1: string): string => {
