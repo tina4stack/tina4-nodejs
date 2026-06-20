@@ -209,6 +209,44 @@ export class Log {
   }
 
   /**
+   * The single console-threshold predicate: does a message at `level` clear
+   * the configured minimum console level? This is the ONE place level
+   * comparison lives — both the live log() gate and the public isEnabled()
+   * predicate call it, so they can never disagree about what actually prints.
+   */
+  private static passesThreshold(level: LogLevel, minLevel: number): boolean {
+    return (LEVEL_PRIORITY[level] ?? 0) >= minLevel;
+  }
+
+  /**
+   * Return true if a message at `level` would pass the configured minimum
+   * console level (TINA4_LOG_LEVEL) — the same threshold that gates stdout.
+   *
+   * This reflects CONSOLE (stdout) visibility only. The log file always
+   * records every level regardless of this threshold, so don't use it to
+   * decide whether something gets persisted — use it to skip building an
+   * expensive payload that would not be shown:
+   *
+   *     if (Log.isEnabled("debug")) {
+   *       Log.debug("state", expensiveSnapshot());
+   *     }
+   *
+   * `level` is case-insensitive. "critical" additionally requires
+   * TINA4_LOG_CRITICAL=true — mirroring Node's critical(), which is a no-op
+   * when the toggle is off — and is then evaluated at CRITICAL severity (its
+   * real priority here). It reuses the same passesThreshold() check the
+   * logger itself uses, so it never drifts from what print actually does.
+   */
+  static isEnabled(level: string): boolean {
+    const cfg = Log.readEnv();
+    const lvl = (level ?? "").toUpperCase() as LogLevel;
+    if (lvl === "CRITICAL") {
+      return cfg.criticalEnabled && Log.passesThreshold("CRITICAL", cfg.minLevel);
+    }
+    return Log.passesThreshold(lvl, cfg.minLevel);
+  }
+
+  /**
    * Set the current request ID for log correlation.
    */
   static setRequestId(id: string | undefined): void {
@@ -393,7 +431,7 @@ export class Log {
     const fileLine =
       cfg.format === "json" || Log.isProduction() ? JSON.stringify(entry) : humanLine;
 
-    const shouldLog = (LEVEL_PRIORITY[level] ?? 0) >= cfg.minLevel;
+    const shouldLog = Log.passesThreshold(level, cfg.minLevel);
 
     // Console output. v3.13.14: stdout is NOT suppressed in production —
     // containers read PID 1 stdout (docker logs / k8s) and the old

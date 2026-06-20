@@ -251,6 +251,88 @@ assert(
 delete process.env.TINA4_LOG_FUNC;
 delete process.env.TINA4_DEBUG;
 
+// --- isEnabled — console-threshold predicate (parity with Python Log.is_enabled) ---
+console.log("\n--- Log.isEnabled (console-threshold predicate) ---");
+
+// Snapshot env we mutate so this block can't leak into later assertions.
+const savedLevel = process.env.TINA4_LOG_LEVEL;
+const savedCritical = process.env.TINA4_LOG_CRITICAL;
+
+// Standard severity order — the same set the logger compares (debug < info < warning < error).
+const STANDARD_LEVELS = ["debug", "info", "warning", "error"] as const;
+
+// LEVEL_PRIORITY is not exported; re-derive the same threshold check the
+// logger uses so the "equals the internal check" assertion below is meaningful
+// (LEVEL_PRIORITY keys are uppercased; minLevel defaults to INFO=1).
+const PRIORITY: Record<string, number> = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
+function internalShouldLog(level: string, minLevel: number): boolean {
+  return (PRIORITY[level.toUpperCase()] ?? 0) >= minLevel;
+}
+
+// Threshold at INFO: debug suppressed, info/warning/error visible.
+process.env.TINA4_LOG_LEVEL = "INFO";
+assert("isEnabled at info: debug is False", Log.isEnabled("debug") === false);
+assert("isEnabled at info: info is True", Log.isEnabled("info") === true);
+assert("isEnabled at info: warning is True", Log.isEnabled("warning") === true);
+assert("isEnabled at info: error is True", Log.isEnabled("error") === true);
+
+// Threshold at ERROR: info/warning suppressed, error visible.
+process.env.TINA4_LOG_LEVEL = "ERROR";
+assert("isEnabled at error: info is False", Log.isEnabled("info") === false);
+assert("isEnabled at error: warning is False", Log.isEnabled("warning") === false);
+assert("isEnabled at error: error is True", Log.isEnabled("error") === true);
+
+// Case-insensitive: at INFO, "INFO" passes, "Debug" does not.
+process.env.TINA4_LOG_LEVEL = "INFO";
+assert('isEnabled case-insensitive: "INFO" is True', Log.isEnabled("INFO") === true);
+assert('isEnabled case-insensitive: "Debug" is False', Log.isEnabled("Debug") === false);
+assert('isEnabled case-insensitive: "WaRnInG" is True', Log.isEnabled("WaRnInG") === true);
+
+// Contract lock-in: isEnabled(level) === the internal threshold check for every
+// standard level at multiple thresholds — it must never disagree with what print does.
+let contractHolds = true;
+for (const minLevelName of ["DEBUG", "INFO", "WARNING", "ERROR"] as const) {
+  process.env.TINA4_LOG_LEVEL = minLevelName;
+  const minLevel = PRIORITY[minLevelName];
+  for (const lvl of STANDARD_LEVELS) {
+    if (Log.isEnabled(lvl) !== internalShouldLog(lvl, minLevel)) {
+      contractHolds = false;
+      console.log(`    mismatch at minLevel=${minLevelName} level=${lvl}: isEnabled=${Log.isEnabled(lvl)} internal=${internalShouldLog(lvl, minLevel)}`);
+    }
+  }
+}
+assert("isEnabled(level) === internal threshold check for all standard levels", contractHolds);
+
+// Critical reflects Node's critical() behaviour: it logs at CRITICAL priority but
+// is a no-op unless TINA4_LOG_CRITICAL=true. So isEnabled("critical") requires the
+// toggle AND the CRITICAL priority clearing the threshold.
+process.env.TINA4_LOG_LEVEL = "INFO";
+
+delete process.env.TINA4_LOG_CRITICAL;
+assert("isEnabled critical: False when TINA4_LOG_CRITICAL unset", Log.isEnabled("critical") === false);
+
+process.env.TINA4_LOG_CRITICAL = "false";
+assert("isEnabled critical: False when toggle is 'false'", Log.isEnabled("critical") === false);
+
+process.env.TINA4_LOG_CRITICAL = "true";
+assert("isEnabled critical: True when toggle on and threshold passes", Log.isEnabled("critical") === true);
+assert('isEnabled critical: case-insensitive "CRITICAL" True with toggle on', Log.isEnabled("CRITICAL") === true);
+
+// Even with the toggle on, CRITICAL (priority 4) must still clear the min level.
+// There is no level above CRITICAL, so it always passes once enabled; assert the
+// toggle is the gating factor by toggling it off again.
+process.env.TINA4_LOG_CRITICAL = "true";
+const criticalOn = Log.isEnabled("critical");
+delete process.env.TINA4_LOG_CRITICAL;
+const criticalOff = Log.isEnabled("critical");
+assert("isEnabled critical: toggle gates the result (on=true, off=false)", criticalOn === true && criticalOff === false);
+
+// Restore env we mutated.
+if (savedLevel !== undefined) process.env.TINA4_LOG_LEVEL = savedLevel;
+else delete process.env.TINA4_LOG_LEVEL;
+if (savedCritical !== undefined) process.env.TINA4_LOG_CRITICAL = savedCritical;
+else delete process.env.TINA4_LOG_CRITICAL;
+
 // Cleanup
 rmSync("/tmp/tina4-logger-test", { recursive: true });
 
