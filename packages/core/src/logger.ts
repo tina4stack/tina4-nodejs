@@ -144,10 +144,9 @@ function resolveLogFilePath(logDir: string, logFile: string): string {
  *   TINA4_LOG_DIR           — directory for log files (default: "logs")
  *   TINA4_LOG_FORMAT        — "text" | "json" (default: "text")
  *   TINA4_LOG_OUTPUT        — "stdout" | "file" | "both" (default: "stdout")
- *   TINA4_LOG_CRITICAL      — "true" to enable CRITICAL level shortcut (default: "false")
  *   TINA4_LOG_ROTATE_SIZE   — bytes; 0 disables rotation (default: 10485760 = 10MB)
  *   TINA4_LOG_ROTATE_KEEP   — number of historical files to keep (default: 5)
- *   TINA4_LOG_LEVEL         — minimum console level (default: "DEBUG")
+ *   TINA4_LOG_LEVEL         — minimum console level: DEBUG | INFO | WARNING | ERROR | CRITICAL (default: "INFO")
  *
  * Rotation is stdlib roll-your-own:
  *   - On each write, statSync the file. If size >= TINA4_LOG_ROTATE_SIZE, rotate.
@@ -171,7 +170,6 @@ export class Log {
     minLevel: number;
     format: "text" | "json";
     output: "stdout" | "file" | "both";
-    criticalEnabled: boolean;
   } {
     const logDir = process.env.TINA4_LOG_DIR ?? DEFAULT_LOG_DIR;
     const logFile = (process.env.TINA4_LOG_FILE ?? "").trim() || DEFAULT_LOG_FILE;
@@ -203,9 +201,7 @@ export class Log {
     if (out === "file") output = "file";
     else if (out === "both") output = "both";
 
-    const criticalEnabled = isTruthy(process.env.TINA4_LOG_CRITICAL);
-
-    return { logDir, logFile, rotateSize, rotateKeep, minLevel, format, output, criticalEnabled };
+    return { logDir, logFile, rotateSize, rotateKeep, minLevel, format, output };
   }
 
   /**
@@ -231,18 +227,14 @@ export class Log {
    *       Log.debug("state", expensiveSnapshot());
    *     }
    *
-   * `level` is case-insensitive. "critical" additionally requires
-   * TINA4_LOG_CRITICAL=true — mirroring Node's critical(), which is a no-op
-   * when the toggle is off — and is then evaluated at CRITICAL severity (its
-   * real priority here). It reuses the same passesThreshold() check the
-   * logger itself uses, so it never drifts from what print actually does.
+   * `level` is case-insensitive. "critical" is the highest severity (priority
+   * 4 > error 3) and flows through the ordinary threshold check like every
+   * other level — there is no toggle. It reuses the same passesThreshold()
+   * check the logger itself uses, so it never drifts from what print does.
    */
   static isEnabled(level: string): boolean {
     const cfg = Log.readEnv();
     const lvl = (level ?? "").toUpperCase() as LogLevel;
-    if (lvl === "CRITICAL") {
-      return cfg.criticalEnabled && Log.passesThreshold("CRITICAL", cfg.minLevel);
-    }
     return Log.passesThreshold(lvl, cfg.minLevel);
   }
 
@@ -295,9 +287,12 @@ export class Log {
   }
 
   /**
-   * Log a critical message. Only emitted when TINA4_LOG_CRITICAL=true,
-   * otherwise this is a no-op (matches Python parity — critical is the
-   * highest-severity bucket and is opt-in to avoid drowning noisy apps).
+   * Log a critical message. CRITICAL is the highest severity (priority 4 >
+   * error 3) and ALWAYS emits like every other level — subject only to the
+   * console threshold, which it always passes at normal levels — and is always
+   * persisted to the log file (Node tees every level to a single tina4.log;
+   * critical 4 >= warning 2 so it would be in error.log on a split-file model).
+   * Matches Python master parity — there is no enable toggle.
    */
   static critical(message: string, data?: unknown): void {
     Log.log("CRITICAL", message, data);
@@ -392,9 +387,6 @@ export class Log {
   /** Core log method */
   private static log(level: LogLevel, message: string, data?: unknown): void {
     const cfg = Log.readEnv();
-
-    // Critical level is opt-in; treat as no-op when disabled.
-    if (level === "CRITICAL" && !cfg.criticalEnabled) return;
 
     const entry: LogEntry = {
       timestamp: Log.timestamp(),

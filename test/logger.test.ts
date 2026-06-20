@@ -251,6 +251,65 @@ assert(
 delete process.env.TINA4_LOG_FUNC;
 delete process.env.TINA4_DEBUG;
 
+// --- CRITICAL is first-class and ALWAYS logs (toggle retired) ---
+console.log("\n--- Log.critical (first-class, always logs) ---");
+
+// Dedicated file so we can assert on exactly the critical line(s).
+Log.configure({ logDir: TEST_LOG_DIR, logFile: "critical.log" });
+const critLogPath = join(TEST_LOG_DIR, "critical.log");
+process.env.TINA4_DEBUG = "true"; // dev → human-readable text line (parseable)
+
+// (1) With the toggle env var ABSENT, critical() must still emit — never a no-op.
+delete process.env.TINA4_LOG_CRITICAL;
+Log.critical("Critical without toggle");
+{
+  const critContent = readFileSync(critLogPath, "utf-8");
+  const critLine = critContent.trim().split("\n").pop()!;
+  const critEntry = parseLogLine(critLine);
+  assert("critical(): emits a line with no TINA4_LOG_CRITICAL set", critEntry.message === "Critical without toggle");
+  assert("critical(): level is CRITICAL", critEntry.level === "CRITICAL");
+}
+
+// (2) The retired env var must NOT suppress critical, even set to a falsy value.
+process.env.TINA4_LOG_CRITICAL = "false";
+Log.critical("Critical with retired toggle false");
+{
+  const critContent = readFileSync(critLogPath, "utf-8");
+  const critLine = critContent.trim().split("\n").pop()!;
+  const critEntry = parseLogLine(critLine);
+  assert("critical(): still emits when retired TINA4_LOG_CRITICAL=false", critEntry.message === "Critical with retired toggle false");
+}
+delete process.env.TINA4_LOG_CRITICAL;
+
+// (3) critical() renders magenta (\x1b[35m) on the dev console.
+{
+  const originalLog = console.log;
+  let captured = "";
+  console.log = (...args: unknown[]) => { captured += args.join(" "); };
+  Log.critical("Magenta critical");
+  console.log = originalLog;
+  assert("critical(): console line is magenta (\\x1b[35m)", captured.includes("\x1b[35m"));
+  assert("critical(): console line carries the message", captured.includes("Magenta critical"));
+}
+
+// (4) CRITICAL outranks ERROR — a CRITICAL threshold suppresses error but NOT critical.
+process.env.TINA4_LOG_LEVEL = "CRITICAL";
+{
+  const before = readFileSync(critLogPath, "utf-8").trim().split("\n").length;
+  Log.error("error at CRITICAL threshold (suppressed from console, still teed to file)");
+  Log.critical("critical at CRITICAL threshold (always emits)");
+  const after = readFileSync(critLogPath, "utf-8").trim().split("\n");
+  const lastEntry = parseLogLine(after[after.length - 1]);
+  assert("critical(): emits even when threshold is CRITICAL", lastEntry.level === "CRITICAL" && lastEntry.message.startsWith("critical at CRITICAL threshold"));
+  // File always tees every level (legacy behaviour) — both lines persisted.
+  assert("critical(): file teed error + critical regardless of threshold", after.length === before + 2);
+}
+delete process.env.TINA4_LOG_LEVEL;
+delete process.env.TINA4_DEBUG;
+
+// Restore the test log file for the remaining assertions.
+Log.configure({ logDir: TEST_LOG_DIR, logFile: "test.log" });
+
 // --- isEnabled — console-threshold predicate (parity with Python Log.is_enabled) ---
 console.log("\n--- Log.isEnabled (console-threshold predicate) ---");
 
@@ -303,29 +362,36 @@ for (const minLevelName of ["DEBUG", "INFO", "WARNING", "ERROR"] as const) {
 }
 assert("isEnabled(level) === internal threshold check for all standard levels", contractHolds);
 
-// Critical reflects Node's critical() behaviour: it logs at CRITICAL priority but
-// is a no-op unless TINA4_LOG_CRITICAL=true. So isEnabled("critical") requires the
-// toggle AND the CRITICAL priority clearing the threshold.
+// CRITICAL is the highest severity (priority 4 > error 3) and a FIRST-CLASS level.
+// There is no TINA4_LOG_CRITICAL toggle — isEnabled("critical") is ordinary
+// threshold logic (critical 4 >= configured min), exactly like every other level.
 process.env.TINA4_LOG_LEVEL = "INFO";
 
+// With the toggle env var RETIRED, its presence/absence must NOT change the result.
 delete process.env.TINA4_LOG_CRITICAL;
-assert("isEnabled critical: False when TINA4_LOG_CRITICAL unset", Log.isEnabled("critical") === false);
+assert("isEnabled critical: True at INFO (no toggle needed)", Log.isEnabled("critical") === true);
 
 process.env.TINA4_LOG_CRITICAL = "false";
-assert("isEnabled critical: False when toggle is 'false'", Log.isEnabled("critical") === false);
-
-process.env.TINA4_LOG_CRITICAL = "true";
-assert("isEnabled critical: True when toggle on and threshold passes", Log.isEnabled("critical") === true);
-assert('isEnabled critical: case-insensitive "CRITICAL" True with toggle on', Log.isEnabled("CRITICAL") === true);
-
-// Even with the toggle on, CRITICAL (priority 4) must still clear the min level.
-// There is no level above CRITICAL, so it always passes once enabled; assert the
-// toggle is the gating factor by toggling it off again.
-process.env.TINA4_LOG_CRITICAL = "true";
-const criticalOn = Log.isEnabled("critical");
+assert("isEnabled critical: still True even with retired TINA4_LOG_CRITICAL=false", Log.isEnabled("critical") === true);
 delete process.env.TINA4_LOG_CRITICAL;
-const criticalOff = Log.isEnabled("critical");
-assert("isEnabled critical: toggle gates the result (on=true, off=false)", criticalOn === true && criticalOff === false);
+
+assert('isEnabled critical: case-insensitive "CRITICAL" is True', Log.isEnabled("CRITICAL") === true);
+
+// CRITICAL outranks ERROR — wherever error is enabled, critical is too.
+process.env.TINA4_LOG_LEVEL = "ERROR";
+assert("isEnabled critical: True at ERROR threshold (outranks error)", Log.isEnabled("critical") === true);
+assert("isEnabled critical: tracks error at ERROR threshold", Log.isEnabled("critical") === Log.isEnabled("error"));
+
+// CRITICAL is priority 4, so it passes the threshold at every standard level —
+// there is no level above it. Lock that in across all thresholds.
+let criticalAlwaysPasses = true;
+for (const minLevelName of ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] as const) {
+  process.env.TINA4_LOG_LEVEL = minLevelName;
+  if (Log.isEnabled("critical") !== internalShouldLog("critical", PRIORITY[minLevelName])) {
+    criticalAlwaysPasses = false;
+  }
+}
+assert("isEnabled critical: ordinary threshold logic at every level (4 >= min)", criticalAlwaysPasses);
 
 // Restore env we mutated.
 if (savedLevel !== undefined) process.env.TINA4_LOG_LEVEL = savedLevel;
