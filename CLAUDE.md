@@ -124,7 +124,7 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `queue.ts` — Queue system with pluggable backends
 - `graphql.ts` — GraphQL engine. **Hardening:** selection-set nesting is bounded by `TINA4_GRAPHQL_MAX_DEPTH` (default `50`; `<= 0` disables; exposed as the public `gql.maxDepth` field + `graphqlMaxDepth()` helper). Depth increments on every recursive entry — sub-selections, fragment spreads, AND inline fragments — so an over-deep query or a circular fragment fails with `Query exceeds maximum depth of N` instead of overflowing the stack (top-level starts at depth 1). A resolver exception is logged via `Log.error` and the detail is surfaced to the client **only** under `TINA4_DEBUG` (`isDebugMode()`); otherwise it returns a generic `Internal server error` (path preserved) so internal state never leaks.
 - `i18n.ts` — Internationalization / localization
-- `logger.ts` — Structured logging
+- `logger.ts` — Structured logging. Five first-class severity levels: `debug`(0) < `info`(1) < `warning`(2) < `error`(3) < `critical`(4). `critical` is the HIGHEST level, NOT a relabelled `error`, and renders magenta. `Log.critical()` ALWAYS emits like every other level — subject only to `TINA4_LOG_LEVEL` (which it always clears) and teed to the log file regardless. There is NO enable toggle: the old `TINA4_LOG_CRITICAL` opt-in was retired in v3.13.39 (the env var is no longer read), so a critical log is never a silent no-op. `Log.isEnabled("critical")` is ordinary threshold logic (`4 >= configured min`). Full parity with Python master.
 - `rateLimiter.ts` — Rate limiting middleware
 - `dotenv.ts` — `.env` file loading
 - `health.ts` — Health check endpoint
