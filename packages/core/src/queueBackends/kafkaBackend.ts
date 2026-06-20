@@ -9,6 +9,11 @@
  *   TINA4_KAFKA_BROKERS   (override; default: "localhost:9092")
  *   TINA4_KAFKA_GROUP_ID  (default: "tina4_consumer_group")
  *
+ *   TLS/SASL (each read as TINA4_KAFKA_<NAME> first, then bare KAFKA_<NAME>):
+ *   TINA4_KAFKA_SECURITY_PROTOCOL — e.g. SSL / SASL_SSL (default: PLAINTEXT)
+ *   TINA4_KAFKA_SSL_CA_LOCATION   — CA cert path for TLS brokers/proxies
+ *   TINA4_KAFKA_SASL_MECHANISM / TINA4_KAFKA_SASL_USERNAME / TINA4_KAFKA_SASL_PASSWORD — optional SASL
+ *
  * Precedence for brokers: specific TINA4_KAFKA_BROKERS var (if set)
  *   > value derived from TINA4_QUEUE_URL > existing default.
  */
@@ -22,6 +27,62 @@ import type { QueueJob } from "../queue.js";
 export interface KafkaConfig {
   brokers?: string;
   groupId?: string;
+}
+
+/**
+ * librdkafka-style SSL/SASL client config (a TLS broker/proxy). Mirrors the
+ * keys produced by Python's `KafkaConnector._security_config`. Every key is
+ * optional — an unset env var leaves the key OUT (librdkafka defaults to the
+ * PLAINTEXT protocol with no SASL).
+ */
+export interface KafkaSecurityConfig {
+  "security.protocol"?: string;
+  "ssl.ca.location"?: string;
+  "sasl.mechanism"?: string;
+  "sasl.username"?: string;
+  "sasl.password"?: string;
+}
+
+/** Resolved producer/consumer config — brokers, client id, and security keys. */
+export interface KafkaClientConfig extends KafkaSecurityConfig {
+  "bootstrap.servers": string;
+  "client.id": string;
+  "group.id"?: string;
+  "auto.offset.reset"?: string;
+  "enable.auto.commit"?: boolean;
+}
+
+/**
+ * Build the SSL/SASL client config from the environment (for a TLS broker or
+ * proxy in front of Kafka). Each setting is read from the Tina4-namespaced env
+ * var FIRST (`TINA4_KAFKA_SECURITY_PROTOCOL` …) and falls back to the bare
+ * librdkafka-convention name (`KAFKA_SECURITY_PROTOCOL` …) that many Kafka
+ * deployments already set. Honours security.protocol (e.g. SSL, SASL_SSL),
+ * ssl.ca.location, and optional SASL (mechanism / username / password). Unset
+ * keys are omitted so librdkafka keeps its PLAINTEXT defaults.
+ *
+ * Exported for testing/introspection — and exact parity with Python's
+ * `_security_config` (same key set, same precedence, same omit-when-unset).
+ */
+export function kafkaSecurityConfig(
+  env: NodeJS.ProcessEnv = process.env
+): KafkaSecurityConfig {
+  // rdkafka key -> env suffix (read as TINA4_KAFKA_<suffix>, then KAFKA_<suffix>)
+  const mapping: [keyof KafkaSecurityConfig, string][] = [
+    ["security.protocol", "SECURITY_PROTOCOL"],
+    ["ssl.ca.location", "SSL_CA_LOCATION"],
+    ["sasl.mechanism", "SASL_MECHANISM"],
+    ["sasl.username", "SASL_USERNAME"],
+    ["sasl.password", "SASL_PASSWORD"],
+  ];
+  const config: KafkaSecurityConfig = {};
+  for (const [rdk, suffix] of mapping) {
+    const value = env[`TINA4_KAFKA_${suffix}`] || env[`KAFKA_${suffix}`];
+    if (value) {
+      config[rdk] = value;
+    }
+  }
+  return config;
 }
 
 export interface QueueBackend {
@@ -75,6 +136,42 @@ export class KafkaBackend implements QueueBackend {
    */
   getConfig(): Required<KafkaConfig> {
     return { brokers: this.brokers, groupId: this.groupId };
+  }
+
+  /**
+   * Resolved SSL/SASL client config from the environment (PLAINTEXT default).
+   * Mirrors Python's `KafkaConnector._security_config`.
+   */
+  securityConfig(): KafkaSecurityConfig {
+    return kafkaSecurityConfig();
+  }
+
+  /**
+   * Full producer config — brokers + client id + the resolved security block.
+   * The security keys are applied to BOTH producer and consumer (matching
+   * Python's `_connect_confluent`).
+   */
+  producerConfig(): KafkaClientConfig {
+    return {
+      "bootstrap.servers": this.brokers,
+      "client.id": "tina4-nodejs",
+      ...this.securityConfig(),
+    };
+  }
+
+  /**
+   * Full consumer config — brokers + client id + group id + the SAME resolved
+   * security block applied to the producer.
+   */
+  consumerConfig(): KafkaClientConfig {
+    return {
+      "bootstrap.servers": this.brokers,
+      "client.id": "tina4-nodejs",
+      "group.id": this.groupId,
+      "auto.offset.reset": "earliest",
+      "enable.auto.commit": false,
+      ...this.securityConfig(),
+    };
   }
 
   /**

@@ -100,8 +100,12 @@ export type { ImapMessage, ImapFullMessage } from "./messenger.js";
 export { LiteBackend } from "./queueBackends/liteBackend.js";
 export { RabbitMQBackend, parseAmqpUrl } from "./queueBackends/rabbitmqBackend.js";
 export type { RabbitMQConfig } from "./queueBackends/rabbitmqBackend.js";
-export { KafkaBackend } from "./queueBackends/kafkaBackend.js";
-export type { KafkaConfig } from "./queueBackends/kafkaBackend.js";
+export { KafkaBackend, kafkaSecurityConfig } from "./queueBackends/kafkaBackend.js";
+export type {
+  KafkaConfig,
+  KafkaSecurityConfig,
+  KafkaClientConfig,
+} from "./queueBackends/kafkaBackend.js";
 export { MongoBackend } from "./queueBackends/mongoBackend.js";
 export type { MongoConfig as MongoQueueConfig } from "./queueBackends/mongoBackend.js";
 export { DatabaseSessionHandler } from "./sessionHandlers/databaseHandler.js";

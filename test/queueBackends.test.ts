@@ -5,7 +5,7 @@
  * Tests class structure and interface only — no actual RabbitMQ/Kafka connections.
  */
 import {
-  RabbitMQBackend, KafkaBackend,
+  RabbitMQBackend, KafkaBackend, kafkaSecurityConfig,
 } from "../packages/core/src/index.ts";
 
 let pass = 0;
@@ -100,6 +100,108 @@ const fqEmpty = fileQueue.pop();
 assert("file queue pop returns null when empty", fqEmpty === null);
 
 try { rmSync(TEST_PATH, { recursive: true, force: true }); } catch {}
+
+// --- Kafka TLS/SASL security config (parity with Python _security_config) ---
+console.log("\n--- Kafka Security Config (TLS/SASL parity) ---");
+
+{
+  const SECURITY_VARS = [
+    "TINA4_KAFKA_SECURITY_PROTOCOL", "KAFKA_SECURITY_PROTOCOL",
+    "TINA4_KAFKA_SSL_CA_LOCATION", "KAFKA_SSL_CA_LOCATION",
+    "TINA4_KAFKA_SASL_MECHANISM", "KAFKA_SASL_MECHANISM",
+    "TINA4_KAFKA_SASL_USERNAME", "KAFKA_SASL_USERNAME",
+    "TINA4_KAFKA_SASL_PASSWORD", "KAFKA_SASL_PASSWORD",
+  ];
+
+  // Snapshot + clean every relevant var so the host environment can't leak in.
+  const saved: Record<string, string | undefined> = {};
+  for (const v of SECURITY_VARS) {
+    saved[v] = process.env[v];
+    delete process.env[v];
+  }
+
+  const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+  // 1) NEGATIVE: no env set -> {} (librdkafka keeps its PLAINTEXT default).
+  assert(
+    "kafka security: no env -> empty config",
+    eq(kafkaSecurityConfig(), {})
+  );
+
+  // 2) POSITIVE: bare KAFKA_* names still work.
+  process.env.KAFKA_SECURITY_PROTOCOL = "SSL";
+  process.env.KAFKA_SSL_CA_LOCATION = "/etc/ssl/ca.pem";
+  assert(
+    "kafka security: bare KAFKA_* names honoured",
+    eq(kafkaSecurityConfig(), {
+      "security.protocol": "SSL",
+      "ssl.ca.location": "/etc/ssl/ca.pem",
+    })
+  );
+  delete process.env.KAFKA_SECURITY_PROTOCOL;
+  delete process.env.KAFKA_SSL_CA_LOCATION;
+
+  // 3) POSITIVE: TINA4_KAFKA_* namespaced names honoured.
+  process.env.TINA4_KAFKA_SECURITY_PROTOCOL = "SASL_SSL";
+  assert(
+    "kafka security: TINA4_KAFKA_* namespaced names honoured",
+    eq(kafkaSecurityConfig(), { "security.protocol": "SASL_SSL" })
+  );
+  delete process.env.TINA4_KAFKA_SECURITY_PROTOCOL;
+
+  // 4) PRECEDENCE: TINA4_KAFKA_* wins when both are set.
+  process.env.KAFKA_SECURITY_PROTOCOL = "SSL";
+  process.env.TINA4_KAFKA_SECURITY_PROTOCOL = "SASL_SSL";
+  assert(
+    "kafka security: TINA4_KAFKA_* takes precedence over bare KAFKA_*",
+    kafkaSecurityConfig()["security.protocol"] === "SASL_SSL"
+  );
+  delete process.env.KAFKA_SECURITY_PROTOCOL;
+  delete process.env.TINA4_KAFKA_SECURITY_PROTOCOL;
+
+  // 5) POSITIVE: SASL trio maps to the rdkafka sasl.* keys.
+  process.env.TINA4_KAFKA_SASL_MECHANISM = "PLAIN";
+  process.env.KAFKA_SASL_USERNAME = "user";
+  process.env.KAFKA_SASL_PASSWORD = "secret";
+  assert(
+    "kafka security: SASL mechanism/username/password mapped",
+    eq(kafkaSecurityConfig(), {
+      "sasl.mechanism": "PLAIN",
+      "sasl.username": "user",
+      "sasl.password": "secret",
+    })
+  );
+  delete process.env.TINA4_KAFKA_SASL_MECHANISM;
+  delete process.env.KAFKA_SASL_USERNAME;
+  delete process.env.KAFKA_SASL_PASSWORD;
+
+  // Bonus: the security block is applied to BOTH producer and consumer config.
+  process.env.TINA4_KAFKA_SECURITY_PROTOCOL = "SASL_SSL";
+  process.env.TINA4_KAFKA_SASL_USERNAME = "u2";
+  const kb = new KafkaBackend();
+  const pc = kb.producerConfig();
+  const cc = kb.consumerConfig();
+  assert(
+    "kafka security: producer config carries security keys",
+    pc["security.protocol"] === "SASL_SSL" && pc["sasl.username"] === "u2"
+  );
+  assert(
+    "kafka security: consumer config carries security keys",
+    cc["security.protocol"] === "SASL_SSL" && cc["sasl.username"] === "u2"
+  );
+  assert(
+    "kafka security: consumer config has group.id, producer does not",
+    cc["group.id"] !== undefined && (pc as Record<string, unknown>)["group.id"] === undefined
+  );
+  delete process.env.TINA4_KAFKA_SECURITY_PROTOCOL;
+  delete process.env.TINA4_KAFKA_SASL_USERNAME;
+
+  // Restore the original environment.
+  for (const v of SECURITY_VARS) {
+    if (saved[v] === undefined) delete process.env[v];
+    else process.env[v] = saved[v];
+  }
+}
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);
