@@ -67,8 +67,9 @@ function escapeRegExp(s: string): string {
 /**
  * Top-level classes DEFINED in a source file. A test that references one of
  * these genuinely exercises this file. Classes only (distinctive PascalCase,
- * length > 3) — module-level function names like `get`/`run`/`init` are too
- * generic to trust as a coverage signal.
+ * length > 2 — so short-but-real names like `ORM`/`Api`/`Log`/`Env` count) —
+ * module-level function names like `get`/`run`/`init` are too generic to trust
+ * as a coverage signal.
  */
 function definedClasses(source: string): Set<string> {
   const names = new Set<string>();
@@ -76,7 +77,10 @@ function definedClasses(source: string): Set<string> {
   let m: RegExpExecArray | null;
   while ((m = re.exec(source)) !== null) {
     const name = m[1];
-    if (name && !name.startsWith("_") && name.length > 3) {
+    // length > 2 (NOT > 3): a 3-char class like ORM/Api/Log/Env is a genuine,
+    // distinctive coverage signal — the old > 3 gate silently dropped them so a
+    // test that references `new Api()` / `Log.error()` left the file "untested".
+    if (name && !name.startsWith("_") && name.length > 2) {
       names.add(name);
     }
   }
@@ -98,8 +102,9 @@ function definedClasses(source: string): Set<string> {
  *   2. Import — a test that actually IMPORTS this module by its path
  *      (`import … from ".../<m>.js"`, `require(".../<m>")`).
  *   3. Class reference — a test that references a top-level class DEFINED in
- *      this file (distinctive PascalCase, length > 3). NO bare module-name word
- *      match and NO guessed CamelCase-from-snake_case match.
+ *      this file (distinctive PascalCase, length > 2 — short-but-real names
+ *      like ORM/Api/Log/Env count). NO bare module-name word match and NO
+ *      guessed CamelCase-from-snake_case match.
  *
  * Returns true only on a real signal, so the "untested" offenders surfaced by
  * `tina4 metrics` and the dashboard "T" badge are trustworthy.
@@ -169,6 +174,11 @@ function hasMatchingTest(relPath: string): boolean {
     new RegExp(`import\\b[^;\\n]*?from\\s*${spec}`),
     // require("<spec>")
     new RegExp(`require\\s*\\(\\s*${spec}\\s*\\)`),
+    // dynamic / inline-type import("<spec>") — covers `await import("…/m.js")`
+    // AND the TS inline type position `import("…/m.ts").SomeType`. The full
+    // package path a test uses ("../packages/core/src/<m>.ts") matches as a
+    // SUFFIX via the leading `(?:[^"']*\/)?` in <spec>.
+    new RegExp(`import\\s*\\(\\s*${spec}\\s*\\)`),
     // side-effect import "<spec>"
     new RegExp(`import\\s*${spec}`),
   ];
