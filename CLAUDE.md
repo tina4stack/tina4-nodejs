@@ -821,6 +821,8 @@ frond.unsandbox();
 
 Zero-dep HTTP client over `node:http` / `node:https`. Used by integrations, queue producers, health checks, and tests.
 
+**Retry/backoff (opt-in, default off):** pass `maxRetries` (default `0`) and `retryBackoff` (default `0.5`s base, exponential) in the options bag — `new Api(url, { bearerToken, maxRetries: 3, retryBackoff: 0.5 })`. Retries a transport error (`http_code` null) or a retryable status (429/500/502/503/504); 4xx is never retried (a retried non-idempotent request may be re-sent, so retries are opt-in). Node's `node:http`/`node:https` doesn't auto-follow redirects, so there's no cross-host Authorization-leak surface (the redirect auth-strip is Python-only).
+
 ```typescript
 import { Api } from "@tina4/core";
 

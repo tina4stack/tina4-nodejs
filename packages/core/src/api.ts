@@ -19,6 +19,13 @@ export interface ApiResult {
 }
 
 /**
+ * HTTP statuses that warrant an automatic retry when `maxRetries` > 0:
+ * rate-limit (429) plus the transient server-side 5xx family. 4xx client
+ * errors (401, 404, …) are NOT retried — a repeat won't succeed.
+ */
+const RETRY_STATUSES: ReadonlySet<number> = new Set([429, 500, 502, 503, 504]);
+
+/**
  * Constructor options for {@link Api}. Used as the second argument to
  * `new Api(url, { ... })` — cross-framework parity with Python
  * `Api(bearer_token=, ...)` kwargs added in 3.13.x.
@@ -33,6 +40,16 @@ export interface ApiOptions {
     username?: string;
     password?: string;
     headers?: Record<string, string>;
+    /**
+     * Maximum automatic retries on a transient failure (default 0 = off, so
+     * existing callers are unaffected). When > 0, a transport error or a
+     * retryable status (429/5xx) is retried up to this many times with
+     * exponential backoff. NOTE: a retried non-idempotent request (POST/…)
+     * may be re-sent — retries are opt-in for that reason.
+     */
+    maxRetries?: number;
+    /** Base backoff in seconds, doubling each attempt (default 0.5). */
+    retryBackoff?: number;
 }
 
 export class Api {
@@ -41,6 +58,8 @@ export class Api {
     private timeout: number;
     private authHeader: string;
     private ignoreSsl: boolean;
+    private maxRetries: number;
+    private retryBackoff: number;
 
     /**
      * Construct an Api client.
@@ -60,6 +79,14 @@ export class Api {
      * Bearer wins over basic-auth when both passed. `verifySsl: false` is
      * the positive form of `ignoreSsl: true`; `ignoreSsl` wins when both
      * supplied for backward compatibility.
+     *
+     * `maxRetries` (default 0 = off) enables automatic retry with
+     * exponential backoff (`retryBackoff` seconds base, doubling each
+     * attempt) on a transport error or a retryable status (429/5xx). A
+     * retried non-idempotent request (POST/…) may be re-sent — retries are
+     * opt-in for that reason.
+     *
+     *     new Api("https://api.example.com", { maxRetries: 3, retryBackoff: 0.5 });
      */
     constructor(
         baseUrl: string = "",
@@ -68,6 +95,9 @@ export class Api {
     ) {
         this.baseUrl = baseUrl.replace(/\/+$/, "");
         this.headers = {};
+        // Retry defaults: off (0) so existing callers are unaffected.
+        this.maxRetries = 0;
+        this.retryBackoff = 0.5;
 
         // Options-bag form — second arg is an object literal
         if (typeof authHeaderOrOptions === "object" && authHeaderOrOptions !== null) {
@@ -75,6 +105,8 @@ export class Api {
             this.authHeader = opts.authHeader ?? "";
             this.timeout = opts.timeout ?? timeout;
             this.ignoreSsl = (opts.ignoreSsl ?? false) || (opts.verifySsl === false);
+            this.maxRetries = Math.max(0, opts.maxRetries ?? 0);
+            this.retryBackoff = opts.retryBackoff ?? 0.5;
 
             // Bearer wins over basic-auth when both are passed
             if (opts.bearerToken != null) {
@@ -189,7 +221,38 @@ export class Api {
         return `${this.baseUrl}/${path.replace(/^\/+/, "")}`;
     }
 
-    private execute(
+    /**
+     * Execute the request with opt-in retry/backoff.
+     *
+     * With `maxRetries` > 0, a transport failure (`http_code` null) or a
+     * retryable status (429/5xx) is retried up to `maxRetries` times with
+     * exponential backoff; any other outcome (2xx, 3xx, other 4xx) returns
+     * at once. A retried non-idempotent request may be re-sent — retries
+     * are opt-in for that reason.
+     */
+    private async execute(
+        method: string,
+        url: string,
+        body?: unknown,
+        contentType: string = "application/json",
+    ): Promise<ApiResult> {
+        const attempts = this.maxRetries + 1;
+        let result: ApiResult = { http_code: null, body: null, headers: {}, error: null };
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            result = await this.attempt(method, url, body, contentType);
+            const code = result.http_code;
+            const retryable = code === null || RETRY_STATUSES.has(code);
+            if (!retryable || attempt === attempts - 1) {
+                return result;
+            }
+            const delayMs = this.retryBackoff * Math.pow(2, attempt) * 1000;
+            await new Promise<void>((r) => setTimeout(r, delayMs));
+        }
+        return result;
+    }
+
+    /** A single HTTP attempt — returns the standardized result. */
+    private attempt(
         method: string,
         url: string,
         body?: unknown,
