@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { Log } from "@tina4/core";
 import type { FieldDefinition, DatabaseAdapter } from "./types.js";
 import type { SQLiteAdapter } from "./adapters/sqlite.js";
 import type { DiscoveredModel } from "./model.js";
@@ -73,6 +74,55 @@ async function shouldSkipForFirebird(
     return `Column ${column} already exists in ${table}, skipping`;
   }
 
+  return null;
+}
+
+/**
+ * Match CREATE TABLE <name> — name may be quoted ("x"), bracketed ([x] MSSQL),
+ * or bare. Captures the table name.
+ */
+const CREATE_TABLE_RE =
+  /^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|\[([^\]]+)\]|(\w+))/i;
+
+/**
+ * Identify the database engine via the adapter's class name.
+ * (constructor.name is the engine discriminator used throughout this package.)
+ */
+function engineOf(db: DatabaseAdapter): "firebird" | "mssql" | "other" {
+  const name = db.constructor.name;
+  if (name === "FirebirdAdapter") return "firebird";
+  if (name === "MssqlAdapter") return "mssql";
+  return "other";
+}
+
+/**
+ * Make CREATE TABLE idempotent on engines lacking IF NOT EXISTS.
+ *
+ * Firebird and MSSQL do not support `CREATE TABLE IF NOT EXISTS`, so a raw
+ * CREATE in a re-run migration raises "object already exists". When the target
+ * table already exists on those engines, return a skip reason so the statement
+ * is skipped (mirrors the Firebird ALTER-TABLE-ADD idempotency guard).
+ * SQLite/MySQL/PostgreSQL support IF NOT EXISTS and are left to the engine.
+ * Only a genuine already-exists is skipped — every other error still raises.
+ */
+export async function shouldSkipCreateTable(
+  db: DatabaseAdapter,
+  stmt: string,
+): Promise<string | null> {
+  const engine = engineOf(db);
+  if (engine !== "firebird" && engine !== "mssql") return null;
+
+  const m = stmt.match(CREATE_TABLE_RE);
+  if (!m) return null;
+
+  const table = m[1] ?? m[2] ?? m[3];
+  try {
+    if (await adapterTableExists(db, table)) {
+      return `Table ${table} already exists, skipping CREATE TABLE`;
+    }
+  } catch {
+    return null;
+  }
   return null;
 }
 
@@ -417,7 +467,7 @@ export interface MigrationStatus {
  * Strips line comments (`-- ...`) and block comments, handles stored
  * procedure blocks delimited by `$$` or `//`.
  */
-function splitStatements(sql: string, delimiter = ";"): string[] {
+export function splitStatements(sql: string, delimiter = ";"): string[] {
   // Extract blocks delimited by $$ or // first, replacing with placeholders
   const blocks: string[] = [];
   const saveBlock = (_match: string, _p1: string): string => {
@@ -426,7 +476,12 @@ function splitStatements(sql: string, delimiter = ";"): string[] {
   };
 
   let processed = sql.replace(/\$\$([\s\S]*?)\$\$/g, saveBlock);
-  processed = processed.replace(/\/\/([\s\S]*?)\/\//g, saveBlock);
+  // The `//` delimiters must NOT be preceded by a colon, so a URL scheme
+  // (`https://…`) or other `://` literal inside a migration is never captured
+  // as an opaque stored-proc block (it would otherwise swallow everything
+  // between two `//` occurrences and skip statement splitting/cleaning).
+  // Negative lookbehind `(?<!:)` mirrors Python's runner.
+  processed = processed.replace(/(?<!:)\/\/([\s\S]*?)(?<!:)\/\//g, saveBlock);
 
   // Remove block comments (/* ... */)
   const clean = processed.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -458,23 +513,41 @@ function splitStatements(sql: string, delimiter = ";"): string[] {
  * - Sequential: 000001_name.sql, 000002_name.sql
  * - Timestamp: 20240315120000_name.sql (YYYYMMDDHHMMSS)
  *
- * Both patterns start with digits followed by underscore, so alphabetical
- * sort works correctly for both (zero-padded sequential and timestamp).
+ * Numeric-aware: a file with a leading numeric/timestamp prefix sorts first by
+ * that number (so `9_*` applies before `10_*` — a plain lexical sort misorders
+ * unpadded prefixes because "10" < "9"). Files with NO numeric prefix sort
+ * AFTER the numbered ones, then lexically. Mirrors Python's `_migration_sort_key`.
  */
-function sortMigrationFiles(files: string[]): string[] {
+export function sortMigrationFiles(files: string[]): string[] {
+  // Returns a tuple-like key: [group, numeric, name].
+  // group 0 = has numeric prefix (sorts first); group 1 = no prefix (sorts after).
+  const key = (name: string): [number, bigint, string] => {
+    const m = name.match(/^(\d+)/);
+    return m ? [0, BigInt(m[1]), name] : [1, 0n, name];
+  };
   return [...files].sort((a, b) => {
-    const aPrefix = a.match(/^(\d+)/);
-    const bPrefix = b.match(/^(\d+)/);
-    if (aPrefix && bPrefix) {
-      // Compare numeric prefixes — handles both 000001 and 20240315120000
-      const aNum = BigInt(aPrefix[1]);
-      const bNum = BigInt(bPrefix[1]);
-      if (aNum < bNum) return -1;
-      if (aNum > bNum) return 1;
-      return a.localeCompare(b);
-    }
-    return a.localeCompare(b);
+    const [ag, an, anm] = key(a);
+    const [bg, bn, bnm] = key(b);
+    if (ag !== bg) return ag - bg;
+    if (an < bn) return -1;
+    if (an > bn) return 1;
+    return anm.localeCompare(bnm);
   });
+}
+
+/**
+ * Warn (once) about migration filenames without a recognized NNNNNN_/timestamp
+ * prefix — their ordering relative to numbered migrations is undefined, a silent
+ * out-of-order-apply footgun. Mirrors Python's runner.
+ */
+function warnUnprefixedMigrations(files: string[]): void {
+  const unprefixed = files.filter((f) => !/^\d+[_-]/.test(f));
+  if (unprefixed.length > 0) {
+    Log.warning(
+      "Migration file(s) without a numeric/timestamp prefix may apply out of order: " +
+        unprefixed.join(", "),
+    );
+  }
 }
 
 /**
@@ -533,7 +606,19 @@ export async function migrate(
         batch INTEGER NOT NULL DEFAULT 1,
         applied_at TEXT NOT NULL
       )`);
+    } else if (engineOf(db) === "mssql") {
+      // MSSQL has no AUTOINCREMENT / IF NOT EXISTS — route the bootstrap
+      // through the adapter's engine-aware createTable (IDENTITY(1,1) etc.),
+      // exactly like ensureMigrationTable does. Emitting raw
+      // AUTOINCREMENT/IF NOT EXISTS here is invalid on SQL Server.
+      await adapterCreateTable(db, MIGRATION_TABLE, {
+        id: { type: "integer", primaryKey: true, autoIncrement: true },
+        name: { type: "string", required: true },
+        batch: { type: "integer", required: true },
+        applied_at: { type: "datetime", default: "now" },
+      });
     } else {
+      // SQLite / MySQL — both support IF NOT EXISTS + AUTOINCREMENT/AUTO_INCREMENT.
       await adapterExecute(db, `CREATE TABLE IF NOT EXISTS "${MIGRATION_TABLE}" (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -553,12 +638,16 @@ export async function migrate(
     }
   }
 
-  // Collect .sql files (exclude .down.sql), sorted by prefix
+  // Collect .sql files (exclude .down.sql), numeric-aware sorted (9_ before 10_).
   const files = sortMigrationFiles(
     readdirSync(dir).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql")),
   );
 
   if (files.length === 0) return result;
+
+  // Warn about files without a recognized numeric/timestamp prefix — their
+  // ordering relative to numbered migrations is undefined.
+  warnUnprefixedMigrations(files);
 
   // Determine the batch number for this run
   let currentBatch = 1;
@@ -621,10 +710,12 @@ export async function migrate(
       await adapterStartTransaction(db);
 
       for (const stmt of statements) {
-        // Firebird lacks IF NOT EXISTS for ALTER TABLE ADD.
-        // Pre-check the system catalogue so duplicate columns are
-        // silently skipped instead of raising an error.
-        const skipReason = await shouldSkipForFirebird(db, stmt);
+        // Idempotency on engines lacking IF NOT EXISTS: Firebird ALTER-TABLE-ADD,
+        // and CREATE TABLE on Firebird/MSSQL. Pre-check the catalogue so a genuine
+        // already-exists is skipped instead of raising — every other error still
+        // raises (rolls the file back).
+        const skipReason =
+          (await shouldSkipForFirebird(db, stmt)) ?? (await shouldSkipCreateTable(db, stmt));
         if (skipReason) {
           console.log(`  Migration ${file}: ${skipReason}`);
           continue;
@@ -671,7 +762,12 @@ export async function migrate(
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`  Migration failed: ${file} — ${msg}`);
       result.failed.push(file);
-      // Continue to next file (matching Python behaviour)
+      // STOP at the first failure (parity with Python/PHP/Ruby). The file rolled
+      // back; later migrations must NOT be applied on top of a missing earlier
+      // one (a missing column / table would cascade silent corruption). Already-
+      // applied files stay applied — fix the bad file and re-run.
+      Log.error(`Migration stopped at first failure: ${file} — ${msg}`);
+      break;
     }
   }
 

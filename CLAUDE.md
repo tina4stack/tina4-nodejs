@@ -790,7 +790,16 @@ await createMigration("add users table");   // scaffolds migrations/<ts>_add_use
 syncModels(discoveredModels);               // auto-create tables / add columns from `static fields`
 ```
 
-Migration tracking lives in `tina4_migration` (id, name, batch, applied_at). Schema sync runs alongside SQL migrations on boot.
+### How migrations work internally
+
+- SQL files live in `migrations/`, named `NNNNNN_description.sql` (sequential) or `YYYYMMDDHHMMSS_description.sql` (timestamp), and are split on the `;` delimiter.
+- Files are applied in **numeric-prefix order** (`9_` before `10_` — a plain lexical sort misorders unpadded prefixes because `"10" < "9"`). A file with no numeric/timestamp prefix sorts **after** the numbered ones (lexically) and logs a `Log.warning` — its order is undefined.
+- State is tracked by **row existence** in `tina4_migration` (id, name, batch, applied_at), auto-created per engine: a migration runs once — if a row with its `name` exists it is skipped. A FAILED migration is **never** recorded (no row is written, nothing is deleted) — fix the bad file and re-run; the `migrate()` summary's `failed[]` carries the failure.
+- **Each migration FILE is wrapped in its own transaction.** On a failure the file rolls back and `migrate()` **STOPS** — later files are never applied on top of a missing earlier one (parity with Python/PHP/Ruby). Already-applied files stay applied. The explicit `tina4 migrate` CLI surfaces a non-empty `failed[]` as a non-zero exit; startup auto-migration logs it and the service still boots (see `TINA4_AUTO_MIGRATE` above).
+- **Atomicity caveat:** per-file transactions are truly atomic only on engines with **transactional DDL (PostgreSQL)**. MySQL, Firebird, and SQLite auto-commit DDL, so a multi-statement migration that fails midway on those engines leaves earlier statements applied — keep one logical change per file. `CREATE TABLE` and `ALTER TABLE ... ADD` are made idempotent on Firebird/MSSQL (existence-checked via `RDB$RELATION_FIELDS` / `tableExists`) so a re-run with a raw `CREATE`/`ADD` does not error "object already exists"; SQLite/MySQL/PostgreSQL support `IF NOT EXISTS` and are left to the engine. Only a genuine already-exists is skipped — every other error still raises.
+- The stored-proc block delimiters (`$$ … $$` / `// … //`) are extracted before splitting, but a `//` preceded by a colon is **not** treated as a delimiter, so a URL (`https://…`) or any `://` literal inside a migration is never swallowed as an opaque block.
+
+Schema sync (`syncModels`) runs alongside SQL migrations on boot.
 
 ## Module: Frond (`packages/frond/src/engine.ts`)
 
