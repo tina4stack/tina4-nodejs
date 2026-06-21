@@ -20,6 +20,13 @@ export interface FieldDefinition {
 export interface RelationshipDefinition {
   model: string;
   foreignKey: string;
+  /**
+   * The relationship accessor/include name on the OWNING model. For an
+   * FK-auto-wired has-many this is the declaring class name lowercased + "s"
+   * (Python master rule) or the `relatedName` override. Used by eager-load
+   * include resolution so an `include: ["posts"]` matches the wired relation.
+   */
+  relatedName?: string;
 }
 
 export interface ModelDefinition {

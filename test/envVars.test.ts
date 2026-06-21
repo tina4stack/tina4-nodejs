@@ -188,15 +188,18 @@ assert("JSON line carries level + message",
   parsed?.level === "INFO" && parsed?.message === "json-message");
 delete process.env.TINA4_LOG_FORMAT;
 
-// CRITICAL — disabled by default
+// CRITICAL — first-class, ALWAYS emits (TINA4_LOG_CRITICAL toggle retired).
+// With no toggle set, critical() must still write a line.
+delete process.env.TINA4_LOG_CRITICAL;
 const sizeBeforeCritical = statSync(appLogPath).size;
-Log.critical("should-not-emit");
-assert("CRITICAL suppressed by default", statSync(appLogPath).size === sizeBeforeCritical);
+Log.critical("always-emits");
+assert("CRITICAL always emits (no toggle needed)", statSync(appLogPath).size > sizeBeforeCritical);
 
-process.env.TINA4_LOG_CRITICAL = "true";
-Log.critical("now-emits");
-const sizeAfterCritical = statSync(appLogPath).size;
-assert("TINA4_LOG_CRITICAL=true enables CRITICAL", sizeAfterCritical > sizeBeforeCritical);
+// The retired env var must NOT suppress critical, even set to a falsy value.
+process.env.TINA4_LOG_CRITICAL = "false";
+const sizeBeforeRetired = statSync(appLogPath).size;
+Log.critical("still-emits-with-retired-false");
+assert("CRITICAL ignores retired TINA4_LOG_CRITICAL=false", statSync(appLogPath).size > sizeBeforeRetired);
 delete process.env.TINA4_LOG_CRITICAL;
 
 // OUTPUT modes

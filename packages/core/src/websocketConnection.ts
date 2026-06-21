@@ -13,6 +13,12 @@ export interface WebSocketConnection {
   headers: Record<string, string>;
   /** Route parameters extracted from `{param}` segments in the path */
   params: Record<string, string>;
+  /**
+   * Verified JWT payload on a `@secured` / `.secure()` WebSocket route, or
+   * `null` on a public route (the default). Set on the upgrade after the token
+   * is validated — mirrors Python's `connection.auth`.
+   */
+  auth: Record<string, unknown> | null;
   /** Send a message to this connection only */
   send(message: string): void;
   /** Serialize an object to JSON and send it to this connection. Parity with Python/PHP. */

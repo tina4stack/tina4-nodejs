@@ -251,6 +251,305 @@ assert(
 delete process.env.TINA4_LOG_FUNC;
 delete process.env.TINA4_DEBUG;
 
+// --- CRITICAL is first-class and ALWAYS logs (toggle retired) ---
+console.log("\n--- Log.critical (first-class, always logs) ---");
+
+// Dedicated file so we can assert on exactly the critical line(s).
+Log.configure({ logDir: TEST_LOG_DIR, logFile: "critical.log" });
+const critLogPath = join(TEST_LOG_DIR, "critical.log");
+process.env.TINA4_DEBUG = "true"; // dev → human-readable text line (parseable)
+
+// (1) With the toggle env var ABSENT, critical() must still emit — never a no-op.
+delete process.env.TINA4_LOG_CRITICAL;
+Log.critical("Critical without toggle");
+{
+  const critContent = readFileSync(critLogPath, "utf-8");
+  const critLine = critContent.trim().split("\n").pop()!;
+  const critEntry = parseLogLine(critLine);
+  assert("critical(): emits a line with no TINA4_LOG_CRITICAL set", critEntry.message === "Critical without toggle");
+  assert("critical(): level is CRITICAL", critEntry.level === "CRITICAL");
+}
+
+// (2) The retired env var must NOT suppress critical, even set to a falsy value.
+process.env.TINA4_LOG_CRITICAL = "false";
+Log.critical("Critical with retired toggle false");
+{
+  const critContent = readFileSync(critLogPath, "utf-8");
+  const critLine = critContent.trim().split("\n").pop()!;
+  const critEntry = parseLogLine(critLine);
+  assert("critical(): still emits when retired TINA4_LOG_CRITICAL=false", critEntry.message === "Critical with retired toggle false");
+}
+delete process.env.TINA4_LOG_CRITICAL;
+
+// (3) critical() renders magenta (\x1b[35m) on the dev console.
+{
+  const originalLog = console.log;
+  let captured = "";
+  console.log = (...args: unknown[]) => { captured += args.join(" "); };
+  Log.critical("Magenta critical");
+  console.log = originalLog;
+  assert("critical(): console line is magenta (\\x1b[35m)", captured.includes("\x1b[35m"));
+  assert("critical(): console line carries the message", captured.includes("Magenta critical"));
+}
+
+// (4) CRITICAL outranks ERROR — a CRITICAL threshold suppresses error but NOT critical.
+process.env.TINA4_LOG_LEVEL = "CRITICAL";
+{
+  const before = readFileSync(critLogPath, "utf-8").trim().split("\n").length;
+  Log.error("error at CRITICAL threshold (suppressed from console, still teed to file)");
+  Log.critical("critical at CRITICAL threshold (always emits)");
+  const after = readFileSync(critLogPath, "utf-8").trim().split("\n");
+  const lastEntry = parseLogLine(after[after.length - 1]);
+  assert("critical(): emits even when threshold is CRITICAL", lastEntry.level === "CRITICAL" && lastEntry.message.startsWith("critical at CRITICAL threshold"));
+  // File always tees every level (legacy behaviour) — both lines persisted.
+  assert("critical(): file teed error + critical regardless of threshold", after.length === before + 2);
+}
+delete process.env.TINA4_LOG_LEVEL;
+delete process.env.TINA4_DEBUG;
+
+// Restore the test log file for the remaining assertions.
+Log.configure({ logDir: TEST_LOG_DIR, logFile: "test.log" });
+
+// --- isEnabled — console-threshold predicate (parity with Python Log.is_enabled) ---
+console.log("\n--- Log.isEnabled (console-threshold predicate) ---");
+
+// Snapshot env we mutate so this block can't leak into later assertions.
+const savedLevel = process.env.TINA4_LOG_LEVEL;
+const savedCritical = process.env.TINA4_LOG_CRITICAL;
+
+// Standard severity order — the same set the logger compares (debug < info < warning < error).
+const STANDARD_LEVELS = ["debug", "info", "warning", "error"] as const;
+
+// LEVEL_PRIORITY is not exported; re-derive the same threshold check the
+// logger uses so the "equals the internal check" assertion below is meaningful
+// (LEVEL_PRIORITY keys are uppercased; minLevel defaults to INFO=1).
+const PRIORITY: Record<string, number> = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
+function internalShouldLog(level: string, minLevel: number): boolean {
+  return (PRIORITY[level.toUpperCase()] ?? 0) >= minLevel;
+}
+
+// Threshold at INFO: debug suppressed, info/warning/error visible.
+process.env.TINA4_LOG_LEVEL = "INFO";
+assert("isEnabled at info: debug is False", Log.isEnabled("debug") === false);
+assert("isEnabled at info: info is True", Log.isEnabled("info") === true);
+assert("isEnabled at info: warning is True", Log.isEnabled("warning") === true);
+assert("isEnabled at info: error is True", Log.isEnabled("error") === true);
+
+// Threshold at ERROR: info/warning suppressed, error visible.
+process.env.TINA4_LOG_LEVEL = "ERROR";
+assert("isEnabled at error: info is False", Log.isEnabled("info") === false);
+assert("isEnabled at error: warning is False", Log.isEnabled("warning") === false);
+assert("isEnabled at error: error is True", Log.isEnabled("error") === true);
+
+// Case-insensitive: at INFO, "INFO" passes, "Debug" does not.
+process.env.TINA4_LOG_LEVEL = "INFO";
+assert('isEnabled case-insensitive: "INFO" is True', Log.isEnabled("INFO") === true);
+assert('isEnabled case-insensitive: "Debug" is False', Log.isEnabled("Debug") === false);
+assert('isEnabled case-insensitive: "WaRnInG" is True', Log.isEnabled("WaRnInG") === true);
+
+// Contract lock-in: isEnabled(level) === the internal threshold check for every
+// standard level at multiple thresholds — it must never disagree with what print does.
+let contractHolds = true;
+for (const minLevelName of ["DEBUG", "INFO", "WARNING", "ERROR"] as const) {
+  process.env.TINA4_LOG_LEVEL = minLevelName;
+  const minLevel = PRIORITY[minLevelName];
+  for (const lvl of STANDARD_LEVELS) {
+    if (Log.isEnabled(lvl) !== internalShouldLog(lvl, minLevel)) {
+      contractHolds = false;
+      console.log(`    mismatch at minLevel=${minLevelName} level=${lvl}: isEnabled=${Log.isEnabled(lvl)} internal=${internalShouldLog(lvl, minLevel)}`);
+    }
+  }
+}
+assert("isEnabled(level) === internal threshold check for all standard levels", contractHolds);
+
+// CRITICAL is the highest severity (priority 4 > error 3) and a FIRST-CLASS level.
+// There is no TINA4_LOG_CRITICAL toggle — isEnabled("critical") is ordinary
+// threshold logic (critical 4 >= configured min), exactly like every other level.
+process.env.TINA4_LOG_LEVEL = "INFO";
+
+// With the toggle env var RETIRED, its presence/absence must NOT change the result.
+delete process.env.TINA4_LOG_CRITICAL;
+assert("isEnabled critical: True at INFO (no toggle needed)", Log.isEnabled("critical") === true);
+
+process.env.TINA4_LOG_CRITICAL = "false";
+assert("isEnabled critical: still True even with retired TINA4_LOG_CRITICAL=false", Log.isEnabled("critical") === true);
+delete process.env.TINA4_LOG_CRITICAL;
+
+assert('isEnabled critical: case-insensitive "CRITICAL" is True', Log.isEnabled("CRITICAL") === true);
+
+// CRITICAL outranks ERROR — wherever error is enabled, critical is too.
+process.env.TINA4_LOG_LEVEL = "ERROR";
+assert("isEnabled critical: True at ERROR threshold (outranks error)", Log.isEnabled("critical") === true);
+assert("isEnabled critical: tracks error at ERROR threshold", Log.isEnabled("critical") === Log.isEnabled("error"));
+
+// CRITICAL is priority 4, so it passes the threshold at every standard level —
+// there is no level above it. Lock that in across all thresholds.
+let criticalAlwaysPasses = true;
+for (const minLevelName of ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] as const) {
+  process.env.TINA4_LOG_LEVEL = minLevelName;
+  if (Log.isEnabled("critical") !== internalShouldLog("critical", PRIORITY[minLevelName])) {
+    criticalAlwaysPasses = false;
+  }
+}
+assert("isEnabled critical: ordinary threshold logic at every level (4 >= min)", criticalAlwaysPasses);
+
+// Restore env we mutated.
+if (savedLevel !== undefined) process.env.TINA4_LOG_LEVEL = savedLevel;
+else delete process.env.TINA4_LOG_LEVEL;
+if (savedCritical !== undefined) process.env.TINA4_LOG_CRITICAL = savedCritical;
+else delete process.env.TINA4_LOG_CRITICAL;
+
+// --- Default file output: dev writes a file, prod is stdout-only (v3.13.39) ---
+// Mirrors Python master (4c6d881) TestLogDefaultFileOutput. When
+// TINA4_LOG_OUTPUT is unset (default), the log FILE is written ONLY in dev
+// (TINA4_DEBUG truthy). In production / containers the logger is stdout-only —
+// no file to bloat the writable layer / disk. Explicit TINA4_LOG_OUTPUT
+// (file/both) OR an explicit TINA4_LOG_FILE path always forces a file.
+//
+// IMPORTANT: these cases must NOT route through Log.configure({ logFile }) —
+// configure() SETS process.env.TINA4_LOG_FILE, which is itself an explicit
+// file override that would mask the dev/prod default. They set TINA4_LOG_DIR
+// directly and assert against logs/tina4.log under a fresh dir each time.
+console.log("\n--- Default file output (dev=file, prod=stdout-only) ---");
+
+const DEFAULT_OUT_DIR = "/tmp/tina4-logger-test/default-output";
+
+// Snapshot every env knob the default-output logic reads so this block can't
+// leak into anything that runs after it (logger.test runs as its own child
+// process, but be a good citizen).
+const savedDefaultEnv = {
+  output: process.env.TINA4_LOG_OUTPUT,
+  file: process.env.TINA4_LOG_FILE,
+  dir: process.env.TINA4_LOG_DIR,
+  debug: process.env.TINA4_DEBUG,
+  level: process.env.TINA4_LOG_LEVEL,
+  format: process.env.TINA4_LOG_FORMAT,
+};
+
+function resetDefaultOutputEnv(subdir: string): string {
+  delete process.env.TINA4_LOG_OUTPUT;
+  delete process.env.TINA4_LOG_FILE; // critical: no explicit file → exercise the default
+  delete process.env.TINA4_LOG_FORMAT;
+  process.env.TINA4_LOG_LEVEL = "INFO";
+  const dir = join(DEFAULT_OUT_DIR, subdir);
+  try { rmSync(dir, { recursive: true }); } catch {}
+  process.env.TINA4_LOG_DIR = dir;
+  return join(dir, "tina4.log");
+}
+
+// (a) Production (TINA4_DEBUG unset/falsy), default output → NO file written —
+//     neither the main tina4.log nor (for an error) an error.log. stdout only.
+{
+  const mainPath = resetDefaultOutputEnv("prod-no-file");
+  delete process.env.TINA4_DEBUG;
+  const dir = process.env.TINA4_LOG_DIR!;
+  // Capture stdout so the prod log line doesn't pollute test output.
+  const origLog = console.log;
+  console.log = () => {};
+  Log.error("prod default — no file");
+  console.log = origLog;
+  assert(
+    "default+prod: main tina4.log NOT written",
+    !existsSync(mainPath),
+    `unexpected file at ${mainPath}`,
+  );
+  // Node tees every level into one tina4.log (no split error.log), but assert
+  // the dir holds no log file at all — true stdout-only.
+  const wroteAnything = existsSync(dir) && existsSync(join(dir, "error.log"));
+  assert(
+    "default+prod: no error.log written either",
+    !wroteAnything,
+    `unexpected error.log under ${dir}`,
+  );
+}
+
+// (b) Development (TINA4_DEBUG truthy), default output → file IS written.
+{
+  const mainPath = resetDefaultOutputEnv("dev-file");
+  process.env.TINA4_DEBUG = "true";
+  Log.info("dev default — file written");
+  assert("default+dev: tina4.log IS written", existsSync(mainPath), `expected file at ${mainPath}`);
+  if (existsSync(mainPath)) {
+    assert(
+      "default+dev: file carries the message",
+      readFileSync(mainPath, "utf-8").includes("dev default — file written"),
+    );
+  }
+  delete process.env.TINA4_DEBUG;
+}
+
+// (c) Explicit TINA4_LOG_OUTPUT=both with TINA4_DEBUG off → file STILL written
+//     (explicit output always wins, regardless of dev/prod).
+{
+  const mainPath = resetDefaultOutputEnv("explicit-both");
+  process.env.TINA4_LOG_OUTPUT = "both";
+  delete process.env.TINA4_DEBUG;
+  // Suppress the stdout half of "both" so it doesn't pollute test output.
+  const origLog = console.log;
+  console.log = () => {};
+  Log.info("explicit both — file even in prod");
+  console.log = origLog;
+  assert(
+    "explicit output=both + prod: tina4.log STILL written (explicit wins)",
+    existsSync(mainPath),
+    `expected file at ${mainPath}`,
+  );
+  if (existsSync(mainPath)) {
+    assert(
+      "explicit output=both: file carries the message",
+      readFileSync(mainPath, "utf-8").includes("explicit both — file even in prod"),
+    );
+  }
+  delete process.env.TINA4_LOG_OUTPUT;
+}
+
+// (c2) Explicit TINA4_LOG_FILE path with TINA4_DEBUG off → file STILL written.
+{
+  const dir = join(DEFAULT_OUT_DIR, "explicit-file");
+  try { rmSync(dir, { recursive: true }); } catch {}
+  delete process.env.TINA4_LOG_OUTPUT;
+  delete process.env.TINA4_DEBUG;
+  process.env.TINA4_LOG_DIR = dir;
+  process.env.TINA4_LOG_FILE = "explicit.log";
+  process.env.TINA4_LOG_LEVEL = "INFO";
+  const explicitPath = join(dir, "explicit.log");
+  Log.info("explicit file path — prod");
+  assert(
+    "explicit TINA4_LOG_FILE + prod: file STILL written (explicit wins)",
+    existsSync(explicitPath),
+    `expected file at ${explicitPath}`,
+  );
+  delete process.env.TINA4_LOG_FILE;
+}
+
+// (d) stdout still receives logs in production (default output) — the platform
+//     captures PID 1 stdout; only the FILE is suppressed in prod, never stdout.
+{
+  resetDefaultOutputEnv("prod-stdout");
+  delete process.env.TINA4_DEBUG;
+  const origLog = console.log;
+  let captured = "";
+  console.log = (...args: unknown[]) => { captured += args.join(" "); };
+  Log.info("prod stdout still on");
+  console.log = origLog;
+  assert("default+prod: stdout still receives logs", captured.includes("prod stdout still on"));
+  // Prod stdout is clean structured JSON (no ANSI) so aggregators can parse it.
+  assert("default+prod: stdout line has no ANSI colour codes", !captured.includes("\x1b["));
+}
+
+// Restore the default-output env knobs.
+for (const [key, val] of Object.entries({
+  TINA4_LOG_OUTPUT: savedDefaultEnv.output,
+  TINA4_LOG_FILE: savedDefaultEnv.file,
+  TINA4_LOG_DIR: savedDefaultEnv.dir,
+  TINA4_DEBUG: savedDefaultEnv.debug,
+  TINA4_LOG_LEVEL: savedDefaultEnv.level,
+  TINA4_LOG_FORMAT: savedDefaultEnv.format,
+})) {
+  if (val !== undefined) process.env[key] = val;
+  else delete process.env[key];
+}
+
 // Cleanup
 rmSync("/tmp/tina4-logger-test", { recursive: true });
 

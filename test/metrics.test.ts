@@ -278,6 +278,119 @@ writeFileSync(join(tmpDir, "complex.ts"), complexFile);
   }
 }
 
+// --- Literal/comment stripping: complexity counts REAL branches only ---
+console.log("\n--- Literal Stripping: complexity ignores string/template/regex content ---");
+
+{
+  // A fresh isolated root so the mtime cache never collides.
+  const stripDir = "/tmp/tina4-metrics-strip-" + Date.now();
+  mkdirSync(stripDir, { recursive: true });
+
+  // `noisy`: ONE real branch (the `if`). The string, template and regex bodies
+  // are STUFFED with &&, ||, if, ? :, case, for — none must be counted. Its CC
+  // must equal `quiet`'s (a sibling with exactly one real `if` and no literals).
+  const stripTs = `
+export function noisy(x: number): string {
+  const s = "if a && b || c ? d : e for while case && || ?? if";
+  const t = \`outer \${x} if a && b ? c : d || e\`;
+  const re = /if\\s*\\(.*&&.*\\)\\s*\\{.*\\}|case\\s+x:|a\\?b:c/g;
+  // comment: if (a && b || c) for while ? : case && ||
+  /* block: && || ?? if for while case ? : && || ?? if for */
+  if (x > 0) {
+    return s + t + String(re);
+  }
+  return "default && || ? :";
+}
+
+export function quiet(x: number): string {
+  if (x > 0) {
+    return "yes";
+  }
+  return "no";
+}
+`;
+  writeFileSync(join(stripDir, "stripme.ts"), stripTs);
+
+  const analysis = fullAnalysis(stripDir);
+  const noisy = analysis.most_complex_functions.find((f: any) => f.name === "noisy");
+  const quiet = analysis.most_complex_functions.find((f: any) => f.name === "quiet");
+  assert("noisy function is extracted", noisy !== undefined);
+  assert("quiet function is extracted", quiet !== undefined);
+  if (noisy && quiet) {
+    // Both have exactly one real decision point → CC 2.
+    assert("noisy CC counts the REAL branch only (===2)", noisy.complexity === 2,
+      `got ${noisy.complexity}`);
+    assert("quiet CC is 2 (baseline single if)", quiet.complexity === 2,
+      `got ${quiet.complexity}`);
+    assert("noisy CC == quiet CC (literals contribute nothing)",
+      noisy.complexity === quiet.complexity, `noisy=${noisy.complexity} quiet=${quiet.complexity}`);
+  }
+
+  try { rmSync(stripDir, { recursive: true, force: true }); } catch {}
+}
+
+// --- Function extraction: a call inside a string is NOT a function ---
+console.log("\n--- Literal Stripping: string content is not extracted as a function ---");
+
+{
+  const fnDir = "/tmp/tina4-metrics-fnstrip-" + Date.now();
+  mkdirSync(fnDir, { recursive: true });
+
+  // Only ONE real function (`real`). The string/template/regex bodies contain
+  // method-shaped text — `something(...)`, `bogus(...)`, `name(...)` — plus a
+  // regex literal that mimics the analyzer's own patterns. None must surface.
+  const fnTs = `
+export function real(a: number): number {
+  const note = "call something(x, y) and bogus(1) here";
+  const tpl = \`do name(z) then other(w)\`;
+  const pat = /(?:async\\s+)?function\\s+(\\w+)\\s*\\(([^)]*)\\)/g;
+  // doc: helper(a, b) and parse(c) are NOT functions
+  return a + String(note) + String(tpl) + String(pat);
+}
+`;
+  writeFileSync(join(fnDir, "fns.ts"), fnTs);
+
+  const detail = fileDetail(join(fnDir, "fns.ts"));
+  const names = (detail.functions as any[]).map((f) => f.name);
+  assert("real function is extracted", names.includes("real"));
+  assert("string content 'something(...)' NOT extracted", !names.includes("something"));
+  assert("string content 'bogus(...)' NOT extracted", !names.includes("bogus"));
+  assert("template content 'name(...)' NOT extracted", !names.includes("name"));
+  assert("template content 'other(...)' NOT extracted", !names.includes("other"));
+  assert("regex group 'function'/'\\w+' NOT extracted", !names.includes("function") && !names.includes("w"));
+  assert("comment content 'helper(...)' NOT extracted", !names.includes("helper"));
+  assert("exactly one function extracted from fns.ts", (detail.functions as any[]).length === 1,
+    `got ${(detail.functions as any[]).length}: ${JSON.stringify(names)}`);
+
+  try { rmSync(fnDir, { recursive: true, force: true }); } catch {}
+}
+
+// --- A genuinely complex function still reports HIGH cc ---
+console.log("\n--- Literal Stripping: a real branchy function still ranks high ---");
+
+{
+  const hiDir = "/tmp/tina4-metrics-high-" + Date.now();
+  mkdirSync(hiDir, { recursive: true });
+
+  // 12 REAL branches in CODE (no literals involved) → CC must be well above 10.
+  const lines = ["export function branchy(x: number): number {"];
+  for (let i = 0; i < 12; i++) lines.push(`  if (x === ${i} && x > -1) { return ${i}; }`);
+  lines.push("  return -1;");
+  lines.push("}");
+  writeFileSync(join(hiDir, "branchy.ts"), lines.join("\n") + "\n");
+
+  const analysis = fullAnalysis(hiDir);
+  const branchy = analysis.most_complex_functions.find((f: any) => f.name === "branchy");
+  assert("branchy function is extracted", branchy !== undefined);
+  if (branchy) {
+    // 12 ifs + 12 && + base 1 = 25.
+    assert("genuinely complex function reports high CC (>20)", branchy.complexity > 20,
+      `got ${branchy.complexity}`);
+  }
+
+  try { rmSync(hiDir, { recursive: true, force: true }); } catch {}
+}
+
 // Cleanup
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 

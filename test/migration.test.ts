@@ -313,9 +313,12 @@ writeFileSync(join(failDir, "000003_also_good.sql"), `CREATE TABLE another_good 
 const resultFail = await migrate(adapter2, { migrationsDir: failDir });
 assert("Good migration applied", resultFail.applied.includes("000001_good.sql"));
 assert("Bad migration failed", resultFail.failed.includes("000002_bad.sql"));
-assert("Migration after failure still runs", resultFail.applied.includes("000003_also_good.sql"));
+// G3 (data-integrity): migrate() STOPS at the first failed file — a later
+// migration must NOT be applied on top of a missing earlier one (parity with
+// Python/PHP/Ruby).
+assert("Migration after failure does NOT run (stopped)", !resultFail.applied.includes("000003_also_good.sql"));
 assert("good_table exists", adapter2.tableExists("good_table"));
-assert("another_good exists", adapter2.tableExists("another_good"));
+assert("another_good NOT created (stopped before it)", !adapter2.tableExists("another_good"));
 
 // --- Both naming patterns supported ---
 console.log("\n--- Dual naming pattern support ---");

@@ -20,7 +20,7 @@ import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
 import { DevAdmin, RequestInspector, WsTracker } from "./devAdmin.js";
-import { devReloadWs } from "./websocket.js";
+import { devReloadWs, serveWebSocketRoute, wsRouteManager } from "./websocket.js";
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
 import { stopAllBackgroundTasks } from "./background.js";
@@ -33,6 +33,72 @@ const BUILTIN_ERROR_TEMPLATES_DIR = resolve(__dirname, "..", "templates");
 
 /** Built-in public directory for framework-bundled static assets. */
 const BUILTIN_PUBLIC_DIR = resolve(__dirname, "..", "public");
+
+/**
+ * Apply pending DB migrations on startup — NON-BREAKING.
+ *
+ * When a `migrations/` folder exists (with at least one `.sql` file, excluding
+ * `.down.sql`) and `TINA4_AUTO_MIGRATE` is not disabled (default "true";
+ * false/0/no/off disable), pending migrations are applied during boot so the
+ * schema is current with no manual `tina4 migrate` step. A failure here is
+ * logged LOUD via `Log.error` and the service STILL starts — a bad migration
+ * must never take the backend down. (The explicit `tina4 migrate` CLI stays
+ * fail-fast so CI still gets a non-zero exit. Only this startup hook swallows.)
+ *
+ * Disable with `TINA4_AUTO_MIGRATE=false` — e.g. multi-instance production that
+ * migrates as a separate deploy step (concurrent first-apply can race).
+ *
+ * @param migrationDir - migrations directory (default "migrations", relative to base)
+ * @param base - project root used to resolve the migrations directory
+ */
+export async function autoMigrateOnStartup(
+  migrationDir = "migrations",
+  base = process.cwd(),
+): Promise<void> {
+  const dir = resolve(base, migrationDir);
+
+  // Gate 1: a migrations/ folder with at least one .sql (non-down) file.
+  if (!existsSync(dir)) return;
+  let hasSql = false;
+  try {
+    hasSql = readdirSync(dir).some((f) => f.endsWith(".sql") && !f.endsWith(".down.sql"));
+  } catch {
+    return; // unreadable dir → nothing to do (silent)
+  }
+  if (!hasSql) return;
+
+  // Gate 2: TINA4_AUTO_MIGRATE not falsy (default "true").
+  const flag = process.env.TINA4_AUTO_MIGRATE;
+  if (flag != null && !isTruthy(flag)) {
+    Log.debug("TINA4_AUTO_MIGRATE is off — skipping startup migrations");
+    return;
+  }
+
+  // Gate 3: a DB adapter must be resolvable. (initDatabase() has already run by
+  // the time this is called from startServer.)
+  let orm: typeof import("../../orm/src/index.js");
+  try {
+    orm = await import("../../orm/src/index.js");
+    orm.getAdapter(); // throws if no adapter configured
+  } catch (err) {
+    Log.debug(`Startup migrations skipped (no database configured): ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  // Run the EXISTING migrate runner inside try/catch — NEVER re-raise out of
+  // the startup hook (non-breaking).
+  try {
+    const result = await orm.migrate(undefined, { migrationsDir: dir });
+    if (result.applied.length > 0) {
+      Log.info(`Applied ${result.applied.length} pending migration(s) on startup`);
+    }
+  } catch (err) {
+    Log.error(
+      `Startup auto-migration failed: ${err instanceof Error ? err.message : String(err)} — ` +
+      "the service is starting anyway. Run `tina4 migrate` to retry.",
+    );
+  }
+}
 
 /** Read version from root package.json so the banner always matches the published version. */
 function readPackageVersion(): string {
@@ -884,6 +950,12 @@ ${reset}
     } catch (err) {
       console.warn(`\n  ORM not available (install @tina4/orm to enable):`, err);
     }
+
+    // Auto-run pending migrations on startup — AFTER initDatabase()/model sync,
+    // BEFORE the server listens. Non-breaking: a failure is logged and boot
+    // continues (the helper never throws). Gated on a migrations/ dir + the
+    // TINA4_AUTO_MIGRATE flag (default on) + a resolvable DB adapter.
+    await autoMigrateOnStartup("migrations", base);
   }
 
   // Initialize Swagger — gated on TINA4_SWAGGER_ENABLED (default: enabled
@@ -1415,31 +1487,52 @@ ${reset}
   // posts /__dev/api/reload to the MAIN port. Matches Python (master).
   const server = createServer(dispatch);
 
-  // WebSocket-primary DevReload: accept and hold /__dev_reload upgrades on the
-  // MAIN port (debug only) so POST /__dev/api/reload can push an instant reload.
-  // Mirrors Python's _register_dev_reload_ws + _ws_manager.broadcast(path=…).
-  // Without this the handshake 404s and the whole stack silently falls back to
-  // polling. Track connections in WsTracker so they appear in the dev-admin list.
+  // WebSocket upgrade handling on the MAIN port. Two responsibilities:
+  //
+  //  1. WebSocket-primary DevReload (debug only): accept and hold /__dev_reload
+  //     upgrades so POST /__dev/api/reload can push an instant reload. Mirrors
+  //     Python's _register_dev_reload_ws + _ws_manager.broadcast(path=…).
+  //
+  //  2. USER WS ROUTES (always): a route registered via Router.websocket() /
+  //     WebSocketServer.route() is dispatched to a live open/message/close
+  //     lifecycle on the real connection — parity with Python/PHP/Ruby. Per-route
+  //     auth is enforced here on the upgrade (serveWebSocketRoute): a @secured /
+  //     .secure() route rejects a missing/invalid JWT before accepting; public
+  //     routes pass. Previously the integrated server only handled /__dev_reload,
+  //     so user WS routes never reached a live connection.
+  //
+  // Tracking goes through WsTracker so connections show in the dev-admin list.
   if (isDevMode()) {
     devReloadWs.setTracker(
       (remoteAddress, p) => WsTracker.add(remoteAddress, p),
       (id) => { WsTracker.remove(id); },
     );
-    server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
-      const upPath = (req.url ?? "/").split("?")[0];
-      if (upPath === "/__dev_reload") {
-        devReloadWs.handleUpgrade(req, socket, head);
-        return;
-      }
-      // Not a dev-reload upgrade — refuse cleanly rather than leaving it hanging.
-      try {
-        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
-        socket.destroy();
-      } catch {
-        /* socket already gone */
-      }
-    });
+    wsRouteManager.setTracker(
+      (remoteAddress, p) => WsTracker.add(remoteAddress, p),
+      (id) => { WsTracker.remove(id); },
+    );
   }
+  server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
+    const upPath = (req.url ?? "/").split("?")[0];
+    // Dev-reload channel (debug only).
+    if (isDevMode() && upPath === "/__dev_reload") {
+      devReloadWs.handleUpgrade(req, socket, head);
+      return;
+    }
+    // User-registered WS route — enforces per-route auth, then drives the
+    // open/message/close lifecycle on this connection. Returns false only when
+    // no WS route matches this path.
+    if (serveWebSocketRoute(req, socket, head)) {
+      return;
+    }
+    // No dev-reload and no matching user route — refuse cleanly.
+    try {
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+    } catch {
+      /* socket already gone */
+    }
+  });
 
   return new Promise((resolvePromise) => {
     server.listen(port, host, () => {

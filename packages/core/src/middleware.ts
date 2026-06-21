@@ -345,7 +345,7 @@ export class CorsMiddleware {
     const allowedHeaders = process.env.TINA4_CORS_HEADERS
       ?? "Content-Type,Authorization,X-Request-ID";
 
-    const credentials = process.env.TINA4_CORS_CREDENTIALS ?? "true";
+    const credentials = process.env.TINA4_CORS_CREDENTIALS ?? "false";
 
     const maxAge = process.env.TINA4_CORS_MAX_AGE
       ? parseInt(process.env.TINA4_CORS_MAX_AGE, 10)

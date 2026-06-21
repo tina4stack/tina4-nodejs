@@ -67,8 +67,9 @@ function escapeRegExp(s: string): string {
 /**
  * Top-level classes DEFINED in a source file. A test that references one of
  * these genuinely exercises this file. Classes only (distinctive PascalCase,
- * length > 3) — module-level function names like `get`/`run`/`init` are too
- * generic to trust as a coverage signal.
+ * length > 2 — so short-but-real names like `ORM`/`Api`/`Log`/`Env` count) —
+ * module-level function names like `get`/`run`/`init` are too generic to trust
+ * as a coverage signal.
  */
 function definedClasses(source: string): Set<string> {
   const names = new Set<string>();
@@ -76,7 +77,10 @@ function definedClasses(source: string): Set<string> {
   let m: RegExpExecArray | null;
   while ((m = re.exec(source)) !== null) {
     const name = m[1];
-    if (name && !name.startsWith("_") && name.length > 3) {
+    // length > 2 (NOT > 3): a 3-char class like ORM/Api/Log/Env is a genuine,
+    // distinctive coverage signal — the old > 3 gate silently dropped them so a
+    // test that references `new Api()` / `Log.error()` left the file "untested".
+    if (name && !name.startsWith("_") && name.length > 2) {
       names.add(name);
     }
   }
@@ -98,8 +102,9 @@ function definedClasses(source: string): Set<string> {
  *   2. Import — a test that actually IMPORTS this module by its path
  *      (`import … from ".../<m>.js"`, `require(".../<m>")`).
  *   3. Class reference — a test that references a top-level class DEFINED in
- *      this file (distinctive PascalCase, length > 3). NO bare module-name word
- *      match and NO guessed CamelCase-from-snake_case match.
+ *      this file (distinctive PascalCase, length > 2 — short-but-real names
+ *      like ORM/Api/Log/Env count). NO bare module-name word match and NO
+ *      guessed CamelCase-from-snake_case match.
  *
  * Returns true only on a real signal, so the "untested" offenders surfaced by
  * `tina4 metrics` and the dashboard "T" badge are trustworthy.
@@ -169,6 +174,11 @@ function hasMatchingTest(relPath: string): boolean {
     new RegExp(`import\\b[^;\\n]*?from\\s*${spec}`),
     // require("<spec>")
     new RegExp(`require\\s*\\(\\s*${spec}\\s*\\)`),
+    // dynamic / inline-type import("<spec>") — covers `await import("…/m.js")`
+    // AND the TS inline type position `import("…/m.ts").SomeType`. The full
+    // package path a test uses ("../packages/core/src/<m>.ts") matches as a
+    // SUFFIX via the leading `(?:[^"']*\/)?` in <spec>.
+    new RegExp(`import\\s*\\(\\s*${spec}\\s*\\)`),
     // side-effect import "<spec>"
     new RegExp(`import\\s*${spec}`),
   ];
@@ -248,6 +258,214 @@ function countLines(source: string): LineCounts {
   return { loc, blank, comment };
 }
 
+// ── Literal / comment stripping ──────────────────────────────
+
+/**
+ * Replace the CONTENTS of string literals, template literals (including
+ * interpolations), regex literals, and both comment styles with neutral
+ * placeholder characters (spaces), preserving newlines so line numbers and
+ * structure stay intact. The surrounding delimiters are kept.
+ *
+ * This is the regex-based stand-in for Python's AST: the decision-point
+ * patterns and the function-extraction patterns must only ever see real code,
+ * never text that happens to live inside a string, template, regex, line
+ * comment or block comment. Without this, a string full of boolean operators
+ * or a regex inflates complexity and yields bogus "functions".
+ *
+ * Regex-vs-division is resolved conservatively: a slash only starts a regex
+ * when the previous significant token can't end an expression (an operator,
+ * keyword, open bracket, comma, semicolon, etc.). When in doubt we treat the
+ * slash as division and DON'T strip — favouring "leave code intact" over
+ * "wrongly blank out a division", per the brief.
+ */
+function stripLiterals(source: string): string {
+  const out: string[] = [];
+  const n = source.length;
+  let i = 0;
+
+  // The last non-whitespace, non-comment character we EMITTED as real code —
+  // used to decide whether a `/` opens a regex or is a division operator.
+  let prevSignificant = "";
+  // The last "word" token (identifier/keyword) emitted, for keyword checks.
+  let prevWord = "";
+
+  /** Keywords after which a `/` is a regex, not division. */
+  const regexKeywords = new Set([
+    "return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
+    "throw", "case", "do", "else", "yield", "await",
+  ]);
+
+  /** Can the previous significant token end an expression? If so, `/` = division. */
+  function prevEndsExpression(): boolean {
+    if (prevSignificant === "") return false; // start of input → regex
+    // Identifier/number ending char → could be a value → division …
+    if (/[A-Za-z0-9_$]/.test(prevSignificant)) {
+      // …unless it's a keyword like `return`/`case` that precedes a regex.
+      return !regexKeywords.has(prevWord);
+    }
+    // Closing brackets and these chars end an expression → division.
+    if (prevSignificant === ")" || prevSignificant === "]") return true;
+    // `.` (member access) ends an expression-ish context → division ( `a./` is odd, treat as div).
+    if (prevSignificant === ".") return true;
+    // Everything else (operators, `(`, `,`, `{`, `[`, `;`, `:`, `=`, `<`, `>`, `&`,
+    // `|`, `!`, `?`, `+`, `-`, `*`, `%`, `^`, `~`) → regex context.
+    return false;
+  }
+
+  while (i < n) {
+    const ch = source[i];
+    const next = i + 1 < n ? source[i + 1] : "";
+
+    // ── Line comment ──
+    if (ch === "/" && next === "/") {
+      out.push("//");
+      i += 2;
+      while (i < n && source[i] !== "\n") {
+        out.push(" ");
+        i++;
+      }
+      continue;
+    }
+
+    // ── Block comment ──
+    if (ch === "/" && next === "*") {
+      out.push("/*");
+      i += 2;
+      while (i < n && !(source[i] === "*" && source[i + 1] === "/")) {
+        out.push(source[i] === "\n" ? "\n" : " ");
+        i++;
+      }
+      if (i < n) {
+        out.push("*/");
+        i += 2;
+      }
+      continue;
+    }
+
+    // ── String literals ' " ──
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      out.push(quote);
+      i++;
+      while (i < n && source[i] !== quote) {
+        if (source[i] === "\\" && i + 1 < n) {
+          out.push("  "); // blank the escape pair, stay 2 chars wide
+          i += 2;
+          continue;
+        }
+        if (source[i] === "\n") {
+          out.push("\n"); // unterminated string safety
+          i++;
+          break;
+        }
+        out.push(" ");
+        i++;
+      }
+      if (i < n && source[i] === quote) {
+        out.push(quote);
+        i++;
+      }
+      prevSignificant = quote;
+      prevWord = "";
+      continue;
+    }
+
+    // ── Template literals ` ` (with ${ ... } interpolation, recursively code) ──
+    if (ch === "`") {
+      out.push("`");
+      i++;
+      while (i < n && source[i] !== "`") {
+        if (source[i] === "\\" && i + 1 < n) {
+          out.push(source[i + 1] === "\n" ? " \n" : "  ");
+          i += 2;
+          continue;
+        }
+        // Interpolation: ${ ... } — the inside IS real code, recurse on it.
+        if (source[i] === "$" && source[i + 1] === "{") {
+          out.push("${");
+          i += 2;
+          let depth = 1;
+          const exprStart = i;
+          while (i < n && depth > 0) {
+            if (source[i] === "{") depth++;
+            else if (source[i] === "}") depth--;
+            if (depth === 0) break;
+            i++;
+          }
+          // Strip literals INSIDE the interpolation too (handles nested strings/regex).
+          out.push(stripLiterals(source.slice(exprStart, i)));
+          if (i < n && source[i] === "}") {
+            out.push("}");
+            i++;
+          }
+          continue;
+        }
+        out.push(source[i] === "\n" ? "\n" : " ");
+        i++;
+      }
+      if (i < n && source[i] === "`") {
+        out.push("`");
+        i++;
+      }
+      prevSignificant = "`";
+      prevWord = "";
+      continue;
+    }
+
+    // ── Regex literal / vs division ──
+    if (ch === "/" && !prevEndsExpression()) {
+      // Scan a regex literal: /.../flags, honouring escapes and [...] classes.
+      let j = i + 1;
+      let ok = false;
+      let inClass = false;
+      while (j < n) {
+        const c = source[j];
+        if (c === "\\") {
+          j += 2;
+          continue;
+        }
+        if (c === "\n") break; // regex can't span a newline → not a regex
+        if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+        else if (c === "/" && !inClass) {
+          ok = true;
+          break;
+        }
+        j++;
+      }
+      if (ok) {
+        out.push("/");
+        for (let k = i + 1; k < j; k++) out.push(" ");
+        out.push("/");
+        i = j + 1;
+        // consume flags
+        while (i < n && /[a-z]/i.test(source[i])) {
+          out.push(source[i]);
+          i++;
+        }
+        prevSignificant = "/"; // a regex value ends an expression-ish slot
+        prevWord = "";
+        continue;
+      }
+      // Not a regex — fall through, emit `/` as division.
+    }
+
+    // ── Ordinary code char ──
+    out.push(ch);
+    if (!/\s/.test(ch)) {
+      prevSignificant = ch;
+      if (/[A-Za-z0-9_$]/.test(ch)) {
+        prevWord = /[A-Za-z0-9_$]/.test(source[i - 1] ?? "") ? prevWord + ch : ch;
+      } else {
+        prevWord = "";
+      }
+    }
+    i++;
+  }
+
+  return out.join("");
+}
+
 // ── Class & function counting (quick) ────────────────────────
 
 function countClassesQuick(source: string): number {
@@ -259,21 +477,24 @@ function countClassesQuick(source: string): number {
 }
 
 function countFunctionsQuick(source: string): number {
+  // Count on cleaned source so `something(...)` inside a string/regex/comment is
+  // never mistaken for a method (the chief source of the old over-count).
+  const clean = stripLiterals(source);
   let count = 0;
   // function declarations: function foo(, async function foo(, export function foo(
-  const funcDecls = source.match(
+  const funcDecls = clean.match(
     /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\(/g
   );
   if (funcDecls) count += funcDecls.length;
 
   // Method declarations inside classes: name(, async name(, static name(, get name(, set name(
-  const methods = source.match(
+  const methods = clean.match(
     /(?:^|\n)\s*(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:async\s+)?(?:get\s+|set\s+)?\w+\s*\([^)]*\)\s*(?::\s*\S+)?\s*\{/g
   );
   if (methods) count += methods.length;
 
   // Arrow functions assigned to const/let/var
-  const arrows = source.match(
+  const arrows = clean.match(
     /(?:^|\n)\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\(/g
   );
   if (arrows) count += arrows.length;
@@ -286,8 +507,12 @@ function countFunctionsQuick(source: string): number {
 function cycloMaticComplexity(funcBody: string): number {
   let cc = 1;
 
-  // Count decision points via regex
-  // if statements (not inside strings ideally, but regex-based is approximate)
+  // Decision points must be counted on REAL code only — strip string/template/
+  // regex literals and comments first so `&&`/`if`/`? :` inside data don't inflate
+  // the count (matches the intent of Python's AST-based analyzer).
+  const body = stripLiterals(funcBody);
+
+  // Count decision points via regex.
   const patterns: [RegExp, number][] = [
     [/\bif\s*\(/g, 1],
     [/\belse\s+if\s*\(/g, 1],
@@ -304,7 +529,7 @@ function cycloMaticComplexity(funcBody: string): number {
   ];
 
   for (const [pattern, weight] of patterns) {
-    const matches = funcBody.match(pattern);
+    const matches = body.match(pattern);
     if (matches) cc += matches.length * weight;
   }
 
@@ -322,94 +547,129 @@ interface FunctionInfo {
   file?: string;
 }
 
+/**
+ * Reserved words that look like `keyword(...)` (a call/control-flow head) but are
+ * NEVER a function declaration. Guards the loose class-method pattern from
+ * extracting `if (...)`, `for (...)`, `return (...)`, `await foo()` etc. as
+ * "functions" (the bogus-name source).
+ */
+const NON_FUNCTION_WORDS = new Set([
+  "if", "for", "while", "switch", "catch", "return", "new", "class", "import",
+  "export", "from", "do", "else", "typeof", "instanceof", "in", "of", "void",
+  "delete", "await", "yield", "throw", "super", "this", "function", "const",
+  "let", "var", "async", "static", "public", "private", "protected", "get",
+  "set", "type", "interface", "enum", "extends", "implements", "as", "case",
+  "default", "with", "debugger",
+]);
+
 function extractFunctions(source: string, filePath: string, root: string = "."): FunctionInfo[] {
   const functions: FunctionInfo[] = [];
-  const lines = source.split("\n");
+  // Detect/extract on LITERAL-STRIPPED source only — a `word(...)` or a bogus
+  // name like "name"/"if" living inside a string/template/regex/comment is now
+  // blanked out, so it can never be mistaken for a declaration. Newlines are
+  // preserved, so line numbers and the brace-matched body stay accurate.
+  const lines = stripLiterals(source).split("\n");
 
-  // Patterns to match function/method declarations
-  const patterns = [
-    // function name(args) or async function name(args)
-    /(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)/,
-    // Class method: name(args) { or async name(args) {
-    /(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:async\s+)?(\w+)\s*\(([^)]*)\)\s*(?::\s*[^{]+)?\s*\{/,
-    // Arrow: const name = (args) => or const name = async (args) =>
-    /(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*(?::\s*[^=]+)?\s*=>/,
-  ];
+  // Patterns — anchored at the START of the trimmed line so a mid-line call can
+  // never match. Only real declaration shapes are accepted.
+  // 1) function name(args) / async function name(args) / export …
+  const fnDecl = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*(\w+)\s*\(([^)]*)\)/;
+  // 2) Arrow assigned to a binding: const name = (args) => / = async (args) =>
+  const arrowDecl = /^(?:export\s+)?(?:default\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*(?::\s*[^=]+)?\s*=>/;
+  // 3) A class member: optional modifiers then name(args) … {  — only trusted
+  //    when we're inside a class body, OR a modifier keyword is present.
+  const methodMod = /^(?:(public|private|protected)\s+)?(?:(static)\s+)?(?:(async)\s+)?(?:(get|set)\s+)?(\w+)\s*\(([^)]*)\)\s*(?::\s*[^{;]+)?\s*\{/;
 
   // Track which class we're in
   let currentClass: string | null = null;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const stripped = line.trim();
+    const stripped = lines[i].trim();
 
     // Detect class entry
     const classMatch = stripped.match(
-      /(?:export\s+)?(?:abstract\s+)?class\s+(\w+)/
+      /^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(\w+)/
     );
     if (classMatch) {
       currentClass = classMatch[1];
     }
 
-    for (const pattern of patterns) {
-      const match = stripped.match(pattern);
-      if (match && match[1]) {
-        const funcName = match[1];
+    let funcName: string | null = null;
+    let argsStr = "";
+    let isTopLevelDecl = false; // function/arrow at module/top scope (not class-qualified)
 
-        // Skip keywords that look like function calls
+    // 1) function declaration
+    let m = stripped.match(fnDecl);
+    if (m) {
+      funcName = m[1];
+      argsStr = m[2] || "";
+      isTopLevelDecl = true;
+    }
+
+    // 2) arrow binding
+    if (funcName === null) {
+      m = stripped.match(arrowDecl);
+      if (m) {
+        funcName = m[1];
+        argsStr = m[2] || "";
+        isTopLevelDecl = true;
+      }
+    }
+
+    // 3) class method (only with a modifier, or while inside a class)
+    if (funcName === null) {
+      m = stripped.match(methodMod);
+      if (m) {
+        const hasModifier = !!(m[1] || m[2] || m[3] || m[4]);
+        const candidate = m[5];
+        // Accept only a genuine member: needs a modifier OR an enclosing class.
+        // Never accept a reserved control-flow / declaration keyword.
         if (
-          ["if", "for", "while", "switch", "catch", "return", "new", "class", "import", "export", "from", "constructor"].includes(funcName) &&
-          !stripped.includes("constructor")
+          candidate &&
+          !NON_FUNCTION_WORDS.has(candidate) &&
+          (hasModifier || currentClass !== null)
         ) {
-          if (funcName !== "constructor") continue;
+          funcName = candidate;
+          argsStr = m[6] || "";
         }
+      }
+    }
 
-        // Handle constructor specifically
-        const displayName =
-          funcName === "constructor" && currentClass
-            ? `${currentClass}.constructor`
-            : currentClass && !stripped.startsWith("function") &&
-              !stripped.startsWith("export function") &&
-              !stripped.startsWith("async function") &&
-              !stripped.startsWith("export async function") &&
-              !stripped.startsWith("const ") &&
-              !stripped.startsWith("let ") &&
-              !stripped.startsWith("var ") &&
-              !stripped.startsWith("export const ") &&
-              !stripped.startsWith("export let ")
+    if (funcName !== null && !NON_FUNCTION_WORDS.has(funcName)) {
+      // Constructor / class-qualified display name.
+      const displayName =
+        funcName === "constructor" && currentClass
+          ? `${currentClass}.constructor`
+          : currentClass !== null && !isTopLevelDecl
             ? `${currentClass}.${funcName}`
             : funcName;
 
-        // Extract function body by brace matching
-        const funcBody = extractFunctionBody(lines, i);
-        const funcLoc = funcBody.split("\n").length;
-        const complexity = cycloMaticComplexity(funcBody);
+      // Extract function body by brace matching (on cleaned lines).
+      const funcBody = extractFunctionBody(lines, i);
+      const funcLoc = funcBody.split("\n").length;
+      const complexity = cycloMaticComplexity(funcBody);
 
-        // Parse args
-        const argsStr = match[2] || "";
-        const args = argsStr
-          .split(",")
-          .map((a) => a.trim().split(":")[0].split("=")[0].replace("?", "").trim())
-          .filter((a) => a && a !== "this");
+      // Parse args
+      const args = argsStr
+        .split(",")
+        .map((a) => a.trim().split(":")[0].split("=")[0].replace("?", "").trim())
+        .filter((a) => a && a !== "this");
 
-        functions.push({
-          name: displayName,
-          line: i + 1,
-          complexity,
-          loc: funcLoc,
-          args,
-          file: relativePath(filePath, root),
-        });
-
-        break; // Only match first pattern per line
-      }
+      functions.push({
+        name: displayName,
+        line: i + 1,
+        complexity,
+        loc: funcLoc,
+        args,
+        file: relativePath(filePath, root),
+      });
     }
 
     // Detect class exit (simple heuristic: closing brace at column 0)
     if (
       currentClass &&
       stripped === "}" &&
-      line.match(/^\}/) // brace at start of line
+      /^\}/.test(lines[i]) // brace at start of line
     ) {
       currentClass = null;
     }

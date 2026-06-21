@@ -86,6 +86,20 @@ export function validate(
           errors.push({ field: name, message: "must be a valid date/time" });
         }
         break;
+
+      case "foreignKey": {
+        // Outlier D: previously there was no foreignKey case, so ANY value
+        // passed validation silently. A foreign key references another model's
+        // primary key — by default an auto-increment integer — so validate it
+        // as an integer (a numeric string like "12" is coerced and accepted).
+        // This catches the common bug of assigning a whole object / array /
+        // non-numeric string to an *_id column before it reaches the driver.
+        const fkNum = typeof value === "string" ? Number(value) : value;
+        if (typeof fkNum !== "number" || isNaN(fkNum) || !Number.isInteger(fkNum)) {
+          errors.push({ field: name, message: "must be a valid foreign key (integer)" });
+        }
+        break;
+      }
     }
   }
 

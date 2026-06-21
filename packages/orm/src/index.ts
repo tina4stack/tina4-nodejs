@@ -39,6 +39,10 @@ export {
   createMigration,
   status,
   Migration,
+  splitStatements,
+  normalizeQuotes,
+  sortMigrationFiles,
+  shouldSkipCreateTable,
 } from "./migration.js";
 export type { MigrationResult, MigrationStatus } from "./migration.js";
 export { AutoCrud, generateCrudRoutes } from "./autoCrud.js";
