@@ -138,6 +138,28 @@ export interface RouteMeta {
   example?: unknown;
   /** Marks the operation deprecated in the spec. */
   deprecated?: boolean;
+  /**
+   * Per-route security requirement (v3.13.42). Overrides the default scheme.
+   * Accepted forms (normalized by the generator into a security-requirement list):
+   *   "bearerAuth"                          -> [{ bearerAuth: [] }]
+   *   "public" | "none" | []                -> [] (explicitly no auth)
+   *   { apiKeyAuth: [] }                    -> [{ apiKeyAuth: [] }]   (AND within one map)
+   *   [{ oauth2: ["read"] }, { bearerAuth: [] }]  -> verbatim (OR across maps)
+   */
+  security?: string | string[] | Record<string, string[]> | Array<Record<string, string[]>>;
+  /** Scopes for a single named scheme passed as `security: "oauth2"` + `scopes: [...]`. */
+  scopes?: string[];
+  /**
+   * Reference a registered component schema as the request body (v3.13.42):
+   *   requestSchema: "CreateUser"  OR  { name: "CreateUser", contentType: "application/json" }
+   * Emits `$ref: #/components/schemas/CreateUser` and lands the schema in components.schemas.
+   */
+  requestSchema?: string | { name: string; contentType?: string };
+  /**
+   * Reference registered component schemas as response bodies, keyed by status (v3.13.42):
+   *   responseSchemas: { 200: "User", 201: { name: "User", isList: true } }
+   */
+  responseSchemas?: Record<string, string | { name: string; isList?: boolean }>;
 }
 
 export interface Tina4Config {
