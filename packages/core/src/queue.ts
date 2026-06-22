@@ -81,9 +81,17 @@ export interface ProcessOptions {
   maxJobs?: number;
   maxRetries?: number;
   batchSize?: number;
+  /**
+   * Override the queue's topic for this drain (parity with Python's
+   * process(handler, topic=...)). When set, process() retargets the queue so
+   * pop() reads the requested topic instead of the construction-time one.
+   */
+  topic?: string;
 }
 
 export interface ConsumeOptions {
+  /** Topic to consume (defaults to the constructor topic). */
+  topic?: string;
   batchSize?: number;
   pollInterval?: number;
   iterations?: number;
@@ -95,6 +103,18 @@ export interface QueueBackendInterface {
   pop(queue: string): QueueJob | null;
   size(queue: string): number;
   clear(queue: string): void;
+  // Optional full lifecycle. Reservation-based backends (MongoDB) implement
+  // these so complete()/fail() ack the ACTIVE store — without complete(), a
+  // reserved Mongo job is re-delivered after the visibility window. Backends
+  // that auto-ack on pop (RabbitMQ no-ack) or delegate to the broker (Kafka
+  // offsets) omit them, and the Queue keeps its prior behaviour for them.
+  complete?(queue: string, id: string): void;
+  fail?(queue: string, id: string, error: string, maxRetries: number, retryBackoff: number): void;
+  retry?(queue: string, id: string, delaySeconds?: number): void;
+  deadLetters?(queue: string, maxRetries?: number): QueueJob[];
+  failed?(queue: string, maxRetries?: number): QueueJob[];
+  retryFailed?(queue: string, maxRetries?: number): number;
+  purge?(queue: string, status?: string): number;
 }
 
 // ── Queue ────────────────────────────────────────────────────
@@ -152,6 +172,22 @@ export class Queue {
     }
   }
 
+  /**
+   * Point this queue at ``topic`` in place.
+   *
+   * produce()/consume()/process() call this so a topic argument actually
+   * changes which topic is read or written. Without it the argument was
+   * accepted but ignored on the read path — pop() always used the
+   * construction-time topic, so consume("other") silently drained the wrong
+   * queue. The lite + external backends are topic-per-call (every push/pop/size
+   * takes the queue name), so changing this.topic retargets all of them; the
+   * job lifecycle (complete()/fail()/retry()) routes by the job's own .topic, so
+   * it is unaffected. Mirrors Python's Queue._retarget().
+   */
+  private retarget(topic: string): void {
+    this.topic = topic;
+  }
+
   // ── Unified API (topic-aware) ────────────────────────────────
 
   /**
@@ -197,6 +233,12 @@ export class Queue {
     handler: (job: QueueJob | QueueJob[]) => Promise<void> | void,
     options?: ProcessOptions,
   ): void {
+    // Honour an explicit topic: retarget so pop() drains the requested topic
+    // (parity with Python's process(handler, topic=...)). Without this the
+    // argument was accepted but ignored on the read path.
+    if (options?.topic !== undefined) {
+      this.retarget(options.topic);
+    }
     const queue = this.topic;
     const opts = options;
 
@@ -275,6 +317,9 @@ export class Queue {
    * auto-retry lifecycle; dead-lettered jobs are returned by deadLetters().
    */
   failed(): QueueJob[] {
+    if (this.externalBackend?.failed) {
+      return this.externalBackend.failed(this.topic, this._maxRetries);
+    }
     return this.liteBackend.failed(this.topic, this._maxRetries);
   }
 
@@ -288,6 +333,10 @@ export class Queue {
   retry(jobId?: string, delaySeconds?: number): boolean {
     if (jobId) {
       // Retry a specific job by ID
+      if (this.externalBackend?.retry) {
+        this.externalBackend.retry(this.topic, jobId, delaySeconds);
+        return true;
+      }
       return this.liteBackend.retry(this.topic, jobId, delaySeconds);
     }
     // Retry all dead-letter jobs
@@ -295,8 +344,12 @@ export class Queue {
     if (deadJobs.length === 0) return false;
     let retried = false;
     for (const job of deadJobs) {
-      const ok = this.liteBackend.retry(this.topic, job.id, delaySeconds);
-      if (ok) retried = true;
+      if (this.externalBackend?.retry) {
+        this.externalBackend.retry(this.topic, job.id, delaySeconds);
+        retried = true;
+      } else if (this.liteBackend.retry(this.topic, job.id, delaySeconds)) {
+        retried = true;
+      }
     }
     return retried;
   }
@@ -305,6 +358,9 @@ export class Queue {
    * Get dead letter jobs — failed jobs that exceeded max retries.
    */
   deadLetters(maxRetries?: number): QueueJob[] {
+    if (this.externalBackend?.deadLetters) {
+      return this.externalBackend.deadLetters(this.topic, maxRetries ?? this._maxRetries);
+    }
     return this.liteBackend.deadLetters(this.topic, maxRetries ?? this._maxRetries);
   }
 
@@ -312,6 +368,9 @@ export class Queue {
    * Delete messages by status (e.g. "completed", "failed", "dead").
    */
   purge(status: string, maxRetries?: number): number {
+    if (this.externalBackend?.purge) {
+      return this.externalBackend.purge(this.topic, status);
+    }
     return this.liteBackend.purge(this.topic, status, maxRetries ?? this._maxRetries);
   }
 
@@ -319,17 +378,27 @@ export class Queue {
    * Re-queue failed jobs that haven't exceeded max retries back to pending.
    */
   retryFailed(maxRetries?: number): number {
+    if (this.externalBackend?.retryFailed) {
+      return this.externalBackend.retryFailed(this.topic, maxRetries ?? this._maxRetries);
+    }
     return this.liteBackend.retryFailed(this.topic, maxRetries ?? this._maxRetries);
   }
 
   /**
    * Produce a message onto a topic. Convenience wrapper around push().
+   *
+   * Retargets to the requested topic (restoring the prior one afterwards) so it
+   * shares the same retarget path consume()/process() use — keeping produce and
+   * consume symmetric on the same topic argument.
    */
   produce(topic: string, payload: unknown, priority: number = 0, delay: number = 0): string {
-    if (this.externalBackend) {
-      return this.externalBackend.push(topic, payload, delay);
+    const previous = this.topic;
+    this.retarget(topic);
+    try {
+      return this.push(payload, delay, priority);
+    } finally {
+      this.retarget(previous);
     }
-    return this.liteBackend.push(topic, payload, delay, priority);
   }
 
   /**
@@ -368,7 +437,9 @@ export class Queue {
 
     if (topicOrOptions !== null && typeof topicOrOptions === "object") {
       const opts = topicOrOptions as ConsumeOptions;
-      q = this.topic;
+      // Honour opts.topic (parity with the string-arg form) — previously the
+      // options-object form ignored it and always drained the constructor topic.
+      q = opts.topic ?? this.topic;
       resolvedId = opts.id;
       resolvedPollInterval = opts.pollInterval ?? 1000;
       resolvedIterations = opts.iterations ?? 0;
@@ -380,6 +451,12 @@ export class Queue {
       resolvedIterations = iterations;
       resolvedBatchSize = batchSize;
     }
+
+    // Honour the topic argument: point the queue (and the backend pop()/
+    // popById() route through) at it. Previously the resolved topic was
+    // computed but never used — pop()/popById() read this.topic, so
+    // consume("other") silently drained the construction-time topic.
+    this.retarget(q);
 
     if (resolvedId !== undefined) {
       const raw = this.popById(resolvedId);
@@ -453,6 +530,10 @@ export class Queue {
    * after retryBackoff seconds) or dead-letter (attempts >= maxRetries).
    */
   _failJob(queue: string, job: QueueJob, error: string, maxRetries: number): void {
+    if (this.externalBackend?.fail) {
+      this.externalBackend.fail(queue, job.id, error, maxRetries, this._retryBackoff);
+      return;
+    }
     this.liteBackend.failJob(queue, job, error, maxRetries, this._retryBackoff);
   }
 
@@ -460,15 +541,26 @@ export class Queue {
    * Re-queue a job back to the main queue directory with incremented attempts.
    */
   _retryJob(queue: string, job: QueueJob, delaySeconds?: number): void {
+    if (this.externalBackend?.retry) {
+      this.externalBackend.retry(queue, job.id, delaySeconds);
+      return;
+    }
     this.liteBackend.retryJob(queue, job, delaySeconds);
   }
 
   /**
-   * Acknowledge a completed job — drop its reservation record so the visibility
-   * reclaim never re-delivers it. No-op for external backends (they ack their
-   * own way; lite-backend reservations are file records).
+   * Acknowledge a completed job — drop its reservation so the visibility reclaim
+   * never re-delivers it. Routes to the active backend: a reservation-based
+   * external backend (MongoDB) acks there (without this its reserved doc would
+   * be re-delivered after the visibility window); RabbitMQ (no-ack on get) and
+   * Kafka (offset-based) expose no complete(), so the lite path is used and is a
+   * harmless no-op for them since they already acked/own redelivery.
    */
   _completeJob(queue: string, job: QueueJob): void {
+    if (this.externalBackend?.complete) {
+      this.externalBackend.complete(queue, job.id);
+      return;
+    }
     this.liteBackend.completeJob(queue, job);
   }
 }

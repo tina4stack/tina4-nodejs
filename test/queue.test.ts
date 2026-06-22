@@ -945,6 +945,211 @@ console.log("\n--- RabbitMQ + Kafka ignore visibilityTimeout ---");
     !("visibilityTimeout" in kafka.getConfig()));
 }
 
+// --- Topic-targeting: consume()/process()/produce() honour the topic arg ---
+//
+// Regression lock for the production bug where consume(topic)/process(topic)
+// IGNORED the topic argument and drained the construction-time topic instead.
+// produce(topic) already retargeted correctly — the asymmetry was the tell. A
+// job produced onto "alerts" must be consumable via consume("alerts") even when
+// the Queue was constructed with a different default topic. Engine-agnostic:
+// runs on the file backend so it needs no live broker. Mirrors the Python
+// master regression test (commit 04f9f05).
+console.log("\n--- Topic Targeting (consume/process/produce honour topic) ---");
+
+const TEST_PATH_TGT = join("/tmp", "tina4-queue-target-test-" + Date.now());
+function cleanupTgt() {
+  try { rmSync(TEST_PATH_TGT, { recursive: true, force: true }); } catch {}
+}
+cleanupTgt();
+
+await (async () => {
+  // (a) produce("alerts") then consume("alerts") on a queue built with topic
+  // "default" — the job lands on "alerts" and consume("alerts") drains it. With
+  // the bug, consume drained "default" (empty) and yielded nothing.
+  {
+    const q = new Queue({ topic: "default", path: TEST_PATH_TGT });
+    q.produce("alerts", { msg: "fire" });
+    // produce() restores the prior topic afterwards, so size() (which reads the
+    // current topic) reports the DEFAULT topic — which must be empty, proving the
+    // job landed on "alerts" not "default".
+    assert("target: produce(topic) does not push onto the construction-time topic",
+      q.size() === 0);
+
+    const drained: any[] = [];
+    for await (const j of q.consume("alerts", undefined, 0)) {
+      drained.push((j as QueueJob).payload);
+      (j as QueueJob).complete();
+    }
+    assert("target: consume(topic) drains the produced topic (Bug A)",
+      drained.length === 1 && (drained[0] as any).msg === "fire");
+  }
+
+  // (b) consume(topic) must NOT drain the construction-time topic. A job on the
+  // default topic is left untouched when consuming a different topic.
+  {
+    const q = new Queue({ topic: "default", path: TEST_PATH_TGT });
+    q.push({ msg: "on_default" });          // lands on "default"
+    q.produce("other", { msg: "on_other" }); // lands on "other"
+
+    const fromOther: any[] = [];
+    for await (const j of q.consume("other", undefined, 0)) {
+      fromOther.push((j as QueueJob).payload);
+      (j as QueueJob).complete();
+    }
+    assert("target: consume(other) yields only 'other' jobs",
+      fromOther.length === 1 && (fromOther[0] as any).msg === "on_other");
+
+    // The default-topic job is still pending and consumable via consume("default").
+    const fromDefault: any[] = [];
+    const qd = new Queue({ topic: "default", path: TEST_PATH_TGT });
+    for await (const j of qd.consume("default", undefined, 0)) {
+      fromDefault.push((j as QueueJob).payload);
+      (j as QueueJob).complete();
+    }
+    assert("target: consume(other) left the default-topic job intact",
+      fromDefault.length === 1 && (fromDefault[0] as any).msg === "on_default");
+  }
+
+  // (b2) The OPTIONS-OBJECT form of consume must also honour opts.topic — it
+  // previously ignored it (q = this.topic) and silently drained the
+  // construction-time topic. Engine-agnostic regression (file backend).
+  {
+    const q = new Queue({ topic: "default", path: TEST_PATH_TGT });
+    q.produce("alerts", { msg: "a1" });
+    q.produce("alerts", { msg: "a2" });
+    const fromAlerts: any[] = [];
+    for await (const j of q.consume({ topic: "alerts", pollInterval: 0 })) {
+      fromAlerts.push((j as QueueJob).payload);
+      (j as QueueJob).complete();
+    }
+    assert("target: consume({topic}) options-form drains the requested topic",
+      fromAlerts.length === 2 && (fromAlerts[0] as any).msg === "a1");
+  }
+
+  // (c) process({ topic }) honours the topic override (Python parity:
+  // process(handler, topic=...)). Jobs on the override topic are handled; the
+  // construction-time topic is left alone.
+  {
+    const q = new Queue({ topic: "default", path: TEST_PATH_TGT });
+    q.push({ where: "default" });           // default topic
+    q.produce("work", { where: "work" });   // override topic
+
+    const handled: string[] = [];
+    q.process((job: QueueJob | QueueJob[]) => {
+      const arr = Array.isArray(job) ? job : [job];
+      for (const j of arr) {
+        handled.push((j.payload as any).where);
+        j.complete();
+      }
+    }, { topic: "work" });
+
+    assert("target: process({topic}) drains the override topic (Bug A)",
+      handled.length === 1 && handled[0] === "work");
+
+    // The default-topic job must remain pending (process drained "work" only).
+    const q2 = new Queue({ topic: "default", path: TEST_PATH_TGT });
+    assert("target: process({topic:work}) left the default-topic job pending",
+      q2.size() === 1);
+  }
+
+  // (d) complete()/fail() after consume(topic) act on the RIGHT topic. After a
+  // failure on a retargeted topic the retry lands back on that same topic (the
+  // ack routes by the job's own .topic), and nothing leaks into 'default'.
+  // Uses its OWN path so the leak assertion can't be contaminated by earlier
+  // sub-blocks that deliberately leave default-topic jobs pending.
+  {
+    const dPath = join("/tmp", "tina4-queue-target-d-" + Date.now());
+    try { rmSync(dPath, { recursive: true, force: true }); } catch {}
+    const q = new Queue({ topic: "default", path: dPath, maxRetries: 3 });
+    q.produce("retryable", { task: "x" });
+
+    let runs = 0;
+    for await (const j of q.consume("retryable", undefined, 0)) {
+      runs++;
+      if (runs === 1) {
+        (j as QueueJob).fail("transient");   // re-enqueued onto "retryable"
+      } else {
+        (j as QueueJob).complete();
+        break;
+      }
+    }
+    assert("target: fail() on a retargeted topic re-enqueues on the same topic", runs === 2);
+
+    const qDefault = new Queue({ topic: "default", path: dPath });
+    assert("target: retargeted fail()/retry never leaked into the default topic",
+      qDefault.size() === 0);
+    try { rmSync(dPath, { recursive: true, force: true }); } catch {}
+  }
+
+  cleanupTgt();
+})();
+
+// --- MongoDB queue lifecycle routing + flat-attempts schema (no live mongo) ---
+//
+// Node's Mongo queue backend is a thin push/pop/size/clear adapter; the job
+// lifecycle (fail/retry/dead_letters/retry_failed) routes through the file
+// (lite) backend in Queue, NOT through the Mongo backend — so the Python-master
+// Mongo bugs B (reject leaves available_at in the future) and D (dead_letters/
+// retry_failed kwarg TypeError) cannot occur here: those code paths don't exist
+// on the Mongo backend. This test locks in the surviving Mongo invariant
+// equivalent to Bug C: the Node document is FLAT (top-level `attempts`), so the
+// pop script surfaces the LIVE document attempts that reclaim increments — there
+// is no nested push-time `data.attempts` snapshot to mask it. Mirrors the
+// existing script-introspection approach in mongoQueue.test.ts (no live mongo).
+console.log("\n--- MongoDB queue lifecycle routing + flat attempts ---");
+{
+  const { MongoBackend } = await import("../packages/core/src/queueBackends/mongoBackend.ts");
+  const backend = new MongoBackend({ uri: "mongodb://localhost:27017", visibilityTimeout: 300, maxRetries: 3 });
+
+  // Push stores attempts as a TOP-LEVEL document field (flat schema), not nested
+  // inside a `data` envelope — so there is no push-time snapshot to confuse with
+  // the live count (the Bug C divergence Python had to fix is absent here).
+  const pushScript = backend.buildScript("push", "jobs", JSON.stringify({ id: "j1", payload: { x: 1 }, attempts: 0 }));
+  assert("mongo: push inserts the job document with its top-level fields spread",
+    pushScript.includes("...job") && pushScript.includes("queue: queueName"));
+
+  // The reclaim path increments the LIVE top-level attempts ($inc) and the pop
+  // path returns the whole document (so that live attempts surfaces directly,
+  // not a stale nested copy).
+  const reclaimScript = backend.buildScript("reclaim", "jobs");
+  assert("mongo: reclaim increments the live top-level attempts",
+    reclaimScript.includes("$inc: { attempts: 1 }"));
+  const popScript = backend.buildScript("pop", "jobs");
+  assert("mongo: pop returns the live document (top-level attempts surfaces, no nested snapshot)",
+    popScript.includes("JSON.stringify(doc)") && !popScript.includes("doc.data.attempts"));
+
+  // Unified lifecycle (3.13.43): the Mongo backend now owns the FULL lifecycle so
+  // complete()/fail() ack the active store. Without complete() acking Mongo, a
+  // reserved doc was re-delivered after the visibility window (proven live). The
+  // Queue routes the lifecycle to the external backend when it implements these.
+  assert("mongo: backend implements complete (acks the reservation)",
+    typeof (backend as any).complete === "function");
+  assert("mongo: backend implements fail (requeue-or-dead-letter)",
+    typeof (backend as any).fail === "function");
+  assert("mongo: backend implements retry",
+    typeof (backend as any).retry === "function");
+  assert("mongo: backend implements deadLetters",
+    typeof (backend as any).deadLetters === "function");
+  assert("mongo: backend implements retryFailed",
+    typeof (backend as any).retryFailed === "function");
+  assert("mongo: backend implements failed",
+    typeof (backend as any).failed === "function");
+  assert("mongo: backend implements purge",
+    typeof (backend as any).purge === "function");
+
+  // The new script ops exist: complete acks (status completed), fail decides
+  // requeue-vs-dead-letter atomically, and pop carries the topic so the ack
+  // routes back to the right topic's docs.
+  const completeScript = backend.buildScript("complete", "jobs", "j1");
+  assert("mongo: complete op marks the doc completed",
+    completeScript.includes('status: "completed"'));
+  const failScript = backend.buildScript("fail", "jobs", JSON.stringify({ id: "j1", error: "x", maxRetries: 3, retryBackoff: 0 }));
+  assert("mongo: fail op dead-letters at the limit, else requeues",
+    failScript.includes("dead_letter") && failScript.includes('status: "pending"'));
+  assert("mongo: pop carries the framework topic on the returned job",
+    popScript.includes("doc.topic = queueName"));
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
