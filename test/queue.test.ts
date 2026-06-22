@@ -695,6 +695,53 @@ console.log("\n--- process with batchSize ---");
 
 cleanupBatch();
 
+// --- Queue Isolation Contract ---
+// Locks in: a job pushed to one topic never leaks into another (same path),
+// and a queue on a FRESH storage path starts empty. Uses its own per-test
+// temp dirs so it can't be contaminated by the shared TEST_PATH above.
+console.log("\n--- Queue Isolation Contract ---");
+{
+  const isoPath = join("/tmp", "tina4-queue-iso-" + Date.now());
+  try { rmSync(isoPath, { recursive: true, force: true }); } catch {}
+
+  const topicA = new Queue({ topic: "topic_a", path: isoPath });
+  const topicB = new Queue({ topic: "topic_b", path: isoPath });
+
+  topicA.push({ to: "a" });
+  topicA.push({ to: "a2" });
+
+  // topic_b shares the base path but must see none of topic_a's jobs.
+  assert("isolation: topic_b sees zero of topic_a's jobs", topicB.size() === 0);
+  assert("isolation: topic_b pop is null", topicB.pop() === null);
+  assert("isolation: topic_a retains its 2 jobs", topicA.size() === 2);
+
+  // Draining topic_a leaves topic_b intact.
+  topicB.push({ to: "b" });
+  topicA.pop();
+  topicA.pop();
+  assert("isolation: draining topic_a leaves topic_b's job", topicB.size() === 1);
+
+  try { rmSync(isoPath, { recursive: true, force: true }); } catch {}
+
+  // A queue on a DIFFERENT base path starts empty.
+  const pathOne = join("/tmp", "tina4-queue-iso-one-" + Date.now());
+  const pathTwo = join("/tmp", "tina4-queue-iso-two-" + Date.now());
+  try { rmSync(pathOne, { recursive: true, force: true }); } catch {}
+  try { rmSync(pathTwo, { recursive: true, force: true }); } catch {}
+
+  const first = new Queue({ topic: "jobs", path: pathOne });
+  first.push({ n: 1 });
+  first.push({ n: 2 });
+  assert("isolation: first path has 2 jobs", first.size() === 2);
+
+  const second = new Queue({ topic: "jobs", path: pathTwo });
+  assert("isolation: fresh path starts empty (size 0)", second.size() === 0);
+  assert("isolation: fresh path pop is null", second.pop() === null);
+
+  try { rmSync(pathOne, { recursive: true, force: true }); } catch {}
+  try { rmSync(pathTwo, { recursive: true, force: true }); } catch {}
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
