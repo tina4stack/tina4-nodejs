@@ -66,8 +66,10 @@ export class MongoSessionHandler implements SessionHandler {
       ?? (process.env.TINA4_SESSION_MONGO_PORT
         ? parseInt(process.env.TINA4_SESSION_MONGO_PORT, 10)
         : 27017);
+    // Canonical TINA4_SESSION_MONGO_URI; TINA4_SESSION_MONGO_URL is a legacy alias.
     this.uri = config?.uri
       ?? process.env.TINA4_SESSION_MONGO_URI
+      ?? process.env.TINA4_SESSION_MONGO_URL
       ?? "";
     this.username = config?.username
       ?? process.env.TINA4_SESSION_MONGO_USERNAME

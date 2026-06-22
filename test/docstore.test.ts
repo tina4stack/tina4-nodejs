@@ -281,6 +281,31 @@ console.log("\n--- serverless selection ---");
   rmSync(tmp, { recursive: true, force: true });
 }
 
+// ── session-Mongo env-var parity (canonical _URI, legacy _URL alias) ─────────
+console.log("\n--- session-Mongo env parity ---");
+{
+  const prevUri = process.env.TINA4_MONGO_URI;
+  const prevSess = process.env.TINA4_SESSION_MONGO_URI;
+  const prevSessUrl = process.env.TINA4_SESSION_MONGO_URL;
+  delete process.env.TINA4_MONGO_URI;
+  delete process.env.TINA4_SESSION_MONGO_URI;
+  delete process.env.TINA4_SESSION_MONGO_URL;
+
+  // Canonical TINA4_SESSION_MONGO_URI resolves.
+  process.env.TINA4_SESSION_MONGO_URI = "mongodb://uri-host/db";
+  assert("session _URI is read (not serverless)", isServerless() === false);
+
+  // Legacy TINA4_SESSION_MONGO_URL still resolves (back-compat alias).
+  delete process.env.TINA4_SESSION_MONGO_URI;
+  process.env.TINA4_SESSION_MONGO_URL = "mongodb://url-host/db";
+  assert("legacy session _URL still resolves (not serverless)", isServerless() === false);
+
+  // restore
+  if (prevUri === undefined) delete process.env.TINA4_MONGO_URI; else process.env.TINA4_MONGO_URI = prevUri;
+  if (prevSess === undefined) delete process.env.TINA4_SESSION_MONGO_URI; else process.env.TINA4_SESSION_MONGO_URI = prevSess;
+  if (prevSessUrl === undefined) delete process.env.TINA4_SESSION_MONGO_URL; else process.env.TINA4_SESSION_MONGO_URL = prevSessUrl;
+}
+
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
 console.log(`${"=".repeat(50)}\n`);
