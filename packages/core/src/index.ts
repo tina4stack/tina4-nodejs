@@ -135,7 +135,7 @@ export type {
 export {
   McpServer, mcpTool, mcpResource, registerDevTools, getDefaultDevServer,
   encodeResponse, encodeError, encodeNotification, decodeRequest,
-  schemaFromParams, isLocalhost, mcpEnabled, mcpPort,
+  schemaFromParams, isLocalhost, isLoopback, mcpEnabled, isRequestAllowed, mcpPort,
   PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR,
 } from "./mcp.js";
 export type { JsonRpcMessage, McpToolDefinition, McpResourceDefinition, JsonSchema, McpToolParam } from "./mcp.js";

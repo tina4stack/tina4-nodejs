@@ -1,16 +1,18 @@
 /**
- * MCP enable-gate tests — the remote/localhost guard on the /__dev/mcp endpoint.
+ * MCP capability-gate tests — mcpEnabled() after the 3.13.40 split.
  * Run with: npx tsx test/mcpGate.test.ts
  *
  * Canonical semantics (Python master tina4_python.mcp.is_enabled()):
  *   explicit = TINA4_MCP
  *   if explicit set and non-empty: return truthy(explicit)   # ANY host
- *   if not truthy(TINA4_DEBUG): return false
- *   return isLocalhost() OR truthy(TINA4_MCP_REMOTE)          # dev = localhost-only
+ *   return truthy(TINA4_DEBUG)                                # host-INDEPENDENT
  *
- * WHY this matters: the MCP dev tools expose powerful operations (DB query,
- * file read/WRITE, route listing). On a non-localhost TINA4_DEBUG=true
- * deployment they must NOT auto-expose without an explicit opt-in.
+ * mcpEnabled() is now a pure CAPABILITY gate — it no longer consults the host.
+ * A remote caller is stopped by the per-request gate (isRequestAllowed, see
+ * mcpSecurity.test.ts), not by flipping the capability off on a public host.
+ * This file locks the capability predicate; the regression guard is that a
+ * 0.0.0.0 host no longer flips it (the old isLocalhost-based gate treated
+ * 0.0.0.0 as local, which is exactly what exposed the dev tools).
  */
 import { mcpEnabled } from "@tina4/core";
 
@@ -39,17 +41,18 @@ function setEnv(env: Partial<Record<(typeof KEYS)[number], string>>) {
 
 console.log("MCP Enable-Gate Matrix");
 
-// 1. Localhost dev (default port host) → enabled.
+// 1. Localhost dev → enabled.
 setEnv({ TINA4_DEBUG: "true", TINA4_HOST_NAME: "localhost:7148" });
 assert("localhost + debug → enabled", mcpEnabled() === true);
 
-// 2. Remote host + debug, no remote opt-in → DISABLED (the security gap this closes).
+// 2. Remote host + debug → ENABLED (capability is host-independent now).
 setEnv({ TINA4_DEBUG: "true", TINA4_HOST_NAME: "myserver.example.com:7148" });
-assert("remote + debug, no opt-in → disabled", mcpEnabled() === false);
+assert("remote + debug → capability enabled (host-independent)", mcpEnabled() === true);
 
-// 3. Remote host + debug + TINA4_MCP_REMOTE=true → enabled (documented escape hatch).
-setEnv({ TINA4_DEBUG: "true", TINA4_HOST_NAME: "myserver.example.com:7148", TINA4_MCP_REMOTE: "true" });
-assert("remote + debug + MCP_REMOTE → enabled", mcpEnabled() === true);
+// 3. A configured 0.0.0.0 host does NOT flip the gate (regression — old code
+//    routed mcpEnabled through isLocalhost which treated 0.0.0.0 as local).
+setEnv({ TINA4_DEBUG: "true", TINA4_HOST_NAME: "0.0.0.0:7148" });
+assert("0.0.0.0 host + debug → enabled (host ignored)", mcpEnabled() === true);
 
 // 4. Explicit TINA4_MCP=true on a remote, debug-OFF host → enabled (sysadmin opt-in, any host).
 setEnv({ TINA4_MCP: "true", TINA4_HOST_NAME: "myserver.example.com:7148" });
@@ -63,13 +66,7 @@ assert("explicit MCP=false on localhost+debug → disabled", mcpEnabled() === fa
 setEnv({ TINA4_HOST_NAME: "localhost:7148" });
 assert("no debug, no explicit → disabled", mcpEnabled() === false);
 
-// Extra coverage — the localhost set members all auto-enable under debug.
-for (const host of ["127.0.0.1:7148", "0.0.0.0:7148", "::1", ""]) {
-  setEnv({ TINA4_DEBUG: "true", TINA4_HOST_NAME: host });
-  assert(`localhost-set host "${host}" + debug → enabled`, mcpEnabled() === true);
-}
-
-// Extra coverage — TINA4_MCP_REMOTE alone (no debug) does NOT enable.
+// Extra coverage — TINA4_MCP_REMOTE alone (no debug) does NOT enable the capability.
 setEnv({ TINA4_MCP_REMOTE: "true", TINA4_HOST_NAME: "myserver.example.com:7148" });
 assert("MCP_REMOTE without debug → disabled", mcpEnabled() === false);
 

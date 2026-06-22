@@ -187,6 +187,14 @@ export function schemaFromParams(params: McpToolParam[]): JsonSchema {
 
 // ── Localhost detection ──────────────────────────────────────
 
+/**
+ * Informational only — whether the CONFIGURED host looks local.
+ *
+ * NOT the security gate. Reads `TINA4_HOST_NAME` (the configured bind address),
+ * which on a 0.0.0.0 bind looks "local" while still accepting remote clients.
+ * Trust decisions use {@link isRequestAllowed} with the RAW socket peer instead.
+ * Kept for diagnostics / back-compat.
+ */
 export function isLocalhost(): boolean {
   const hostEnv = process.env.TINA4_HOST_NAME || "localhost:7148";
   const host = hostEnv.split(":")[0];
@@ -202,35 +210,61 @@ function envTruthy(val: string | undefined): boolean {
 }
 
 /**
- * Whether the built-in MCP dev tools / `/__dev/mcp` endpoint should be enabled.
+ * Whether an address is a loopback (in-process / same-host) peer.
  *
- * Resolution order (highest priority first), matching Python master
- * `tina4_python.mcp.is_enabled()`:
- *   1. `TINA4_MCP` — explicit on/off override, honoured on ANY host. An
- *      explicit truthy value opts a remote / debug-disabled deployment in
- *      (e.g. for a remote AI assistant); an explicit falsy value force-disables
- *      it everywhere.
- *   2. `TINA4_DEBUG=true` — implicit on for dev, but LOCALHOST-ONLY unless
- *      `TINA4_MCP_REMOTE=true`. The MCP dev tools expose powerful operations
- *      (DB query, file read/WRITE, route listing), so they never auto-expose on
- *      a non-localhost host without an explicit opt-in.
+ * Operates on the RAW socket peer, never X-Forwarded-For. Empty/undefined means
+ * an in-process / synthetic request (no socket) and is trusted. The `::ffff:`
+ * IPv4-mapped prefix is stripped. NOTE: 0.0.0.0 is a BIND address, never a
+ * client address, so it is deliberately NOT loopback.
+ *
+ * Python master parity: tina4_python.mcp.is_loopback.
+ */
+export function isLoopback(ip: string | undefined | null): boolean {
+  if (ip == null || ip === "") return true;
+  let addr = ip.trim().toLowerCase();
+  if (addr.startsWith("::ffff:")) addr = addr.slice(7);
+  return addr === "::1" || addr === "localhost" || addr.startsWith("127.");
+}
+
+/**
+ * Capability gate — whether MCP may run at all.
+ *
+ * Pure capability, host-INDEPENDENT (Python master parity):
+ *   1. `TINA4_MCP` explicit on/off override (sysadmin, any host).
+ *   2. Else `TINA4_DEBUG=true` → MCP is a capability of this deployment.
  *   3. Otherwise off.
  *
- * Wired in v3.13.39: previously this was `TINA4_MCP` else `TINA4_DEBUG`, with
- * `isLocalhost()` unused for the gate and `TINA4_MCP_REMOTE` read by zero code
- * — so the documented localhost guard was not actually enforced and a
- * non-localhost `TINA4_DEBUG=true` deployment auto-exposed the dev tools.
+ * This NO LONGER consults the host. A debug box bound to 0.0.0.0 still "has"
+ * the capability, but {@link isRequestAllowed} decides whether a given CALLER
+ * may use it — loopback always, remote only with an explicit opt-in plus a
+ * valid token. Splitting capability from per-request authorisation closes the
+ * hole where a 0.0.0.0 bind auto-exposed DB/file tools to remote
+ * unauthenticated callers (the pre-3.13.40 isLocalhost() treated 0.0.0.0 local).
  */
 export function mcpEnabled(): boolean {
   const explicit = process.env.TINA4_MCP;
   if (explicit !== undefined && explicit.trim() !== "") {
     return envTruthy(explicit);
   }
-  if (!envTruthy(process.env.TINA4_DEBUG)) {
-    return false;
-  }
-  // Dev auto-enable: localhost only, unless explicitly opted into remote.
-  return isLocalhost() || envTruthy(process.env.TINA4_MCP_REMOTE);
+  return envTruthy(process.env.TINA4_DEBUG);
+}
+
+/**
+ * Per-request authorisation — whether THIS caller may use MCP.
+ *
+ * @param remoteIp        Raw socket peer (`req.socket.remoteAddress`), never XFF.
+ * @param hasValidToken   True when the request carried a token matching TINA4_MCP_TOKEN.
+ *
+ * Rules (Python master parity, tina4_python.mcp.is_request_allowed):
+ *   - Capability off ({@link mcpEnabled} false) → deny.
+ *   - Loopback peer → allow.
+ *   - Remote peer → only when TINA4_MCP_REMOTE is truthy AND a valid token was
+ *     presented. No configured token ⇒ remote can never pass.
+ */
+export function isRequestAllowed(remoteIp: string | undefined | null, hasValidToken = false): boolean {
+  if (!mcpEnabled()) return false;
+  if (isLoopback(remoteIp)) return true;
+  return envTruthy(process.env.TINA4_MCP_REMOTE) && hasValidToken;
 }
 
 /**
@@ -620,8 +654,29 @@ export function mcpResource(
  */
 function safePath(projectRoot: string, relPath: string): string {
   const resolved = path.resolve(projectRoot, relPath);
-  if (!resolved.startsWith(projectRoot)) {
+  // Compare against root + separator, not a bare prefix: a plain
+  // startsWith(projectRoot) also accepts a sibling like "<root>-evil".
+  // path.resolve collapses ".." so a climb-out lands outside root.
+  const rootPrefix = projectRoot.endsWith(path.sep) ? projectRoot : projectRoot + path.sep;
+  if (resolved !== projectRoot && !resolved.startsWith(rootPrefix)) {
     throw new Error(`Path escapes project directory: ${relPath}`);
+  }
+  // Belt-and-braces against symlink escapes: if the path exists, canonicalise
+  // it and re-check containment. A symlink inside the tree pointing outside
+  // would otherwise slip past the textual check. New paths (parent not yet
+  // created) have no realpath and rely on the resolve() containment above.
+  let real: string | null = null;
+  try {
+    real = fs.realpathSync(resolved);
+  } catch {
+    real = null; // not created yet — textual guard above holds
+  }
+  if (real !== null) {
+    const realRoot = fs.realpathSync(projectRoot);
+    const realPrefix = realRoot.endsWith(path.sep) ? realRoot : realRoot + path.sep;
+    if (real !== realRoot && !real.startsWith(realPrefix)) {
+      throw new Error(`Path escapes project directory: ${relPath}`);
+    }
   }
   return resolved;
 }
@@ -865,8 +920,22 @@ export function registerDevTools(server: McpServer): void {
       try {
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
-        const params = typeof args.params === "string" ? JSON.parse(args.params as string) : (args.params || []);
-        const result = await db.fetch(args.sql as string, params);
+        let params = typeof args.params === "string" ? JSON.parse(args.params as string) : (args.params || []);
+        if (!Array.isArray(params)) params = [];
+        // Defense-in-depth: this tool is read-only. Strip comments, reject
+        // multiple statements, and require a leading SELECT/WITH so it can never
+        // mutate data even if reached (database_execute is the write surface,
+        // gated separately). Mirrors the Python master.
+        const cleaned = (args.sql as string)
+          .replace(/--[^\r\n]*/g, " ")
+          .replace(/\/\*[\s\S]*?\*\//g, " ")
+          .trim()
+          .replace(/[;\s]+$/, "");
+        if (cleaned.includes(";")) return { error: "database_query rejects multiple statements" };
+        if (!/^(select|with)\b/i.test(cleaned)) {
+          return { error: "database_query is read-only (SELECT/WITH only)" };
+        }
+        const result = await db.fetch(cleaned, params);
         return { records: result.records || [], count: result.count || 0 };
       } catch (e) {
         return { error: (e as Error).message };
@@ -921,7 +990,14 @@ export function registerDevTools(server: McpServer): void {
       try {
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
-        return (await db.getColumns?.(args.table as string)) ?? [];
+        // Constrain the table name to a safe identifier (optionally
+        // schema-qualified) — defense-in-depth so it can never be abused for
+        // injection even if an adapter interpolates it. Parity with Python/PHP.
+        const table = String(args.table ?? "");
+        if (!/^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?$/.test(table)) {
+          return { error: "Invalid table name" };
+        }
+        return (await db.getColumns?.(table)) ?? [];
       } catch (e) {
         return { error: (e as Error).message };
       }

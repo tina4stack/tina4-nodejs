@@ -14,12 +14,13 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, copyFi
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Router } from "./router.js";
-import type { RouteHandler } from "./types.js";
+import type { RouteHandler, Tina4Request } from "./types.js";
 import { DevMailbox } from "./devMailbox.js";
 import { isTruthy } from "./dotenv.js";
 import { quickMetrics, fullAnalysis, fileDetail } from "./metrics.js";
 import { registerFeedbackRoutes } from "./feedback.js";
-import { getDefaultDevServer, mcpEnabled } from "./mcp.js";
+import { getDefaultDevServer, mcpEnabled, isRequestAllowed } from "./mcp.js";
+import { timingSafeEqual } from "node:crypto";
 
 const cpuCount = osCpus().length;
 
@@ -2151,7 +2152,47 @@ const handleGitStatus: RouteHandler = async (_req, res) => {
   }
 };
 
-const handleMcpTools: RouteHandler = async (_req, res) => {
+/** Constant-time string compare (length-guarded so timingSafeEqual never throws). */
+function mcpSecureEqual(expected: string, provided: string): boolean {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(provided);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+/**
+ * Whether the request carried a token matching TINA4_MCP_TOKEN (fallback
+ * TINA4_API_KEY). Transports: Authorization Bearer / X-MCP-Token / X-Api-Key.
+ * No configured token ⇒ a remote caller can never present a valid one.
+ */
+function mcpTokenOk(req: Tina4Request): boolean {
+  let expected = process.env.TINA4_MCP_TOKEN;
+  if (!expected) expected = process.env.TINA4_API_KEY;
+  if (!expected) return false;
+  let provided = "";
+  const auth = req.header("authorization") ?? "";
+  if (auth.toLowerCase().startsWith("bearer ")) provided = auth.slice(7).trim();
+  if (!provided) provided = req.header("x-mcp-token") ?? "";
+  if (!provided) provided = req.header("x-api-key") ?? "";
+  if (!provided) return false;
+  return mcpSecureEqual(expected, provided);
+}
+
+/**
+ * Per-request MCP authorisation using the RAW socket peer (never X-Forwarded-For,
+ * which is spoofable). Loopback is always allowed; a remote caller needs
+ * TINA4_MCP_REMOTE=true plus a valid token. Mirrors the Python/PHP/Ruby gate.
+ */
+function mcpRequestAllowed(req: Tina4Request): boolean {
+  const peer = (req as unknown as { socket?: { remoteAddress?: string } }).socket?.remoteAddress ?? "";
+  return isRequestAllowed(peer, mcpTokenOk(req));
+}
+
+const handleMcpTools: RouteHandler = async (req, res) => {
+  if (!mcpRequestAllowed(req)) {
+    res.json({ tools: [], error: "MCP forbidden" }, 404);
+    return;
+  }
   try {
     // Ensure the default /__dev/mcp server exists with its dev tools registered,
     // then enumerate every registered MCP server instance (app-defined servers
@@ -2172,6 +2213,10 @@ const handleMcpTools: RouteHandler = async (_req, res) => {
 };
 
 const handleMcpCall: RouteHandler = async (req, res) => {
+  if (!mcpRequestAllowed(req)) {
+    res.json({ error: "MCP forbidden" }, 404);
+    return;
+  }
   const body = (req.body as Record<string, unknown>) || {};
   const name = (body.name as string) || "";
   const args = (body.arguments as Record<string, unknown>) || {};
@@ -2203,6 +2248,10 @@ const handleMcpCall: RouteHandler = async (req, res) => {
  * clients connect without a token.
  */
 const handleMcpMessage: RouteHandler = async (req, res) => {
+  if (!mcpRequestAllowed(req)) {
+    res.json({ error: "MCP forbidden" }, 404);
+    return;
+  }
   try {
     const { getDefaultDevServer } = await import("./mcp.js");
     const server = getDefaultDevServer();
@@ -2233,6 +2282,10 @@ const handleMcpMessage: RouteHandler = async (req, res) => {
  * the Python v3 fix. Content-Type text/event-stream, status 200.
  */
 const handleMcpSse: RouteHandler = async (req, res) => {
+  if (!mcpRequestAllowed(req)) {
+    res.json({ error: "MCP forbidden" }, 404);
+    return;
+  }
   // req.path is the path only (no query); turn /__dev/mcp/sse into the message
   // endpoint /__dev/mcp/message that the client should POST to.
   const reqPath = req.path || "/__dev/mcp/sse";
