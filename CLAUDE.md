@@ -1,4 +1,4 @@
-# CLAUDE.md — AI Developer Guide for tina4-nodejs (v3.13.37)
+# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.40)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
@@ -117,6 +117,10 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `fakeData.ts` — Core fake data generator (names, emails, addresses, UUIDs, etc.)
 - `constants.ts` — HTTP status codes (`HTTP_OK`, `HTTP_NOT_FOUND`, etc.) and content types (`APPLICATION_JSON`, `TEXT_HTML`, etc.)
 - `devAdmin.ts` — Dev toolbar (fixed bottom bar injected into HTML pages) and admin dashboard at `/_dev/`
+- `mcp.ts` - Model Context Protocol server (mounted by `devAdmin.ts` at `/__dev/mcp`) for live AI access to project tools. **MCP environment (read by `mcp.ts` / `devAdmin.ts`):**
+  - `TINA4_MCP` / `TINA4_DEBUG` - capability gate (whether MCP is enabled at all). Explicit `TINA4_MCP` true/false wins on any host; else `TINA4_DEBUG=true` enables it.
+  - `TINA4_MCP_TOKEN` - bearer token authorising a REMOTE MCP request (fallback `TINA4_API_KEY`). Accepted as `Authorization: Bearer`, `X-MCP-Token`, or `X-Api-Key`. With no token configured a remote caller is always denied. Loopback callers never need it.
+  - `TINA4_MCP_REMOTE` - set `true` to allow non-loopback MCP callers at all (still requires a valid token).
 - `auth.ts` — Authentication helpers
 - `cache.ts` — In-memory caching
 - `session.ts` — Session management with pluggable handlers. `TINA4_SESSION_SAMESITE` env var (default: Lax)
@@ -258,11 +262,19 @@ queue.consume(topic?, id?, pollInterval=1000): AsyncGenerator<QueueJob>
 ```
 
 ### @tina4/swagger (`packages/swagger/`)
-Auto-generates OpenAPI 3.0 docs.
+Auto-generates OpenAPI 3.0.3 docs.
 
 **Key files:**
 - `generator.ts` — Produces OpenAPI spec from route table + model definitions
 - `ui.ts` — Serves Swagger UI HTML (CDN-based) at `/swagger` and spec at `/swagger/openapi.json`
+
+**3.13.40 spec behaviour:** ORM models become reusable `components.schemas` entries referenced by `$ref` (no more inlined duplicate shapes); a secured route emits a `bearerAuth` security requirement; the spec is OpenAPI 3.0.3.
+
+**Environment (read by `generator.ts` / `ui.ts`):**
+- `TINA4_SWAGGER_ENABLED` - turns the `/swagger` UI + `/swagger/openapi.json` endpoints on/off (`ui.ts`). Explicit `true`/`false` wins; unset falls back to `TINA4_DEBUG`. Set `false` to DISABLE swagger in ANY environment (including dev); set `true` to expose it in production. This is the documented production on/off switch (wired for real in 3.13.40 - previously ignored). **This is how you disable swagger.**
+- `TINA4_SWAGGER_SERVERS` - comma-separated list of server URLs for the OpenAPI `servers[]` block (multi-server / multi-environment). Falls back to `SWAGGER_DEV_URL`, else the framework default.
+- `TINA4_SWAGGER_UI_CDN` - base URL for the Swagger UI assets (`swagger-ui.css` + `swagger-ui-bundle.js`). Defaults to the public CDN (`https://unpkg.com/swagger-ui-dist@5`); point it at a self-hosted mirror for air-gapped deployments.
+- Info block: `TINA4_SWAGGER_TITLE`, `TINA4_SWAGGER_VERSION`, `TINA4_SWAGGER_DESCRIPTION`, `TINA4_SWAGGER_CONTACT_EMAIL`, `TINA4_SWAGGER_CONTACT_TEAM`, `TINA4_SWAGGER_CONTACT_URL`, `TINA4_SWAGGER_LICENSE`.
 
 ### @tina4/frond (`packages/frond/`)
 Built-in zero-dependency Twig-compatible template engine (the only template engine; there is no `twig` npm dependency).
