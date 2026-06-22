@@ -29,7 +29,10 @@ import { isTruthy } from "./dotenv.js";
 /** Actionable blank-secret warning — emitted from both the bootstrap (CI/prod) and the lazy resolvers. */
 const BLANK_SECRET_WARNING =
   "Auth: TINA4_SECRET is not set — JWT signing is insecure. Set TINA4_SECRET to a random " +
-  "value (e.g. `openssl rand -hex 32`) in your environment or .env before serving traffic.";
+  "value (e.g. `openssl rand -hex 32`) in your environment or .env before serving traffic. " +
+  "For LOCAL DEV, set TINA4_DEBUG=true and a per-machine secret is generated automatically " +
+  "into .env.local (gitignored). Seeing this warning means the run was NOT detected as dev — " +
+  "typically a container or CI without TINA4_DEBUG set, or TINA4_ENV=production.";
 
 /** True when running under CI — the de-facto `CI` env var (set by every major CI). */
 function _isCi(): boolean {

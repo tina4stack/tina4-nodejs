@@ -58,6 +58,16 @@ export { FakeData } from "./fakeData.js";
 export { seedTable, seedOrm, seedModels } from "./seeder.js";
 export type { SeedSummary, SeedOptions } from "./seeder.js";
 
+// DocStore — pymongo-style document store with a zero-config SQLite (JSON1) fallback
+export {
+  ObjectId, InvalidId, SqliteDatabase, SqliteCollection, Cursor,
+  getCollection, isServerless, resetDefaultStore,
+  encodeValue, decodeValue, compileFilter,
+} from "./docstore.js";
+export type {
+  InsertOneResult, InsertManyResult, UpdateResult, DeleteResult,
+} from "./docstore.js";
+
 // Database adapters
 export { SQLiteAdapter } from "./adapters/sqlite.js";
 export { PostgresAdapter } from "./adapters/postgres.js";
