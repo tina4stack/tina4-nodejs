@@ -182,6 +182,73 @@ const catchAllRoutes: RouteDefinition[] = [
 const catchSpec = generate(catchAllRoutes, []);
 assert("catch-all route converted to {path}", "/api/files/{path}" in catchSpec.paths);
 
+// --- v3.13.40: Security ---
+console.log("\n--- Security (v3.13.40) ---");
+
+assert("bearerAuth scheme defined", (spec.components as Record<string, Record<string, Record<string, unknown>>>)?.securitySchemes?.bearerAuth?.scheme === "bearer");
+const postSec = (spec.paths["/api/users"]?.post as Record<string, unknown>)?.security as Array<Record<string, unknown>>;
+assert("POST is secured by default", Array.isArray(postSec) && postSec[0]?.bearerAuth !== undefined);
+assert("GET is not secured by default", (spec.paths["/api/users"]?.get as Record<string, unknown>)?.security === undefined);
+
+const noAuthSpec = generate([{ method: "POST", pattern: "/api/webhook", handler: async () => {}, noAuth: true }], []);
+assert("noAuth write has no security", (noAuthSpec.paths["/api/webhook"]?.post as Record<string, unknown>)?.security === undefined);
+
+const secGetSpec = generate([{ method: "GET", pattern: "/api/admin", handler: async () => {}, secure: true }], []);
+assert("secured GET gets security", Array.isArray((secGetSpec.paths["/api/admin"]?.get as Record<string, unknown>)?.security));
+
+// --- v3.13.40: foreignKey + default ---
+console.log("\n--- foreignKey + default (v3.13.40) ---");
+
+const fkModels = [{
+  tableName: "posts",
+  fields: {
+    id: { type: "integer" as const, primaryKey: true, autoIncrement: true },
+    author_id: { type: "foreignKey" as const, references: "User" },
+    status: { type: "string" as const, default: "draft" },
+  },
+}];
+const fkSpec = generate([], fkModels);
+const postsProps = (fkSpec.components?.schemas?.posts as Record<string, Record<string, Record<string, unknown>>>)?.properties;
+assert("foreignKey field maps to integer", postsProps?.author_id?.type === "integer");
+assert("field default is mapped", postsProps?.status?.default === "draft");
+
+// --- v3.13.40: nested-path inference safety ---
+console.log("\n--- nested-path inference (v3.13.40) ---");
+
+const nestedSpec = generate([{ method: "POST", pattern: "/api/users/[id]/comments", handler: async () => {} }], models);
+const nestedPost = nestedSpec.paths["/api/users/{id}/comments"]?.post as Record<string, unknown>;
+assert("nested path does NOT attach parent model body", nestedPost?.requestBody === undefined);
+
+// --- v3.13.40: meta description/deprecated/example ---
+console.log("\n--- meta description/deprecated/example (v3.13.40) ---");
+
+const richSpec = generate([{ method: "POST", pattern: "/api/things", handler: async () => {}, meta: { description: "Create a thing", deprecated: true, example: { name: "x" } } }], []);
+const postThings = richSpec.paths["/api/things"]?.post as Record<string, unknown>;
+assert("meta description emitted", postThings?.description === "Create a thing");
+assert("meta deprecated emitted", postThings?.deprecated === true);
+const thingsBody = (postThings?.requestBody as Record<string, Record<string, Record<string, Record<string, unknown>>>>)?.content?.["application/json"]?.example as Record<string, unknown>;
+assert("meta example in requestBody", thingsBody?.name === "x");
+
+// --- v3.13.40: operationId + servers + tags[] ---
+console.log("\n--- operationId / servers / tags (v3.13.40) ---");
+
+assert("operationId present", typeof (spec.paths["/api/users"]?.get as Record<string, unknown>)?.operationId === "string");
+const dupSpec = generate([
+  { method: "GET", pattern: "/api/users/[id]", handler: async () => {} },
+  { method: "GET", pattern: "/api/users/id", handler: async () => {} },
+], []);
+const dupId1 = (dupSpec.paths["/api/users/{id}"]?.get as Record<string, unknown>)?.operationId;
+const dupId2 = (dupSpec.paths["/api/users/id"]?.get as Record<string, unknown>)?.operationId;
+assert("operationIds are unique", dupId1 !== dupId2);
+
+assert("spec has servers", Array.isArray(spec.servers) && spec.servers.length > 0);
+process.env.TINA4_SWAGGER_SERVERS = "https://a.test,https://b.test";
+const multiSpec = generate([], []);
+delete process.env.TINA4_SWAGGER_SERVERS;
+assert("multi-server from env", multiSpec.servers?.length === 2 && multiSpec.servers?.[0]?.url === "https://a.test");
+
+assert("top-level tags array", Array.isArray(spec.tags) && (spec.tags as Array<{ name: string }>).some((t) => t.name === "users"));
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

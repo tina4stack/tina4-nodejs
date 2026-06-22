@@ -12,9 +12,13 @@ interface OpenAPISpecInfo {
 interface OpenAPISpec {
   openapi: string;
   info: OpenAPISpecInfo;
+  servers?: { url: string }[];
   paths: Record<string, Record<string, unknown>>;
-  components?: { schemas?: Record<string, unknown> };
+  components?: { schemas?: Record<string, unknown>; securitySchemes?: Record<string, unknown> };
+  tags?: { name: string }[];
 }
+
+const WRITE_METHODS = new Set(["post", "put", "patch", "delete"]);
 
 export function generate(
   routes: RouteDefinition[],
@@ -26,12 +30,16 @@ export function generate(
     description: process.env.TINA4_SWAGGER_DESCRIPTION ?? "Auto-generated API documentation",
   };
 
-  // Optional contact email — surfaced in the OpenAPI `info.contact.email`
-  // field when set. Matches the python `SWAGGER_CONTACT_EMAIL` convention.
+  // Optional contact — email, plus name/url (the interface declares them; they
+  // were never populated before). Matches the python SWAGGER_CONTACT_* convention.
   const contactEmail = (process.env.TINA4_SWAGGER_CONTACT_EMAIL ?? "").trim();
-  if (contactEmail.length > 0) {
-    info.contact = { email: contactEmail };
-  }
+  const contactName = (process.env.TINA4_SWAGGER_CONTACT_TEAM ?? "").trim();
+  const contactUrl = (process.env.TINA4_SWAGGER_CONTACT_URL ?? "").trim();
+  const contact: { name?: string; url?: string; email?: string } = {};
+  if (contactName.length > 0) contact.name = contactName;
+  if (contactUrl.length > 0) contact.url = contactUrl;
+  if (contactEmail.length > 0) contact.email = contactEmail;
+  if (Object.keys(contact).length > 0) info.contact = contact;
 
   // Optional license — accepts a plain SPDX identifier ("MIT", "Apache-2.0")
   // or a "Name|URL" pair. Empty string disables license output entirely.
@@ -44,8 +52,16 @@ export function generate(
   const spec: OpenAPISpec = {
     openapi: "3.0.3",
     info,
+    servers: resolveServers(),
     paths: {},
-    components: { schemas: {} },
+    components: {
+      schemas: {},
+      // bearerAuth was never defined before — secured routes were documented
+      // identically to public ones (audit P1). Define it once and reference it.
+      securitySchemes: {
+        bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" },
+      },
+    },
   };
 
   // Generate schemas from models
@@ -53,6 +69,9 @@ export function generate(
     const schema = modelToSchema(model);
     spec.components!.schemas![model.tableName] = schema;
   }
+
+  const usedTags: string[] = [];
+  const seenIds = new Set<string>();
 
   // Generate paths from routes
   for (const route of routes) {
@@ -63,13 +82,22 @@ export function generate(
       spec.paths[openApiPath] = {};
     }
 
+    const tags = route.meta?.tags ?? inferTags(route.pattern);
+    for (const t of tags) {
+      if (!usedTags.includes(t)) usedTags.push(t);
+    }
+
     const operation: Record<string, unknown> = {
+      operationId: uniqueOperationId(method, openApiPath, seenIds),
       summary: route.meta?.summary ?? `${route.method} ${route.pattern}`,
-      tags: route.meta?.tags ?? inferTags(route.pattern),
+      tags,
       responses: route.meta?.responses ?? {
         "200": { description: "Successful response" },
       },
     };
+
+    if (route.meta?.description) operation.description = route.meta.description;
+    if (route.meta?.deprecated) operation.deprecated = true;
 
     // Add path parameters
     const pathParams = extractPathParams(route.pattern);
@@ -99,13 +127,13 @@ export function generate(
     if (method === "post" || method === "put") {
       const modelName = inferModelFromPath(route.pattern);
       if (modelName && models.some((m) => m.tableName === modelName)) {
+        const media: Record<string, unknown> = {
+          schema: { $ref: `#/components/schemas/${modelName}` },
+        };
+        if (route.meta?.example !== undefined) media.example = route.meta.example;
         operation.requestBody = {
           required: true,
-          content: {
-            "application/json": {
-              schema: { $ref: `#/components/schemas/${modelName}` },
-            },
-          },
+          content: { "application/json": media },
         };
 
         // Add response schema
@@ -115,13 +143,45 @@ export function generate(
             : { "200": { description: "Updated", content: { "application/json": { schema: { $ref: `#/components/schemas/${modelName}` } } } } }),
           "422": { description: "Validation failed" },
         };
+      } else if (route.meta?.example !== undefined) {
+        // Non-model body with an explicit example.
+        operation.requestBody = {
+          content: { "application/json": { schema: inferSchema(route.meta.example), example: route.meta.example } },
+        };
       }
+    }
+
+    // Security — a secured route emits operation.security + 401. Mirrors the
+    // router's enforcement (writes secure by default unless noAuth; GET secure
+    // only when marked). Before, no route ever got a security requirement.
+    if (routeRequiresAuth(route, method)) {
+      operation.security = [{ bearerAuth: [] }];
+      const responses = operation.responses as Record<string, unknown>;
+      if (!responses["401"]) responses["401"] = { description: "Unauthorized" };
     }
 
     spec.paths[openApiPath][method] = operation;
   }
 
+  if (usedTags.length > 0) {
+    spec.tags = usedTags.map((name) => ({ name }));
+  }
+
   return spec;
+}
+
+function routeRequiresAuth(route: RouteDefinition, method: string): boolean {
+  if (route.noAuth) return false;
+  if (WRITE_METHODS.has(method)) return true; // secure by default (router parity)
+  return route.secure === true;
+}
+
+function resolveServers(): { url: string }[] {
+  const raw = (process.env.TINA4_SWAGGER_SERVERS ?? "").trim();
+  const urls = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  if (urls.length > 0) return urls.map((url) => ({ url }));
+  const dev = (process.env.SWAGGER_DEV_URL ?? "").trim();
+  return dev.length > 0 ? [{ url: dev }] : [{ url: "/" }];
 }
 
 function modelToSchema(model: ModelDefinition): Record<string, unknown> {
@@ -171,13 +231,37 @@ function fieldToSchemaProperty(def: FieldDefinition): Record<string, unknown> {
       prop.type = "string";
       prop.format = "date-time";
       break;
+    case "foreignKey":
+      // A foreign-key column is an integer reference. Before, it had no case
+      // and produced an empty {} schema (audit P2).
+      prop.type = "integer";
+      break;
+    default:
+      prop.type = "string";
   }
 
+  if (def.default !== undefined) prop.default = def.default;
   if (def.primaryKey && def.autoIncrement) {
     prop.readOnly = true;
   }
 
   return prop;
+}
+
+function inferSchema(value: unknown): Record<string, unknown> {
+  if (Array.isArray(value)) {
+    return { type: "array", items: value.length > 0 ? inferSchema(value[0]) : {} };
+  }
+  if (value !== null && typeof value === "object") {
+    const properties: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      properties[k] = inferSchema(v);
+    }
+    return { type: "object", properties };
+  }
+  if (typeof value === "boolean") return { type: "boolean" };
+  if (typeof value === "number") return { type: Number.isInteger(value) ? "integer" : "number" };
+  return { type: "string" };
 }
 
 function patternToOpenAPI(pattern: string): string {
@@ -207,8 +291,27 @@ function inferTags(pattern: string): string[] {
 function inferModelFromPath(pattern: string): string | null {
   const parts = pattern.split("/").filter(Boolean);
   const apiIndex = parts.indexOf("api");
-  if (apiIndex !== -1 && parts[apiIndex + 1]) {
-    return parts[apiIndex + 1];
-  }
+  if (apiIndex === -1 || !parts[apiIndex + 1]) return null;
+  const candidate = parts[apiIndex + 1];
+  // Only a SIMPLE resource binds a model: /api/<model> or /api/<model>/[id].
+  // A deeper nested path (/api/users/[id]/comments) must NOT attach the parent
+  // resource's body/schema to the sub-resource endpoint (audit P2).
+  const rest = parts.slice(apiIndex + 2);
+  if (rest.length === 0) return candidate;
+  if (rest.length === 1 && /^[[{]\.{0,3}\w+[\]}]$/.test(rest[0])) return candidate;
   return null;
+}
+
+function uniqueOperationId(method: string, openApiPath: string, seen: Set<string>): string {
+  const base = (method + openApiPath.replace(/[/{}]/g, "_"))
+    .replace(/_+/g, "_")
+    .replace(/_$/, "");
+  let oid = base;
+  let n = 2;
+  while (seen.has(oid)) {
+    oid = `${base}_${n}`;
+    n += 1;
+  }
+  seen.add(oid);
+  return oid;
 }

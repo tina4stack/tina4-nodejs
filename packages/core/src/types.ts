@@ -134,6 +134,10 @@ export interface RouteMeta {
   description?: string;
   tags?: string[];
   responses?: Record<string, { description: string }>;
+  /** Request-body example surfaced in the OpenAPI requestBody. */
+  example?: unknown;
+  /** Marks the operation deprecated in the spec. */
+  deprecated?: boolean;
 }
 
 export interface Tina4Config {

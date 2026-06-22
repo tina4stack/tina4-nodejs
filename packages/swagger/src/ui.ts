@@ -1,11 +1,19 @@
 import type { Tina4Request, Tina4Response, RouteDefinition } from "@tina4/core";
 
+// The UI assets load from a CDN by default (a documented architecture decision —
+// we don't vendor ~1.4MB of swagger-ui-dist, to stay small). Air-gapped
+// deployments point TINA4_SWAGGER_UI_CDN at a self-hosted mirror (a base URL
+// serving swagger-ui.css + swagger-ui-bundle.js).
+function swaggerUiCdn(): string {
+  return (process.env.TINA4_SWAGGER_UI_CDN ?? "https://unpkg.com/swagger-ui-dist@5").replace(/\/+$/, "");
+}
+
 const SWAGGER_UI_HTML = (specUrl: string) => `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>Tina4 API Documentation</title>
-  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <link rel="stylesheet" href="${swaggerUiCdn()}/swagger-ui.css">
   <style>
     body { margin: 0; background: #fafafa; }
     .topbar { display: none !important; }
@@ -13,7 +21,7 @@ const SWAGGER_UI_HTML = (specUrl: string) => `<!DOCTYPE html>
 </head>
 <body>
   <div id="swagger-ui"></div>
-  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="${swaggerUiCdn()}/swagger-ui-bundle.js"></script>
   <script>
     SwaggerUIBundle({
       url: "${specUrl}",
