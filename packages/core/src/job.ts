@@ -40,6 +40,7 @@ export type QueueJob = JobData & JobLifecycle;
 export interface JobQueueBridge {
   _failJob(topic: string, job: QueueJob, reason: string, maxRetries: number): void;
   _retryJob(topic: string, job: QueueJob, delaySeconds?: number): void;
+  _completeJob(topic: string, job: QueueJob): void;
   getMaxRetries(): number;
 }
 
@@ -48,8 +49,11 @@ export function createJob(data: JobData, queue: JobQueueBridge): QueueJob {
   const job: QueueJob = {
     ...data,
     complete() {
-      // Terminal — the job was already removed from the queue on pop().
+      // Terminal — the pending file was claimed on pop and a reservation record
+      // written; complete() drops the reservation so a dead-consumer reclaim
+      // never re-delivers an already-acked job. The job is done.
       job.status = "completed";
+      queue._completeJob(job.topic, job);
     },
     fail(reason = "") {
       // Record a failed attempt. `attempts` is incremented exactly once, inside

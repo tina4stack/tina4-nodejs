@@ -27,6 +27,12 @@ import type { QueueJob } from "../queue.js";
 export interface KafkaConfig {
   brokers?: string;
   groupId?: string;
+  /**
+   * Accepted for API parity with the file/MongoDB backends and IGNORED —
+   * consumer-group offsets own redelivery, so the framework-level visibility
+   * timeout does not apply here.
+   */
+  visibilityTimeout?: number;
 }
 
 /**
@@ -134,7 +140,7 @@ export class KafkaBackend implements QueueBackend {
   /**
    * Resolved connection config — exposed for testing/introspection.
    */
-  getConfig(): Required<KafkaConfig> {
+  getConfig(): Required<Omit<KafkaConfig, "visibilityTimeout">> {
     return { brokers: this.brokers, groupId: this.groupId };
   }
 

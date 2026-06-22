@@ -24,9 +24,19 @@ import { createJob, type JobQueueBridge } from "../job.js";
 export class LiteBackend {
   private basePath: string;
   private seq: number = 0;
+  /**
+   * Reservation/visibility timeout (seconds). A popped job is held in reserved/
+   * with availableAt = now + visibilityTimeout. If the consumer dies before
+   * complete()/fail() (crash, OOM, k8s eviction) the next pop() reclaims it once
+   * the window expires — incrementing attempts and re-enqueuing, or
+   * dead-lettering past maxRetries. <= 0 disables the reclaim (a reservation
+   * then lasts until the consumer acks — the old at-most-once behaviour).
+   */
+  private visibilityTimeout: number;
 
-  constructor(basePath: string = "data/queue") {
+  constructor(basePath: string = "data/queue", visibilityTimeout: number = 300) {
     this.basePath = basePath;
+    this.visibilityTimeout = visibilityTimeout;
   }
 
   private ensureDir(queue: string): string {
@@ -39,6 +49,24 @@ export class LiteBackend {
     const dir = join(this.basePath, queue, "failed");
     mkdirSync(dir, { recursive: true });
     return dir;
+  }
+
+  private ensureReservedDir(queue: string): string {
+    const dir = join(this.basePath, queue, "reserved");
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  private reservedPath(queue: string, jobId: string): string {
+    return join(this.ensureReservedDir(queue), `${jobId}.queue-data`);
+  }
+
+  private nowIso(): string {
+    return new Date().toISOString();
+  }
+
+  private futureIso(seconds: number): string {
+    return new Date(Date.now() + seconds * 1000).toISOString();
   }
 
   private nextPrefix(): string {
@@ -111,22 +139,112 @@ export class LiteBackend {
     return candidates;
   }
 
-  pop(queue: string, bridge: JobQueueBridge): QueueJob | null {
-    const dir = this.ensureDir(queue);
-    const now = new Date().toISOString();
+  /**
+   * Persist a reservation record so a dead consumer's job is reclaimable.
+   *
+   * Stores reservedAt + availableAt = now + visibilityTimeout. The next pop()
+   * reclaims this job once availableAt has passed (see reclaimExpired).
+   * complete()/fail()/retry() delete the record.
+   */
+  private writeReserved(queue: string, job: any): void {
+    const now = this.nowIso();
+    const vt = this.visibilityTimeout || 0;
+    const record = {
+      id: job.id,
+      payload: job.payload,
+      status: "reserved" as const,
+      priority: job.priority ?? 0,
+      attempts: job.attempts ?? 0,
+      error: job.error,
+      reservedAt: now,
+      availableAt: vt > 0 ? this.futureIso(vt) : now,
+      createdAt: job.createdAt ?? now,
+      topic: job.topic ?? queue,
+    };
+    writeFileSync(this.reservedPath(queue, record.id), JSON.stringify(record, null, 2));
+  }
 
-    for (const [filename, job] of this.availableCandidates(queue, now)) {
-      const filePath = join(dir, filename);
-      // Claim the job by deleting the file.
+  /**
+   * Return expired reservations to the queue (at-least-once delivery).
+   *
+   * A reserved job whose availableAt <= now means its consumer never
+   * acknowledged in time (crash / OOM / pod eviction). Atomically claim it
+   * (delete the reservation file), increment attempts, and either re-enqueue it
+   * (so the next pop picks it up) or dead-letter it once it has hit maxRetries.
+   * Disabled when visibilityTimeout <= 0.
+   */
+  private reclaimExpired(queue: string, maxRetries: number, now: string): void {
+    if (!this.visibilityTimeout || this.visibilityTimeout <= 0) return;
+    const reservedDir = this.ensureReservedDir(queue);
+
+    let filenames: string[];
+    try {
+      filenames = readdirSync(reservedDir).filter(f => f.endsWith(".queue-data"));
+    } catch {
+      return;
+    }
+
+    for (const filename of filenames) {
+      const filePath = join(reservedDir, filename);
+      let record: any;
+      try {
+        record = JSON.parse(readFileSync(filePath, "utf-8"));
+      } catch {
+        continue;
+      }
+      if (record.availableAt && record.availableAt > now) continue; // still valid
+      // Atomically claim the expired reservation by deleting its file.
       try {
         unlinkSync(filePath);
       } catch {
-        continue; // Already consumed by another worker
+        continue; // another worker reclaimed it first
+      }
+
+      const attempts = (record.attempts ?? 0) + 1;
+      const error = "reservation timed out — consumer did not acknowledge within the visibility timeout";
+      const job: QueueJob = {
+        id: record.id,
+        payload: record.payload,
+        status: "reserved",
+        createdAt: record.createdAt ?? now,
+        attempts,
+        delayUntil: null,
+        priority: record.priority ?? 0,
+        topic: record.topic ?? queue,
+        error,
+      } as QueueJob;
+
+      if (attempts >= maxRetries) {
+        this.deadLetter(queue, job, error);
+      } else {
+        this.requeue(queue, job, 0, error);
+      }
+    }
+  }
+
+  pop(queue: string, bridge: JobQueueBridge): QueueJob | null {
+    const dir = this.ensureDir(queue);
+    // First return any reservations whose consumer died mid-flight.
+    this.reclaimExpired(queue, bridge.getMaxRetries(), this.nowIso());
+    const now = this.nowIso();
+
+    for (const [filename, job] of this.availableCandidates(queue, now)) {
+      const filePath = join(dir, filename);
+      job.topic = queue;
+      job.priority = job.priority ?? 0;
+      // Write the reservation BEFORE claiming the pending file, so a crash
+      // between claim and reserve can never strand the job. Only the worker
+      // that wins the unlink owns — and returns — it.
+      this.writeReserved(queue, job);
+      try {
+        unlinkSync(filePath);
+      } catch {
+        // Already consumed by another worker — drop the speculative reservation.
+        try { unlinkSync(this.reservedPath(queue, job.id)); } catch { /* ignore */ }
+        continue;
       }
 
       job.status = "reserved";
-      job.topic = queue;
-      job.priority = job.priority ?? 0;
       return createJob(job as any, bridge);
     }
 
@@ -135,25 +253,47 @@ export class LiteBackend {
 
   popBatch(queue: string, bridge: JobQueueBridge, count: number): QueueJob[] {
     const dir = this.ensureDir(queue);
-    const now = new Date().toISOString();
+    this.reclaimExpired(queue, bridge.getMaxRetries(), this.nowIso());
+    const now = this.nowIso();
     const results: QueueJob[] = [];
 
     for (const [filename, job] of this.availableCandidates(queue, now)) {
       if (results.length >= count) break;
       const filePath = join(dir, filename);
+      job.topic = queue;
+      job.priority = job.priority ?? 0;
+      this.writeReserved(queue, job);
       try {
         unlinkSync(filePath);
       } catch {
+        try { unlinkSync(this.reservedPath(queue, job.id)); } catch { /* ignore */ }
         continue; // Already consumed by another worker
       }
 
       job.status = "reserved";
-      job.topic = queue;
-      job.priority = job.priority ?? 0;
       results.push(createJob(job as any, bridge));
     }
 
     return results;
+  }
+
+  /**
+   * Delete a job's reservation record (best-effort).
+   */
+  private clearReservation(queue: string, jobId: string): void {
+    try {
+      unlinkSync(this.reservedPath(queue, jobId));
+    } catch {
+      // no reservation record — nothing to clear
+    }
+  }
+
+  /**
+   * Acknowledge a completed job — drop its reservation record so the visibility
+   * reclaim never re-delivers an already-acked job.
+   */
+  completeJob(queue: string, job: QueueJob): void {
+    this.clearReservation(queue, job.id);
   }
 
   // Status aliases that live in the failed/ directory (dead-lettered jobs)
@@ -162,7 +302,12 @@ export class LiteBackend {
 
   size(queue: string, status: string = "pending"): number {
     const isDead = LiteBackend.DEAD_STATES.includes(status);
-    const scanDir = isDead ? this.ensureFailedDir(queue) : this.ensureDir(queue);
+    const isReserved = status === "reserved";
+    const scanDir = isDead
+      ? this.ensureFailedDir(queue)
+      : isReserved
+        ? this.ensureReservedDir(queue)
+        : this.ensureDir(queue);
 
     let files: string[];
     try {
@@ -171,9 +316,9 @@ export class LiteBackend {
       return 0;
     }
 
-    if (isDead) {
-      // Every file in failed/ is a dead-letter; count them all regardless of
-      // the exact stored status string.
+    if (isDead || isReserved) {
+      // Every file in failed/ (or reserved/) matches the requested status;
+      // count them all regardless of the exact stored status string.
       return files.length;
     }
 
@@ -209,6 +354,20 @@ export class LiteBackend {
         const files = readdirSync(failedDir).filter(f => f.endsWith(".queue-data"));
         for (const file of files) {
           unlinkSync(join(failedDir, file));
+          count++;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // Also clear reservation records.
+    const reservedDir = join(dir, "reserved");
+    try {
+      if (existsSync(reservedDir)) {
+        const files = readdirSync(reservedDir).filter(f => f.endsWith(".queue-data"));
+        for (const file of files) {
+          unlinkSync(join(reservedDir, file));
           count++;
         }
       }
@@ -416,7 +575,18 @@ export class LiteBackend {
 
       if (job.status !== "pending") continue;
       if (job.id === id) {
-        try { unlinkSync(filePath); } catch { /* already consumed */ }
+        job.topic = queue;
+        job.priority = job.priority ?? 0;
+        // Reserve (so a dead consumer's job is reclaimable) then claim the
+        // pending file — mirrors pop().
+        this.writeReserved(queue, job);
+        try {
+          unlinkSync(filePath);
+        } catch {
+          try { unlinkSync(this.reservedPath(queue, job.id)); } catch { /* ignore */ }
+          continue; // already consumed
+        }
+        job.status = "reserved";
         return job;
       }
     }
@@ -479,6 +649,8 @@ export class LiteBackend {
    * (attempts >= maxRetries) it is moved to the dead-letter store.
    */
   failJob(queue: string, job: QueueJob, error: string, maxRetries: number, retryBackoff: number = 0): void {
+    // Clear the reservation — the consumer acknowledged (with a failure).
+    this.clearReservation(queue, job.id);
     job.attempts = (job.attempts || 0) + 1;
     job.error = error;
     if (job.attempts < maxRetries) {
@@ -495,6 +667,8 @@ export class LiteBackend {
    * distinct from the automatic failJob() path.
    */
   retryJob(queue: string, job: QueueJob, delaySeconds?: number): void {
+    // Clear the reservation — the consumer acknowledged (with an explicit retry).
+    this.clearReservation(queue, job.id);
     job.attempts = (job.attempts || 0) + 1;
     job.error = undefined;
     this.requeue(queue, job, delaySeconds ?? 0, undefined);

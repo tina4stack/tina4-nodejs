@@ -742,6 +742,209 @@ console.log("\n--- Queue Isolation Contract ---");
   try { rmSync(pathTwo, { recursive: true, force: true }); } catch {}
 }
 
+// --- Visibility timeout / reservation reclaim (file backend) ---
+//
+// Regression lock for the production bug where a consumer that dies before
+// job.complete() left the message stuck forever — never re-delivered, never
+// retried, never dead-lettered. A popped job is now reserved for
+// visibilityTimeout seconds; if it is not acked in time the next pop()
+// reclaims it (incrementing attempts) or dead-letters it past maxRetries.
+// Deterministic: tiny visibilityTimeout + a short real sleep.
+console.log("\n--- Visibility Timeout / Reservation Reclaim ---");
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+await (async () => {
+  // (a) reserve-then-abandon is reclaimed after the timeout, attempts == 1
+  {
+    const p = join("/tmp", "tina4-vt-reclaim-" + Date.now());
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+    const q = new Queue({ topic: "vt", path: p, visibilityTimeout: 0.05 });
+    q.push({ job: "import" });
+    const job = q.pop();                            // consumer A reserves it
+    assert("vt: reserve returns a job", job !== null);
+    assert("vt: reserved job has attempts 0", job !== null && job.attempts === 0);
+    assert("vt: claimed out of pending", q.size("pending") === 0);
+    assert("vt: held as a reservation", q.size("reserved") === 1);
+
+    // Consumer A "dies" — never acks. After the window expires the next pop()
+    // reclaims the abandoned reservation.
+    await sleep(120);
+    const reclaimed = q.pop();
+    assert("vt: abandoned reservation reclaimed after timeout", reclaimed !== null);
+    assert("vt: reclaimed payload preserved", reclaimed !== null && (reclaimed.payload as any).job === "import");
+    assert("vt: reclaim counted as one attempt", reclaimed !== null && reclaimed.attempts === 1);
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+  }
+
+  // (b) NOT reclaimed before the timeout (second consumer gets nothing)
+  {
+    const p = join("/tmp", "tina4-vt-notyet-" + Date.now());
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+    const q = new Queue({ topic: "vt", path: p, visibilityTimeout: 30 });
+    q.push({ job: "import" });
+    assert("vt: pop reserves the job", q.pop() !== null);
+    assert("vt: reservation still valid -> second pop is null", q.pop() === null);
+    assert("vt: still one reservation", q.size("reserved") === 1);
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+  }
+
+  // (c) reclaim past maxRetries dead-letters instead of re-delivering
+  {
+    const p = join("/tmp", "tina4-vt-deadletter-" + Date.now());
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+    const q = new Queue({ topic: "vt", path: p, maxRetries: 1, visibilityTimeout: 0.05 });
+    q.push({ job: "import" });
+    assert("vt: reserve (attempts 0)", q.pop() !== null);
+    await sleep(120);
+    // Reclaim bumps attempts to 1 (>= maxRetries) -> dead-letter, not re-served.
+    assert("vt: past-max-retries reclaim does NOT re-deliver", q.pop() === null);
+    assert("vt: no reservation left after dead-letter", q.size("reserved") === 0);
+    const dead = q.deadLetters();
+    assert("vt: dead-lettered exactly one job", dead.length === 1);
+    assert("vt: dead-letter payload preserved", dead.length === 1 && (dead[0].payload as any).job === "import");
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+  }
+
+  // (d) complete() clears the reservation (no phantom reclaim)
+  {
+    const p = join("/tmp", "tina4-vt-complete-" + Date.now());
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+    const q = new Queue({ topic: "vt", path: p, visibilityTimeout: 0.05 });
+    q.push({ job: "import" });
+    // Consume by single-pass drain so the job carries lifecycle methods bound
+    // to the queue (createJob wraps the pop result).
+    let acked = false;
+    for await (const j of q.consume("vt", undefined, 0)) {
+      (j as QueueJob).complete();                    // acked — reservation cleared
+      acked = true;
+      break;
+    }
+    assert("vt: complete() ran", acked);
+    assert("vt: complete() clears the reservation", q.size("reserved") === 0);
+    await sleep(120);
+    assert("vt: nothing to reclaim after complete()", q.pop() === null);
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+  }
+
+  // (d2) fail() clears the reservation and requeues with attempts incremented
+  {
+    const p = join("/tmp", "tina4-vt-fail-" + Date.now());
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+    const q = new Queue({ topic: "vt", path: p, maxRetries: 3, visibilityTimeout: 0.05 });
+    q.push({ job: "import" });
+    let failed = false;
+    for await (const j of q.consume("vt", undefined, 0)) {
+      (j as QueueJob).fail("boom");                  // acked with failure -> requeued
+      failed = true;
+      break;
+    }
+    assert("vt: fail() ran", failed);
+    assert("vt: fail() clears the reservation", q.size("reserved") === 0);
+    const retried = q.pop();
+    assert("vt: failed job requeued with attempts 1", retried !== null && retried.attempts === 1);
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+  }
+
+  // (e) default 300 + TINA4_QUEUE_VISIBILITY_TIMEOUT env override
+  {
+    const prev = process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
+    delete process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
+    const def = new Queue({ topic: "vt", path: join("/tmp", "tina4-vt-def-" + Date.now()) });
+    assert("vt: default visibility timeout is 300", def.getVisibilityTimeout() === 300);
+
+    process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT = "42";
+    const fromEnv = new Queue({ topic: "vt", path: join("/tmp", "tina4-vt-env-" + Date.now()) });
+    assert("vt: env override sets visibility timeout to 42", fromEnv.getVisibilityTimeout() === 42);
+
+    const ctorWins = new Queue({ topic: "vt", path: join("/tmp", "tina4-vt-ctor-" + Date.now()), visibilityTimeout: 7 });
+    assert("vt: constructor arg wins over env", ctorWins.getVisibilityTimeout() === 7);
+
+    if (prev === undefined) delete process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
+    else process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT = prev;
+  }
+
+  // (f) visibilityTimeout=0 disables reclaim (reservation stays)
+  {
+    const p = join("/tmp", "tina4-vt-disabled-" + Date.now());
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+    const q = new Queue({ topic: "vt", path: p, visibilityTimeout: 0 });
+    q.push({ job: "import" });
+    assert("vt(0): pop reserves the job", q.pop() !== null);
+    await sleep(60);
+    // Reclaim is disabled — the reservation stays put (opt-out / old behaviour).
+    assert("vt(0): disabled reclaim -> next pop is null", q.pop() === null);
+    assert("vt(0): reservation stays", q.size("reserved") === 1);
+    try { rmSync(p, { recursive: true, force: true }); } catch {}
+  }
+})();
+
+// --- Visibility timeout (MongoDB backend — no live mongo, script introspection) ---
+//
+// There is no live MongoDB in the test environment, so — mirroring the Python
+// mongo mock tests — we assert the backend threads the visibility timeout into
+// the operation script the same way a live driver would observe it: dequeue
+// advances availableAt (now + visibilityTimeout) and stamps reservedAt; reclaim
+// flips an expired { status: reserved } back to pending with attempts
+// incremented (dead-lettering past maxRetries); and the reclaim is gated off
+// when the timeout is 0.
+console.log("\n--- Visibility Timeout (MongoDB script) ---");
+{
+  // Import the backend directly so we can introspect the generated script.
+  const { MongoBackend } = await import("../packages/core/src/queueBackends/mongoBackend.ts");
+
+  const backend = new MongoBackend({ uri: "mongodb://localhost:27017", visibilityTimeout: 300, maxRetries: 3 });
+  assert("mongo: visibility timeout resolved to 300", backend.getVisibilityTimeout() === 300);
+  assert("mongo: getConfig exposes visibilityTimeout", (backend.getConfig() as any).visibilityTimeout === 300);
+
+  const popScript = backend.buildScript("pop", "emails");
+  assert("mongo: pop advances availableAt to now + timeout",
+    popScript.includes("availableAt: future") && popScript.includes("visibilityTimeout * 1000"));
+  assert("mongo: pop stamps reservedAt = now", popScript.includes("reservedAt: now"));
+  assert("mongo: pop sort honours priority then createdAt",
+    popScript.includes("priority: -1") && popScript.includes("createdAt: 1"));
+
+  const reclaimScript = backend.buildScript("reclaim", "emails");
+  assert("mongo: reclaim matches expired reserved docs",
+    reclaimScript.includes('status: "reserved"') && reclaimScript.includes("availableAt: { $lte: now }"));
+  assert("mongo: reclaim flips reserved -> pending + increments attempts",
+    reclaimScript.includes('status: "pending"') && reclaimScript.includes("$inc: { attempts: 1 }"));
+  assert("mongo: reclaim dead-letters past maxRetries",
+    reclaimScript.includes(">= maxRetries") && reclaimScript.includes("dead_letter"));
+  assert("mongo: reclaim guarded by visibilityTimeout > 0",
+    reclaimScript.includes("if (visibilityTimeout > 0)"));
+
+  // Timeout <= 0 disables the reclaim: the script's reclaim loop is gated off.
+  const disabled = new MongoBackend({ uri: "mongodb://localhost:27017", visibilityTimeout: 0 });
+  assert("mongo(0): visibility timeout resolved to 0", disabled.getVisibilityTimeout() === 0);
+  const disabledReclaim = disabled.buildScript("reclaim", "emails");
+  assert("mongo(0): reclaim still guarded so it no-ops",
+    disabledReclaim.includes("if (visibilityTimeout > 0)"));
+
+  // Env override mirrors the file backend.
+  const prev = process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
+  process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT = "45";
+  const fromEnv = new MongoBackend({ uri: "mongodb://localhost:27017" });
+  assert("mongo: env override sets visibility timeout to 45", fromEnv.getVisibilityTimeout() === 45);
+  if (prev === undefined) delete process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
+  else process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT = prev;
+}
+
+// --- RabbitMQ + Kafka accept and ignore visibilityTimeout ---
+console.log("\n--- RabbitMQ + Kafka ignore visibilityTimeout ---");
+{
+  const { RabbitMQBackend } = await import("../packages/core/src/queueBackends/rabbitmqBackend.ts");
+  const { KafkaBackend } = await import("../packages/core/src/queueBackends/kafkaBackend.ts");
+  // Both accept the param (no throw) and their resolved config does not surface
+  // it — the broker owns redelivery.
+  const rabbit = new RabbitMQBackend({ visibilityTimeout: 99 });
+  assert("rabbitmq: accepts visibilityTimeout without surfacing it",
+    !("visibilityTimeout" in rabbit.getConfig()));
+  const kafka = new KafkaBackend({ visibilityTimeout: 99 });
+  assert("kafka: accepts visibilityTimeout without surfacing it",
+    !("visibilityTimeout" in kafka.getConfig()));
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

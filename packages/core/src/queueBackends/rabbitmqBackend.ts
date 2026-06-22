@@ -28,6 +28,12 @@ export interface RabbitMQConfig {
   username?: string;
   password?: string;
   vhost?: string;
+  /**
+   * Accepted for API parity with the file/MongoDB backends and IGNORED — the
+   * broker owns redelivery (unacked messages requeue on channel close), so the
+   * framework-level visibility timeout does not apply here.
+   */
+  visibilityTimeout?: number;
 }
 
 /**
@@ -200,7 +206,7 @@ export class RabbitMQBackend implements QueueBackend {
   /**
    * Resolved connection config — exposed for testing/introspection.
    */
-  getConfig(): Required<RabbitMQConfig> {
+  getConfig(): Required<Omit<RabbitMQConfig, "visibilityTimeout">> {
     return {
       host: this.host,
       port: this.port,

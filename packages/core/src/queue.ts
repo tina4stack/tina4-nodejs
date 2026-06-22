@@ -51,6 +51,29 @@ export interface QueueConfig {
    * straight away. Parity with Python's retry_backoff.
    */
   retryBackoff?: number;
+  /**
+   * Reservation/visibility timeout (seconds). A popped job is reserved for this
+   * long; if the consumer dies before complete()/fail() (crash, OOM, k8s
+   * eviction) the next pop() reclaims it — incrementing attempts and
+   * re-enqueuing, or dead-lettering past maxRetries (at-least-once delivery).
+   * Falls back to TINA4_QUEUE_VISIBILITY_TIMEOUT, else 300 (5 min). <= 0
+   * disables the reclaim (a reservation then lasts until the consumer acks —
+   * the old at-most-once behaviour). File + MongoDB backends only;
+   * RabbitMQ/Kafka delegate visibility to the broker. Parity with Python's
+   * visibility_timeout.
+   */
+  visibilityTimeout?: number;
+}
+
+/**
+ * Reservation/visibility timeout in seconds, from env (default 300 = 5 min).
+ * Mirrors Python's _default_visibility_timeout().
+ */
+function defaultVisibilityTimeout(): number {
+  const raw = process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
+  if (raw === undefined || raw === "") return 300;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 300;
 }
 
 export interface ProcessOptions {
@@ -82,6 +105,7 @@ export class Queue {
   private topic: string;
   private _maxRetries: number;
   private _retryBackoff: number;
+  private _visibilityTimeout: number;
   private externalBackend: QueueBackendInterface | null = null;
   private liteBackend!: LiteBackend;
 
@@ -112,15 +136,19 @@ export class Queue {
     this.topic = resolvedConfig.topic ?? "default";
     this._maxRetries = resolvedConfig.maxRetries ?? 3;
     this._retryBackoff = resolvedConfig.retryBackoff ?? 0;
-    this.liteBackend = new LiteBackend(this.basePath);
+    this._visibilityTimeout = resolvedConfig.visibilityTimeout ?? defaultVisibilityTimeout();
+    this.liteBackend = new LiteBackend(this.basePath, this._visibilityTimeout);
 
     // Initialize external backends
     if (this.backendName === "rabbitmq") {
-      this.externalBackend = new RabbitMQBackend();
+      // Broker manages visibility/redelivery (unacked messages requeue on
+      // channel close) — the framework timeout is accepted but not used.
+      this.externalBackend = new RabbitMQBackend({ visibilityTimeout: this._visibilityTimeout });
     } else if (this.backendName === "kafka") {
-      this.externalBackend = new KafkaBackend();
+      // Consumer-group offsets manage redelivery — framework timeout N/A.
+      this.externalBackend = new KafkaBackend({ visibilityTimeout: this._visibilityTimeout });
     } else if (this.backendName === "mongodb" || this.backendName === "mongo") {
-      this.externalBackend = new MongoBackend();
+      this.externalBackend = new MongoBackend({ visibilityTimeout: this._visibilityTimeout });
     }
   }
 
@@ -411,6 +439,15 @@ export class Queue {
   }
 
   /**
+   * Resolved reservation/visibility timeout (seconds). <= 0 means the reclaim
+   * is disabled. File + MongoDB backends honour it; RabbitMQ/Kafka delegate to
+   * the broker.
+   */
+  getVisibilityTimeout(): number {
+    return this._visibilityTimeout;
+  }
+
+  /**
    * Record a failed attempt for a job. The backend increments `attempts`
    * exactly once and decides whether to re-enqueue (attempts < maxRetries,
    * after retryBackoff seconds) or dead-letter (attempts >= maxRetries).
@@ -424,5 +461,14 @@ export class Queue {
    */
   _retryJob(queue: string, job: QueueJob, delaySeconds?: number): void {
     this.liteBackend.retryJob(queue, job, delaySeconds);
+  }
+
+  /**
+   * Acknowledge a completed job — drop its reservation record so the visibility
+   * reclaim never re-delivers it. No-op for external backends (they ack their
+   * own way; lite-backend reservations are file records).
+   */
+  _completeJob(queue: string, job: QueueJob): void {
+    this.liteBackend.completeJob(queue, job);
   }
 }

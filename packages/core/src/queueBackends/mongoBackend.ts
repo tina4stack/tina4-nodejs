@@ -32,6 +32,15 @@ export interface MongoConfig {
   password?: string;
   database?: string;
   collection?: string;
+  /**
+   * Reservation/visibility timeout (seconds). A dequeued message is held
+   * reserved with availableAt = now + timeout; reclaim returns it once that
+   * passes (consumer died mid-flight, before complete()/fail()). <= 0 disables
+   * the reclaim. Falls back to TINA4_QUEUE_VISIBILITY_TIMEOUT, else 300.
+   */
+  visibilityTimeout?: number;
+  /** Max attempts before the reclaim dead-letters a job instead of re-delivering. */
+  maxRetries?: number;
 }
 
 export interface QueueBackend {
@@ -58,6 +67,8 @@ export class MongoBackend implements QueueBackend {
   private password: string;
   private database: string;
   private collection: string;
+  private visibilityTimeout: number;
+  private maxRetries: number;
 
   constructor(config?: MongoConfig) {
     this.host = config?.host ?? process.env.TINA4_MONGO_HOST ?? "localhost";
@@ -67,6 +78,16 @@ export class MongoBackend implements QueueBackend {
     this.password = config?.password ?? process.env.TINA4_MONGO_PASSWORD ?? "";
     this.database = config?.database ?? process.env.TINA4_MONGO_DB ?? "tina4";
     this.collection = config?.collection ?? process.env.TINA4_MONGO_COLLECTION ?? "tina4_queue";
+
+    // Reservation/visibility timeout (seconds): config wins, else env, else 300.
+    if (config?.visibilityTimeout !== undefined) {
+      this.visibilityTimeout = config.visibilityTimeout;
+    } else {
+      const raw = process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
+      const parsed = raw === undefined || raw === "" ? 300 : Number(raw);
+      this.visibilityTimeout = Number.isFinite(parsed) ? parsed : 300;
+    }
+    this.maxRetries = config?.maxRetries ?? 3;
 
     // Connection URI precedence: explicit config.uri > TINA4_MONGO_URI
     // > TINA4_QUEUE_URL > a URI built from the host/port/auth field vars.
@@ -84,15 +105,34 @@ export class MongoBackend implements QueueBackend {
   /**
    * Resolved connection config — exposed for testing/introspection.
    */
-  getConfig(): { uri: string; database: string; collection: string } {
-    return { uri: this.uri, database: this.database, collection: this.collection };
+  getConfig(): { uri: string; database: string; collection: string; visibilityTimeout: number } {
+    return {
+      uri: this.uri,
+      database: this.database,
+      collection: this.collection,
+      visibilityTimeout: this.visibilityTimeout,
+    };
   }
 
   /**
-   * Execute a MongoDB operation synchronously via a child process.
+   * Resolved reservation/visibility timeout (seconds). <= 0 disables the
+   * reclaim. Exposed for testing/introspection.
    */
-  private execSync(operation: string, queue: string, data?: string): string {
-    const script = `
+  getVisibilityTimeout(): number {
+    return this.visibilityTimeout;
+  }
+
+  /**
+   * Build the Node script that performs one MongoDB queue operation in a child
+   * process. Exposed (not private) so tests can assert the visibility-timeout
+   * behaviour without a live MongoDB — the script's pop branch advances
+   * availableAt = now + visibilityTimeout and stamps reservedAt (the core fix),
+   * and the reclaim branch flips an expired { status: reserved } back to
+   * pending with attempts incremented (dead-lettering past maxRetries),
+   * disabled when visibilityTimeout <= 0.
+   */
+  buildScript(operation: string, queue: string, data?: string): string {
+    return `
       async function main() {
         let mongodb;
         try {
@@ -109,6 +149,8 @@ export class MongoBackend implements QueueBackend {
         const operation = ${JSON.stringify(operation)};
         const queueName = ${JSON.stringify(queue)};
         const data = ${JSON.stringify(data ?? "")};
+        const visibilityTimeout = ${JSON.stringify(this.visibilityTimeout)};
+        const maxRetries = ${JSON.stringify(this.maxRetries)};
 
         const client = new MongoClient(uri, {
           connectTimeoutMS: 5000,
@@ -121,7 +163,7 @@ export class MongoBackend implements QueueBackend {
           const col = db.collection(collName);
 
           // Ensure indexes on first use
-          await col.createIndex({ queue: 1, status: 1, delayUntil: 1 });
+          await col.createIndex({ queue: 1, status: 1, availableAt: 1 });
           await col.createIndex({ queue: 1, createdAt: 1 });
 
           if (operation === "push") {
@@ -129,19 +171,59 @@ export class MongoBackend implements QueueBackend {
             await col.insertOne({ ...job, queue: queueName });
             process.stdout.write("__PUSHED__");
           }
+          else if (operation === "reclaim") {
+            // Return reservations whose visibility window expired (at-least-once
+            // delivery). A doc left { status: reserved, availableAt <= now } had
+            // its consumer die before acknowledging — flip it back to pending
+            // with attempts incremented, or dead-letter once attempts hit the
+            // limit. Disabled when visibilityTimeout <= 0.
+            let reclaimed = 0;
+            if (visibilityTimeout > 0) {
+              while (true) {
+                const now = new Date().toISOString();
+                const doc = await col.findOneAndUpdate(
+                  { queue: queueName, status: "reserved", availableAt: { $lte: now } },
+                  { $set: { status: "pending", availableAt: now, reservedAt: null }, $inc: { attempts: 1 } },
+                  { sort: { availableAt: 1 }, returnDocument: "after" },
+                );
+                const updated = doc && doc.value ? doc.value : (doc && doc._id ? doc : null);
+                if (!updated) break;
+                reclaimed++;
+                if ((updated.attempts || 0) >= maxRetries) {
+                  await col.insertOne({
+                    ...updated,
+                    _id: undefined,
+                    status: "dead",
+                    queue: queueName + ".dead_letter",
+                    error: "reservation timed out — consumer did not acknowledge within the visibility timeout",
+                  });
+                  await col.deleteOne({ _id: updated._id, queue: queueName });
+                }
+              }
+            }
+            process.stdout.write(String(reclaimed));
+          }
           else if (operation === "pop") {
             const now = new Date().toISOString();
+            // The claim advances availableAt = now + visibilityTimeout and
+            // stamps reservedAt so reclaim can return the job if the consumer
+            // dies before complete()/fail() — this is the fix for the "reserved
+            // forever" bug (previously availableAt was left unchanged).
+            const future = new Date(Date.now() + visibilityTimeout * 1000).toISOString();
             const result = await col.findOneAndUpdate(
               {
                 queue: queueName,
                 status: "pending",
                 $or: [
+                  { availableAt: null },
+                  { availableAt: { $exists: false } },
+                  { availableAt: { $lte: now } },
                   { delayUntil: null },
                   { delayUntil: { $lte: now } },
                 ],
               },
-              { $set: { status: "reserved" } },
-              { sort: { createdAt: 1 }, returnDocument: "before" },
+              { $set: { status: "reserved", reservedAt: now, availableAt: future } },
+              { sort: { priority: -1, createdAt: 1 }, returnDocument: "before" },
             );
 
             if (result && result.value) {
@@ -181,6 +263,13 @@ export class MongoBackend implements QueueBackend {
 
       main();
     `;
+  }
+
+  /**
+   * Execute a MongoDB operation synchronously via a child process.
+   */
+  private execSync(operation: string, queue: string, data?: string): string {
+    const script = this.buildScript(operation, queue, data);
 
     try {
       const result = execFileSync(process.execPath, ["-e", script], {
@@ -215,6 +304,11 @@ export class MongoBackend implements QueueBackend {
   }
 
   pop(queue: string): QueueJob | null {
+    // Reclaim any reservations whose consumer died before acking, then take the
+    // next available message (at-least-once delivery). Disabled at timeout <= 0.
+    if (this.visibilityTimeout > 0) {
+      this.execSync("reclaim", queue);
+    }
     const result = this.execSync("pop", queue);
     if (!result || result === "__EMPTY__") return null;
 
