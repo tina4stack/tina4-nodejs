@@ -1239,6 +1239,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 - **Don't break the test files** — run `npm test` before committing
 - **Don't add unnecessary dependencies** — minimal footprint is a core principle
 - **Parity across all frameworks** — Every new feature, fix, or optimization must be implemented with equivalent logic AND tests in all 4 Tina4 frameworks (Python, PHP, Ruby, Node.js). Never ship to one without shipping to all.
+- **Tests validate against the real thing — NO mock testing.** Any test that touches an external dependency (a DB engine, MongoDB, Redis/Valkey/Memcached, RabbitMQ/Kafka, an HTTP service) must exercise the REAL service, not a mock/stub/fake/script-introspection. "Verified"/"green" requires a real run — a passing mock test is not verification. CI provisions the services; use them (add one if missing). Pure-logic unit tests with no external dependency are exempt. (The MongoDB queue re-delivered every completed job for two releases because its queue tests were mock/script-introspection-based and never ran against a real Mongo.)
 - **Don't use `url.parse()`** — use the WHATWG `URL` constructor instead (deprecated in Node 20+)
 
 ## Tina4 Maintainer Skill
