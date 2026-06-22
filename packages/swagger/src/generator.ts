@@ -20,6 +20,120 @@ interface OpenAPISpec {
 
 const WRITE_METHODS = new Set(["post", "put", "patch", "delete"]);
 
+// ── Configuration registries (v3.13.42) ───────────────────────────
+// Process-wide registries for security schemes and reusable component schemas
+// declared programmatically (addSecurityScheme / addSchema). Kept module-level so
+// app bootstrap can register before any generate() call; resetRegistry() clears
+// them (tests). Parity with Python's Swagger.add_security_scheme/add_schema/reset_registry.
+const registeredSchemes: Record<string, Record<string, unknown>> = {};
+const registeredSchemas: Record<string, Record<string, unknown>> = {};
+
+/**
+ * Register a named OpenAPI security scheme (e.g. an oauth2 scheme with scopes,
+ * or a custom apiKey). Call at app bootstrap, before generate(). A registered
+ * scheme may override the built-in bearerAuth.
+ */
+export function addSecurityScheme(name: string, definition: Record<string, unknown>): void {
+  registeredSchemes[name] = definition;
+}
+
+/**
+ * Register a reusable component schema, referenceable via meta.requestSchema /
+ * meta.responseSchemas or a raw $ref.
+ */
+export function addSchema(name: string, schema: Record<string, unknown>): void {
+  registeredSchemas[name] = schema;
+}
+
+/** Clear the security-scheme and schema registries (test helper). */
+export function resetRegistry(): void {
+  for (const k of Object.keys(registeredSchemes)) delete registeredSchemes[k];
+  for (const k of Object.keys(registeredSchemas)) delete registeredSchemas[k];
+}
+
+/** Resolve TINA4_SWAGGER_OPENAPI to a concrete version. Default 3.0.3; "3.1"/"3.1.0" -> "3.1.0". */
+function resolveOpenApiVersion(): string {
+  const v = (process.env.TINA4_SWAGGER_OPENAPI ?? "").trim();
+  if (!v) return "3.0.3";
+  if (v === "3.1" || v === "3.1.0") return "3.1.0";
+  if (v === "3.0" || v === "3.0.3") return "3.0.3";
+  return v; // honour an explicit full version verbatim
+}
+
+/** Comma-separated env value -> clean list. */
+function csv(val: string | undefined): string[] {
+  return (val ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+/** Resolve components.securitySchemes from defaults + env + registry. */
+function resolveSecuritySchemes(): Record<string, Record<string, unknown>> {
+  const bearerFormat = process.env.TINA4_SWAGGER_BEARER_FORMAT ?? "JWT";
+  const schemes: Record<string, Record<string, unknown>> = {
+    bearerAuth: { type: "http", scheme: "bearer", bearerFormat },
+  };
+  const apiKeyName = (process.env.TINA4_SWAGGER_API_KEY_NAME ?? "").trim();
+  if (apiKeyName.length > 0) {
+    const rawIn = process.env.TINA4_SWAGGER_API_KEY_IN ?? "header";
+    const apiKeyIn = ["header", "query", "cookie"].includes(rawIn) ? rawIn : "header";
+    schemes.apiKeyAuth = { type: "apiKey", name: apiKeyName, in: apiKeyIn };
+  }
+  // Registered schemes win (let an app override bearerAuth or add oauth2).
+  for (const [name, def] of Object.entries(registeredSchemes)) {
+    schemes[name] = def;
+  }
+  return schemes;
+}
+
+/**
+ * Normalize a meta.security value (+ optional scopes) into an OpenAPI
+ * security-requirement list. Mirrors Python's _normalize_security.
+ */
+function normalizeSecurity(
+  value: NonNullable<unknown> | undefined,
+  scopes: string[] | undefined
+): Array<Record<string, string[]>> {
+  if ((value === "public" || value === "none" || value === undefined || value === null) && (!scopes || scopes.length === 0)) {
+    return [];
+  }
+  if (typeof value === "string") {
+    return [{ [value]: [...(scopes ?? [])] }];
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return [];
+    return value.map((req) => normalizeRequirementMap(req as Record<string, string[]>));
+  }
+  if (value !== null && typeof value === "object") {
+    return [normalizeRequirementMap(value as Record<string, string[]>)];
+  }
+  return [];
+}
+
+function normalizeRequirementMap(req: Record<string, string[]>): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(req)) out[k] = [...(v ?? [])];
+  return out;
+}
+
+/**
+ * Keep a security-requirement list spec-valid: scopes are allowed only on
+ * oauth2/openIdConnect schemes; everything else gets an empty array (OpenAPI
+ * requires it). Mirrors Python's _sanitize_security.
+ */
+function sanitizeSecurity(
+  reqs: Array<Record<string, string[]>>,
+  schemes: Record<string, Record<string, unknown>>
+): Array<Record<string, string[]>> {
+  const scopeOk = new Set(["oauth2", "openIdConnect"]);
+  return reqs.map((req) => {
+    const clean: Record<string, string[]> = {};
+    for (const [name, scopes] of Object.entries(req)) {
+      const stype = (schemes[name] as Record<string, unknown> | undefined)?.type;
+      clean[name] = scopeOk.has(stype as string) ? [...scopes] : [];
+    }
+    return clean;
+  });
+}
+
 export function generate(
   routes: RouteDefinition[],
   models: ModelDefinition[] = []
@@ -49,20 +163,30 @@ export function generate(
     info.license = url ? { name, url } : { name };
   }
 
+  const schemes = resolveSecuritySchemes();
   const spec: OpenAPISpec = {
-    openapi: "3.0.3",
+    openapi: resolveOpenApiVersion(),
     info,
     servers: resolveServers(),
     paths: {},
     components: {
       schemas: {},
-      // bearerAuth was never defined before — secured routes were documented
-      // identically to public ones (audit P1). Define it once and reference it.
-      securitySchemes: {
-        bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" },
-      },
+      // Configurable security schemes (v3.13.42): bearerFormat via env, optional
+      // apiKey scheme, plus any programmatically-registered schemes (which may
+      // override bearerAuth — e.g. an oauth2 scheme with scopes).
+      securitySchemes: schemes,
     },
   };
+
+  // Default scheme secured routes use when no explicit meta.security is set.
+  const defaultScheme = process.env.TINA4_SWAGGER_DEFAULT_SCHEME ?? "bearerAuth";
+
+  // Path filters (comma-separated raw-path prefixes).
+  const includePrefixes = csv(process.env.TINA4_SWAGGER_INCLUDE);
+  const excludePrefixes = csv(process.env.TINA4_SWAGGER_EXCLUDE);
+
+  // Reusable custom schemas referenced by routes via meta.requestSchema/responseSchemas.
+  const refSchemas = new Set<string>();
 
   // Generate schemas from models
   for (const model of models) {
@@ -75,6 +199,7 @@ export function generate(
 
   // Generate paths from routes
   for (const route of routes) {
+    if (!isIncludedPath(route.pattern, includePrefixes, excludePrefixes)) continue;
     const openApiPath = patternToOpenAPI(route.pattern);
     const method = route.method.toLowerCase();
 
@@ -123,8 +248,20 @@ export function generate(
       }
     }
 
-    // Add request body for POST/PUT
-    if (method === "post" || method === "put") {
+    // Request body — a registered custom schema $ref (meta.requestSchema) wins,
+    // else the inferred-from-model body (POST/PUT to a resource), else an
+    // example-only body.
+    const reqSchemaRef = parseRequestSchema(route.meta?.requestSchema);
+    if (reqSchemaRef && (method === "post" || method === "put" || method === "patch")) {
+      refSchemas.add(reqSchemaRef.name);
+      const media: Record<string, unknown> = {
+        schema: { $ref: `#/components/schemas/${reqSchemaRef.name}` },
+      };
+      if (route.meta?.example !== undefined) media.example = route.meta.example;
+      operation.requestBody = {
+        content: { [reqSchemaRef.contentType]: media },
+      };
+    } else if (method === "post" || method === "put") {
       const modelName = inferModelFromPath(route.pattern);
       if (modelName && models.some((m) => m.tableName === modelName)) {
         const media: Record<string, unknown> = {
@@ -151,16 +288,50 @@ export function generate(
       }
     }
 
-    // Security — a secured route emits operation.security + 401. Mirrors the
-    // router's enforcement (writes secure by default unless noAuth; GET secure
-    // only when marked). Before, no route ever got a security requirement.
-    if (routeRequiresAuth(route, method)) {
-      operation.security = [{ bearerAuth: [] }];
+    // Registered response schemas ($ref) — explicit and authoritative, keyed by status.
+    const respSchemas = parseResponseSchemas(route.meta?.responseSchemas);
+    if (respSchemas.length > 0) {
+      const responses = operation.responses as Record<string, unknown>;
+      for (const { status, name, isList } of respSchemas) {
+        refSchemas.add(name);
+        const sref = `#/components/schemas/${name}`;
+        const schema = isList ? { type: "array", items: { $ref: sref } } : { $ref: sref };
+        responses[status] = {
+          description: status.startsWith("2") ? "Successful response" : "Response",
+          content: { "application/json": { schema } },
+        };
+      }
+    }
+
+    // Security (v3.13.42) — explicit meta.security wins (empty list = explicitly
+    // public); otherwise a secured route gets the default scheme. Scopes are kept
+    // valid (only oauth2/openIdConnect carry them).
+    const hasExplicitSecurity =
+      route.meta?.security !== undefined || (route.meta?.scopes !== undefined && route.meta.scopes.length > 0);
+    if (hasExplicitSecurity) {
+      const normalized = normalizeSecurity(route.meta?.security, route.meta?.scopes);
+      operation.security = normalized.length > 0 ? sanitizeSecurity(normalized, schemes) : [];
+      if (normalized.length > 0) {
+        const responses = operation.responses as Record<string, unknown>;
+        if (!responses["401"]) responses["401"] = { description: "Unauthorized" };
+      }
+    } else if (routeRequiresAuth(route, method)) {
+      operation.security = sanitizeSecurity([{ [defaultScheme]: [] }], schemes);
       const responses = operation.responses as Record<string, unknown>;
       if (!responses["401"]) responses["401"] = { description: "Unauthorized" };
     }
 
     spec.paths[openApiPath][method] = operation;
+  }
+
+  // Registered component schemas referenced via meta.requestSchema/responseSchemas.
+  if (refSchemas.size > 0) {
+    const schemas = spec.components!.schemas!;
+    for (const name of refSchemas) {
+      if (name in registeredSchemas && !(name in schemas)) {
+        schemas[name] = registeredSchemas[name];
+      }
+    }
   }
 
   if (usedTags.length > 0) {
@@ -174,6 +345,45 @@ function routeRequiresAuth(route: RouteDefinition, method: string): boolean {
   if (route.noAuth) return false;
   if (WRITE_METHODS.has(method)) return true; // secure by default (router parity)
   return route.secure === true;
+}
+
+/**
+ * Path-filter a raw route pattern. Framework internals (/swagger, /__dev) are
+ * ALWAYS excluded; then TINA4_SWAGGER_INCLUDE (allow-list) / _EXCLUDE apply.
+ * Mirrors Python's _included.
+ */
+function isIncludedPath(rawPath: string, include: string[], exclude: string[]): boolean {
+  for (const internal of ["/swagger", "/__dev"]) {
+    if (rawPath === internal || rawPath.startsWith(internal + "/")) return false;
+  }
+  if (include.length > 0 && !include.some((p) => rawPath === p || rawPath.startsWith(p))) {
+    return false;
+  }
+  if (exclude.some((p) => rawPath === p || rawPath.startsWith(p))) return false;
+  return true;
+}
+
+function parseRequestSchema(
+  spec: string | { name: string; contentType?: string } | undefined
+): { name: string; contentType: string } | null {
+  if (spec === undefined) return null;
+  if (typeof spec === "string") return { name: spec, contentType: "application/json" };
+  return { name: spec.name, contentType: spec.contentType ?? "application/json" };
+}
+
+function parseResponseSchemas(
+  spec: Record<string, string | { name: string; isList?: boolean }> | undefined
+): Array<{ status: string; name: string; isList: boolean }> {
+  if (!spec) return [];
+  const out: Array<{ status: string; name: string; isList: boolean }> = [];
+  for (const [status, value] of Object.entries(spec)) {
+    if (typeof value === "string") {
+      out.push({ status, name: value, isList: false });
+    } else {
+      out.push({ status, name: value.name, isList: value.isList === true });
+    }
+  }
+  return out;
 }
 
 function resolveServers(): { url: string }[] {

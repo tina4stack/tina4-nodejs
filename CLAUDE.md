@@ -1,4 +1,4 @@
-# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.41)
+# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.42)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
@@ -299,6 +299,15 @@ Auto-generates OpenAPI 3.0.3 docs.
 - `TINA4_SWAGGER_SERVERS` - comma-separated list of server URLs for the OpenAPI `servers[]` block (multi-server / multi-environment). Falls back to `SWAGGER_DEV_URL`, else the framework default.
 - `TINA4_SWAGGER_UI_CDN` - base URL for the Swagger UI assets (`swagger-ui.css` + `swagger-ui-bundle.js`). Defaults to the public CDN (`https://unpkg.com/swagger-ui-dist@5`); point it at a self-hosted mirror for air-gapped deployments.
 - Info block: `TINA4_SWAGGER_TITLE`, `TINA4_SWAGGER_VERSION`, `TINA4_SWAGGER_DESCRIPTION`, `TINA4_SWAGGER_CONTACT_EMAIL`, `TINA4_SWAGGER_CONTACT_TEAM`, `TINA4_SWAGGER_CONTACT_URL`, `TINA4_SWAGGER_LICENSE`.
+
+**Configurability (v3.13.42):**
+- `TINA4_SWAGGER_OPENAPI` - OpenAPI version (default `3.0.3`); `3.1`/`3.1.0` emits `3.1.0`.
+- `TINA4_SWAGGER_BEARER_FORMAT` - `bearerFormat` on the built-in `bearerAuth` scheme (default `JWT`; use `opaque` for `sk_live_` keys).
+- `TINA4_SWAGGER_API_KEY_NAME` / `TINA4_SWAGGER_API_KEY_IN` - when the name is set, emit an `apiKeyAuth` scheme; `_IN` is `header` (default) / `query` / `cookie`.
+- `TINA4_SWAGGER_DEFAULT_SCHEME` - scheme a secured route uses when its `meta` declares no `security` (default `bearerAuth`).
+- `TINA4_SWAGGER_INCLUDE` / `TINA4_SWAGGER_EXCLUDE` - comma-separated path-prefix allow-list / deny-list (`/swagger` + `/__dev` always excluded).
+
+**Per-route security + reusable schemas (v3.13.42).** A route's `meta` may carry `security` (a scheme name, a `{name: [scopes]}` map, a list of maps for OR, or the string `"public"` to force `security: []`), a sibling `scopes` array, and `requestSchema` / `responseSchemas` referencing schemas registered with `addSchema(name, schema)`. Register arbitrary schemes (including `oauth2` with scopes) via `addSecurityScheme(name, definition)`; `resetRegistry()` clears both. All three are exported from `@tina4/swagger`. Scopes are kept spec-valid: only `oauth2`/`openIdConnect` carry them, `http`/`apiKey` get `[]`.
 
 ### @tina4/frond (`packages/frond/`)
 Built-in zero-dependency Twig-compatible template engine (the only template engine; there is no `twig` npm dependency).
