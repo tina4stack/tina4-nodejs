@@ -229,12 +229,20 @@ export class MongoBackend implements QueueBackend {
             if (result && result.value) {
               // findOneAndUpdate returns { value: doc } in older drivers
               const doc = result.value;
+              // Carry the framework topic on the job so complete()/fail()
+              // route the ack/requeue back to THIS topic's docs (the Mongo
+              // internal queue field is dropped from the returned shape).
+              doc.topic = queueName;
               delete doc._id;
               delete doc.queue;
               process.stdout.write(JSON.stringify(doc));
             } else if (result && result._id) {
               // Some driver versions return the doc directly
               const doc = { ...result };
+              // Carry the framework topic on the job so complete()/fail()
+              // route the ack/requeue back to THIS topic's docs (the Mongo
+              // internal queue field is dropped from the returned shape).
+              doc.topic = queueName;
               delete doc._id;
               delete doc.queue;
               process.stdout.write(JSON.stringify(doc));
@@ -252,6 +260,95 @@ export class MongoBackend implements QueueBackend {
           else if (operation === "clear") {
             await col.deleteMany({ queue: queueName });
             process.stdout.write("__CLEARED__");
+          }
+          else if (operation === "complete") {
+            // Ack a finished job so the reclaim never re-delivers it. data = job id.
+            // (The pop reserved this doc; without this it stays reserved and is
+            // re-delivered after the visibility window — the redelivery bug.)
+            await col.updateOne(
+              { queue: queueName, id: data },
+              { $set: { status: "completed", completedAt: new Date().toISOString(), reservedAt: null } },
+            );
+            process.stdout.write("__OK__");
+          }
+          else if (operation === "fail") {
+            // Requeue while retries remain (reset availableAt -> visible again),
+            // else dead-letter. Atomic decision in Mongo. data = JSON
+            // { id, error, maxRetries, retryBackoff }.
+            const info = JSON.parse(data);
+            const now = new Date().toISOString();
+            const doc = await col.findOne({ queue: queueName, id: info.id });
+            if (doc) {
+              const attempts = (doc.attempts || 0) + 1;
+              if (attempts >= info.maxRetries) {
+                await col.insertOne({
+                  ...doc, _id: undefined, attempts,
+                  status: "dead", queue: queueName + ".dead_letter", error: info.error,
+                });
+                await col.deleteOne({ _id: doc._id, queue: queueName });
+              } else {
+                const avail = info.retryBackoff > 0
+                  ? new Date(Date.now() + info.retryBackoff * 1000).toISOString()
+                  : now;
+                await col.updateOne(
+                  { _id: doc._id, queue: queueName },
+                  { $set: { status: "pending", availableAt: avail, reservedAt: null, error: info.error },
+                    $inc: { attempts: 1 } },
+                );
+              }
+            }
+            process.stdout.write("__OK__");
+          }
+          else if (operation === "retry") {
+            // Explicit manual re-queue (always re-enqueues). data = JSON
+            // { id, delaySeconds }.
+            const info = JSON.parse(data);
+            const avail = info.delaySeconds > 0
+              ? new Date(Date.now() + info.delaySeconds * 1000).toISOString()
+              : new Date().toISOString();
+            await col.updateOne(
+              { queue: queueName, id: info.id },
+              { $set: { status: "pending", availableAt: avail, reservedAt: null }, $inc: { attempts: 1 } },
+            );
+            process.stdout.write("__OK__");
+          }
+          else if (operation === "deadLetters") {
+            const docs = await col.find({ queue: queueName + ".dead_letter" }).toArray();
+            const out = docs.map((d) => { delete d._id; delete d.queue; return d; });
+            process.stdout.write(JSON.stringify(out));
+          }
+          else if (operation === "failed") {
+            const docs = await col
+              .find({ queue: queueName, status: "failed", attempts: { $lt: maxRetries } })
+              .toArray();
+            const out = docs.map((d) => { delete d._id; delete d.queue; return d; });
+            process.stdout.write(JSON.stringify(out));
+          }
+          else if (operation === "retryFailed") {
+            // Revive dead-lettered jobs under the (possibly raised) limit back to
+            // the main queue as pending. data = the max-retries limit.
+            const mr = data ? Number(data) : maxRetries;
+            const now = new Date().toISOString();
+            let revived = 0;
+            while (true) {
+              const doc = await col.findOneAndUpdate(
+                { queue: queueName + ".dead_letter", attempts: { $lt: mr } },
+                { $set: { status: "pending", availableAt: now, reservedAt: null, queue: queueName, error: null } },
+                { returnDocument: "after" },
+              );
+              const updated = doc && doc.value ? doc.value : (doc && doc._id ? doc : null);
+              if (!updated) break;
+              revived++;
+            }
+            process.stdout.write(String(revived));
+          }
+          else if (operation === "purge") {
+            // Delete docs by status (default: all for the topic). data = JSON { status }.
+            const info = data ? JSON.parse(data) : {};
+            const filter = { queue: queueName };
+            if (info.status) filter.status = info.status;
+            const res = await col.deleteMany(filter);
+            process.stdout.write(String(res.deletedCount || 0));
           }
         } catch (err) {
           process.stderr.write(err.message || String(err));
@@ -327,5 +424,51 @@ export class MongoBackend implements QueueBackend {
 
   clear(queue: string): void {
     this.execSync("clear", queue);
+  }
+
+  /**
+   * Acknowledge a completed job — drop its reservation so the reclaim never
+   * re-delivers it. Without this a Mongo-popped job stayed reserved and was
+   * re-delivered after the visibility window (the redelivery bug).
+   */
+  complete(queue: string, id: string): void {
+    this.execSync("complete", queue, id);
+  }
+
+  /**
+   * Record a failed attempt: requeue (reset availableAt, ++attempts) while
+   * retries remain, else dead-letter. Mirrors the file/lite backend.
+   */
+  fail(queue: string, id: string, error: string, maxRetries: number, retryBackoff: number = 0): void {
+    this.execSync("fail", queue, JSON.stringify({ id, error, maxRetries, retryBackoff }));
+  }
+
+  /** Explicit manual re-queue (always re-enqueues regardless of the retry limit). */
+  retry(queue: string, id: string, delaySeconds: number = 0): void {
+    this.execSync("retry", queue, JSON.stringify({ id, delaySeconds }));
+  }
+
+  /** Jobs that exceeded max retries (the `<queue>.dead_letter` collection topic). */
+  deadLetters(queue: string, maxRetries?: number): QueueJob[] {
+    const out = this.execSync("deadLetters", queue, String(maxRetries ?? this.maxRetries));
+    try { return JSON.parse(out) as QueueJob[]; } catch { return []; }
+  }
+
+  /** Jobs that failed but are still eligible for retry (status=failed, attempts < max). */
+  failed(queue: string, maxRetries?: number): QueueJob[] {
+    const out = this.execSync("failed", queue, String(maxRetries ?? this.maxRetries));
+    try { return JSON.parse(out) as QueueJob[]; } catch { return []; }
+  }
+
+  /** Revive dead-lettered jobs under the (possibly raised) limit. Returns count revived. */
+  retryFailed(queue: string, maxRetries?: number): number {
+    const out = this.execSync("retryFailed", queue, String(maxRetries ?? this.maxRetries));
+    return parseInt(out, 10) || 0;
+  }
+
+  /** Remove jobs by status (default: every doc for the topic). Returns count removed. */
+  purge(queue: string, status?: string): number {
+    const out = this.execSync("purge", queue, JSON.stringify({ status: status ?? "" }));
+    return parseInt(out, 10) || 0;
   }
 }
