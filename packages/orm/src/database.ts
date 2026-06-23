@@ -768,8 +768,8 @@ export class Database {
     }
   }
 
-  /** Insert a row into a table. */
-  async insert(table: string, data: Record<string, unknown>): Promise<DatabaseWriteResult> {
+  /** Insert one row (object) or a batch of rows (array of objects) into a table. */
+  async insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): Promise<DatabaseWriteResult> {
     const adapter = this.getNextAdapter();
     const result = (adapter as any).insertAsync
       ? await (adapter as any).insertAsync(table, data)

@@ -55,7 +55,7 @@ console.log("=== RabbitMQ Live Integration Test ===\n");
 
 const url = process.env.TINA4_TEST_RABBITMQ_URL;
 if (!url) {
-  console.log("  SKIP: set TINA4_TEST_RABBITMQ_URL (e.g. amqp://guest:guest@localhost:5672) to run the live RabbitMQ integration test.");
+  console.log("  SKIP: TINA4_TEST_RABBITMQ_URL not set (e.g. amqp://guest:guest@localhost:5672) — RabbitMQ broker not available for the live integration test.");
   summarise();
 }
 

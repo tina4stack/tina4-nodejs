@@ -10,9 +10,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    # Cache backends — the unified CacheBackend tests (test/cache-backends.test.ts)
-    # exercise these for real; without them those checks self-skip. Ports mirror
-    # the local docker harness. redis-auth uses requirepass s3cret.
+    # Real-service test gate. Every backend the suite can touch runs for real in
+    # CI so the integration tests execute instead of skipping (the gap that let
+    # the Mongo-queue redelivery / migration bugs ship). Service containers are
+    # health-checked, so the job fails if one never comes up. Ports mirror the
+    # local docker harness (/tmp/tina4_infra_up.sh) so the same TINA4_TEST_*
+    # values work locally and here. redis-auth uses requirepass s3cret.
     services:
       redis:
         image: redis:7
@@ -45,6 +48,52 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      postgres:
+        image: postgres:16
+        ports:
+          - 55432:5432
+        env:
+          POSTGRES_USER: tina4
+          POSTGRES_PASSWORD: tina4
+          POSTGRES_DB: tina4_node
+        options: >-
+          --health-cmd "pg_isready -U tina4 -d tina4_node"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      rabbitmq:
+        image: rabbitmq:3-management
+        ports:
+          - 5672:5672
+          - 15672:15672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # Enable the real-service integration tests (they skip when unset). Ports
+      # mirror the service containers above and the local docker harness.
+      TINA4_TEST_PG_HOST: localhost
+      TINA4_TEST_PG_PORT: '55432'
+      TINA4_TEST_PG_USER: tina4
+      TINA4_TEST_PG_PASS: tina4
+      TINA4_TEST_PG_DB: tina4_node
+      TINA4_TEST_PG_DB_2: tina4_py
+      TINA4_TEST_POSTGRES_URL: postgres://tina4:tina4@localhost:55432/tina4_node
+      TINA4_TEST_MONGO_URL: mongodb://localhost:27017
+      TINA4_MONGO_URI: mongodb://localhost:27017
+      TINA4_TEST_REDIS_URL: redis://localhost:6379
+      TINA4_TEST_VALKEY_URL: redis://localhost:6380
+      TINA4_TEST_RABBITMQ_URL: amqp://guest:guest@localhost:5672
+      TINA4_TEST_KAFKA_URL: localhost:9092
+      TINA4_KAFKA_BROKERS: localhost:9092
+      # Turn a missing provisioned service into a hard failure (no green skips).
+      # The run-all.ts gate fails the run if a real-service test skips because a
+      # PROVISIONED service was unavailable. MySQL/MSSQL/Firebird are not
+      # provisioned, so their skips stay green.
+      TINA4_REQUIRE_SERVICES: '1'
 
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +110,43 @@ jobs:
             fi
             sleep 1
           done
+
+      # Second Postgres database for the two-DB named-connection test
+      # (test/bind-database.test.ts uses TINA4_TEST_PG_DB_2=tina4_py). The
+      # service container only creates POSTGRES_DB=tina4_node, so add the other.
+      - name: Create second Postgres database (tina4_py)
+        run: |
+          for i in $(seq 1 30); do
+            if PGPASSWORD=tina4 psql -h localhost -p 55432 -U tina4 -d tina4_node -c "SELECT 1" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          PGPASSWORD=tina4 psql -h localhost -p 55432 -U tina4 -d tina4_node \
+            -c "CREATE DATABASE tina4_py" || echo "tina4_py may already exist"
+
+      # Kafka in KRaft mode (single node, no ZooKeeper). GitHub service
+      # containers can't express the KRaft listener config cleanly, so run it as
+      # a plain container and FAIL the job if the broker never serves metadata.
+      - name: Start Kafka (KRaft)
+        run: |
+          docker run -d --name tina4-kafka -p 9092:9092 \
+            -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
+            -e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
+            -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
+            -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+            -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+            -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+            -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+            apache/kafka:3.7.0
+          echo "Waiting for Kafka to serve metadata on :9092 ..."
+          for i in $(seq 1 60); do
+            if docker exec tina4-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then
+              echo "Kafka ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Kafka did not become ready in 60s"; docker logs tina4-kafka | tail -40; exit 1
 
       # Node 22+ is required — packages/orm/src/adapters/sqlite.ts uses
       # `node:sqlite` (introduced in Node 22, stable in Node 24).

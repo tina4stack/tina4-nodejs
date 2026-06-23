@@ -193,6 +193,13 @@ export class KafkaBackend implements QueueBackend {
 
   /**
    * Execute a Kafka operation synchronously via a child process.
+   *
+   * The wire protocol is hand-rolled (Tina4 is zero-dependency — no npm Kafka
+   * library). Produce uses Produce **v3** carrying a Kafka **v2 RecordBatch**
+   * (magic byte 2) with a **CRC-32C** (Castagnoli) checksum; Fetch uses Fetch
+   * **v4** and parses the v2 RecordBatch out of the response. Both formats are
+   * what a modern KRaft broker (apache/kafka 3.7.0) requires — the old
+   * Produce-v0 / message-format-v0 / CRC=0 batch is rejected by such brokers.
    */
   private execSync(operation: string, topic: string, data?: string): string {
     // execFileSync imported at top level
@@ -206,213 +213,342 @@ export class KafkaBackend implements QueueBackend {
       const topic = ${JSON.stringify(topic)};
       const groupId = ${JSON.stringify(this.groupId)};
       const data = ${JSON.stringify(data ?? "")};
+      const API_PRODUCE = ${API_PRODUCE};
+      const API_FETCH = ${API_FETCH};
+      const PRODUCE_VERSION = 3; // v3+ requires the v2 RecordBatch format
+      const FETCH_VERSION = 4;   // v4 returns v2 RecordBatches + isolation_level
       let correlationId = 0;
 
-      // Kafka wire protocol helpers
-      function writeInt32(buf, offset, val) {
-        buf.writeInt32BE(val, offset);
-        return offset + 4;
-      }
-      function writeInt16(buf, offset, val) {
-        buf.writeInt16BE(val, offset);
-        return offset + 2;
-      }
-      function writeString(buf, offset, str) {
-        if (str === null) {
-          buf.writeInt16BE(-1, offset);
-          return offset + 2;
+      // ── CRC-32C (Castagnoli, polynomial 0x1EDC6F41), table-based ──────────
+      // Node has no built-in CRC-32C; the v2 RecordBatch mandates it over the
+      // bytes from \`attributes\` to the end of the batch. A wrong CRC makes the
+      // broker drop the connection, so this must be exact.
+      const CRC32C_TABLE = (() => {
+        const table = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+          let c = n;
+          for (let k = 0; k < 8; k++) {
+            c = (c & 1) ? (0x82f63b78 ^ (c >>> 1)) : (c >>> 1);
+          }
+          table[n] = c >>> 0;
         }
-        const len = Buffer.byteLength(str, "utf-8");
-        buf.writeInt16BE(len, offset);
-        buf.write(str, offset + 2, len, "utf-8");
-        return offset + 2 + len;
-      }
-      function writeBytes(buf, offset, bytes) {
-        if (bytes === null) {
-          buf.writeInt32BE(-1, offset);
-          return offset + 4;
+        return table;
+      })();
+      function crc32c(buf) {
+        let crc = 0xffffffff;
+        for (let i = 0; i < buf.length; i++) {
+          crc = (CRC32C_TABLE[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8)) >>> 0;
         }
-        buf.writeInt32BE(bytes.length, offset);
-        bytes.copy(buf, offset + 4);
-        return offset + 4 + bytes.length;
+        return (crc ^ 0xffffffff) >>> 0;
       }
 
-      function buildProduceRequest(topicName, messageBytes) {
+      // ── Kafka protocol varints (zigzag-encoded signed varints) ────────────
+      function encodeZigZag(n) {
+        // 32-bit zigzag: (n << 1) ^ (n >> 31)
+        return ((n << 1) ^ (n >> 31)) >>> 0;
+      }
+      function encodeVarintUnsigned(u) {
+        const bytes = [];
+        let v = u >>> 0;
+        while (true) {
+          if ((v & ~0x7f) === 0) { bytes.push(v); break; }
+          bytes.push((v & 0x7f) | 0x80);
+          v >>>= 7;
+        }
+        return Buffer.from(bytes);
+      }
+      function encodeVarint(n) {
+        // signed varint = zigzag then unsigned-varint
+        return encodeVarintUnsigned(encodeZigZag(n));
+      }
+      function decodeVarint(buf, pos) {
+        // returns { value, next } — signed (zigzag-decoded)
+        let result = 0, shift = 0, b;
+        do {
+          b = buf[pos++];
+          result |= (b & 0x7f) << shift;
+          shift += 7;
+        } while (b & 0x80);
+        result = result >>> 0;
+        // zigzag decode
+        const value = (result >>> 1) ^ -(result & 1);
+        return { value, next: pos };
+      }
+
+      // ── v2 RecordBatch builder ────────────────────────────────────────────
+      function buildRecordBatch(valueBytes) {
+        const now = BigInt(Date.now());
+
+        // Build the single record body.
+        // record = attributes:int8(0), timestampDelta:varint(0),
+        //          offsetDelta:varint(0), keyLen:varint(-1 null),
+        //          valueLen:varint(len), value, headerCount:varint(0)
+        const recBody = Buffer.concat([
+          Buffer.from([0]),              // attributes (int8)
+          encodeVarint(0),               // timestampDelta
+          encodeVarint(0),               // offsetDelta
+          encodeVarint(-1),              // keyLen (-1 = null key)
+          encodeVarint(valueBytes.length), // valueLen
+          valueBytes,                    // value (JSON payload bytes)
+          encodeVarint(0),               // headerCount
+        ]);
+        // record length prefix = signed varint of recBody length
+        const record = Buffer.concat([encodeVarint(recBody.length), recBody]);
+        const recordsCount = 1;
+
+        // The portion the CRC covers starts at \`attributes\` and runs to end.
+        // crcBody = attributes:int16(0), lastOffsetDelta:int32(count-1),
+        //           firstTimestamp:int64, maxTimestamp:int64,
+        //           producerId:int64(-1), producerEpoch:int16(-1),
+        //           baseSequence:int32(-1), recordsCount:int32, records
+        const crcBody = Buffer.alloc(2 + 4 + 8 + 8 + 8 + 2 + 4 + 4 + record.length);
+        let c = 0;
+        crcBody.writeInt16BE(0, c); c += 2;                 // attributes
+        crcBody.writeInt32BE(recordsCount - 1, c); c += 4;  // lastOffsetDelta
+        crcBody.writeBigInt64BE(now, c); c += 8;            // firstTimestamp
+        crcBody.writeBigInt64BE(now, c); c += 8;            // maxTimestamp
+        crcBody.writeBigInt64BE(-1n, c); c += 8;            // producerId
+        crcBody.writeInt16BE(-1, c); c += 2;                // producerEpoch
+        crcBody.writeInt32BE(-1, c); c += 4;                // baseSequence
+        crcBody.writeInt32BE(recordsCount, c); c += 4;      // recordsCount
+        record.copy(crcBody, c);
+
+        const crc = crc32c(crcBody);
+
+        // Header before the CRC-covered region:
+        // baseOffset:int64(0), batchLength:int32, partitionLeaderEpoch:int32(-1),
+        // magic:int8(2), crc:uint32. batchLength counts everything AFTER itself
+        // (partitionLeaderEpoch through end of records) = 4 + 1 + 4 + crcBody.
+        const batchLength = 4 + 1 + 4 + crcBody.length;
+        const head = Buffer.alloc(8 + 4 + 4 + 1 + 4);
+        let h = 0;
+        head.writeBigInt64BE(0n, h); h += 8;        // baseOffset
+        head.writeInt32BE(batchLength, h); h += 4;  // batchLength
+        head.writeInt32BE(-1, h); h += 4;           // partitionLeaderEpoch
+        head.writeInt8(2, h); h += 1;               // magic = 2
+        head.writeUInt32BE(crc, h); h += 4;         // crc (CRC-32C)
+
+        return Buffer.concat([head, crcBody]);
+      }
+
+      // ── Produce v3 request ─────────────────────────────────────────────────
+      function buildProduceRequest(topicName, valueBytes) {
         correlationId++;
-        const clientId = "tina4";
+        const clientBuf = Buffer.from("tina4", "utf-8");
         const topicBuf = Buffer.from(topicName, "utf-8");
-        const clientBuf = Buffer.from(clientId, "utf-8");
+        const recordBatch = buildRecordBatch(valueBytes);
 
-        // Build message set (MessageV0)
-        const msgSize = 4 + 1 + 1 + 4 + 4 + messageBytes.length; // crc + magic + attrs + key(-1) + value
-        const msgBuf = Buffer.alloc(12 + msgSize); // offset(8) + size(4) + message
-        let o = 0;
-        // Offset (8 bytes, 0 for produce)
-        msgBuf.writeBigInt64BE(0n, o); o += 8;
-        // Message size
-        msgBuf.writeInt32BE(msgSize, o); o += 4;
-        // CRC placeholder (will be 0 — Kafka accepts for some versions)
-        msgBuf.writeInt32BE(0, o); o += 4;
-        // Magic byte
-        msgBuf.writeInt8(0, o); o += 1;
-        // Attributes
-        msgBuf.writeInt8(0, o); o += 1;
-        // Key (null = -1)
-        msgBuf.writeInt32BE(-1, o); o += 4;
-        // Value
-        msgBuf.writeInt32BE(messageBytes.length, o); o += 4;
-        messageBytes.copy(msgBuf, o); o += messageBytes.length;
+        const body = Buffer.alloc(
+          2 + // transactionalId (-1 null nullable_string)
+          2 + // acks
+          4 + // timeoutMs
+          4 + // topics array count
+          2 + topicBuf.length + // topic name
+          4 + // partitions array count
+          4 + // partition index
+          4 + recordBatch.length // recordSetBytes (int32 size) + batch
+        );
+        let p = 0;
+        body.writeInt16BE(-1, p); p += 2;            // transactionalId = null
+        body.writeInt16BE(1, p); p += 2;             // acks = 1
+        body.writeInt32BE(10000, p); p += 4;         // timeoutMs
+        body.writeInt32BE(1, p); p += 4;             // topics count
+        body.writeInt16BE(topicBuf.length, p); p += 2;
+        topicBuf.copy(body, p); p += topicBuf.length;
+        body.writeInt32BE(1, p); p += 4;             // partitions count
+        body.writeInt32BE(0, p); p += 4;             // partition index 0
+        body.writeInt32BE(recordBatch.length, p); p += 4; // recordSetBytes size
+        recordBatch.copy(body, p);
 
-        // Build request
-        const reqSize = 2 + 2 + 4 + 2 + clientBuf.length + 2 + 4 + 4 + 2 + topicBuf.length + 4 + 4 + 4 + msgBuf.length;
-        const req = Buffer.alloc(4 + reqSize);
-        let pos = 0;
-        req.writeInt32BE(reqSize, pos); pos += 4;
-        // API key (Produce = 0)
-        req.writeInt16BE(API_PRODUCE, pos); pos += 2;
-        // API version
-        req.writeInt16BE(0, pos); pos += 2;
-        // Correlation ID
-        req.writeInt32BE(correlationId, pos); pos += 4;
-        // Client ID
-        req.writeInt16BE(clientBuf.length, pos); pos += 2;
-        clientBuf.copy(req, pos); pos += clientBuf.length;
-        // Required acks
-        req.writeInt16BE(1, pos); pos += 2;
-        // Timeout
-        req.writeInt32BE(5000, pos); pos += 4;
-        // Topic count
-        req.writeInt32BE(1, pos); pos += 4;
-        // Topic name
-        req.writeInt16BE(topicBuf.length, pos); pos += 2;
-        topicBuf.copy(req, pos); pos += topicBuf.length;
-        // Partition count
-        req.writeInt32BE(1, pos); pos += 4;
-        // Partition index
-        req.writeInt32BE(0, pos); pos += 4;
-        // Message set size
-        req.writeInt32BE(msgBuf.length, pos); pos += 4;
-        msgBuf.copy(req, pos);
-
-        return req;
+        return frameRequest(API_PRODUCE, PRODUCE_VERSION, clientBuf, body);
       }
 
+      // ── Fetch v4 request ────────────────────────────────────────────────────
       function buildFetchRequest(topicName, fetchOffset) {
         correlationId++;
-        const clientId = "tina4";
+        const clientBuf = Buffer.from("tina4", "utf-8");
         const topicBuf = Buffer.from(topicName, "utf-8");
-        const clientBuf = Buffer.from(clientId, "utf-8");
 
-        const reqSize = 2 + 2 + 4 + 2 + clientBuf.length + 4 + 4 + 4 + 4 + 2 + topicBuf.length + 4 + 4 + 8 + 4;
-        const req = Buffer.alloc(4 + reqSize);
-        let pos = 0;
-        req.writeInt32BE(reqSize, pos); pos += 4;
-        req.writeInt16BE(API_FETCH, pos); pos += 2;
-        req.writeInt16BE(0, pos); pos += 2;
-        req.writeInt32BE(correlationId, pos); pos += 4;
-        req.writeInt16BE(clientBuf.length, pos); pos += 2;
-        clientBuf.copy(req, pos); pos += clientBuf.length;
-        // Replica ID (-1 for consumer)
-        req.writeInt32BE(-1, pos); pos += 4;
-        // Max wait time
-        req.writeInt32BE(1000, pos); pos += 4;
-        // Min bytes
-        req.writeInt32BE(1, pos); pos += 4;
-        // Topic count
-        req.writeInt32BE(1, pos); pos += 4;
-        // Topic name
-        req.writeInt16BE(topicBuf.length, pos); pos += 2;
-        topicBuf.copy(req, pos); pos += topicBuf.length;
-        // Partition count
-        req.writeInt32BE(1, pos); pos += 4;
-        // Partition
-        req.writeInt32BE(0, pos); pos += 4;
-        // Fetch offset
-        req.writeBigInt64BE(BigInt(fetchOffset), pos); pos += 8;
-        // Max bytes
-        req.writeInt32BE(1048576, pos); pos += 4;
+        // Fetch v4 request body (NO logStartOffset — that arrives in v5+):
+        // replicaId(4), maxWaitMs(4), minBytes(4), maxBytes(4 v3+),
+        // isolationLevel(1 v4+), topics[count]: name, partitions[count]:
+        //   partition(4), fetchOffset(8), partitionMaxBytes(4).
+        const buf = Buffer.alloc(4 + 4 + 4 + 4 + 1 + 4 + (2 + topicBuf.length) + 4 + 4 + 8 + 4);
+        let p = 0;
+        buf.writeInt32BE(-1, p); p += 4;             // replicaId (-1 consumer)
+        buf.writeInt32BE(1000, p); p += 4;           // maxWaitMs
+        buf.writeInt32BE(1, p); p += 4;              // minBytes
+        buf.writeInt32BE(1048576, p); p += 4;        // maxBytes
+        buf.writeInt8(0, p); p += 1;                 // isolationLevel = READ_UNCOMMITTED
+        buf.writeInt32BE(1, p); p += 4;              // topics count
+        buf.writeInt16BE(topicBuf.length, p); p += 2;
+        topicBuf.copy(buf, p); p += topicBuf.length;
+        buf.writeInt32BE(1, p); p += 4;              // partitions count
+        buf.writeInt32BE(0, p); p += 4;              // partition 0
+        buf.writeBigInt64BE(BigInt(fetchOffset), p); p += 8; // fetchOffset
+        buf.writeInt32BE(1048576, p); p += 4;        // partitionMaxBytes
 
-        return req;
+        return frameRequest(API_FETCH, FETCH_VERSION, clientBuf, buf);
+      }
+
+      // Frame a request with header v1: apiKey, apiVersion, correlationId,
+      // clientId (nullable string) + body.
+      function frameRequest(apiKey, apiVersion, clientBuf, body) {
+        const header = Buffer.alloc(2 + 2 + 4 + 2 + clientBuf.length);
+        let p = 0;
+        header.writeInt16BE(apiKey, p); p += 2;
+        header.writeInt16BE(apiVersion, p); p += 2;
+        header.writeInt32BE(correlationId, p); p += 4;
+        header.writeInt16BE(clientBuf.length, p); p += 2;
+        clientBuf.copy(header, p);
+        const payload = Buffer.concat([header, body]);
+        const framed = Buffer.alloc(4 + payload.length);
+        framed.writeInt32BE(payload.length, 0);
+        payload.copy(framed, 4);
+        return framed;
+      }
+
+      // ── Parse a v2 RecordBatch region, return the FIRST record value ───────
+      // \`buf\` is the whole fetch response; [start, end) bounds the partition's
+      // record-set bytes (may contain one or more concatenated batches).
+      function firstRecordValue(buf, start, end) {
+        let pos = start;
+        while (pos + 12 <= end) {
+          // baseOffset(8) + batchLength(4) then batchLength bytes follow.
+          const batchLength = buf.readInt32BE(pos + 8);
+          const batchStart = pos + 12; // first byte of partitionLeaderEpoch
+          const batchEnd = batchStart + batchLength;
+          if (batchLength <= 0 || batchEnd > end) break;
+          // partitionLeaderEpoch(4), magic(1), crc(4), attributes(2),
+          // lastOffsetDelta(4), firstTimestamp(8), maxTimestamp(8),
+          // producerId(8), producerEpoch(2), baseSequence(4), recordsCount(4)
+          const magic = buf.readInt8(batchStart + 4);
+          if (magic !== 2) { pos = batchEnd; continue; }
+          let r = batchStart + 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4;
+          const recordsCount = buf.readInt32BE(r); r += 4;
+          for (let i = 0; i < recordsCount && r < batchEnd; i++) {
+            const recLen = decodeVarint(buf, r); // record length (signed varint)
+            let rp = recLen.next;
+            const recordEnd = rp + recLen.value;
+            rp += 1; // attributes (int8)
+            const tsDelta = decodeVarint(buf, rp); rp = tsDelta.next;
+            const offDelta = decodeVarint(buf, rp); rp = offDelta.next;
+            const keyLen = decodeVarint(buf, rp); rp = keyLen.next;
+            if (keyLen.value >= 0) rp += keyLen.value;
+            const valLen = decodeVarint(buf, rp); rp = valLen.next;
+            if (valLen.value >= 0) {
+              return buf.subarray(rp, rp + valLen.value).toString("utf-8");
+            }
+            r = recordEnd;
+          }
+          pos = batchEnd;
+        }
+        return null;
+      }
+
+      let finished = false;
+      function finish(out, code) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        try { sock.destroy(); } catch (e) { /* ignore */ }
+        if (out) process.stdout.write(out);
+        // Flush stdout before exiting so execFileSync captures it.
+        process.stdout.write("", () => process.exit(code));
       }
 
       const sock = net.createConnection({ host, port }, () => {
         if (operation === "publish") {
-          const msgBytes = Buffer.from(data, "utf-8");
-          const req = buildProduceRequest(topic, msgBytes);
+          const req = buildProduceRequest(topic, Buffer.from(data, "utf-8"));
           sock.write(req);
         } else if (operation === "get") {
-          const req = buildFetchRequest(topic, 0);
-          sock.write(req);
+          sock.write(buildFetchRequest(topic, 0));
         } else {
-          process.stdout.write("__UNSUPPORTED__");
-          sock.destroy();
+          finish("__UNSUPPORTED__", 0);
         }
       });
 
       let buffer = Buffer.alloc(0);
       sock.on("data", (chunk) => {
         buffer = Buffer.concat([buffer, chunk]);
+        if (buffer.length < 4) return;
+        const respSize = buffer.readInt32BE(0);
+        if (buffer.length < 4 + respSize) return;
 
-        if (buffer.length >= 4) {
-          const respSize = buffer.readInt32BE(0);
-          if (buffer.length >= 4 + respSize) {
-            if (operation === "publish") {
-              process.stdout.write("__PUBLISHED__");
-            } else if (operation === "get") {
-              // Parse fetch response to extract message value
-              try {
-                // Skip response header and topic metadata to find message
-                let pos = 4 + 4; // size + correlation_id
-                const topicCount = buffer.readInt32BE(pos); pos += 4;
-                if (topicCount > 0) {
-                  const topicLen = buffer.readInt16BE(pos); pos += 2 + topicLen;
-                  const partCount = buffer.readInt32BE(pos); pos += 4;
-                  if (partCount > 0) {
-                    const partId = buffer.readInt32BE(pos); pos += 4;
-                    const errCode = buffer.readInt16BE(pos); pos += 2;
-                    const hwm = buffer.readBigInt64BE(pos); pos += 8;
-                    const msgSetSize = buffer.readInt32BE(pos); pos += 4;
-
-                    if (msgSetSize > 0 && errCode === 0) {
-                      // Parse first message in message set
-                      const msgOffset = buffer.readBigInt64BE(pos); pos += 8;
-                      const msgSize = buffer.readInt32BE(pos); pos += 4;
-                      const crc = buffer.readInt32BE(pos); pos += 4;
-                      const magic = buffer.readInt8(pos); pos += 1;
-                      const attrs = buffer.readInt8(pos); pos += 1;
-                      const keyLen = buffer.readInt32BE(pos); pos += 4;
-                      if (keyLen > 0) pos += keyLen;
-                      const valLen = buffer.readInt32BE(pos); pos += 4;
-                      if (valLen > 0) {
-                        const val = buffer.subarray(pos, pos + valLen).toString("utf-8");
-                        process.stdout.write(val);
-                      } else {
-                        process.stdout.write("__EMPTY__");
-                      }
-                    } else {
-                      process.stdout.write("__EMPTY__");
-                    }
-                  } else {
-                    process.stdout.write("__EMPTY__");
-                  }
-                } else {
-                  process.stdout.write("__EMPTY__");
-                }
-              } catch (e) {
-                process.stdout.write("__EMPTY__");
+        if (operation === "publish") {
+          // Produce v3 response (after the 4-byte frame size): correlationId(4),
+          // topics[count]: name, partitions[count]: partition(4), errorCode(2),
+          //   baseOffset(8), logAppendTime(8); then throttleTimeMs(4) at the END.
+          // Only the per-partition error code matters here.
+          try {
+            let pos = 4 + 4; // skip frame size + correlationId
+            const topicCount = buffer.readInt32BE(pos); pos += 4;
+            let errCode = 0;
+            for (let t = 0; t < topicCount; t++) {
+              const tl = buffer.readInt16BE(pos); pos += 2 + tl;
+              const pc = buffer.readInt32BE(pos); pos += 4;
+              for (let pi = 0; pi < pc; pi++) {
+                pos += 4;                               // partition index
+                errCode = buffer.readInt16BE(pos); pos += 2; // error code
+                pos += 8;                               // baseOffset
+                pos += 8;                               // logAppendTime (v2+)
               }
             }
-            sock.destroy();
+            if (errCode === 0) {
+              finish("__PUBLISHED__", 0);
+            } else {
+              process.stderr.write("Produce error code " + errCode);
+              finish("__ERROR__" + errCode, 0);
+            }
+          } catch (e) {
+            process.stderr.write("produce parse: " + e.message);
+            finish("__ERROR__", 0);
           }
+          return;
+        } else if (operation === "get") {
+          // Fetch v4 response (after the 4-byte frame size): correlationId(4),
+          // throttleTimeMs(4), topics[count]: name, partitions[count]:
+          //   partition(4), errorCode(2), highWatermark(8), lastStableOffset(8),
+          //   abortedTxns[count](producerId(8)+firstOffset(8)),
+          //   recordSetBytes(int32)+batch.
+          try {
+            let pos = 4 + 4;                            // frame size + correlationId
+            pos += 4;                                   // throttleTimeMs (v1+)
+            const topicCount = buffer.readInt32BE(pos); pos += 4;
+            let out = "__EMPTY__";
+            for (let t = 0; t < topicCount; t++) {
+              const tl = buffer.readInt16BE(pos); pos += 2 + tl;
+              const pc = buffer.readInt32BE(pos); pos += 4;
+              for (let pi = 0; pi < pc; pi++) {
+                pos += 4;                               // partition index
+                const errCode = buffer.readInt16BE(pos); pos += 2;
+                pos += 8;                               // highWatermark
+                pos += 8;                               // lastStableOffset (v4+)
+                const abortedCount = buffer.readInt32BE(pos); pos += 4;
+                if (abortedCount > 0) pos += abortedCount * 16; // (-1 => none, skip)
+                const recSetSize = buffer.readInt32BE(pos); pos += 4;
+                if (errCode === 0 && recSetSize > 0) {
+                  const val = firstRecordValue(buffer, pos, pos + recSetSize);
+                  if (val !== null) out = val;
+                }
+                pos += recSetSize > 0 ? recSetSize : 0;
+              }
+            }
+            finish(out, 0);
+          } catch (e) {
+            process.stderr.write("fetch parse: " + e.message);
+            finish("__EMPTY__", 0);
+          }
+          return;
         }
       });
 
       sock.on("error", (err) => {
         process.stderr.write(err.message);
-        process.exit(1);
+        finish("", 1);
       });
 
-      setTimeout(() => { sock.destroy(); process.exit(1); }, 10000);
+      var timer = setTimeout(() => { finish("", 1); }, 10000);
     `;
 
     try {

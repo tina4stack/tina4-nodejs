@@ -184,6 +184,30 @@ const int2 = new FakeData(7).integer(1, 100);
 assert("new FakeData(7) produces deterministic integer",
   int1 === int2, `got ${int1} vs ${int2}`);
 
+// --- Interleaved seed reproducibility (parity with the Python master) ---
+// Two same-seed instances must produce IDENTICAL sequences even when their
+// calls are INTERLEAVED and the process-global RNG (Math.random) is churned
+// between their draws. This is the exact case that exposed a shared-global-RNG
+// bug in the PHP FakeData; a non-interleaved "consume a fully, then b fully"
+// test passes even with that bug. Node uses a per-instance mulberry32 closure,
+// so it is immune.
+console.log("\n--- Interleaved seed reproducibility ---");
+{
+  const a = new FakeData(7);
+  const b = new FakeData(7);
+  const seqA: unknown[] = [];
+  const seqB: unknown[] = [];
+  for (let i = 0; i < 15; i++) {
+    seqA.push(a.name(), a.email(), a.integer(1, 1_000_000));
+    Math.random();   // churn the GLOBAL RNG between a's and b's draws
+    seqB.push(b.name(), b.email(), b.integer(1, 1_000_000));
+  }
+  const firstDiff = seqA.findIndex((v, i) => v !== seqB[i]);
+  assert("two same-seed instances match when interleaved (+ global Math.random churn)",
+    JSON.stringify(seqA) === JSON.stringify(seqB),
+    `diverged at index ${firstDiff}: ${String(seqA[firstDiff])} vs ${String(seqB[firstDiff])}`);
+}
+
 // --- ORM FakeData extensions ---
 console.log("\n--- ORM FakeData Extensions ---");
 

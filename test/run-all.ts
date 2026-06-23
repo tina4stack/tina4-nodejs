@@ -10,6 +10,7 @@ import { execSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { requireServices, findProvisionedServiceSkips } from "./_serviceGate.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, "..");
@@ -27,6 +28,19 @@ let totalFail = 0;
 let filesRun = 0;
 let filesFailed = 0;
 const failures: string[] = [];
+
+// Real-service gate: collect skips that name a PROVISIONED service that was
+// unavailable. When TINA4_REQUIRE_SERVICES is set, these turn the run red
+// (mirrors tina4-python/tests/conftest.py). MySQL/MSSQL/Firebird are excluded.
+const gateOn = requireServices();
+const serviceSkips: { file: string; reason: string }[] = [];
+
+function collectServiceSkips(label: string, output: string): void {
+  if (!gateOn || !output) return;
+  for (const reason of findProvisionedServiceSkips(output)) {
+    serviceSkips.push({ file: label, reason });
+  }
+}
 
 console.log(`\n\x1b[1m=== Tina4 Test Suite — ${allFiles.length} test files ===\x1b[0m\n`);
 
@@ -52,6 +66,8 @@ for (const file of allFiles) {
     totalFail += failed;
     filesRun++;
 
+    collectServiceSkips(label, output);
+
     if (failed > 0) {
       console.log(`  \x1b[31mFAIL\x1b[0m ${label} (${passed} passed, ${failed} failed)`);
       filesFailed++;
@@ -73,6 +89,8 @@ for (const file of allFiles) {
 
     totalPass += passed;
     totalFail += failed;
+
+    collectServiceSkips(label, output);
 
     console.log(`  \x1b[31mFAIL\x1b[0m ${label} (${passed} passed, ${failed} failed)`);
     failures.push(label);
@@ -103,4 +121,23 @@ if (failures.length > 0) {
 }
 console.log(`${"=".repeat(60)}\n`);
 
-process.exit(totalFail > 0 || filesFailed > 0 ? 1 : 0);
+// Real-service gate verdict. With TINA4_REQUIRE_SERVICES set, a skip caused by
+// a PROVISIONED service being unavailable fails the whole run — a green skip of
+// an integration test in CI is exactly what we must never allow.
+if (gateOn && serviceSkips.length > 0) {
+  console.log(
+    "\x1b[31m  TINA4_REQUIRE_SERVICES is set, but real-service tests SKIPPED because a\x1b[0m"
+  );
+  console.log(
+    "\x1b[31m  provisioned service or client library was unavailable:\x1b[0m"
+  );
+  for (const { file, reason } of serviceSkips) {
+    console.log(`\x1b[31m    - [${file}] ${reason}\x1b[0m`);
+  }
+  console.log(
+    "\x1b[31m  Provision the service / install the client, or unset TINA4_REQUIRE_SERVICES.\x1b[0m\n"
+  );
+}
+
+const gateFailed = gateOn && serviceSkips.length > 0;
+process.exit(totalFail > 0 || filesFailed > 0 || gateFailed ? 1 : 0);

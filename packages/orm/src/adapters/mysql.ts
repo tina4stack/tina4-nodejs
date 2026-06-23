@@ -163,12 +163,30 @@ export class MysqlAdapter implements DatabaseAdapter {
     return rows[0] ?? null;
   }
 
-  insert(table: string, data: Record<string, unknown>): DatabaseResult {
+  insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): DatabaseResult {
     throw new Error("Use insertAsync() for MySQL.");
   }
 
-  async insertAsync(table: string, data: Record<string, unknown>): Promise<DatabaseResult> {
+  async insertAsync(table: string, data: Record<string, unknown> | Record<string, unknown>[]): Promise<DatabaseResult> {
     this.ensureConnected();
+    // A list of dicts is a batch insert — one parameterised INSERT run per row via
+    // executeManyAsync (ONE connection). See PostgresAdapter for the rationale;
+    // without this branch a list crashed/mis-built SQL via Object.keys() on the array.
+    if (Array.isArray(data)) {
+      if (data.length === 0) return { success: true, rowsAffected: 0 };
+      const keys = Object.keys(data[0]);
+      const placeholders = keys.map(() => "?").join(", ");
+      const sql = `INSERT INTO \`${table}\` (\`${keys.join("`, `")}\`) VALUES (${placeholders})`;
+      const paramsList = data.map((row) => keys.map((k) => row[k]));
+      try {
+        const result = await this.executeManyAsync(sql, paramsList);
+        if (result.lastInsertId !== undefined) this._lastInsertId = result.lastInsertId;
+        return { success: true, rowsAffected: result.totalAffected, lastInsertId: result.lastInsertId };
+      } catch (e) {
+        return { success: false, rowsAffected: 0, error: (e as Error).message };
+      }
+    }
+
     const keys = Object.keys(data);
     const placeholders = keys.map(() => "?").join(", ");
     const sql = `INSERT INTO \`${table}\` (\`${keys.join("`, `")}\`) VALUES (${placeholders})`;
