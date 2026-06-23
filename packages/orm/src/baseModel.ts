@@ -679,7 +679,9 @@ export class BaseModel {
         // the caller; don't overwrite it with the driver's last_id.
         if (pkField?.autoIncrement) {
           // RETURNING result: pg puts it in rows[0][pkCol]; normalise here.
-          let newId = extractLastInsertId(result);
+          // string is allowed for a non-integer PK surfaced by lastInsertId()
+          // (e.g. a PostgreSQL UUID PK) — #256.
+          let newId: number | bigint | string | null = extractLastInsertId(result);
           if (newId === null && result && typeof result === "object") {
             const rows = (result as any).rows;
             if (Array.isArray(rows) && rows[0]) {

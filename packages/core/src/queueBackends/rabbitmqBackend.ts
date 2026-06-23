@@ -242,6 +242,8 @@ export class RabbitMQBackend implements QueueBackend {
       let buffer = Buffer.alloc(0);
       let step = "handshake";
       let deliveryTag = null;
+      let expectedBody = 0;
+      let receivedBody = 0;
 
       sock.on("data", (chunk) => {
         buffer = Buffer.concat([buffer, chunk]);
@@ -264,11 +266,29 @@ export class RabbitMQBackend implements QueueBackend {
             const methodId = payload.readUInt16BE(2);
             handleMethod(classId, methodId, payload.subarray(4), channel);
           } else if (frameType === 2) { // HEADER frame
-            // Content header — skip for basic.get
+            // Content header — capture the declared body size so we know when the
+            // body is complete (a body may arrive in several frames).
+            if (operation === "get") {
+              // body-size is a 64-bit field at offset 4 of the header payload;
+              // the low 32 bits are enough for our JSON payloads.
+              expectedBody = payload.readUInt32BE(8);
+              receivedBody = 0;
+            }
           } else if (frameType === 3) { // BODY frame
             // Content body
             const body = payload.toString("utf-8");
             process.stdout.write(body);
+            if (operation === "get") {
+              receivedBody += payload.length;
+              // Once the whole body has arrived, cleanly close the connection so
+              // the child exits 0 with the body on stdout. Without this the get
+              // handler fell through to the 10s watchdog (exit 1), so pop()
+              // always saw a failed child and returned null even though the
+              // message body had been written to stdout.
+              if (receivedBody >= expectedBody) {
+                closeConnection();
+              }
+            }
           }
         }
       }
@@ -310,11 +330,29 @@ export class RabbitMQBackend implements QueueBackend {
           sendMethod(0, 10, 11, payload.subarray(0, offset));
         }
         else if (classId === 10 && methodId === 30) {
-          // Connection.Tune → send Connection.Tune-Ok + Connection.Open
-          const tuneOk = Buffer.alloc(12);
-          tuneOk.writeUInt16BE(0, 0);     // channel-max
-          tuneOk.writeUInt32BE(131072, 2); // frame-max
-          tuneOk.writeUInt16BE(60, 6);     // heartbeat
+          // Connection.Tune → send Connection.Tune-Ok + Connection.Open.
+          // AMQP 0-9-1 requires TuneOk values to NOT exceed the server's proposal.
+          // The broker's Tune args are channel-max:short, frame-max:long,
+          // heartbeat:short. Hardcoding channel-max=0 means "no limit", which
+          // RabbitMQ treats as exceeding its proposed channel-max (e.g. 2047) and
+          // it aborts the connection right after Open — so negotiate instead.
+          const desiredFrameMax = 131072;
+          const desiredHeartbeat = 60;
+          const serverChannelMax = args.length >= 2 ? args.readUInt16BE(0) : 0;
+          const serverFrameMax = args.length >= 6 ? args.readUInt32BE(2) : 0;
+          const serverHeartbeat = args.length >= 8 ? args.readUInt16BE(6) : 0;
+
+          // channel-max: echo the server's value (its cap); 0 = unlimited.
+          const channelMax = serverChannelMax;
+          // frame-max: min(desired, server), treating 0 as unlimited on either side.
+          const frameMax = serverFrameMax === 0 ? desiredFrameMax : Math.min(desiredFrameMax, serverFrameMax);
+          // heartbeat: our choice, clamped to the server's if it proposed a non-zero one.
+          const heartbeat = serverHeartbeat === 0 ? desiredHeartbeat : Math.min(desiredHeartbeat, serverHeartbeat);
+
+          const tuneOk = Buffer.alloc(8);
+          tuneOk.writeUInt16BE(channelMax, 0); // channel-max (negotiated)
+          tuneOk.writeUInt32BE(frameMax, 2);   // frame-max (negotiated)
+          tuneOk.writeUInt16BE(heartbeat, 6);  // heartbeat (negotiated)
           sendMethod(0, 10, 31, tuneOk);
 
           // Connection.Open
@@ -334,8 +372,13 @@ export class RabbitMQBackend implements QueueBackend {
         }
         else if (classId === 20 && methodId === 11) {
           // Channel.Open-Ok → declare queue
+          // Payload: reserved(2) + queue short-string(1 + len) + flags(1) +
+          // arguments empty-table(4) = 8 + len bytes. (Was 7 + len, which
+          // overflowed the 4-byte empty-table write at offset 4 + len and threw
+          // ERR_OUT_OF_RANGE — swallowed by the catch, so publish/get/size all
+          // silently failed even once the handshake succeeded.)
           const qBuf = Buffer.from(queueName, "utf-8");
-          const declPayload = Buffer.alloc(7 + qBuf.length);
+          const declPayload = Buffer.alloc(8 + qBuf.length);
           declPayload.writeUInt16BE(0, 0); // reserved
           declPayload.writeUInt8(qBuf.length, 2);
           qBuf.copy(declPayload, 3);
@@ -357,25 +400,21 @@ export class RabbitMQBackend implements QueueBackend {
 
             sendMethod(1, 60, 40, pubPayload);
 
-            // Content header
+            // Content header frame. AMQP 0-9-1 content header body is:
+            // class-id(2) + weight(2) + body-size(8) + property-flags(2), then
+            // one entry per set property flag. With property-flags = 0 (no
+            // properties) the header is EXACTLY 14 bytes. The previous code
+            // allocated 14 + 1 + ct.length + 1 = 32 bytes but only wrote the
+            // first 14, leaving 18 trailing zero bytes that the broker parsed as
+            // bogus property data — it replied INTERNAL_ERROR (541) and closed
+            // the connection, so no message was ever stored. Allocate exactly 14.
             const bodyBuf = Buffer.from(data, "utf-8");
-            const header = Buffer.alloc(18);
-            header.writeUInt16BE(60, 0); // class = basic
-            header.writeUInt16BE(0, 2);  // weight
-            // body size (64-bit, we only use lower 32)
-            header.writeUInt32BE(0, 4);
-            header.writeUInt32BE(bodyBuf.length, 8);
-            header.writeUInt16BE(0x6000, 12); // property flags: delivery-mode + content-type
-            // content-type
-            const ct = Buffer.from("application/json");
-            header.writeUInt8(ct.length, 14);
-
-            const fullHeader = Buffer.alloc(14 + 1 + ct.length + 1);
-            fullHeader.writeUInt16BE(60, 0);
-            fullHeader.writeUInt16BE(0, 2);
-            fullHeader.writeUInt32BE(0, 4);
-            fullHeader.writeUInt32BE(bodyBuf.length, 8);
-            fullHeader.writeUInt16BE(0x0000, 12); // no properties for simplicity
+            const fullHeader = Buffer.alloc(14);
+            fullHeader.writeUInt16BE(60, 0);          // class = basic
+            fullHeader.writeUInt16BE(0, 2);           // weight
+            fullHeader.writeUInt32BE(0, 4);           // body-size high 32 bits
+            fullHeader.writeUInt32BE(bodyBuf.length, 8); // body-size low 32 bits
+            fullHeader.writeUInt16BE(0x0000, 12);     // property flags: none set
 
             // Send header frame
             const hFrame = Buffer.alloc(7 + fullHeader.length + 1);
@@ -440,9 +479,21 @@ export class RabbitMQBackend implements QueueBackend {
           closeConnection();
         }
         else if (classId === 10 && methodId === 50) {
-          // Connection.Close → send Connection.Close-Ok
+          // Connection.Close (server-initiated, e.g. a channel/protocol error)
+          // → send Connection.Close-Ok and exit non-zero so the caller sees the
+          // failure rather than a half-completed operation.
           sendMethod(0, 10, 51, Buffer.alloc(0));
           sock.destroy();
+          process.exit(1);
+        }
+        else if (classId === 10 && methodId === 51) {
+          // Connection.Close-Ok — the broker has acknowledged our Close, which
+          // means it has fully processed everything we sent (incl. a Basic.Publish
+          // and its content frames). Only now is it safe to drop the socket. The
+          // previous code destroyed the socket on a blind 200ms timer right after
+          // writing the body frame, racing the broker and dropping the message.
+          sock.destroy();
+          process.exit(0);
         }
       }
 
@@ -482,14 +533,26 @@ export class RabbitMQBackend implements QueueBackend {
       }
 
       function closeConnection() {
-        // Send Connection.Close
-        const closePayload = Buffer.alloc(6);
+        // Send Connection.Close — payload is reply-code(2) + reply-text
+        // short-string(1 + 0) + class-id(2) + method-id(2) = 7 bytes. (Was
+        // Buffer.alloc(6), so the method-id write at offset 5 overflowed and
+        // threw ERR_OUT_OF_RANGE right after "__PUBLISHED__" was written —
+        // swallowed by the parent catch, so push() reported "publish failed"
+        // even though the message had already reached the broker.)
+        const closePayload = Buffer.alloc(7);
         closePayload.writeUInt16BE(200, 0); // reply code
-        closePayload.writeUInt8(0, 2); // reply text (empty)
+        closePayload.writeUInt8(0, 2); // reply text (empty short-string)
         closePayload.writeUInt16BE(0, 3); // class
         closePayload.writeUInt16BE(0, 5); // method
         sendMethod(0, 10, 50, closePayload);
-        setTimeout(() => sock.destroy(), 500);
+        // Do NOT destroy the socket here — wait for the broker's
+        // Connection.Close-Ok (10/51), which confirms it has fully processed
+        // everything we sent (the Basic.Publish + content frames in particular).
+        // The 10/51 handler exits 0. This safety net only fires if the broker
+        // never replies, and still exits 0 because stdout already carries the
+        // operation's result (the message was flushed to the socket before
+        // Close was sent).
+        setTimeout(() => { sock.destroy(); process.exit(0); }, 3000).unref();
       }
 
       sock.on("error", (err) => {
@@ -497,7 +560,10 @@ export class RabbitMQBackend implements QueueBackend {
         process.exit(1);
       });
 
-      setTimeout(() => { sock.destroy(); process.exit(1); }, 10000);
+      // Watchdog: only fires if an operation never completes (handshake hangs).
+      // unref() so a completed operation's pending timer can't keep the event
+      // loop alive and delay/override the clean exit above.
+      setTimeout(() => { sock.destroy(); process.exit(1); }, 10000).unref();
     `;
 
     try {

@@ -397,7 +397,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     return this.adapter.columns(table);
   }
 
-  lastInsertId(): number | bigint | null {
+  lastInsertId(): number | bigint | string | null {
     return this.adapter.lastInsertId();
   }
 

@@ -202,7 +202,40 @@ await withFreshDb(async (db) => {
     `result=${JSON.stringify(result)}`);
   assert("insertAsync on UUID PK returns a non-null lastInsertId (uuid)",
     result?.lastInsertId !== null && result?.lastInsertId !== undefined);
+  // #256: the surfaced id is the actual 36-char UUID string the row was given,
+  // not a coerced number/null.
+  assert("insertAsync UUID lastInsertId is the actual uuid string",
+    typeof result?.lastInsertId === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result.lastInsertId),
+    `lastInsertId=${JSON.stringify(result?.lastInsertId)}`);
 });
+
+// 7. SERIAL-PK contract guard (#256): widening lastInsertId to accept a UUID
+// string must NOT break the integer auto-increment path — a SERIAL PK insert
+// still returns the new integer id as a number.
+await (async () => {
+  const db = new PostgresAdapter({
+    host: PG_HOST, port: PG_PORT, user: PG_USER, password: PG_PASS, database: PG_DB,
+  });
+  await db.connect();
+  await db.executeAsync("DROP TABLE IF EXISTS t4_issue256_serial");
+  await db.executeAsync(
+    "CREATE TABLE t4_issue256_serial (id SERIAL PRIMARY KEY, name text)",
+  );
+  try {
+    const r1 = await db.insertAsync("t4_issue256_serial", { name: "g1" });
+    const r2 = await db.insertAsync("t4_issue256_serial", { name: "g2" });
+    assert("insertAsync on SERIAL PK returns a numeric lastInsertId",
+      typeof r1?.lastInsertId === "number" && typeof r2?.lastInsertId === "number",
+      `r1=${JSON.stringify(r1?.lastInsertId)} r2=${JSON.stringify(r2?.lastInsertId)}`);
+    assert("SERIAL lastInsertId increments (id2 = id1 + 1)",
+      Number(r2?.lastInsertId) === Number(r1?.lastInsertId) + 1,
+      `r1=${r1?.lastInsertId} r2=${r2?.lastInsertId}`);
+  } finally {
+    try { await db.executeAsync("DROP TABLE IF EXISTS t4_issue256_serial"); } catch {}
+    db.close();
+  }
+})();
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

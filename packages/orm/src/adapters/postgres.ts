@@ -68,7 +68,10 @@ export interface PostgresConfig {
 
 export class PostgresAdapter implements DatabaseAdapter {
   private client: InstanceType<typeof import("pg").Client> | null = null;
-  private _lastInsertId: number | bigint | null = null;
+  // string is included for non-integer primary keys: a UUID PK (the common
+  // `id uuid PRIMARY KEY DEFAULT gen_random_uuid()` shape) returns its id as a
+  // 36-char string via RETURNING, not a SERIAL integer (#256).
+  private _lastInsertId: number | bigint | string | null = null;
 
   constructor(private config: PostgresConfig | string) {}
 
@@ -115,16 +118,20 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   /**
    * Normalise an `id` column value (typed `unknown` because pg row values are
-   * `unknown`) into the `number | bigint | null` shape `_lastInsertId` /
-   * `DatabaseResult.lastInsertId` expect. At runtime PG returns numeric PKs as
-   * number/bigint (the int8/numeric type parsers above coerce them to Number);
-   * a numeric string is coerced, anything else (null/undefined/non-numeric)
-   * becomes null.
+   * `unknown`) into the shape `_lastInsertId` / `DatabaseResult.lastInsertId`
+   * expect. At runtime PG returns numeric PKs as number/bigint (the int8/numeric
+   * type parsers above coerce them to Number); a numeric string is coerced to a
+   * number so the SERIAL path always returns the integer id.
+   *
+   * A non-numeric string id — the UUID PK case (`id uuid PRIMARY KEY DEFAULT
+   * gen_random_uuid()`) returned via RETURNING — is preserved as-is so the
+   * insert surfaces the actual id instead of null (#256). null/undefined/empty
+   * still become null.
    */
-  private normalizeId(value: unknown): number | bigint | null {
+  private normalizeId(value: unknown): number | bigint | string | null {
     if (typeof value === "number" || typeof value === "bigint") return value;
-    if (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value))) {
-      return Number(value);
+    if (typeof value === "string" && value.trim() !== "") {
+      return Number.isNaN(Number(value)) ? value : Number(value);
     }
     return null;
   }
@@ -337,7 +344,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     }));
   }
 
-  lastInsertId(): number | bigint | null {
+  lastInsertId(): number | bigint | string | null {
     return this._lastInsertId;
   }
 

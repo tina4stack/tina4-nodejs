@@ -520,6 +520,19 @@ export class Database {
   }
 
   /**
+   * Set the engine type ("sqlite" | "postgres" | "mysql" | "mssql" |
+   * "firebird" | "mongodb"). The static `Database.create` factory assigns the
+   * private `dbType` directly; `initDatabase()` (a free function, no private
+   * access) routes through this setter so a URL connection is correctly typed.
+   * Without it a `postgres://` connection kept the `"sqlite"` default and
+   * `getNextId()` took the SQLite branch — hitting the non-existent
+   * `tina4_sequences` table on PostgreSQL instead of native sequences (#255).
+   */
+  setDbType(type: string): void {
+    this.dbType = type;
+  }
+
+  /**
    * Async factory: creates a Database from a connection URL.
    * Works with all adapter types (sqlite, postgres, mysql, mssql, firebird).
    *
@@ -1434,11 +1447,19 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
     if (pool > 0) {
       // Pool-aware path — delegate to Database.create which manages
       // round-robin adapter rotation and async-local-storage transaction pinning.
-      // Database.create already exposes the global; exposeDb here is idempotent.
+      // Database.create already sets dbType + exposes the global; exposeDb here
+      // is idempotent.
       return exposeDb(await Database.create(url, resolvedUser, resolvedPassword, pool));
     }
+    // Single-connection URL path. Parse the URL so the engine type is known and
+    // set it on the Database — otherwise dbType keeps its "sqlite" default and a
+    // postgres://… connection takes the SQLite getNextId branch, crashing on the
+    // missing tina4_sequences table instead of using native sequences (#255).
+    const parsed = parseDatabaseUrl(url, resolvedUser, resolvedPassword);
     const adapter = await createAdapterFromUrl(url, resolvedUser, resolvedPassword);
-    return exposeDb(new Database(setAdapter(adapter)));
+    const db = new Database(setAdapter(adapter));
+    db.setDbType(parsed.type);
+    return exposeDb(db);
   }
 
   // Legacy config path — normalize "sqlserver" to "mssql"
@@ -1459,11 +1480,21 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
     );
   }
 
+  // Legacy config-object path. As with the URL path above, the constructed
+  // Database must be told its engine type — otherwise dbType keeps its "sqlite"
+  // default and a `{ type: "postgres" }` connection takes the SQLite getNextId
+  // branch and crashes on the missing tina4_sequences table (#255).
+  const finished = (adapter: DatabaseAdapter): Database => {
+    const db = new Database(setAdapter(adapter));
+    db.setDbType(type);
+    return exposeDb(db);
+  };
+
   switch (type) {
     case "sqlite": {
       const { SQLiteAdapter } = await import("./adapters/sqlite.js");
       const adapter = new SQLiteAdapter(config?.path ?? "./data/tina4.db");
-      return exposeDb(new Database(setAdapter(adapter)));
+      return finished(adapter);
     }
     case "postgres": {
       const { PostgresAdapter } = await import("./adapters/postgres.js");
@@ -1475,7 +1506,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      return exposeDb(new Database(setAdapter(adapter)));
+      return finished(adapter);
     }
     case "mysql": {
       const { MysqlAdapter } = await import("./adapters/mysql.js");
@@ -1487,7 +1518,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      return exposeDb(new Database(setAdapter(adapter)));
+      return finished(adapter);
     }
     case "mssql": {
       const { MssqlAdapter } = await import("./adapters/mssql.js");
@@ -1499,7 +1530,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      return exposeDb(new Database(setAdapter(adapter)));
+      return finished(adapter);
     }
     case "firebird": {
       const { FirebirdAdapter } = await import("./adapters/firebird.js");
@@ -1511,7 +1542,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
         database: config?.database,
       });
       await adapter.connect();
-      return exposeDb(new Database(setAdapter(adapter)));
+      return finished(adapter);
     }
     case "mongodb": {
       const { MongodbAdapter } = await import("./adapters/mongodb.js");
@@ -1524,14 +1555,14 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
       const connectionString = `mongodb://${creds}${host}:${port}/${database}`;
       const adapter = new MongodbAdapter(connectionString);
       await adapter.connect();
-      return exposeDb(new Database(setAdapter(adapter)));
+      return finished(adapter);
     }
     case "odbc": {
       const { OdbcAdapter } = await import("./adapters/odbc.js");
       const connStr = config?.connectionString ?? config?.url?.replace(/^odbc:\/\/\//, "") ?? "";
       const adapter = new OdbcAdapter({ connectionString: connStr });
       await adapter.connect();
-      return exposeDb(new Database(setAdapter(adapter)));
+      return finished(adapter);
     }
     default:
       throw new Error(`Unknown database type: ${type}`);

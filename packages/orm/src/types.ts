@@ -52,7 +52,9 @@ export interface ColumnInfo {
 export interface DatabaseResult {
   success: boolean;
   rowsAffected: number;
-  lastInsertId?: number | bigint;
+  // string covers a non-integer primary key (e.g. a PostgreSQL UUID PK returns
+  // its id as a string via RETURNING, not a SERIAL integer) — #256.
+  lastInsertId?: number | bigint | string;
   error?: string;
 }
 
@@ -96,8 +98,8 @@ export interface DatabaseAdapter {
   /** List columns with types for a table. */
   columns(table: string): ColumnInfo[];
 
-  /** Get the last auto-increment id. */
-  lastInsertId(): number | bigint | null;
+  /** Get the last inserted id (auto-increment integer, or a UUID/string PK). */
+  lastInsertId(): number | bigint | string | null;
 
   /** Close the connection. */
   close(): void;

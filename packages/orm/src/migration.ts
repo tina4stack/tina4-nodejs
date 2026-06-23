@@ -28,15 +28,41 @@ const ALTER_ADD_RE =
   /^\s*ALTER\s+TABLE\s+(?:"([^"]+)"|(\S+))\s+ADD\s+(?:"([^"]+)"|(\S+))/i;
 
 /**
- * Check if the adapter is a Firebird adapter (duck-type check).
- * We look for the `queryAsync` method and `translateSql` which are
- * unique to the Firebird adapter.
+ * Check if the adapter is a Firebird adapter.
+ *
+ * Detection is by the adapter's class name (`constructor.name`) — the engine
+ * discriminator used throughout this package (see `engineOf`). A previous
+ * duck-type check (`queryAsync` + `translateSql`) was WRONG: every async
+ * adapter (Postgres/MySQL/MSSQL) exposes BOTH of those, so the Postgres
+ * adapter was mis-identified as Firebird. That routed the migration-tracking
+ * CREATE into the Firebird `CREATE GENERATOR` + no-default-id DDL and the
+ * record INSERT into the Firebird `GEN_ID()` path — both invalid on Postgres,
+ * so `migrate()` died on the FIRST migration with "syntax error" / aborted
+ * transaction. Class-name detection fixes the mis-route without altering the
+ * runner loop, transaction handling, or raise/return semantics.
  */
+/**
+ * Unwrap a CachedDatabaseAdapter (what initDatabase() returns) to the concrete
+ * underlying adapter. Engine detection keys on constructor.name, which on the
+ * wrapper reads "CachedDatabaseAdapter" — so without unwrapping, every real app
+ * (all of which go through initDatabase) is mis-detected as SQLite and migrate()
+ * emits AUTOINCREMENT on Postgres/MySQL/MSSQL. Drills through any nesting; a raw
+ * adapter passes through unchanged.
+ */
+function unwrapAdapter(db: DatabaseAdapter): DatabaseAdapter {
+  let cur: unknown = db;
+  while (
+    cur &&
+    (cur as { constructor?: { name?: string } }).constructor?.name === "CachedDatabaseAdapter" &&
+    (cur as { adapter?: unknown }).adapter
+  ) {
+    cur = (cur as { adapter: unknown }).adapter;
+  }
+  return cur as DatabaseAdapter;
+}
+
 function isFirebirdAdapter(db: DatabaseAdapter): boolean {
-  return (
-    typeof (db as any).queryAsync === "function" &&
-    typeof (db as any).translateSql === "function"
-  );
+  return unwrapAdapter(db).constructor.name === "FirebirdAdapter";
 }
 
 /**
@@ -87,12 +113,41 @@ const CREATE_TABLE_RE =
 /**
  * Identify the database engine via the adapter's class name.
  * (constructor.name is the engine discriminator used throughout this package.)
+ *
+ * SQLite is the default for any unrecognized adapter (matches the rest of the
+ * package and Python's `db.get_database_type() or "sqlite"`).
  */
-function engineOf(db: DatabaseAdapter): "firebird" | "mssql" | "other" {
-  const name = db.constructor.name;
-  if (name === "FirebirdAdapter") return "firebird";
-  if (name === "MssqlAdapter") return "mssql";
-  return "other";
+function engineOf(
+  db: DatabaseAdapter,
+): "firebird" | "mssql" | "postgres" | "mysql" | "sqlite" {
+  switch (unwrapAdapter(db).constructor.name) {
+    case "FirebirdAdapter": return "firebird";
+    case "MssqlAdapter": return "mssql";
+    case "PostgresAdapter": return "postgres";
+    case "MysqlAdapter": return "mysql";
+    default: return "sqlite";
+  }
+}
+
+/**
+ * Engine-aware auto-increment integer primary-key column for the
+ * `tina4_migration` tracking table.
+ *
+ * Each engine spells an auto-increment integer PK differently — SQLite uses
+ * AUTOINCREMENT, PostgreSQL SERIAL, MySQL AUTO_INCREMENT, MSSQL IDENTITY(1,1).
+ * Emitting raw `AUTOINCREMENT` on any non-SQLite engine fails with
+ * "syntax error at or near AUTOINCREMENT" — which is exactly why `migrate()`
+ * was unusable on PostgreSQL/MySQL/MSSQL. Mirrors the engine-aware id DDL in
+ * the adapters' createTableAsync and Python's `_create_v3_table`. (Firebird is
+ * handled by its own generator branch and never reaches here.)
+ */
+function migrationIdColumn(db: DatabaseAdapter): string {
+  switch (engineOf(db)) {
+    case "postgres": return "id SERIAL PRIMARY KEY";
+    case "mysql": return "id INTEGER PRIMARY KEY AUTO_INCREMENT";
+    case "mssql": return "id INTEGER IDENTITY(1,1) PRIMARY KEY";
+    default: return "id INTEGER PRIMARY KEY AUTOINCREMENT";
+  }
 }
 
 /**
@@ -192,7 +247,7 @@ function buildAddColumnSql(
   colName: string,
   def: FieldDefinition,
 ): string {
-  const engine = adapter.constructor.name;
+  const engine = unwrapAdapter(adapter).constructor.name;
   const isPg = engine === "PostgresAdapter";
   const typeMap: Record<string, string> = isPg
     ? { integer: "INTEGER", string: def.maxLength ? `VARCHAR(${def.maxLength})` : "VARCHAR(255)", text: "TEXT", number: "DOUBLE PRECISION", numeric: "DOUBLE PRECISION", boolean: "BOOLEAN", datetime: "TIMESTAMP" }
@@ -237,12 +292,24 @@ export async function ensureMigrationTable(): Promise<void> {
         applied_at VARCHAR(50) NOT NULL
       )`);
     } else {
-      await adapterCreateTable(adapter, MIGRATION_TABLE, {
-        id: { type: "integer", primaryKey: true, autoIncrement: true },
-        name: { type: "string", required: true },
-        batch: { type: "integer", required: true },
-        applied_at: { type: "datetime", default: "now" },
-      });
+      // Engine-aware bookkeeping DDL (non-Firebird) — same per-engine id column
+      // and column types as the inline `migrate()` bootstrap. Raw AUTOINCREMENT
+      // is SQLite-only and a syntax error elsewhere; SERIAL/AUTO_INCREMENT/
+      // IDENTITY(1,1) are produced via migrationIdColumn(). VARCHAR name (UNIQUE-
+      // safe on MySQL) and DATETIME applied_at on MSSQL (TIMESTAMP is rowversion
+      // there). SQLite gives VARCHAR TEXT affinity, so SQLite stays unchanged.
+      // applied_at keeps a CURRENT_TIMESTAMP default so recordMigration() (which
+      // inserts only name+batch) still works — same as the prior createTable.
+      const idCol = migrationIdColumn(adapter);
+      const engine = engineOf(adapter);
+      const ifNotExists = engine === "mssql" ? "" : "IF NOT EXISTS ";
+      const appliedType = engine === "mssql" ? "DATETIME" : "TEXT";
+      await adapterExecute(adapter, `CREATE TABLE ${ifNotExists}"${MIGRATION_TABLE}" (
+        ${idCol},
+        name VARCHAR(500) NOT NULL,
+        batch INTEGER NOT NULL DEFAULT 1,
+        applied_at ${appliedType} NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
     }
   } else {
     // Ensure batch column exists on older tables that only had passed/description
@@ -629,32 +696,30 @@ export async function migrate(
         batch INTEGER NOT NULL DEFAULT 1,
         applied_at VARCHAR(50) NOT NULL
       )`);
-    } else if (db.constructor.name === "PostgresAdapter") {
-      // PostgreSQL: SERIAL + TIMESTAMP (not AUTOINCREMENT/TEXT).
-      await adapterExecute(db, `CREATE TABLE IF NOT EXISTS "${MIGRATION_TABLE}" (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        batch INTEGER NOT NULL DEFAULT 1,
-        applied_at TEXT NOT NULL
-      )`);
-    } else if (engineOf(db) === "mssql") {
-      // MSSQL has no AUTOINCREMENT / IF NOT EXISTS — route the bootstrap
-      // through the adapter's engine-aware createTable (IDENTITY(1,1) etc.),
-      // exactly like ensureMigrationTable does. Emitting raw
-      // AUTOINCREMENT/IF NOT EXISTS here is invalid on SQL Server.
-      await adapterCreateTable(db, MIGRATION_TABLE, {
-        id: { type: "integer", primaryKey: true, autoIncrement: true },
-        name: { type: "string", required: true },
-        batch: { type: "integer", required: true },
-        applied_at: { type: "datetime", default: "now" },
-      });
     } else {
-      // SQLite / MySQL — both support IF NOT EXISTS + AUTOINCREMENT/AUTO_INCREMENT.
-      await adapterExecute(db, `CREATE TABLE IF NOT EXISTS "${MIGRATION_TABLE}" (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
+      // Engine-aware bookkeeping DDL (non-Firebird). Each engine spells an
+      // auto-increment integer PK differently — SQLite AUTOINCREMENT, Postgres
+      // SERIAL, MySQL AUTO_INCREMENT, MSSQL IDENTITY(1,1) — so the id column is
+      // built per engine (raw `AUTOINCREMENT` is a syntax error on every other
+      // engine; that is the bug that made `migrate()` unusable on
+      // Postgres/MySQL/MSSQL). The `name` column is VARCHAR (not TEXT) so it can
+      // carry a UNIQUE index on MySQL; `applied_at` is DATETIME on MSSQL
+      // (TIMESTAMP there is rowversion, not a real timestamp). SQLite gives
+      // VARCHAR TEXT affinity, so SQLite behaviour is byte-for-byte unchanged.
+      // MSSQL has no IF NOT EXISTS (already guarded by the tableExists check
+      // above), so it is omitted; the other engines tolerate it being absent.
+      // applied_at keeps a CURRENT_TIMESTAMP default so the recordMigration()
+      // path (which inserts only name+batch) still works — preserving the prior
+      // engine-aware createTable behaviour that supplied that default.
+      const idCol = migrationIdColumn(db);
+      const engine = engineOf(db);
+      const ifNotExists = engine === "mssql" ? "" : "IF NOT EXISTS ";
+      const appliedType = engine === "mssql" ? "DATETIME" : "TEXT";
+      await adapterExecute(db, `CREATE TABLE ${ifNotExists}"${MIGRATION_TABLE}" (
+        ${idCol},
+        name VARCHAR(500) NOT NULL,
         batch INTEGER NOT NULL DEFAULT 1,
-        applied_at TEXT NOT NULL
+        applied_at ${appliedType} NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`);
     }
   } else {
