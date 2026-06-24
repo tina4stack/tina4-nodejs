@@ -5,7 +5,8 @@
 import { FakeData as CoreFakeData } from "../packages/core/src/index.ts";
 import { FakeData } from "../packages/orm/src/fakeData.ts";
 import { seedTable } from "../packages/orm/src/seeder.ts";
-import type { FieldDefinition, DatabaseAdapter } from "../packages/orm/src/types.ts";
+import { createAdapterFromUrl } from "../packages/orm/src/index.ts";
+import type { FieldDefinition } from "../packages/orm/src/types.ts";
 
 let pass = 0;
 let fail = 0;
@@ -329,62 +330,66 @@ assert("ORM FakeData(123) produces deterministic name()",
     typeof fieldInt === "number" && Number.isInteger(fieldInt) && fieldInt >= 100 && fieldInt <= 110);
 }
 
-// --- seedTable() ---
+// --- seedTable() against a REAL in-memory SQLite DB (no mock) ---
 console.log("\n--- seedTable() ---");
 
-// Create a mock database adapter
-const insertedRows: Array<{ sql: string; params: unknown[] }> = [];
-const mockDb: DatabaseAdapter = {
-  execute(sql: string, params?: unknown[]): unknown {
-    insertedRows.push({ sql, params: params ?? [] });
-    return { lastInsertRowid: insertedRows.length };
-  },
-  query<T>(_sql: string, _params?: unknown[]): T[] {
-    return [] as T[];
-  },
-  close(): void {},
-  tableExists(_name: string): boolean {
-    return true;
-  },
-  createTable(): void {},
-};
+// A real node:sqlite adapter via createAdapterFromUrl — the seeder runs real
+// INSERTs and we assert on the rows read back, not on captured SQL strings.
+const liveDb = await createAdapterFromUrl("sqlite:///:memory:");
+liveDb.execute(
+  `CREATE TABLE test_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT, age INTEGER)`,
+);
 
 const seedFake = new FakeData(42);
-const seedCount = (await seedTable(mockDb, "test_users", 5, {
+const seedCount = (await seedTable(liveDb, "test_users", 5, {
   name: () => seedFake.name(),
   email: () => seedFake.email(),
   age: () => seedFake.integer(18, 65),
 })).seeded;
 
+const seededUserRows = liveDb.fetch<{ id: number; name: string; email: string; age: number }>(
+  "SELECT * FROM test_users ORDER BY id",
+);
+
 assert("seedTable returns correct count",
   seedCount === 5);
 
-assert("seedTable inserted correct number of rows",
-  insertedRows.length === 5);
+assert("seedTable wrote 5 real rows",
+  seededUserRows.length === 5);
 
-assert("seedTable SQL targets correct table",
-  insertedRows[0].sql.includes('"test_users"'));
+assert("seedTable populated name + email + age on every real row",
+  seededUserRows.every((r) => typeof r.name === "string" && r.name.length > 0 &&
+    r.email.includes("@") && Number.isInteger(r.age) && r.age >= 18 && r.age <= 65));
 
-assert("seedTable SQL has correct columns",
-  insertedRows[0].sql.includes('"name"') && insertedRows[0].sql.includes('"email"') && insertedRows[0].sql.includes('"age"'));
-
-// Test with overrides
-insertedRows.length = 0;
-const seedCountWithOverrides = (await seedTable(mockDb, "test_users", 3, {
+// Test with overrides — distinct table so the row count is unambiguous.
+liveDb.execute(
+  `CREATE TABLE test_user_roles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, role TEXT, status TEXT)`,
+);
+const seedCountWithOverrides = (await seedTable(liveDb, "test_user_roles", 3, {
   name: () => seedFake.name(),
   role: () => "user",
 }, { status: "active" })).seeded;
 
+const roleRows = liveDb.fetch<{ name: string; role: string; status: string }>(
+  "SELECT * FROM test_user_roles",
+);
+
 assert("seedTable with overrides returns correct count",
   seedCountWithOverrides === 3);
 
-assert("seedTable override values are inserted (3 columns: name, role, status)",
-  insertedRows[0].params.length === 3);
+assert("seedTable wrote all 3 override columns to the real rows (name, role, status)",
+  roleRows.length === 3 &&
+  roleRows.every((r) => typeof r.name === "string" && r.name.length > 0 &&
+    r.role === "user" && r.status === "active"));
 
-// Test empty fieldMap
-const emptyResult = (await seedTable(mockDb, "test_users", 10)).seeded;
+// Test empty fieldMap — nothing is written to the real table.
+liveDb.execute(`CREATE TABLE test_empty (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)`);
+const emptyResult = (await seedTable(liveDb, "test_empty", 10)).seeded;
+const emptyCount = liveDb.fetchOne<{ c: number }>("SELECT COUNT(*) AS c FROM test_empty");
 assert("seedTable with no fieldMap returns 0",
   emptyResult === 0);
+assert("seedTable wrote no rows to the real table when fieldMap is absent",
+  emptyCount?.c === 0);
 
 // --- Core FakeData direct usage ---
 console.log("\n--- Core FakeData Direct ---");

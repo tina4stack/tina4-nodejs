@@ -18,9 +18,23 @@ function isIdentifier(str: string): boolean {
  */
 type SqlParam = null | number | bigint | string | NodeJS.ArrayBufferView;
 
-/** Narrow adapter-level `unknown[]` params to node:sqlite's bindable type. */
+/**
+ * Coerce adapter-level `unknown[]` params to node:sqlite's bindable shape.
+ *
+ * node:sqlite only binds null/number/bigint/string/ArrayBufferView and REJECTS a
+ * raw JS boolean ("Provided value cannot be bound to SQLite parameter N"). SQLite
+ * stores booleans as INTEGER 0/1 (fieldTypeToSQLite maps "boolean" -> INTEGER, and
+ * boolean defaults already emit 1/0), so coerce here at the single bind boundary —
+ * every write path (execute/query/fetchOne/insert/update/delete and ORM save())
+ * funnels through this. booleans -> 0/1, Date -> ISO-8601 string, undefined -> null.
+ */
 function toSqlParams(params: readonly unknown[]): SqlParam[] {
-  return params as SqlParam[];
+  return params.map((p) => {
+    if (typeof p === "boolean") return p ? 1 : 0;
+    if (p === undefined) return null;
+    if (p instanceof Date) return p.toISOString();
+    return p as SqlParam;
+  });
 }
 
 /**

@@ -3,7 +3,6 @@
  * Run with: npx tsx test/seeder.test.ts
  */
 import { seedTable, seedOrm, FakeData, createAdapterFromUrl } from "../packages/orm/src/index.ts";
-import type { DatabaseAdapter, FieldDefinition } from "../packages/orm/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -16,33 +15,6 @@ function assert(name: string, condition: boolean, detail = "") {
     console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
     fail++;
   }
-}
-
-// Mock database adapter
-function createMockDb(): DatabaseAdapter & { _inserts: Array<{ sql: string; params: unknown[] }> } {
-  const inserts: Array<{ sql: string; params: unknown[] }> = [];
-  return {
-    _inserts: inserts,
-    execute(sql: string, params?: unknown[]) {
-      inserts.push({ sql, params: params ?? [] });
-      return { lastInsertRowid: inserts.length };
-    },
-    query() { return []; },
-    fetch() { return []; },
-    fetchOne() { return null; },
-    insert() { return { success: true, rowsAffected: 1 }; },
-    update() { return { success: true, rowsAffected: 0 }; },
-    delete() { return { success: true, rowsAffected: 0 }; },
-    startTransaction() {},
-    commit() {},
-    rollback() {},
-    tables() { return []; },
-    columns() { return []; },
-    lastInsertId() { return null; },
-    close() {},
-    tableExists() { return true; },
-    createTable() {},
-  };
 }
 
 console.log("=== Seeder Tests ===\n");
@@ -109,123 +81,165 @@ assert(
 // --- seedTable basic ---
 console.log("\n--- seedTable Basic ---");
 
-const db1 = createMockDb();
+liveDb.execute(
+  `CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL)`,
+);
 const fake = new FakeData(42);
-const count = (await seedTable(db1, "users", 5, {
+const count = (await seedTable(liveDb, "users", 5, {
   name: () => fake.name(),
   email: () => fake.email(),
 })).seeded;
+const usersRows = liveDb.fetch<{ id: number; name: string; email: string }>("SELECT * FROM users ORDER BY id");
 assert("seedTable returns inserted count", count === 5);
-assert("Database received 5 INSERT statements", db1._inserts.length === 5);
-assert("INSERT targets correct table", db1._inserts[0].sql.includes('"users"'));
-assert("INSERT has correct columns", db1._inserts[0].sql.includes('"name"') && db1._inserts[0].sql.includes('"email"'));
-assert("INSERT has placeholders", db1._inserts[0].sql.includes("?"));
-assert("INSERT params have 2 values", db1._inserts[0].params.length === 2);
+assert("Real table received 5 rows", usersRows.length === 5);
+assert("Seeded rows have a non-empty name", typeof usersRows[0].name === "string" && usersRows[0].name.length > 0);
+assert("Seeded rows have a structured email", usersRows[0].email.includes("@"));
+assert("Auto-increment PK assigned 1..5", usersRows[0].id === 1 && usersRows[4].id === 5);
 
 // --- seedTable with static values ---
 console.log("\n--- seedTable Static Values ---");
 
-const db2 = createMockDb();
-const count2 = (await seedTable(db2, "items", 3, {
+liveDb.execute(
+  `CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, category TEXT)`,
+);
+const count2 = (await seedTable(liveDb, "items", 3, {
   name: () => "dynamic",
   category: "static-value",
 })).seeded;
+const itemsRows = liveDb.fetch<{ name: string; category: string }>("SELECT * FROM items");
 assert("Static values accepted in fieldMap", count2 === 3);
-assert("Params include static value", db2._inserts[0].params.includes("static-value"));
+assert("Real rows store the static value verbatim", itemsRows.length === 3 && itemsRows.every((r) => r.category === "static-value"));
+assert("Real rows store the dynamic value", itemsRows[0].name === "dynamic");
 
 // --- seedTable with overrides ---
 console.log("\n--- seedTable Overrides ---");
 
-const db3 = createMockDb();
-const count3 = (await seedTable(db3, "users", 2, {
+liveDb.execute(
+  `CREATE TABLE users_override (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, role TEXT)`,
+);
+const count3 = (await seedTable(liveDb, "users_override", 2, {
   name: () => "generated",
   role: () => "generated-role",
 }, { role: "admin" })).seeded;
+const overrideRows = liveDb.fetch<{ name: string; role: string }>("SELECT * FROM users_override");
 assert("Overrides applied", count3 === 2);
-assert("Override value in params", db3._inserts[0].params.includes("admin"));
+assert("Override value wins in the real row (role=admin, not generated-role)", overrideRows.length === 2 && overrideRows.every((r) => r.role === "admin"));
+assert("Non-overridden field keeps its generated value", overrideRows[0].name === "generated");
 
 // --- seedTable with no fieldMap ---
 console.log("\n--- seedTable Empty ---");
 
-const db4 = createMockDb();
-const count4 = (await seedTable(db4, "empty", 10)).seeded;
+liveDb.execute(
+  `CREATE TABLE empty_tbl (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)`,
+);
+const count4 = (await seedTable(liveDb, "empty_tbl", 10)).seeded;
+const emptyAfterNoMap = liveDb.fetchOne<{ c: number }>("SELECT COUNT(*) AS c FROM empty_tbl");
 assert("No fieldMap returns 0", count4 === 0);
-assert("No inserts executed", db4._inserts.length === 0);
+assert("No rows written to the real table when fieldMap is absent", emptyAfterNoMap?.c === 0);
 
-const db5 = createMockDb();
-const count5 = (await seedTable(db5, "empty", 10, {})).seeded;
+const count5 = (await seedTable(liveDb, "empty_tbl", 10, {})).seeded;
+const emptyAfterEmptyMap = liveDb.fetchOne<{ c: number }>("SELECT COUNT(*) AS c FROM empty_tbl");
 assert("Empty fieldMap returns 0", count5 === 0);
+assert("No rows written to the real table when fieldMap is empty", emptyAfterEmptyMap?.c === 0);
 
 // --- seedTable default count ---
 console.log("\n--- seedTable Default Count ---");
 
-const db6 = createMockDb();
-const count6 = (await seedTable(db6, "defaults", undefined, {
+liveDb.execute(
+  `CREATE TABLE defaults_tbl (id INTEGER PRIMARY KEY AUTOINCREMENT, col TEXT)`,
+);
+const count6 = (await seedTable(liveDb, "defaults_tbl", undefined, {
   col: () => "val",
 })).seeded;
+const defaultsCount = liveDb.fetchOne<{ c: number }>("SELECT COUNT(*) AS c FROM defaults_tbl");
 assert("Default count is 10", count6 === 10);
-assert("10 inserts executed", db6._inserts.length === 10);
+assert("10 rows actually landed in the real table", defaultsCount?.c === 10);
 
 // --- seedOrm ---
 console.log("\n--- seedOrm ---");
 
-const db7 = createMockDb();
-const mockModel = {
+// Every field type round-trips through the REAL node:sqlite driver, INCLUDING a
+// boolean column: forField() emits a JS boolean, and the SQLite adapter's
+// toSqlParams() now coerces it to 0/1 at the bind boundary (node:sqlite refuses
+// to bind a raw boolean otherwise). This locks in the boolean-coercion fix.
+liveDb.execute(
+  `CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price REAL, description TEXT, active INTEGER, created_at TEXT)`,
+);
+const ormModel = {
   tableName: "products",
   fields: {
     id: { type: "integer" as const, primaryKey: true, autoIncrement: true },
     name: { type: "string" as const, required: true },
     price: { type: "number" as const },
-    active: { type: "boolean" as const },
     description: { type: "text" as const },
+    active: { type: "boolean" as const },
     created_at: { type: "datetime" as const },
   },
-  getDb: () => db7,
+  getDb: () => liveDb,
 };
 
-const ormCount = (await seedOrm(mockModel, 5)).seeded;
+const ormCount = (await seedOrm(ormModel, 5)).seeded;
+const productRows = liveDb.fetch<{ id: number; name: string; price: number; description: string; active: number; created_at: string }>(
+  "SELECT * FROM products ORDER BY id",
+);
 assert("seedOrm returns count", ormCount === 5);
-assert("seedOrm executed 5 inserts", db7._inserts.length === 5);
-assert("seedOrm skips auto-increment PK", !db7._inserts[0].sql.includes('"id"'));
-assert("seedOrm includes name field", db7._inserts[0].sql.includes('"name"'));
-assert("seedOrm includes price field", db7._inserts[0].sql.includes('"price"'));
+assert("seedOrm wrote 5 real rows", productRows.length === 5);
+assert("seedOrm let the DB assign the auto-increment PK (1..5)", productRows[0].id === 1 && productRows[4].id === 5);
+assert("seedOrm populated the required name field", typeof productRows[0].name === "string" && productRows[0].name.length > 0);
+assert("seedOrm populated the price field with a number", typeof productRows[0].price === "number");
+assert("seedOrm populated the text description column", typeof productRows[0].description === "string" && productRows[0].description.length > 0);
+assert("seedOrm coerced the boolean column to 0/1 on the real driver", productRows.every((r) => r.active === 0 || r.active === 1));
+assert("seedOrm populated the datetime column with an ISO timestamp", /^\d{4}-\d{2}-\d{2}T/.test(productRows[0].created_at));
 
 // --- seedOrm with overrides ---
 console.log("\n--- seedOrm Overrides ---");
 
-const db8 = createMockDb();
-const mockModel2 = {
-  tableName: "users",
+liveDb.execute(
+  `CREATE TABLE orm_override_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, role TEXT)`,
+);
+const ormOverrideModel = {
+  tableName: "orm_override_users",
   fields: {
     id: { type: "integer" as const, primaryKey: true, autoIncrement: true },
     name: { type: "string" as const },
     role: { type: "string" as const },
   },
-  getDb: () => db8,
+  getDb: () => liveDb,
 };
 
-const ormCount2 = (await seedOrm(mockModel2, 3, { role: "admin" })).seeded;
+const ormCount2 = (await seedOrm(ormOverrideModel, 3, { role: "admin" })).seeded;
+const ormOverrideRows = liveDb.fetch<{ name: string; role: string }>("SELECT * FROM orm_override_users");
 assert("seedOrm with override returns count", ormCount2 === 3);
-assert("Override field excluded from generated", !db8._inserts[0].sql.includes('"role"') || db8._inserts[0].params.includes("admin"));
+assert("Override field lands as the literal value in every real row", ormOverrideRows.length === 3 && ormOverrideRows.every((r) => r.role === "admin"));
 
 // --- seedOrm deterministic seed ---
 console.log("\n--- seedOrm Deterministic ---");
 
-const db9 = createMockDb();
-const db10 = createMockDb();
-const seedModel = {
-  tableName: "items",
+liveDb.execute(
+  `CREATE TABLE seed_items_a (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)`,
+);
+liveDb.execute(
+  `CREATE TABLE seed_items_b (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)`,
+);
+const seedModelA = {
+  tableName: "seed_items_a",
   fields: {
     id: { type: "integer" as const, primaryKey: true, autoIncrement: true },
     name: { type: "string" as const },
   },
-  getDb: () => db9,
+  getDb: () => liveDb,
 };
-const seedModel2 = { ...seedModel, getDb: () => db10 };
+const seedModelB = { ...seedModelA, tableName: "seed_items_b" };
 
-await seedOrm(seedModel, 3, undefined, 42);
-await seedOrm(seedModel2, 3, undefined, 42);
-assert("Same seed produces same data", JSON.stringify(db9._inserts[0].params) === JSON.stringify(db10._inserts[0].params));
+await seedOrm(seedModelA, 3, undefined, 42);
+await seedOrm(seedModelB, 3, undefined, 42);
+const namesA = liveDb.fetch<{ name: string }>("SELECT name FROM seed_items_a ORDER BY id").map((r) => r.name);
+const namesB = liveDb.fetch<{ name: string }>("SELECT name FROM seed_items_b ORDER BY id").map((r) => r.name);
+assert(
+  "Same seed produces identical real rows in two independent tables",
+  namesA.length === 3 && JSON.stringify(namesA) === JSON.stringify(namesB),
+  `a=${JSON.stringify(namesA)} b=${JSON.stringify(namesB)}`,
+);
 
 // --- FakeData basic ---
 console.log("\n--- FakeData ---");
