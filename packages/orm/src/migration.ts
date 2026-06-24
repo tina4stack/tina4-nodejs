@@ -427,7 +427,16 @@ export async function removeMigrationRecord(name: string): Promise<void> {
  *
  * @param migrationsDir - Directory containing migration files (default: "migrations")
  * @param delimiter - SQL statement delimiter (default: ";")
- * @returns Array of rolled-back migration names
+ * @returns Array of the down-migration files that were run, e.g.
+ *   "000001_create_users.down.sql".
+ *
+ * NOTE on return form (intentional, cross-framework): migration return values reflect
+ * WHAT each method acted on, so the forms differ by method and that is by design (not
+ * unified). migrate()/getApplied()/getPending() return the up-migration filename
+ * ("name.sql"); rollback() returns the DOWN-migration filename it executed
+ * ("name.down.sql") — matching the Python master. So a caller diffing rollback()
+ * against getApplied() compares ".down.sql" vs ".sql": strip the suffixes (or compare
+ * the bare "name" stem) to relate them.
  */
 export async function rollback(
   migrationsDir?: string | Map<string, () => void | Promise<void>>,
@@ -444,7 +453,8 @@ export async function rollback(
         await down();
       }
       await removeMigrationRecord(migration.name);
-      rolledBack.push(migration.name);
+      // Return the down-migration identifier (what rollback ran), matching Python.
+      rolledBack.push(`${migration.name}.down.sql`);
     }
     return rolledBack;
   }
@@ -486,7 +496,9 @@ export async function rollback(
     }
 
     await removeMigrationRecord(migration.name);
-    rolledBack.push(migration.name);
+    // Return the down-migration file that was run (e.g. "name.down.sql"), matching
+    // the Python master's rollback return form.
+    rolledBack.push(`${migration.name}.down.sql`);
   }
 
   return rolledBack;

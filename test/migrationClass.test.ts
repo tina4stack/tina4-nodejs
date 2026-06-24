@@ -129,12 +129,18 @@ console.log("=== Migration Class Tests ===\n");
   await m.migrate();
   assert("rollback() precondition: users table created", (db as any).tableExists("users"));
   const rolled = await m.rollback();
-  // rollback() returns the tracked migration NAMES (the bookkeeping `name`, which
-  // is the filename with the .sql suffix stripped — see migrate()'s migrationId).
-  // Assert the real returned name AND that the down SQL's DROP actually executed.
+  // CONTRACT (intentional per-method return form, matching the Python master): the
+  // migration methods return WHAT they acted on, so the forms differ by design and
+  // are NOT unified. migrate()/getApplied()/getPending() return the up-file name
+  // ("name.sql"); rollback() returns the DOWN-file it executed ("name.down.sql").
+  // Relate them by stripping the suffix (compare the bare "name" stem).
   assert(
-    "rollback() reports the rolled-back migration name",
-    rolled.includes("000001_create_users"),
+    "rollback() reports the down-migration file it ran (name.down.sql)",
+    rolled.includes("000001_create_users.down.sql"),
+  );
+  assert(
+    "rollback() does NOT return the up-file (.sql) name (per-method semantics)",
+    !rolled.includes("000001_create_users.sql"),
   );
   assert("rollback() down SQL dropped the users table", !(db as any).tableExists("users"));
   teardown(base);
@@ -162,8 +168,8 @@ console.log("=== Migration Class Tests ===\n");
   // the users table created by 000001 is gone (000002's DROP TABLE executed first,
   // then 000001's record is removed) — not merely that the result has >= 1 entry.
   assert(
-    "rollback(2) reports both rolled-back migration names",
-    rolled.includes("000002_add_email") && rolled.includes("000001_create_users"),
+    "rollback(2) reports both rolled-back down-migration files (name.down.sql)",
+    rolled.includes("000002_add_email.down.sql") && rolled.includes("000001_create_users.down.sql"),
   );
   assert("rollback(2) leaves nothing applied", (await m.getApplied()).length === 0);
   assert("rollback(2) down SQL dropped the users table", !(db as any).tableExists("users"));
