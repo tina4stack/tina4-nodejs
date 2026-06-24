@@ -31,7 +31,8 @@ const failures: string[] = [];
 
 // Real-service gate: collect skips that name a PROVISIONED service that was
 // unavailable. When TINA4_REQUIRE_SERVICES is set, these turn the run red
-// (mirrors tina4-python/tests/conftest.py). MySQL/MSSQL/Firebird are excluded.
+// (mirrors tina4-python/tests/conftest.py). MySQL/MSSQL joined the provisioned
+// set in #262; only Firebird is excluded now.
 const gateOn = requireServices();
 const serviceSkips: { file: string; reason: string }[] = [];
 

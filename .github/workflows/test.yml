@@ -61,6 +61,36 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
+      # MySQL 8 (#262). DB tina4_test, user tina4/tina4 created by the image env.
+      mysql:
+        image: mysql:8
+        ports:
+          - 3306:3306
+        env:
+          MYSQL_DATABASE: tina4_test
+          MYSQL_USER: tina4
+          MYSQL_PASSWORD: tina4
+          MYSQL_ROOT_PASSWORD: tina4
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -ptina4"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      # MSSQL 2022 (#262). The image starts with NO user database, so a later
+      # step CREATEs tina4_test once the server is healthy.
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        ports:
+          - 1433:1433
+        env:
+          ACCEPT_EULA: 'Y'
+          SA_PASSWORD: 'TinaSQL123!Secure'
+          MSSQL_PID: Developer
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'TinaSQL123!Secure' -C -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'TinaSQL123!Secure' -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
       rabbitmq:
         image: rabbitmq:3-management
         ports:
@@ -82,6 +112,18 @@ jobs:
       TINA4_TEST_PG_DB: tina4_node
       TINA4_TEST_PG_DB_2: tina4_py
       TINA4_TEST_POSTGRES_URL: postgres://tina4:tina4@localhost:55432/tina4_node
+      # MySQL 8 + MSSQL 2022 (#262) — mirror the service containers above and the
+      # local docker harness. The MySQL+MSSQL boolean round-trip test reads these.
+      TINA4_TEST_MYSQL_HOST: localhost
+      TINA4_TEST_MYSQL_PORT: '3306'
+      TINA4_TEST_MYSQL_USER: tina4
+      TINA4_TEST_MYSQL_PASS: tina4
+      TINA4_TEST_MYSQL_DB: tina4_test
+      TINA4_TEST_MSSQL_HOST: localhost
+      TINA4_TEST_MSSQL_PORT: '1433'
+      TINA4_TEST_MSSQL_USER: sa
+      TINA4_TEST_MSSQL_PASS: 'TinaSQL123!Secure'
+      TINA4_TEST_MSSQL_DB: tina4_test
       TINA4_TEST_MONGO_URL: mongodb://localhost:27017
       TINA4_MONGO_URI: mongodb://localhost:27017
       TINA4_TEST_REDIS_URL: redis://localhost:6379
@@ -91,8 +133,8 @@ jobs:
       TINA4_KAFKA_BROKERS: localhost:9092
       # Turn a missing provisioned service into a hard failure (no green skips).
       # The run-all.ts gate fails the run if a real-service test skips because a
-      # PROVISIONED service was unavailable. MySQL/MSSQL/Firebird are not
-      # provisioned, so their skips stay green.
+      # PROVISIONED service was unavailable. MySQL/MSSQL joined the provisioned
+      # set in #262; only Firebird is not provisioned, so its skips stay green.
       TINA4_REQUIRE_SERVICES: '1'
 
     steps:
@@ -124,6 +166,26 @@ jobs:
           done
           PGPASSWORD=tina4 psql -h localhost -p 55432 -U tina4 -d tina4_node \
             -c "CREATE DATABASE tina4_py" || echo "tina4_py may already exist"
+
+      # MSSQL 2022 (#262) starts with NO user database — create tina4_test once
+      # the server is accepting connections. sqlcmd lives in the mssql container;
+      # exec it there (the runner has no sqlcmd). The mssql-tools18 path needs -C
+      # (trust self-signed cert); fall back to the legacy mssql-tools path.
+      - name: Create MSSQL database (tina4_test)
+        run: |
+          CID=$(docker ps --filter "ancestor=mcr.microsoft.com/mssql/server:2022-latest" --format '{{.ID}}' | head -n1)
+          if [ -z "$CID" ]; then echo "MSSQL container not found"; docker ps; exit 1; fi
+          run_sqlcmd() {
+            docker exec "$CID" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'TinaSQL123!Secure' -C "$@" 2>/dev/null \
+              || docker exec "$CID" /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'TinaSQL123!Secure' "$@"
+          }
+          echo "Waiting for MSSQL to accept connections ..."
+          for i in $(seq 1 60); do
+            if run_sqlcmd -Q "SELECT 1" >/dev/null 2>&1; then echo "MSSQL ready after ${i}s"; break; fi
+            sleep 2
+          done
+          run_sqlcmd -Q "IF DB_ID('tina4_test') IS NULL CREATE DATABASE tina4_test"
+          echo "tina4_test database ensured"
 
       # Kafka in KRaft mode (single node, no ZooKeeper). GitHub service
       # containers can't express the KRaft listener config cleanly, so run it as

@@ -2,7 +2,7 @@
  * Unit tests for the DevMailbox (packages/core/src/devMailbox.ts).
  * Run with: npx tsx test/devMailbox.test.ts
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DevMailbox } from "../packages/core/src/devMailbox.ts";
@@ -349,6 +349,58 @@ setup();
   const msg = mailbox.read(result.id!);
   assert("long subject preserved", msg !== null && msg!.subject.length === 500);
   assert("long body preserved", msg !== null && msg!.body.length === 10000);
+}
+cleanup();
+
+// --- Non-ASCII round trip ---
+console.log("\n--- Non-ASCII Round Trip ---");
+
+// Regression (#262 parity with the Python test_dev_mailbox::test_non_ascii_round_trips
+// and the Ruby dev_mailbox UTF-8 fix): non-ASCII subjects/bodies (accented fake-data
+// names, smart quotes, euro sign) must survive a capture -> inbox -> read -> count
+// round-trip via real on-disk JSON files. Node is the safe case: devMailbox.ts reads
+// with readFileSync(path, "utf-8") (UTF-8 pinned, not locale-dependent) and writes via
+// JSON.stringify, whose UTF-8 bytes go straight to disk. The locale-decode crash the
+// Ruby fix addressed (JSON.pretty_generate writes raw UTF-8 read back under a non-UTF-8
+// locale) cannot occur here. This locks in the round-trip + the UTF-8 pin so a future
+// change can't silently reintroduce it. Real file I/O, no mocks.
+setup();
+{
+  const subject = "Réservation confirmée — José's café";
+  const body = "Dvořák, naïve façade, “smart quotes”, €";
+
+  const result = mailbox.capture("jose@tëst.com", subject, body, false, [], [], undefined, [], "dev@test.com");
+  assert("non-ascii capture succeeds", result.success === true);
+
+  // inbox() reads every message file back off disk
+  const inbox = mailbox.inbox();
+  assert("non-ascii inbox has the captured message", inbox.length === 1);
+  assert(
+    "non-ascii subject round-trips via inbox()",
+    inbox[0].subject === subject,
+    `got ${JSON.stringify(inbox[0].subject)}`,
+  );
+
+  // read() re-reads then rewrites the file (read receipt) — both directions UTF-8
+  const msg = mailbox.read(inbox[0].id);
+  assert("non-ascii read() returns the message", msg !== null);
+  assert("non-ascii subject round-trips via read()", msg!.subject === subject, `got ${JSON.stringify(msg!.subject)}`);
+  assert("non-ascii body round-trips via read()", msg!.body === body, `got ${JSON.stringify(msg!.body)}`);
+
+  // count() walks every file too — must not raise on non-ASCII content
+  const c = mailbox.count();
+  assert("non-ascii count() returns inbox+outbox totals", c.inbox === 1 && c.outbox === 1 && c.total === 2, JSON.stringify(c));
+
+  // the raw file on disk decodes as UTF-8 and round-trips the EXACT content
+  const outboxDir = join(mailboxDir, "outbox");
+  const files = readdirSync(outboxDir).filter((f) => f.endsWith(".json"));
+  assert("non-ascii outbox has a json file on disk", files.length === 1);
+  const onDisk = JSON.parse(readFileSync(join(outboxDir, files[0]), "utf-8"));
+  assert(
+    "non-ascii content survives the raw on-disk JSON file",
+    onDisk.subject === subject && onDisk.body === body,
+    JSON.stringify({ subject: onDisk.subject, body: onDisk.body }),
+  );
 }
 cleanup();
 

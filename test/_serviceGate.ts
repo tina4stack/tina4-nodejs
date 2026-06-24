@@ -9,8 +9,10 @@
  * silently went missing (the exact gap that let the migration / queue bugs
  * ship green).
  *
- * MySQL / MSSQL / SQL Server / Firebird are deliberately NOT provisioned, so
- * their skips must stay green. Their keywords are EXCLUDED below.
+ * MySQL / MSSQL / SQL Server joined the provisioned set in #262 (CI stands up
+ * mysql:8 + mssql/server:2022), so their reachability / driver skips now fail
+ * the gate too — they are in SERVICE_KEYWORDS below. Firebird is still NOT
+ * provisioned, so its skips must stay green and its keyword stays EXCLUDED.
  *
  * The runner (test/run-all.ts) captures each test file's stdout and runs every
  * SKIP line through this matcher — so individual test files need no edits. This
@@ -22,6 +24,10 @@
 const SERVICE_KEYWORDS = [
   "postgres",
   "postgresql",
+  "mysql", // also matches "mysql2" (#262, provisioned mysql:8)
+  "mssql",
+  "sqlserver", // MSSQL / SQL Server (#262, provisioned mssql/server:2022)
+  "tedious", // the Node MSSQL client library
   "redis",
   "valkey",
   "memcached",
@@ -46,8 +52,9 @@ const UNAVAILABLE_HINTS = [
 ];
 
 // Service keywords that are NOT provisioned in CI — their skips stay green even
-// when they appear alongside an unavailable hint.
-const EXCLUDED_KEYWORDS = ["mysql", "mssql", "sqlserver", "firebird"];
+// when they appear alongside an unavailable hint. Firebird is the only engine
+// left here (MySQL/MSSQL became provisioned in #262 and moved to SERVICE_KEYWORDS).
+const EXCLUDED_KEYWORDS = ["firebird"];
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
