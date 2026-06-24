@@ -510,8 +510,13 @@ export class GraphQL {
   /**
    * Decorator-style resolver registration.
    *
+   * Resolvers may be synchronous OR async (return a Promise) — `execute()`
+   * awaits every resolver, so an `async` resolver's value is resolved before
+   * the field is serialized. Return a value directly, or `await` your data
+   * (e.g. an async DB driver) and the executor will await it for you.
+   *
    *     GraphQL.resolve("Query", "products", async (root, args) =>
-   *       db.fetchAll("SELECT * FROM products"));
+   *       (await db.fetch("SELECT * FROM products")).records);
    *
    *     GraphQL.resolve("Mutation", "createProduct", async (root, args) => {
    *       const p = new Product(args.input);
@@ -520,7 +525,7 @@ export class GraphQL {
    *     });
    *
    *     GraphQL.resolve("Product", "reviews", async (product, args) =>
-   *       db.fetchAll("SELECT * FROM reviews WHERE product_id = ?", [product.id]));
+   *       (await db.fetch("SELECT * FROM reviews WHERE product_id = ?", [product.id])).records);
    *
    * Resolvers registered before any GraphQL instance exists accumulate
    * in the class-level registry. `new GraphQL()` drains them into its
@@ -647,7 +652,7 @@ export class GraphQL {
   /**
    * Execute a GraphQL query string.
    */
-  execute(query: string, variables?: Record<string, unknown>, context?: Record<string, unknown>): GraphQLResult {
+  async execute(query: string, variables?: Record<string, unknown>, context?: Record<string, unknown>): Promise<GraphQLResult> {
     const vars = variables ?? {};
     const ctx = context ?? {};
     const errors: Array<{ message: string; path?: string[] }> = [];
@@ -690,7 +695,7 @@ export class GraphQL {
 
     const data: Record<string, unknown> = {};
     // Top-level selections start at depth 1.
-    const errs = this.resolveSelectionsInto(op.selections, resolvers, null, vars, ctx, fragments, data, 1);
+    const errs = await this.resolveSelectionsInto(op.selections, resolvers, null, vars, ctx, fragments, data, 1);
     errors.push(...errs);
 
     const result: GraphQLResult = { data };
@@ -710,7 +715,7 @@ export class GraphQL {
    * instead of recursing until the interpreter stack overflows. Top-level
    * starts at depth 1; `maxDepth <= 0` disables the guard.
    */
-  private resolveSelectionsInto(
+  private async resolveSelectionsInto(
     selections: ParsedSelection[],
     resolvers: Map<string, QueryConfig>,
     parent: unknown,
@@ -719,7 +724,7 @@ export class GraphQL {
     fragments: Map<string, ParsedFragment>,
     target: Record<string, unknown>,
     depth: number,
-  ): Array<{ message: string; path?: string[] }> {
+  ): Promise<Array<{ message: string; path?: string[] }>> {
     const errors: Array<{ message: string; path?: string[] }> = [];
 
     if (this.maxDepth > 0 && depth > this.maxDepth) {
@@ -736,7 +741,7 @@ export class GraphQL {
           errors.push({ message: `Fragment not found: ${sel.name}` });
           continue;
         }
-        const errs = this.resolveSelectionsInto(
+        const errs = await this.resolveSelectionsInto(
           frag.selections, resolvers, parent, variables, context, fragments, target, depth + 1,
         );
         errors.push(...errs);
@@ -744,14 +749,14 @@ export class GraphQL {
       }
 
       if (sel.kind === "inline_fragment") {
-        const errs = this.resolveSelectionsInto(
+        const errs = await this.resolveSelectionsInto(
           sel.selections, resolvers, parent, variables, context, fragments, target, depth + 1,
         );
         errors.push(...errs);
         continue;
       }
 
-      const [value, errs] = this.resolveField(sel, resolvers, parent, variables, context, fragments, depth);
+      const [value, errs] = await this.resolveField(sel, resolvers, parent, variables, context, fragments, depth);
       errors.push(...errs);
       const key = sel.alias ?? sel.name;
       target[key] = value;
@@ -1010,7 +1015,7 @@ export class GraphQL {
     return `(${parts.join(", ")})`;
   }
 
-  private resolveField(
+  private async resolveField(
     sel: ParsedField,
     resolvers: Map<string, QueryConfig>,
     parent: unknown,
@@ -1018,7 +1023,7 @@ export class GraphQL {
     context: Record<string, unknown> = {},
     fragments: Map<string, ParsedFragment> = new Map(),
     depth: number = 1,
-  ): [unknown, Array<{ message: string; path?: string[] }>] {
+  ): Promise<[unknown, Array<{ message: string; path?: string[] }>]> {
     const errors: Array<{ message: string; path?: string[] }> = [];
     const name = sel.name;
     const args = this.resolveArgs(sel.args, variables);
@@ -1046,7 +1051,11 @@ export class GraphQL {
       // Inject sub-selections into context for DataLoader/eager-loading
       const ctx = { ...context, __selections: sel.selections ?? [] };
       try {
-        value = config.resolver(null, args, ctx);
+        // Resolvers may be sync or async. Awaiting a plain value is a no-op;
+        // awaiting a Promise (async resolver) resolves it before serialization.
+        // A rejected Promise throws here, into the same catch below, so async
+        // resolver errors are masked/detailed exactly like sync ones.
+        value = await config.resolver(null, args, ctx);
       } catch (e: unknown) {
         // Log the real cause; only surface the detail to the client in debug
         // mode — a resolver exception can carry internal state (DB errors,
@@ -1067,7 +1076,7 @@ export class GraphQL {
       const result: Record<string, unknown>[] = [];
       for (const item of value) {
         const obj: Record<string, unknown> = {};
-        const errs = this.resolveSelectionsInto(
+        const errs = await this.resolveSelectionsInto(
           sel.selections, new Map(), item, variables, context, fragments, obj, depth + 1,
         );
         errors.push(...errs);
@@ -1078,7 +1087,7 @@ export class GraphQL {
 
     if (value !== null && value !== undefined) {
       const obj: Record<string, unknown> = {};
-      const errs = this.resolveSelectionsInto(
+      const errs = await this.resolveSelectionsInto(
         sel.selections, new Map(), value, variables, context, fragments, obj, depth + 1,
       );
       errors.push(...errs);

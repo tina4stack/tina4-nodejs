@@ -28,7 +28,19 @@ const result = gql.addType("User", {
   name: { type: "String" },
   email: { type: "String" },
 });
-assert("addType returns GraphQL instance (chaining)", result === gql);
+// Identity is necessary for chaining, but on its own only proves `addType`
+// returns `this`. Render through the RETURNED reference to prove it is a live,
+// type-bearing instance: the freshly-registered "User" type must appear in the
+// SDL produced by `result`, and a follow-on chained call on `result` must also
+// register (fluent builder really works end-to-end).
+assert("addType returns same instance for chaining", result === gql);
+const chainedSdl = result
+  .addType("Account", { id: { type: "ID" }, balance: { type: "Float" } })
+  .schemaSdl();
+assert("chained instance rendered the first type", chainedSdl.includes("type User {"));
+assert("chained instance rendered the first type's field", chainedSdl.includes("id: ID"));
+assert("chained instance registered the follow-on type", chainedSdl.includes("type Account {"));
+assert("chained instance rendered the follow-on field", chainedSdl.includes("balance: Float"));
 
 const schema = gql.schemaSdl();
 assert("schema contains type User", schema.includes("type User {"));
@@ -57,7 +69,7 @@ assert("schema contains users query", querySchema.includes("users: [User]"));
 // --- Simple Query Execution ---
 console.log("\n--- Simple Query Execution ---");
 
-const r1 = gql.execute('{ user(id: "1") { name email } }');
+const r1 = await gql.execute('{ user(id: "1") { name email } }');
 assert("query returns data", r1.data !== null);
 assert("query returns correct name", (r1.data as any)?.user?.name === "Alice");
 assert("query returns correct email", (r1.data as any)?.user?.email === "alice@test.com");
@@ -66,7 +78,7 @@ assert("query has no errors", r1.errors === undefined);
 // --- List Query ---
 console.log("\n--- List Query ---");
 
-const r2 = gql.execute("{ users { id name } }");
+const r2 = await gql.execute("{ users { id name } }");
 assert("list query returns array", Array.isArray((r2.data as any)?.users));
 assert("list query returns 2 users", (r2.data as any)?.users?.length === 2);
 assert("list query first user is Alice", (r2.data as any)?.users?.[0]?.name === "Alice");
@@ -81,7 +93,7 @@ gql.addMutation("createUser", { name: "String!", email: "String!" }, "User", (ro
   return lastCreated;
 });
 
-const r3 = gql.execute('mutation { createUser(name: "Eve", email: "eve@test.com") { id name } }');
+const r3 = await gql.execute('mutation { createUser(name: "Eve", email: "eve@test.com") { id name } }');
 assert("mutation returns data", r3.data !== null);
 assert("mutation returns created user", (r3.data as any)?.createUser?.name === "Eve");
 assert("mutation resolver was called", lastCreated !== null && lastCreated.name === "Eve");
@@ -92,7 +104,7 @@ assert("schema contains Mutation type", mutationSchema.includes("type Mutation {
 // --- Variables ---
 console.log("\n--- Variables ---");
 
-const r4 = gql.execute(
+const r4 = await gql.execute(
   'query GetUser($userId: ID!) { user(id: $userId) { name } }',
   { userId: "2" },
 );
@@ -105,7 +117,7 @@ gql.addQuery("greeting", { name: "String" }, "String", (root, args) => {
   return `Hello, ${args.name}!`;
 });
 
-const r5 = gql.execute(
+const r5 = await gql.execute(
   'query Greet($name: String = "World") { greeting(name: $name) }',
 );
 assert("variable default applied", (r5.data as any)?.greeting === "Hello, World!");
@@ -113,7 +125,7 @@ assert("variable default applied", (r5.data as any)?.greeting === "Hello, World!
 // --- Aliases ---
 console.log("\n--- Aliases ---");
 
-const r6 = gql.execute('{ first: user(id: "1") { name } second: user(id: "2") { name } }');
+const r6 = await gql.execute('{ first: user(id: "1") { name } second: user(id: "2") { name } }');
 assert("alias first resolves", (r6.data as any)?.first?.name === "Alice");
 assert("alias second resolves", (r6.data as any)?.second?.name === "Bob");
 
@@ -139,7 +151,7 @@ gql2.addQuery("author", { id: "ID!" }, "Author", (root, args) => {
   };
 });
 
-const r7 = gql2.execute('{ author(id: "1") { name posts { title } } }');
+const r7 = await gql2.execute('{ author(id: "1") { name posts { title } } }');
 assert("nested query returns author", (r7.data as any)?.author?.name === "Jane");
 assert("nested query returns posts array", Array.isArray((r7.data as any)?.author?.posts));
 assert("nested posts have titles", (r7.data as any)?.author?.posts?.[0]?.title === "First Post");
@@ -163,7 +175,7 @@ gql3.addQuery("broken", {}, "String", () => {
 
 // NEGATIVE/prod: detail is masked, path preserved.
 delete process.env.TINA4_DEBUG;
-const r8 = gql3.execute("{ broken }");
+const r8 = await gql3.execute("{ broken }");
 assert("error query has errors array", r8.errors !== undefined && r8.errors.length > 0);
 assert("error message is masked in prod", r8.errors![0].message === "Internal server error");
 assert("error detail not leaked in prod", r8.errors![0].message !== "Something went wrong");
@@ -176,7 +188,7 @@ const gql3b = new GraphQL();
 gql3b.addQuery("broken", {}, "String", () => {
   throw new Error("Something went wrong");
 });
-const r8b = gql3b.execute("{ broken }");
+const r8b = await gql3b.execute("{ broken }");
 assert("error detail surfaced under TINA4_DEBUG", r8b.errors![0].message === "Something went wrong");
 assert("error path preserved in debug", JSON.stringify(r8b.errors![0].path) === JSON.stringify(["broken"]));
 
@@ -189,14 +201,14 @@ else process.env.TINA4_LOG_OUTPUT = savedOutGql;
 // --- Parse Error ---
 console.log("\n--- Parse Error ---");
 
-const r9 = gql3.execute("{ broken(");
+const r9 = await gql3.execute("{ broken(");
 assert("parse error returns errors", r9.errors !== undefined && r9.errors.length > 0);
 assert("parse error has null data", r9.data === null);
 
 // --- No Operation ---
 console.log("\n--- No Operation ---");
 
-const r10 = new GraphQL().execute("");
+const r10 = await new GraphQL().execute("");
 assert("empty query returns error", r10.errors !== undefined && r10.errors.length > 0);
 
 // --- Number and Boolean Args ---
@@ -207,7 +219,7 @@ gql4.addQuery("math", { x: "Int", y: "Int" }, "Int", (root, args) => {
   return (args.x as number) + (args.y as number);
 });
 
-const r11 = gql4.execute("{ math(x: 10, y: 20) }");
+const r11 = await gql4.execute("{ math(x: 10, y: 20) }");
 assert("integer args parsed correctly", (r11.data as any)?.math === 30);
 
 // --- Schema SDL Output ---
@@ -226,8 +238,60 @@ assert("SDL contains mutation type", sdl.includes("type Mutation {"));
 // --- Recursion depth guard (item 4) ---
 console.log("\n--- Depth Guard ---");
 
-// Default maxDepth reads from TINA4_GRAPHQL_MAX_DEPTH (50 when unset).
-assert("default maxDepth is 50", new GraphQL().maxDepth === 50);
+// The default depth limit must be the REAL enforced boundary, not just a stored
+// constant. Build a self-referential Tree resolver, leave `maxDepth` at its
+// default, and drive a query nested to exactly 50 selection-set levels (must
+// succeed) versus 51 (must be rejected). The deepest `resolveSelectionsInto`
+// call reaches a depth equal to the total selection-set nesting, and the guard
+// fires when that depth EXCEEDS maxDepth — so depth 50 passes and depth 51 is
+// the first rejected query, proving 50 is the live boundary.
+//
+// A query/data tree nested to a total selection-set depth `d` has `d - 1`
+// object fields that open a selection set (top-level `tree` + `d - 2` nested
+// `child` fields), with a leaf scalar `id` at the bottom.
+function buildDepthData(depth: number): unknown {
+  let node: Record<string, unknown> = { id: "leaf" };
+  for (let i = 0; i < depth - 2; i++) {
+    node = { id: String(i), child: node };
+  }
+  return node; // value returned for the top-level "tree" field
+}
+function buildDepthQuery(depth: number): string {
+  let inner = "id";
+  for (let i = 0; i < depth - 2; i++) {
+    inner = `child { ${inner} }`;
+  }
+  return `{ tree { ${inner} } }`;
+}
+function makeDepthGql(depth: number): GraphQL {
+  const g = new GraphQL(); // maxDepth left at the env-driven default (50)
+  g.addType("Tree", { id: { type: "ID" }, child: { type: "Tree" } });
+  const data = buildDepthData(depth);
+  g.addQuery("tree", {}, "Tree", () => data);
+  return g;
+}
+
+const defaultDepthGql = new GraphQL();
+assert("default maxDepth is 50", defaultDepthGql.maxDepth === 50);
+
+// POSITIVE: nested exactly 50 deep succeeds at the default limit.
+const at50 = makeDepthGql(50);
+const at50Res = await at50.execute(buildDepthQuery(50));
+assert(
+  "query nested exactly 50 deep succeeds at default limit",
+  at50Res.errors === undefined && at50Res.data !== null,
+  JSON.stringify(at50Res.errors),
+);
+
+// NEGATIVE: nested 51 deep is rejected with the structured depth-50 error.
+const at51 = makeDepthGql(51);
+const at51Res = await at51.execute(buildDepthQuery(51));
+assert(
+  "query nested 51 deep rejected at default limit",
+  at51Res.errors !== undefined
+    && at51Res.errors.some((e) => e.message === "Query exceeds maximum depth of 50"),
+  JSON.stringify(at51Res.errors),
+);
 
 // Build a self-referential tree resolver so we can drive arbitrary nesting.
 function makeTreeGql(maxDepth: number): GraphQL {
@@ -243,7 +307,7 @@ function makeTreeGql(maxDepth: number): GraphQL {
 
 // NEGATIVE: an over-deep query is rejected with the structured depth error.
 const deepGql = makeTreeGql(2);
-const deepRes = deepGql.execute("{ tree { child { child { id } } } }");
+const deepRes = await deepGql.execute("{ tree { child { child { id } } } }");
 assert(
   "over-deep query rejected",
   deepRes.errors !== undefined
@@ -251,7 +315,7 @@ assert(
 );
 
 // POSITIVE: a shallow query within the limit is allowed.
-const shallowRes = makeTreeGql(5).execute("{ tree { id } }");
+const shallowRes = await makeTreeGql(5).execute("{ tree { id } }");
 assert("shallow query allowed", shallowRes.errors === undefined && (shallowRes.data as any)?.tree?.id === "1");
 
 // NEGATIVE: a circular fragment (A spreads itself) is caught by the depth
@@ -263,7 +327,7 @@ circGql.addQuery("node", {}, "Node", () => ({
   child: { id: "2", child: { id: "3", child: { id: "4" } } },
 }));
 circGql.maxDepth = 3;
-const circRes = circGql.execute("{ node { ...A } } fragment A on Node { id child { ...A } }");
+const circRes = await circGql.execute("{ node { ...A } } fragment A on Node { id child { ...A } }");
 assert(
   "circular fragment rejected",
   circRes.errors !== undefined
@@ -272,16 +336,16 @@ assert(
 
 // maxDepth <= 0 disables the guard — even a deep query passes.
 const offGql = makeTreeGql(0);
-const offRes = offGql.execute("{ tree { child { child { child { id } } } } }");
+const offRes = await offGql.execute("{ tree { child { child { child { id } } } } }");
 assert("maxDepth<=0 disables guard", offRes.errors === undefined);
 
 // Fragment spreads and inline fragments resolve normally within the limit.
 const fragGql = new GraphQL();
 fragGql.addType("User", { id: { type: "ID" }, name: { type: "String" } });
 fragGql.addQuery("user", { id: "ID!" }, "User", () => ({ id: "1", name: "Alice" }));
-const spreadRes = fragGql.execute('{ user(id: "1") { ...UF } } fragment UF on User { name }');
+const spreadRes = await fragGql.execute('{ user(id: "1") { ...UF } } fragment UF on User { name }');
 assert("fragment spread resolves", (spreadRes.data as any)?.user?.name === "Alice");
-const inlineRes = fragGql.execute('{ user(id: "1") { ... on User { name } } }');
+const inlineRes = await fragGql.execute('{ user(id: "1") { ... on User { name } } }');
 assert("inline fragment resolves", (inlineRes.data as any)?.user?.name === "Alice");
 
 // Summary
