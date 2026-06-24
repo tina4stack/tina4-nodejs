@@ -39,6 +39,10 @@ export interface MysqlConfig {
 export class MysqlAdapter implements DatabaseAdapter {
   private connection: any = null;
   private _lastInsertId: number | bigint | null = null;
+  // True between startTransactionAsync() and commit/rollback. executeManyAsync
+  // uses it to decide whether IT owns the batch transaction (mirrors the Python
+  // master's owns_txn guard) so it never double-BEGINs inside an explicit one.
+  private _inTransaction = false;
 
   constructor(private config: MysqlConfig | string) {}
 
@@ -108,12 +112,28 @@ export class MysqlAdapter implements DatabaseAdapter {
   }
 
   async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastInsertId?: number | bigint }> {
+    // Run the whole batch in ONE transaction so it is atomic (all-or-nothing) —
+    // a bad row mid-batch rolls back the rows already inserted instead of
+    // leaving a partial write. Mirrors the documented "wrapped in a transaction"
+    // contract, the SQLite adapter, and the Python master's execute_many. Only
+    // own the transaction when not already inside an explicit one (owns guard),
+    // so a batch insert nested in a caller's startTransaction() just joins it.
+    const owns = !this._inTransaction;
+    if (owns) await this.startTransactionAsync();
     let totalAffected = 0;
     let lastId: number | bigint | undefined;
-    for (const params of paramsList) {
-      const result = await this.executeAsync(sql, params) as any;
-      totalAffected += result?.affectedRows ?? 1;
-      if (result?.insertId) lastId = result.insertId;
+    try {
+      for (const params of paramsList) {
+        const result = await this.executeAsync(sql, params) as any;
+        totalAffected += result?.affectedRows ?? 1;
+        if (result?.insertId) lastId = result.insertId;
+      }
+      if (owns) await this.commitAsync();
+    } catch (e) {
+      if (owns) {
+        try { await this.rollbackAsync(); } catch { /* surface the original error */ }
+      }
+      throw e;
     }
     return { totalAffected, lastInsertId: lastId };
   }
@@ -248,6 +268,7 @@ export class MysqlAdapter implements DatabaseAdapter {
 
   async startTransactionAsync(): Promise<void> {
     await this.executeAsync("START TRANSACTION");
+    this._inTransaction = true;
   }
 
   commit(): void {
@@ -256,6 +277,7 @@ export class MysqlAdapter implements DatabaseAdapter {
 
   async commitAsync(): Promise<void> {
     await this.executeAsync("COMMIT");
+    this._inTransaction = false;
   }
 
   rollback(): void {
@@ -264,6 +286,7 @@ export class MysqlAdapter implements DatabaseAdapter {
 
   async rollbackAsync(): Promise<void> {
     await this.executeAsync("ROLLBACK");
+    this._inTransaction = false;
   }
 
   tables(): string[] {

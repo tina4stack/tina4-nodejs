@@ -40,6 +40,10 @@ export interface MssqlConfig {
 export class MssqlAdapter implements DatabaseAdapter {
   private connection: any = null;
   private _lastInsertId: number | bigint | null = null;
+  // True between startTransactionAsync() and commit/rollback. executeManyAsync
+  // uses it to decide whether IT owns the batch transaction (mirrors the Python
+  // master's owns_txn guard) so it never double-BEGINs inside an explicit one.
+  private _inTransaction = false;
 
   constructor(private config: MssqlConfig | string) {}
 
@@ -179,10 +183,26 @@ export class MssqlAdapter implements DatabaseAdapter {
   }
 
   async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastInsertId?: number | bigint }> {
+    // Run the whole batch in ONE transaction so it is atomic (all-or-nothing) —
+    // a bad row mid-batch rolls back the rows already inserted instead of
+    // leaving a partial write. Mirrors the documented "wrapped in a transaction"
+    // contract, the SQLite adapter, and the Python master's execute_many. Only
+    // own the transaction when not already inside an explicit one (owns guard),
+    // so a batch insert nested in a caller's startTransaction() just joins it.
+    const owns = !this._inTransaction;
+    if (owns) await this.startTransactionAsync();
     let totalAffected = 0;
-    for (const params of paramsList) {
-      await this.executeAsync(sql, params);
-      totalAffected++;
+    try {
+      for (const params of paramsList) {
+        await this.executeAsync(sql, params);
+        totalAffected++;
+      }
+      if (owns) await this.commitAsync();
+    } catch (e) {
+      if (owns) {
+        try { await this.rollbackAsync(); } catch { /* surface the original error */ }
+      }
+      throw e;
     }
     return { totalAffected };
   }
@@ -275,7 +295,11 @@ export class MssqlAdapter implements DatabaseAdapter {
       if (id !== null) this._lastInsertId = id;
       return {
         success: true,
-        rowsAffected: result.rowCount,
+        // A single-object insert affects exactly one row. Do NOT use
+        // result.rowCount here: the statement is "INSERT ...; SELECT
+        // SCOPE_IDENTITY()", and tedious sums the row counts of BOTH statements
+        // (1 for the INSERT + 1 for the SELECT), which reported rowsAffected=2.
+        rowsAffected: 1,
         lastInsertId: id ?? undefined,
       };
     } catch (e) {
@@ -331,7 +355,16 @@ export class MssqlAdapter implements DatabaseAdapter {
   }
 
   async startTransactionAsync(): Promise<void> {
-    await this.executeAsync("BEGIN TRANSACTION");
+    // Use tedious's NATIVE transaction API, NOT a raw "BEGIN TRANSACTION" via
+    // execSql: every adapter statement runs through sp_executesql (an RPC), and
+    // SQL Server forbids changing @@TRANCOUNT inside an sp_executesql call, so a
+    // raw BEGIN raised "Transaction count ... mismatching BEGIN and COMMIT".
+    // beginTransaction manages the transaction at the TDS protocol level, so the
+    // INSERTs inside it commit/rollback atomically.
+    await new Promise<void>((resolve, reject) => {
+      this.connection.beginTransaction((err: Error | null) => (err ? reject(err) : resolve()));
+    });
+    this._inTransaction = true;
   }
 
   commit(): void {
@@ -339,7 +372,10 @@ export class MssqlAdapter implements DatabaseAdapter {
   }
 
   async commitAsync(): Promise<void> {
-    await this.executeAsync("COMMIT");
+    await new Promise<void>((resolve, reject) => {
+      this.connection.commitTransaction((err: Error | null) => (err ? reject(err) : resolve()));
+    });
+    this._inTransaction = false;
   }
 
   rollback(): void {
@@ -347,7 +383,10 @@ export class MssqlAdapter implements DatabaseAdapter {
   }
 
   async rollbackAsync(): Promise<void> {
-    await this.executeAsync("ROLLBACK");
+    await new Promise<void>((resolve, reject) => {
+      this.connection.rollbackTransaction((err: Error | null) => (err ? reject(err) : resolve()));
+    });
+    this._inTransaction = false;
   }
 
   tables(): string[] {

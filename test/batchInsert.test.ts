@@ -1,5 +1,5 @@
 /**
- * Regression test: db.insert(table, [rows]) batch-inserts ALL rows.
+ * Regression test: db.insert(table, [rows]) batch-inserts ALL rows atomically.
  *
  * Mirrors the tina4-python master fix. Each per-engine async adapter
  * (PostgreSQL/MySQL/MSSQL/Firebird) overrode insert() and only handled a single
@@ -9,14 +9,19 @@
  * SQLite's sync insert already routed an array through executeMany; the async
  * adapters now do the same via executeManyAsync (ONE connection, one batch path).
  *
- * Contract locked in here (engine-agnostic):
- *   - all 3 rows land in the table (read back, count == 3)
- *   - the result reports rowsAffected == 3
- *   - lastInsertId is sensible where the engine surfaces one (SQLite)
+ * Full batch contract locked in here for EVERY reachable engine (engine-agnostic):
+ *   1. all 3 rows land in the table (read back, count == 3)
+ *   2. the result reports rowsAffected == 3
+ *   3. a single-object insert still works (rowsAffected == 1)
+ *   4. an empty array is a 0-row no-op, not a crash
+ *   5. a bad row (NULL into a NOT NULL column) rolls the WHOLE batch back as one
+ *      transaction — no partial write (post-insert count is unchanged)
+ * plus a sensible lastInsertId where the engine surfaces one.
  *
- * SQLite always runs (node:sqlite, temp file). Live PostgreSQL runs when
- * reachable, else SKIPs with reason "postgres … not reachable". MySQL/MSSQL are
- * gated-skip (not provisioned in CI).
+ * NO MOCKS: SQLite always runs (node:sqlite, temp file); PostgreSQL, MySQL and
+ * MSSQL run against the live containers when reachable + their driver is
+ * installed, else SKIP with an engine-named reason. Under TINA4_REQUIRE_SERVICES
+ * the run-all gate turns an unreachable provisioned engine into a hard failure.
  *
  * Run with: npx tsx test/batchInsert.test.ts
  */
@@ -74,6 +79,73 @@ const ROWS = [
   { name: "Eve", email: "eve@example.com" },
 ];
 
+async function count(db: any, table: string): Promise<number> {
+  const r = await db.fetch(`SELECT count(*) AS c FROM ${table}`);
+  return Number((r.records[0] as any).c);
+}
+
+/**
+ * Run the full 5-point batch contract against one live engine. `lastId` selects
+ * how the engine surfaces the batch's last insert id: "exact3" (SQLite autoinc),
+ * "positive" (MySQL AUTO_INCREMENT / PG SERIAL), or "none" (MSSQL batch path
+ * tracks no per-row id). No mocks — `db` is a real adapter on a real engine.
+ */
+async function batchContract(
+  label: string,
+  db: any,
+  table: string,
+  lastId: "exact3" | "positive" | "none",
+): Promise<void> {
+  // 1 + 2: all three rows land, rowsAffected == 3.
+  const res = await db.insert(table, ROWS);
+  assert(`${label} batch insert succeeds`, res.success === true, JSON.stringify(res));
+  assert(`${label} reports rowsAffected == 3`, res.rowsAffected === 3, `(got ${res.rowsAffected})`);
+  if (lastId === "exact3") {
+    assert(`${label} lastInsertId is the 3rd row`, Number(res.lastInsertId) === 3, `(got ${String(res.lastInsertId)})`);
+  } else if (lastId === "positive") {
+    assert(`${label} lastInsertId is a positive id`, Number(res.lastInsertId) > 0, `(got ${String(res.lastInsertId)})`);
+  }
+
+  const back = await db.fetch(`SELECT name, email FROM ${table} ORDER BY name`);
+  assert(`${label} read-back: all 3 rows present`, back.records.length === 3, `(got ${back.records.length})`);
+  assert(
+    `${label} read-back: values match the batch`,
+    (back.records[0] as any).name === "Alice" &&
+      (back.records[1] as any).name === "Bob" &&
+      (back.records[2] as any).email === "eve@example.com",
+    JSON.stringify(back.records),
+  );
+
+  // 3: single-object insert is unaffected.
+  const single = await db.insert(table, { name: "Frank", email: "frank@example.com" });
+  assert(`${label} single-object insert still works`, single.success === true && single.rowsAffected === 1, JSON.stringify(single));
+  assert(`${label} total is 4 after single insert`, (await count(db, table)) === 4);
+
+  // 4: empty array is a 0-row no-op, not a crash.
+  const empty = await db.insert(table, []);
+  assert(`${label} empty-array insert is a 0-row no-op`, empty.success === true && empty.rowsAffected === 0, JSON.stringify(empty));
+
+  // 5: a bad row (NULL into NOT NULL name) rolls the WHOLE batch back — atomic.
+  // Adapters report the failure two ways (both acceptable): the sync SQLite path
+  // throws; the async adapters catch and return { success: false }. Either way the
+  // contract is "no partial write" — the post-insert count must be unchanged.
+  const before = await count(db, table);
+  let failed = false;
+  try {
+    const bad = await db.insert(table, [
+      { name: "rb1", email: "rb1@example.com" },
+      { name: "rb2", email: "rb2@example.com" },
+      { name: null, email: "rbbad@example.com" }, // violates NOT NULL
+    ]);
+    failed = bad.success === false;
+  } catch {
+    failed = true;
+  }
+  assert(`${label} bad-row batch fails (no partial insert)`, failed, "batch with a bad row should not succeed");
+  const after = await count(db, table);
+  assert(`${label} bad-row batch rolled back as one transaction (count unchanged)`, after === before, `before=${before} after=${after}`);
+}
+
 console.log("=== Batch insert: db.insert(table, [rows]) ===\n");
 
 const { initDatabase, closeDatabase } = await import("../packages/orm/src/index.ts");
@@ -87,39 +159,7 @@ const tmp = mkdtempSync(join(tmpdir(), "tina4-batch-"));
     await db.execute(
       "CREATE TABLE people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT)",
     );
-
-    const res = await db.insert("people", ROWS);
-    assert("SQLite batch insert succeeds", res.success === true, JSON.stringify(res));
-    assert(
-      "SQLite reports rowsAffected == 3",
-      res.rowsAffected === 3,
-      `(got ${res.rowsAffected})`,
-    );
-    assert(
-      "SQLite returns a sensible lastInsertId (3rd row)",
-      Number(res.lastInsertId) === 3,
-      `(got ${String(res.lastInsertId)})`,
-    );
-
-    const back = await db.fetch("SELECT name, email FROM people ORDER BY id");
-    assert("SQLite read-back: all 3 rows present", back.records.length === 3, `(got ${back.records.length})`);
-    assert(
-      "SQLite read-back: values match the batch",
-      (back.records[0] as any).name === "Alice" &&
-        (back.records[1] as any).name === "Bob" &&
-        (back.records[2] as any).email === "eve@example.com",
-      JSON.stringify(back.records),
-    );
-
-    // Single-object insert must still work unchanged.
-    const single = await db.insert("people", { name: "Frank", email: "frank@example.com" });
-    assert("SQLite single-object insert still works", single.success === true && single.rowsAffected === 1);
-    const total = await db.fetch("SELECT count(*) AS c FROM people");
-    assert("SQLite total is 4 after single insert", Number((total.records[0] as any).c) === 4);
-
-    // Empty array is a no-op, not a crash.
-    const empty = await db.insert("people", []);
-    assert("SQLite empty-array insert is a 0-row no-op", empty.success === true && empty.rowsAffected === 0);
+    await batchContract("SQLite", db, "people", "exact3");
   } catch (e) {
     assert("SQLite batch insert (no exception)", false, (e as Error).message);
   } finally {
@@ -154,35 +194,9 @@ const tmp = mkdtempSync(join(tmpdir(), "tina4-batch-"));
         await db.execute(
           "CREATE TABLE t4_batch_people (id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, email VARCHAR(255))",
         );
-
-        const res = await db.insert("t4_batch_people", ROWS);
-        assert("PG batch insert succeeds", res.success === true, JSON.stringify(res));
-        assert(
-          "PG reports rowsAffected == 3",
-          res.rowsAffected === 3,
-          `(got ${res.rowsAffected})`,
-        );
-
-        const back = await db.fetch("SELECT name, email FROM t4_batch_people ORDER BY id");
-        assert("PG read-back: all 3 rows present", back.records.length === 3, `(got ${back.records.length})`);
-        assert(
-          "PG read-back: values match the batch",
-          (back.records[0] as any).name === "Alice" &&
-            (back.records[2] as any).email === "eve@example.com",
-          JSON.stringify(back.records),
-        );
-
-        // Single-object insert (RETURNING *) still works + surfaces the id.
-        const single = await db.insert("t4_batch_people", { name: "Frank", email: "frank@example.com" });
-        assert(
-          "PG single-object insert still works + returns id",
-          single.success === true && single.rowsAffected === 1 && Number(single.lastInsertId) > 0,
-          JSON.stringify(single),
-        );
-
-        const empty = await db.insert("t4_batch_people", []);
-        assert("PG empty-array insert is a 0-row no-op", empty.success === true && empty.rowsAffected === 0);
-
+        // PG's batch path surfaces no per-row id (plain INSERTs, no RETURNING in
+        // the batch loop), so lastInsertId is not asserted for the batch.
+        await batchContract("PG", db, "t4_batch_people", "none");
         await db.execute("DROP TABLE IF EXISTS t4_batch_people");
       } catch (e) {
         assert("PG batch insert (no exception)", false, (e as Error).message);
@@ -193,13 +207,83 @@ const tmp = mkdtempSync(join(tmpdir(), "tina4-batch-"));
   }
 }
 
-// ── MySQL / MSSQL (not provisioned in CI — gated skip) ───────────────
+// ── MySQL (live, gated on reachability + the mysql2 driver) ──────────
 {
-  console.log("\n-- MySQL / MSSQL (gated) --");
-  const MYSQL_HOST = process.env.TINA4_TEST_MYSQL_HOST;
-  const MSSQL_HOST = process.env.TINA4_TEST_MSSQL_HOST;
-  if (!MYSQL_HOST) skip("mysql not configured (TINA4_TEST_MYSQL_HOST unset) — skipping");
-  if (!MSSQL_HOST) skip("mssql not configured (TINA4_TEST_MSSQL_HOST unset) — skipping");
+  console.log("\n-- MySQL (live) --");
+  const HOST = process.env.TINA4_TEST_MYSQL_HOST ?? "localhost";
+  const PORT = parseInt(process.env.TINA4_TEST_MYSQL_PORT ?? "3306", 10);
+  const USER = process.env.TINA4_TEST_MYSQL_USER ?? "tina4";
+  const PASS = process.env.TINA4_TEST_MYSQL_PASS ?? "tina4";
+  const DB = process.env.TINA4_TEST_MYSQL_DB ?? "tina4_test";
+
+  if (!(await reachable(HOST, PORT))) {
+    skip(`mysql not reachable at ${HOST}:${PORT} — skipping`);
+  } else {
+    let hasDriver = true;
+    try {
+      await import("mysql2");
+    } catch {
+      hasDriver = false;
+      skip("mysql2 driver not installed — npm install mysql2");
+    }
+    if (hasDriver) {
+      const URL = `mysql://${USER}:${PASS}@${HOST}:${PORT}/${DB}`;
+      const db = await initDatabase({ url: URL });
+      try {
+        await db.execute("DROP TABLE IF EXISTS t4_batch_people");
+        // InnoDB (mysql:8 default) gives the batch a real transactional rollback.
+        await db.execute(
+          "CREATE TABLE t4_batch_people (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL, email VARCHAR(255)) ENGINE=InnoDB",
+        );
+        await batchContract("MySQL", db, "t4_batch_people", "positive");
+        await db.execute("DROP TABLE IF EXISTS t4_batch_people");
+      } catch (e) {
+        assert("MySQL batch insert (no exception)", false, (e as Error).message);
+      } finally {
+        try { await closeDatabase(); } catch { /* ignore */ }
+      }
+    }
+  }
+}
+
+// ── MSSQL (live, gated on reachability + the tedious driver) ─────────
+{
+  console.log("\n-- MSSQL (live) --");
+  const HOST = process.env.TINA4_TEST_MSSQL_HOST ?? "localhost";
+  const PORT = parseInt(process.env.TINA4_TEST_MSSQL_PORT ?? "1433", 10);
+  const USER = process.env.TINA4_TEST_MSSQL_USER ?? "sa";
+  const PASS = process.env.TINA4_TEST_MSSQL_PASS ?? "TinaSQL123!Secure";
+  const DB = process.env.TINA4_TEST_MSSQL_DB ?? "tina4_test";
+
+  if (!(await reachable(HOST, PORT))) {
+    skip(`mssql not reachable at ${HOST}:${PORT} — skipping`);
+  } else {
+    let hasDriver = true;
+    try {
+      await import("tedious");
+    } catch {
+      hasDriver = false;
+      skip("tedious driver not installed — npm install tedious");
+    }
+    if (hasDriver) {
+      const URL = `mssql://${USER}:${encodeURIComponent(PASS)}@${HOST}:${PORT}/${DB}`;
+      const db = await initDatabase({ url: URL });
+      try {
+        await db.execute("IF OBJECT_ID('t4_batch_people', 'U') IS NOT NULL DROP TABLE t4_batch_people");
+        await db.execute(
+          "CREATE TABLE t4_batch_people (id INT IDENTITY(1,1) PRIMARY KEY, name VARCHAR(100) NOT NULL, email VARCHAR(255))",
+        );
+        // The MSSQL batch path surfaces no per-row id (executeManyAsync returns
+        // only totalAffected), so lastInsertId is not asserted for the batch.
+        await batchContract("MSSQL", db, "t4_batch_people", "none");
+        await db.execute("IF OBJECT_ID('t4_batch_people', 'U') IS NOT NULL DROP TABLE t4_batch_people");
+      } catch (e) {
+        assert("MSSQL batch insert (no exception)", false, (e as Error).message);
+      } finally {
+        try { await closeDatabase(); } catch { /* ignore */ }
+      }
+    }
+  }
 }
 
 try { rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }

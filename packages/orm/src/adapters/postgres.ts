@@ -72,6 +72,10 @@ export class PostgresAdapter implements DatabaseAdapter {
   // `id uuid PRIMARY KEY DEFAULT gen_random_uuid()` shape) returns its id as a
   // 36-char string via RETURNING, not a SERIAL integer (#256).
   private _lastInsertId: number | bigint | string | null = null;
+  // True between startTransactionAsync() and commit/rollback. executeManyAsync
+  // uses it to decide whether IT owns the batch transaction (mirrors the Python
+  // master's owns_txn guard) so it never double-BEGINs inside an explicit one.
+  private _inTransaction = false;
 
   constructor(private config: PostgresConfig | string) {}
 
@@ -150,14 +154,30 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   /** Async executeMany for real usage. */
   async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastInsertId?: number | bigint }> {
+    // Run the whole batch in ONE transaction so it is atomic (all-or-nothing) —
+    // a bad row mid-batch rolls back the rows already inserted instead of
+    // leaving a partial write. Mirrors the documented "wrapped in a transaction"
+    // contract, the SQLite adapter, and the Python master's execute_many. Only
+    // own the transaction when not already inside an explicit one (owns guard),
+    // so a batch insert nested in a caller's startTransaction() just joins it.
+    const owns = !this._inTransaction;
+    if (owns) await this.startTransactionAsync();
     let totalAffected = 0;
     let lastId: number | bigint | undefined;
-    for (const params of paramsList) {
-      const result = await this.executeAsync(sql, params);
-      totalAffected++;
-      if (result && typeof result === "object" && "lastInsertId" in (result as any)) {
-        lastId = (result as any).lastInsertId;
+    try {
+      for (const params of paramsList) {
+        const result = await this.executeAsync(sql, params);
+        totalAffected++;
+        if (result && typeof result === "object" && "lastInsertId" in (result as any)) {
+          lastId = (result as any).lastInsertId;
+        }
       }
+      if (owns) await this.commitAsync();
+    } catch (e) {
+      if (owns) {
+        try { await this.rollbackAsync(); } catch { /* surface the original error */ }
+      }
+      throw e;
     }
     return { totalAffected, lastInsertId: lastId };
   }
