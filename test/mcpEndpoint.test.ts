@@ -233,11 +233,17 @@ assert("plan_list returns the freshly created plan, marked current",
   planList.parsed.some((p: any) => p.name === "mcp-endpoint-coverage.md" && p.is_current === true && p.steps_total === 2),
   JSON.stringify(planList.parsed).slice(0, 200));
 
-// migration_status — with a live DB it must reach the connection (not the
-// "No database connection" error path). NOTE the Node handler is a stub.
+// migration_status — with a live DB it now calls the REAL status() from @tina4/orm
+// (no longer the "not yet implemented" stub). It must reach the connection and
+// return a real status payload: completed + pending arrays, never an `info` string.
 const migStatus = await callTool("migration_status", {});
 assert("migration_status reaches the live DB (NOT the no-connection error path)",
   migStatus.http === 200 && migStatus.parsed?.error !== "No database connection",
+  JSON.stringify(migStatus.parsed).slice(0, 160));
+assert("migration_status returns a real status payload (completed + pending arrays, not a stub)",
+  Array.isArray(migStatus.parsed?.completed)
+    && Array.isArray(migStatus.parsed?.pending)
+    && migStatus.parsed?.info === undefined,
   JSON.stringify(migStatus.parsed).slice(0, 160));
 
 // ── tools/call a safe read-only tool → content ──────────────

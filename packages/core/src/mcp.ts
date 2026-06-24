@@ -1231,7 +1231,17 @@ export function registerDevTools(server: McpServer): void {
       try {
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
-        return { info: "Migration status not yet implemented for Node.js" };
+        // Use the real migration API (parity with the Python master, whose MCP
+        // migration_status calls MigrationRunner(db).status()). Previously a stub.
+        // Load orm via dynamic ESM import (the same mechanism server.ts uses for
+        // autoMigrateOnStartup) — reqSibling()'s createRequire fails here because
+        // @tina4/orm imports @tina4/core (no CJS "exports" main).
+        const orm = await import("../../orm/src/index.js");
+        if (typeof orm.status !== "function") {
+          return { error: "Migration API not available (install @tina4/orm)" };
+        }
+        const st = await orm.status(db, { migrationsDir: path.join(projectRoot, "migrations") });
+        return { completed: st.completed, pending: st.pending };
       } catch (e) {
         return { error: (e as Error).message };
       }
@@ -1264,7 +1274,16 @@ export function registerDevTools(server: McpServer): void {
       try {
         const db = (globalThis as any).__tina4_db;
         if (!db) return { error: "No database connection" };
-        return { info: "Migration run not yet implemented for Node.js" };
+        // Run pending migrations for real (parity with the Python master's MCP
+        // migration_run -> Migration(db).migrate()). Previously a stub. Load orm
+        // via dynamic ESM import (server.ts's mechanism); reqSibling's createRequire
+        // fails because @tina4/orm imports @tina4/core.
+        const orm = await import("../../orm/src/index.js");
+        if (typeof orm.migrate !== "function") {
+          return { error: "Migration API not available (install @tina4/orm)" };
+        }
+        const result = await orm.migrate(db, { migrationsDir: path.join(projectRoot, "migrations") });
+        return { applied: result.applied, skipped: result.skipped, failed: result.failed };
       } catch (e) {
         return { error: (e as Error).message };
       }
