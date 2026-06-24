@@ -61,18 +61,27 @@ async function main() {
 
   console.log("--- MongoBackend with explicit config ---");
 
-  const mongo = new MongoBackend({
-    host: "127.0.0.1",
-    port: 27017,
-    database: "test_queue",
-    collection: "jobs",
-  });
-
   {
     // (1) [construction] Construct with explicit config, then assert the REAL
     // resolved config via getConfig(): database + collection are taken verbatim
     // and the host/port build the mongodb:// URI.
-    const cfg = mongo.getConfig();
+    //
+    // This test exercises the host/port BUILD path, so it must clear the URI
+    // env overrides first — `config.uri`/`TINA4_MONGO_URI`/`TINA4_QUEUE_URL` all
+    // take precedence over the host/port build (documented precedence in
+    // mongoBackend.ts), and CI sets TINA4_MONGO_URI=mongodb://localhost:27017,
+    // which would otherwise win and the build path would never run.
+    const savedUri = process.env.TINA4_MONGO_URI;
+    const savedQueueUrl = process.env.TINA4_QUEUE_URL;
+    delete process.env.TINA4_MONGO_URI;
+    delete process.env.TINA4_QUEUE_URL;
+
+    const cfg = new MongoBackend({
+      host: "127.0.0.1",
+      port: 27017,
+      database: "test_queue",
+      collection: "jobs",
+    }).getConfig();
     assert(
       "MongoBackend resolves explicit config (database/collection/uri)",
       cfg.database === "test_queue" &&
@@ -81,6 +90,9 @@ async function main() {
         cfg.uri.startsWith("mongodb://"),
       `cfg=${JSON.stringify(cfg)}`,
     );
+
+    if (savedUri !== undefined) process.env.TINA4_MONGO_URI = savedUri;
+    if (savedQueueUrl !== undefined) process.env.TINA4_QUEUE_URL = savedQueueUrl;
   }
 
   // (6) [construction] Defaults: with no config and no env, getConfig() yields
@@ -136,6 +148,15 @@ async function main() {
   // encodeURIComponent credential-encoding path.
   console.log("\n--- MongoBackend with auth ---");
   {
+    // Like (1), this asserts the host/port+auth BUILD path, so the URI env
+    // overrides must be cleared first — otherwise CI's
+    // TINA4_MONGO_URI=mongodb://localhost:27017 wins over the build and the
+    // credentials are never embedded.
+    const savedUri = process.env.TINA4_MONGO_URI;
+    const savedQueueUrl = process.env.TINA4_QUEUE_URL;
+    delete process.env.TINA4_MONGO_URI;
+    delete process.env.TINA4_QUEUE_URL;
+
     const cfg = new MongoBackend({
       host: "127.0.0.1",
       port: 27017,
@@ -151,6 +172,9 @@ async function main() {
         cfg.database === "prod_queue",
       `uri=${cfg.uri}`,
     );
+
+    if (savedUri !== undefined) process.env.TINA4_MONGO_URI = savedUri;
+    if (savedQueueUrl !== undefined) process.env.TINA4_QUEUE_URL = savedQueueUrl;
   }
 
   // ── Layer 3: graceful-degrade contract (real child process, no live server) ─
