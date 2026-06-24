@@ -1,5 +1,5 @@
 import { BaseModel } from "../packages/orm/src/baseModel.js";
-import { generateCrudRoutes } from "../packages/orm/src/autoCrud.js";
+import { generateCrudRoutes, crudEligibleModels } from "../packages/orm/src/autoCrud.js";
 import type { DiscoveredModel } from "../packages/orm/src/model.js";
 
 const results: string[] = [];
@@ -37,11 +37,13 @@ function discoveredFrom(ModelClass: typeof BaseModel): DiscoveredModel {
   };
 }
 
-// The opt-in gate the flag is meant to drive: only models that set
-// `static autoCrud = true` are handed to the CRUD route generator.
+// The opt-in gate the flag is meant to drive: discover the models, then run them
+// through the SAME crudEligibleModels() gate the server uses (server.ts calls
+// orm.crudEligibleModels(models) before generateCrudRoutes), so this locks in the
+// real gate rather than re-implementing the filter.
 function registerAutoCrud(models: Array<typeof BaseModel>) {
-  const optedIn = models.filter((m) => m.autoCrud === true);
-  return generateCrudRoutes(optedIn.map(discoveredFrom));
+  const discovered = models.map(discoveredFrom);
+  return generateCrudRoutes(crudEligibleModels(discovered));
 }
 
 // Test 1: a model that leaves autoCrud at its default is NOT opted into CRUD

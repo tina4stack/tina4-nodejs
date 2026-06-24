@@ -65,6 +65,19 @@ export class AutoCrud {
 }
 
 /**
+ * Filter discovered models down to those that explicitly opted into auto-CRUD via
+ * `static autoCrud = true` (the documented opt-in gate; default false). The server
+ * passes only these to generateCrudRoutes, so a model without the flag gets no CRUD
+ * endpoints. Exported so the opt-in gate is locked in by a test rather than
+ * re-implemented at each call site.
+ */
+export function crudEligibleModels(models: DiscoveredModel[]): DiscoveredModel[] {
+  return models.filter(
+    (m) => (m.modelClass as { autoCrud?: boolean } | undefined)?.autoCrud === true,
+  );
+}
+
+/**
  * Generate CRUD route definitions for the given models.
  * (Standalone function for backward compatibility.)
  */

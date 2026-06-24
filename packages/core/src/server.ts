@@ -937,8 +937,13 @@ ${reset}
           console.log(`    \x1b[35m${definition.tableName}\x1b[0m (${Object.keys(definition.fields).length} fields)`);
         }
 
-        // Generate auto-CRUD routes for all discovered models
-        const crudRoutes = orm.generateCrudRoutes(models);
+        // Generate auto-CRUD routes ONLY for models that explicitly opted in via
+        // `static autoCrud = true` (the documented opt-in gate; default false). The
+        // server previously generated the 5 CRUD endpoints for every discovered model
+        // regardless of the flag, contradicting the documented contract. (Python's
+        // AutoCrud is opt-in too — via an explicit AutoCrud.register/discover call.)
+        const crudModels = orm.crudEligibleModels(models);
+        const crudRoutes = crudModels.length > 0 ? orm.generateCrudRoutes(crudModels) : [];
         for (const route of crudRoutes) {
           // Only add if no file-based route already handles this
           const existing = router.match(route.method, route.pattern.replace(/\{(\w+)\}/g, "test").replace(/\[(\w+)\]/g, "test"));
@@ -947,9 +952,11 @@ ${reset}
           }
         }
 
-        console.log(`\n  Auto-CRUD endpoints:`);
-        for (const route of crudRoutes) {
-          console.log(`    \x1b[33m${route.method.padEnd(7)}\x1b[0m ${route.pattern}`);
+        if (crudRoutes.length > 0) {
+          console.log(`\n  Auto-CRUD endpoints:`);
+          for (const route of crudRoutes) {
+            console.log(`    \x1b[33m${route.method.padEnd(7)}\x1b[0m ${route.pattern}`);
+          }
         }
       }
     } catch (err) {

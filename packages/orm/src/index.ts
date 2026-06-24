@@ -45,7 +45,7 @@ export {
   shouldSkipCreateTable,
 } from "./migration.js";
 export type { MigrationResult, MigrationStatus } from "./migration.js";
-export { AutoCrud, generateCrudRoutes } from "./autoCrud.js";
+export { AutoCrud, generateCrudRoutes, crudEligibleModels } from "./autoCrud.js";
 export { buildQuery, parseQueryString } from "./query.js";
 export { validate } from "./validation.js";
 export type { ValidationError } from "./validation.js";
