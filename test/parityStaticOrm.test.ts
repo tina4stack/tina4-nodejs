@@ -75,13 +75,71 @@ const articleModel: DiscoveredModel = {
 
 await syncModels([userModel, articleModel]);
 
-// --- Existence: static methods are present ---
-console.log("--- Static Method Existence ---");
-assert("BaseModel.findOrFail exists",  typeof (BaseModel as any).findOrFail === "function");
-assert("BaseModel.count exists",       typeof (BaseModel as any).count === "function");
-assert("BaseModel.withTrashed exists", typeof (BaseModel as any).withTrashed === "function");
-assert("BaseModel.scope exists",       typeof (BaseModel as any).scope === "function");
-assert("seedOrm exported",             typeof seedOrm === "function");
+// --- Static helpers: each exercised against a throwaway Probe model so the
+// behaviour is proven here without polluting the users/articles row counts the
+// blocks below depend on. (Formerly bare `typeof === "function"` existence
+// checks — now real behavioural assertions against the live SQLite DB.) ---
+console.log("--- Static Helpers (behavioural smoke) ---");
+
+class Probe extends BaseModel {
+  static tableName = "probes";
+  static softDelete = true;
+  static fields: Record<string, FieldDefinition> = {
+    id:   { type: "integer", primaryKey: true, autoIncrement: true },
+    name: { type: "string", required: true, maxLength: 50 },
+    rank: { type: "integer", min: 0, max: 100 },
+  };
+}
+const probeModel: DiscoveredModel = {
+  definition: { tableName: "probes", fields: Probe.fields, softDelete: true },
+  filePath: "test",
+  modelClass: Probe,
+};
+await syncModels([probeModel]);
+
+// seedOrm: prove it actually inserts rows into the real table (not just that it
+// is exported). Seed 4 probes (rank pinned low so they never collide with the
+// scope assertion below) and confirm they landed.
+const probeSeed = await seedOrm(Probe as any, 4, { rank: 0 }, 7);
+assert(
+  "seedOrm inserts real rows (returns count + rows land)",
+  probeSeed.seeded === 4 && (await Probe.count()) === 4,
+);
+
+// Give two rows known ranks so the scope/count assertions are deterministic.
+const p1 = new Probe({ name: "Pinned", rank: 90 });
+await p1.save();
+const p2 = new Probe({ name: "Lowly", rank: 5 });
+await p2.save();
+const pinnedId = (p1 as any).id;
+
+// findOrFail: returns the exact row for a known id (not just that it exists).
+const pinned = await Probe.findOrFail(pinnedId);
+assert("findOrFail returns the row for a known id", (pinned as any).name === "Pinned");
+
+// count: returns the true total — 4 seeded + 2 explicit = 6 live rows.
+assert("count() returns the real total row count", (await Probe.count()) === 6);
+
+// scope: registers a callable that runs the real WHERE and filters rows.
+Probe.scope("highRank", "rank >= ?", [50]);
+const highRank = await (Probe as any).highRank();
+assert(
+  "scope() runs the registered query and filters rows",
+  Array.isArray(highRank) && highRank.length === 1 && (highRank[0] as any).name === "Pinned",
+);
+
+// withTrashed: soft-delete one row, then prove withTrashed sees it while the
+// default all() (and count()) excludes it.
+await p2.delete(); // soft delete "Lowly"
+const probeLive = await Probe.all();
+const probeAll = await Probe.withTrashed();
+assert(
+  "withTrashed() includes a soft-deleted row that all() excludes",
+  probeAll.length === probeLive.length + 1,
+);
+
+// Drop the probe table so it cannot interfere with the focused blocks below.
+getAdapter().execute(`DROP TABLE IF EXISTS "probes"`);
 
 // --- findOrFail ---
 console.log("\n--- findOrFail ---");

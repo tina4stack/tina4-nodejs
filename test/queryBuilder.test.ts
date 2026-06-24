@@ -52,11 +52,30 @@ db.execute("INSERT INTO orders (user_id, amount) VALUES (?, ?)", [3, 300.00]);
 console.log("=== QueryBuilder Tests ===\n");
 
 // ---------- 1. from() creates a QueryBuilder ----------
-console.log("--- 1. from() creates a QueryBuilder ---");
+console.log("--- 1. from() creates a usable QueryBuilder ---");
 {
-  const qb = QueryBuilder.fromTable("users", db);
-  assert("from() returns a QueryBuilder instance", qb instanceof QueryBuilder);
-  assert("from() without db returns a QueryBuilder", QueryBuilder.fromTable("users") instanceof QueryBuilder);
+  // A builder created WITH a db actually queries the real (in-memory SQLite) table.
+  const withDb = QueryBuilder.fromTable("users", db);
+  assert("from(table, db) builds the right SQL", withDb.toSql() === "SELECT * FROM users");
+  const total = await withDb.count();
+  assert("from(table, db) runs a real count against the seeded table", total === 5, `got: ${total}`);
+
+  // A builder created WITHOUT a db still composes SQL purely (no adapter needed).
+  const noDb = QueryBuilder.fromTable("users").select("id");
+  assert("from(table) without db still builds SQL", noDb.toSql() === "SELECT id FROM users");
+
+  // ...but executing the db-less builder throws the missing-adapter error
+  // (no global adapter is bound in this test process — section 17 relies on this too).
+  let threwNoDb = false;
+  let noDbMsg = "";
+  try {
+    await QueryBuilder.fromTable("users").get();
+  } catch (e: any) {
+    threwNoDb = true;
+    noDbMsg = e.message;
+  }
+  assert("from(table) without db throws on get()", threwNoDb);
+  assert("db-less get() error mentions no adapter", noDbMsg.includes("No database adapter"), `got: ${noDbMsg}`);
 }
 
 // ---------- 2. select() sets columns ----------

@@ -276,8 +276,58 @@ const ormSeeded2 = new FakeData(123);
 assert("ORM FakeData(123) produces deterministic name()",
   ormSeeded1.name() === ormSeeded2.name());
 
-assert("ORM FakeData inherits from CoreFakeData",
-  ormFake instanceof CoreFakeData);
+// Behavioural inheritance check (not just the prototype-chain `instanceof`):
+// prove the ORM subclass really inherits a CORE generator method's contract AND
+// that the ORM-only forField() produces a typed value driven by that inherited
+// behaviour. instanceof only asserts the type relationship; these assert that
+// the subclass actually runs inherited core code and layers its own on top.
+{
+  // 1. instanceof still holds (type relationship).
+  assert("ORM FakeData is an instanceof CoreFakeData",
+    ormFake instanceof CoreFakeData);
+
+  // 2. The inherited CORE method firstName() honours its contract when called
+  //    on the ORM subclass instance — non-empty string, repeatedly.
+  let allFirstNamesValid = true;
+  let badFirst = "";
+  for (let i = 0; i < 20; i++) {
+    const fn = ormFake.firstName();
+    if (typeof fn !== "string" || fn.length === 0) {
+      allFirstNamesValid = false;
+      badFirst = String(fn);
+      break;
+    }
+  }
+  assert("ORM FakeData inherits core firstName() contract (non-empty string)",
+    allFirstNamesValid, `got "${badFirst}"`);
+
+  // 3. The inherited firstName() is the SAME core implementation: a seeded ORM
+  //    instance and a seeded CORE instance must produce the identical first
+  //    name from the same seed — proving the subclass runs core code, not a
+  //    reimplementation.
+  const ormSeed = new FakeData(2024);
+  const coreSeed = new CoreFakeData(2024);
+  const ormFn = ormSeed.firstName();
+  const coreFn = coreSeed.firstName();
+  assert("ORM-seeded firstName() matches CORE-seeded firstName() (shared impl)",
+    ormFn === coreFn, `orm "${ormFn}" vs core "${coreFn}"`);
+
+  // 4. The ORM-only forField() (which does NOT exist on CoreFakeData) produces
+  //    a typed value built from inherited core generators — proving the subclass
+  //    layers real new behaviour on top of inherited behaviour.
+  const bareCore = new CoreFakeData();
+  assert("ORM-only forField() exists on the subclass but not on CoreFakeData",
+    typeof (ormFake as { forField?: unknown }).forField === "function" &&
+    typeof (bareCore as unknown as { forField?: unknown }).forField === "undefined");
+
+  const fieldEmail = ormFake.forField({ type: "string" }, "email") as string;
+  assert("ORM forField() produces a typed value via inherited core email() generator",
+    typeof fieldEmail === "string" && fieldEmail.includes("@") && fieldEmail.includes("."));
+
+  const fieldInt = ormFake.forField({ type: "integer", min: 100, max: 110 }, "qty") as number;
+  assert("ORM forField() integer respects bounds using inherited core integer() generator",
+    typeof fieldInt === "number" && Number.isInteger(fieldInt) && fieldInt >= 100 && fieldInt <= 110);
+}
 
 // --- seedTable() ---
 console.log("\n--- seedTable() ---");

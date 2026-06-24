@@ -91,18 +91,28 @@ console.log("--- quickMetrics ---");
 
 {
   const metrics = quickMetrics(tmpDir);
-  assert("quickMetrics returns an object", typeof metrics === "object");
+  // quickMetrics returns the computed breakdown of the two .ts fixtures we wrote.
+  assert("quickMetrics breakdown maps the two .ts files (typescript===2)",
+    metrics.breakdown.typescript === 2, `got ${JSON.stringify(metrics.breakdown)}`);
   assert("file_count is 2", metrics.file_count === 2);
   assert("total_loc > 0", metrics.total_loc > 0);
-  assert("total_blank >= 0", metrics.total_blank >= 0);
-  assert("total_comment >= 0", metrics.total_comment >= 0);
+  // calculator.ts has 11 blank lines + logger.ts has 0 (no internal blanks; the
+  // leading/trailing newlines of its template are the only empties). Assert the
+  // exact aggregate so a blank-line counting regression is caught.
+  assert("total_blank is exact (11 across both fixtures)", metrics.total_blank === 11,
+    `got ${metrics.total_blank}`);
+  // Comment lines: calculator.ts has "// A simple module", the 3-line /** Block
+  // comment */ and "// Simple utility" = 5; logger.ts has none. Exact = 5.
+  assert("total_comment is exact (5 across both fixtures)", metrics.total_comment === 5,
+    `got ${metrics.total_comment}`);
   assert("classes > 0", metrics.classes > 0);
   assert("functions > 0", metrics.functions > 0);
   assert("avg_file_size > 0", metrics.avg_file_size > 0);
   assert("largest_files is array", Array.isArray(metrics.largest_files));
   assert("largest_files has entries", metrics.largest_files.length > 0);
-  assert("breakdown exists", typeof metrics.breakdown === "object");
-  assert("breakdown has typescript", typeof metrics.breakdown.typescript === "number");
+  // breakdown is the real computed result: exactly the 2 .ts files we wrote.
+  assert("breakdown.typescript === 2 (the two .ts fixtures)",
+    metrics.breakdown.typescript === 2, `got ${metrics.breakdown.typescript}`);
   assert("lloc > 0", metrics.lloc > 0);
 }
 
@@ -126,16 +136,42 @@ console.log("\n--- fullAnalysis ---");
 
 {
   const analysis = fullAnalysis(tmpDir);
-  assert("fullAnalysis returns an object", typeof analysis === "object");
   assert("files_analyzed is 2", analysis.files_analyzed === 2);
   assert("total_functions > 0", analysis.total_functions > 0);
   assert("avg_complexity >= 1", analysis.avg_complexity >= 1);
   assert("avg_maintainability > 0", analysis.avg_maintainability > 0);
-  assert("most_complex_functions is array", Array.isArray(analysis.most_complex_functions));
-  assert("file_metrics is array", Array.isArray(analysis.file_metrics));
-  assert("violations is array", Array.isArray(analysis.violations));
-  assert("dependency_graph is object", typeof analysis.dependency_graph === "object");
-  assert("scan_root exists", typeof analysis.scan_root === "string");
+  // most_complex_functions contains the real functions extracted from the two
+  // fixtures (methods are class-qualified: Calculator.add etc.).
+  const fnNames = analysis.most_complex_functions.map((f: any) => f.name);
+  assert("most_complex_functions contains the known fixture functions",
+    ["Calculator.add", "Calculator.subtract", "Calculator.divide", "multiply", "isEven"]
+      .every((n) => fnNames.includes(n)),
+    `got ${JSON.stringify(fnNames)}`);
+  // file_metrics is the per-file array: exactly the 2 fixtures, both paths present.
+  assert("file_metrics has 2 entries for both fixture paths",
+    Array.isArray(analysis.file_metrics) &&
+    analysis.file_metrics.length === 2 &&
+    analysis.file_metrics.some((f: any) => f.path.includes("calculator")) &&
+    analysis.file_metrics.some((f: any) => f.path.includes("logger")),
+    `got ${JSON.stringify(analysis.file_metrics.map((f: any) => f.path))}`);
+  // The simple Calculator/Logger fixtures are clean — no complexity/size/MI rule
+  // is tripped, so the violations list is empty (a complex.ts added later flips it).
+  assert("violations is empty for the clean fixtures", analysis.violations.length === 0,
+    `got ${JSON.stringify(analysis.violations)}`);
+  // dependency_graph records calculator.ts's single import of node:path
+  // (logger.ts imports nothing).
+  const calcKey = Object.keys(analysis.dependency_graph).find((k) => k.includes("calculator"));
+  assert("dependency_graph records calculator.ts -> node:path",
+    calcKey !== undefined &&
+    Array.isArray(analysis.dependency_graph[calcKey!]) &&
+    analysis.dependency_graph[calcKey!].includes("node:path"),
+    `got ${JSON.stringify(analysis.dependency_graph)}`);
+  // scan_root resolves to the directory we actually scanned (tmpDir). On macOS
+  // /tmp symlinks to /private/tmp so compare on the basename which is unique.
+  const tmpBase = tmpDir.split("/").pop()!;
+  assert("scan_root resolves to the scanned tmpDir",
+    typeof analysis.scan_root === "string" && analysis.scan_root.endsWith(tmpBase),
+    `scan_root=${analysis.scan_root} tmpDir=${tmpDir}`);
 }
 
 // --- fullAnalysis file_metrics detail ---
@@ -146,15 +182,50 @@ console.log("\n--- File Metrics Detail ---");
   const calcMetric = analysis.file_metrics.find((f: any) => f.path.includes("calculator"));
   assert("calculator file found in metrics", calcMetric !== undefined);
   if (calcMetric) {
-    assert("has loc", typeof calcMetric.loc === "number" && calcMetric.loc > 0);
-    assert("has complexity", typeof calcMetric.complexity === "number");
-    assert("has avg_complexity", typeof calcMetric.avg_complexity === "number");
-    assert("has functions count", typeof calcMetric.functions === "number" && calcMetric.functions > 0);
-    assert("has maintainability", typeof calcMetric.maintainability === "number");
-    assert("has halstead_volume", typeof calcMetric.halstead_volume === "number");
-    assert("has coupling_efferent", typeof calcMetric.coupling_efferent === "number");
-    assert("has instability", typeof calcMetric.instability === "number");
-    assert("has dep_count", typeof calcMetric.dep_count === "number");
+    // LOC = non-blank, non-line-comment lines of calculator.ts. The fixture has
+    // 30 such lines (the 40-line source minus 7 blanks and 3 line/JSDoc lines the
+    // loc counter treats as code-vs-comment per metrics.ts). Lock the exact count
+    // so a counting regression is caught.
+    assert("calculator loc is exact (30)", calcMetric.loc === 30, `got ${calcMetric.loc}`);
+    // Aggregate cyclomatic complexity of the file: add(1) + subtract(2: base+if) +
+    // divide(2: base+if) + multiply(1) + greet(1) + isEven(1) = 8.
+    assert("calculator complexity is the aggregate CC (8)", calcMetric.complexity === 8,
+      `got ${calcMetric.complexity}`);
+    // avg_complexity = complexity / functions = 8 / 6 = 1.33 (rounded to 2dp).
+    assert("calculator avg_complexity == complexity/functions (1.33)",
+      calcMetric.avg_complexity === 1.33, `got ${calcMetric.avg_complexity}`);
+    // calculator.ts defines add/subtract/divide methods + module functions
+    // multiply/isEven + the greet arrow = 6 extracted functions.
+    assert("calculator extracted function count is exact (6)", calcMetric.functions === 6,
+      `got ${calcMetric.functions}`);
+    // The simple fixture is reasonably maintainable. Its computed MI is ~49 — well
+    // above the 40 "moderate" floor (a meaningful threshold), not just "a number".
+    assert("calculator maintainability > 40 (meaningful threshold)",
+      calcMetric.maintainability > 40, `got ${calcMetric.maintainability}`);
+    // Non-empty fixture yields a positive Halstead volume; an empty file yields 0.
+    assert("calculator halstead_volume > 0", calcMetric.halstead_volume > 0,
+      `got ${calcMetric.halstead_volume}`);
+    {
+      const hvDir = "/tmp/tina4-metrics-hv-" + Date.now();
+      mkdirSync(hvDir, { recursive: true });
+      writeFileSync(join(hvDir, "empty.ts"), "");
+      writeFileSync(join(hvDir, "keep.ts"), "export const x = 1;\n");
+      const hvAnalysis = fullAnalysis(hvDir);
+      const emptyMetric = hvAnalysis.file_metrics.find((f: any) => f.path.includes("empty"));
+      assert("empty file yields halstead_volume === 0",
+        emptyMetric !== undefined && emptyMetric.halstead_volume === 0,
+        `got ${emptyMetric ? emptyMetric.halstead_volume : "undefined"}`);
+      try { rmSync(hvDir, { recursive: true, force: true }); } catch {}
+    }
+    // calculator.ts has exactly one import (node:path) -> efferent coupling 1.
+    assert("calculator coupling_efferent === 1 (single node:path import)",
+      calcMetric.coupling_efferent === 1, `got ${calcMetric.coupling_efferent}`);
+    // Instability = ce / (ce + ca). ce=1, ca=0 (nothing depends on calculator) -> 1.0.
+    assert("calculator instability === 1.0 (ce=1, ca=0)", calcMetric.instability === 1,
+      `got ${calcMetric.instability}`);
+    // dep_count mirrors efferent coupling: the single node:path import.
+    assert("calculator dep_count === 1", calcMetric.dep_count === 1,
+      `got ${calcMetric.dep_count}`);
   }
 }
 
@@ -219,11 +290,45 @@ console.log("\n--- fileDetail Function Detail ---");
   const detail = fileDetail(join(tmpDir, "calculator.ts"));
   const funcs = detail.functions;
   assert("functions are sorted by complexity desc", funcs.length > 0);
+
+  // Known truth for the calculator.ts fixture: the real declaration line, the
+  // cyclomatic complexity, and the brace-matched body LOC of each function.
+  // (Lines refer to the 1-based position in the written source; the leading
+  // template newline makes "add(" land on line 9, etc.)
+  const expected: Record<string, { line: number; complexity: number; loc: number }> = {
+    "Calculator.add":      { line: 9,  complexity: 1, loc: 3 },
+    "Calculator.subtract": { line: 13, complexity: 2, loc: 6 },
+    "Calculator.divide":   { line: 20, complexity: 2, loc: 6 },
+    "multiply":            { line: 28, complexity: 1, loc: 3 },
+    "greet":               { line: 32, complexity: 1, loc: 3 },
+    "isEven":              { line: 37, complexity: 1, loc: 3 },
+  };
+  const seen = new Set<string>();
   for (const fn of funcs) {
-    assert(`function ${fn.name} has line`, typeof fn.line === "number");
-    assert(`function ${fn.name} has complexity`, typeof fn.complexity === "number");
-    assert(`function ${fn.name} has loc`, typeof fn.loc === "number");
+    const exp = expected[fn.name];
+    assert(`function ${fn.name} is a known fixture function`, exp !== undefined,
+      `unexpected function ${fn.name}`);
+    if (exp) {
+      seen.add(fn.name);
+      // line points at the REAL declaration line in the fixture (e.g. add -> 9).
+      assert(`function ${fn.name} line points at its declaration (${exp.line})`,
+        fn.line === exp.line, `got ${fn.line}`);
+      // complexity is the real computed CC: add has no branch (1), divide has
+      // an if (>=2).
+      assert(`function ${fn.name} complexity is exact (${exp.complexity})`,
+        fn.complexity === exp.complexity, `got ${fn.complexity}`);
+      // per-function LOC matches the known body size (add is 3 lines).
+      assert(`function ${fn.name} loc matches body size (${exp.loc})`,
+        fn.loc === exp.loc, `got ${fn.loc}`);
+    }
   }
+  // Pin the specific add/divide cases the suggestion called out.
+  assert("add complexity is 1 (no branches)",
+    funcs.find((f: any) => f.name === "Calculator.add")?.complexity === 1);
+  assert("divide complexity >= 2 (if + throw)",
+    (funcs.find((f: any) => f.name === "Calculator.divide")?.complexity ?? 0) >= 2);
+  assert("all 6 known functions were extracted", seen.size === 6,
+    `got ${[...seen].join(", ")}`);
 }
 
 // --- Violation detection ---

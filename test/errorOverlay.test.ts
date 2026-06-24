@@ -22,11 +22,38 @@ function assert(name: string, condition: boolean, detail = "") {
 
 console.log("=== Error Overlay Tests ===\n");
 
-// --- Exports exist ---
-console.log("--- Exports ---");
-assert("renderErrorOverlay is a function", typeof renderErrorOverlay === "function");
-assert("renderProductionError is a function", typeof renderProductionError === "function");
-assert("isDebugMode is a function", typeof isDebugMode === "function");
+// --- Behaviour proven by use (existence by exercise) ---
+console.log("--- Behaviour (existence by use) ---");
+
+// renderErrorOverlay: a real Error raised HERE produces an overlay that
+// actually rendered the message AND surfaced this .test.ts caller frame from
+// the live stack — proves the function ran, not merely that it exists.
+const boomErr = new Error("boom");           // captured stack points at this file
+const boomHtml = renderErrorOverlay(boomErr);
+assert("renderErrorOverlay renders the error message", boomHtml.includes("boom"));
+assert("renderErrorOverlay surfaces the .test.ts caller frame from the stack",
+  boomHtml.includes("errorOverlay.test.ts") && boomHtml.includes("Stack Trace"),
+  `(html len=${boomHtml.length})`);
+
+// renderProductionError: a 404 body actually contains the status + message but
+// leaks NO stack/file path — proves the production-safe page was produced.
+const notFoundHtml = renderProductionError(404, "Not Found");
+assert("renderProductionError(404) body contains status and message",
+  notFoundHtml.includes("404") && notFoundHtml.includes("Not Found"));
+assert("renderProductionError(404) leaks no stack/source path",
+  !notFoundHtml.includes("Stack Trace")
+  && !notFoundHtml.includes("errorOverlay.test.ts")
+  && !notFoundHtml.includes(".ts:"));
+
+// isDebugMode: real toggle of the env var flips the result (also exercised
+// exhaustively in the isDebugMode section below).
+const savedDebug = process.env.TINA4_DEBUG;
+process.env.TINA4_DEBUG = "true";
+const debugOn = isDebugMode();
+delete process.env.TINA4_DEBUG;
+const debugOff = isDebugMode();
+if (savedDebug !== undefined) process.env.TINA4_DEBUG = savedDebug; else delete process.env.TINA4_DEBUG;
+assert("isDebugMode tracks TINA4_DEBUG (on then off)", debugOn === true && debugOff === false);
 
 // --- renderErrorOverlay basic output ---
 console.log("\n--- renderErrorOverlay ---");
@@ -34,7 +61,12 @@ console.log("\n--- renderErrorOverlay ---");
 const testError = new Error("Something went wrong");
 const html = renderErrorOverlay(testError);
 
-assert("Returns a string", typeof html === "string");
+assert("Renders a complete overlay document for the error",
+  html.startsWith("<!DOCTYPE html>")
+  && html.includes("Something went wrong")
+  && html.includes("Error")
+  && html.includes("Debug Overlay"),
+  `(starts="${html.slice(0, 20)}")`);
 assert("Contains DOCTYPE", html.includes("<!DOCTYPE html>"));
 assert("Contains error message", html.includes("Something went wrong"));
 assert("Contains error type name", html.includes("Error"));
@@ -83,7 +115,12 @@ assert("Contains custom error message", customHtml.includes("Field is required")
 console.log("\n--- renderProductionError ---");
 
 const prodHtml = renderProductionError();
-assert("Production error returns string", typeof prodHtml === "string");
+assert("Default production error is a complete 500 document with no stack",
+  prodHtml.includes("<!DOCTYPE html>")
+  && prodHtml.includes("500")
+  && prodHtml.includes("Internal Server Error")
+  && !prodHtml.includes("Stack Trace"),
+  `(len=${prodHtml.length})`);
 assert("Production error contains 500", prodHtml.includes("500"));
 assert("Production error contains Internal Server Error", prodHtml.includes("Internal Server Error"));
 assert("Production error contains DOCTYPE", prodHtml.includes("<!DOCTYPE html>"));

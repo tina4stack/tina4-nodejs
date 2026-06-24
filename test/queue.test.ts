@@ -6,9 +6,11 @@ import { Queue } from "../packages/core/src/index.ts";
 import type { QueueJob } from "../packages/core/src/index.ts";
 import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import * as net from "node:net";
 
 let pass = 0;
 let fail = 0;
+let skipped = 0;
 
 function assert(name: string, condition: boolean, detail = "") {
   if (condition) {
@@ -18,6 +20,15 @@ function assert(name: string, condition: boolean, detail = "") {
     console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
     fail++;
   }
+}
+
+// Skip a real-service test when the provisioned service/driver is unavailable.
+// The reason names the service + "not reachable"/"not installed" so the #252
+// service gate (test/_serviceGate.ts) can treat an unavailable provisioned
+// service as a hard FAILURE under TINA4_REQUIRE_SERVICES.
+function skip(name: string, reason: string) {
+  console.log(`  \x1b[33mSKIP\x1b[0m ${name} (${reason})`);
+  skipped++;
 }
 
 const TEST_PATH = join("/tmp", "tina4-queue-test-" + Date.now());
@@ -587,20 +598,51 @@ function cleanupLC() {
 cleanupLC();
 
 {
-  const qt = new Queue({ topic: "lifecycle", path: TEST_PATH_LC });
-  qt.push({ task: "test" });
+  // complete() drives the lifecycle effect, not just exposes a method: the job
+  // moves to 'completed', leaves pending, and is not re-popped.
+  const qc = new Queue({ topic: "lifecycle", path: TEST_PATH_LC });
+  qc.push({ task: "test" });
 
-  const job = qt.pop();
-  assert("popped job has complete method", typeof job?.complete === "function");
-  assert("popped job has fail method", typeof job?.fail === "function");
-  assert("popped job has reject method", typeof job?.reject === "function");
-  assert("popped job has retry method", typeof job?.retry === "function");
+  const job = qc.pop();
   assert("popped job has topic field", job?.topic === "lifecycle");
-
+  assert("pop holds the job as a reservation", qc.size("reserved") === 1);
   if (job) {
     job.complete();
     assert("complete sets status to completed", job.status === "completed");
   }
+  // The file backend acks complete() by clearing the reservation (a tombstone,
+  // not a counted "completed" bucket): the observable effect is the reservation
+  // is gone, nothing is pending, and the job is never re-popped.
+  assert("complete() clears the reservation", qc.size("reserved") === 0);
+  assert("complete() leaves nothing pending", qc.size("pending") === 0);
+  assert("completed job is not re-popped", qc.pop() === null);
+
+  // fail() on a maxRetries>0 queue re-enqueues to pending with attempts++ —
+  // exercising fail(), not asserting it exists.
+  const qf = new Queue({ topic: "lifecycle_fail", path: TEST_PATH_LC, maxRetries: 3 });
+  qf.push({ task: "retryable" });
+  qf.pop()?.fail("boom");
+  assert("fail() re-enqueues a retryable job to pending", qf.size("pending") === 1);
+  const refailed = qf.pop();
+  assert("fail() re-enqueued job carries attempts === 1", refailed !== null && refailed.attempts === 1);
+
+  // reject() on a maxRetries:1 queue dead-letters with the given error —
+  // exercising reject(), not asserting it exists.
+  const qr = new Queue({ topic: "lifecycle_reject", path: TEST_PATH_LC, maxRetries: 1 });
+  qr.push({ task: "bad" });
+  qr.pop()?.reject("invalid");
+  const rejectedDead = qr.deadLetters();
+  assert("reject() dead-letters the job", rejectedDead.length === 1);
+  assert("reject() preserves the error on the dead letter", rejectedDead.length === 1 && rejectedDead[0].error === "invalid");
+
+  // retry() always re-queues to pending and increments attempts once —
+  // exercising retry(), not asserting it exists.
+  const qrt = new Queue({ topic: "lifecycle_retry", path: TEST_PATH_LC, maxRetries: 1 });
+  qrt.push({ task: "again" });
+  qrt.pop()?.retry();
+  assert("retry() re-queues the job to pending", qrt.size("pending") === 1);
+  const retried = qrt.pop();
+  assert("retry() re-queued job carries attempts === 1", retried !== null && retried.attempts === 1);
 }
 
 cleanupLC();
@@ -879,56 +921,229 @@ await (async () => {
   }
 })();
 
-// --- Visibility timeout (MongoDB backend — no live mongo, script introspection) ---
+// --- Visibility timeout / lifecycle (MongoDB backend — LIVE mongo, NO mocks) ---
 //
-// There is no live MongoDB in the test environment, so — mirroring the Python
-// mongo mock tests — we assert the backend threads the visibility timeout into
-// the operation script the same way a live driver would observe it: dequeue
-// advances availableAt (now + visibilityTimeout) and stamps reservedAt; reclaim
-// flips an expired { status: reserved } back to pending with attempts
-// incremented (dead-lettering past maxRetries); and the reclaim is gated off
-// when the timeout is 0.
-console.log("\n--- Visibility Timeout (MongoDB script) ---");
-{
-  // Import the backend directly so we can introspect the generated script.
-  const { MongoBackend } = await import("../packages/core/src/queueBackends/mongoBackend.ts");
+// These were script-string-introspection tests (no live Mongo) — exactly the
+// shape that let the Mongo queue re-deliver every completed job for two
+// releases. They are now REAL behavioural tests against a live MongoDB
+// (localhost:27017), mirroring mongoQueueDeadLetterLive.test.ts: a throwaway,
+// framework-namespaced database that is DROPPED on teardown so app data is
+// never touched. We push/pop/complete/fail real documents and read the live
+// collection back to assert the reservation effect — not the source text.
+//
+// Gated on a reachable Mongo + the `mongodb` driver. The skip reason contains
+// "mongo" + "not reachable"/"not installed" so the #252 service gate treats an
+// unavailable Mongo as a hard FAILURE under TINA4_REQUIRE_SERVICES.
+const MONGO_URI = process.env.TINA4_MONGO_URI ?? "mongodb://localhost:27017";
+const MONGO_DB = "tina4_test_queue_vt_node";    // throwaway, framework-namespaced
+const MONGO_COLLECTION = "tina4_test_queue_vt_jobs";
 
-  const backend = new MongoBackend({ uri: "mongodb://localhost:27017", visibilityTimeout: 300, maxRetries: 3 });
-  assert("mongo: visibility timeout resolved to 300", backend.getVisibilityTimeout() === 300);
-  assert("mongo: getConfig exposes visibilityTimeout", (backend.getConfig() as any).visibilityTimeout === 300);
-
-  const popScript = backend.buildScript("pop", "emails");
-  assert("mongo: pop advances availableAt to now + timeout",
-    popScript.includes("availableAt: future") && popScript.includes("visibilityTimeout * 1000"));
-  assert("mongo: pop stamps reservedAt = now", popScript.includes("reservedAt: now"));
-  assert("mongo: pop sort honours priority then createdAt",
-    popScript.includes("priority: -1") && popScript.includes("createdAt: 1"));
-
-  const reclaimScript = backend.buildScript("reclaim", "emails");
-  assert("mongo: reclaim matches expired reserved docs",
-    reclaimScript.includes('status: "reserved"') && reclaimScript.includes("availableAt: { $lte: now }"));
-  assert("mongo: reclaim flips reserved -> pending + increments attempts",
-    reclaimScript.includes('status: "pending"') && reclaimScript.includes("$inc: { attempts: 1 }"));
-  assert("mongo: reclaim dead-letters past maxRetries",
-    reclaimScript.includes(">= maxRetries") && reclaimScript.includes("dead_letter"));
-  assert("mongo: reclaim guarded by visibilityTimeout > 0",
-    reclaimScript.includes("if (visibilityTimeout > 0)"));
-
-  // Timeout <= 0 disables the reclaim: the script's reclaim loop is gated off.
-  const disabled = new MongoBackend({ uri: "mongodb://localhost:27017", visibilityTimeout: 0 });
-  assert("mongo(0): visibility timeout resolved to 0", disabled.getVisibilityTimeout() === 0);
-  const disabledReclaim = disabled.buildScript("reclaim", "emails");
-  assert("mongo(0): reclaim still guarded so it no-ops",
-    disabledReclaim.includes("if (visibilityTimeout > 0)"));
-
-  // Env override mirrors the file backend.
-  const prev = process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
-  process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT = "45";
-  const fromEnv = new MongoBackend({ uri: "mongodb://localhost:27017" });
-  assert("mongo: env override sets visibility timeout to 45", fromEnv.getVisibilityTimeout() === 45);
-  if (prev === undefined) delete process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
-  else process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT = prev;
+/** Async TCP reachability probe (native node:net, no child process). */
+function mongoReachable(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = net.createConnection({ host, port }, () => { s.destroy(); resolve(true); });
+    s.on("error", () => resolve(false));
+    const t = setTimeout(() => { try { s.destroy(); } catch {} resolve(false); }, 1500);
+    if (t.unref) t.unref();
+  });
 }
+
+function parseMongoHostPort(uri: string): { host: string; port: number } {
+  const m = uri.match(/mongodb:\/\/(?:[^@/]*@)?([^:/]+)(?::(\d+))?/);
+  return { host: m?.[1] ?? "localhost", port: m?.[2] ? parseInt(m[2], 10) : 27017 };
+}
+
+const mongoSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+console.log("\n--- Visibility Timeout / lifecycle (MongoDB LIVE) ---");
+await (async () => {
+  // ── Gate: driver present? ──────────────────────────────────────────────
+  let mongodb: typeof import("mongodb");
+  try {
+    mongodb = await import("mongodb");
+  } catch {
+    skip("mongo: visibility timeout / lifecycle (live)", "mongodb driver not installed");
+    return;
+  }
+
+  // ── Gate: server reachable? ────────────────────────────────────────────
+  const { host, port } = parseMongoHostPort(MONGO_URI);
+  if (!(await mongoReachable(host, port))) {
+    skip("mongo: visibility timeout / lifecycle (live)", "mongo not reachable on " + host + ":" + port);
+    return;
+  }
+
+  const { MongoBackend } = await import("../packages/core/src/queueBackends/mongoBackend.ts");
+  const { MongoClient } = mongodb;
+
+  // Point the Mongo backend at the throwaway, namespaced database.
+  const prevMongoUri = process.env.TINA4_MONGO_URI;
+  const prevMongoDb = process.env.TINA4_MONGO_DB;
+  const prevMongoColl = process.env.TINA4_MONGO_COLLECTION;
+  process.env.TINA4_MONGO_URI = MONGO_URI;
+  process.env.TINA4_MONGO_DB = MONGO_DB;
+  process.env.TINA4_MONGO_COLLECTION = MONGO_COLLECTION;
+
+  const client = new MongoClient(MONGO_URI, { connectTimeoutMS: 5000, serverSelectionTimeoutMS: 5000 });
+  await client.connect();
+  const coll = client.db(MONGO_DB).collection(MONGO_COLLECTION);
+  const reset = async (t: string) => {
+    await coll.deleteMany({ queue: t });
+    await coll.deleteMany({ queue: t + ".dead_letter" });
+  };
+
+  try {
+    // Config still resolves the same way (constructor/env). Keep the cheap
+    // resolution asserts but BACK THEM with live behaviour below.
+    const backend = new MongoBackend({ uri: MONGO_URI, database: MONGO_DB, collection: MONGO_COLLECTION, visibilityTimeout: 300, maxRetries: 3 });
+    assert("mongo: visibility timeout resolved to 300", backend.getVisibilityTimeout() === 300);
+    assert("mongo: getConfig exposes visibilityTimeout", (backend.getConfig() as any).visibilityTimeout === 300);
+
+    // (5) Resolved timeout drives a REAL reclaim: push, reserve, sleep past the
+    // (tiny) window, pop again — the abandoned reservation is reclaimed with
+    // attempts === 1 (mirrors the file-backend block (a), but on live Mongo).
+    {
+      const T = "vt_reclaim";
+      await reset(T);
+      const b = new MongoBackend({ uri: MONGO_URI, database: MONGO_DB, collection: MONGO_COLLECTION, visibilityTimeout: 1, maxRetries: 5 });
+      b.push(T, { job: "import" });
+      const first = b.pop(T);
+      assert("mongo: reserve returns a job (attempts 0)", first !== null && first.attempts === 0);
+      await mongoSleep(1300);
+      const reclaimed = b.pop(T);
+      assert("mongo: abandoned reservation reclaimed after timeout", reclaimed !== null);
+      assert("mongo: reclaimed payload preserved", reclaimed !== null && (reclaimed.payload as any).job === "import");
+      assert("mongo: reclaim counted as one attempt (attempts === 1)", reclaimed !== null && reclaimed.attempts === 1);
+      await reset(T);
+    }
+
+    // (6,7) pop advances availableAt to now + visibilityTimeout*1000 and stamps
+    // reservedAt — read the stored document back, not the script text.
+    {
+      const T = "vt_reserve_stamp";
+      await reset(T);
+      const b = new MongoBackend({ uri: MONGO_URI, database: MONGO_DB, collection: MONGO_COLLECTION, visibilityTimeout: 300, maxRetries: 3 });
+      b.push(T, { x: 1 });
+      const before = Date.now();
+      b.pop(T);
+      const doc = await coll.findOne({ queue: T });
+      assert("mongo: pop reserves the live document", !!doc && doc.status === "reserved");
+      const availMs = doc ? new Date((doc as any).availableAt).getTime() : 0;
+      assert("mongo: pop advances availableAt to ~now + visibilityTimeout*1000",
+        availMs >= before + 300 * 1000 - 5000 && availMs <= Date.now() + 300 * 1000 + 5000,
+        `availableAt delta=${availMs - before}`);
+      const reservedMs = doc ? new Date((doc as any).reservedAt).getTime() : 0;
+      assert("mongo: pop stamps reservedAt within a few seconds of now",
+        Math.abs(reservedMs - Date.now()) < 5000, `reservedAt delta=${reservedMs - Date.now()}`);
+      await reset(T);
+    }
+
+    // (8) pop sort honours priority DESC then createdAt ASC. MongoBackend.push
+    // doesn't carry priority, so seed three real docs with priorities 1/5/10
+    // (out of insertion order) and assert pop returns 10, 5, 1.
+    {
+      const T = "vt_priority";
+      await reset(T);
+      const b = new MongoBackend({ uri: MONGO_URI, database: MONGO_DB, collection: MONGO_COLLECTION, visibilityTimeout: 300, maxRetries: 3 });
+      const t0 = new Date(Date.now()).toISOString();
+      await coll.insertMany([
+        { id: "p1", queue: T, status: "pending", createdAt: t0, attempts: 0, priority: 1, payload: { v: 1 } },
+        { id: "p10", queue: T, status: "pending", createdAt: t0, attempts: 0, priority: 10, payload: { v: 10 } },
+        { id: "p5", queue: T, status: "pending", createdAt: t0, attempts: 0, priority: 5, payload: { v: 5 } },
+      ]);
+      const order = [b.pop(T), b.pop(T), b.pop(T)].map((j) => (j ? (j.payload as any).v : null));
+      assert("mongo: pop sort honours priority DESC (10,5,1)", order.join(",") === "10,5,1", `order=${order.join(",")}`);
+
+      // Ties break oldest-first by createdAt.
+      const T2 = "vt_priority_tie";
+      await reset(T2);
+      await coll.insertMany([
+        { id: "a", queue: T2, status: "pending", createdAt: "2020-01-01T00:00:00.000Z", attempts: 0, priority: 5, payload: { n: 1 } },
+        { id: "b", queue: T2, status: "pending", createdAt: "2020-01-02T00:00:00.000Z", attempts: 0, priority: 5, payload: { n: 2 } },
+        { id: "c", queue: T2, status: "pending", createdAt: "2020-01-03T00:00:00.000Z", attempts: 0, priority: 5, payload: { n: 3 } },
+      ]);
+      const tieOrder = [b.pop(T2), b.pop(T2), b.pop(T2)].map((j) => (j ? (j.payload as any).n : null));
+      assert("mongo: equal-priority ties break oldest-first (1,2,3)", tieOrder.join(",") === "1,2,3", `order=${tieOrder.join(",")}`);
+      await reset(T);
+      await reset(T2);
+    }
+
+    // (9,10) reclaim matches expired reserved docs, flips them to in-flight and
+    // increments attempts on the LIVE document.
+    {
+      const T = "vt_reclaim_inc";
+      await reset(T);
+      const b = new MongoBackend({ uri: MONGO_URI, database: MONGO_DB, collection: MONGO_COLLECTION, visibilityTimeout: 1, maxRetries: 5 });
+      b.push(T, { job: "x" });
+      b.pop(T);                                  // reserve, attempts 0
+      await mongoSleep(1300);                    // expire the reservation
+      const reclaimed = b.pop(T);                // reclaim returns it
+      assert("mongo: expired reservation reclaimed (returned again)", reclaimed !== null);
+      assert("mongo: reclaimed job carries incremented attempts (=== 1)", reclaimed !== null && reclaimed.attempts === 1);
+      const live = await coll.findOne({ queue: T });
+      assert("mongo: live doc top-level attempts incremented to 1", !!live && (live as any).attempts === 1, `attempts=${(live as any)?.attempts}`);
+      await reset(T);
+    }
+
+    // (11) reclaim past maxRetries dead-letters instead of re-delivering.
+    {
+      const T = "vt_reclaim_dl";
+      await reset(T);
+      const b = new MongoBackend({ uri: MONGO_URI, database: MONGO_DB, collection: MONGO_COLLECTION, visibilityTimeout: 1, maxRetries: 1 });
+      b.push(T, { job: "import" });
+      b.pop(T);                                  // reserve, attempts 0
+      await mongoSleep(1300);
+      const re = b.pop(T);                        // reclaim bumps to 1 >= 1 -> dead-letter
+      assert("mongo: past-max-retries reclaim does NOT re-deliver (pop === null)", re === null);
+      const dead = b.deadLetters(T);
+      assert("mongo: reclaim dead-letters exactly one job", dead.length === 1);
+      assert("mongo: dead-letter payload preserved", dead.length === 1 && (dead[0].payload as any).job === "import");
+      await reset(T);
+    }
+
+    // (12) reclaim guarded by visibilityTimeout > 0: with vt=0 the reservation
+    // stays put (the guard disables reclaim — proven by behaviour).
+    {
+      const T = "vt_zero";
+      await reset(T);
+      const b = new MongoBackend({ uri: MONGO_URI, database: MONGO_DB, collection: MONGO_COLLECTION, visibilityTimeout: 0, maxRetries: 5 });
+      assert("mongo(0): visibility timeout resolved to 0", b.getVisibilityTimeout() === 0);
+      b.push(T, { x: 1 });
+      assert("mongo(0): pop reserves the job", b.pop(T) !== null);
+      await mongoSleep(300);
+      assert("mongo(0): disabled reclaim -> next pop is null", b.pop(T) === null);
+      const doc = await coll.findOne({ queue: T });
+      assert("mongo(0): reservation stays reserved (no reclaim)", !!doc && doc.status === "reserved");
+      await reset(T);
+    }
+
+    // (13) env override sets the timeout AND drives the reclaim window: with
+    // TINA4_QUEUE_VISIBILITY_TIMEOUT=1 the reclaim fires after ~1.2s.
+    {
+      const prev = process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
+      process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT = "1";
+      const T = "vt_env";
+      await reset(T);
+      const b = new MongoBackend({ uri: MONGO_URI, database: MONGO_DB, collection: MONGO_COLLECTION, maxRetries: 5 });
+      assert("mongo: env override sets visibility timeout to 1", b.getVisibilityTimeout() === 1);
+      b.push(T, { x: 1 });
+      b.pop(T);                                  // reserve
+      await mongoSleep(1200);
+      const reclaimed = b.pop(T);
+      assert("mongo: env-driven reclaim fires after the env window", reclaimed !== null && reclaimed.attempts === 1);
+      await reset(T);
+      if (prev === undefined) delete process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
+      else process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT = prev;
+    }
+  } finally {
+    // Drop the throwaway, namespaced database — never touch app data.
+    try { await client.db(MONGO_DB).dropDatabase(); } catch { /* best effort */ }
+    await client.close();
+    if (prevMongoUri === undefined) delete process.env.TINA4_MONGO_URI; else process.env.TINA4_MONGO_URI = prevMongoUri;
+    if (prevMongoDb === undefined) delete process.env.TINA4_MONGO_DB; else process.env.TINA4_MONGO_DB = prevMongoDb;
+    if (prevMongoColl === undefined) delete process.env.TINA4_MONGO_COLLECTION; else process.env.TINA4_MONGO_COLLECTION = prevMongoColl;
+  }
+})();
 
 // --- RabbitMQ + Kafka accept and ignore visibilityTimeout ---
 console.log("\n--- RabbitMQ + Kafka ignore visibilityTimeout ---");
@@ -1084,75 +1299,200 @@ await (async () => {
   cleanupTgt();
 })();
 
-// --- MongoDB queue lifecycle routing + flat-attempts schema (no live mongo) ---
+// --- MongoDB queue lifecycle routing + flat-attempts schema (LIVE mongo) ---
 //
-// Node's Mongo queue backend is a thin push/pop/size/clear adapter; the job
-// lifecycle (fail/retry/dead_letters/retry_failed) routes through the file
-// (lite) backend in Queue, NOT through the Mongo backend — so the Python-master
-// Mongo bugs B (reject leaves available_at in the future) and D (dead_letters/
-// retry_failed kwarg TypeError) cannot occur here: those code paths don't exist
-// on the Mongo backend. This test locks in the surviving Mongo invariant
-// equivalent to Bug C: the Node document is FLAT (top-level `attempts`), so the
-// pop script surfaces the LIVE document attempts that reclaim increments — there
-// is no nested push-time `data.attempts` snapshot to mask it. Mirrors the
-// existing script-introspection approach in mongoQueue.test.ts (no live mongo).
-console.log("\n--- MongoDB queue lifecycle routing + flat attempts ---");
-{
+// Previously these grepped the TEXT of the generated operation scripts (never
+// executed) — script-introspection, not behaviour, the exact shape that let the
+// Mongo queue re-deliver every completed job for two releases. They now run
+// against a LIVE MongoDB: push/pop/complete/fail real documents and read the
+// stored docs back to prove the flat (top-level `attempts`) schema, the topic
+// routing, complete/fail effects, and lifecycle methods. Same throwaway,
+// framework-namespaced DB pattern (dropped on teardown).
+console.log("\n--- MongoDB queue lifecycle routing + flat attempts (LIVE) ---");
+await (async () => {
+  // ── Gate: driver present? ──
+  let mongodb: typeof import("mongodb");
+  try {
+    mongodb = await import("mongodb");
+  } catch {
+    skip("mongo: lifecycle routing + flat attempts (live)", "mongodb driver not installed");
+    return;
+  }
+  // ── Gate: server reachable? ──
+  const { host, port } = parseMongoHostPort(MONGO_URI);
+  if (!(await mongoReachable(host, port))) {
+    skip("mongo: lifecycle routing + flat attempts (live)", "mongo not reachable on " + host + ":" + port);
+    return;
+  }
+
   const { MongoBackend } = await import("../packages/core/src/queueBackends/mongoBackend.ts");
-  const backend = new MongoBackend({ uri: "mongodb://localhost:27017", visibilityTimeout: 300, maxRetries: 3 });
+  const { MongoClient } = mongodb;
+  const LDB = "tina4_test_queue_lc_node";        // throwaway, framework-namespaced
+  const LCOLL = "tina4_test_queue_lc_jobs";
+  const client = new MongoClient(MONGO_URI, { connectTimeoutMS: 5000, serverSelectionTimeoutMS: 5000 });
+  await client.connect();
+  const coll = client.db(LDB).collection(LCOLL);
+  const reset = async (t: string) => {
+    await coll.deleteMany({ queue: t });
+    await coll.deleteMany({ queue: t + ".dead_letter" });
+  };
+  const mk = (cfg?: Record<string, unknown>) =>
+    new MongoBackend({ uri: MONGO_URI, database: LDB, collection: LCOLL, visibilityTimeout: 300, maxRetries: 3, ...(cfg ?? {}) });
 
-  // Push stores attempts as a TOP-LEVEL document field (flat schema), not nested
-  // inside a `data` envelope — so there is no push-time snapshot to confuse with
-  // the live count (the Bug C divergence Python had to fix is absent here).
-  const pushScript = backend.buildScript("push", "jobs", JSON.stringify({ id: "j1", payload: { x: 1 }, attempts: 0 }));
-  assert("mongo: push inserts the job document with its top-level fields spread",
-    pushScript.includes("...job") && pushScript.includes("queue: queueName"));
+  try {
+    // (18) Push inserts the job document with FLAT top-level fields: `attempts`
+    // is a top-level field (not nested under `data`) and `queue` === queueName.
+    {
+      const T = "lc_push";
+      await reset(T);
+      const b = mk();
+      b.push(T, { x: 1 });
+      const doc = await coll.findOne({ queue: T });
+      assert("mongo: push stores attempts as a TOP-LEVEL field (flat schema)",
+        !!doc && typeof (doc as any).attempts === "number" && (doc as any).attempts === 0);
+      assert("mongo: push does NOT nest fields under a `data` envelope",
+        !!doc && (doc as any).data === undefined);
+      assert("mongo: push stores queue === queueName", !!doc && (doc as any).queue === T);
+      assert("mongo: push stores payload at the top level", !!doc && ((doc as any).payload as any).x === 1);
+      await reset(T);
+    }
 
-  // The reclaim path increments the LIVE top-level attempts ($inc) and the pop
-  // path returns the whole document (so that live attempts surfaces directly,
-  // not a stale nested copy).
-  const reclaimScript = backend.buildScript("reclaim", "jobs");
-  assert("mongo: reclaim increments the live top-level attempts",
-    reclaimScript.includes("$inc: { attempts: 1 }"));
-  const popScript = backend.buildScript("pop", "jobs");
-  assert("mongo: pop returns the live document (top-level attempts surfaces, no nested snapshot)",
-    popScript.includes("JSON.stringify(doc)") && !popScript.includes("doc.data.attempts"));
+    // (17) pop carries the framework topic on the returned job so a later
+    // complete()/fail() routes back to the right topic's docs.
+    {
+      const T = "alerts";
+      await reset(T);
+      const b = mk();
+      b.push(T, { msg: "fire" });
+      const job = b.pop(T);
+      assert("mongo: pop carries the framework topic on the returned job",
+        job !== null && (job as any).topic === "alerts");
+      await reset(T);
+    }
 
-  // Unified lifecycle (3.13.43): the Mongo backend now owns the FULL lifecycle so
-  // complete()/fail() ack the active store. Without complete() acking Mongo, a
-  // reserved doc was re-delivered after the visibility window (proven live). The
-  // Queue routes the lifecycle to the external backend when it implements these.
-  assert("mongo: backend implements complete (acks the reservation)",
-    typeof (backend as any).complete === "function");
-  assert("mongo: backend implements fail (requeue-or-dead-letter)",
-    typeof (backend as any).fail === "function");
-  assert("mongo: backend implements retry",
-    typeof (backend as any).retry === "function");
-  assert("mongo: backend implements deadLetters",
-    typeof (backend as any).deadLetters === "function");
-  assert("mongo: backend implements retryFailed",
-    typeof (backend as any).retryFailed === "function");
-  assert("mongo: backend implements failed",
-    typeof (backend as any).failed === "function");
-  assert("mongo: backend implements purge",
-    typeof (backend as any).purge === "function");
+    // (20,19) pop returns the LIVE document: reserve+expire+reclaim bumps the
+    // live top-level attempts, then pop surfaces attempts === 1 (no nested
+    // snapshot masks the live value).
+    {
+      const T = "lc_live_attempts";
+      await reset(T);
+      const b = mk({ visibilityTimeout: 1, maxRetries: 5 });
+      b.push(T, { x: 1 });
+      b.pop(T);                                  // reserve, attempts 0
+      await mongoSleep(1300);                    // expire
+      const reclaimed = b.pop(T);                // reclaim bumps live attempts
+      assert("mongo: reclaimed pop surfaces the LIVE incremented attempts (=== 1)",
+        reclaimed !== null && reclaimed.attempts === 1);
+      const live = await coll.findOne({ queue: T });
+      assert("mongo: live doc top-level attempts === 1 (no stale nested snapshot)",
+        !!live && (live as any).attempts === 1);
+      assert("mongo: live doc has no nested data.attempts snapshot",
+        !!live && ((live as any).data === undefined || (live as any).data?.attempts === undefined));
+      await reset(T);
+    }
 
-  // The new script ops exist: complete acks (status completed), fail decides
-  // requeue-vs-dead-letter atomically, and pop carries the topic so the ack
-  // routes back to the right topic's docs.
-  const completeScript = backend.buildScript("complete", "jobs", "j1");
-  assert("mongo: complete op marks the doc completed",
-    completeScript.includes('status: "completed"'));
-  const failScript = backend.buildScript("fail", "jobs", JSON.stringify({ id: "j1", error: "x", maxRetries: 3, retryBackoff: 0 }));
-  assert("mongo: fail op dead-letters at the limit, else requeues",
-    failScript.includes("dead_letter") && failScript.includes('status: "pending"'));
-  assert("mongo: pop carries the framework topic on the returned job",
-    popScript.includes("doc.topic = queueName"));
-}
+    // (14,15) complete() acks the reservation on the LIVE store: status becomes
+    // 'completed', completedAt is set, and it is not re-delivered after the
+    // visibility window.
+    {
+      const T = "lc_complete";
+      await reset(T);
+      const b = mk({ visibilityTimeout: 1 });
+      b.push(T, { x: 1 });
+      const job = b.pop(T);
+      b.complete(T, job!.id);
+      const doc = await coll.findOne({ queue: T, id: job!.id });
+      assert("mongo: complete marks the live doc completed", !!doc && doc.status === "completed");
+      assert("mongo: complete stamps completedAt", !!doc && typeof (doc as any).completedAt === "string");
+      await mongoSleep(1300);                    // past the visibility window
+      assert("mongo: completed job is NOT re-delivered after the window", b.pop(T) === null);
+      await reset(T);
+    }
+
+    // (14,16) fail() requeues below the limit (live doc back to pending,
+    // attempts incremented) and dead-letters at the limit.
+    {
+      // maxRetries=3 -> first fail requeues to pending with attempts incremented.
+      const T = "lc_fail_requeue";
+      await reset(T);
+      const b3 = mk({ maxRetries: 3 });
+      b3.push(T, { x: 1 });
+      const j = b3.pop(T);
+      b3.fail(T, j!.id, "transient", 3, 0);
+      const live = await coll.findOne({ queue: T, id: j!.id });
+      assert("mongo: fail below the limit requeues the live doc to pending", !!live && live.status === "pending");
+      assert("mongo: fail below the limit increments the live attempts", !!live && (live as any).attempts === 1);
+      await reset(T);
+
+      // maxRetries=1 -> fail dead-letters (queryable in the dead_letter store).
+      const T2 = "lc_fail_dead";
+      await reset(T2);
+      const b1 = mk({ maxRetries: 1 });
+      b1.push(T2, { x: 1 });
+      const j2 = b1.pop(T2);
+      b1.fail(T2, j2!.id, "fatal", 1, 0);
+      const deadDoc = await coll.findOne({ queue: T2 + ".dead_letter", id: j2!.id });
+      assert("mongo: fail at the limit dead-letters the job (queryable, status dead)",
+        !!deadDoc && deadDoc.status === "dead");
+      assert("mongo: dead-lettered job preserves the failure reason", !!deadDoc && (deadDoc as any).error === "fatal");
+      const dead = b1.deadLetters(T2);
+      assert("mongo: deadLetters() returns the dead-lettered job", dead.length === 1);
+      await reset(T2);
+    }
+
+    // (14) retry() always re-queues the live doc to pending with attempts
+    // incremented (manual override, independent of the retry limit).
+    {
+      const T = "lc_retry";
+      await reset(T);
+      const b = mk({ maxRetries: 1 });
+      const id = b.push(T, { x: 1 });
+      b.pop(T);                                  // reserve
+      b.retry(T, id);                            // manual re-queue
+      const doc = await coll.findOne({ queue: T, id });
+      assert("mongo: retry() re-queues the live doc to pending", !!doc && doc.status === "pending");
+      assert("mongo: retry() increments the live attempts", !!doc && (doc as any).attempts === 1);
+      await reset(T);
+    }
+
+    // (14) retryFailed() revives a real dead-letter doc back to the main topic.
+    {
+      const T = "lc_retry_failed";
+      await reset(T);
+      await coll.insertOne({
+        id: "lc-failed-1", queue: T + ".dead_letter", status: "failed", attempts: 1,
+        payload: { x: 1 }, error: "boom", availableAt: "1970-01-01T00:00:00.000Z",
+      });
+      const b = mk({ maxRetries: 2 });
+      const revived = b.retryFailed(T, 3);
+      assert("mongo: retryFailed revives exactly one seeded dead-letter doc", revived === 1);
+      const doc = await coll.findOne({ id: "lc-failed-1" });
+      assert("mongo: retryFailed flips the doc back to pending on the main topic",
+        !!doc && doc.status === "pending" && (doc as any).queue === T);
+      await reset(T);
+    }
+
+    // (14) purge() removes live docs by status.
+    {
+      const T = "lc_purge";
+      await reset(T);
+      const b = mk();
+      b.push(T, { x: 1 });
+      b.push(T, { x: 2 });
+      const removed = b.purge(T, "pending");
+      assert("mongo: purge removes the live pending docs", removed === 2);
+      assert("mongo: purge leaves nothing for that status", await coll.countDocuments({ queue: T, status: "pending" }) === 0);
+      await reset(T);
+    }
+  } finally {
+    try { await client.db(LDB).dropDatabase(); } catch { /* best effort */ }
+    await client.close();
+  }
+})();
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);
-console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
+console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m, \x1b[33m${skipped} skipped\x1b[0m`);
 console.log(`${"=".repeat(50)}\n`);
 
 process.exit(fail > 0 ? 1 : 0);

@@ -26,9 +26,10 @@ Events.clear();
 console.log("--- on() ---");
 
 let called = false;
-Events.on("test.event", () => { called = true; });
+const testHandler = () => { called = true; };
+Events.on("test.event", testHandler);
 
-assert("on() does not throw", true);
+assert("on() retains the exact registered callback identity", Events.listeners("test.event")[0] === testHandler);
 assert("listener registered", Events.listeners("test.event").length === 1);
 
 // --- emit() calls listeners ---

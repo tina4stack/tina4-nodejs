@@ -33,11 +33,23 @@ const getHandler = async (req: Tina4Request, res: Tina4Response) => {
 };
 Router.get("/api/users", getHandler);
 
-const getRoutes = defaultRouter.getRoutes();
-const hasGet = getRoutes.some((r) => r.method === "GET" && r.pattern === "/api/users");
-assert("Router.get() registers on defaultRouter", hasGet);
-
+// Behavioural: resolve the GET route THROUGH the router's real match table and
+// DISPATCH it. We don't just check the route appears in getRoutes(); we run the
+// handler the router hands back and assert the real response body it writes —
+// proving registration wires the live handler that produces { users: [] }.
 const getMatch = defaultRouter.match("GET", "/api/users");
+let getBody: unknown = undefined;
+let getStatus = 0;
+const getRes = {
+  json(data: unknown, status = 200) { getBody = data; getStatus = status; return getRes; },
+} as unknown as Tina4Response;
+await getMatch!.handler({} as Tina4Request, getRes);
+assert(
+  "Router.get() registers a live, dispatchable handler that writes its real body",
+  getMatch !== null && JSON.stringify(getBody) === JSON.stringify({ users: [] }) && getStatus === 200,
+  `got body=${JSON.stringify(getBody)} status=${getStatus}`,
+);
+
 assert("Router.get() route matches correctly", getMatch !== null);
 assert("Router.get() returns correct handler", getMatch?.handler === getHandler);
 
@@ -122,8 +134,26 @@ const wsHandler: WebSocketRouteHandler = async (conn, msg) => {
 };
 Router.websocket("/ws/chat", wsHandler);
 
+// Behavioural: resolve the ws route THROUGH the router's match table and invoke
+// the handler it returns with a capturing connection + a real "message" event.
+// Counting wsRoutes only proves presence; driving matchWebSocket("/ws/chat").handler
+// proves the registered route is dispatchable and echoes the real "echo: ping".
 const wsRoutes = defaultRouter.getWebSocketRoutes();
-assert("Router.websocket() registers a ws route", wsRoutes.length >= 1);
+const chatMatch = defaultRouter.matchWebSocket("/ws/chat");
+let chatCaptured = "";
+const chatConn = {
+  id: "conn-chat",
+  send: (data: string) => { chatCaptured = data; },
+} as unknown as Parameters<WebSocketRouteHandler>[0];
+// These wsHandlers (defined above) interpolate their SECOND positional argument
+// — `(conn, msg) => conn.send(\`echo: ${msg}\`)` — so the message rides in the
+// second slot, matching the handler's own contract in this file.
+await chatMatch!.handler(chatConn, "ping" as "message", "");
+assert(
+  "Router.websocket() registers a dispatchable ws route that echoes the real message",
+  wsRoutes.length >= 1 && chatMatch !== null && chatCaptured === "echo: ping",
+  `captured=${JSON.stringify(chatCaptured)}`,
+);
 
 const wsRoute = wsRoutes.find((r) => r.pattern === "/ws/chat");
 assert("WebSocket route has correct pattern", wsRoute !== undefined);
@@ -203,10 +233,38 @@ const wsHandler2: WebSocketRouteHandler = async (conn, msg) => {
 Router.websocket("/ws/notifications", wsHandler2);
 
 const allWs = defaultRouter.getWebSocketRoutes();
-assert("Multiple WebSocket routes registered", allWs.length >= 2);
 
+// Behavioural: both registered routes must resolve to DISTINCT handlers AND
+// behave distinctly. Counting allWs.length only proves two entries exist; here
+// we dispatch each matched handler with the same message "x" and assert the
+// /ws/chat route yields "echo: x" while /ws/notifications yields "notify: x" —
+// proving the two routes are independently dispatchable, not aliased.
 const wsChat = defaultRouter.matchWebSocket("/ws/chat");
 const wsNotify = defaultRouter.matchWebSocket("/ws/notifications");
+
+let chatOut = "";
+let notifyOut = "";
+const chatConn2 = {
+  id: "conn-chat-2",
+  send: (data: string) => { chatOut = data; },
+} as unknown as Parameters<WebSocketRouteHandler>[0];
+const notifyConn = {
+  id: "conn-notify",
+  send: (data: string) => { notifyOut = data; },
+} as unknown as Parameters<WebSocketRouteHandler>[0];
+
+// Message rides in the second positional slot (the wsHandlers interpolate it).
+await wsChat!.handler(chatConn2, "x" as "message", "");
+await wsNotify!.handler(notifyConn, "x" as "message", "");
+
+assert(
+  "Multiple WebSocket routes are independently dispatchable with distinct behaviour",
+  allWs.length >= 2 &&
+    wsChat !== null && wsNotify !== null &&
+    chatOut === "echo: x" && notifyOut === "notify: x",
+  `chatOut=${JSON.stringify(chatOut)} notifyOut=${JSON.stringify(notifyOut)}`,
+);
+
 assert("First WS route still matches", wsChat?.handler === wsHandler);
 assert("Second WS route matches", wsNotify?.handler === wsHandler2);
 

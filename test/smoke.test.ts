@@ -5,6 +5,8 @@
  */
 import { rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 
 // ── Core imports ────────────────────────────────────────────────────
 import {
@@ -303,11 +305,11 @@ assert("schema contains type Product", schema.includes("type Product {"));
 assert("schema contains Query type", schema.includes("type Query {"));
 assert("schema contains Mutation type", schema.includes("type Mutation {"));
 
-const qr = gql.execute("{ products { id name } }");
+const qr = await gql.execute("{ products { id name } }");
 assert("query executes and returns data", qr.data !== null);
 assert("query returns products", Array.isArray((qr.data as any)?.products));
 
-const mr = gql.execute('mutation { createProduct(name: "Gadget") { name } }');
+const mr = await gql.execute('mutation { createProduct(name: "Gadget") { name } }');
 assert("mutation returns data", (mr.data as any)?.createProduct?.name === "Gadget");
 
 // ═══════════════════════════════════════════════════════════════════
@@ -435,8 +437,19 @@ console.log("\n=== 18. DevMailbox ===\n");
 
 const mbDir = join(TMP, "mailbox");
 const mailbox = new DevMailbox(mbDir);
-assert("DevMailbox instantiates", mailbox !== null);
-assert("DevMailbox.capture method exists", typeof mailbox.capture === "function");
+
+// Capture a real email to the temp dir and read the on-disk round-trip back.
+const captureResult = mailbox.capture("bob@test.com", "Hi", "Body");
+assert("DevMailbox captures email (success)", captureResult.success === true);
+const inbox = mailbox.inbox();
+assert(
+  "DevMailbox inbox round-trip (subject + recipient)",
+  inbox.length === 1 && inbox[0].subject === "Hi" && inbox[0].to.includes("bob@test.com"),
+);
+// Verify capture's filesystem effect: a JSON file landed and read() returns its body.
+assert("DevMailbox.capture writes to disk (count)", mailbox.count("inbox").inbox === 1);
+const fetched = mailbox.read(inbox[0].id);
+assert("DevMailbox.read returns captured body", fetched !== null && fetched.body === "Body");
 
 // ═══════════════════════════════════════════════════════════════════
 // 19. DotEnv
@@ -460,15 +473,51 @@ assert("hasEnv returns false for missing", hasEnv("NONEXISTENT_KEY_XYZ") === fal
 
 console.log("\n=== 20. WSDL ===\n");
 
-assert("WSDLService class exists", typeof WSDLService === "function");
-assert("WSDLOperation decorator exists", typeof WSDLOperation === "function");
-
+// Build a real WSDLService subclass with an actual operation, then exercise the
+// real WSDL emitter and SOAP dispatcher instead of asserting the class exists.
 class TestCalc extends WSDLService {
   serviceName = "TestCalc";
   serviceUrl = "/api/calc";
+
+  async add(a: number, b: number): Promise<Record<string, unknown>> {
+    return { result: a + b };
+  }
 }
+
+// Apply the real WSDLOperation decorator function to add() exactly as the
+// TypeScript decorator runtime would — (target, propertyKey, descriptor) — to
+// prove it registers an operation (decorators are not enabled at runtime under
+// tsx, so we invoke the exported decorator directly; this is the real code path,
+// not a stub).
+const addDescriptor = Object.getOwnPropertyDescriptor(TestCalc.prototype, "add")!;
+WSDLOperation({ description: "Add two numbers", input: { a: "int", b: "int" }, output: { result: "int" } })(
+  TestCalc.prototype,
+  "add",
+  addDescriptor,
+);
+assert("WSDLOperation registers _wsdlOp on the method", (TestCalc.prototype.add as any)._wsdlOp?.name === "add");
+
 const calc = new TestCalc();
-assert("WSDLService subclass instantiates", calc.serviceName === "TestCalc");
+
+// Case 3/5: the real WSDL emitter produces a valid document driven by serviceName/serviceUrl.
+const wsdl = calc.generateWSDL();
+assert(
+  "generateWSDL emits definitions + service binding for TestCalc",
+  wsdl.includes('<definitions name="TestCalc"') && wsdl.includes("soap:address") && wsdl.includes('location="/api/calc"'),
+);
+assert(
+  "generateWSDL emits namespace + portType derived from serviceName",
+  wsdl.includes('targetNamespace="urn:TestCalc"') && wsdl.includes('name="TestCalcPortType"'),
+);
+
+// Case 4: the decorated operation appears in the WSDL and a real SOAP call computes 2+3=5.
+assert("generateWSDL includes the add operation", wsdl.includes('<operation name="add">'));
+const soapEnvelope =
+  '<?xml version="1.0" encoding="UTF-8"?>'
+  + '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+  + "<soap:Body><add><a>2</a><b>3</b></add></soap:Body></soap:Envelope>";
+const soapResult = await calc.handle(soapEnvelope);
+assert("handle dispatches add and returns 5", soapResult.includes("<result>5</result>"));
 
 // ═══════════════════════════════════════════════════════════════════
 // 21. WebSocket
@@ -547,11 +596,77 @@ assert("rateLimiter returns middleware function", typeof rlMiddleware === "funct
 
 console.log("\n=== 25. Logger ===\n");
 
-assert("Log.info exists", typeof Log.info === "function");
-assert("Log.debug exists", typeof Log.debug === "function");
-assert("Log.warning exists", typeof Log.warning === "function");
-assert("Log.error exists", typeof Log.error === "function");
-assert("Log.configure exists", typeof Log.configure === "function");
+// Exercise the real logger against a real file sink (TINA4_LOG_OUTPUT=file) and
+// the real console-threshold predicate (Log.isEnabled). No mocks — the log file
+// is a genuine sink we read back, and isEnabled is the production threshold fn.
+const savedLogOut = process.env.TINA4_LOG_OUTPUT;
+const savedLogFile = process.env.TINA4_LOG_FILE;
+const savedLogLevel = process.env.TINA4_LOG_LEVEL;
+const savedLogDebug = process.env.TINA4_DEBUG;
+const savedLogFormat = process.env.TINA4_LOG_FORMAT;
+
+const logFile = join(TMP, "logger", "tina4.log");
+process.env.TINA4_LOG_OUTPUT = "file";       // file-only sink; keeps test stdout clean
+process.env.TINA4_LOG_FILE = logFile;
+delete process.env.TINA4_DEBUG;               // production format → structured JSON line
+
+const readLog = (): string => (existsSync(logFile) ? readFileSync(logFile, "utf-8") : "");
+
+// Case 11: Log.info emits a real INFO line containing the message; isEnabled reflects threshold.
+process.env.TINA4_LOG_LEVEL = "INFO";
+Log.info("hello world");
+const afterInfo = readLog();
+assert(
+  "Log.info emits an INFO line with the message",
+  afterInfo.includes("hello world") && afterInfo.includes("INFO"),
+);
+process.env.TINA4_LOG_LEVEL = "ERROR";
+assert("Log.info suppressed at console when level=error (isEnabled false)", Log.isEnabled("info") === false);
+
+// Case 12: Log.debug writes when level=debug; threshold logic gates it at info.
+process.env.TINA4_LOG_LEVEL = "DEBUG";
+Log.debug("dbg-line");
+assert("Log.debug emits a line at level=debug", readLog().includes("dbg-line"));
+process.env.TINA4_LOG_LEVEL = "INFO";
+assert("Log.debug suppressed at console when level=info (isEnabled false)", Log.isEnabled("debug") === false);
+
+// Case 13: Log.warning emits a WARNING line; suppressed at console when level=error.
+process.env.TINA4_LOG_LEVEL = "WARNING";
+Log.warning("careful");
+const afterWarn = readLog();
+assert(
+  "Log.warning emits a WARNING line with the message",
+  afterWarn.includes("careful") && afterWarn.includes("WARNING"),
+);
+process.env.TINA4_LOG_LEVEL = "ERROR";
+assert("Log.warning suppressed at console when level=error (isEnabled false)", Log.isEnabled("warning") === false);
+
+// Case 14: Log.error emits an ERROR line and always passes the threshold at level=error.
+process.env.TINA4_LOG_LEVEL = "ERROR";
+Log.error("boom");
+const afterError = readLog();
+assert(
+  "Log.error emits an ERROR line with the message even at level=error",
+  afterError.includes("boom") && afterError.includes("ERROR"),
+);
+assert("Log.error always passes threshold at level=error (isEnabled true)", Log.isEnabled("error") === true);
+
+// Case 15: Log.configure changes the sink — point it at a fresh file and prove output lands there.
+const configuredFile = join(TMP, "logger", "configured.log");
+Log.configure({ logFile: configuredFile });
+process.env.TINA4_LOG_LEVEL = "INFO";
+Log.info("to-file");
+assert(
+  "Log.configure redirects output to the configured file",
+  existsSync(configuredFile) && readFileSync(configuredFile, "utf-8").includes("to-file"),
+);
+
+// Restore env so later code / cleanup is unaffected.
+if (savedLogOut === undefined) delete process.env.TINA4_LOG_OUTPUT; else process.env.TINA4_LOG_OUTPUT = savedLogOut;
+if (savedLogFile === undefined) delete process.env.TINA4_LOG_FILE; else process.env.TINA4_LOG_FILE = savedLogFile;
+if (savedLogLevel === undefined) delete process.env.TINA4_LOG_LEVEL; else process.env.TINA4_LOG_LEVEL = savedLogLevel;
+if (savedLogDebug === undefined) delete process.env.TINA4_DEBUG; else process.env.TINA4_DEBUG = savedLogDebug;
+if (savedLogFormat === undefined) delete process.env.TINA4_LOG_FORMAT; else process.env.TINA4_LOG_FORMAT = savedLogFormat;
 
 // ═══════════════════════════════════════════════════════════════════
 // 26. API Client
@@ -559,12 +674,73 @@ assert("Log.configure exists", typeof Log.configure === "function");
 
 console.log("\n=== 26. API Client ===\n");
 
-const api = new Api("https://httpbin.org");
-assert("Api class instantiates", api !== null);
-assert("Api.get method exists", typeof api.get === "function");
-assert("Api.post method exists", typeof api.post === "function");
-assert("Api.put method exists", typeof api.put === "function");
-assert("Api.delete method exists", typeof api.delete === "function");
+// Drive real HTTP round-trips against a locally-served route table (no external
+// network dependency, no mocks — a real node:http server on 127.0.0.1).
+const itemStore: { value: { id: number; name: string } | null } = {
+  value: { id: 1, name: "original" },
+};
+const apiServer = http.createServer((req, res) => {
+  const url = req.url ?? "";
+  const chunks: Buffer[] = [];
+  req.on("data", (c: Buffer) => chunks.push(c));
+  req.on("end", () => {
+    const raw = Buffer.concat(chunks).toString("utf-8");
+    const json = (code: number, obj: unknown) => {
+      res.writeHead(code, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    if (req.method === "GET" && url === "/ping") return json(200, { pong: true });
+    if (req.method === "GET" && url === "/status/200") return json(200, { ok: true });
+    if (req.method === "GET" && url === "/item") {
+      return itemStore.value ? json(200, itemStore.value) : json(404, { error: "gone" });
+    }
+    if (req.method === "POST" && url === "/echo") return json(200, JSON.parse(raw || "{}"));
+    if (req.method === "PUT" && url === "/item") {
+      itemStore.value = { id: 1, ...(JSON.parse(raw || "{}")) };
+      return json(200, itemStore.value);
+    }
+    if (req.method === "DELETE" && url === "/item") {
+      itemStore.value = null;
+      res.writeHead(204);
+      return res.end();
+    }
+    json(404, { error: "not found" });
+  });
+});
+const apiPort: number = await new Promise((resolve) => {
+  apiServer.listen(0, "127.0.0.1", () => resolve((apiServer.address() as AddressInfo).port));
+});
+
+const api = new Api(`http://127.0.0.1:${apiPort}`);
+
+// Case 6: a real request against a live local endpoint.
+const statusResult = await api.get("/status/200");
+assert("Api.get hits live endpoint (200, no error)", statusResult.http_code === 200 && statusResult.error === null);
+
+// Case 7: GET round-trip returning parsed JSON.
+const pingResult = await api.get("/ping");
+assert("Api.get returns parsed JSON body", pingResult.http_code === 200 && (pingResult.body as any).pong === true);
+
+// Case 8: POST sends the body and the route echoes it back, parsed.
+const echoResult = await api.post("/echo", { name: "Alice" });
+assert("Api.post sends + parses JSON body", echoResult.http_code === 200 && (echoResult.body as any).name === "Alice");
+
+// Case 9: PUT updates the resource; the echoed representation reflects the payload.
+const putResult = await api.put("/item", { name: "updated" });
+assert(
+  "Api.put updates and returns the new representation",
+  putResult.http_code === 200 && (putResult.body as any).name === "updated",
+);
+
+// Case 10: DELETE removes the resource; a follow-up GET is 404.
+const delResult = await api.delete("/item");
+const afterDelete = await api.get("/item");
+assert(
+  "Api.delete removes resource (204) then GET is 404",
+  (delResult.http_code === 204 || delResult.http_code === 200) && afterDelete.http_code === 404,
+);
+
+await new Promise<void>((resolve) => apiServer.close(() => resolve()));
 
 // ═══════════════════════════════════════════════════════════════════
 // Cleanup and Summary

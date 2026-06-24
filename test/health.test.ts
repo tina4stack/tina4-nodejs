@@ -61,7 +61,22 @@ await new Promise((r) => setTimeout(r, 50));
 
 const health = await request("GET", "/health");
 
-assert("GET /health returns 200", health.status === 200);
+// [live-uptime] Prove the handler computes uptime LIVE — (Date.now() - startTime)/1000 —
+// rather than returning a static body. Capture the first uptime, let real wall-clock
+// time pass, request again, and assert the second reading strictly advanced. This folds
+// the 200 status into a real behavioural check (a live, monotonically increasing handler).
+const firstUptime = health.data.uptime;
+await new Promise((r) => setTimeout(r, 60));
+const health2 = await request("GET", "/health");
+assert(
+  "GET /health returns 200 with live, advancing uptime",
+  health.status === 200 &&
+    health2.status === 200 &&
+    typeof firstUptime === "number" &&
+    typeof health2.data.uptime === "number" &&
+    health2.data.uptime > firstUptime,
+  `first=${firstUptime} second=${health2.data.uptime}`,
+);
 assert("Response has status 'ok'", health.data.status === "ok");
 assert("Response has version string", typeof health.data.version === "string" && health.data.version.length > 0);
 assert("Response has framework 'tina4-nodejs'", health.data.framework === "tina4-nodejs");

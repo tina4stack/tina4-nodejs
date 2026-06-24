@@ -211,11 +211,26 @@ console.log("\n--- res.render() ---");
 {
   const { res, ended } = mockServerResponse();
   const response = createResponse(res);
-  assert("render() method exists", typeof response.render === "function");
-  // render() will fail without @tina4/twig installed, but should handle gracefully
+  // @tina4/frond IS installed (the built-in engine), but "test.twig" does not
+  // resolve in the default templates dir, so Frond.render() throws
+  // "Template not found: ...". response.render() catches that and takes the
+  // 500 catch branch: statusCode 500 + json({error,statusCode,message}).
   await response.render("test.twig", { name: "World" });
-  // Since @tina4/twig might not be available, it should return a 500 error
-  assert("render() handles missing template engine gracefully", ended.statusCode === 500 || (ended.headers["content-type"] as string)?.includes("text/html"));
+
+  // Real status code from the catch branch.
+  assert("render() unresolvable template ends with status 500", ended.statusCode === 500);
+
+  // Real response body — the JSON envelope emitted by the catch branch.
+  const body = JSON.parse(String(ended.data)) as { error?: string; statusCode?: number; message?: string };
+  assert("render() error body.error is 'Template engine error'", body.error === "Template engine error");
+  assert("render() error body.statusCode is 500", body.statusCode === 500);
+  assert(
+    "render() error body.message names the missing template",
+    typeof body.message === "string" && body.message.includes("test.twig"),
+    `message was: ${body.message}`,
+  );
+  // The catch branch routes through response.json(), so content-type is JSON.
+  assert("render() error sends application/json", String(ended.headers["content-type"]).includes("application/json"));
 }
 
 // --- Cleanup ---

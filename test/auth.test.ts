@@ -370,26 +370,71 @@ console.log("\n-- Auth Class Wrapper --");
 {
   const { Auth } = await import("../packages/core/src/auth.ts");
 
-  assert("Auth.getToken is a function", typeof Auth.getToken === "function");
-  assert("Auth.validToken is a function", typeof Auth.validToken === "function");
-  assert("Auth.getPayload is a function", typeof Auth.getPayload === "function");
-  assert("Auth.hashPassword is a function", typeof Auth.hashPassword === "function");
-  assert("Auth.checkPassword is a function", typeof Auth.checkPassword === "function");
-  assert("Auth.authMiddleware is a function", typeof Auth.authMiddleware === "function");
-  assert("Auth.refreshToken is a function", typeof Auth.refreshToken === "function");
-  assert("Auth.authenticateRequest is a function", typeof Auth.authenticateRequest === "function");
-  assert("Auth.validateApiKey is a function", typeof Auth.validateApiKey === "function");
+  // 1+2+3: getToken/validToken/getPayload round-trip — sign a token then verify
+  // and decode it, proving all three do real work rather than merely existing.
+  {
+    const t = Auth.getToken({ userId: 5 });
+    const v = Auth.validToken(t);
+    assert("Auth.getToken+validToken round-trip: valid token verifies", v !== null);
+    assert("Auth.validToken returns the signed payload (userId === 5)", v?.userId === 5);
+    const gp = Auth.getPayload(t);
+    assert("Auth.getPayload decodes the signed payload (userId === 5)", gp?.userId === 5);
+  }
+
+  // 2: validToken actually validates — an expired token and a non-JWT both fail.
+  assert("Auth.validToken rejects an expired token (null)", Auth.validToken(Auth.getToken({ userId: 1 }, -1)) === null);
+  assert("Auth.validToken rejects a non-JWT string (null)", Auth.validToken("not.a.jwt") === null);
+
+  // 3: getPayload decodes multiple claims from a real token.
+  {
+    const t = Auth.getToken({ a: 1, b: "x" });
+    const p = Auth.getPayload(t);
+    assert("Auth.getPayload decodes claim a===1", p?.a === 1);
+    assert("Auth.getPayload decodes claim b==='x'", p?.b === "x");
+  }
+
+  // 4+5: hashPassword/checkPassword round-trip — correct verifies, wrong rejects.
+  {
+    const hash = Auth.hashPassword("test123");
+    assert("Auth.hashPassword+checkPassword round-trip: correct password verifies", Auth.checkPassword("test123", hash) === true);
+    assert("Auth.checkPassword rejects a wrong password", Auth.checkPassword("wrong", hash) === false);
+  }
+
+  // 6: authMiddleware actually authorises — a valid Bearer token calls next()
+  //    and attaches the decoded payload to req.auth.
+  {
+    const mwAuth = Auth.authMiddleware();
+    const req = mockRequest(`Bearer ${Auth.getToken({ userId: 3 })}`);
+    const mock = mockResponse();
+    let nextCalled = false;
+    mwAuth(req, mock.response, () => { nextCalled = true; });
+    assert("Auth.authMiddleware calls next() for a valid token", nextCalled === true);
+    assert("Auth.authMiddleware attaches decoded auth (userId === 3)", (req as any).auth?.userId === 3);
+    assert("Auth.authMiddleware does not send a response on success", mock.lastCall === null);
+  }
+
+  // 7: refreshToken re-issues a valid token preserving claims; rejects garbage.
+  {
+    const r = Auth.refreshToken(Auth.getToken({ userId: 8 }, 60));
+    assert("Auth.refreshToken returns a re-signed valid token", r !== null && Auth.validToken(r) !== null);
+    assert("Auth.refreshToken preserves userId === 8", Auth.getPayload(r!)?.userId === 8);
+    assert("Auth.refreshToken returns null for an invalid token", Auth.refreshToken("bad") === null);
+  }
+
+  // 8: authenticateRequest extracts + validates a Bearer JWT from headers.
+  {
+    const payload = Auth.authenticateRequest({ authorization: `Bearer ${Auth.getToken({ userId: 9 })}` });
+    assert("Auth.authenticateRequest validates a Bearer JWT (userId === 9)", payload?.userId === 9);
+    assert("Auth.authenticateRequest returns null with no header", Auth.authenticateRequest({}) === null);
+  }
+
+  // 9: validateApiKey compares keys — match true, mismatch false.
+  assert("Auth.validateApiKey returns true for matching keys", Auth.validateApiKey("k", "k") === true);
+  assert("Auth.validateApiKey returns false for mismatched keys", Auth.validateApiKey("k", "x") === false);
+
+  // Identity: the class methods ARE the standalone functions (not copies).
   assert("Auth.getToken matches standalone getToken", Auth.getToken === getToken);
   assert("Auth.validToken matches standalone validToken", Auth.validToken === validToken);
-
-  // Verify Auth class methods produce same results as standalone functions
-  const classToken = Auth.getToken({ userId: 77 }, SECRET);
-  assert("Auth class validToken works", Auth.validToken(classToken) !== null);
-  const classPayload = Auth.getPayload(classToken);
-  assert("Auth class getToken works", classPayload?.userId === 77);
-
-  const classHash = Auth.hashPassword("test123");
-  assert("Auth class hashPassword works", Auth.checkPassword("test123", classHash) === true);
 }
 
 // ── JWT Edge Cases ───────────────────────────────────────────────
@@ -494,11 +539,28 @@ console.log("\n-- getToken with explicit secret --");
 console.log("\n-- authenticateRequest with explicit secret --");
 
 {
-  const token = getToken({ userId: 55 }, "my-explicit-secret", 3600);
-  // Even though env SECRET differs, authenticate_request is still env-based
-  const payload = authenticateRequest({ authorization: `Bearer ${token}` }, "my-explicit-secret");
-  // authenticateRequest passes secret to validToken but validToken reads from env — no-op for now
-  assert("authenticateRequest accepts secret param", payload === null || payload !== undefined);
+  // CONTRACT: authenticateRequest's `secret` param is currently IGNORED — it
+  // forwards to validToken WITHOUT the secret (auth.ts line 407: `validToken(token)`),
+  // so verification always uses process.env.TINA4_SECRET. We assert that contract
+  // explicitly rather than with a tautology.
+  const origSecret = process.env.TINA4_SECRET;
+  try {
+    // (a) Token signed under the env secret → authenticates (env is the source of truth).
+    process.env.TINA4_SECRET = "my-explicit-secret";
+    const token = getToken({ userId: 55 }); // signed with current env secret
+    const ok = authenticateRequest({ authorization: `Bearer ${token}` });
+    assert("authenticateRequest validates against env TINA4_SECRET (userId === 55)", ok?.userId === 55);
+
+    // (b) The `secret` param does NOT override env: a token signed under a DIFFERENT
+    //     secret, with the correct secret passed ONLY as the param, must fail —
+    //     proving the param is ignored and env governs verification.
+    const tokenOtherSecret = getToken({ userId: 56 }, "param-only-secret");
+    process.env.TINA4_SECRET = "different-env-secret";
+    const viaParam = authenticateRequest({ authorization: `Bearer ${tokenOtherSecret}` }, "param-only-secret");
+    assert("authenticateRequest ignores the secret param (env-based verification, returns null)", viaParam === null);
+  } finally {
+    process.env.TINA4_SECRET = origSecret;
+  }
 }
 
 // ── Summary ───────────────────────────────────────────────────────

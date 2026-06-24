@@ -7,7 +7,7 @@ import {
   installSelected, installAll,
 } from "../packages/core/src/index.ts";
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 
 let pass = 0;
 let fail = 0;
@@ -38,8 +38,104 @@ console.log("--- AI_TOOLS basics ---");
 assert("AI_TOOLS is an array", Array.isArray(AI_TOOLS));
 assert("AI_TOOLS has 7 entries", AI_TOOLS.length === 7);
 assert("first tool is claude-code", AI_TOOLS[0].name === "claude-code");
-assert("all tools have name", AI_TOOLS.every((t) => typeof t.name === "string" && t.name.length > 0));
-assert("all tools have contextFile", AI_TOOLS.every((t) => typeof t.contextFile === "string"));
+
+// Behavioural: every AI_TOOLS entry must map to a real, installable tool.
+// Install each one individually via installSelected(dir, String(i+1)) and prove
+// the file named by AI_TOOLS[i].contextFile is actually written to disk and
+// carries the Tina4 context. This exercises the array as the installer's source
+// of truth rather than just checking it is an array.
+{
+  let allEntriesInstall = true;
+  let installDetail = "";
+  for (let i = 0; i < AI_TOOLS.length; i++) {
+    const tool = AI_TOOLS[i];
+    const dir = join(TEST_DIR, "by-index", String(i));
+    mkdirSync(dir, { recursive: true });
+    const created = installSelected(dir, String(i + 1));
+    const contextPath = join(dir, tool.contextFile);
+    const onDisk = existsSync(contextPath);
+    // The created list (relative paths) must reference this tool's contextFile.
+    const reported = created.includes(tool.contextFile);
+    // The written file must actually contain the Tina4 skill/context content.
+    const hasContent = onDisk && readFileSync(contextPath, "utf-8").includes("Tina4");
+    if (!onDisk || !reported || !hasContent) {
+      allEntriesInstall = false;
+      installDetail = `tool[${i}] ${tool.name} contextFile=${tool.contextFile} onDisk=${onDisk} reported=${reported} hasContent=${hasContent}`;
+      break;
+    }
+  }
+  assert(
+    "every AI_TOOLS entry installs its contextFile via installSelected(i+1)",
+    allEntriesInstall,
+    installDetail,
+  );
+}
+
+// Behavioural: each tool's `name`/`contextFile` are wired to real detection.
+// On a fresh empty dir isInstalled() must be false; after the tool's contextFile
+// is written it must report true. This proves the fields drive isInstalled(),
+// not just that name is a non-empty string.
+{
+  let detectionWired = true;
+  let detectionDetail = "";
+  for (let i = 0; i < AI_TOOLS.length; i++) {
+    const tool = AI_TOOLS[i];
+    if (typeof tool.name !== "string" || tool.name.length === 0) {
+      detectionWired = false;
+      detectionDetail = `tool[${i}] has empty name`;
+      break;
+    }
+    const dir = join(TEST_DIR, "detect", String(i));
+    mkdirSync(dir, { recursive: true });
+    if (isInstalled(dir, tool)) {
+      detectionWired = false;
+      detectionDetail = `tool[${i}] ${tool.name} reported installed on empty dir`;
+      break;
+    }
+    const contextPath = join(dir, tool.contextFile);
+    mkdirSync(dirname(contextPath), { recursive: true });
+    writeFileSync(contextPath, "# context");
+    if (!isInstalled(dir, tool)) {
+      detectionWired = false;
+      detectionDetail = `tool[${i}] ${tool.name} not detected after writing ${tool.contextFile}`;
+      break;
+    }
+  }
+  assert(
+    "tool name/contextFile drive real isInstalled() detection",
+    detectionWired,
+    detectionDetail,
+  );
+}
+
+// Behavioural: every declared contextFile is actually produced by installAll().
+// Run installAll() once and assert existsSync(join(dir, tool.contextFile)) holds
+// for every tool in AI_TOOLS, confirming each declared contextFile is a real
+// artifact rather than merely a string field.
+{
+  const dir = join(TEST_DIR, "install-all");
+  mkdirSync(dir, { recursive: true });
+  installAll(dir);
+  let allProduced = true;
+  let produceDetail = "";
+  for (const tool of AI_TOOLS) {
+    if (typeof tool.contextFile !== "string" || tool.contextFile.length === 0) {
+      allProduced = false;
+      produceDetail = `tool ${tool.name} has invalid contextFile`;
+      break;
+    }
+    if (!existsSync(join(dir, tool.contextFile))) {
+      allProduced = false;
+      produceDetail = `installAll did not create ${tool.contextFile} for ${tool.name}`;
+      break;
+    }
+  }
+  assert(
+    "installAll produces every declared contextFile in AI_TOOLS",
+    allProduced,
+    produceDetail,
+  );
+}
 
 // --- isInstalled ---
 console.log("\n--- isInstalled ---");

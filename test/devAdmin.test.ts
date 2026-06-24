@@ -364,20 +364,50 @@ if (statusHandler) {
   RequestInspector.clear();
   RequestInspector.capture("GET", "/test", 200, 5);
 
+  // Register a known user route on the SAME router so the reported route
+  // count must reflect the real route table (not just be a number).
+  router.get("/__status_probe_route", async (_req, res2) => res2.json({ ok: true }));
+  const realRouteCount = router.getRoutes().length;
+
   const res = mockRes();
   await statusHandler(mockReq("/__dev/api/status"), res);
   const data = res.result;
 
   assert("handleStatus returns an object", typeof data === "object" && data !== null);
   assert("handleStatus has framework field", typeof data.framework === "string" && data.framework.includes("tina4-nodejs"));
-  assert("handleStatus has routes field (number)", typeof data.routes === "number");
+  // routes must equal the live router's real route-table length, and must
+  // include the probe route we just registered.
+  assert("handleStatus routes reflects the real route table",
+    data.routes === realRouteCount,
+    `data.routes=${data.routes} expected ${realRouteCount}`);
+  assert("handleStatus routes counts our newly-registered probe route",
+    data.routes >= 1 && router.getRoutes().some((r) => r.pattern === "/__status_probe_route"));
   assert("handleStatus has messages field", data.messages !== undefined);
   assert("handleStatus has requests field", data.requests !== undefined);
-  assert("handleStatus has memory field", typeof data.memory === "object");
-  assert("handleStatus has uptime field", typeof data.uptime === "number");
-  assert("handleStatus has timestamp field", typeof data.timestamp === "string");
-  assert("handleStatus has nodeVersion field", typeof data.nodeVersion === "string");
-  assert("handleStatus has debug field", typeof data.debug === "string");
+  // memory: rss must be a real positive megabyte count from process.memoryUsage().
+  const liveRssMb = Math.round(process.memoryUsage().rss / 1048576);
+  assert("handleStatus memory.rss is a real positive MB count",
+    typeof data.memory === "object" && data.memory.rss > 0 && data.memory.rss <= liveRssMb + 64,
+    `data.memory.rss=${data.memory?.rss} liveRssMb=${liveRssMb}`);
+  // uptime: the handler returns Math.round(process.uptime()); it must track the
+  // real process uptime (non-negative and not beyond it — a sub-second uptime
+  // legitimately rounds to 0), not be an arbitrary number.
+  assert("handleStatus uptime tracks the real process.uptime()",
+    typeof data.uptime === "number" && data.uptime >= 0 && data.uptime <= Math.ceil(process.uptime()) + 1,
+    `data.uptime=${data.uptime} process.uptime=${process.uptime()}`);
+  // timestamp: a real, parseable, near-now ISO date (within 5s of Date.now()).
+  const tsMs = new Date(data.timestamp).getTime();
+  assert("handleStatus timestamp is a finite near-now ISO date",
+    Number.isFinite(tsMs) && Math.abs(Date.now() - tsMs) < 5000,
+    `data.timestamp=${data.timestamp}`);
+  // nodeVersion: the actual running Node version.
+  assert("handleStatus nodeVersion equals process.version",
+    data.nodeVersion === process.version,
+    `data.nodeVersion=${data.nodeVersion} process.version=${process.version}`);
+  // debug: TINA4_DEBUG was set to "true" above, so it must reflect that.
+  assert("handleStatus debug reflects TINA4_DEBUG=true",
+    data.debug === process.env.TINA4_DEBUG && data.debug === "true",
+    `data.debug=${data.debug}`);
   assert("handleStatus has health field", typeof data.health === "object");
 }
 
@@ -438,23 +468,32 @@ const systemHandler = findHandler("GET", "/__dev/api/system");
 assert("handleSystem handler is registered", systemHandler !== undefined);
 
 if (systemHandler) {
+  const os = await import("node:os");
   const res = mockRes();
   await systemHandler(mockReq("/__dev/api/system"), res);
   const data = res.result;
 
   assert("handleSystem returns an object", typeof data === "object" && data !== null);
-  assert("handleSystem has node_version field", typeof data.node_version === "string");
-  assert("handleSystem has platform field", typeof data.platform === "string");
-  assert("handleSystem has architecture field", typeof data.architecture === "string");
-  assert("handleSystem has pid field", typeof data.pid === "number");
-  assert("handleSystem has memory_mb field", typeof data.memory_mb === "number");
+  // Each field must equal the real value computed from the live process, not
+  // merely be of the right JS type.
+  assert("handleSystem node_version equals process.version",
+    data.node_version === process.version, `got ${data.node_version}`);
+  assert("handleSystem platform equals process.platform",
+    data.platform === process.platform, `got ${data.platform}`);
+  assert("handleSystem architecture equals process.arch",
+    data.architecture === process.arch, `got ${data.architecture}`);
+  assert("handleSystem pid equals process.pid",
+    data.pid === process.pid, `got ${data.pid}`);
+  assert("handleSystem cpus equals os.cpus().length",
+    data.cpus === os.cpus().length, `got ${data.cpus} expected ${os.cpus().length}`);
+  assert("handleSystem memory_mb is a real positive heap-used MB count",
+    typeof data.memory_mb === "number" && data.memory_mb > 0, `got ${data.memory_mb}`);
   assert("handleSystem has memory object", typeof data.memory === "object");
   assert("handleSystem memory has current_mb", typeof data.memory.current_mb === "number");
   assert("handleSystem has framework object", typeof data.framework === "object");
   assert("handleSystem framework has name", data.framework.name === "tina4-nodejs");
   assert("handleSystem has uptime object", typeof data.uptime === "object");
   assert("handleSystem uptime has seconds", typeof data.uptime.seconds === "number");
-  assert("handleSystem has cpus field", typeof data.cpus === "number");
   assert("handleSystem has node object", typeof data.node === "object");
 }
 
@@ -495,9 +534,17 @@ if (queueHandler) {
   assert("handleQueue returns an object", typeof data === "object" && data !== null);
   assert("handleQueue has jobs array", Array.isArray(data.jobs));
   assert("handleQueue has stats object", typeof data.stats === "object");
-  assert("handleQueue stats has pending field", typeof data.stats.pending === "number");
-  assert("handleQueue stats has completed field", typeof data.stats.completed === "number");
-  assert("handleQueue stats has failed field", typeof data.stats.failed === "number");
+  // The two jobs we just enqueued are freshly added → pending, so pending must
+  // count at least those two real jobs.
+  assert("handleQueue stats.pending counts the jobs we enqueued",
+    data.stats.pending >= 2,
+    `stats.pending=${data.stats.pending}`);
+  // The per-status counts must add up to the real number of jobs returned (no
+  // status filter on this call), proving stats reflect the actual queue.
+  const statusSum = data.stats.pending + data.stats.completed + data.stats.failed + (data.stats.reserved ?? 0);
+  assert("handleQueue stats sum equals the total job count",
+    statusSum === data.jobs.length,
+    `pending+completed+failed+reserved=${statusSum} jobs.length=${data.jobs.length}`);
   assert("handleQueue jobs have expected shape", data.jobs.length >= 2);
   const job = data.jobs[0];
   assert("handleQueue job has id", typeof job.id === "string");

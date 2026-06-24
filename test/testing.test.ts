@@ -19,64 +19,170 @@ function assert(name: string, condition: boolean, detail = "") {
 
 console.log("=== Inline Testing Framework Tests ===\n");
 
-// --- Exports ---
-console.log("--- Exports ---");
-assert("tests is a function", typeof tests === "function");
-assert("assertEqual is a function", typeof assertEqual === "function");
-assert("assertRaises is a function", typeof assertRaises === "function");
-assert("assertTrue is a function", typeof assertTrue === "function");
-assert("assertFalse is a function", typeof assertFalse === "function");
-assert("runAll is a function", typeof runAll === "function");
-assert("reset is a function", typeof reset === "function");
+// --- Exports (behavioural) ---
+console.log("--- Exports (behavioural) ---");
 
-// --- assertEqual ---
+// tests() registers exactly one entry that runAll reports as a single pass.
+reset();
+tests(assertEqual([1, 1], 2))(function f(a: number, b: number): number { return a + b; });
+{
+  const r = runAll({ quiet: true });
+  assert("tests registers one passing entry", r.passed === 1 && r.failed === 0 && r.errors === 0 && r.details.length === 1);
+}
+
+// assertEqual drives a real comparison: 1+1+1 == 3 passes against add3.
+reset();
+tests(assertEqual([1, 1, 1], 3))(function add3(a: number, b: number, c: number): number { return a + b + c; });
+assert("assertEqual is exercised by runAll", runAll({ quiet: true }).passed === 1);
+
+// assertRaises catches a real thrown error.
+reset();
+tests(assertRaises(Error, [null]))(function g(b: number | null): number { if (b === null) throw new Error("x"); return b; });
+assert("assertRaises is exercised by runAll", runAll({ quiet: true }).passed === 1);
+
+// assertTrue verifies a real truthy result.
+reset();
+tests(assertTrue([1]))(function idTrue(x: unknown): unknown { return x; });
+assert("assertTrue is exercised by runAll", runAll({ quiet: true }).passed === 1);
+
+// assertFalse verifies a real falsy result.
+reset();
+tests(assertFalse([0]))(function idFalse(x: unknown): unknown { return x; });
+assert("assertFalse is exercised by runAll", runAll({ quiet: true }).passed === 1);
+
+// runAll returns a real results summary reflecting the registered tests.
+reset();
+tests(assertEqual([2, 2], 4))(function add2(a: number, b: number): number { return a + b; });
+assert("runAll reports the registered pass", runAll({ quiet: true }).passed === 1);
+
+// reset() clears the registry: after reset, runAll sees nothing.
+reset();
+tests(assertEqual([9, 9], 18))(function add9(a: number, b: number): number { return a + b; });
+reset();
+{
+  const r = runAll({ quiet: true });
+  assert("reset clears the registry", r.passed === 0 && r.failed === 0 && r.errors === 0 && r.details.length === 0);
+}
+
+// --- assertEqual (behavioural) ---
 console.log("\n--- assertEqual ---");
 
-const eq = assertEqual([1, 2], 3);
-assert("assertEqual returns assertion object", eq !== null && typeof eq === "object");
-assert("assertEqual type is 'equal'", eq.type === "equal");
-assert("assertEqual stores args", Array.isArray(eq.args) && eq.args[0] === 1 && eq.args[1] === 2);
-assert("assertEqual stores expected", eq.expected === 3);
+function addEq(a: number, b: number): number { return a + b; }
 
-// --- assertRaises ---
+// The built assertion actually drives a passing test against add(2,3)===5.
+reset();
+tests(assertEqual([2, 3], 5))(addEq);
+assert("assertEqual drives a passing test", runAll({ quiet: true }).passed === 1);
+
+// The 'equal' assertion FAILS when the function returns the wrong value.
+reset();
+tests(assertEqual([1, 1], 999))(addEq);
+{
+  const r = runAll({ quiet: true });
+  assert("assertEqual fails on wrong return value", r.failed === 1 && r.details[0].status === "failed");
+}
+
+// The stored args are actually passed to the function: [2,3] applied -> 5.
+reset();
+tests(assertEqual([2, 3], 5))(function add(a: number, b: number): number { return a + b; });
+assert("assertEqual passes stored args to the function", runAll({ quiet: true }).passed === 1);
+
+// The expected value is the comparison target: 1+1!==3 fails, ===2 passes.
+reset();
+tests(assertEqual([1, 1], 3))(addEq);
+assert("assertEqual expected is the comparison target (mismatch fails)", runAll({ quiet: true }).failed === 1);
+reset();
+tests(assertEqual([1, 1], 2))(addEq);
+assert("assertEqual expected is the comparison target (match passes)", runAll({ quiet: true }).passed === 1);
+
+// --- assertRaises (behavioural) ---
 console.log("\n--- assertRaises ---");
 
-const throws = assertRaises(Error, ["bad"]);
-assert("assertRaises returns assertion object", throws !== null);
-assert("assertRaises type is 'raises'", throws.type === "raises");
-assert("assertRaises stores exception class", throws.exception === Error);
-assert("assertRaises stores args", throws.args[0] === "bad");
+// The raises assertion catches a thrown Error.
+reset();
+tests(assertRaises(Error, [null]))(function fRaises(b: number | null): number { if (b === null) throw new Error("x"); return b; });
+assert("assertRaises catches the thrown Error", runAll({ quiet: true }).passed === 1);
 
-// --- assertTrue ---
+// A raises assertion FAILS when no error is thrown.
+reset();
+tests(assertRaises(Error, [1]))(function fNoThrow(b: number): number { return b; });
+assert("assertRaises fails when nothing is thrown", runAll({ quiet: true }).failed === 1);
+
+// The exception class is matched: wrong class does NOT pass, right class does.
+reset();
+tests(assertRaises(TypeError, [null]))(function fRange(): number { throw new RangeError("x"); });
+assert("assertRaises fails on wrong exception class", runAll({ quiet: true }).passed === 0);
+reset();
+tests(assertRaises(RangeError, [null]))(function fRange2(): number { throw new RangeError("x"); });
+assert("assertRaises passes on matching exception class", runAll({ quiet: true }).passed === 1);
+
+// The args reach the function: 'bad' triggers the throw.
+reset();
+tests(assertRaises(Error, ["bad"]))(function fArg(x: string): void { if (x === "bad") throw new Error("boom"); });
+assert("assertRaises passes args through to the function", runAll({ quiet: true }).passed === 1);
+
+// --- assertTrue (behavioural) ---
 console.log("\n--- assertTrue ---");
 
-const trueAssert = assertTrue([42]);
-assert("assertTrue returns assertion object", trueAssert !== null);
-assert("assertTrue type is 'true'", trueAssert.type === "true");
-assert("assertTrue stores args", trueAssert.args[0] === 42);
+function idT(x: unknown): unknown { return x; }
 
-// --- assertFalse ---
+// 42 is truthy -> assertTrue passes.
+reset();
+tests(assertTrue([42]))(idT);
+assert("assertTrue passes on a truthy result", runAll({ quiet: true }).passed === 1);
+
+// 0 is falsy -> assertTrue fails.
+reset();
+tests(assertTrue([0]))(idT);
+assert("assertTrue fails on a falsy result", runAll({ quiet: true }).failed === 1);
+
+// The arg drives truthiness: 0 fails, 42 passes.
+reset();
+tests(assertTrue([0]))(idT);
+assert("assertTrue arg drives truthiness (0 fails)", runAll({ quiet: true }).failed === 1);
+reset();
+tests(assertTrue([42]))(idT);
+assert("assertTrue arg drives truthiness (42 passes)", runAll({ quiet: true }).passed === 1);
+
+// --- assertFalse (behavioural) ---
 console.log("\n--- assertFalse ---");
 
-const falseAssert = assertFalse([0]);
-assert("assertFalse returns assertion object", falseAssert !== null);
-assert("assertFalse type is 'false'", falseAssert.type === "false");
-assert("assertFalse stores args", falseAssert.args[0] === 0);
+function idF(x: unknown): unknown { return x; }
+
+// 0 is falsy -> assertFalse passes.
+reset();
+tests(assertFalse([0]))(idF);
+assert("assertFalse passes on a falsy result", runAll({ quiet: true }).passed === 1);
+
+// 1 is truthy -> assertFalse fails.
+reset();
+tests(assertFalse([1]))(idF);
+assert("assertFalse fails on a truthy result", runAll({ quiet: true }).failed === 1);
+
+// The arg drives falsiness: 1 fails, 0 passes.
+reset();
+tests(assertFalse([1]))(idF);
+assert("assertFalse arg drives falsiness (1 fails)", runAll({ quiet: true }).failed === 1);
+reset();
+tests(assertFalse([0]))(idF);
+assert("assertFalse arg drives falsiness (0 passes)", runAll({ quiet: true }).passed === 1);
 
 // --- tests decorator ---
 console.log("\n--- tests Decorator ---");
 
 reset();
 
+function originalAdd(a: number, b: number): number {
+  return a + b;
+}
 const add = tests(
   assertEqual([2, 3], 5),
   assertEqual([0, 0], 0),
   assertEqual([-1, 1], 0),
-)(function add(a: number, b: number): number {
-  return a + b;
-});
+)(originalAdd);
 
-assert("tests() returns the original function", typeof add === "function");
+// tests() returns the SAME function object unchanged (identity), still callable.
+assert("tests() returns the original function (identity)", add === originalAdd);
 assert("Decorated function still works", add(10, 20) === 30);
 
 // --- runAll with passing tests ---
@@ -84,10 +190,14 @@ console.log("\n--- runAll Passing ---");
 
 const results = runAll({ quiet: true });
 assert("runAll returns results object", results !== null);
-assert("Results has passed count", typeof results.passed === "number");
-assert("Results has failed count", typeof results.failed === "number");
-assert("Results has errors count", typeof results.errors === "number");
-assert("Results has details array", Array.isArray(results.details));
+// passed count is the real number of passing assertions (3 add tests).
+assert("Results passed count is the real value (3)", results.passed === 3);
+// failed count is the real number of failures (none here).
+assert("Results failed count is the real value (0)", results.failed === 0);
+// errors count is the real number of errors (none here).
+assert("Results errors count is the real value (0)", results.errors === 0);
+// details holds one real entry per assertion, with the real recorded status.
+assert("Results details holds one entry per assertion", results.details.length === 3 && results.details[0].status === "passed");
 assert("All 3 add tests passed", results.passed === 3);
 assert("No failures", results.failed === 0);
 assert("No errors", results.errors === 0);

@@ -78,9 +78,27 @@ assert("GET returns CORS Allow-Origin header", normal.headers["access-control-al
 
 const preflight = await request("OPTIONS", "/api/test", { Origin: "http://example.com" });
 assert("OPTIONS returns 204", preflight.status === 204);
-assert("OPTIONS returns Allow-Methods", preflight.headers["access-control-allow-methods"] !== undefined);
-assert("OPTIONS returns Allow-Headers", preflight.headers["access-control-allow-headers"] !== undefined);
-assert("OPTIONS returns Max-Age", preflight.headers["access-control-max-age"] !== undefined);
+const allowMethods = String(preflight.headers["access-control-allow-methods"] ?? "");
+assert(
+  "OPTIONS Allow-Methods advertises the real REST verbs",
+  /GET/.test(allowMethods) && /POST/.test(allowMethods) && /PUT/.test(allowMethods) &&
+    /DELETE/.test(allowMethods) && /PATCH/.test(allowMethods) && /OPTIONS/.test(allowMethods),
+  `got "${allowMethods}"`
+);
+
+const allowHeaders = String(preflight.headers["access-control-allow-headers"] ?? "").toLowerCase();
+assert(
+  "OPTIONS Allow-Headers includes the default allowed headers",
+  allowHeaders.includes("content-type") && allowHeaders.includes("authorization"),
+  `got "${preflight.headers["access-control-allow-headers"]}"`
+);
+
+const maxAge = preflight.headers["access-control-max-age"];
+assert(
+  "OPTIONS Max-Age advertises a real positive cache lifetime",
+  Number.isInteger(Number(maxAge)) && Number(maxAge) > 0,
+  `got "${maxAge}"`
+);
 
 server.close();
 

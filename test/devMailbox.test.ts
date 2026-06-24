@@ -34,18 +34,68 @@ function cleanup() {
 
 console.log("=== DevMailbox Tests ===\n");
 
-// --- Class Existence ---
-console.log("--- Class Existence ---");
+// --- Class Behaviour (constructed instance exercises its mailboxDir) ---
+console.log("--- Class Behaviour ---");
 
+// 1. A freshly-built DevMailbox bound to mailboxDir actually reads/writes that
+//    directory: capture then inbox()[0].subject proves the round trip, not just
+//    that the class is a function / instanceof.
 setup();
-assert("DevMailbox class exists and is constructable", typeof DevMailbox === "function");
-assert("instance is DevMailbox", mailbox instanceof DevMailbox);
-assert("has capture method", typeof mailbox.capture === "function");
-assert("has inbox method", typeof mailbox.inbox === "function");
-assert("has read method", typeof mailbox.read === "function");
-assert("has delete method", typeof mailbox.delete === "function");
-assert("has clear method", typeof mailbox.clear === "function");
-assert("has count method", typeof mailbox.count === "function");
+{
+  const cap = mailbox.capture("a@test.com", "Behaviour S", "Behaviour B");
+  assert(
+    "constructed DevMailbox captures+reads its mailboxDir (inbox[0].subject)",
+    mailbox.inbox()[0]?.subject === "Behaviour S",
+    `got ${JSON.stringify(mailbox.inbox()[0]?.subject)}`,
+  );
+
+  // 2. capture() returns a real success result with a string id (the wire shape
+  //    callers depend on), not merely an invokable method.
+  assert(
+    "capture() returns success=true with a string id",
+    cap.success === true && typeof cap.id === "string" && cap.id.length > 0,
+    JSON.stringify(cap),
+  );
+
+  // 3. inbox() returns the persisted message after a capture (length === 1).
+  assert("inbox() returns the one captured message", mailbox.inbox().length === 1);
+
+  // 4. read(id) retrieves the captured message AND marks it read on disk.
+  const got = mailbox.read(cap.id!);
+  assert(
+    "read(id) returns the captured message with matching subject",
+    got !== null && got.subject === "Behaviour S",
+  );
+  assert("read(id) marks the message as read", got !== null && got.read === true);
+
+  // 5. delete(id) removes the message: returns true, then read(id) is null.
+  assert("delete(id) returns true for an existing message", mailbox.delete(cap.id!) === true);
+  assert("read(id) returns null after delete", mailbox.read(cap.id!) === null);
+}
+cleanup();
+
+// 6. clear() empties the inbox: capture, clear, inbox().length === 0.
+setup();
+{
+  mailbox.capture("clear@test.com", "Clear S", "Clear B");
+  assert("inbox has the captured message before clear", mailbox.inbox().length === 1);
+  mailbox.clear();
+  assert("inbox() is empty after clear()", mailbox.inbox().length === 0);
+}
+cleanup();
+
+// 7. count() reflects real folder contents: one capture writes to inbox AND
+//    outbox, so count().total === 2.
+setup();
+{
+  mailbox.capture("count@test.com", "Count S", "Count B");
+  const c = mailbox.count();
+  assert(
+    "count().total === 2 after one capture (inbox+outbox)",
+    c.total === 2 && c.inbox === 1 && c.outbox === 1,
+    JSON.stringify(c),
+  );
+}
 cleanup();
 
 // --- capture() ---

@@ -61,9 +61,13 @@ async function roundtrip(b: any, expectName: string) {
   assert(`${expectName}: miss returns undefined`, (await b.get("missing_xyz_123")) === undefined);
   const st = await b.stats();
   assert(`${expectName}: stats.backend === '${expectName}'`, st.backend === expectName, JSON.stringify(st));
-  for (const field of ["hits", "misses", "size"]) {
-    assert(`${expectName}: stats has '${field}'`, field in st);
-  }
+  // Behavioural stats: the clear()+set()+get(hit)+get(miss) sequence above must
+  // have advanced the real counters — not just defined the keys. One hit (k1)
+  // and one miss (missing_xyz_123) were recorded, and k1 is stored at this point
+  // (delete happens after stats()).
+  assert(`${expectName}: stats.hits increments on a hit`, typeof st.hits === "number" && st.hits >= 1, JSON.stringify(st));
+  assert(`${expectName}: stats.misses increments on a miss`, typeof st.misses === "number" && st.misses >= 1, JSON.stringify(st));
+  assert(`${expectName}: stats.size reflects the stored key`, typeof st.size === "number" && st.size >= 1, JSON.stringify(st));
   assert(`${expectName}: delete returns true`, (await b.delete("k1")) === true);
   assert(`${expectName}: get after delete returns undefined`, (await b.get("k1")) === undefined);
 }
@@ -109,42 +113,71 @@ async function main() {
   // TINA4_CACHE_PASSWORD (parity with TINA4_DATABASE_USERNAME / _PASSWORD).
   console.log("\n--- Credential parsing ---");
 
-  // parseCacheUrl is internal, so we assert its observable effect: a backend
-  // pointed at a dead port still constructs and falls back, and authenticated
-  // behaviour is covered by the live redis-auth test below. Here we verify the
-  // WHATWG URL path handles each credential form without throwing.
-  {
-    const forms = [
-      "redis://alice:s3cret@127.0.0.1:6399",
-      "redis://:justpass@127.0.0.1:6399",
-      "redis://127.0.0.1:6399",
-      "redis://127.0.0.1:6399/3",
-    ];
-    let ok = true;
-    for (const url of forms) {
-      try {
-        const b = await createBackend({ backend: "redis", cacheUrl: url, cacheDir: `/tmp/tina4_cred_${Date.now()}` });
-        if (b.name() !== "file") ok = false; // dead port → file fallback
-      } catch {
-        ok = false;
-      }
-    }
-    assert("all credential URL forms parse + fall back cleanly", ok);
+  // parseCacheUrl is internal, so we assert its observable effect against the
+  // LIVE redis-auth server (6381, requirepass s3cret): each authenticated URL
+  // credential shape must actually parse the user:pass, drive AUTH, connect as
+  // 'redis', and round-trip a value. A dead-port form must still fall back to
+  // 'file'. This proves the parsed credentials were applied, not just that the
+  // URL was syntactically swallowed.
+  if (await reachable("localhost", 6381)) {
+    // (1) password-only form: redis://:s3cret@host
+    const bPwOnly = await createBackend({ backend: "redis", cacheUrl: "redis://:s3cret@localhost:6381/3" });
+    assert("cred URL redis://:pass@ authenticates (name === redis)", bPwOnly.name() === "redis");
+    await bPwOnly.set("cred_pwonly", { v: 1 }, 60);
+    assert("cred URL redis://:pass@ round-trips after AUTH",
+      JSON.stringify(await bPwOnly.get("cred_pwonly")) === JSON.stringify({ v: 1 }));
+
+    // (2) user:pass form: redis://default:s3cret@host (redis default ACL user).
+    const bUserPass = await createBackend({ backend: "redis", cacheUrl: "redis://default:s3cret@localhost:6381/3" });
+    assert("cred URL redis://default:pass@ authenticates (name === redis)", bUserPass.name() === "redis");
+    await bUserPass.set("cred_userpass", { v: 2 }, 60);
+    assert("cred URL redis://default:pass@ round-trips after AUTH",
+      JSON.stringify(await bUserPass.get("cred_userpass")) === JSON.stringify({ v: 2 }));
+
+    // (3) dead-port form still falls back to a real file cache (no creds applied).
+    const dir = `/tmp/tina4_cred_dead_${Date.now()}`;
+    const bDead = await createBackend({ backend: "redis", cacheUrl: "redis://:s3cret@127.0.0.1:6399/3", cacheDir: dir });
+    assert("cred URL on dead port falls back to file", bDead.name() === "file");
+    await bDead.set("cred_dead", { v: 3 }, 60);
+    assert("cred URL dead-port file fallback round-trips",
+      JSON.stringify(await bDead.get("cred_dead")) === JSON.stringify({ v: 3 }));
+    try { fs.rmSync(dir, { recursive: true }); } catch {}
+  } else {
+    skip("credential URL forms authenticate", "redis-auth not running on 6381");
   }
 
   {
-    // Env-var credentials fill the gap left by the URL.
+    // Env-var credentials fill the gap left by a URL that carries none. Point a
+    // bare URL (no inline user:pass) at the LIVE redis-auth server (6381,
+    // requirepass s3cret) and prove the env var actually drove AUTH: the right
+    // password connects + round-trips; a WRONG one fails the handshake and
+    // degrades to the file backend. !threw against a dead port proved nothing.
     const prevU = process.env.TINA4_CACHE_USERNAME;
     const prevP = process.env.TINA4_CACHE_PASSWORD;
-    process.env.TINA4_CACHE_USERNAME = "bob";
-    process.env.TINA4_CACHE_PASSWORD = "pw";
-    let threw = false;
-    try {
-      await createBackend({ backend: "redis", cacheUrl: "redis://127.0.0.1:6399", cacheDir: `/tmp/tina4_cred_env_${Date.now()}` });
-    } catch {
-      threw = true;
+    // redis-auth only has `requirepass` (no ACL user), so leave USERNAME unset —
+    // an AUTH with a username would target a non-existent ACL user.
+    delete process.env.TINA4_CACHE_USERNAME;
+    if (await reachable("localhost", 6381)) {
+      // Right env password → authenticates, connects as redis, round-trips.
+      process.env.TINA4_CACHE_PASSWORD = "s3cret";
+      const bGood = await createBackend({ backend: "redis", cacheUrl: "redis://localhost:6381/3" });
+      assert("env TINA4_CACHE_PASSWORD drives AUTH (name === redis)", bGood.name() === "redis");
+      await bGood.set("cred_env_good", { v: 7 }, 60);
+      assert("env-credential backend round-trips after AUTH",
+        JSON.stringify(await bGood.get("cred_env_good")) === JSON.stringify({ v: 7 }));
+
+      // Wrong env password → failed handshake → file fallback (a real cache).
+      const dir = `/tmp/tina4_cred_env_bad_${Date.now()}`;
+      process.env.TINA4_CACHE_PASSWORD = "wrongpass";
+      const bBad = await createBackend({ backend: "redis", cacheUrl: "redis://localhost:6381/3", cacheDir: dir });
+      assert("wrong env password fails AUTH and falls back to file", bBad.name() === "file");
+      await bBad.set("cred_env_bad", { v: 8 }, 60);
+      assert("env-credential bad-auth file fallback round-trips",
+        JSON.stringify(await bBad.get("cred_env_bad")) === JSON.stringify({ v: 8 }));
+      try { fs.rmSync(dir, { recursive: true }); } catch {}
+    } else {
+      skip("env-var credentials drive AUTH", "redis-auth not running on 6381");
     }
-    assert("env-var credentials parse without throwing", !threw);
     if (prevU === undefined) delete process.env.TINA4_CACHE_USERNAME; else process.env.TINA4_CACHE_USERNAME = prevU;
     if (prevP === undefined) delete process.env.TINA4_CACHE_PASSWORD; else process.env.TINA4_CACHE_PASSWORD = prevP;
   }

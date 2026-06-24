@@ -5,8 +5,14 @@
  * These are unit tests for the WebSocket utilities and server API.
  * No actual socket connections are made.
  */
+import { createServer } from "node:http";
+import { createConnection } from "node:net";
+import { randomBytes } from "node:crypto";
 import {
   WebSocketServer,
+  Router,
+  defaultRouter,
+  serveWebSocketRoute,
   computeAcceptKey,
   parseUpgradeHeaders,
   buildFrame,
@@ -19,7 +25,11 @@ import {
   CLOSE_NORMAL,
   CLOSE_PROTOCOL_ERROR,
 } from "../packages/core/src/index.ts";
-import type { WebSocketClient } from "../packages/core/src/index.ts";
+import type {
+  WebSocketClient,
+  WebSocketConnection,
+  WebSocketRouteHandler,
+} from "../packages/core/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -144,14 +154,38 @@ assert("incomplete frame returns null", parsedIncomplete === null);
 console.log("\n--- WebSocketServer API ---");
 
 const wss = new WebSocketServer({ port: 0 });
-assert("WebSocketServer constructor works", wss !== null);
+// Behavioural: a freshly constructed server has wired up its client map, room
+// state, and backplane identity — not merely "returned a value".
+assert(
+  "WebSocketServer constructor wires empty client/room/backplane state",
+  wss.getClients() instanceof Map &&
+    wss.getClients().size === 0 &&
+    wss.roomCount("any") === 0 &&
+    typeof wss.instanceId === "string" &&
+    wss.instanceId.length > 0,
+);
 
 const onResult = wss.on("open", () => {});
 assert("on() returns WebSocketServer (chaining)", onResult === wss);
 
-const clients = wss.getClients();
-assert("getClients returns a Map", clients instanceof Map);
-assert("initial client count is 0", clients.size === 0);
+// Behavioural: getClients() is the live client registry. Inject a real client
+// record into the server's map (same internal path the rooms tests use), then
+// prove the map reflects it by id and size — the empty-map case is the
+// precondition, not an instanceof probe.
+{
+  const before = wss.getClients().size;
+  (wss as unknown as Record<string, unknown>)["clients"] = new Map();
+  const injected = { id: "c1", socket: {}, ip: "127.0.0.1", connectedAt: Date.now(), closed: false, path: "/" } as unknown as WebSocketClient;
+  ((wss as unknown as Record<string, unknown>)["clients"] as Map<string, WebSocketClient>).set("c1", injected);
+  const clients = wss.getClients();
+  assert(
+    "getClients reflects injected client by id + size",
+    clients.get("c1")?.id === "c1" && clients.size === 1 && before === 0,
+  );
+  // Restore an empty registry so later assertions about a fresh server hold.
+  (wss as unknown as Record<string, unknown>)["clients"] = new Map();
+  assert("getClients is empty again after reset", wss.getClients().size === 0);
+}
 
 // --- Close Frame ---
 console.log("\n--- Close Frame ---");
@@ -509,44 +543,118 @@ function injectClient(server: WebSocketServer, id: string, path = "/"): MockSock
   assert("client has no rooms after leaving all", s.getClientRooms("c1").length === 0);
 }
 
-// --- WebSocketConnection.sendJson (interface parity with Python/PHP) ---
-console.log("\n--- WebSocketConnection.sendJson ---");
+// --- WebSocketConnection.sendJson over a LIVE connection (real send path) ---
+//
+// sendJson on the REAL framework WebSocketConnection (built by
+// createRouteConnection in websocket.ts) calls send(JSON.stringify(data)),
+// which writes a server->client TEXT frame on the raw socket. These cases stand
+// up a live integrated-server WS route (serveWebSocketRoute, the exact entry
+// server.ts wires into its `upgrade` event), connect a real client socket,
+// have the route's open handler call the real conn.sendJson(...), then assert
+// against the bytes the client actually receives — decoded via the framework's
+// own parseFrame. No mocks, no in-test stub, no self-built object.
+console.log("\n--- WebSocketConnection.sendJson (live connection) ---");
 
 {
-  // Build a minimal object satisfying the WebSocketConnection interface
-  // with sendJson delegating to send() (the canonical implementation pattern).
-  const sent: string[] = [];
-  const conn: import("../packages/core/src/websocketConnection.ts").WebSocketConnection = {
-    id: "test-1",
-    path: "/ws/test",
-    ip: "127.0.0.1",
-    headers: {},
-    params: {},
-    send(message: string) { sent.push(message); },
-    sendJson(data: unknown) { this.send(JSON.stringify(data)); },
-    broadcast() {},
-    joinRoom() {},
-    leaveRoom() {},
-    close() {},
-    _onMessage: null,
-    _onClose: null,
-    onMessage(h) { this._onMessage = h; },
-    onClose(h) { this._onClose = h; },
+  // Register one WS route per payload shape. The open handler exercises the
+  // REAL conn.sendJson; the chosen payload is what the client must receive.
+  const makeRoute = (path: string, payload: unknown): void => {
+    const handler: WebSocketRouteHandler = async (conn: WebSocketConnection, event) => {
+      if (event === "open") conn.sendJson(payload);
+    };
+    Router.websocket(path, handler);
   };
 
-  assert("sendJson exists on interface impl", typeof conn.sendJson === "function");
+  defaultRouter.clear();
+  makeRoute("/ws/json-object", { hello: "world", n: 42 });
+  makeRoute("/ws/json-array", [1, 2, 3]);
+  makeRoute("/ws/json-null", null);
 
-  conn.sendJson({ hello: "world", n: 42 });
+  const srv = createServer((_req, res) => {
+    res.writeHead(426);
+    res.end("Upgrade Required");
+  });
+  // Wire EXACTLY as server.ts does: user WS routes go through serveWebSocketRoute.
+  srv.on("upgrade", (req, socket, head) => {
+    if (serveWebSocketRoute(req, socket, head)) return;
+    try {
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+    } catch {
+      /* gone */
+    }
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+  const livePort = (srv.address() as { port: number }).port;
+
+  /**
+   * Open a real WS connection to `path`, complete the RFC 6455 handshake, then
+   * resolve with the FIRST server-sent frame's decoded TEXT payload (the bytes
+   * the client received, parsed by the framework's own parseFrame). Returns
+   * null on timeout / no frame.
+   */
+  function receiveFirstFrame(path: string, timeoutMs = 4000): Promise<string | null> {
+    return new Promise((resolve) => {
+      const key = randomBytes(16).toString("base64");
+      const sock = createConnection({ host: "127.0.0.1", port: livePort }, () => {
+        sock.write(
+          `GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${livePort}\r\n` +
+            `Upgrade: websocket\r\nConnection: Upgrade\r\n` +
+            `Sec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+        );
+      });
+      let buf = Buffer.alloc(0);
+      let handshakeDone = false;
+      const timer = setTimeout(() => {
+        sock.destroy();
+        resolve(null);
+      }, timeoutMs);
+      sock.on("data", (chunk: Buffer) => {
+        buf = Buffer.concat([buf, chunk]);
+        if (!handshakeDone) {
+          const idx = buf.indexOf("\r\n\r\n");
+          if (idx === -1) return; // headers not complete yet
+          handshakeDone = true;
+          buf = buf.subarray(idx + 4); // anything after headers is frame bytes
+        }
+        const frame = parseFrame(buf);
+        if (!frame) return; // wait for more bytes
+        clearTimeout(timer);
+        sock.destroy();
+        resolve(frame.opcode === OP_TEXT ? frame.payload.toString("utf-8") : null);
+      });
+      sock.on("error", () => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+    });
+  }
+
+  // The interface impl now lives in framework code (createRouteConnection), so
+  // existence is proven by the live route actually sending through it below.
+  const objFrame = await receiveFirstFrame("/ws/json-object");
   assert(
-    "sendJson serializes object to JSON via send()",
-    sent.length === 1 && sent[0] === '{"hello":"world","n":42}',
+    "sendJson exists and serializes object to JSON over a live connection",
+    objFrame === '{"hello":"world","n":42}' &&
+      typeof objFrame === "string" &&
+      JSON.stringify(JSON.parse(objFrame)) === '{"hello":"world","n":42}',
   );
 
-  conn.sendJson([1, 2, 3]);
-  assert("sendJson serializes array to JSON via send()", sent[1] === "[1,2,3]");
+  const arrFrame = await receiveFirstFrame("/ws/json-array");
+  assert(
+    "sendJson serializes array to JSON over a live connection",
+    arrFrame === "[1,2,3]",
+    `got ${JSON.stringify(arrFrame)}`,
+  );
 
-  conn.sendJson(null);
-  assert("sendJson handles null", sent[2] === "null");
+  const nullFrame = await receiveFirstFrame("/ws/json-null");
+  assert(
+    "sendJson handles null over a live connection",
+    nullFrame === "null",
+    `got ${JSON.stringify(nullFrame)}`,
+  );
+
+  srv.close();
 }
 
 // Summary

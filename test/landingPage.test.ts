@@ -224,7 +224,15 @@ console.log("\n--- C. src/public/index.html SPA auto-serve ---");
   {
     const res = mockRes();
     const served = tryServeStatic(publicDir, mockReq("/"), res);
-    assert("root '/' picks up src/public/index.html", served === true);
+    // Prove the SPA index file content was actually emitted, not just that
+    // the call returned true: the bytes written to res must be the exact
+    // index.html we wrote, served as text/html.
+    assert("root '/' serves src/public/index.html body (not just returns true)",
+      served === true
+        && res.endedRef === true
+        && String(res.bodyRef).includes("<h1>SPA</h1>")
+        && String(res.headersRef["Content-Type"]).includes("text/html"),
+      `served=${served} body=${String(res.bodyRef)} ct=${res.headersRef["Content-Type"]}`);
   }
 
   // Subdirectory index — /admin/ -> src/public/admin/index.html
@@ -233,7 +241,15 @@ console.log("\n--- C. src/public/index.html SPA auto-serve ---");
   {
     const res = mockRes();
     const served = tryServeStatic(publicDir, mockReq("/admin/"), res);
-    assert("/admin/ picks up src/public/admin/index.html", served === true);
+    // Prove the correct subdirectory index body was emitted: the bytes must be
+    // exactly the "admin" content of src/public/admin/index.html, served as
+    // text/html — not the root index.html and not merely a true return.
+    assert("/admin/ serves src/public/admin/index.html body (correct subdir index)",
+      served === true
+        && res.endedRef === true
+        && String(res.bodyRef) === "admin"
+        && String(res.headersRef["Content-Type"]).includes("text/html"),
+      `served=${served} body=${String(res.bodyRef)} ct=${res.headersRef["Content-Type"]}`);
   }
 
   // No index.html → returns false

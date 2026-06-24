@@ -133,14 +133,42 @@ console.log("\n--- ServiceRunner registration ---");
 {
   ServiceRunner.clear();
   let executed = false;
-  ServiceRunner.register("test-task", async (_ctx) => {
+  let seenContextName: string | null = null;
+  // interval 0.01s == 10ms; the interval timer fires several times within 50ms.
+  ServiceRunner.register("test-task", async (ctx) => {
     executed = true;
-  }, { interval: 60 });
+    seenContextName = ctx.name;
+  }, { interval: 0.01 });
 
   const services = ServiceRunner.list();
   assert("ServiceRunner registers a task", services.length === 1);
   assert("Registered task has correct name", services[0].name === "test-task");
-  assert("Registered task is not running before start", services[0].running === false);
+
+  // Drive the real lifecycle: before start the task is NOT running, the handler
+  // has NOT fired, and lastRun is null.
+  assert(
+    "Registered task is not running before start",
+    ServiceRunner.isRunning("test-task") === false && services[0].running === false,
+  );
+  assert("Handler has not fired before start", executed === false);
+  assert("lastRun is null before start", services[0].lastRun === null);
+
+  // Start the interval service and let it tick.
+  ServiceRunner.start("test-task");
+  assert("isRunning flips to true after start", ServiceRunner.isRunning("test-task") === true);
+
+  await new Promise((r) => setTimeout(r, 50));
+  ServiceRunner.stop("test-task");
+
+  // The registered handler actually ran (real side effect), received the live
+  // ServiceContext, and the runner stamped lastRun with a real Date.
+  assert("Registered handler actually fired after start", executed === true);
+  assert("Handler received the live ServiceContext (name)", seenContextName === "test-task");
+  const afterRun = ServiceRunner.list();
+  assert("lastRun is a real Date after the handler ran", afterRun[0].lastRun instanceof Date);
+
+  // After stop, isRunning flips back to false (lifecycle teardown).
+  assert("isRunning flips back to false after stop", ServiceRunner.isRunning("test-task") === false);
 
   ServiceRunner.clear();
   const afterClear = ServiceRunner.list();

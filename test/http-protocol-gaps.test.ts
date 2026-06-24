@@ -128,13 +128,26 @@ run("Router.options() registers an OPTIONS route", () => {
 
 // ── ANY route covers HEAD + OPTIONS implicitly ─────────────────────
 
-run("any() route is matched for HEAD and OPTIONS", () => {
+run("any() registers GET/POST/PUT/PATCH/DELETE/OPTIONS/HEAD but NOT TRACE", () => {
   const r = new Router();
   r.any("/wildcard", (async () => {}) as any);
-  assert.ok(r.match("HEAD", "/wildcard"));
-  assert.ok(r.match("OPTIONS", "/wildcard"));
-  assert.ok(r.match("TRACE", "/wildcard") || true,
-    "TRACE — any() registers GET/POST/PUT/PATCH/DELETE/OPTIONS/HEAD, not TRACE; so this match should be null");
+  // The seven methods any() actually registers all match...
+  for (const m of ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]) {
+    assert.ok(r.match(m, "/wildcard"), `any() must match ${m}`);
+  }
+  // ...and the methods any() does NOT register must NOT match. TRACE/CONNECT are
+  // never registered by any(), and only HEAD (not TRACE) has the GET auto-fallback,
+  // so the match MUST be null — an accidental TRACE registration would fail here.
+  assert.equal(
+    r.match("TRACE", "/wildcard"),
+    null,
+    "any() does not register TRACE — match must be null, not a stray handler",
+  );
+  assert.equal(
+    r.match("CONNECT", "/wildcard"),
+    null,
+    "any() does not register CONNECT — match must be null",
+  );
 });
 
 // ── Param-aware paths ──────────────────────────────────────────────

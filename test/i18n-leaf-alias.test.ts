@@ -207,8 +207,8 @@ if (frondEngine) {
     frondEngine.addGlobal("t", (key: string, params?: Record<string, string>) => autoI18n.t(key, params));
   }
 
-  assert("t() global is registered on Frond engine",
-    typeof frondEngine.globals.t === "function");
+  assert("t() global renders in a template via the engine",
+    frondEngine.renderString("{{ t('hello') }}", {}) === "Hello World");
 
   assert("t() global translates flat keys",
     frondEngine.globals.t("hello") === "Hello World");

@@ -11,7 +11,14 @@
  */
 
 import { strict as assert } from "node:assert";
-import { Tina4Test, Tina4AssertionError, validToken, getToken } from "@tina4/core";
+import {
+  Tina4Test,
+  Tina4AssertionError,
+  validToken,
+  getToken,
+  defaultRouter,
+} from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "@tina4/core";
 
 let passed = 0;
 let failed = 0;
@@ -33,21 +40,60 @@ function it(name: string, fn: () => Promise<void> | void): void {
 
 async function run(): Promise<void> {
   // ── Tina4Test class shape ────────────────────────────────────────────
-  it("Tina4Test class is defined", () => {
-    assert.equal(typeof Tina4Test, "function");
+  it("Tina4Test base class drives a subclass test to completion", async () => {
+    // Behavioural smoke: a minimal subclass with one passing test method,
+    // run through the real built-in runner, must report exactly one pass.
+    class Sub extends Tina4Test {
+      async testNoop(): Promise<void> {
+        this.assertTrue(true);
+      }
+    }
+    const results = await Sub.run();
+    assert.equal(results.passed, 1, "one test method should pass");
+    assert.equal(results.failed, 0);
+    assert.equal(results.errors, 0);
+    // The per-test detail records the real outcome, not just a count.
+    assert.deepEqual(results.details, [
+      { suite: "Sub", test: "testNoop", status: "passed" },
+    ]);
   });
 
-  it("Subclasses can be instantiated", () => {
+  it("Subclass behaviour: assertions enforce + HTTP helpers dispatch a real request", async () => {
+    // Register a real in-process route the suite's HTTP client will hit.
+    // TestClient executes against defaultRouter using real node:http
+    // IncomingMessage/ServerResponse objects — no mock collaborator.
+    defaultRouter.clear();
+    defaultRouter.get("/__parity/echo", async (req: Tina4Request, res: Tina4Response) => {
+      return res.json({ ok: true, who: req.query["who"] ?? "anon" }, 201);
+    });
+
     class MyTest extends Tina4Test {
       async testNoop(): Promise<void> { this.assertTrue(true); }
     }
     const suite = new MyTest();
-    assert.equal(typeof suite.assertEqual, "function");
-    assert.equal(typeof suite.get, "function");
-    assert.equal(typeof suite.post, "function");
-    assert.equal(typeof suite.put, "function");
-    assert.equal(typeof suite.patch, "function");
-    assert.equal(typeof suite.delete, "function");
+
+    // 1. assertEqual is a real predicate: passes on a match, throws on a mismatch.
+    suite.assertEqual(1, 1);
+    assert.throws(() => suite.assertEqual(1, 2), Tina4AssertionError);
+
+    // 2. The HTTP helper issues a real request and returns the route's
+    //    actual status + parsed body — proving instantiation by behaviour.
+    const resp = await suite.get("/__parity/echo?who=parity");
+    assert.equal(resp.status, 201, "handler's explicit 201 status must round-trip");
+    const body = resp.json() as Record<string, unknown>;
+    assert.equal(body.ok, true);
+    assert.equal(body.who, "parity", "query param must reach the handler and come back in the body");
+
+    // 3. POST helper carries a JSON body through to a second real route.
+    defaultRouter.post("/__parity/sum", async (req: Tina4Request, res: Tina4Response) => {
+      const b = (req.body ?? {}) as Record<string, number>;
+      return res.json({ total: (b.a ?? 0) + (b.b ?? 0) });
+    });
+    const postResp = await suite.post("/__parity/sum", { json: { a: 2, b: 3 } });
+    assert.equal(postResp.status, 200);
+    assert.equal((postResp.json() as Record<string, unknown>).total, 5);
+
+    defaultRouter.clear();
   });
 
   // ── Positional assertions ────────────────────────────────────────────

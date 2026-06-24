@@ -429,6 +429,40 @@ console.log("\n=== Decorator API Tests ===\n");
   );
 
   assert("mcpResource sets _mcpResourceUri", getData._mcpResourceUri === "test://data");
+
+  // Follow through like the mcpTool block above: prove the decorated getter is
+  // actually wired into the server registry and invoked, by reading it back
+  // through the real resources/read JSON-RPC path (not just the metadata flag).
+  const resp = JSON.parse(
+    await server.handleMessage({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "resources/read",
+      params: { uri: "test://data" },
+    }),
+  );
+  const contents = resp.result?.contents;
+  assert(
+    "mcpResource read-back returns one content entry",
+    Array.isArray(contents) && contents.length === 1,
+    JSON.stringify(resp).slice(0, 160),
+  );
+  assert(
+    "mcpResource read-back echoes the uri",
+    contents?.[0]?.uri === "test://data",
+    JSON.stringify(contents?.[0]).slice(0, 160),
+  );
+  assert(
+    "mcpResource read-back carries the declared mimeType",
+    contents?.[0]?.mimeType === "application/json",
+    JSON.stringify(contents?.[0]).slice(0, 160),
+  );
+  const payload = JSON.parse(contents[0].text);
+  assert(
+    "mcpResource decorated getter actually ran (deep-equals [1,2,3])",
+    JSON.stringify(payload) === JSON.stringify([1, 2, 3]),
+    JSON.stringify(payload).slice(0, 160),
+  );
 }
 
 // ══════════════════════════════════════════════════════════════

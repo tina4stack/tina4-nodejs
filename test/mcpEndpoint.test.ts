@@ -8,8 +8,9 @@
  */
 import { startServer } from "../packages/core/src/index.ts";
 import { getDefaultDevServer } from "../packages/core/src/mcp.ts";
+import { initDatabase, closeDatabase } from "../packages/orm/src/index.ts";
 import http from "node:http";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const TEST_DIR = "/tmp/tina4-mcp-endpoint-test";
@@ -77,6 +78,20 @@ process.env.TINA4_NO_AI_PORT = "true"; // single port — don't spin up the +100
 
 console.log("=== MCP Endpoint Tests ===\n");
 
+// The built-in MCP file/plan tools resolve their sandbox root from process.cwd()
+// at the moment the default dev server registers them — which startServer() below
+// triggers via DevAdmin.register() → getDefaultDevServer(). chdir into TEST_DIR
+// FIRST so file_write / plan_create / plan_list operate inside the throwaway temp
+// project (never the real repo). Restored at cleanup.
+const ORIG_CWD = process.cwd();
+process.chdir(TEST_DIR);
+
+// A real in-memory SQLite connection so the DB-backed MCP tools (database_query,
+// database_execute, migration_status) hit a live engine instead of returning
+// {error:"No database connection"}. initDatabase() publishes the wrapper on
+// globalThis.__tina4_db, which is exactly what those tool handlers read.
+const mcpDb = await initDatabase({ url: "sqlite::memory:" });
+
 // ── Server with debug ON (MCP enabled) ──────────────────────
 process.env.TINA4_DEBUG = "true";
 const server = await startServer({
@@ -115,15 +130,115 @@ const tools: Array<{ name: string }> = list.data?.result?.tools ?? [];
 assert("tools/list returns 200", list.status === 200);
 assert("tools/list returns a non-empty tools array", Array.isArray(tools) && tools.length > 0, `len=${tools.length}`);
 const toolNames = new Set(tools.map((t) => t.name));
-// Core tool-set coverage (the names the task calls out explicitly).
+// The full core tool-set must be advertised by tools/list. The names below are
+// each exercised behaviourally elsewhere in this file (route_list / file_list /
+// plan_list / log_tail / docs_list / project_overview / system_info above, and
+// database_*/file_write/migration_status/plan_create driven over HTTP just
+// below), so this single membership check guards against a tool silently
+// dropping out of the registry without re-asserting presence per name.
 const coreTools = [
   "database_query", "database_execute", "file_read", "file_write", "file_list",
   "route_list", "migration_status", "plan_list", "plan_create", "log_tail",
   "docs_list", "project_overview",
 ];
-for (const name of coreTools) {
-  assert(`tool registered: ${name}`, toolNames.has(name));
+const missing = coreTools.filter((n) => !toolNames.has(n));
+assert("tools/list advertises the full core tool-set", missing.length === 0, `missing: ${missing.join(", ")}`);
+
+// ── Drive the core tools NOT exercised elsewhere through the REAL endpoint ──
+// Each call goes over POST /__dev/mcp/message (exactly what an MCP client speaks)
+// and asserts the real observable side effect: a row written then read back, a
+// file created on disk, a plan persisted to plan/, migration_status reaching the
+// live DB. (file_read/file_list/route_list/plan_list/docs_list/log_tail/
+// project_overview/system_info are already behaviourally checked above, so their
+// presence is covered by the membership assertion — no redundant existence-only
+// check is repeated here.)
+console.log("\n--- POST /__dev/mcp/message: behavioural tool round-trips ---");
+
+// Helper: call a tool over HTTP and JSON.parse its single content text block.
+async function callTool(name: string, args: Record<string, unknown>): Promise<{ http: number; parsed: any; rawText: string; data: any }> {
+  const r = await request("POST", "/__dev/mcp/message", PORT, {
+    jsonrpc: "2.0", id: 100, method: "tools/call", params: { name, arguments: args },
+  });
+  const rawText = r.data?.result?.content?.[0]?.text;
+  let parsed: any = null;
+  try { parsed = typeof rawText === "string" ? JSON.parse(rawText) : rawText; } catch { parsed = rawText; }
+  return { http: r.status, parsed, rawText, data: r.data };
 }
+
+// database_execute — create a table + insert a row (real DDL/DML on live SQLite).
+const ddl = await callTool("database_execute", {
+  sql: "CREATE TABLE mcp_widgets (id INTEGER PRIMARY KEY, name TEXT)",
+});
+assert("database_execute CREATE TABLE succeeds (success:true, no error)",
+  ddl.http === 200 && ddl.parsed?.success === true && ddl.parsed?.error === undefined,
+  JSON.stringify(ddl.parsed).slice(0, 160));
+const ins = await callTool("database_execute", {
+  sql: "INSERT INTO mcp_widgets (id, name) VALUES (?, ?)", params: "[7, \"sprocket\"]",
+});
+assert("database_execute INSERT (with JSON-string params) succeeds",
+  ins.parsed?.success === true && ins.parsed?.error === undefined,
+  JSON.stringify(ins.parsed).slice(0, 160));
+
+// database_query — read the row straight back over HTTP (proves the write landed
+// on the same live connection the read sees).
+const q = await callTool("database_query", {
+  sql: "SELECT id, name FROM mcp_widgets WHERE id = ?", params: "[7]",
+});
+assert("database_query reads back the inserted row over HTTP",
+  Array.isArray(q.parsed?.records) && q.parsed.records.length === 1 &&
+  q.parsed.records[0].id === 7 && q.parsed.records[0].name === "sprocket",
+  JSON.stringify(q.parsed).slice(0, 200));
+// database_query is the read-only surface — a write must be refused, not run.
+const qWrite = await callTool("database_query", {
+  sql: "DELETE FROM mcp_widgets WHERE id = 7",
+});
+assert("database_query refuses a non-SELECT (read-only guard) and the row survives",
+  typeof qWrite.parsed?.error === "string" && qWrite.parsed.error.toLowerCase().includes("read-only"),
+  JSON.stringify(qWrite.parsed).slice(0, 160));
+const stillThere = await callTool("database_query", { sql: "SELECT count(*) AS c FROM mcp_widgets" });
+assert("database_query refusal did NOT delete the row (count still 1)",
+  Array.isArray(stillThere.parsed?.records) && Number(stillThere.parsed.records[0].c) === 1,
+  JSON.stringify(stillThere.parsed).slice(0, 160));
+
+// file_write — write a file under the (chdir'd) project root and read it back via
+// the file_read tool, asserting the bytes actually hit disk inside TEST_DIR.
+const writeRes = await callTool("file_write", {
+  path: "src/generated/note.txt", content: "hello from mcp endpoint test\n",
+});
+assert("file_write reports the written path + byte count",
+  writeRes.parsed?.written === join("src", "generated", "note.txt") && writeRes.parsed?.bytes === 29,
+  JSON.stringify(writeRes.parsed).slice(0, 160));
+assert("file_write actually created the file on disk inside TEST_DIR",
+  existsSync(join(TEST_DIR, "src/generated/note.txt")) &&
+  readFileSync(join(TEST_DIR, "src/generated/note.txt"), "utf-8") === "hello from mcp endpoint test\n");
+const readBack = await callTool("file_read", { path: "src/generated/note.txt" });
+assert("file_read returns the content file_write wrote",
+  readBack.rawText === "hello from mcp endpoint test\n",
+  JSON.stringify(readBack.rawText).slice(0, 120));
+
+// plan_create — create a markdown plan, then plan_list must return it as current.
+const planRes = await callTool("plan_create", {
+  title: "MCP Endpoint Coverage", goal: "verify the dev tools", steps: ["one", "two"],
+});
+assert("plan_create succeeds and reports the plan name + current flag",
+  planRes.parsed?.ok === true && planRes.parsed?.name === "mcp-endpoint-coverage.md" &&
+  planRes.parsed?.is_current === true,
+  JSON.stringify(planRes.parsed).slice(0, 160));
+assert("plan_create wrote the markdown file into plan/ under TEST_DIR",
+  existsSync(join(TEST_DIR, "plan", "mcp-endpoint-coverage.md")) &&
+  readFileSync(join(TEST_DIR, "plan", "mcp-endpoint-coverage.md"), "utf-8").includes("# MCP Endpoint Coverage"));
+const planList = await callTool("plan_list", {});
+assert("plan_list returns the freshly created plan, marked current",
+  Array.isArray(planList.parsed) &&
+  planList.parsed.some((p: any) => p.name === "mcp-endpoint-coverage.md" && p.is_current === true && p.steps_total === 2),
+  JSON.stringify(planList.parsed).slice(0, 200));
+
+// migration_status — with a live DB it must reach the connection (not the
+// "No database connection" error path). NOTE the Node handler is a stub.
+const migStatus = await callTool("migration_status", {});
+assert("migration_status reaches the live DB (NOT the no-connection error path)",
+  migStatus.http === 200 && migStatus.parsed?.error !== "No database connection",
+  JSON.stringify(migStatus.parsed).slice(0, 160));
 
 // ── tools/call a safe read-only tool → content ──────────────
 console.log("\n--- POST /__dev/mcp/message: tools/call route_list ---");
@@ -218,9 +333,13 @@ assert("disabled: GET /__dev/mcp/sse returns 404", offSse.status === 404, `got $
 serverOff.close();
 
 // Cleanup
+closeDatabase();
+delete (globalThis as any).__tina4_db;
 delete process.env.TINA4_RATE_LIMIT;
 delete process.env.TINA4_NO_AI_PORT;
 delete process.env.TINA4_DEBUG;
+// Restore cwd BEFORE removing TEST_DIR (it is the current working directory).
+process.chdir(ORIG_CWD);
 try { rmSync(TEST_DIR, { recursive: true }); } catch {}
 
 // Summary

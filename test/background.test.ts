@@ -25,15 +25,48 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 console.log("=== background() Tests ===\n");
 
-// --- Exports ---
-console.log("--- Exports ---");
-assert("background is a function", typeof background === "function");
-assert("stopAllBackgroundTasks is a function", typeof stopAllBackgroundTasks === "function");
-assert("backgroundTaskCount is a function", typeof backgroundTaskCount === "function");
+// --- Core behaviour (was: typeof export probes) ---
+console.log("--- Core Behaviour ---");
 
 // Reset before any test
 stopAllBackgroundTasks();
-assert("starts with no tasks", backgroundTaskCount() === 0);
+
+// background() actually schedules and fires a real periodic callback, and the
+// returned handle's stop() halts it. (Was: "background is a function".)
+{
+  let fired = 0;
+  const handle = background(() => { fired++; }, 0.05); // 50ms
+  await sleep(180);
+  handle.stop();
+  const afterStop = fired;
+  assert("background() schedules a real recurring callback", afterStop >= 2, `(fired=${afterStop})`);
+  // returned handle.stop must really exist and have halted the timer
+  await sleep(120);
+  assert("handle.stop() halts the recurring callback", fired === afterStop, `(now=${fired}, afterStop=${afterStop})`);
+}
+
+// backgroundTaskCount() returns the real live registry size: 0 when empty,
+// climbing by one per registration. (Was: "backgroundTaskCount is a function".)
+{
+  assert("backgroundTaskCount() reports 0 when registry empty", backgroundTaskCount() === 0);
+  const a = background(() => {}, 0.5);
+  assert("backgroundTaskCount() reports 1 after one register", backgroundTaskCount() === 1);
+  const b = background(() => {}, 0.5);
+  assert("backgroundTaskCount() reports 2 after two registers", backgroundTaskCount() === 2);
+  a.stop();
+  b.stop();
+  assert("backgroundTaskCount() back to 0 after both stop", backgroundTaskCount() === 0);
+}
+
+// stopAllBackgroundTasks() really clears the whole registry, not just one task.
+// (Was: "stopAllBackgroundTasks is a function".)
+{
+  background(() => {}, 0.5);
+  background(() => {}, 0.5);
+  assert("two tasks registered before clear-all", backgroundTaskCount() === 2);
+  stopAllBackgroundTasks();
+  assert("stopAllBackgroundTasks() clears every registered task", backgroundTaskCount() === 0);
+}
 
 // --- Periodic invocation ---
 console.log("\n--- Periodic Invocation ---");

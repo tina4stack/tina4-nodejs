@@ -2,7 +2,7 @@
  * Unit tests for the database seeder (seeder.ts).
  * Run with: npx tsx test/seeder.test.ts
  */
-import { seedTable, seedOrm, FakeData } from "../packages/orm/src/index.ts";
+import { seedTable, seedOrm, FakeData, createAdapterFromUrl } from "../packages/orm/src/index.ts";
 import type { DatabaseAdapter, FieldDefinition } from "../packages/orm/src/index.ts";
 
 let pass = 0;
@@ -47,11 +47,64 @@ function createMockDb(): DatabaseAdapter & { _inserts: Array<{ sql: string; para
 
 console.log("=== Seeder Tests ===\n");
 
-// --- Exports ---
-console.log("--- Exports ---");
-assert("seedTable is a function", typeof seedTable === "function");
-assert("seedOrm is a function", typeof seedOrm === "function");
-assert("FakeData is a constructor", typeof FakeData === "function");
+// --- Behavioural existence: seedTable / seedOrm / FakeData against a REAL SQLite DB ---
+// These replace the old `typeof === "function"` smoke checks with real exercises:
+// a real in-memory SQLite adapter (node:sqlite via createAdapterFromUrl) is created,
+// rows are seeded, and the inserted rows are read back. No mocks.
+console.log("--- Behavioural existence (real SQLite) ---");
+
+const liveDb = await createAdapterFromUrl("sqlite:///:memory:");
+
+// 1. seedTable really inserts into a real table and the rows read back.
+liveDb.execute(
+  `CREATE TABLE live_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`,
+);
+const liveTableSummary = await seedTable(liveDb, "live_users", 3, { name: () => "Ada" });
+const liveTableRows = liveDb.fetch<{ id: number; name: string }>("SELECT * FROM live_users");
+assert(
+  "seedTable inserts rows into a real SQLite table",
+  liveTableSummary.seeded === 3 && liveTableRows.length === 3 && liveTableRows[0].name === "Ada",
+  `seeded=${liveTableSummary.seeded} rows=${liveTableRows.length}`,
+);
+
+// 2. seedOrm really seeds an ORM model, auto-increment PK is populated by the DB,
+//    and the generated INSERT omits the auto-increment 'id' column.
+liveDb.execute(
+  `CREATE TABLE live_products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price REAL)`,
+);
+const liveOrmModel = {
+  tableName: "live_products",
+  fields: {
+    id: { type: "integer" as const, primaryKey: true, autoIncrement: true },
+    name: { type: "string" as const, required: true },
+    price: { type: "number" as const },
+  },
+  getDb: () => liveDb,
+};
+const liveOrmSummary = await seedOrm(liveOrmModel, 4, undefined, 99);
+const liveOrmRows = liveDb.fetch<{ id: number; name: string; price: number }>(
+  "SELECT * FROM live_products ORDER BY id",
+);
+assert(
+  "seedOrm seeds a real ORM model with DB-assigned auto-increment PKs",
+  liveOrmSummary.seeded === 4 &&
+    liveOrmRows.length === 4 &&
+    liveOrmRows[0].id === 1 &&
+    liveOrmRows[3].id === 4 &&
+    typeof liveOrmRows[0].name === "string",
+  `seeded=${liveOrmSummary.seeded} rows=${liveOrmRows.length} firstId=${liveOrmRows[0]?.id}`,
+);
+
+// 3. FakeData is a real, deterministic generator: same seed → same value,
+//    different seed → (in practice) different value.
+const fdSeedA = new FakeData(42);
+const fdSeedB = new FakeData(42);
+const fdSeedC = new FakeData(43);
+assert(
+  "FakeData is deterministic per seed (42==42, 42!=43)",
+  fdSeedA.name() === fdSeedB.name() && fdSeedA.name() !== fdSeedC.name(),
+  `a=${new FakeData(42).name()} c=${new FakeData(43).name()}`,
+);
 
 // --- seedTable basic ---
 console.log("\n--- seedTable Basic ---");
@@ -177,12 +230,63 @@ assert("Same seed produces same data", JSON.stringify(db9._inserts[0].params) ==
 // --- FakeData basic ---
 console.log("\n--- FakeData ---");
 
-const fd = new FakeData(123);
-assert("FakeData.name() returns string", typeof fd.name() === "string");
-assert("FakeData.email() returns string with @", fd.email().includes("@"));
-assert("FakeData.uuid() returns string with dashes", fd.uuid().includes("-"));
-assert("FakeData.boolean() returns boolean", typeof fd.boolean() === "boolean");
-assert("FakeData.integer() returns number", typeof fd.integer(1, 100) === "number");
+// 4. name() — pinned deterministic output + reproducibility across instances.
+//    With seed 123 the PRNG produces firstName "Penny" + lastName "Martinez".
+assert(
+  "FakeData.name() is deterministic and pins to the exact seeded output",
+  new FakeData(123).name() === "Penny Martinez" &&
+    new FakeData(123).name() === new FakeData(123).name(),
+  `got=${new FakeData(123).name()}`,
+);
+
+// 5. email() — structured shape (first.last@domain) + reproducibility.
+const fdEmail = new FakeData(123).email();
+assert(
+  "FakeData.email() matches first.last@domain and reproduces per seed",
+  /^[a-z]+\.[a-z]+@[a-z.]+$/.test(fdEmail) &&
+    fdEmail === new FakeData(123).email(),
+  `got=${fdEmail}`,
+);
+
+// 6. uuid() — real UUID format; two consecutive calls on the same instance differ
+//    (the PRNG advances).
+const fdUuidInstance = new FakeData(123);
+const uuid1 = fdUuidInstance.uuid();
+const uuid2 = fdUuidInstance.uuid();
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+assert(
+  "FakeData.uuid() matches UUID hex format and advances per call",
+  uuidPattern.test(uuid1) && uuidPattern.test(uuid2) && uuid1 !== uuid2,
+  `uuid1=${uuid1} uuid2=${uuid2}`,
+);
+
+// 7. boolean() — distribution (both values occur) + deterministic sequence per seed.
+const fdBoolA = new FakeData(123);
+const boolSeqA: boolean[] = [];
+for (let i = 0; i < 100; i++) boolSeqA.push(fdBoolA.boolean());
+const fdBoolB = new FakeData(123);
+const boolSeqB: boolean[] = [];
+for (let i = 0; i < 100; i++) boolSeqB.push(fdBoolB.boolean());
+assert(
+  "FakeData.boolean() yields both values and is reproducible per seed",
+  boolSeqA.includes(true) &&
+    boolSeqA.includes(false) &&
+    JSON.stringify(boolSeqA) === JSON.stringify(boolSeqB),
+  `true=${boolSeqA.filter((b) => b).length} false=${boolSeqA.filter((b) => !b).length}`,
+);
+
+// 8. integer(1, 100) — within bounds (an integer in [1, 100]) + deterministic per seed.
+//    Note: FakeData.integer(min, max) is INCLUSIVE of max (randInt(min, max+1)),
+//    so the real bound is 1..100 inclusive — assert against actual behaviour.
+const intVal = new FakeData(123).integer(1, 100);
+assert(
+  "FakeData.integer(1,100) is an in-bounds integer and reproducible per seed",
+  Number.isInteger(intVal) &&
+    intVal >= 1 &&
+    intVal <= 100 &&
+    intVal === new FakeData(123).integer(1, 100),
+  `got=${intVal}`,
+);
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

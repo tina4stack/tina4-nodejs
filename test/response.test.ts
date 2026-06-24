@@ -3,6 +3,7 @@
  * Run with: npx tsx test/response.test.ts
  */
 import { createResponse } from "../packages/core/src/index.ts";
+import http from "node:http";
 import type { ServerResponse } from "node:http";
 
 let pass = 0;
@@ -48,23 +49,200 @@ function mockServerResponse(): {
 
 console.log("=== Response Tests ===\n");
 
-// --- createResponse wraps ServerResponse ---
-console.log("--- createResponse ---");
+// --- Real-server harness ----------------------------------------------------
+// The flagged "smoke"/"existence" cases below were rewritten to drive
+// createResponse() against a REAL node:http ServerResponse over a real socket,
+// rather than the hand-rolled mockServerResponse(). Each probe runs inside a
+// live request handler; we then assert on the bytes/headers/status the HTTP
+// client actually received off the wire — the strongest proof the callable and
+// its methods produce the real observable effect (no fakes, no stubs).
+
+interface RealResult {
+  statusCode: number;
+  headers: http.IncomingHttpHeaders;
+  body: string;
+}
+
+/**
+ * Start a one-shot real HTTP server, run `probe(response, raw)` inside its
+ * request handler, fire a single real GET request, and resolve with the actual
+ * response the client received. `probe` may end the response itself; if it does
+ * not (e.g. it only mutates raw), the harness ends it so the request completes.
+ */
+async function withRealResponse(
+  probe: (response: ReturnType<typeof createResponse>, raw: ServerResponse) => void,
+): Promise<RealResult> {
+  const server = http.createServer((_req, res) => {
+    const response = createResponse(res);
+    probe(response, res);
+    if (!res.writableEnded) res.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const addr = server.address() as { port: number };
+  try {
+    return await new Promise<RealResult>((resolve, reject) => {
+      const req = http.request(
+        { host: "127.0.0.1", port: addr.port, path: "/", method: "GET" },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (c) => chunks.push(c as Buffer));
+          res.on("end", () =>
+            resolve({
+              statusCode: res.statusCode ?? 0,
+              headers: res.headers,
+              body: Buffer.concat(chunks).toString("utf8"),
+            }),
+          );
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+// --- createResponse wraps a real ServerResponse -----------------------------
+console.log("--- createResponse (real socket) ---");
 
 {
-  const { res } = mockServerResponse();
-  const response = createResponse(res);
-  assert("createResponse returns a function", typeof response === "function");
-  assert("response has raw property", response.raw === res);
-  assert("response has json method", typeof response.json === "function");
-  assert("response has html method", typeof response.html === "function");
-  assert("response has text method", typeof response.text === "function");
-  assert("response has send method", typeof response.send === "function");
-  assert("response has status method", typeof response.status === "function");
-  assert("response has header method", typeof response.header === "function");
-  assert("response has redirect method", typeof response.redirect === "function");
-  assert("response has cookie method", typeof response.cookie === "function");
-  assert("response has clearCookie method", typeof response.clearCookie === "function");
+  // 1. createResponse returns a CALLABLE that actually serialises + ends the
+  //    response. Invoke it once and assert the real wire effect.
+  const r = await withRealResponse((response) => {
+    response({ ok: true });
+  });
+  assert(
+    "createResponse callable serialises body to the socket",
+    r.body === '{"ok":true}',
+    r.body,
+  );
+  assert(
+    "createResponse callable sets application/json on the socket",
+    r.headers["content-type"] === "application/json",
+    String(r.headers["content-type"]),
+  );
+}
+
+{
+  // 2. response.raw is the LIVE underlying socket: mutating through the wrapper
+  //    is visible on response.raw (and lands on the wire).
+  let rawIsLive = false;
+  const r = await withRealResponse((response, raw) => {
+    response.status(418);
+    rawIsLive = response.raw === raw && (response.raw as ServerResponse).statusCode === 418;
+  });
+  assert("response.raw is the live underlying ServerResponse", rawIsLive);
+  assert("mutation via wrapper reaches the wire (418)", r.statusCode === 418, String(r.statusCode));
+}
+
+{
+  // 3. json() serialises and sets content-type — asserted off the wire.
+  const r = await withRealResponse((response) => {
+    response.json({ a: 1 });
+  });
+  assert("json writes serialised body to socket", r.body === '{"a":1}', r.body);
+  assert("json sets application/json on socket", r.headers["content-type"] === "application/json");
+}
+
+{
+  // 4. html() sends the literal HTML with a text/html content type.
+  const r = await withRealResponse((response) => {
+    response.html("<b>x</b>");
+  });
+  assert("html writes literal HTML to socket", r.body === "<b>x</b>", r.body);
+  assert(
+    "html sets text/html on socket",
+    String(r.headers["content-type"]).includes("text/html"),
+    String(r.headers["content-type"]),
+  );
+}
+
+{
+  // 5. text() sends the literal string with a text/plain content type.
+  const r = await withRealResponse((response) => {
+    response.text("hi");
+  });
+  assert("text writes literal string to socket", r.body === "hi", r.body);
+  assert(
+    "text sets text/plain on socket",
+    String(r.headers["content-type"]).includes("text/plain"),
+    String(r.headers["content-type"]),
+  );
+}
+
+{
+  // 6. send() delegates to the callable, honouring an explicit content type.
+  const r = await withRealResponse((response) => {
+    response.send("data", 200, "text/csv");
+  });
+  assert("send honours explicit content type on socket", r.headers["content-type"] === "text/csv");
+  assert("send writes the body to socket", r.body === "data", r.body);
+}
+
+{
+  // 7. status() sets the code on the live response and returns itself for chaining.
+  let chained = false;
+  const r = await withRealResponse((response) => {
+    const ret = response.status(404);
+    chained = ret === response;
+    response.text("nope");
+  });
+  assert("status sets status code on the wire", r.statusCode === 404, String(r.statusCode));
+  assert("status returns response for chaining", chained);
+}
+
+{
+  // 8. header() emits a custom header that arrives at the client.
+  const r = await withRealResponse((response) => {
+    response.header("X-A", "1");
+    response.text("ok");
+  });
+  assert("header reaches the client", r.headers["x-a"] === "1", String(r.headers["x-a"]));
+}
+
+{
+  // 9. redirect() sets 302 + Location on the wire.
+  const r = await withRealResponse((response) => {
+    response.redirect("/x");
+  });
+  assert("redirect sets 302 on the wire", r.statusCode === 302, String(r.statusCode));
+  assert("redirect sets Location on the wire", r.headers["location"] === "/x", String(r.headers["location"]));
+}
+
+{
+  // 10. cookie() emits a Set-Cookie header the client receives.
+  const r = await withRealResponse((response) => {
+    response.cookie("s", "v");
+    response.text("ok");
+  });
+  const c = r.headers["set-cookie"];
+  const cookieStr = Array.isArray(c) ? c[0] : String(c);
+  assert("cookie sets Set-Cookie on the wire", cookieStr.includes("s=v"), cookieStr);
+}
+
+{
+  // 11. clearCookie() emits a Max-Age=0 expiry cookie the client receives.
+  const r = await withRealResponse((response) => {
+    response.clearCookie("s");
+    response.text("ok");
+  });
+  const c = r.headers["set-cookie"];
+  const cookieStr = Array.isArray(c) ? c[0] : String(c);
+  assert("clearCookie emits Max-Age=0 on the wire", cookieStr.includes("Max-Age=0"), cookieStr);
+}
+
+{
+  // 12. addHeader() (parity primary) applies the header to the live response.
+  const r = await withRealResponse((response) => {
+    response.addHeader("X-Custom", "value-1");
+    response.text("ok");
+  });
+  assert(
+    "addHeader reaches the client",
+    r.headers["x-custom"] === "value-1",
+    String(r.headers["x-custom"]),
+  );
 }
 
 // --- .json() sets content-type and sends JSON ---

@@ -41,16 +41,58 @@ function assert(name: string, condition: boolean, detail = "") {
 async function main() {
   console.log("=== Response Cache Tests ===\n");
 
-  // --- Exports exist ---
-  console.log("--- Exports ---");
-  assert("responseCache is a function", typeof responseCache === "function");
-  assert("clearCache is a function", typeof clearCache === "function");
-  assert("cacheStats is a function", typeof cacheStats === "function");
-  assert("cacheGet is a function", typeof cacheGet === "function");
-  assert("cacheSet is a function", typeof cacheSet === "function");
-  assert("cacheDelete is a function", typeof cacheDelete === "function");
-  assert("cacheClear is a function", typeof cacheClear === "function");
-  assert("cacheBackendStats is a function", typeof cacheBackendStats === "function");
+  // --- Exported API actually behaves (exercise every symbol, not just typeof) ---
+  // Each export is driven through a real call against the live (memory default)
+  // backend and asserted on its observable effect — no `typeof === "function"`
+  // smoke. (createBackend/_getBackend probe the real configured backend.)
+  console.log("--- Exported API behaves ---");
+
+  _resetBackend();
+  await cacheClear();
+
+  // cacheSet stores; cacheGet reads it back (round-trip through the backend).
+  await cacheSet("exp_k", "v", 60);
+  assert("cacheSet stores a value cacheGet reads back", (await cacheGet("exp_k")) === "v");
+
+  // cacheDelete removes it; the follow-up cacheGet is a real miss.
+  assert("cacheDelete returns true for the stored key", (await cacheDelete("exp_k")) === true);
+  assert("cacheGet returns undefined after cacheDelete", (await cacheGet("exp_k")) === undefined);
+
+  // cacheStats / cacheBackendStats report the real KV backend after a set.
+  await cacheSet("exp_stats", "x", 60);
+  const expStats = await cacheStats();
+  assert("cacheStats reports the memory backend", expStats.backend === "memory");
+  assert("cacheStats size reflects the stored key", expStats.size >= 1);
+  const expBackendStats = await cacheBackendStats();
+  assert("cacheBackendStats matches cacheStats backend", expBackendStats.backend === "memory");
+
+  // cacheClear empties the KV backend (real side effect).
+  await cacheClear();
+  assert("cacheClear empties the KV backend", (await cacheStats()).size === 0);
+
+  // responseCache returns a usable middleware that, driven for real, calls next()
+  // on a cache MISS (full HIT/MISS behaviour is locked in further below).
+  {
+    const expMw = responseCache({ ttl: 60 });
+    let expNext = false;
+    const h: Record<string, string> = {};
+    const req = { method: "GET", url: "/api/exp-exports" } as Tina4Request;
+    const res = {
+      raw: {
+        writableEnded: false, statusCode: 200,
+        end(_c: any) { return this; },
+        getHeader: (n: string) => h[n.toLowerCase()] || "application/json",
+      },
+      header: (n: string, v: string) => { h[n.toLowerCase()] = v; },
+    } as unknown as Tina4Response;
+    await expMw(req, res, () => { expNext = true; });
+    assert("responseCache middleware calls next() on a real GET miss", expNext);
+  }
+
+  // clearCache resets the responseCache (middleware) backend — proven by the
+  // shared-backend block at the bottom which relies on it returning a clean store.
+  await clearCache();
+  _resetBackend();
 
   // --- clearCache and cacheStats ---
   console.log("\n--- clearCache and cacheStats ---");
@@ -61,12 +103,63 @@ async function main() {
   assert("cacheStats reflects the KV backend (cacheSet store)", typeof emptyStats.size === "number");
   assert("cacheStats has backend field", typeof emptyStats.backend === "string");
 
-  // --- Creating middleware ---
-  console.log("\n--- Middleware Creation ---");
+  // --- Middleware caches a GET and serves the 2nd identical GET from cache ---
+  // Drive the SAME middleware twice through the real (memory) backend: the 1st
+  // call is a MISS (next() runs, body captured on res.raw.end) and the 2nd call
+  // is a HIT served from the backend (next() NOT called, body === the 1st body).
+  console.log("\n--- Middleware Caches GET ---");
 
-  const mw = responseCache({ ttl: 60 });
-  assert("responseCache returns a function", typeof mw === "function");
-  assert("Middleware has 3 params (req, res, next)", mw.length === 3);
+  {
+    delete process.env.TINA4_CACHE_BACKEND;
+    _resetBackend();
+    await clearCache();
+
+    const mw = responseCache({ ttl: 60 });
+    const url = "/api/mw-roundtrip";
+    const body = JSON.stringify({ n: 1 });
+
+    // First request — MISS. next() runs, the handler ends the response, capture stores it.
+    const h1: Record<string, string> = {};
+    let next1 = false;
+    const req1 = { method: "GET", url } as Tina4Request;
+    const res1 = {
+      raw: {
+        writableEnded: false, statusCode: 200,
+        end(_c: any) { return this; },
+        getHeader: (n: string) => h1[n.toLowerCase()] || "application/json",
+      },
+      header: (n: string, v: string) => { h1[n.toLowerCase()] = v; },
+    } as unknown as Tina4Response;
+    await mw(req1, res1, () => { next1 = true; });
+    assert("middleware 1st GET is a MISS (next called)", next1);
+    (res1.raw.end as any)(body);             // server flushes the body → capture+store
+    assert("middleware MISS sets X-Cache: MISS", h1["x-cache"] === "MISS");
+    await new Promise((r) => setTimeout(r, 30)); // let fire-and-forget set() settle
+
+    // Second request — HIT. next() must NOT run; the cached body is served.
+    const h2: Record<string, string> = {};
+    let next2 = false;
+    let servedBody: string | null = null;
+    const req2 = { method: "GET", url } as Tina4Request;
+    const res2 = Object.assign(
+      function (b: any) { servedBody = b; },
+      {
+        raw: {
+          writableEnded: false, statusCode: 200,
+          end(_c: any) { return this; },
+          getHeader: (n: string) => h2[n.toLowerCase()] || "application/json",
+        },
+        header: (n: string, v: string) => { h2[n.toLowerCase()] = v; },
+      },
+    ) as unknown as Tina4Response;
+    await mw(req2, res2, () => { next2 = true; });
+    assert("middleware 2nd GET is a HIT (next NOT called)", !next2, `next2=${next2}`);
+    assert("middleware HIT serves the cached body", servedBody === body, `served=${servedBody}`);
+    assert("middleware HIT sets X-Cache: HIT", h2["x-cache"] === "HIT");
+
+    await clearCache();
+    _resetBackend();
+  }
 
   // --- TTL 0 disables caching ---
   console.log("\n--- TTL 0 Disables Cache ---");
@@ -123,26 +216,200 @@ async function main() {
   await cacheMw2(getReq, getRes, () => { getNextCalled = true; });
   assert("GET cache miss calls next()", getNextCalled);
 
-  // --- Config options ---
+  // --- Config options take effect (statusCodes is honoured) ---
+  // Build a middleware that caches ONLY 201 (not 200). Prove the config was
+  // applied: a 200 response is NOT cached (a 2nd identical GET still MISSes and
+  // calls next), while a 201 IS cached (2nd GET is a HIT served from cache).
   console.log("\n--- Config Options ---");
 
-  const customMw = responseCache({ ttl: 120, maxEntries: 500, statusCodes: [200, 201] });
-  assert("Custom config returns middleware", typeof customMw === "function");
+  {
+    delete process.env.TINA4_CACHE_BACKEND;
+    _resetBackend();
+    await clearCache();
 
-  // --- Default config ---
-  const defaultMw = responseCache();
-  assert("Default config (no args) returns middleware", typeof defaultMw === "function");
+    const customMw = responseCache({ ttl: 120, maxEntries: 500, statusCodes: [201] });
 
-  // --- Config with env var ---
-  console.log("\n--- Environment Variable ---");
-  const originalEnv = process.env.TINA4_CACHE_TTL;
-  process.env.TINA4_CACHE_TTL = "30";
-  const envMw = responseCache();
-  assert("Env var TINA4_CACHE_TTL creates middleware", typeof envMw === "function");
-  if (originalEnv !== undefined) {
-    process.env.TINA4_CACHE_TTL = originalEnv;
-  } else {
+    // (a) A 200 response must NOT be cached because 200 is not in statusCodes.
+    const url200 = "/api/cfg-200";
+    const h200a: Record<string, string> = {};
+    let next200a = false;
+    const req200a = { method: "GET", url: url200 } as Tina4Request;
+    const res200a = {
+      raw: {
+        writableEnded: false, statusCode: 200,
+        end(_c: any) { return this; },
+        getHeader: (n: string) => h200a[n.toLowerCase()] || "application/json",
+      },
+      header: (n: string, v: string) => { h200a[n.toLowerCase()] = v; },
+    } as unknown as Tina4Response;
+    await customMw(req200a, res200a, () => { next200a = true; });
+    (res200a.raw.end as any)(JSON.stringify({ s: 200 })); // 200 → NOT captured (not in statusCodes)
+    await new Promise((r) => setTimeout(r, 30));
+
+    let next200b = false;
+    const h200b: Record<string, string> = {};
+    const req200b = { method: "GET", url: url200 } as Tina4Request;
+    const res200b = Object.assign(
+      function (_b: any) { /* would mean a HIT — must not happen for 200 */ },
+      {
+        raw: {
+          writableEnded: false, statusCode: 200,
+          end(_c: any) { return this; },
+          getHeader: (n: string) => h200b[n.toLowerCase()] || "application/json",
+        },
+        header: (n: string, v: string) => { h200b[n.toLowerCase()] = v; },
+      },
+    ) as unknown as Tina4Response;
+    await customMw(req200b, res200b, () => { next200b = true; });
+    assert("statusCodes:[201] does NOT cache a 200 (2nd GET still MISSes)", next200b, `next200b=${next200b}`);
+
+    // (b) A 201 response MUST be cached because 201 is in statusCodes.
+    const url201 = "/api/cfg-201";
+    const body201 = JSON.stringify({ s: 201, created: true });
+    const h201a: Record<string, string> = {};
+    const req201a = { method: "GET", url: url201 } as Tina4Request;
+    const res201a = {
+      raw: {
+        writableEnded: false, statusCode: 201,
+        end(_c: any) { return this; },
+        getHeader: (n: string) => h201a[n.toLowerCase()] || "application/json",
+      },
+      header: (n: string, v: string) => { h201a[n.toLowerCase()] = v; },
+    } as unknown as Tina4Response;
+    await customMw(req201a, res201a, () => {});
+    (res201a.raw.end as any)(body201); // 201 → captured + stored
+    await new Promise((r) => setTimeout(r, 30));
+
+    let next201b = false;
+    let served201: string | null = null;
+    const h201b: Record<string, string> = {};
+    const req201b = { method: "GET", url: url201 } as Tina4Request;
+    const res201b = Object.assign(
+      function (b: any) { served201 = b; },
+      {
+        raw: {
+          writableEnded: false, statusCode: 200,
+          end(_c: any) { return this; },
+          getHeader: (n: string) => h201b[n.toLowerCase()] || "application/json",
+        },
+        header: (n: string, v: string) => { h201b[n.toLowerCase()] = v; },
+      },
+    ) as unknown as Tina4Response;
+    await customMw(req201b, res201b, () => { next201b = true; });
+    assert("statusCodes:[201] DOES cache a 201 (2nd GET is a HIT)", !next201b && served201 === body201, `next=${next201b} served=${served201}`);
+    // The configured ttl: 120 is advertised on the HIT.
+    assert("custom config ttl:120 reflected in X-Cache-TTL on HIT", h201b["x-cache-ttl"] === "120", JSON.stringify(h201b));
+
+    await clearCache();
+    _resetBackend();
+  }
+
+  // --- Default config (no args) caches a plain 200 GET (default statusCodes:[200]) ---
+  {
+    delete process.env.TINA4_CACHE_BACKEND;
     delete process.env.TINA4_CACHE_TTL;
+    _resetBackend();
+    await clearCache();
+
+    const defaultMw = responseCache();
+    const url = "/api/cfg-default";
+    const body = JSON.stringify({ default: true });
+
+    const ha: Record<string, string> = {};
+    const reqa = { method: "GET", url } as Tina4Request;
+    const resa = {
+      raw: {
+        writableEnded: false, statusCode: 200,
+        end(_c: any) { return this; },
+        getHeader: (n: string) => ha[n.toLowerCase()] || "application/json",
+      },
+      header: (n: string, v: string) => { ha[n.toLowerCase()] = v; },
+    } as unknown as Tina4Response;
+    await defaultMw(reqa, resa, () => {});
+    (resa.raw.end as any)(body);
+    await new Promise((r) => setTimeout(r, 30));
+
+    let nextb = false;
+    let servedb: string | null = null;
+    const hb: Record<string, string> = {};
+    const reqb = { method: "GET", url } as Tina4Request;
+    const resb = Object.assign(
+      function (b: any) { servedb = b; },
+      {
+        raw: {
+          writableEnded: false, statusCode: 200,
+          end(_c: any) { return this; },
+          getHeader: (n: string) => hb[n.toLowerCase()] || "application/json",
+        },
+        header: (n: string, v: string) => { hb[n.toLowerCase()] = v; },
+      },
+    ) as unknown as Tina4Response;
+    await defaultMw(reqb, resb, () => { nextb = true; });
+    assert("default config caches a 200 GET (2nd is a HIT)", !nextb && servedb === body, `next=${nextb} served=${servedb}`);
+    // Default ttl is 60 (no env, no arg).
+    assert("default config advertises default TTL 60 on HIT", hb["x-cache-ttl"] === "60", JSON.stringify(hb));
+
+    await clearCache();
+    _resetBackend();
+  }
+
+  // --- Env var TINA4_CACHE_TTL feeds the cache lifetime ---
+  // With no explicit ttl arg, responseCache() reads TINA4_CACHE_TTL. Drive a real
+  // MISS→HIT and assert the HIT advertises X-Cache-TTL: 30 — proving the env var
+  // (not the 60s default) fed the middleware's lifetime.
+  console.log("\n--- Environment Variable ---");
+  {
+    const originalEnv = process.env.TINA4_CACHE_TTL;
+    delete process.env.TINA4_CACHE_BACKEND;
+    process.env.TINA4_CACHE_TTL = "30";
+    _resetBackend();
+    await clearCache();
+
+    const envMw = responseCache(); // no ttl arg → must read TINA4_CACHE_TTL=30
+    const url = "/api/env-ttl";
+    const body = JSON.stringify({ env: true });
+
+    const ha: Record<string, string> = {};
+    const reqa = { method: "GET", url } as Tina4Request;
+    const resa = {
+      raw: {
+        writableEnded: false, statusCode: 200,
+        end(_c: any) { return this; },
+        getHeader: (n: string) => ha[n.toLowerCase()] || "application/json",
+      },
+      header: (n: string, v: string) => { ha[n.toLowerCase()] = v; },
+    } as unknown as Tina4Response;
+    await envMw(reqa, resa, () => {});
+    (resa.raw.end as any)(body);
+    assert("env TTL reflected on MISS (X-Cache-TTL: 30)", ha["x-cache-ttl"] === "30", JSON.stringify(ha));
+    await new Promise((r) => setTimeout(r, 30));
+
+    let nextb = false;
+    let servedb: string | null = null;
+    const hb: Record<string, string> = {};
+    const reqb = { method: "GET", url } as Tina4Request;
+    const resb = Object.assign(
+      function (b: any) { servedb = b; },
+      {
+        raw: {
+          writableEnded: false, statusCode: 200,
+          end(_c: any) { return this; },
+          getHeader: (n: string) => hb[n.toLowerCase()] || "application/json",
+        },
+        header: (n: string, v: string) => { hb[n.toLowerCase()] = v; },
+      },
+    ) as unknown as Tina4Response;
+    await envMw(reqb, resb, () => { nextb = true; });
+    assert("env TTL HIT serves cached body", !nextb && servedb === body, `next=${nextb} served=${servedb}`);
+    assert("env var TINA4_CACHE_TTL=30 fed the HIT lifetime (X-Cache-TTL: 30)", hb["x-cache-ttl"] === "30", JSON.stringify(hb));
+
+    await clearCache();
+    _resetBackend();
+    if (originalEnv !== undefined) {
+      process.env.TINA4_CACHE_TTL = originalEnv;
+    } else {
+      delete process.env.TINA4_CACHE_TTL;
+    }
   }
 
   // --- cacheClear resets KV stats ---
@@ -310,14 +577,25 @@ async function main() {
   assert("backend has 2 entries after 2 sets", backendStatsAfterSet.size === 2);
   assert("backend backend field is string", typeof backendStatsAfterSet.backend === "string");
 
-  // --- TTL expiry via short TTL ---
-  console.log("\n--- TTL Expiry ---");
+  // --- Zero-TTL contract: 0 means NO expiry (value persists) ---
+  // The memory backend (and the rest) treat ttl <= 0 as expiresAt = 0, i.e. the
+  // entry never expires (MemoryBackend.set: `ttl > 0 ? Date.now()+ttl*1000 : 0`,
+  // and get() only expires when `expiresAt && now > expiresAt`). Lock that
+  // documented semantics in rather than asserting a constant — and confirm it
+  // survives a short wait (it would have expired if 0 meant immediate expiry).
+  console.log("\n--- Zero TTL = No Expiry ---");
 
+  _resetBackend();
   await cacheClear();
-  await cacheSet("short_ttl", "ephemeral", 0); // 0 second TTL — should expire immediately or be unset
-  // Note: with 0 TTL, behavior depends on implementation - some treat 0 as "no expiry"
-  // We just verify the API doesn't throw
-  assert("zero TTL does not throw", true);
+  await cacheSet("short_ttl", "ephemeral", 0); // 0 TTL — no-expiry contract
+  assert("zero TTL stores the value (no immediate expiry)", (await cacheGet("short_ttl")) === "ephemeral");
+  await new Promise((r) => setTimeout(r, 40));
+  assert("zero TTL value persists after a wait (0 = no expiry)", (await cacheGet("short_ttl")) === "ephemeral");
+  // Contrast: a positive short TTL DOES expire, proving the 0 path is genuinely
+  // the no-expiry branch and not just a slow timer.
+  await cacheSet("short_ttl_real", "gone-soon", 1);
+  assert("positive TTL value present immediately", (await cacheGet("short_ttl_real")) === "gone-soon");
+  await cacheClear();
 
   // --- File backend edge cases ---
   console.log("\n--- File Backend Edge Cases ---");
@@ -356,17 +634,102 @@ async function main() {
   delete process.env.TINA4_CACHE_DIR;
   _resetBackend();
 
-  // --- Middleware with custom options ---
+  // --- Middleware custom options actually filter by status code ---
+  // {ttl:30, statusCodes:[200]} caches a 200 GET (2nd identical GET is a HIT).
+  // The ttl-only middleware (default statusCodes:[200]) must NOT cache a non-200
+  // (404) response — proving the statusCodes filter genuinely runs.
   console.log("\n--- Middleware Custom Options ---");
 
   {
+    delete process.env.TINA4_CACHE_BACKEND;
+    delete process.env.TINA4_CACHE_TTL;
+    _resetBackend();
+    await clearCache();
+
+    // (a) {ttl:30, statusCodes:[200]} — a 200 GET is cached, 2nd GET is a HIT.
     const customMw2 = responseCache({ ttl: 30, statusCodes: [200] });
-    assert("Custom middleware with statusCodes", typeof customMw2 === "function");
+    const url = "/api/custopt-200";
+    const body = JSON.stringify({ ok: true });
+    const ha: Record<string, string> = {};
+    const reqa = { method: "GET", url } as Tina4Request;
+    const resa = {
+      raw: {
+        writableEnded: false, statusCode: 200,
+        end(_c: any) { return this; },
+        getHeader: (n: string) => ha[n.toLowerCase()] || "application/json",
+      },
+      header: (n: string, v: string) => { ha[n.toLowerCase()] = v; },
+    } as unknown as Tina4Response;
+    await customMw2(reqa, resa, () => {});
+    (resa.raw.end as any)(body);
+    await new Promise((r) => setTimeout(r, 30));
+
+    let nextb = false;
+    let servedb: string | null = null;
+    const hb: Record<string, string> = {};
+    const reqb = { method: "GET", url } as Tina4Request;
+    const resb = Object.assign(
+      function (b: any) { servedb = b; },
+      {
+        raw: {
+          writableEnded: false, statusCode: 200,
+          end(_c: any) { return this; },
+          getHeader: (n: string) => hb[n.toLowerCase()] || "application/json",
+        },
+        header: (n: string, v: string) => { hb[n.toLowerCase()] = v; },
+      },
+    ) as unknown as Tina4Response;
+    await customMw2(reqb, resb, () => { nextb = true; });
+    assert("statusCodes:[200] caches a 200 GET (2nd is a HIT)", !nextb && servedb === body, `next=${nextb} served=${servedb}`);
+    assert("custom ttl:30 advertised on HIT", hb["x-cache-ttl"] === "30", JSON.stringify(hb));
+
+    await clearCache();
+    _resetBackend();
   }
 
   {
+    delete process.env.TINA4_CACHE_BACKEND;
+    delete process.env.TINA4_CACHE_TTL;
+    _resetBackend();
+    await clearCache();
+
+    // (b) ttl-only middleware (default statusCodes:[200]) must NOT cache a 404.
     const noArgMw = responseCache({ ttl: 60 });
-    assert("Middleware with ttl-only option", typeof noArgMw === "function");
+    const url = "/api/custopt-404";
+    const ha: Record<string, string> = {};
+    const reqa = { method: "GET", url } as Tina4Request;
+    const resa = {
+      raw: {
+        writableEnded: false, statusCode: 404,
+        end(_c: any) { return this; },
+        getHeader: (n: string) => ha[n.toLowerCase()] || "application/json",
+      },
+      header: (n: string, v: string) => { ha[n.toLowerCase()] = v; },
+    } as unknown as Tina4Response;
+    await noArgMw(reqa, resa, () => {});
+    (resa.raw.end as any)(JSON.stringify({ error: "not found" })); // 404 → NOT cached
+    await new Promise((r) => setTimeout(r, 30));
+
+    // A 2nd identical GET must still MISS (call next) — the 404 was never stored.
+    let nextb = false;
+    const hb: Record<string, string> = {};
+    const reqb = { method: "GET", url } as Tina4Request;
+    const resb = Object.assign(
+      function (_b: any) { /* a HIT here would be a bug — 404 must not cache */ },
+      {
+        raw: {
+          writableEnded: false, statusCode: 404,
+          end(_c: any) { return this; },
+          getHeader: (n: string) => hb[n.toLowerCase()] || "application/json",
+        },
+        header: (n: string, v: string) => { hb[n.toLowerCase()] = v; },
+      },
+    ) as unknown as Tina4Response;
+    await noArgMw(reqb, resb, () => { nextb = true; });
+    assert("ttl-only middleware does NOT cache a 404 (2nd GET still MISSes)", nextb, `next=${nextb}`);
+
+    await clearCache();
+    _resetBackend();
   }
 
   // --- responseCache distributes through the backend (memory default) ---

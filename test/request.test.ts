@@ -54,7 +54,15 @@ console.log("=== Request Parsing Tests ===\n");
 
 // --- Exports ---
 console.log("--- Exports ---");
-assert("createRequest is a function", typeof createRequest === "function");
+// Behavioural guard: exercise createRequest end-to-end rather than asserting it
+// merely exists. A wrapped request must carry the parsed query and the original
+// HTTP method through unchanged.
+const exportReq = createRequest(fakeIncoming("/api/x?n=1"));
+assert(
+  "createRequest wraps an IncomingMessage into a usable Tina4Request",
+  exportReq.query.n === "1" && exportReq.method === "GET",
+  `query.n=${exportReq.query.n} method=${exportReq.method}`,
+);
 // parseBody is now an instance method on Tina4Request (req.parseBody())
 
 // --- createRequest basic ---

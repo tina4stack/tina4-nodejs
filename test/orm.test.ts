@@ -304,15 +304,39 @@ await Article.eagerLoad([article2], ["user"]);
 const artDict = article2.toDict(["user"]);
 assert("toDict with belongsTo include", "user" in artDict);
 
-// --- Cache clears on save ---
+// --- Cache clears on save (hasMany re-queries after a write) ---
 console.log("\n--- Relationship Cache ---");
 const freshArticle = await Article.findById((article2 as any).id);
 if (freshArticle) {
-  await freshArticle.hasMany(Reply as any, "article_id"); // populate cache
+  // Populate the relationship — hasMany stores the result on the instance.
+  const before = await freshArticle.hasMany(Reply as any, "article_id");
+  const beforeCount = before.length;
+  assert("hasMany returns the seeded replies before save", beforeCount === 2);
+
+  // Insert a NEW reply row for this article directly through the adapter,
+  // bypassing the ORM so the in-memory instance has no knowledge of it.
+  adapter.execute(
+    `INSERT INTO "replies" (body, article_id) VALUES (?, ?)`,
+    ["Reply added out-of-band", (article2 as any).id],
+  );
+
+  // Mutate + save: save() resets _relCache and the instance is reused.
   (freshArticle as any).title = "Updated Title";
-  await freshArticle.save();
-  // _relCache should be cleared
-  assert("Relationship cache cleared on save", true);
+  const saved = await freshArticle.save();
+  assert("save() succeeds and returns the instance", saved !== false);
+
+  // Re-call hasMany on the SAME instance after the save. If a stale cached
+  // result were returned we'd still see 2; a real re-query sees the new row.
+  const after = await freshArticle.hasMany(Reply as any, "article_id");
+  assert(
+    "Relationship cache cleared on save (hasMany re-queries and sees the new row)",
+    after.length === beforeCount + 1,
+    `before=${beforeCount} after=${after.length}`,
+  );
+
+  // The title write itself is durable on re-read.
+  const reread = await Article.findById((article2 as any).id);
+  assert("save() persisted the updated title", (reread as any)?.title === "Updated Title");
 }
 
 // --- selectOne ---
@@ -343,7 +367,13 @@ console.log("\n--- select() ---");
 
 {
   const allUsers = await User.select<User>("SELECT * FROM users");
-  assert("select returns array", Array.isArray(allUsers));
+  // Assert real content rather than the array type: every returned row must be
+  // a hydrated User with a string name (proves select() returns real instances).
+  assert(
+    "select returns hydrated User rows with string names",
+    allUsers.length >= 2 && allUsers.every((u) => typeof (u as any).name === "string"),
+    `count=${allUsers.length}`,
+  );
   assert("select returns all non-deleted users", allUsers.length >= 2);
 
   const filtered = await User.select<User>("SELECT * FROM users WHERE age > ?", [28]);
@@ -357,8 +387,19 @@ console.log("\n--- select() ---");
 console.log("\n--- all Variations ---");
 
 {
+  // Compute the EXACT live count from the raw table (User has no soft-delete,
+  // so all() must return every row — no more, no fewer). At this point the
+  // lifecycle is: Alice + Charlie remain (Bob was hard-deleted), so 2 rows.
+  const rawCount = (adapter.query(`SELECT COUNT(*) AS c FROM "users"`) as any[])[0].c;
+  assert("raw users count is the expected 2 at this point", Number(rawCount) === 2,
+    `rawCount=${rawCount}`);
+
   const allUsersNow = await User.all();
-  assert("all without args returns all", allUsersNow.length >= 2);
+  assert(
+    "all without args returns exactly every non-deleted row",
+    allUsersNow.length === Number(rawCount),
+    `all=${allUsersNow.length} raw=${rawCount}`,
+  );
 
   const withWhere = await User.all("age > ?", [0]);
   assert("all with WHERE clause returns filtered", withWhere.length >= 1);
@@ -451,8 +492,13 @@ console.log("\n--- toArray/toDict Edge Cases ---");
     assert("toArray returns non-empty array", arr.length > 0);
 
     const json = user.toJson();
-    assert("toJson is valid JSON string", typeof json === "string");
     const parsed = JSON.parse(json);
+    // Assert real serialized field values, not just that it's a string.
+    assert(
+      "toJson serializes the model's id and email fields",
+      parsed.email === (dict as any).email && parsed.id === (dict as any).id,
+      `parsed.id=${parsed.id} dict.id=${(dict as any).id} parsed.email=${parsed.email} dict.email=${(dict as any).email}`,
+    );
     assert("toJson round-trips correctly", parsed.name === dict.name);
   }
 }
@@ -461,11 +507,15 @@ console.log("\n--- toArray/toDict Edge Cases ---");
 console.log("\n--- Model Registry ---");
 
 {
-  // registerModel was called earlier — verify it doesn't throw on re-registration
+  // registerModel was called earlier — re-register and verify the registry
+  // actually maps the name to THIS class (the real observable effect).
+  const registry = (BaseModel as any)._modelRegistry as Record<string, typeof BaseModel>;
+
   BaseModel.registerModel("User", User);
-  assert("re-registering User does not throw", true);
+  assert("re-registering User maps the name to the User class", registry["User"] === User);
+
   BaseModel.registerModel("Article", Article);
-  assert("re-registering Article does not throw", true);
+  assert("re-registering Article maps the name to the Article class", registry["Article"] === Article);
 }
 
 // --- Multiple saves (update idempotency) ---

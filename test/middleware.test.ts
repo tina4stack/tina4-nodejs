@@ -70,19 +70,64 @@ function mockRes(): Tina4Response & { _headers: Record<string, string>; _status:
 
 console.log("=== Middleware Chain Tests ===\n");
 
-// --- Exports exist ---
+// --- Exports behave (constructed/invoked for real, not just typeof) ---
 console.log("--- Exports ---");
-assert("MiddlewareChain is a constructor", typeof MiddlewareChain === "function");
-assert("cors is a function", typeof cors === "function");
-assert("requestLogger is a function", typeof requestLogger === "function");
+
+// MiddlewareChain actually constructs and runs a registered middleware.
+{
+  const probe = new MiddlewareChain();
+  let ran = false;
+  probe.use((_req, _res, next) => { ran = true; next(); });
+  const completed = await probe.run(mockReq(), mockRes());
+  assert("MiddlewareChain constructs and runs its middleware", ran === true && completed === true);
+}
+
+// cors() actually produces headers on a request (real side effect, not typeof).
+{
+  const probeRes = mockRes();
+  let probeNext = false;
+  cors()(mockReq({ headers: { origin: "http://probe.test" } } as any), probeRes, () => { probeNext = true; });
+  assert(
+    "cors() produces a working middleware (sets Allow-Origin and calls next)",
+    probeRes._headers["access-control-allow-origin"] === "*" && probeNext === true,
+  );
+}
+
+// requestLogger() actually emits a line on response finish (real side effect).
+{
+  const { EventEmitter } = await import("node:events");
+  const raw: any = new EventEmitter();
+  raw.statusCode = 200;
+  const savedDebug = process.env.TINA4_DEBUG;
+  process.env.TINA4_DEBUG = "true";
+  let captured = "";
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { captured += a.join(" ") + "\n"; };
+  try {
+    requestLogger()({ method: "GET", url: "/probe" } as any, { raw } as any, () => {});
+    raw.emit("finish");
+  } finally {
+    console.log = orig;
+    if (savedDebug === undefined) delete process.env.TINA4_DEBUG;
+    else process.env.TINA4_DEBUG = savedDebug;
+  }
+  assert("requestLogger() emits a request line on finish", captured.includes("GET /probe -> 200 ("));
+}
 
 // --- MiddlewareChain basic ---
 console.log("\n--- MiddlewareChain Basic ---");
 
 const chain = new MiddlewareChain();
-assert("MiddlewareChain can be instantiated", chain !== null);
-assert("chain.use is a function", typeof chain.use === "function");
-assert("chain.run is a function", typeof chain.run === "function");
+
+// chain.use() registers and chain.run() executes it — exercise both for real.
+{
+  const useChain = new MiddlewareChain();
+  const seen: string[] = [];
+  useChain.use((_req, _res, next) => { seen.push("registered-mw"); next(); });
+  const ok = await useChain.run(mockReq(), mockRes());
+  assert("chain.use registers a middleware that chain.run executes", seen.includes("registered-mw"));
+  assert("chain.run returns true when the chain completes", ok === true);
+}
 
 // --- Empty chain runs and returns true ---
 console.log("\n--- Empty Chain ---");
@@ -167,13 +212,14 @@ assert("Only first middleware ran", endLogs.length === 1 && endLogs[0] === "befo
 console.log("\n--- CORS Middleware ---");
 
 const corsMw = cors();
-assert("cors() returns a middleware function", typeof corsMw === "function");
 
-// CORS with wildcard origin
+// CORS with wildcard origin — exercises corsMw and asserts the real headers it sets.
 const corsReq = mockReq({ headers: { origin: "http://example.com" } } as any);
 const corsRes = mockRes();
 let corsNextCalled = false;
 corsMw(corsReq, corsRes, () => { corsNextCalled = true; });
+assert("cors() middleware calls next() and sets the default Allow-Methods on a non-OPTIONS request",
+  corsNextCalled === true && corsRes._headers["access-control-allow-methods"] === "GET, POST, PUT, DELETE, PATCH, OPTIONS");
 assert("CORS next() called for non-OPTIONS", corsNextCalled);
 assert("CORS sets Access-Control-Allow-Origin", corsRes._headers["access-control-allow-origin"] === "*");
 
@@ -210,14 +256,74 @@ const customCors = cors({
   headers: ["X-Custom"],
   maxAge: 3600,
 });
-assert("Custom CORS config returns middleware", typeof customCors === "function");
+// Invoke the custom-config middleware on a real OPTIONS preflight and assert the
+// custom methods/headers/maxAge it actually emits (not just that it's a function).
+const customOptionsReq = mockReq({ method: "OPTIONS", headers: { origin: "http://anything.test" } } as any);
+const customOptionsRes = mockRes();
+let customOptionsNext = false;
+customCors(customOptionsReq, customOptionsRes, () => { customOptionsNext = true; });
+assert("Custom CORS sets Access-Control-Allow-Methods: GET, POST",
+  customOptionsRes._headers["access-control-allow-methods"] === "GET, POST",
+  `methods=${customOptionsRes._headers["access-control-allow-methods"]}`);
+assert("Custom CORS sets Access-Control-Allow-Headers: X-Custom",
+  customOptionsRes._headers["access-control-allow-headers"] === "X-Custom",
+  `headers=${customOptionsRes._headers["access-control-allow-headers"]}`);
+assert("Custom CORS sets Access-Control-Max-Age: 3600",
+  customOptionsRes._headers["access-control-max-age"] === "3600",
+  `maxAge=${customOptionsRes._headers["access-control-max-age"]}`);
+assert("Custom CORS preflight ends the response (does not call next)", customOptionsNext === false);
 
 // --- requestLogger ---
 console.log("\n--- Request Logger ---");
 
-const loggerMw = requestLogger();
-assert("requestLogger returns a middleware", typeof loggerMw === "function");
-assert("Logger middleware has 3 params", loggerMw.length === 3);
+{
+  const { EventEmitter } = await import("node:events");
+  const savedDebug = process.env.TINA4_DEBUG;
+  process.env.TINA4_DEBUG = "true";
+
+  // (was "requestLogger returns a middleware") The middleware calls next() and
+  // does NOT log until the response 'finish' fires — logging is deferred to the
+  // finish event, not emitted at invocation time.
+  const raw: any = new EventEmitter();
+  raw.statusCode = 200;
+  let captured = "";
+  let nextCalled = false;
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { captured += a.join(" ") + "\n"; };
+  try {
+    requestLogger()({ method: "GET", url: "/widgets" } as any, { raw } as any, () => { nextCalled = true; });
+    const beforeFinish = captured;
+    raw.emit("finish");
+    console.log = orig;
+    assert("requestLogger calls next() and logs nothing before 'finish' fires",
+      nextCalled === true && beforeFinish === "");
+    assert("requestLogger logs once the response finishes", captured.includes("GET /widgets -> 200 ("));
+  } finally {
+    console.log = orig;
+    if (savedDebug === undefined) delete process.env.TINA4_DEBUG;
+    else process.env.TINA4_DEBUG = savedDebug;
+  }
+
+  // (was "Logger middleware has 3 params") Exercise a real non-200 status and
+  // assert the logged line reflects the actual response status code + method/url.
+  process.env.TINA4_DEBUG = "true";
+  const raw404: any = new EventEmitter();
+  raw404.statusCode = 404;
+  let captured404 = "";
+  const orig2 = console.log;
+  console.log = (...a: unknown[]) => { captured404 += a.join(" ") + "\n"; };
+  try {
+    requestLogger()({ method: "POST", url: "/missing" } as any, { raw: raw404 } as any, () => {});
+    raw404.emit("finish");
+  } finally {
+    console.log = orig2;
+    if (savedDebug === undefined) delete process.env.TINA4_DEBUG;
+    else process.env.TINA4_DEBUG = savedDebug;
+  }
+  assert("requestLogger reports the real method/url/status (POST /missing -> 404)",
+    captured404.includes("POST /missing -> 404 ("),
+    `line=${captured404.trim()}`);
+}
 
 // --- requestLogger behaviour (v3.13.14) ---
 // On by default in dev, gated by TINA4_LOG_REQUESTS, routed through Tina4

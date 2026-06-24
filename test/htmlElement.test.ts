@@ -123,11 +123,13 @@ console.log("\n--- Helper functions ---");
   const h: Record<string, any> = {};
   addHtmlHelpers(h);
 
-  assert("_div exists", typeof h._div === "function");
-  assert("_p exists", typeof h._p === "function");
-  assert("_span exists", typeof h._span === "function");
-  assert("_a exists", typeof h._a === "function");
-  assert("_br exists", typeof h._br === "function");
+  // Exercise each injected helper and assert the rendered markup (not just typeof).
+  assertEqual("_div renders", h._div({ id: "x" }, "hi").toString(), '<div id="x">hi</div>');
+  assertEqual("_p renders", h._p("para").toString(), "<p>para</p>");
+  assertEqual("_span renders", h._span({ class: "tag" }, "x").toString(), '<span class="tag">x</span>');
+  assertEqual("_a renders", h._a({ href: "/p" }, "link").toString(), '<a href="/p">link</a>');
+  // _br is a void tag — renders with no closing tag.
+  assertEqual("_br renders void", h._br().toString(), "<br>");
 
   assertEqual(
     "helper creates element",
@@ -185,6 +187,21 @@ console.log("\n--- XSS escaping + Raw opt-in ---");
 }
 
 {
+  // SafeString is the unescaping marker, not merely the same object as Raw.
+  // Prove it renders trusted markup verbatim in a child slot...
+  assertEqual(
+    "SafeString renders unescaped like Raw",
+    new HtmlElement("div", {}, [new SafeString("<b>z</b>")]).toString(),
+    "<div><b>z</b></div>",
+  );
+  // ...while a plain string in the SAME slot is escaped — confirming SafeString
+  // is what disables escaping, not the default behaviour.
+  assertEqual(
+    "plain string in same slot is escaped",
+    new HtmlElement("div", {}, ["<b>z</b>"]).toString(),
+    "<div>&lt;b&gt;z&lt;/b&gt;</div>",
+  );
+  // And it is the literal same constructor as Raw (the alias is real).
   assert("SafeString === Raw", (SafeString as unknown) === (Raw as unknown));
 }
 

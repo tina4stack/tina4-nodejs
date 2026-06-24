@@ -49,6 +49,25 @@ const registered = getAdapter();
 const unwrapped = registered instanceof CachedDatabaseAdapter ? registered.getAdapter() : registered;
 assert("SQLiteAdapter registered as default (cache-wrapped)", unwrapped === sqlite);
 
+// Beyond identity: prove the REGISTERED adapter (the cache wrapper returned by
+// getAdapter()) is the real I/O path, not just === the raw instance. Create a
+// table on the raw adapter, then round-trip a row entirely through getAdapter():
+// insert via the wrapper, read it back via the wrapper, and confirm the bytes
+// landed in the underlying SQLite file (visible to the raw adapter too).
+sqlite.createTable("driver_reg", {
+  id: { type: "integer", primaryKey: true, autoIncrement: true },
+  name: { type: "string", required: true },
+});
+const regAdapter = getAdapter();
+const regInsert = regAdapter.insert("driver_reg", { name: "Reg" });
+assert("Registered adapter insert succeeds via getAdapter()", regInsert.success);
+const regRow = regAdapter.fetchOne("SELECT name FROM driver_reg WHERE name = ?", ["Reg"]) as { name: string } | null;
+assert("Registered adapter row round-trips through wrapper", regRow !== null && regRow.name === "Reg");
+// The write must be visible on the underlying raw adapter — proving the wrapper
+// delegated real I/O to the registered SQLiteAdapter, not a detached cache.
+const rawRow = sqlite.fetchOne("SELECT name FROM driver_reg WHERE name = ?", ["Reg"]) as { name: string } | null;
+assert("Wrapper write is visible on the underlying registered adapter", rawRow !== null && rawRow.name === "Reg");
+
 // Test the expanded interface methods on SQLite
 sqlite.createTable("driver_test", {
   id: { type: "integer", primaryKey: true, autoIncrement: true },
@@ -231,10 +250,19 @@ assert("MySQL ILIKE to LIKE",
 
 console.log("\n--- SQL Translation: PostgreSQL ---");
 
-assert("PostgreSQL placeholder $N",
-  SQLTranslator.placeholderStyle("SELECT * FROM t WHERE id = ? AND name = ?", "$") ===
-  "SELECT * FROM t WHERE id = ? AND name = ?" // PostgreSQL adapter handles this internally
-  || true, // placeholder_style uses : not $ — pg adapter converts ? to $N directly
+// placeholderStyle converts ? to the engine's positional style. Exercise the
+// two documented conversions for real (no `|| true` escape hatch):
+//   ":" → :1, :2, ... (Oracle/Firebird, 1-based and incrementing per ?)
+//   "%s" → %s         (MySQL/PostgreSQL driver style)
+assert("placeholderStyle ? → :N (numbered, incrementing)",
+  SQLTranslator.placeholderStyle("SELECT * FROM t WHERE id = ? AND name = ?", ":") ===
+  "SELECT * FROM t WHERE id = :1 AND name = :2",
+  `got ${JSON.stringify(SQLTranslator.placeholderStyle("SELECT * FROM t WHERE id = ? AND name = ?", ":"))}`,
+);
+
+assert("placeholderStyle ? → %s (driver style)",
+  SQLTranslator.placeholderStyle("a = ?", "%s") === "a = %s",
+  `got ${JSON.stringify(SQLTranslator.placeholderStyle("a = ?", "%s"))}`,
 );
 
 console.log("\n--- SQL Translation: Auto-increment DDL ---");

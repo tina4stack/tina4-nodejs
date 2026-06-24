@@ -2,7 +2,7 @@
  * Unit tests for the Migration class (OOP wrapper around migration functions).
  * Run with: npx tsx test/migrationClass.test.ts
  */
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -51,10 +51,24 @@ function writeMigration(dir: string, name: string, upSql: string, downSql = "") 
 
 console.log("=== Migration Class Tests ===\n");
 
-// -- Instantiation -----------------------------------------------------------
+// -- Instantiation: instance is wired to the real adapter + directory ---------
 {
-  const { base, m } = makeEnv();
-  assert("Migration class instantiates", m instanceof Migration);
+  const { base, migrationsDir, db, m } = makeEnv();
+  // A bare `instanceof` check proves nothing about wiring. Instead, write a real
+  // migration file and prove the constructed instance runs it against the adapter
+  // and directory it was given: the file is applied AND its CREATE TABLE side
+  // effect is observable on the same db handle.
+  writeMigration(
+    migrationsDir,
+    "000001_create_widgets.sql",
+    "CREATE TABLE widgets (id INTEGER PRIMARY KEY, label TEXT);",
+    "DROP TABLE widgets;",
+  );
+  const res = await m.migrate();
+  assert(
+    "Migration instance is wired to its adapter + dir (applies real file)",
+    res.applied.includes("000001_create_widgets.sql") && (db as any).tableExists("widgets"),
+  );
   teardown(base);
 }
 
@@ -62,7 +76,13 @@ console.log("=== Migration Class Tests ===\n");
 {
   const { base, m } = makeEnv();
   const result = await m.migrate();
-  assert("migrate() returns MigrationResult", typeof result === "object" && "applied" in result);
+  // Full MigrationResult shape with real values on an empty dir: every bucket is
+  // an actual empty array, not merely a key that happens to be present.
+  assert(
+    "migrate() returns full empty MigrationResult on empty dir",
+    Array.isArray(result.applied) && Array.isArray(result.skipped) && Array.isArray(result.failed) &&
+      result.applied.length === 0 && result.skipped.length === 0 && result.failed.length === 0,
+  );
   assert("migrate() applied is empty list on empty dir", result.applied.length === 0);
   teardown(base);
 }
@@ -97,9 +117,9 @@ console.log("=== Migration Class Tests ===\n");
   teardown(base);
 }
 
-// -- rollback() after migration ----------------------------------------------
+// -- rollback() runs the down SQL (real DROP side effect) --------------------
 {
-  const { base, migrationsDir, m } = makeEnv();
+  const { base, migrationsDir, db, m } = makeEnv();
   writeMigration(
     migrationsDir,
     "000001_create_users.sql",
@@ -107,31 +127,46 @@ console.log("=== Migration Class Tests ===\n");
     "DROP TABLE users;",
   );
   await m.migrate();
+  assert("rollback() precondition: users table created", (db as any).tableExists("users"));
   const rolled = await m.rollback();
-  assert("rollback() returns array", Array.isArray(rolled));
-  assert("rollback() rolled back migration", rolled.length >= 1);
+  // rollback() returns the tracked migration NAMES (the bookkeeping `name`, which
+  // is the filename with the .sql suffix stripped — see migrate()'s migrationId).
+  // Assert the real returned name AND that the down SQL's DROP actually executed.
+  assert(
+    "rollback() reports the rolled-back migration name",
+    rolled.includes("000001_create_users"),
+  );
+  assert("rollback() down SQL dropped the users table", !(db as any).tableExists("users"));
   teardown(base);
 }
 
 // -- rollback(steps=2) -------------------------------------------------------
 {
-  const { base, migrationsDir, m } = makeEnv();
+  const { base, migrationsDir, db, m } = makeEnv();
   writeMigration(
     migrationsDir,
     "000001_create_users.sql",
     "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);",
     "DROP TABLE users;",
   );
-  await m.migrate();
+  await m.migrate();   // batch 1: 000001
   writeMigration(
     migrationsDir,
     "000002_add_email.sql",
     "ALTER TABLE users ADD COLUMN email TEXT;",
-    "-- no-op",
+    "DROP TABLE users;",  // real down SQL so the rollback has an observable effect
   );
-  await m.migrate();
-  const rolled = await m.rollback(2);
-  assert("rollback(2) returns at least 1 item", rolled.length >= 1);
+  await m.migrate();   // batch 2: 000002
+  const rolled = await m.rollback(2);  // unwind both batches
+  // Assert the down SQL of both batches actually ran: nothing remains applied and
+  // the users table created by 000001 is gone (000002's DROP TABLE executed first,
+  // then 000001's record is removed) — not merely that the result has >= 1 entry.
+  assert(
+    "rollback(2) reports both rolled-back migration names",
+    rolled.includes("000002_add_email") && rolled.includes("000001_create_users"),
+  );
+  assert("rollback(2) leaves nothing applied", (await m.getApplied()).length === 0);
+  assert("rollback(2) down SQL dropped the users table", !(db as any).tableExists("users"));
   teardown(base);
 }
 
@@ -172,7 +207,12 @@ console.log("=== Migration Class Tests ===\n");
   );
   await m.migrate();
   const applied = await m.getApplied();
-  assert("getApplied() returns array", Array.isArray(applied));
+  // Exercise the tracking-table read-back: the single applied entry must name the
+  // migration we just ran (getApplied() reports completed filenames, .sql kept).
+  assert(
+    "getApplied() reports the applied migration by name",
+    applied.length === 1 && applied[0].includes("000001_create_users"),
+  );
   assert("getApplied() has 1 entry", applied.length === 1);
   teardown(base);
 }
@@ -186,7 +226,11 @@ console.log("=== Migration Class Tests ===\n");
     "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);",
   );
   const pending = await m.getPending();
-  assert("getPending() returns array", Array.isArray(pending));
+  // Confirm getPending() reports the actual un-applied file by name, not just any array.
+  assert(
+    "getPending() reports the un-applied file by name",
+    pending.includes("000001_create_users.sql"),
+  );
   assert("getPending() has 1 pending item", pending.length === 1);
   teardown(base);
 }
@@ -197,7 +241,8 @@ console.log("=== Migration Class Tests ===\n");
   writeMigration(migrationsDir, "000001_create_users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);");
   writeMigration(migrationsDir, "000002_add_email.sql", "ALTER TABLE users ADD COLUMN email TEXT;");
   const files = m.getFiles();
-  assert("getFiles() returns array", Array.isArray(files));
+  // Both written .sql up-migrations are discovered (the .down.sql siblings excluded).
+  assert("getFiles() discovers both written up-migrations", files.length === 2);
   assert("getFiles() includes up migrations", files.includes("000001_create_users.sql"));
   assert("getFiles() excludes .down.sql", files.every((f: string) => !f.endsWith(".down.sql")));
   assert("getFiles() is sorted", JSON.stringify(files) === JSON.stringify([...files].sort()));
@@ -207,8 +252,18 @@ console.log("=== Migration Class Tests ===\n");
 // -- create() scaffolds files ------------------------------------------------
 {
   const { base, migrationsDir, m } = makeEnv();
-  const result = await m.create("add products table");
-  assert("create() returns upPath and downPath", "upPath" in result && "downPath" in result);
+  const result = await m.create("add products table") as { upPath: string; downPath: string };
+  // Content check, not mere key-presence: the scaffolded up file carries the real
+  // migration template header, and the down path is a distinct .down.sql sibling.
+  const upContent = readFileSync(result.upPath, "utf-8");
+  assert(
+    "create() scaffolds an up file with the migration template header",
+    upContent.includes("-- Migration: add products table"),
+  );
+  assert(
+    "create() down path is a distinct .down.sql sibling",
+    result.downPath.endsWith(".down.sql") && result.downPath !== result.upPath,
+  );
   assert("create() up file exists", existsSync(result.upPath));
   assert("create() down file exists", existsSync(result.downPath));
   assert("create() filename contains description", result.upPath.includes("add_products_table"));

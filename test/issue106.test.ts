@@ -5,7 +5,7 @@
  * Run with: npx tsx test/issue106.test.ts
  */
 import { Router, RouteGroup } from "../packages/core/src/index.ts";
-import type { Tina4Request, Tina4Response } from "../packages/core/src/index.ts";
+import type { Tina4Request, Tina4Response, UploadedFile } from "../packages/core/src/index.ts";
 import { SQLiteAdapter } from "../packages/orm/src/adapters/sqlite.ts";
 import { DatabaseResult } from "../packages/orm/src/databaseResult.ts";
 import { FetchResult } from "../packages/orm/src/types.ts";
@@ -111,40 +111,48 @@ const multipartBody =
 
 const bodyBuffer = Buffer.from(multipartBody);
 
-// Build a mock IncomingMessage-like request object
-const mockReq = {
-  headers: { "content-type": contentType },
-  url: "/upload",
-  method: "POST",
-  params: {},
-  query: {},
-  body: undefined as unknown,
-  files: [] as unknown[],
-  ip: "127.0.0.1",
-} as unknown as Tina4Request;
-
-// parseBody reads from the stream, so test the parseMultipart function directly
+// parseBody reads from the stream, so test the parseMultipart function directly.
+// parseMultipart is a real export of packages/core/src/request.ts.
 const { parseMultipart } = await import("../packages/core/src/request.ts");
 
-// Only run if parseMultipart is exported
-if (typeof parseMultipart === "function") {
-  const { fields, files } = parseMultipart(bodyBuffer, boundary);
-  assert("Multipart fields extracted (title)", fields["title"] === "Hello World");
-  assert("Multipart files separated from body", Object.keys(files).length === 1);
-  const avatarFile = files["avatar"] as any;
-  assert(
-    "Uploaded file has correct filename",
-    avatarFile.filename === "photo.png",
-  );
-  assert(
-    "Uploaded file has correct field name",
-    avatarFile.fieldName === "avatar",
-  );
-} else {
-  // parseMultipart may not be exported; test via createRequest flow
-  console.log("  SKIP parseMultipart not exported — testing via type check");
-  assert("Tina4Request has files property", "files" in mockReq);
-}
+const { fields, files } = parseMultipart(bodyBuffer, boundary);
+assert("Multipart fields extracted (title)", fields["title"] === "Hello World");
+assert("Multipart files separated from body", Object.keys(files).length === 1);
+
+const avatarFile = files["avatar"] as UploadedFile;
+assert(
+  "Uploaded file has correct filename",
+  avatarFile.filename === "photo.png",
+);
+assert(
+  "Uploaded file has correct field name",
+  avatarFile.fieldName === "avatar",
+);
+
+// The whole point of parseMultipart is to carve the binary payload out of the
+// raw body — not just register the field key. Prove the actual bytes, MIME
+// type, and size are extracted (replaces the old dead-branch `"files" in mockReq`
+// existence smoke check). The part body was `<binary-data-here>`.
+const expectedBytes = Buffer.from("<binary-data-here>");
+assert(
+  "Uploaded file content is a Buffer",
+  Buffer.isBuffer(avatarFile.content),
+);
+assert(
+  "Uploaded file content bytes equal the part payload",
+  avatarFile.content.equals(expectedBytes),
+  `got ${JSON.stringify(avatarFile.content.toString("utf-8"))}`,
+);
+assert(
+  "Uploaded file MIME type is image/png",
+  avatarFile.type === "image/png",
+  `got ${avatarFile.type}`,
+);
+assert(
+  "Uploaded file size equals the payload byte length",
+  avatarFile.size === expectedBytes.length,
+  `got ${avatarFile.size}, expected ${expectedBytes.length}`,
+);
 
 // -------------------------------------------------------
 // 4. toPaginate() slices correctly

@@ -8,6 +8,9 @@
  */
 
 import { strict as assert } from "node:assert";
+import { mkdtempSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Api } from "@tina4/core";
 import { Database, initDatabase } from "@tina4/orm";
 
@@ -55,31 +58,59 @@ async function run(): Promise<void> {
   });
 
   // ─── Database.getConnection ─────────────────────────────────────
-  await it("Database.getConnection accepts explicit URL", async () => {
+  await it("Database.getConnection accepts explicit URL and returns a usable adapter", async () => {
     const db = await Database.getConnection("sqlite::memory:");
     assert.ok(db instanceof Database);
+    // Exercise the connection end to end: the returned object must be a real,
+    // queryable adapter, not just a constructed shell.
+    await db.execute("CREATE TABLE g (id INTEGER)");
+    await db.insert("g", { id: 7 });
+    const row = await db.fetchOne<{ id: number }>("SELECT id FROM g");
+    assert.equal(row?.id, 7);
+    db.close();
   });
 
-  await it("Database.getConnection falls back to in-memory SQLite when no URL", async () => {
+  await it("Database.getConnection falls back to a real in-memory SQLite when no URL", async () => {
     const prev = process.env.TINA4_DATABASE_URL;
     delete process.env.TINA4_DATABASE_URL;
     try {
       const db = await Database.getConnection();
       assert.ok(db instanceof Database);
+      // The fallback must be a real, working in-memory SQLite — write and read
+      // a row back through it, not merely assert the object exists.
+      await db.execute("CREATE TABLE f (n INTEGER)");
+      await db.insert("f", { n: 1 });
+      const row = await db.fetchOne<{ c: number }>("SELECT COUNT(*) AS c FROM f");
+      assert.equal(row?.c, 1);
+      db.close();
     } finally {
       if (prev !== undefined) process.env.TINA4_DATABASE_URL = prev;
     }
   });
 
-  await it("Database.getConnection reads TINA4_DATABASE_URL", async () => {
+  await it("Database.getConnection reads TINA4_DATABASE_URL and connects to the env-sourced file DB", async () => {
     const prev = process.env.TINA4_DATABASE_URL;
-    process.env.TINA4_DATABASE_URL = "sqlite::memory:";
+    const tmp = mkdtempSync(join(tmpdir(), "tina4-getconn-"));
+    const dbFile = join(tmp, "env.db");
+    // Point the env var at a real file URL — getConnection() with no arg must
+    // honour it (not fall back to the in-memory default).
+    process.env.TINA4_DATABASE_URL = `sqlite:///${dbFile}`;
     try {
       const db = await Database.getConnection();
       assert.ok(db instanceof Database);
+      await db.execute("CREATE TABLE e (id INTEGER, label TEXT)");
+      await db.insert("e", { id: 42, label: "from-env" });
+      const row = await db.fetchOne<{ id: number; label: string }>("SELECT id, label FROM e WHERE id = ?", [42]);
+      assert.equal(row?.id, 42);
+      assert.equal(row?.label, "from-env");
+      db.close();
+      // The env-sourced file URL drove a real file connection — the file exists
+      // on disk, proving the env var (not a default) was honoured.
+      assert.ok(existsSync(dbFile), `expected SQLite file at ${dbFile} to be created`);
     } finally {
       if (prev === undefined) delete process.env.TINA4_DATABASE_URL;
       else process.env.TINA4_DATABASE_URL = prev;
+      rmSync(tmp, { recursive: true, force: true });
     }
   });
 

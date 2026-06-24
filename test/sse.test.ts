@@ -322,11 +322,15 @@ console.log("\n--- Hardening: client disconnect mid-stream ---");
     }
   }
 
-  await (response as any).stream(infinite());
+  const result = await (response as any).stream(infinite());
 
   assert("disconnect: only the pre-disconnect chunk was written", chunks.length === 1 && chunks[0] === "data: 0\n\n");
   assert("disconnect: generator was closed (finally ran)", closed === true);
-  assert("disconnect: stream did not error out", true);
+  // Real post-conditions of the disconnect path (was a hardcoded `true`): after
+  // the socket died, the loop bailed, closed the source, and end()'d the stream
+  // (so `ended` flipped), then resolved with the response object — without throwing.
+  assert("disconnect: stream end() ran after the socket died", ended === true);
+  assert("disconnect: stream resolved with the response object (no rethrow)", result === response);
   delete process.env.TINA4_SSE_HEARTBEAT;
 }
 

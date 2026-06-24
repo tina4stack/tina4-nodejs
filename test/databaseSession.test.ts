@@ -8,6 +8,7 @@
 import {
   DatabaseSessionHandler,
 } from "../packages/core/src/index.ts";
+import type { SessionHandler } from "../packages/core/src/session.ts";
 import { join } from "node:path";
 import { rmSync, mkdirSync } from "node:fs";
 
@@ -36,7 +37,18 @@ console.log("--- Constructor ---");
 let handler: InstanceType<typeof DatabaseSessionHandler>;
 try {
   handler = new DatabaseSessionHandler({ dbPath: TEST_DB });
-  assert("DatabaseSessionHandler constructor works", handler !== null);
+  // Behavioural: a constructed handler is never null in JS, so prove the
+  // constructor actually opened/created the backing SQLite store and the
+  // table by exercising a real write/read round-trip through it.
+  const bootId = "boot-" + Date.now();
+  handler.write(bootId, { _created: Date.now(), _accessed: Date.now(), user: "x" }, 60);
+  const boot = handler.read(bootId);
+  assert(
+    "DatabaseSessionHandler constructor opens a usable backing store (write/read round-trip)",
+    boot !== null && (boot as any).user === "x",
+    `expected user "x", got ${JSON.stringify(boot)}`,
+  );
+  handler.destroy(bootId);
 } catch (err: any) {
   // If better-sqlite3 is not installed, skip gracefully
   if (err.message && err.message.includes("better-sqlite3")) {
@@ -50,20 +62,62 @@ try {
   throw err;
 }
 
-// --- Required methods ---
+// --- Required methods (proven by behaviour, not typeof) ---
 console.log("\n--- Required Methods ---");
 
-assert("DatabaseSessionHandler has read method", typeof handler.read === "function");
-assert("DatabaseSessionHandler has write method", typeof handler.write === "function");
-assert("DatabaseSessionHandler has destroy method", typeof handler.destroy === "function");
+// read: prove it returns the exact data a prior write stored.
+const readBehaveId = "read-behave-" + Date.now();
+handler.write(readBehaveId, { _created: Date.now(), _accessed: Date.now(), k: "v" }, 60);
+const readBehave = handler.read(readBehaveId);
+assert(
+  "read returns the value a prior write stored",
+  readBehave !== null && (readBehave as any).k === "v",
+  `expected k="v", got ${JSON.stringify(readBehave)}`,
+);
+handler.destroy(readBehaveId);
+
+// write: prove it PERSISTS to the DB FILE — open a SECOND handler on the same
+// dbPath and assert it can read the value the first handler wrote.
+const writePersistId = "write-persist-" + Date.now();
+handler.write(writePersistId, { _created: Date.now(), _accessed: Date.now(), n: 1 }, 60);
+const handler2 = new DatabaseSessionHandler({ dbPath: TEST_DB });
+const persisted = handler2.read(writePersistId);
+assert(
+  "write persists to the DB file (a second handler on the same dbPath reads it back)",
+  persisted !== null && (persisted as any).n === 1,
+  `expected n=1 via second handler, got ${JSON.stringify(persisted)}`,
+);
+handler.destroy(writePersistId);
+
+// destroy: prove the side effect — written session is readable, then gone after destroy.
+const destroyBehaveId = "destroy-behave-" + Date.now();
+handler.write(destroyBehaveId, { _created: Date.now(), _accessed: Date.now(), x: 1 }, 60);
+const beforeDestroy = handler.read(destroyBehaveId);
+handler.destroy(destroyBehaveId);
+const afterDestroy = handler.read(destroyBehaveId);
+assert(
+  "destroy removes a previously-written session (read non-null before, null after)",
+  beforeDestroy !== null && afterDestroy === null,
+  `before=${JSON.stringify(beforeDestroy)} after=${JSON.stringify(afterDestroy)}`,
+);
 
 // --- Interface parity with SessionHandler ---
 console.log("\n--- Interface Parity ---");
 
-const requiredMethods = ["read", "write", "destroy"];
+// Prove parity by BEHAVIOUR, not by reflecting on method names: drive a full
+// session lifecycle through a variable typed as the SessionHandler interface
+// (write -> read -> destroy -> read===null). If any interface method were
+// missing or non-conforming, this would not compile / would not round-trip.
+const iface: SessionHandler = handler;
+const parityId = "iface-parity-" + Date.now();
+iface.write(parityId, { _created: Date.now(), _accessed: Date.now(), claim: "ok" }, 60);
+const parityRead = iface.read(parityId);
+iface.destroy(parityId);
+const parityGone = iface.read(parityId);
 assert(
-  "DatabaseSessionHandler has all SessionHandler methods",
-  requiredMethods.every((m) => typeof (handler as any)[m] === "function"),
+  "SessionHandler interface lifecycle works via the interface type (write/read/destroy)",
+  parityRead !== null && (parityRead as any).claim === "ok" && parityGone === null,
+  `read=${JSON.stringify(parityRead)} afterDestroy=${JSON.stringify(parityGone)}`,
 );
 
 // --- Read non-existent session ---
