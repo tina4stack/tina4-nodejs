@@ -428,7 +428,8 @@ export async function removeMigrationRecord(name: string): Promise<void> {
  * @param migrationsDir - Directory containing migration files (default: "migrations")
  * @param delimiter - SQL statement delimiter (default: ";")
  * @returns Array of the down-migration files that were run, e.g.
- *   "000001_create_users.down.sql".
+ *   "000001_create_users.down.sql". (The legacy down-FUNCTION Map API returns the
+ *   bare migration name instead, since no .down.sql file is involved there.)
  *
  * NOTE on return form (intentional, cross-framework): migration return values reflect
  * WHAT each method acted on, so the forms differ by method and that is by design (not
@@ -453,8 +454,9 @@ export async function rollback(
         await down();
       }
       await removeMigrationRecord(migration.name);
-      // Return the down-migration identifier (what rollback ran), matching Python.
-      rolledBack.push(`${migration.name}.down.sql`);
+      // Legacy down-FUNCTION API: no .down.sql file is involved here, so return the
+      // bare migration name (the file-based path below returns "name.down.sql").
+      rolledBack.push(migration.name);
     }
     return rolledBack;
   }

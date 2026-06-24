@@ -53,6 +53,9 @@ export default async function(req: any, res: any) {
 writeFileSync(join(TEST_DIR, "src/models/User.ts"), `
 export default class User {
   static tableName = "users";
+  // Opt into auto-CRUD route generation (the documented opt-in gate; default false).
+  // This integration test exercises the generated /api/users CRUD endpoints.
+  static autoCrud = true;
   static fields = {
     id: { type: "integer" as const, primaryKey: true, autoIncrement: true },
     name: { type: "string" as const, required: true, maxLength: 100 },
