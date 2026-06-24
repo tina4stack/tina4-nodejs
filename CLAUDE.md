@@ -1,4 +1,4 @@
-# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.45)
+# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.46)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
