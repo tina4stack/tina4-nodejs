@@ -17,7 +17,21 @@
  *   TINA4_SESSION_REDIS_DB       (default: 0)
  */
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import type { SessionHandler } from "../session.js";
+import { respCommandSync } from "./respClient.js";
+
+// Resolve packages relative to this module so the optional `redis` driver is
+// detected exactly as a consumer would resolve it (createRequire works in ESM).
+const moduleRequire = createRequire(import.meta.url);
+function redisDriverAvailable(): boolean {
+  try {
+    moduleRequire.resolve("redis");
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface SessionData {
   _created: number;
@@ -83,125 +97,72 @@ export class RedisNpmSessionHandler implements SessionHandler {
         : 0);
   }
 
+  /** Resolve a host/port for the raw-RESP path (parses TINA4_SESSION_REDIS_URL if set). */
+  private resolveHostPort(): { host: string; port: number } {
+    if (this.url) {
+      try {
+        const u = new URL(this.url);
+        return { host: u.hostname || "127.0.0.1", port: parseInt(u.port, 10) || 6379 };
+      } catch {
+        return { host: this.host, port: this.port };
+      }
+    }
+    return { host: this.host, port: this.port };
+  }
+
   /**
-   * Execute a Redis command synchronously via a short-lived child process.
+   * Execute a Redis command synchronously.
    *
-   * Attempts to use the `redis` npm package first. If unavailable, falls
-   * back to raw TCP (RESP protocol) — same as valkeyHandler.ts.
+   * Prefers the official `redis` driver when it is installed (the class's reason
+   * to exist); otherwise speaks raw RESP via the shared {@link respCommandSync}
+   * transport — same correct path as the Valkey handler, no `redis` dependency.
    *
-   * Returns the command result string. A genuine key miss yields `""`. A
-   * transport/connection FAILURE (server unreachable, AUTH error, timeout)
-   * THROWS so the Session boundary can distinguish "not found" (silent) from
-   * "backend failed" (log-loud + degrade). Backend-failure policy parity.
+   * A genuine key miss yields `""`; a transport/connection FAILURE (server
+   * unreachable, rejected AUTH, timeout) THROWS so the Session boundary can
+   * distinguish "not found" (silent) from "backend failed" (log-loud + degrade).
    */
   private execSync(args: string[]): string {
+    if (redisDriverAvailable()) {
+      return this.execViaNpm(args);
+    }
+    const { host, port } = this.resolveHostPort();
+    return respCommandSync({ host, port, password: this.password, db: this.db }, args, "Redis");
+  }
+
+  /** Drive the command through the `redis` npm client in a short-lived child. */
+  private execViaNpm(args: string[]): string {
     const script = `
-      const net = require("node:net");
-      const host = ${JSON.stringify(this.url || this.host)};
+      const useUrl = ${JSON.stringify(!!this.url)};
+      const url = ${JSON.stringify(this.url)};
+      const host = ${JSON.stringify(this.host)};
       const port = ${this.port};
       const password = ${JSON.stringify(this.password)};
       const db = ${this.db};
-      const useUrl = ${JSON.stringify(!!this.url)};
-      const url = ${JSON.stringify(this.url)};
       const args = ${JSON.stringify(args)};
-
-      // Try the redis npm package first
-      let redisAvailable = false;
-      try {
-        require.resolve("redis");
-        redisAvailable = true;
-      } catch {}
-
-      if (redisAvailable) {
-        const redis = require("redis");
-        (async () => {
-          try {
-            const clientOpts = useUrl
-              ? { url }
-              : { socket: { host, port }, password: password || undefined, database: db };
-            const client = redis.createClient(clientOpts);
-            client.on("error", () => {});
-            await client.connect();
-
-            const cmd = args[0].toUpperCase();
-            let result;
-            if (cmd === "GET") {
-              result = await client.get(args[1]);
-            } else if (cmd === "SET") {
-              result = await client.set(args[1], args[2]);
-            } else if (cmd === "SETEX") {
-              result = await client.setEx(args[1], parseInt(args[2], 10), args[3]);
-            } else if (cmd === "DEL") {
-              result = await client.del(args[1]);
-            }
-            await client.quit();
-
-            if (result === null || result === undefined) {
-              process.stdout.write("__NULL__");
-            } else {
-              process.stdout.write(String(result));
-            }
-          } catch (err) {
-            process.stderr.write(err.message);
-            process.exit(1);
-          }
-        })();
-      } else {
-        // Fallback: raw TCP RESP protocol (no redis package needed)
-        const actualHost = useUrl ? (() => {
-          try { const u = new URL(url); return u.hostname || "127.0.0.1"; } catch { return "127.0.0.1"; }
-        })() : host;
-        const actualPort = useUrl ? (() => {
-          try { const u = new URL(url); return parseInt(u.port, 10) || 6379; } catch { return 6379; }
-        })() : port;
-
-        function buildCommand(a) {
-          let cmd = "*" + a.length + "\\r\\n";
-          for (const s of a) cmd += "$" + Buffer.byteLength(s) + "\\r\\n" + s + "\\r\\n";
-          return cmd;
-        }
-
-        const sock = net.createConnection({ host: actualHost, port: actualPort }, () => {
-          let commands = "";
-          if (password) commands += buildCommand(["AUTH", password]);
-          if (db !== 0) commands += buildCommand(["SELECT", String(db)]);
-          commands += buildCommand(args);
-          sock.write(commands);
-        });
-
-        let buffer = Buffer.alloc(0);
-        sock.on("data", (chunk) => {
-          buffer = Buffer.concat([buffer, chunk]);
-        });
-        sock.on("end", () => {
-          const lines = buffer.toString("utf-8").split("\\r\\n");
-          let responses = [];
-          let i = 0;
-          while (i < lines.length) {
-            const line = lines[i];
-            if (!line) { i++; continue; }
-            if (line.startsWith("+") || line.startsWith("-") || line.startsWith(":")) {
-              responses.push(line);
-              i++;
-            } else if (line.startsWith("$")) {
-              const len = parseInt(line.slice(1), 10);
-              if (len === -1) { responses.push(null); i++; }
-              else { responses.push(lines[i+1] || ""); i += 2; }
-            } else { i++; }
-          }
-          const result = responses[responses.length - 1];
-          if (result === null) process.stdout.write("__NULL__");
-          else if (typeof result === "string" && result.startsWith("-")) process.stdout.write("__ERR__" + result);
-          else process.stdout.write(String(result ?? "__NULL__"));
-        });
-        sock.on("error", (err) => {
-          process.stderr.write(err.message);
+      (async () => {
+        try {
+          const redis = require("redis");
+          const clientOpts = useUrl
+            ? { url }
+            : { socket: { host, port }, password: password || undefined, database: db };
+          const client = redis.createClient(clientOpts);
+          client.on("error", () => {});
+          await client.connect();
+          const cmd = args[0].toUpperCase();
+          let result;
+          if (cmd === "GET") result = await client.get(args[1]);
+          else if (cmd === "SET") result = await client.set(args[1], args[2]);
+          else if (cmd === "SETEX") result = await client.setEx(args[1], parseInt(args[2], 10), args[3]);
+          else if (cmd === "DEL") result = await client.del(args[1]);
+          await client.quit();
+          const out = (result === null || result === undefined) ? "__NULL__" : String(result);
+          process.stdout.write(out, () => process.exit(0));
+        } catch (err) {
+          process.stderr.write(String((err && err.message) || err));
           process.exit(1);
-        });
-        setTimeout(() => { sock.destroy(); process.exit(1); }, 3000);
-      }
+        }
+      })();
     `;
-
     let result: string;
     try {
       result = execFileSync(process.execPath, ["-e", script], {
@@ -210,15 +171,9 @@ export class RedisNpmSessionHandler implements SessionHandler {
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
-      // Non-zero exit = the child hit a socket error / AUTH failure / timeout.
-      // That is a transport FAILURE, not a key miss — surface it so the
-      // Session boundary logs + degrades (or re-throws under strict mode).
       throw new Error(`Redis command failed: ${(err as Error).message}`);
     }
-    if (result === "__NULL__") return "";        // genuine key miss
-    if (result.startsWith("__ERR__")) {
-      throw new Error(`Redis error: ${result.slice("__ERR__".length)}`);
-    }
+    if (result === "__NULL__") return "";       // genuine key miss
     return result;
   }
 

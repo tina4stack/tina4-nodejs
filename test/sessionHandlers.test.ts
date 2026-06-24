@@ -1,5 +1,5 @@
 /**
- * Behavioural tests for Session Handler classes (MongoDB and Valkey).
+ * Behavioural tests for the Session Handler classes (MongoDB and Valkey).
  * Run with: npx tsx test/sessionHandlers.test.ts
  *
  * These exercise the handlers against the REAL services that the CI/dev infra
@@ -7,24 +7,17 @@
  * 127.0.0.1:6379. There are NO mocks, stubs, or fakes — every assertion drives
  * the actual handler code path over a real TCP socket to a real server.
  *
- * IMPORTANT — a real, currently-shipping bug is locked in here. Both the Mongo
- * and Valkey handlers talk to the server by spawning a child `node -e` script
- * (execFileSync) that only emits its result on the socket `"end"` event. Redis,
- * Valkey and MongoDB all keep the connection OPEN after a normal command (they
- * never half-close for a GET/SET/find/update), so `"end"` never fires; the
- * child hits its own 3s timeout, exits non-zero, and execSync() re-throws it as
- * a "transport FAILURE". The Mongo encoder additionally serialises the `$db`
- * field FIRST, so MongoDB reads `$db` as the command name and answers
- * `CommandNotFound`. Net effect: against a REACHABLE server, EVERY write/read/
- * destroy throws — the handler cannot round-trip at all. The Ruby/Python
- * masters (which use real client libraries) DO round-trip, so this is a genuine
- * Node-only parity bug, surfaced and reported by this test (bug_suspected).
- *
- * The tests below assert the REAL observed behaviour (operations surface a
- * transport error against the live server) rather than a fictional success, and
- * each captures its result from a single real round-trip attempt so the file
- * stays well within the runner timeout. When the handler is fixed to round-trip
- * for real, these assertions are the exact contract to flip back to success.
+ * History: both handlers used to talk to the server through a child `node -e`
+ * script that read the reply on the socket "end" event. Redis/Valkey/MongoDB all
+ * keep the connection OPEN after a normal command, so "end" never fired — the
+ * child waited out its timeout and EVERY write/read/destroy was reported as a
+ * transport failure. The Mongo encoder also put `$db` first (so the server read
+ * it as the command name) and never encoded arrays/booleans. Both handlers now
+ * round-trip for real: the RESP transport parses replies incrementally on "data"
+ * (respClient.ts), and the Mongo transport uses the `mongodb` driver when present
+ * with a corrected raw OP_MSG fallback (mongoClient.ts). These tests assert the
+ * real round-trip — write succeeds, read returns the written data, a miss returns
+ * null, and a destroyed session reads back as null.
  */
 import {
   MongoSessionHandler, ValkeySessionHandler,
@@ -43,6 +36,10 @@ function assert(name: string, condition: boolean, detail = "") {
   }
 }
 
+function deepEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /** Run a handler op against the live server, capturing whether it threw and what it returned. */
 function probe<T>(fn: () => T): { threw: boolean; value: T | undefined; error?: string } {
   try {
@@ -51,6 +48,11 @@ function probe<T>(fn: () => T): { threw: boolean; value: T | undefined; error?: 
     return { threw: true, value: undefined, error: (err as Error).message };
   }
 }
+
+// A payload with a nested array + boolean, so the lifecycle locks in the BSON
+// codec (arrays 0x04, booleans 0x08, little-endian doubles) and the RESP JSON
+// round-trip, not just flat scalars.
+const sessionData = { _created: 1, _accessed: 2, userId: 7, k: "v", nested: { a: [1, 2, 3], flag: true } } as const;
 
 console.log("=== Session Handlers Tests ===\n");
 
@@ -64,85 +66,72 @@ const mongo = new MongoSessionHandler({
   collection: "sessions",
 });
 
-// One real round-trip attempt against the live Mongo server. Each labelled
-// case below asserts against these captured outcomes — the operations really
-// ran over a socket to the real server.
-const mongoData = { _created: 1, _accessed: 2, userId: 7, k: "v" } as const;
-const mWrite = probe(() => mongo.write("sid-m", { ...mongoData }, 0));
+const mWrite = probe(() => mongo.write("sid-m", { ...sessionData }, 0));
 const mReadHit = probe(() => mongo.read("sid-m"));
 const mReadMiss = probe(() => mongo.read("missing-sid"));
 const mDestroy = probe(() => mongo.destroy("sid-m"));
 const mReadAfterDestroy = probe(() => mongo.read("sid-m"));
 
-// 1. construction → does the constructed handler actually talk to Mongo?
-// Real behaviour: it connects and drives a real write, but the write surfaces a
-// transport error (see file header). We assert the handler reached the real
-// server and reported the failure honestly rather than silently swallowing it.
+// 1. write → persists a real document to live Mongo (no transport failure).
 assert(
-  "MongoSessionHandler drives a real write against live Mongo (surfaces transport failure)",
-  mWrite.threw && /MongoDB command failed/.test(mWrite.error ?? ""),
-  `wrote-without-error=${!mWrite.threw} err=${mWrite.error}`,
+  "MongoSessionHandler.write persists to live Mongo (no error)",
+  !mWrite.threw,
+  `err=${mWrite.error}`,
 );
 
-// 2. read method → drive a real read of a written doc against the live server.
-// Real behaviour: read of the just-written id surfaces the same transport error.
+// 2. read → returns the just-written session, deep-equal to what was written.
 assert(
-  "MongoSessionHandler.read drives a real read against live Mongo (surfaces transport failure)",
-  mReadHit.threw && /MongoDB command failed/.test(mReadHit.error ?? ""),
+  "MongoSessionHandler.read returns the written session from live Mongo",
+  !mReadHit.threw && deepEqual(mReadHit.value, sessionData),
   `value=${JSON.stringify(mReadHit.value)} err=${mReadHit.error}`,
 );
 
-// 3. write method → confirm the write op was actually dispatched to Mongo (it
-// reached the server and surfaced the real transport error rather than no-oping).
+// 3. read of an absent id → null (a genuine miss, NOT a transport error).
 assert(
-  "MongoSessionHandler.write dispatches to live Mongo (real op, not a no-op)",
-  mWrite.threw,
-  "write returned without ever contacting the server",
+  "MongoSessionHandler.read of an absent id returns null",
+  !mReadMiss.threw && mReadMiss.value === null,
+  `value=${JSON.stringify(mReadMiss.value)} err=${mReadMiss.error}`,
 );
 
-// 4. destroy method → exercise destroy for real against live Mongo.
+// 4. destroy → removes the document (no transport failure).
 assert(
-  "MongoSessionHandler.destroy drives a real delete against live Mongo (surfaces transport failure)",
-  mDestroy.threw && /MongoDB command failed/.test(mDestroy.error ?? ""),
+  "MongoSessionHandler.destroy removes the session on live Mongo (no error)",
+  !mDestroy.threw,
   `err=${mDestroy.error}`,
 );
 
-// 5. construction with defaults → defaults point at the live Mongo (default
-// host 127.0.0.1 / port 27017 match the infra). Prove the default config really
-// connects by driving a write through it.
+// 5. read after destroy → null (the document is really gone).
+assert(
+  "MongoSessionHandler.read after destroy returns null",
+  !mReadAfterDestroy.threw && mReadAfterDestroy.value === null,
+  `value=${JSON.stringify(mReadAfterDestroy.value)} err=${mReadAfterDestroy.error}`,
+);
+
+// 6. default config → defaults point at the live Mongo; prove it round-trips.
 const mongoDefaults = new MongoSessionHandler();
-const mdWrite = probe(() => mongoDefaults.write("d1", { ...mongoData }, 0));
-assert(
-  "MongoSessionHandler default config connects to live Mongo (real write dispatched)",
-  mdWrite.threw && /MongoDB command failed/.test(mdWrite.error ?? ""),
-  `err=${mdWrite.error}`,
-);
-
-// 6. default read method → drive a real read through the default-config handler.
+const mdWrite = probe(() => mongoDefaults.write("d1", { ...sessionData }, 0));
 const mdRead = probe(() => mongoDefaults.read("d1"));
+probe(() => mongoDefaults.destroy("d1"));
 assert(
-  "MongoSessionHandler default.read drives a real read against live Mongo",
-  mdRead.threw && /MongoDB command failed/.test(mdRead.error ?? ""),
-  `value=${JSON.stringify(mdRead.value)} err=${mdRead.error}`,
+  "MongoSessionHandler default config round-trips against live Mongo",
+  !mdWrite.threw && !mdRead.threw && deepEqual(mdRead.value, sessionData),
+  `write-err=${mdWrite.error} read=${JSON.stringify(mdRead.value)} read-err=${mdRead.error}`,
 );
 
-// 7. construction with URI → the URI host/port must be honoured. Point it at the
-// live Mongo via a URI and prove the URI path actually connects by driving a
-// write (parseUri() feeds the child script the URI host/port).
+// 7. URI config → the URI host/port is honoured; prove it round-trips.
 const mongoUri = new MongoSessionHandler({ uri: "mongodb://127.0.0.1:27017/test_sessions" });
-const muWrite = probe(() => mongoUri.write("u1", { ...mongoData }, 0));
+const muWrite = probe(() => mongoUri.write("u1", { ...sessionData }, 0));
+const muRead = probe(() => mongoUri.read("u1"));
+probe(() => mongoUri.destroy("u1"));
 assert(
-  "MongoSessionHandler honours URI config against live Mongo (real write via URI host/port)",
-  muWrite.threw && /MongoDB command failed/.test(muWrite.error ?? ""),
-  `err=${muWrite.error}`,
+  "MongoSessionHandler honours a mongodb:// URI and round-trips",
+  !muWrite.threw && !muRead.threw && deepEqual(muRead.value, sessionData),
+  `write-err=${muWrite.error} read=${JSON.stringify(muRead.value)} read-err=${muRead.error}`,
 );
 
 // Backend-failure policy: an UNREACHABLE server is a transport FAILURE — the
 // handler must SURFACE it (throw) so the Session boundary can log-loud + degrade,
-// rather than swallowing it into a null (which is indistinguishable from a
-// genuine "no session yet" miss). Mirrors the all-backend policy in session.ts.
-// (NOT a flagged smoke case — left as-is; uses a closed port for a fast, real
-// transport failure distinct from the reachable-server cases above.)
+// rather than swallowing it into a null (indistinguishable from a genuine miss).
 let mongoThrew = false;
 try {
   new MongoSessionHandler({ host: "127.0.0.1", port: 59999 }).read("nonexistent-session");
@@ -161,72 +150,73 @@ const valkey = new ValkeySessionHandler({
   db: 0,
 });
 
-// One real round-trip attempt against the live Valkey/Redis server.
-const valkeyData = { _created: 111, _accessed: 222, color: "blue" } as const;
-const vWrite = probe(() => valkey.write("sid-v", { ...valkeyData }, 0));
+const vWrite = probe(() => valkey.write("sid-v", { ...sessionData }, 0));
 const vReadHit = probe(() => valkey.read("sid-v"));
 const vReadMiss = probe(() => valkey.read("missing-sid"));
 const vDestroy = probe(() => valkey.destroy("sid-v"));
+const vReadAfterDestroy = probe(() => valkey.read("sid-v"));
 
-// 8. construction → does the constructed handler actually persist to Valkey?
-// Real behaviour: it connects and drives a real SET, but the op surfaces a
-// transport error (the child waits for a socket "end" that RESP never sends).
+// 8. write → SET persists to live Valkey (no transport failure).
 assert(
-  "ValkeySessionHandler drives a real write against live Valkey (surfaces transport failure)",
-  vWrite.threw && /Valkey command failed/.test(vWrite.error ?? ""),
-  `wrote-without-error=${!vWrite.threw} err=${vWrite.error}`,
+  "ValkeySessionHandler.write persists to live Valkey (no error)",
+  !vWrite.threw,
+  `err=${vWrite.error}`,
 );
 
-// 9. read method → drive a real GET against the live server.
+// 9. read → returns the written session, deep-equal to what was written.
 assert(
-  "ValkeySessionHandler.read drives a real read against live Valkey (surfaces transport failure)",
-  vReadHit.threw && /Valkey command failed/.test(vReadHit.error ?? ""),
+  "ValkeySessionHandler.read returns the written session from live Valkey",
+  !vReadHit.threw && deepEqual(vReadHit.value, sessionData),
   `value=${JSON.stringify(vReadHit.value)} err=${vReadHit.error}`,
 );
 
-// 10. write method → drive a real write WITH a TTL (SETEX path) against the live
-// server and confirm the op was dispatched (reached the server, surfaced the
-// real error rather than no-oping).
-const vWriteTtl = probe(() => valkey.write("sid-ttl", { ...valkeyData }, 60));
+// 10. read of an absent key → null (a genuine miss, NOT a transport error).
 assert(
-  "ValkeySessionHandler.write (TTL/SETEX) dispatches to live Valkey (real op, not a no-op)",
-  vWriteTtl.threw && /Valkey command failed/.test(vWriteTtl.error ?? ""),
-  `err=${vWriteTtl.error}`,
+  "ValkeySessionHandler.read of an absent key returns null",
+  !vReadMiss.threw && vReadMiss.value === null,
+  `value=${JSON.stringify(vReadMiss.value)} err=${vReadMiss.error}`,
 );
 
-// 11. destroy method → exercise destroy (DEL) for real against the live server.
+// 11. write WITH a TTL (SETEX path) → persists and round-trips.
+const vTtlWrite = probe(() => valkey.write("sid-ttl", { ...sessionData }, 60));
+const vTtlRead = probe(() => valkey.read("sid-ttl"));
+probe(() => valkey.destroy("sid-ttl"));
 assert(
-  "ValkeySessionHandler.destroy drives a real DEL against live Valkey (surfaces transport failure)",
-  vDestroy.threw && /Valkey command failed/.test(vDestroy.error ?? ""),
+  "ValkeySessionHandler.write (TTL/SETEX) persists and round-trips on live Valkey",
+  !vTtlWrite.threw && !vTtlRead.threw && deepEqual(vTtlRead.value, sessionData),
+  `write-err=${vTtlWrite.error} read=${JSON.stringify(vTtlRead.value)}`,
+);
+
+// 12. destroy → DEL removes the key (no transport failure).
+assert(
+  "ValkeySessionHandler.destroy removes the key on live Valkey (no error)",
+  !vDestroy.threw,
   `err=${vDestroy.error}`,
 );
 
-// 12. construction with defaults → defaults point at the live Valkey/Redis
-// (default host 127.0.0.1 / port 6379 match the infra). Prove the default
-// config really connects by driving a write through it.
+// 13. read after destroy → null (the key is really gone).
+assert(
+  "ValkeySessionHandler.read after destroy returns null",
+  !vReadAfterDestroy.threw && vReadAfterDestroy.value === null,
+  `value=${JSON.stringify(vReadAfterDestroy.value)} err=${vReadAfterDestroy.error}`,
+);
+
+// 14. default config → defaults point at the live Valkey; prove it round-trips.
 const valkeyDefaults = new ValkeySessionHandler();
-const vdWrite = probe(() => valkeyDefaults.write("d1", { ...valkeyData }, 0));
-assert(
-  "ValkeySessionHandler default config connects to live Valkey (real write dispatched)",
-  vdWrite.threw && /Valkey command failed/.test(vdWrite.error ?? ""),
-  `err=${vdWrite.error}`,
-);
-
-// 13. default read method → drive a real read through the default-config handler.
+const vdWrite = probe(() => valkeyDefaults.write("d1", { ...sessionData }, 0));
 const vdRead = probe(() => valkeyDefaults.read("d1"));
+probe(() => valkeyDefaults.destroy("d1"));
 assert(
-  "ValkeySessionHandler default.read drives a real read against live Valkey",
-  vdRead.threw && /Valkey command failed/.test(vdRead.error ?? ""),
-  `value=${JSON.stringify(vdRead.value)} err=${vdRead.error}`,
+  "ValkeySessionHandler default config round-trips against live Valkey",
+  !vdWrite.threw && !vdRead.threw && deepEqual(vdRead.value, sessionData),
+  `write-err=${vdWrite.error} read=${JSON.stringify(vdRead.value)}`,
 );
 
-// 14. construction with password config → point at the live server and prove the
-// password is actually carried into the wire protocol. The infra Valkey/Redis is
-// NOT password-protected, so a handler that sends `AUTH <pwd>` against it gets a
-// RESP error reply ("ERR Client sent AUTH, but no password is set") — the
-// handler surfaces that AUTH error (a different, password-specific failure),
-// proving the configured password was really transmitted on the connection
-// rather than ignored.
+// 15. password config → the password is really transmitted (AUTH on the wire).
+// The infra Valkey/Redis is NOT password-protected, so a handler that sends
+// `AUTH <pwd>` gets a RESP error ("ERR Client sent AUTH, but no password is
+// set"); the handler surfaces that as a thrown transport failure. A handler that
+// ignored the password would instead succeed — so the throw proves transmission.
 const valkeyWithAuth = new ValkeySessionHandler({
   host: "127.0.0.1",
   port: 6379,
@@ -234,17 +224,14 @@ const valkeyWithAuth = new ValkeySessionHandler({
   prefix: "app:sess:",
   db: 2,
 });
-const vaWrite = probe(() => valkeyWithAuth.write("a1", { ...valkeyData }, 0));
+const vaWrite = probe(() => valkeyWithAuth.write("a1", { ...sessionData }, 0));
 assert(
-  "ValkeySessionHandler transmits the configured password to live Valkey (AUTH attempted on the wire)",
+  "ValkeySessionHandler transmits the configured password to live Valkey (AUTH error surfaced)",
   vaWrite.threw,
-  `password-config op did not contact the server: err=${vaWrite.error}`,
+  `password-config op did not surface the AUTH error: err=${vaWrite.error}`,
 );
 
-// Backend-failure policy: an unreachable Valkey is a transport FAILURE — the
-// handler must SURFACE it (throw), same contract as the Mongo handler above.
-// (NOT a flagged smoke case — left as-is; uses a closed port for a fast, real
-// transport failure distinct from the reachable-server cases above.)
+// Backend-failure policy: an unreachable Valkey is a transport FAILURE — throw.
 let valkeyThrew = false;
 try {
   new ValkeySessionHandler({ host: "127.0.0.1", port: 59999 }).read("nonexistent-session");
@@ -256,39 +243,32 @@ assert("ValkeySessionHandler.read THROWS when server unreachable (transport fail
 // --- Interface Parity (full lifecycle against the live services) ---
 console.log("\n--- Interface Parity ---");
 
-// 15. MongoDB full lifecycle against live Mongo: write → read → destroy → read.
-// Every step is a real op over a real socket. The contract these assertions lock
-// in is the CURRENT (broken) one: each op surfaces a transport failure. When the
-// handler is fixed to round-trip, this flips to:
-//   mWrite.threw === false; mReadHit.value deep-equals mongoData; ...; mReadAfterDestroy.value === null.
+// 16. MongoDB full lifecycle: write → read(==data) → destroy → read(null).
 assert(
   "MongoDB handler runs a real write→read→destroy→read lifecycle against live Mongo",
-  mWrite.threw && mReadHit.threw && mDestroy.threw && mReadAfterDestroy.threw,
-  `write=${mWrite.threw} read=${mReadHit.threw} destroy=${mDestroy.threw} readAfter=${mReadAfterDestroy.threw}`,
+  !mWrite.threw && deepEqual(mReadHit.value, sessionData) && !mDestroy.threw && mReadAfterDestroy.value === null,
+  `write=${!mWrite.threw} read=${JSON.stringify(mReadHit.value)} destroy=${!mDestroy.threw} readAfter=${JSON.stringify(mReadAfterDestroy.value)}`,
 );
 
-// 16. Valkey full lifecycle against live Valkey: write → read → destroy.
-const vReadAfterDestroy = probe(() => valkey.read("sid-v"));
+// 17. Valkey full lifecycle: write → read(==data) → destroy → read(null).
 assert(
   "Valkey handler runs a real write→read→destroy→read lifecycle against live Valkey",
-  vWrite.threw && vReadHit.threw && vDestroy.threw && vReadAfterDestroy.threw,
-  `write=${vWrite.threw} read=${vReadHit.threw} destroy=${vDestroy.threw} readAfter=${vReadAfterDestroy.threw}`,
+  !vWrite.threw && deepEqual(vReadHit.value, sessionData) && !vDestroy.threw && vReadAfterDestroy.value === null,
+  `write=${!vWrite.threw} read=${JSON.stringify(vReadHit.value)} destroy=${!vDestroy.threw} readAfter=${JSON.stringify(vReadAfterDestroy.value)}`,
 );
 
-// A genuine key/doc MISS over a reachable server must NOT be a different code
-// path from a hit — both surface the same transport failure today (proving the
-// handler cannot even distinguish miss from hit because it never gets a reply).
-// Locked in so a future fix that makes a miss return null (and a hit return the
-// doc) is caught as the intended behaviour change.
+// 18. A miss and a hit are now DISTINCT code paths (a hit returns the doc, a miss
+// returns null) — proving the handler really reads a reply rather than failing on
+// every call. This is the exact behaviour change from the old "miss==hit" bug.
 assert(
-  "MongoSessionHandler.read of a missing doc behaves identically to a hit on live Mongo (no reply path)",
-  mReadMiss.threw === mReadHit.threw,
-  `miss=${mReadMiss.threw} hit=${mReadHit.threw}`,
+  "MongoSessionHandler distinguishes a miss (null) from a hit (the session) on live Mongo",
+  mReadMiss.value === null && deepEqual(mReadHit.value, sessionData),
+  `miss=${JSON.stringify(mReadMiss.value)} hit=${JSON.stringify(mReadHit.value)}`,
 );
 assert(
-  "ValkeySessionHandler.read of a missing key behaves identically to a hit on live Valkey (no reply path)",
-  vReadMiss.threw === vReadHit.threw,
-  `miss=${vReadMiss.threw} hit=${vReadHit.threw}`,
+  "ValkeySessionHandler distinguishes a miss (null) from a hit (the session) on live Valkey",
+  vReadMiss.value === null && deepEqual(vReadHit.value, sessionData),
+  `miss=${JSON.stringify(vReadMiss.value)} hit=${JSON.stringify(vReadHit.value)}`,
 );
 
 // Summary
