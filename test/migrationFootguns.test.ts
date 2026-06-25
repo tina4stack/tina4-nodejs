@@ -214,6 +214,82 @@ console.log("\n--- G3: stop at first failure ---");
   try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
 }
 
+// ── [#54] a ';' inside a comment or string literal must NOT split a statement ──
+console.log("\n--- [#54] comment/string-aware split ---");
+
+{
+  // The exact issue #54 repro: a ';' inside a '-- …' line comment used to
+  // fragment this ONE CREATE TABLE into broken pieces.
+  const sql =
+    "CREATE TABLE users (\n" +
+    "    id INTEGER PRIMARY KEY,   -- drop then re-add; old way\n" +
+    "    name TEXT NOT NULL\n" +
+    ");";
+  const stmts = splitStatements(sql, ";");
+  assert(
+    "';' inside a -- comment does not fragment the statement",
+    stmts.length === 1,
+    `got ${stmts.length}: ${JSON.stringify(stmts)}`,
+  );
+  assert("real columns survive intact", stmts[0]?.includes("id INTEGER PRIMARY KEY") === true && stmts[0]?.includes("name TEXT NOT NULL") === true);
+  assert("line comment text is stripped", stmts[0]?.includes("old way") === false, JSON.stringify(stmts));
+}
+
+{
+  const sql = "CREATE TABLE t (id INTEGER /* a; b; c */, name TEXT);";
+  const stmts = splitStatements(sql, ";");
+  assert("';' inside a /* */ comment does not fragment", stmts.length === 1, JSON.stringify(stmts));
+  assert("block comment text is stripped", stmts[0]?.includes("a; b; c") === false, JSON.stringify(stmts));
+}
+
+{
+  const sql = "INSERT INTO t (v) VALUES ('a;b;c'); INSERT INTO t (v) VALUES ('d');";
+  const stmts = splitStatements(sql, ";");
+  assert("';' inside a string literal does not split", stmts.length === 2, JSON.stringify(stmts));
+  assert("string-literal content is preserved", stmts[0]?.includes("'a;b;c'") === true, JSON.stringify(stmts));
+}
+
+{
+  const sql = "INSERT INTO t (v) VALUES ('a--b'); INSERT INTO t (v) VALUES ('c');";
+  const stmts = splitStatements(sql, ";");
+  assert("'--' inside a string literal is not a comment", stmts.length === 2, JSON.stringify(stmts));
+  assert("the '--' string content survives", stmts[0]?.includes("'a--b'") === true, JSON.stringify(stmts));
+}
+
+{
+  const sql = "INSERT INTO t (v) VALUES ('O''Brien; Jr'); SELECT 1;";
+  const stmts = splitStatements(sql, ";");
+  assert("doubled-quote '' escape keeps the ';' inside the literal", stmts.length === 2, JSON.stringify(stmts));
+  assert("escaped-quote literal preserved", stmts[0]?.includes("'O''Brien; Jr'") === true, JSON.stringify(stmts));
+}
+
+{
+  // End-to-end against a REAL temp SQLite DB (no mocks): the issue's repro
+  // migration must apply cleanly and create the table.
+  const TMP = "/tmp/tina4-migration-issue54";
+  const MIGS = join(TMP, "migrations");
+  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  mkdirSync(MIGS, { recursive: true });
+  writeFileSync(
+    join(MIGS, "000001_create_users.sql"),
+    "CREATE TABLE users (\n" +
+      "    id INTEGER PRIMARY KEY,   -- drop then re-add; old way\n" +
+      "    name TEXT NOT NULL\n" +
+      ");",
+  );
+
+  await initDatabase({ type: "sqlite", path: join(TMP, "test.db") });
+  const db = getAdapter();
+  const result = await migrate(db, { migrationsDir: MIGS });
+
+  assert("issue #54 migration applied cleanly", result.applied.includes("000001_create_users.sql"), JSON.stringify(result));
+  assert("issue #54 migration did not fail", !result.failed.includes("000001_create_users.sql"), JSON.stringify(result));
+  assert("users table created from the repro migration", (db as any).tableExists("users"), JSON.stringify(result));
+
+  closeDatabase();
+  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

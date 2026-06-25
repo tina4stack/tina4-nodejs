@@ -122,6 +122,9 @@ function compileString(
   // 5. Resolve @include
   scss = resolveIncludes(scss, mixins);
 
+  // 5.5. Resolve #{ ... } interpolation (before $var substitution + nesting).
+  scss = resolveInterpolation(scss, variables);
+
   // 6. Substitute variables
   scss = substituteVariables(scss, variables);
 
@@ -180,6 +183,26 @@ function substituteVariables(scss: string, variables: Record<string, string>): s
     scss = scss.replaceAll(`$${name}`, variables[name]);
   }
   return scss;
+}
+
+/**
+ * Resolve SCSS `#{ ... }` interpolation. Each `#{ expr }` is replaced by its
+ * resolved inner text: a `$variable` inside the braces resolves to its value,
+ * anything else is inlined verbatim (trimmed). This lets a value carry a
+ * variable inside a string context plain `$var` substitution can't reach —
+ * e.g. `calc(100% - #{$gap})` → `calc(100% - 20px)` — and lets a variable
+ * appear in a selector (`.icon-#{$name}` → `.icon-home`). Run BEFORE nested
+ * rule flattening so the literal braces never confuse the block matcher.
+ */
+function resolveInterpolation(scss: string, variables: Record<string, string>): string {
+  const sorted = Object.keys(variables).sort((a, b) => b.length - a.length);
+  return scss.replace(/#\{([^{}]*)\}/g, (_m, inner: string) => {
+    let resolved = inner.trim();
+    for (const name of sorted) {
+      resolved = resolved.replaceAll(`$${name}`, variables[name]);
+    }
+    return resolved;
+  });
 }
 
 // ── Mixins ───────────────────────────────────────────────────────
