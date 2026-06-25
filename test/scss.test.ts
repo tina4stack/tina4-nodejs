@@ -238,6 +238,28 @@ const emptyResult = compiler.compile(`
 assert("Empty rulesets removed",
   !emptyResult.includes(".empty") && emptyResult.includes(".visible"));
 
+// --- #{ } interpolation (issue #116) ---
+console.log("\n--- #{} interpolation ---");
+
+{
+  const r = compiler.compile(`$gap: 20px;\n.box { width: calc(100% - #{$gap}); }`);
+  assert("variable interpolation inside calc()", r.includes("calc(100% - 20px)"), r);
+  assert("no #{ } or $var left behind", !r.includes("#{") && !r.includes("$gap"), r);
+}
+{
+  const r = compiler.compile(`$name: home;\n.icon-#{$name} { color: red; }`);
+  assert("interpolation in selector", r.includes(".icon-home"), r);
+}
+{
+  const r = compiler.compile(`.x { margin: #{10px}; }`);
+  assert("literal interpolation inlines verbatim", r.includes("margin: 10px"), r);
+}
+{
+  // Regression guard for the already-fixed half: mixed-unit calc preserved.
+  const r = compiler.compile(`.z { height: calc(100vh - 170px); }`);
+  assert("mixed-unit calc() still preserved", r.includes("calc(100vh - 170px)"), r);
+}
+
 // Cleanup
 rmSync(SCSS_DIR, { recursive: true });
 
