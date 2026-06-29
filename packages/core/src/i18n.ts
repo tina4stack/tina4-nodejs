@@ -10,11 +10,20 @@ export class I18n {
   private _currentLocale: string;
   private _translations: Map<string, Record<string, string>> = new Map();
 
-  constructor(localeDir?: string, defaultLocale?: string) {
+  /**
+   * @param locale  Default locale code (e.g. "en"). Falls back to
+   *                TINA4_LOCALE, then "en".
+   * @param path    Directory holding the JSON/YAML locale files. Falls back to
+   *                TINA4_LOCALE_DIR, then "src/locales".
+   *
+   * Arg order is (locale, path) to match the Python master `I18n(locale, path)`
+   * (BUG-7, BREAKING in 3.13.x — was previously (localeDir, defaultLocale)).
+   */
+  constructor(locale?: string, path?: string) {
     this._localeDir = resolve(
-      localeDir ?? process.env.TINA4_LOCALE_DIR ?? "src/locales"
+      path ?? process.env.TINA4_LOCALE_DIR ?? "src/locales"
     );
-    this._defaultLocale = defaultLocale ?? process.env.TINA4_LOCALE ?? "en";
+    this._defaultLocale = locale ?? process.env.TINA4_LOCALE ?? "en";
     this._currentLocale = this._defaultLocale;
     this._loadLocale(this._defaultLocale);
   }

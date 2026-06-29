@@ -15,9 +15,14 @@ import { requireServices, findProvisionedServiceSkips } from "./_serviceGate.ts"
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, "..");
 
-// Discover all test files
+// Discover all test files.
+// The i18n suites are vitest tests (describe/it/expect) — they are run by the
+// `test:i18n` npm script (`vitest run …`), NOT by this tsx-spawning runner,
+// so skip them here (tsx can't execute a vitest suite — it errors on the
+// `vitest` import). The root `npm test` runs this runner THEN `test:i18n`.
+const VITEST_FILES = new Set(["i18n.test.ts", "i18n-leaf-alias.test.ts"]);
 const testFiles = readdirSync(__dirname)
-  .filter((f) => f.endsWith(".test.ts"))
+  .filter((f) => f.endsWith(".test.ts") && !VITEST_FILES.has(f))
   .sort();
 
 // Also include integration.ts

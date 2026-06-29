@@ -1,12 +1,8 @@
 {
   "name": "tina4-nodejs",
-
-
-
-  "version": "3.13.47",
-
+  "version": "3.13.48",
   "type": "module",
-  "description": "Tina4 for Node.js/TypeScript \u2014 54 built-in features, zero dependencies",
+  "description": "Tina4 for Node.js/TypeScript - 54 built-in features, zero dependencies",
   "keywords": [
     "tina4",
     "framework",
@@ -57,18 +53,19 @@
   "scripts": {
     "build": "npm run build --workspaces",
     "clean": "rm -rf packages/*/dist",
-    "test": "tsx test/run-all.ts",
+    "test": "tsx test/run-all.ts && npm run test:i18n",
+    "test:i18n": "vitest run test/i18n.test.ts test/i18n-leaf-alias.test.ts",
     "typecheck": "tsc -p tsconfig.typecheck.json"
   },
   "engines": {
     "node": ">=22.0.0"
   },
-  "dependencies": {},
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "tsx": "^4.19.0",
+    "@types/node": "^22.10.0",
     "esbuild": "^0.24.0",
     "mongodb": "^6.0.0",
-    "@types/node": "^22.10.0"
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.9"
   }
 }

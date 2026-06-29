@@ -1,148 +1,195 @@
 /**
- * Unit tests for the I18n module.
- * Run with: npx tsx test/i18n.test.ts
+ * Vitest tests for the I18n module.
+ * Run with: npx vitest run test/i18n.test.ts
+ *
+ * Real on-disk locale files, real I18n instances — no mocks.
  */
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { I18n } from "../packages/core/src/index.ts";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
-const LOCALE_DIR = "/tmp/tina4-i18n-test/locales";
-let pass = 0;
-let fail = 0;
+const TEST_ROOT = "/tmp/tina4-i18n-test";
+const LOCALE_DIR = join(TEST_ROOT, "locales");
 
-function assert(name: string, condition: boolean, detail = "") {
-  if (condition) {
-    console.log(`  \x1b[32mPASS\x1b[0m ${name}`);
-    pass++;
-  } else {
-    console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
-    fail++;
-  }
-}
+beforeAll(() => {
+  try { rmSync(TEST_ROOT, { recursive: true }); } catch { /* ignore */ }
+  mkdirSync(LOCALE_DIR, { recursive: true });
 
-// Clean slate
-try { rmSync("/tmp/tina4-i18n-test", { recursive: true }); } catch {}
+  writeFileSync(join(LOCALE_DIR, "en.json"), JSON.stringify({
+    greeting: "Hello",
+    farewell: "Goodbye",
+    welcome: "Welcome, {name}!",
+    errors: {
+      not_found: "Not found",
+      forbidden: "Access denied",
+    },
+    count: "You have {count} items",
+  }));
 
-// Create locale files
-mkdirSync(LOCALE_DIR, { recursive: true });
+  writeFileSync(join(LOCALE_DIR, "fr.json"), JSON.stringify({
+    greeting: "Bonjour",
+    farewell: "Au revoir",
+    welcome: "Bienvenue, {name}!",
+    errors: {
+      not_found: "Non trouvé",
+    },
+  }));
 
-writeFileSync(join(LOCALE_DIR, "en.json"), JSON.stringify({
-  greeting: "Hello",
-  farewell: "Goodbye",
-  welcome: "Welcome, {name}!",
-  errors: {
-    not_found: "Not found",
-    forbidden: "Access denied",
-  },
-  count: "You have {count} items",
-}));
+  writeFileSync(join(LOCALE_DIR, "de.json"), JSON.stringify({
+    greeting: "Hallo",
+  }));
+});
 
-writeFileSync(join(LOCALE_DIR, "fr.json"), JSON.stringify({
-  greeting: "Bonjour",
-  farewell: "Au revoir",
-  welcome: "Bienvenue, {name}!",
-  errors: {
-    not_found: "Non trouvé",
-  },
-}));
+afterAll(() => {
+  try { rmSync(TEST_ROOT, { recursive: true }); } catch { /* ignore */ }
+});
 
-writeFileSync(join(LOCALE_DIR, "de.json"), JSON.stringify({
-  greeting: "Hallo",
-}));
+// Constructor arg order is (locale, path) to match Python I18n(locale, path).
+describe("I18n — basic translation", () => {
+  it("default locale is en", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    expect(i18n.getLocale()).toBe("en");
+  });
 
-console.log("=== I18n Tests ===\n");
+  it("translates a simple key", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    expect(i18n.t("greeting")).toBe("Hello");
+  });
 
-// --- Basic translation ---
-console.log("--- Basic Translation ---");
+  it("translates a nested key with dot notation", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    expect(i18n.t("errors.not_found")).toBe("Not found");
+  });
 
-const i18n = new I18n(LOCALE_DIR, "en");
+  it("returns the key itself for a missing translation", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    expect(i18n.t("nonexistent")).toBe("nonexistent");
+  });
+});
 
-assert("Default locale is en", i18n.getLocale() === "en");
+describe("I18n — parameter substitution", () => {
+  it("substitutes a single parameter", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    expect(i18n.t("welcome", { name: "Alice" })).toBe("Welcome, Alice!");
+  });
 
-assert("Translates simple key", i18n.t("greeting") === "Hello");
+  it("substitutes multiple parameters", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    expect(i18n.t("count", { count: "5" })).toBe("You have 5 items");
+  });
+});
 
-assert("Translates nested key with dot notation",
-  i18n.t("errors.not_found") === "Not found");
+describe("I18n — locale switching", () => {
+  it("setLocale changes the current locale", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    i18n.setLocale("fr");
+    expect(i18n.getLocale()).toBe("fr");
+  });
 
-assert("Returns key itself for missing translation",
-  i18n.t("nonexistent") === "nonexistent");
+  it("translates in French after setLocale", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    i18n.setLocale("fr");
+    expect(i18n.t("greeting")).toBe("Bonjour");
+  });
 
-// --- Parameter substitution ---
-console.log("\n--- Parameter Substitution ---");
+  it("falls back to the default locale for a missing French key", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    i18n.setLocale("fr");
+    expect(i18n.t("errors.forbidden")).toBe("Access denied");
+  });
+});
 
-assert("Substitutes single parameter",
-  i18n.t("welcome", { name: "Alice" }) === "Welcome, Alice!");
+describe("I18n — per-call locale override", () => {
+  it("translates with an explicit locale parameter", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    i18n.setLocale("fr");
+    expect(i18n.t("greeting", undefined, "de")).toBe("Hallo");
+  });
 
-assert("Substitutes multiple parameters",
-  i18n.t("count", { count: "5" }) === "You have 5 items");
+  it("leaves the current locale unchanged after an override call", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    i18n.setLocale("fr");
+    i18n.t("greeting", undefined, "de");
+    expect(i18n.getLocale()).toBe("fr");
+  });
+});
 
-// --- Locale switching ---
-console.log("\n--- Locale Switching ---");
+describe("I18n — translate alias", () => {
+  it("translate() is an alias for t()", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    i18n.setLocale("fr");
+    expect(i18n.translate("greeting")).toBe("Bonjour");
+  });
 
-i18n.setLocale("fr");
-assert("setLocale changes current locale", i18n.getLocale() === "fr");
+  it("translate() with a locale override switches then restores the previous locale", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    expect(i18n.translate("greeting", undefined, "de")).toBe("Hallo");
+    expect(i18n.getLocale()).toBe("en");
+  });
+});
 
-assert("Translates in French after setLocale",
-  i18n.t("greeting") === "Bonjour");
+describe("I18n — dynamic translation", () => {
+  it("addTranslation adds an in-memory translation", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    i18n.addTranslation("en", "custom.key", "Custom Value");
+    expect(i18n.t("custom.key")).toBe("Custom Value");
+  });
+});
 
-assert("Falls back to default locale for missing French key",
-  i18n.t("errors.forbidden") === "Access denied");
+describe("I18n — load translations", () => {
+  it("loadTranslations returns a record", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    const enTranslations = i18n.loadTranslations("en");
+    expect(typeof enTranslations).toBe("object");
+    expect(enTranslations["greeting"]).toBe("Hello");
+  });
+});
 
-// --- Locale override per call ---
-console.log("\n--- Per-call Locale Override ---");
+describe("I18n — available locales", () => {
+  it("lists all locale files", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    const locales = i18n.availableLocales();
+    expect(locales).toContain("en");
+    expect(locales).toContain("fr");
+    expect(locales).toContain("de");
+  });
 
-assert("Translate with explicit locale parameter",
-  i18n.t("greeting", undefined, "de") === "Hallo");
+  it("returns locales sorted", () => {
+    const i18n = new I18n("en", LOCALE_DIR);
+    const locales = i18n.availableLocales();
+    expect(locales[0]).toBe("de");
+    expect(locales[1]).toBe("en");
+    expect(locales[2]).toBe("fr");
+  });
+});
 
-assert("Current locale unchanged after override call",
-  i18n.getLocale() === "fr");
+describe("I18n — edge cases", () => {
+  it("missing locale dir returns the key as-is", () => {
+    const i18nMissing = new I18n("en", "/tmp/nonexistent-locale-dir-xyz");
+    expect(i18nMissing.t("anything")).toBe("anything");
+  });
 
-// --- translate alias ---
-console.log("\n--- Translate Alias ---");
+  it("missing locale dir lists the default locale only", () => {
+    const i18nMissing = new I18n("en", "/tmp/nonexistent-locale-dir-xyz");
+    expect(i18nMissing.availableLocales().length).toBe(1);
+  });
+});
 
-assert("translate() is alias for t()",
-  i18n.translate("greeting") === "Bonjour");
+// ── Constructor arg order (BUG-7, BREAKING) ───────────────────────────────
+// Python master is I18n(locale, path); Node now matches.
+describe("I18n — constructor positional (locale, path)", () => {
+  it("constructor_positional_locale_then_path: first arg is locale, second is path", () => {
+    const root = join(TEST_ROOT, "ctor");
+    const dir = join(root, "locales");
+    try { rmSync(root, { recursive: true }); } catch { /* ignore */ }
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "fr.json"), JSON.stringify({ greeting: "Bonjour" }));
+    writeFileSync(join(dir, "en.json"), JSON.stringify({ greeting: "Hello" }));
 
-// --- addTranslation ---
-console.log("\n--- Dynamic Translation ---");
-
-i18n.addTranslation("fr", "custom.key", "Valeur personnalisée");
-assert("addTranslation adds in-memory translation",
-  i18n.t("custom.key") === "Valeur personnalisée");
-
-// --- loadTranslations ---
-console.log("\n--- Load Translations ---");
-
-const enTranslations = i18n.loadTranslations("en");
-assert("loadTranslations returns record",
-  typeof enTranslations === "object" && enTranslations["greeting"] === "Hello");
-
-// --- getAvailableLocales ---
-console.log("\n--- Available Locales ---");
-
-const locales = i18n.availableLocales();
-assert("getAvailableLocales returns all locale files",
-  locales.includes("en") && locales.includes("fr") && locales.includes("de"));
-
-assert("Available locales are sorted",
-  locales[0] === "de" && locales[1] === "en" && locales[2] === "fr");
-
-// --- Missing locale directory ---
-console.log("\n--- Edge Cases ---");
-
-const i18nMissing = new I18n("/tmp/nonexistent-locale-dir-xyz");
-assert("Missing locale dir returns key as-is",
-  i18nMissing.t("anything") === "anything");
-
-assert("Missing locale dir lists default locale only",
-  i18nMissing.availableLocales().length === 1);
-
-// Cleanup
-rmSync("/tmp/tina4-i18n-test", { recursive: true });
-
-// Summary
-console.log(`\n${"=".repeat(50)}`);
-console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
-console.log(`${"=".repeat(50)}\n`);
-
-process.exit(fail > 0 ? 1 : 0);
+    // Positional: locale="fr", path=dir
+    const i18n = new I18n("fr", dir);
+    expect(i18n.getLocale()).toBe("fr");
+    expect(i18n.t("greeting")).toBe("Bonjour");
+  });
+});

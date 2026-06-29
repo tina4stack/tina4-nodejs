@@ -878,7 +878,7 @@ ${reset}
       try {
         const localeFiles = readdirSync(localeDir).filter((f: string) => f.endsWith(".json"));
         if (localeFiles.length > 0 && !frondEngine.globals?.t) {
-          const i18nInstance = new I18n(localeDir, process.env.TINA4_LOCALE ?? "en");
+          const i18nInstance = new I18n(process.env.TINA4_LOCALE ?? "en", localeDir);
           frondEngine.addGlobal("t", (key: string, params?: Record<string, string>) => i18nInstance.t(key, params));
         }
       } catch {

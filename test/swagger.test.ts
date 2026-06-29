@@ -249,6 +249,23 @@ assert("multi-server from env", multiSpec.servers?.length === 2 && multiSpec.ser
 
 assert("top-level tags array", Array.isArray(spec.tags) && (spec.tags as Array<{ name: string }>).some((t) => t.name === "users"));
 
+// --- Multi-field meta survival (parity with Python decorator-stacking #59) ---
+console.log("\n--- Multi-field meta survival ---");
+const regrRoutes: RouteDefinition[] = [
+  {
+    method: "POST",
+    pattern: "/api/regr",
+    handler: async () => {},
+    meta: { summary: "Create a user", description: "Creates a user account", tags: ["Users"], example: { email: "a@b.c" } },
+  },
+];
+const regrSpec = generate(regrRoutes, []);
+const regrOp = regrSpec.paths["/api/regr"]?.post as Record<string, unknown>;
+assert("multi-meta: summary survives", regrOp?.summary === "Create a user");
+assert("multi-meta: description survives", typeof regrOp?.description === "string" && (regrOp.description as string).includes("Creates a user account"));
+assert("multi-meta: tags survive", Array.isArray(regrOp?.tags) && (regrOp.tags as string[])[0] === "Users");
+assert("multi-meta: example -> requestBody", "requestBody" in regrOp);
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

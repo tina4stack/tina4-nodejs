@@ -349,7 +349,7 @@ mkdirSync(localeDir, { recursive: true });
 writeFileSync(join(localeDir, "en.json"), JSON.stringify({ greeting: "Hello", welcome: "Welcome, {name}!" }));
 writeFileSync(join(localeDir, "fr.json"), JSON.stringify({ greeting: "Bonjour" }));
 
-const i18n = new I18n(localeDir, "en");
+const i18n = new I18n("en", localeDir);
 assert("translate key", i18n.t("greeting") === "Hello");
 assert("interpolation", i18n.t("welcome", { name: "Alice" }) === "Welcome, Alice!");
 
