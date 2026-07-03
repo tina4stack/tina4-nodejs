@@ -19,6 +19,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { randomBytes } from "node:crypto";
 
 // Synchronous CommonJS-style require that works under real ESM (where the
 // bare `require` global is undefined). Dev-tool handlers are synchronous, so
@@ -95,6 +96,12 @@ export const INVALID_REQUEST = -32600;
 export const METHOD_NOT_FOUND = -32601;
 export const INVALID_PARAMS = -32602;
 export const INTERNAL_ERROR = -32603;
+
+// MCP protocol versions this server can speak, newest first. The 2025-* versions
+// are the Streamable HTTP era; 2024-11-05 is the legacy HTTP+SSE transport we
+// still accept for older clients (Claude Desktop et al.).
+export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
+export const LATEST_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0];
 
 export function encodeResponse(requestId: number | string | null | undefined, result: unknown): string {
   return JSON.stringify({ jsonrpc: "2.0", id: requestId, result });
@@ -295,11 +302,142 @@ export class McpServer {
   private _resources: Map<string, McpResourceDefinition> = new Map();
   private _initialized = false;
 
+  // Streamable HTTP session ids issued at initialize time -> creation ts. A
+  // request bearing an unknown id gets a 404 so the client re-initializes.
+  private _sessions: Map<string, number> = new Map();
+  // Open legacy HTTP+SSE streams keyed by session id. GET /sse registers a
+  // channel; POST /message pushes each JSON-RPC response onto it so it streams
+  // back on the open connection (the 2024-11-05 transport). Node is single-
+  // threaded, so this in-process map is the whole coordination mechanism.
+  private _sseChannels: Map<string, { buffer: string[]; wake: (() => void) | null }> = new Map();
+
   constructor(mcpPath: string, name = "Tina4 MCP", version = "1.0.0") {
     this.path = mcpPath.replace(/\/+$/, "");
     this.name = name;
     this.version = version;
     McpServer._instances.push(this);
+  }
+
+  // ── Session lifecycle + protocol negotiation ──────────────────
+
+  /** Mint a new session id and remember it. Called on `initialize`. */
+  openSession(): string {
+    const sid = randomBytes(16).toString("hex");
+    this._sessions.set(sid, Date.now());
+    return sid;
+  }
+
+  /** True when `sessionId` was issued by this server and is still open. */
+  isValidSession(sessionId: string | undefined | null): boolean {
+    return !!sessionId && this._sessions.has(sessionId);
+  }
+
+  /** Forget a session (client DELETE or SSE stream close). */
+  closeSession(sessionId: string | undefined | null): boolean {
+    return sessionId ? this._sessions.delete(sessionId) : false;
+  }
+
+  /**
+   * Pick the protocol version to run on. Echo the client's requested version
+   * when we support it (proper negotiation), else fall back to the newest we
+   * speak so an unversioned/old client still connects.
+   */
+  negotiateProtocolVersion(requested: string | undefined | null): string {
+    return requested && (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(requested)
+      ? requested
+      : LATEST_PROTOCOL_VERSION;
+  }
+
+  private _peekMethod(raw: string | Record<string, unknown>): string | null {
+    try {
+      const obj = typeof raw === "object" && raw !== null ? raw : JSON.parse(String(raw || "{}"));
+      return obj && typeof obj === "object" ? ((obj as Record<string, unknown>).method as string) ?? null : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── Streamable HTTP transport (transport-agnostic, mirrors Python) ──
+
+  /**
+   * Streamable HTTP POST handler. initialize mints a session id (returned in
+   * the Mcp-Session-Id response header); a non-initialize request with an
+   * unknown session id is a 404 (client re-inits); a notification is 202; else
+   * 200 with the JSON-RPC response as application/json (which the spec permits
+   * for a POST that resolves to a single response).
+   */
+  async dispatchHttp(
+    raw: string | Record<string, unknown>,
+    sessionId = "",
+  ): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+    const isInit = this._peekMethod(raw) === "initialize";
+    if (!isInit && sessionId && !this.isValidSession(sessionId)) {
+      return { status: 404, headers: {}, body: encodeError(null, INVALID_REQUEST, "session not found") };
+    }
+    const body = await this.handleMessage(raw);
+    const headers: Record<string, string> = {};
+    if (isInit) headers["Mcp-Session-Id"] = this.openSession();
+    if (!body) return { status: 202, headers, body: "" };
+    return { status: 200, headers, body };
+  }
+
+  /**
+   * Legacy HTTP+SSE POST /message handler. When a live SSE stream is open for
+   * `sessionId`, run the message and push the response down that stream (202
+   * here); with no open stream it degrades to an inline Streamable HTTP
+   * response, so the same path serves a legacy SSE client and a plain POST.
+   */
+  async dispatchSseMessage(
+    raw: string | Record<string, unknown>,
+    sessionId = "",
+  ): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+    const channel = sessionId ? this._sseChannels.get(sessionId) : undefined;
+    if (!channel) return this.dispatchHttp(raw, sessionId);
+    const body = await this.handleMessage(raw);
+    if (body) {
+      channel.buffer.push(body);
+      if (channel.wake) {
+        const wake = channel.wake;
+        channel.wake = null;
+        wake();
+      }
+    }
+    return { status: 202, headers: {}, body: "" };
+  }
+
+  /**
+   * Async generator of SSE frames for the legacy HTTP+SSE transport. Emits the
+   * `endpoint` event first (naming the POST target), then each queued JSON-RPC
+   * response as it arrives, with periodic keep-alive comments. Registers the
+   * per-session channel up front and tears it down (plus the session) when the
+   * client disconnects and the generator is closed.
+   */
+  async *sseStream(sessionId: string, endpointUrl: string, keepaliveMs = 15000): AsyncGenerator<string> {
+    const channel: { buffer: string[]; wake: (() => void) | null } = { buffer: [], wake: null };
+    this._sseChannels.set(sessionId, channel);
+    try {
+      yield `event: endpoint\ndata: ${endpointUrl}\n\n`;
+      for (;;) {
+        if (channel.buffer.length > 0) {
+          yield `event: message\ndata: ${channel.buffer.shift()}\n\n`;
+          continue;
+        }
+        const gotMessage = await new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => {
+            channel.wake = null;
+            resolve(false);
+          }, keepaliveMs);
+          channel.wake = () => {
+            clearTimeout(timer);
+            resolve(true);
+          };
+        });
+        if (!gotMessage) yield `: keep-alive\n\n`;
+      }
+    } finally {
+      this._sseChannels.delete(sessionId);
+      this.closeSession(sessionId);
+    }
   }
 
   registerTool(
@@ -375,10 +513,11 @@ export class McpServer {
     }
   }
 
-  private _handleInitialize(_params: Record<string, unknown>): Record<string, unknown> {
+  private _handleInitialize(params: Record<string, unknown>): Record<string, unknown> {
     this._initialized = true;
+    const requested = params ? (params.protocolVersion as string | undefined) : undefined;
     return {
-      protocolVersion: "2024-11-05",
+      protocolVersion: this.negotiateProtocolVersion(requested),
       capabilities: {
         tools: { listChanged: false },
         resources: { subscribe: false, listChanged: false },
@@ -485,55 +624,64 @@ export class McpServer {
     };
   }
 
+  /** Coerce a route handler's parsed body into what the dispatchers accept. */
+  private _normalizeBody(body: unknown): string | Record<string, unknown> {
+    if (typeof body === "object" && body !== null) return body as Record<string, unknown>;
+    if (typeof body === "string") return body;
+    return String(body ?? "");
+  }
+
   /**
-   * Register HTTP routes for this MCP server on the Tina4 router.
+   * Register HTTP routes for this MCP server on the Tina4 router. Mounts both
+   * supported transports on `path`:
+   *   POST {path}          — Streamable HTTP (current transport)
+   *   POST {path}/message  — legacy HTTP+SSE message sink (+ inline fallback)
+   *   GET  {path}/sse      — legacy HTTP+SSE stream (persistent)
    *
-   * Registers:
-   *   POST {path}/message  — JSON-RPC message endpoint
-   *   GET  {path}/sse      — SSE endpoint for streaming
+   * A Streamable HTTP client (Claude Code `--transport http`) POSTs to `{path}`
+   * and reads the JSON-RPC response inline, with an Mcp-Session-Id header on
+   * initialize. A legacy SSE client GETs `{path}/sse`, gets the endpoint event,
+   * and its responses stream back on that connection.
    */
   registerRoutes(router: {
     post: (pattern: string, handler: (req: unknown, res: unknown) => unknown) => { noAuth: () => unknown };
     get: (pattern: string, handler: (req: unknown, res: unknown) => unknown) => { noAuth: () => unknown };
   }): void {
     const server = this;
-    const msgPath = `${this.path}/message`;
-    const ssePath = `${this.path}/sse`;
+    type Resp = ((data: unknown, status?: number, contentType?: string) => unknown) & {
+      addHeader?: (name: string, value: string) => unknown;
+      stream?: (source: AsyncIterable<string>, contentType?: string) => unknown;
+    };
+    const session = (req: { headers?: Record<string, string> }): string =>
+      (req.headers?.["mcp-session-id"] as string) || "";
+    const apply = (response: Resp, outcome: { status: number; headers: Record<string, string>; body: string }) => {
+      for (const [n, v] of Object.entries(outcome.headers)) response.addHeader?.(n, v);
+      if (!outcome.body) return response("", outcome.status);
+      return response(JSON.parse(outcome.body), outcome.status);
+    };
 
     router
-      .post(msgPath, async (req: unknown, res: unknown) => {
-        const request = req as { body: unknown; url?: string };
-        const response = res as ((data: unknown, status?: number, contentType?: string) => unknown);
-        const body = request.body;
-        let raw: string | Record<string, unknown>;
-        if (typeof body === "object" && body !== null) {
-          raw = body as Record<string, unknown>;
-        } else {
-          raw = typeof body === "string" ? body : String(body);
-        }
-        const result = await server.handleMessage(raw);
-        if (!result) {
-          return response("", 204);
-        }
-        return response(JSON.parse(result));
+      .post(this.path, async (req: unknown, res: unknown) => {
+        const request = req as { body: unknown; headers?: Record<string, string> };
+        return apply(res as Resp, await server.dispatchHttp(server._normalizeBody(request.body), session(request)));
       })
       .noAuth();
 
     router
-      .get(ssePath, (req: unknown, res: unknown) => {
-        const request = req as { url?: string; headers?: Record<string, string> };
-        const response = res as {
-          header: (name: string, value: string) => unknown;
-          send: (data: string, status?: number, contentType?: string) => unknown;
-        };
-        // Determine base URL for the endpoint
-        const reqUrl = request.url || ssePath;
-        const endpointUrl = reqUrl.replace(/\/sse$/, "/message");
-        const sseData = `event: endpoint\ndata: ${endpointUrl}\n\n`;
-        response.header("Content-Type", "text/event-stream");
-        response.header("Cache-Control", "no-cache");
-        response.header("Connection", "keep-alive");
-        return response.send(sseData, 200, "text/event-stream");
+      .post(`${this.path}/message`, async (req: unknown, res: unknown) => {
+        const request = req as { body: unknown; headers?: Record<string, string>; query?: Record<string, string> };
+        const sessionId = (request.query?.sessionId as string) || session(request);
+        return apply(res as Resp, await server.dispatchSseMessage(server._normalizeBody(request.body), sessionId));
+      })
+      .noAuth();
+
+    router
+      .get(`${this.path}/sse`, (req: unknown, res: unknown) => {
+        const request = req as { path?: string };
+        const response = res as Resp;
+        const sessionId = server.openSession();
+        const base = (request.path || `${server.path}/sse`).replace(/\/sse$/, "");
+        return response.stream!(server.sseStream(sessionId, `${base}/message?sessionId=${sessionId}`));
       })
       .noAuth();
   }
@@ -563,7 +711,8 @@ export class McpServer {
 
     const serverKey = this.name.toLowerCase().replace(/ /g, "-");
     (config.mcpServers as Record<string, unknown>)[serverKey] = {
-      url: `http://localhost:${port}${this.path}/sse`,
+      type: "http",
+      url: `http://localhost:${port}${this.path}`,
     };
 
     fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + "\n", "utf-8");

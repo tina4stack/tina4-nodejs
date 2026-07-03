@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 interface McpDiscovery {
-  mcpServers: Record<string, { url: string; description: string }>;
+  mcpServers: Record<string, { type?: string; url: string; description: string }>;
 }
 
 const TINA4_DIR = ".tina4";
@@ -34,8 +34,9 @@ export function writeMcpDiscovery(projectRoot: string, port: number): boolean {
   const desired: McpDiscovery = {
     mcpServers: {
       "tina4-live-docs": {
-        url: `http://localhost:${portStr}/__dev/api/mcp`,
-        description: "Live API docs for this Tina4 project (framework + user code)",
+        type: "http",
+        url: `http://localhost:${portStr}/__dev/mcp`,
+        description: "Live API docs + dev tools for this Tina4 project (framework + user code)",
       },
     },
   };

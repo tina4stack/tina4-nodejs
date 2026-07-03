@@ -63,6 +63,36 @@ function request(
   });
 }
 
+// Read a *persistent* SSE stream: collect frames until the endpoint event
+// arrives (or a short timeout), then destroy the connection so the request
+// resolves instead of hanging on a stream that never ends.
+function readSse(
+  path: string,
+  port: number,
+  waitMs = 1500,
+): Promise<{ status: number; raw: string; headers: http.IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: "localhost", port, path, method: "GET" }, (res) => {
+      let raw = "";
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        try { req.destroy(); } catch { /* ignore */ }
+        resolve({ status: res.statusCode!, raw, headers: res.headers });
+      };
+      res.on("data", (c) => {
+        raw += c;
+        if (raw.includes("event: endpoint")) done();
+      });
+      res.on("error", done);
+      setTimeout(done, waitMs);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 // Clean slate
 try { rmSync(TEST_DIR, { recursive: true }); } catch {}
 mkdirSync(join(TEST_DIR, "src/routes"), { recursive: true });
@@ -287,23 +317,38 @@ const unknown = await request("POST", "/__dev/mcp/message", PORT, {
 assert("unknown tool yields a JSON-RPC error", !!unknown.data?.error, JSON.stringify(unknown.data).slice(0, 120));
 assert("unknown tool error mentions the tool name", String(unknown.data?.error?.message || "").includes("does_not_exist"));
 
-// ── notification (no id) → 204 ──────────────────────────────
+// ── notification (no id) → 202 Accepted ─────────────────────
 console.log("\n--- POST /__dev/mcp/message: notification (no id) ---");
 const notif = await request("POST", "/__dev/mcp/message", PORT, {
   jsonrpc: "2.0", method: "notifications/initialized", params: {},
 });
-assert("notification (no id) returns 204 No Content", notif.status === 204, `got ${notif.status}`);
+assert("notification (no id) returns 202 Accepted", notif.status === 202, `got ${notif.status}`);
 assert("notification has empty body", notif.raw === "");
 
-// ── SSE handshake ───────────────────────────────────────────
-console.log("\n--- GET /__dev/mcp/sse ---");
-const sse = await request("GET", "/__dev/mcp/sse", PORT);
+// ── Streamable HTTP: session header + method matrix ─────────
+console.log("\n--- POST /__dev/mcp: Streamable HTTP session + GET 405 ---");
+const shInit = await request("POST", "/__dev/mcp", PORT, {
+  jsonrpc: "2.0", id: 20, method: "initialize", params: { protocolVersion: "2025-06-18" },
+});
+assert("Streamable initialize returns 200", shInit.status === 200, `got ${shInit.status}`);
+assert("Streamable initialize issues an Mcp-Session-Id header",
+  !!shInit.headers["mcp-session-id"], JSON.stringify(shInit.headers));
+assert("Streamable initialize negotiates the requested protocol version",
+  shInit.data?.result?.protocolVersion === "2025-06-18", JSON.stringify(shInit.data?.result));
+const getMcp = await request("GET", "/__dev/mcp", PORT);
+assert("GET /__dev/mcp returns 405 (this server initiates no messages)", getMcp.status === 405, `got ${getMcp.status}`);
+assert("GET /__dev/mcp advertises Allow: POST", String(getMcp.headers["allow"] || "").includes("POST"));
+
+// ── legacy SSE handshake (now a persistent stream) ──────────
+console.log("\n--- GET /__dev/mcp/sse (legacy persistent stream) ---");
+const sse = await readSse("/__dev/mcp/sse", PORT);
 assert("SSE handshake returns 200", sse.status === 200, `got ${sse.status}`);
 assert("SSE content-type is text/event-stream",
   String(sse.headers["content-type"] || "").includes("text/event-stream"),
   String(sse.headers["content-type"]));
-assert("SSE body has an endpoint event", sse.raw.includes("event: endpoint"));
-assert("SSE body announces the message endpoint", sse.raw.includes("data: /__dev/mcp/message"));
+assert("SSE stream emits an endpoint event", sse.raw.includes("event: endpoint"));
+assert("SSE endpoint announces the session-tagged message endpoint",
+  sse.raw.includes("data: /__dev/mcp/message?sessionId="), sse.raw.slice(0, 120));
 
 // ── Default dev server shares the same instance / tool set ──
 console.log("\n--- getDefaultDevServer() registry ---");

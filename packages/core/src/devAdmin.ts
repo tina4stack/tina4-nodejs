@@ -612,12 +612,16 @@ export class DevAdmin {
         // MCP tool introspection over the built-in MCP server (browser dev-admin REST shim)
         { method: "GET", pattern: "/__dev/api/mcp/tools", handler: handleMcpTools },
         { method: "POST", pattern: "/__dev/api/mcp/call", handler: handleMcpCall },
-        // MCP JSON-RPC + SSE endpoints that REAL MCP clients (Claude Code/Desktop)
-        // speak. POST /__dev/mcp[/message] -> JSON-RPC handleMessage; GET
-        // /__dev/mcp/sse -> SSE handshake announcing the message endpoint. Mirrors
-        // the Python v3 fix (POST /__dev/mcp + /__dev/mcp/message, GET /__dev/mcp/sse).
-        { method: "POST", pattern: "/__dev/mcp", handler: handleMcpMessage },
-        { method: "POST", pattern: "/__dev/mcp/message", handler: handleMcpMessage },
+        // MCP transport endpoints that REAL MCP clients (Claude Code/Desktop) speak.
+        // /__dev/mcp is the Streamable HTTP endpoint (current transport): POST = a
+        // JSON-RPC message (initialize issues Mcp-Session-Id), DELETE = terminate a
+        // session, GET = 405 (this server initiates no messages). /message + /sse
+        // are the legacy 2024-11-05 HTTP+SSE transport, kept for older SSE-only
+        // clients. Mirrors the Python master.
+        { method: "POST", pattern: "/__dev/mcp", handler: handleMcpStreamable },
+        { method: "DELETE", pattern: "/__dev/mcp", handler: handleMcpDelete },
+        { method: "GET", pattern: "/__dev/mcp", handler: handleMcpGet405 },
+        { method: "POST", pattern: "/__dev/mcp/message", handler: handleMcpLegacyMessage },
         { method: "GET", pattern: "/__dev/mcp/sse", handler: handleMcpSse },
       ];
       for (const route of mcpRoutes) {
@@ -2241,13 +2245,31 @@ const handleMcpCall: RouteHandler = async (req, res) => {
 /**
  * JSON-RPC message endpoint for real MCP clients.
  *
- * Mounted at POST /__dev/mcp and POST /__dev/mcp/message. Forwards the request
- * body to the default dev MCP server's handleMessage() and returns the JSON-RPC
- * response. Notifications / id-less requests yield an empty 204. Mirrors the
- * Python v3 fix. The /__dev path is always public (auth-bypassed), so MCP
- * clients connect without a token.
+ * Mounted at POST /__dev/mcp (Streamable HTTP). Forwards the body to the default
+ * dev MCP server via dispatchHttp(): initialize issues an Mcp-Session-Id header,
+ * an unknown session id is 404 (client re-inits), a notification is 202, else
+ * 200 with the JSON-RPC response as application/json. The /__dev path is always
+ * public (auth-bypassed), so MCP clients connect without a token.
  */
-const handleMcpMessage: RouteHandler = async (req, res) => {
+function mcpNormalizeBody(body: unknown): string | Record<string, unknown> {
+  if (typeof body === "object" && body !== null) return body as Record<string, unknown>;
+  if (typeof body === "string") return body;
+  return String(body ?? "");
+}
+
+function applyMcpOutcome(
+  res: Parameters<RouteHandler>[1],
+  outcome: { status: number; headers: Record<string, string>; body: string },
+): void {
+  for (const [n, v] of Object.entries(outcome.headers)) res.addHeader(n, v);
+  if (!outcome.body) {
+    res.send("", outcome.status);
+    return;
+  }
+  res.json(JSON.parse(outcome.body), outcome.status);
+}
+
+const handleMcpStreamable: RouteHandler = async (req, res) => {
   if (!mcpRequestAllowed(req)) {
     res.json({ error: "MCP forbidden" }, 404);
     return;
@@ -2255,48 +2277,71 @@ const handleMcpMessage: RouteHandler = async (req, res) => {
   try {
     const { getDefaultDevServer } = await import("./mcp.js");
     const server = getDefaultDevServer();
-    const body = req.body;
-    let raw: string | Record<string, unknown>;
-    if (typeof body === "object" && body !== null) {
-      raw = body as Record<string, unknown>;
-    } else {
-      raw = typeof body === "string" ? body : String(body ?? "");
-    }
-    const result = await server.handleMessage(raw);
-    if (!result) {
-      // Notification / no id — nothing to return.
-      res.send("", 204);
-      return;
-    }
-    res.json(JSON.parse(result));
+    const sessionId = req.header("mcp-session-id") ?? "";
+    applyMcpOutcome(res, await server.dispatchHttp(mcpNormalizeBody(req.body), sessionId));
+  } catch (e) {
+    res.json({ error: (e as Error).message }, 500);
+  }
+};
+
+/** DELETE /__dev/mcp — terminate the session named by Mcp-Session-Id. */
+const handleMcpDelete: RouteHandler = async (req, res) => {
+  if (!mcpRequestAllowed(req)) {
+    res.json({ error: "MCP forbidden" }, 404);
+    return;
+  }
+  const { getDefaultDevServer } = await import("./mcp.js");
+  getDefaultDevServer().closeSession(req.header("mcp-session-id") ?? "");
+  res.send("", 204);
+};
+
+/** GET /__dev/mcp — 405: this server initiates no messages (use /sse for a stream). */
+const handleMcpGet405: RouteHandler = (req, res) => {
+  if (!mcpRequestAllowed(req)) {
+    res.json({ error: "MCP forbidden" }, 404);
+    return;
+  }
+  res.addHeader("Allow", "POST, DELETE");
+  res.json({ error: "method not allowed" }, 405);
+};
+
+/**
+ * POST /__dev/mcp/message — legacy HTTP+SSE message sink. Delivers the JSON-RPC
+ * response on the matching open SSE stream (202 here); with no open stream it
+ * degrades to an inline Streamable HTTP response, so the path serves a plain
+ * POST client too.
+ */
+const handleMcpLegacyMessage: RouteHandler = async (req, res) => {
+  if (!mcpRequestAllowed(req)) {
+    res.json({ error: "MCP forbidden" }, 404);
+    return;
+  }
+  try {
+    const { getDefaultDevServer } = await import("./mcp.js");
+    const server = getDefaultDevServer();
+    const sessionId = (req.query?.sessionId as string) || (req.header("mcp-session-id") ?? "");
+    applyMcpOutcome(res, await server.dispatchSseMessage(mcpNormalizeBody(req.body), sessionId));
   } catch (e) {
     res.json({ error: (e as Error).message }, 500);
   }
 };
 
 /**
- * SSE handshake endpoint for real MCP clients.
- *
- * Mounted at GET /__dev/mcp/sse. Announces the JSON-RPC message endpoint via an
- * `endpoint` event, exactly like the canonical McpServer.registerRoutes() and
- * the Python v3 fix. Content-Type text/event-stream, status 200.
+ * GET /__dev/mcp/sse — legacy HTTP+SSE stream. Opens a persistent SSE connection:
+ * first the `endpoint` event naming the (session-tagged) POST target, then each
+ * JSON-RPC response as it arrives. Node's single event loop lets a separate POST
+ * to /message feed this stream via an in-process channel.
  */
 const handleMcpSse: RouteHandler = async (req, res) => {
   if (!mcpRequestAllowed(req)) {
     res.json({ error: "MCP forbidden" }, 404);
     return;
   }
-  // req.path is the path only (no query); turn /__dev/mcp/sse into the message
-  // endpoint /__dev/mcp/message that the client should POST to.
-  const reqPath = req.path || "/__dev/mcp/sse";
-  const endpointUrl = reqPath.replace(/\/sse$/, "/message");
-  const sseData = `event: endpoint\ndata: ${endpointUrl}\n\n`;
-  res.raw.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-  res.raw.end(sseData);
+  const { getDefaultDevServer } = await import("./mcp.js");
+  const server = getDefaultDevServer();
+  const sessionId = server.openSession();
+  const base = (req.path || "/__dev/mcp/sse").replace(/\/sse$/, "");
+  await res.stream(server.sseStream(sessionId, `${base}/message?sessionId=${sessionId}`));
 };
 
 const handleScaffoldList: RouteHandler = (_req, res) => {

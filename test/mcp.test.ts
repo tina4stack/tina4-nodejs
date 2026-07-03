@@ -622,8 +622,12 @@ console.log("\n=== writeClaudeConfig Tests ===\n");
     assert("writeClaudeConfig has mcpServers", "mcpServers" in config);
     assert("writeClaudeConfig server key", "my-app-tools" in config.mcpServers);
     assert(
-      "writeClaudeConfig url",
-      config.mcpServers["my-app-tools"].url === "http://localhost:9000/my-mcp/sse",
+      "writeClaudeConfig url (Streamable HTTP endpoint, not /sse)",
+      config.mcpServers["my-app-tools"].url === "http://localhost:9000/my-mcp",
+    );
+    assert(
+      "writeClaudeConfig type is http",
+      config.mcpServers["my-app-tools"].type === "http",
     );
   } finally {
     process.chdir(origCwd);
@@ -815,6 +819,66 @@ console.log("\n=== Database Tools (live SQLite) Tests ===\n");
     closeDatabase();
     delete (globalThis as any).__tina4_db;
   }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Streamable HTTP + legacy SSE transport (no mocks: real McpServer +
+// a real in-process SSE channel driven through the async generator)
+// ══════════════════════════════════════════════════════════════
+
+console.log("\n=== Transport (Streamable HTTP + legacy SSE) ===\n");
+{
+  const s = new McpServer("/t-http", "Transport Test");
+  s.registerTool("greet", (a: Record<string, unknown>) => `hi ${a.name}`, "Greet");
+
+  // protocol negotiation
+  assert("negotiate echoes a supported client version", s.negotiateProtocolVersion("2025-06-18") === "2025-06-18");
+  assert("negotiate echoes 2024-11-05 (legacy) when asked", s.negotiateProtocolVersion("2024-11-05") === "2024-11-05");
+  assert("negotiate falls back to latest for unknown", s.negotiateProtocolVersion("1999-01-01") === "2025-06-18");
+  assert("negotiate falls back to latest for null", s.negotiateProtocolVersion(null) === "2025-06-18");
+
+  // session lifecycle
+  const sid0 = s.openSession();
+  assert("openSession returns a valid id", !!sid0 && s.isValidSession(sid0));
+  assert("closeSession removes it", s.closeSession(sid0) === true && !s.isValidSession(sid0));
+  assert("unknown session is invalid", !s.isValidSession("nope"));
+
+  // dispatchHttp: initialize issues Mcp-Session-Id + negotiated version
+  const init = await s.dispatchHttp({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  const issued = init.headers["Mcp-Session-Id"];
+  assert("dispatchHttp initialize -> 200", init.status === 200);
+  assert("dispatchHttp initialize issues Mcp-Session-Id", !!issued && s.isValidSession(issued));
+  assert("dispatchHttp initialize negotiates 2025-06-18", JSON.parse(init.body).result.protocolVersion === "2025-06-18");
+
+  // unknown session on a non-init request -> 404 (client re-inits)
+  const bad = await s.dispatchHttp({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, "never-issued");
+  assert("dispatchHttp unknown session -> 404", bad.status === 404 && !!JSON.parse(bad.body).error);
+
+  // valid session -> tools/list works
+  const listed = await s.dispatchHttp({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} }, issued);
+  assert("dispatchHttp valid session -> 200 tools", listed.status === 200 && JSON.parse(listed.body).result.tools.some((t: { name: string }) => t.name === "greet"));
+
+  // notification -> 202 empty, no session header
+  const notif = await s.dispatchHttp({ jsonrpc: "2.0", method: "notifications/initialized" });
+  assert("dispatchHttp notification -> 202 empty", notif.status === 202 && notif.body === "" && !("Mcp-Session-Id" in notif.headers));
+
+  // legacy HTTP+SSE round-trip through the real generator + channel
+  const sid = s.openSession();
+  const gen = s.sseStream(sid, `/t-http/message?sessionId=${sid}`, 5000);
+  const frame1 = await gen.next();
+  assert("sse first frame is the endpoint event", String(frame1.value).startsWith("event: endpoint"), String(frame1.value));
+  assert("sse endpoint frame carries the sessionId", String(frame1.value).includes(`sessionId=${sid}`));
+  // POST /message feeds the open stream and returns 202 (not inline)
+  const fed = await s.dispatchSseMessage({ jsonrpc: "2.0", id: 9, method: "tools/list", params: {} }, sid);
+  assert("legacy /message with open stream -> 202", fed.status === 202 && fed.body === "");
+  const frame2 = await gen.next();
+  assert("sse delivers the response on the open stream", String(frame2.value).startsWith("event: message") && String(frame2.value).includes("greet"), String(frame2.value));
+  await gen.return(undefined as never);
+  assert("closing the sse stream tears down the session", !s.isValidSession(sid));
+
+  // /message with NO open stream degrades to inline Streamable HTTP
+  const inline = await s.dispatchSseMessage({ jsonrpc: "2.0", id: 10, method: "initialize", params: {} }, "");
+  assert("legacy /message with no stream -> inline 200 + session header", inline.status === 200 && !!inline.headers["Mcp-Session-Id"]);
 }
 
 // ══════════════════════════════════════════════════════════════
