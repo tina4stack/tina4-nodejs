@@ -159,6 +159,27 @@ const unitlessDiv = compiler.compile(`.box { width: 10px / 2; }`);
 assert("Unitless division still folds (10px / 2 = 5px)",
   unitlessDiv.includes("5px"));
 
+// Color functions (issue #124) — rgba(<hex>,a) is invalid CSS; must expand.
+console.log("\n--- Color functions (issue #124) ---");
+const rgbaHex = compiler.compile(`$c: #0f3460; .box { box-shadow: 0 0 4px rgba($c, 0.12); }`);
+assert("rgba(<hex>, a) becomes valid rgba(r, g, b, a)", rgbaHex.includes("rgba(15, 52, 96, 0.12)"));
+assert("rgba(<hex>, a): no leftover rgba(#", !rgbaHex.includes("rgba(#"));
+
+const rgbaNum = compiler.compile(`.box { color: rgba(10, 20, 30, 0.4); }`);
+assert("numeric rgba(r, g, b, a) left untouched", rgbaNum.includes("rgba(10, 20, 30, 0.4)"));
+
+const rgbHex = compiler.compile(`.box { color: rgb(#ffffff); }`);
+assert("rgb(<hex>) becomes rgb(r, g, b)", rgbHex.includes("rgb(255, 255, 255)"));
+
+const mixed = compiler.compile(`.box { background: mix(#ffffff, #000000, 50%); }`);
+assert("mix() evaluates to a hex (#808080)", mixed.includes("#808080") && !mixed.includes("mix("));
+
+const lightDark = compiler.compile(`.box { color: lighten(#0f3460, 20%); border-color: darken(#336699, 10%); }`);
+assert("lighten/darken byte-identical to Python master",
+  lightDark.includes("#1c63b8") && lightDark.includes("#264c72"));
+assert("lighten/darken: no leftover function calls",
+  !lightDark.includes("lighten(") && !lightDark.includes("darken("));
+
 // --- Mixins ---
 console.log("\n--- Mixins ---");
 

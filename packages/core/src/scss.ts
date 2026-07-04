@@ -131,6 +131,10 @@ function compileString(
   // 7. Evaluate basic math in property values
   scss = evalMath(scss);
 
+  // 7.5. Resolve color functions (lighten/darken/rgba/rgb/mix) — after variable
+  // substitution so a $colour arg is already a hex literal (issue #124).
+  scss = resolveColorFunctions(scss);
+
   // 8. Flatten nested rules
   const css = flattenNesting(scss);
 
@@ -338,6 +342,99 @@ function evalMath(scss: string): string {
   return folded.replace(/\x00CALC(\d+)\x00/g, (_m, idx: string) => {
     return placeholders[parseInt(idx, 10)];
   });
+}
+
+// ── Color Functions ──────────────────────────────────────────────
+
+/**
+ * Resolve lighten(), darken(), rgba()/rgb(), and mix() color functions.
+ *
+ * rgba(<hex>, <alpha>) is the damaging case (issue #124): the functional rgba()
+ * notation cannot take a hex, so rgba(#0f3460, 0.12) is invalid CSS and browsers
+ * drop the whole declaration. Convert the hex to its r,g,b components. Runs after
+ * variable substitution so a $colour arg is already a hex literal.
+ */
+function resolveColorFunctions(scss: string): string {
+  scss = scss.replace(/lighten\(\s*([^,]+)\s*,\s*([^)]+)\s*\)/g, (_m, color: string, amt: string) =>
+    adjustLightness(color.trim(), parseFloat(amt.trim().replace(/%$/, "")) / 100)
+  );
+  scss = scss.replace(/darken\(\s*([^,]+)\s*,\s*([^)]+)\s*\)/g, (_m, color: string, amt: string) =>
+    adjustLightness(color.trim(), -(parseFloat(amt.trim().replace(/%$/, "")) / 100))
+  );
+  // rgba(<hex>, <alpha>) — only the two-arg hex form; leave rgba(r,g,b,a) alone.
+  scss = scss.replace(/rgba\(\s*(#[0-9a-fA-F]{3,8})\s*,\s*([\d.]+)\s*\)/g, (whole, hex: string, alpha: string) => {
+    const rgb = hexToRgb(hex);
+    return rgb === null ? whole : `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha.trim()})`;
+  });
+  scss = scss.replace(/rgb\(\s*(#[0-9a-fA-F]{3,8})\s*\)/g, (whole, hex: string) => {
+    const rgb = hexToRgb(hex);
+    return rgb === null ? whole : `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+  });
+  // mix(<c1>, <c2>[, <weight>]) — Sass weight is c1's proportion (default 50%).
+  scss = scss.replace(
+    /mix\(\s*(#[0-9a-fA-F]{3,8})\s*,\s*(#[0-9a-fA-F]{3,8})\s*(?:,\s*([\d.]+%?)\s*)?\)/g,
+    (whole, h1: string, h2: string, weight?: string) => {
+      const c1 = hexToRgb(h1);
+      const c2 = hexToRgb(h2);
+      if (c1 === null || c2 === null) return whole;
+      const w = weight ? parseFloat(weight.replace(/%$/, "")) / 100 : 0.5;
+      const mixed = [0, 1, 2].map((i) => Math.round(c1[i] * w + c2[i] * (1 - w)));
+      return `#${mixed.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+    }
+  );
+  return scss;
+}
+
+/** Parse a #rgb / #rrggbb hex string into an [r, g, b] tuple, or null. */
+function hexToRgb(color: string): [number, number, number] | null {
+  let c = color.trim().replace(/^#/, "");
+  if (c.length === 3) {
+    c = c.split("").map((ch) => ch + ch).join("");
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(c)) return null;
+  return [parseInt(c.slice(0, 2), 16), parseInt(c.slice(2, 4), 16), parseInt(c.slice(4, 6), 16)];
+}
+
+/** Adjust the HSL lightness of a hex color by `amount` (-1..1), return hex.
+ * Truncates (Math.trunc) to match the Python master's int(x*255) byte-for-byte. */
+function adjustLightness(color: string, amount: number): string {
+  const rgb = hexToRgb(color);
+  if (rgb === null) return color;
+  let [r, g, b] = rgb.map((v) => v / 255) as [number, number, number];
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let l = (max + min) / 2;
+  const d = max - min;
+  let h = 0;
+  let s = 0;
+  if (d !== 0) {
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h /= 6;
+  }
+  l = Math.max(0, Math.min(1, l + amount));
+  if (s === 0) {
+    r = g = b = l;
+  } else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hueToRgb(p, q, h + 1 / 3);
+    g = hueToRgb(p, q, h);
+    b = hueToRgb(p, q, h - 1 / 3);
+  }
+  const hex = (v: number): string => Math.trunc(v * 255).toString(16).padStart(2, "0");
+  return `#${hex(r)}${hex(g)}${hex(b)}`;
+}
+
+function hueToRgb(p: number, q: number, t: number): number {
+  if (t < 0) t += 1;
+  if (t > 1) t -= 1;
+  if (t < 1 / 6) return p + (q - p) * 6 * t;
+  if (t < 1 / 2) return q;
+  if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+  return p;
 }
 
 // ── Nesting Flattener ────────────────────────────────────────────
