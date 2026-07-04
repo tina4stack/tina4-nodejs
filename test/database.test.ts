@@ -61,6 +61,13 @@ assert("postgresql user", pg1.user === "admin");
 assert("postgresql password", pg1.password === "secret");
 assert("postgresql database", pg1.database === "myapp");
 
+// pgsql:// is the PDO/Laravel/Doctrine scheme name (issue #58)
+const pgsql = parseDatabaseUrl("pgsql://user:pass@localhost:5432/testdb");
+assert("pgsql:// scheme type", pgsql.type === "postgres");
+assert("pgsql:// scheme host", pgsql.host === "localhost");
+assert("pgsql:// scheme port", pgsql.port === 5432);
+assert("pgsql:// scheme database", pgsql.database === "testdb");
+
 const pg2 = parseDatabaseUrl("postgres://user:pass@localhost/testdb");
 assert("postgres:// shorthand type", pg2.type === "postgres");
 assert("postgres:// shorthand host", pg2.host === "localhost");

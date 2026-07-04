@@ -393,9 +393,10 @@ export function parseDatabaseUrl(url: string, username?: string, password?: stri
       database,
     };
   } else {
-    // Normalize postgres:// to postgresql:// for URL parsing
-    const normalizedUrl = url.startsWith("postgres://")
-      ? url.replace(/^postgres:\/\//, "postgresql://")
+    // Normalize postgres:// and pgsql:// (the PDO/Laravel/Doctrine scheme
+    // name, issue #58) to postgresql:// for URL parsing.
+    const normalizedUrl = /^(postgres|pgsql):\/\//.test(url)
+      ? url.replace(/^(postgres|pgsql):\/\//, "postgresql://")
       : url;
 
     let parsed: URL;
