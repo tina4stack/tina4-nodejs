@@ -13,6 +13,21 @@ import { join, resolve } from "node:path";
 export type FilterFn = (value: unknown, ...args: unknown[]) => unknown;
 export type TestFn = (value: unknown) => boolean;
 
+/** A minimal request shape a {% live %} data provider receives. */
+export interface LiveRequest {
+  headers?: Record<string, unknown>;
+  params?: Record<string, string>;
+}
+/** A {% live %} data provider — re-runs with the live request each refresh. */
+export type LiveProvider = (req: LiveRequest) => Record<string, unknown>;
+/** Result of respondLive — a pure {status, body} descriptor a route applies. */
+export interface LiveResponse {
+  status: number;
+  body: string;
+}
+/** WebSocket broadcaster hook wired by @tina4/core so pushLive can broadcast. */
+export type LiveBroadcaster = (wsPath: string | null, name: string, envelope: string) => void;
+
 /** Marker class for strings that should not be auto-escaped. */
 class SafeString {
   constructor(public value: string) {}
@@ -163,6 +178,21 @@ const FORMAT_RE = /%%|%([-+ 0]*)(\d+)?(?:\.(\d+))?([sdifFeEgGxXob])/g;
 const LEADING_WS_RE = /^\s+/;
 const TRAILING_WS_RE = /\s+$/;
 const THOUSANDS_RE = /\B(?=(\d{3})+(?!\d))/g;
+// {% live "name" poll N | sse | ws "path" [src "url"] %}
+const LIVE_RE = /^live\s+["']([^"']+)["']([\s\S]*)$/;
+const LIVE_WS_RE = /ws\s+["']([^"']+)["']/;
+const LIVE_SRC_RE = /src\s+["']([^"']+)["']/;
+
+/** Escape a value for a live-marker HTML attribute. Byte-identical order to
+ * the Python master / PHP liveAttr / Ruby live_attr so the emitted marker
+ * element matches across all four frameworks (& " < > — no apostrophe). */
+function liveAttr(value: unknown): string {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
 // ── Caches (module level) ─────────────────────────────────────
 
@@ -1374,6 +1404,24 @@ export class Frond {
   private static classGlobals: Map<string, unknown> = new Map();
   private static classTests: Map<string, TestFn> = new Map();
 
+  // ── Live-block registries (server-rendered {% live %} regions) ──
+  // A {% live %} block registers three things when its page first renders:
+  //   liveFragments[name] -> the raw body source, re-rendered on every
+  //                          refresh by GET /__frond/live/<name> or pushLive
+  //   liveSources[name]   -> an optional data provider (liveSource) that
+  //                          re-runs with the LIVE request each refresh, so
+  //                          auth re-applies (IDOR guard)
+  //   liveWsPaths[name]   -> the ws path a `ws "path"` block declared, the
+  //                          pushLive broadcast target
+  // Static so they persist across requests in the long-lived server. Mirrors
+  // the Python master's class-level dicts and PHP/Ruby static registries.
+  private static liveFragments: Map<string, string> = new Map();
+  private static liveSources: Map<string, LiveProvider> = new Map();
+  private static liveWsPaths: Map<string, string> = new Map();
+  // Best-effort WebSocket broadcaster wired by @tina4/core at boot (frond is a
+  // zero-dep leaf package and cannot import core). pushLive calls it if set.
+  private static liveBroadcaster: LiveBroadcaster | null = null;
+
   /**
    * Register a custom filter at the class level — available to every
    * future ``new Frond()`` instance. Callable as ``Frond.addFilter()``
@@ -1412,6 +1460,9 @@ export class Frond {
     Frond.classFilters.clear();
     Frond.classGlobals.clear();
     Frond.classTests.clear();
+    Frond.liveFragments.clear();
+    Frond.liveSources.clear();
+    Frond.liveWsPaths.clear();
   }
 
   private templateDir: string;
@@ -1848,6 +1899,10 @@ export class Frond {
           i++;
         } else if (tag === "cache") {
           const [result, skip] = this.handleCache(tokens, i, context);
+          output.push(result);
+          i = skip;
+        } else if (tag === "live") {
+          const [result, skip] = this.handleLive(tokens, i, context);
           output.push(result);
           i = skip;
         } else if (tag === "spaceless") {
@@ -2500,6 +2555,175 @@ export class Frond {
     const rendered = this.renderTokens([...bodyTokens], context);
     this.fragmentCache.set(cacheKey, [rendered, Date.now() + ttl * 1000]);
     return [rendered, i];
+  }
+
+  /**
+   * Handle {% live "name" poll N | sse | ws "path" [src "url"] %}...{% endlive %}.
+   *
+   * Server-rendered live region. The body renders once for first paint, is
+   * registered under <name> so GET /__frond/live/<name> (or a liveSource
+   * provider) can re-render it, and is wrapped in a marker element that
+   * frond.js wires to the chosen transport (poll / sse / ws). Mirrors the
+   * Python master's _handle_live and PHP/Ruby handleLive.
+   */
+  private handleLive(tokens: Token[], start: number, context: Record<string, unknown>): [string, number] {
+    const [content] = stripTag(tokens[start][1]);
+    const m = content.match(LIVE_RE);
+    if (!m) {
+      throw new Error('live: expected {% live "name" poll N | sse | ws "path" %}');
+    }
+    const name = m[1];
+    const rest = (m[2] || "").trim();
+    const parts = rest.split(/\s+/).filter(Boolean);
+    const mode = parts[0] || "";
+
+    const sm = rest.match(LIVE_SRC_RE);
+    const src = sm ? sm[1] : null;
+    if (src && (src.startsWith("http://") || src.startsWith("https://") || src.startsWith("//"))) {
+      throw new Error("live: src must be a same-origin path, not an absolute URL");
+    }
+
+    let interval: number | null = null;
+    let wsPath: string | null = null;
+    if (mode === "poll") {
+      if (!parts[1] || !/^\d+$/.test(parts[1])) {
+        throw new Error('live: poll requires seconds, e.g. {% live "x" poll 5 %}');
+      }
+      interval = parseInt(parts[1], 10);
+    } else if (mode === "sse") {
+      // no extra config
+    } else if (mode === "ws") {
+      const wm = rest.match(LIVE_WS_RE);
+      if (!wm) {
+        throw new Error('live: ws requires a path, e.g. {% live "x" ws "/ws/x" %}');
+      }
+      wsPath = wm[1];
+    } else {
+      throw new Error(`live: unknown transport "${mode}" (use poll N, sse, or ws "path")`);
+    }
+
+    // Collect body tokens up to {% endlive %}. Nested live is unsupported.
+    const bodyTokens: Token[] = [];
+    let i = start + 1;
+    while (i < tokens.length) {
+      if (tokens[i][0] === "BLOCK") {
+        const [tagContent] = stripTag(tokens[i][1]);
+        const tag = tagContent.split(/\s+/)[0] || "";
+        if (tag === "live") throw new Error("live: nested live blocks are not supported");
+        if (tag === "endlive") {
+          i++;
+          break;
+        }
+        bodyTokens.push(tokens[i]);
+      } else {
+        bodyTokens.push(tokens[i]);
+      }
+      i++;
+    }
+
+    // Register the raw body source so the auto endpoint can re-render it.
+    Frond.liveFragments.set(name, bodyTokens.map((t) => t[1]).join(""));
+
+    const endpoint = src || `/__frond/live/${name}`;
+    const attrs = [`data-frond-live="${liveAttr(name)}"`, `id="live-${liveAttr(name)}"`];
+    if (mode === "poll") {
+      attrs.push('data-mode="poll"', `data-interval="${interval}"`, `data-src="${liveAttr(endpoint)}"`);
+    } else if (mode === "sse") {
+      attrs.push('data-mode="sse"', `data-src="${liveAttr(endpoint)}"`);
+    } else if (mode === "ws") {
+      Frond.liveWsPaths.set(name, wsPath as string);
+      attrs.push('data-mode="ws"', `data-ws="${liveAttr(wsPath)}"`);
+    }
+
+    const firstPaint = this.renderTokens([...bodyTokens], context);
+    return [`<div ${attrs.join(" ")}>${firstPaint}</div>`, i];
+  }
+
+  // ── Live-block class API (mirrors Python master + PHP/Ruby facades) ──
+
+  /**
+   * Re-render a registered {% live %} fragment by name with fresh data.
+   * Returns the rendered HTML, or null if no fragment is registered under that
+   * name yet (its page has not rendered). GET /__frond/live/<name> calls this
+   * after resolving the provider data.
+   */
+  static renderLive(name: string, data?: Record<string, unknown>): string | null {
+    const source = Frond.liveFragments.get(name);
+    if (source === undefined) return null;
+    return new Frond().renderString(source, data || {});
+  }
+
+  /** Register a data provider for a {% live %} block. Invoked with the live
+   * request on every refresh so auth re-applies. Mirrors Python's @live_source. */
+  static liveSource(name: string, fn: LiveProvider): void {
+    Frond.liveSources.set(name, fn);
+  }
+
+  /** The provider registered for a live block, or null. */
+  static getLiveSource(name: string): LiveProvider | null {
+    return Frond.liveSources.get(name) ?? null;
+  }
+
+  /** Whether a live fragment has been registered (its page rendered). */
+  static hasLiveFragment(name: string): boolean {
+    return Frond.liveFragments.has(name);
+  }
+
+  /** The ws path a live block declared (data-ws), or null. */
+  static getLiveWsPath(name: string): string | null {
+    return Frond.liveWsPaths.get(name) ?? null;
+  }
+
+  /**
+   * Resolve GET /__frond/live/{name}: run the provider with the live request
+   * (auth re-applies), re-render the fragment, and return a pure {status, body}
+   * descriptor the route handler applies to the response. 404 for an unknown
+   * name / unrendered fragment. Mirrors Python's live_endpoint / PHP respondLive.
+   */
+  static respondLive(req: LiveRequest, name: string): LiveResponse {
+    const provider = Frond.liveSources.get(name);
+    if (!Frond.liveFragments.has(name) && provider === undefined) {
+      return { status: 404, body: `live block not found: ${name}` };
+    }
+    let context: Record<string, unknown> = {};
+    if (provider !== undefined) {
+      const result = provider(req);
+      context = result && typeof result === "object" ? result : {};
+    }
+    const html = Frond.renderLive(name, context);
+    if (html === null) {
+      return { status: 404, body: `live fragment not registered yet: ${name}` };
+    }
+    return { status: 200, body: html };
+  }
+
+  /** Wire the WebSocket broadcaster used by pushLive. Called once by @tina4/core
+   * at server boot (frond is a zero-dep leaf and cannot import core). */
+  static setLiveBroadcaster(fn: LiveBroadcaster | null): void {
+    Frond.liveBroadcaster = fn;
+  }
+
+  /**
+   * Re-render the '<name>' live fragment and push it to connected clients.
+   * Broadcasts a {type,name,html} envelope over WebSocket to the block's
+   * declared data-ws path (else a room named <name>). Returns the rendered
+   * HTML, or null if the fragment is not registered. Mirrors Python push_live
+   * / PHP pushLive. The broadcast is best-effort — a missing/failed broadcaster
+   * never throws into the caller.
+   */
+  static pushLive(name: string, data?: Record<string, unknown>): string | null {
+    const html = Frond.renderLive(name, data);
+    if (html === null) return null;
+
+    if (Frond.liveBroadcaster) {
+      try {
+        const envelope = JSON.stringify({ type: "live", name, html });
+        Frond.liveBroadcaster(Frond.getLiveWsPath(name), name, envelope);
+      } catch {
+        // best-effort — never let a broadcast failure escape pushLive
+      }
+    }
+    return html;
   }
 
   private handleSpaceless(tokens: Token[], start: number, context: Record<string, unknown>): [string, number] {

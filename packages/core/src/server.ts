@@ -867,6 +867,30 @@ ${reset}
   try {
     const { Frond } = await import("../../frond/src/engine.js");
     frondEngine = new Frond(templatesDir);
+
+    // Always-on Frond {% live %} refresh endpoint. Re-renders a server-rendered
+    // live block on demand (poll / sse), re-running its provider with the live
+    // request so auth re-applies. Parity with Python/PHP/Ruby /__frond/live/{name}.
+    router.addRoute({
+      method: "GET",
+      pattern: "/__frond/live/{name}",
+      handler: (req: any, res: any) => {
+        const { status, body } = Frond.respondLive(req, String(req.params?.name ?? ""));
+        return res.html(body, status);
+      },
+      meta: {
+        summary: "Frond live block refresh",
+        description: "Re-render a server-rendered {% live %} block by name.",
+        tags: ["System"],
+      },
+    });
+
+    // Wire the WebSocket broadcaster so Frond.pushLive can push live-block
+    // updates to connected clients (best-effort). Broadcasts to the block's
+    // declared data-ws path, else falls back to a path named after the block.
+    Frond.setLiveBroadcaster((wsPath: string | null, name: string, envelope: string) => {
+      wsRouteManager.broadcastPath(wsPath || name, envelope);
+    });
   } catch {
     // Frond not available
   }
