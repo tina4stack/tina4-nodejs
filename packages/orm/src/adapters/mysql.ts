@@ -364,10 +364,13 @@ export class MysqlAdapter implements DatabaseAdapter {
 
       if (def.primaryKey && !def.autoIncrement) parts.push("PRIMARY KEY");
       if (def.required && !def.primaryKey) parts.push("NOT NULL");
-      if (def.default !== undefined && def.default !== "now") {
+      // A json column carries no DDL DEFAULT (parity with the Python master; and
+      // MySQL's native JSON type rejects a literal DEFAULT anyway). The instance
+      // still gets its object/array default at construction.
+      if (def.type !== "json" && def.default !== undefined && def.default !== "now") {
         parts.push(`DEFAULT ${sqlDefault(def.default)}`);
       }
-      if (def.default === "now") {
+      if (def.type !== "json" && def.default === "now") {
         parts.push("DEFAULT CURRENT_TIMESTAMP");
       }
 
@@ -395,6 +398,8 @@ function fieldTypeToMysql(def: FieldDefinition): string {
       return "DATETIME";
     case "text":
       return "TEXT";
+    case "json":
+      return "JSON";
     case "string":
       return def.maxLength ? `VARCHAR(${def.maxLength})` : "VARCHAR(255)";
     default:

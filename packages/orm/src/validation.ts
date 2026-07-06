@@ -87,6 +87,15 @@ export function validate(
         }
         break;
 
+      case "json":
+        // A JSON column holds an object/array (or a pre-serialised JSON
+        // string); reject a bare scalar. A value that can't be JSON-encoded
+        // (a circular reference, a BigInt) fails loud at save time.
+        if (value !== null && typeof value !== "object" && typeof value !== "string") {
+          errors.push({ field: name, message: "must be a JSON object or array" });
+        }
+        break;
+
       case "foreignKey": {
         // Outlier D: previously there was no foreignKey case, so ANY value
         // passed validation silently. A foreign key references another model's

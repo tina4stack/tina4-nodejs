@@ -467,10 +467,12 @@ export class MssqlAdapter implements DatabaseAdapter {
 
       if (def.primaryKey && !def.autoIncrement) parts.push("PRIMARY KEY");
       if (def.required && !def.primaryKey) parts.push("NOT NULL");
-      if (def.default !== undefined && def.default !== "now") {
+      // A json column carries no DDL DEFAULT (parity with the Python master): an
+      // object/array default is applied per instance, not a portable SQL literal.
+      if (def.type !== "json" && def.default !== undefined && def.default !== "now") {
         parts.push(`DEFAULT ${sqlDefault(def.default)}`);
       }
-      if (def.default === "now") {
+      if (def.type !== "json" && def.default === "now") {
         parts.push("DEFAULT GETDATE()");
       }
 
@@ -499,6 +501,8 @@ function fieldTypeToMssql(def: FieldDefinition): string {
       return "DATETIME";
     case "text":
       return "NTEXT";
+    case "json":
+      return "NVARCHAR(MAX)";   // MSSQL stores JSON text; its JSON functions read NVARCHAR
     case "string":
       return def.maxLength ? `NVARCHAR(${def.maxLength})` : "NVARCHAR(255)";
     default:

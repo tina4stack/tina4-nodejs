@@ -446,6 +446,11 @@ function fieldToSchemaProperty(def: FieldDefinition): Record<string, unknown> {
       // and produced an empty {} schema (audit P2).
       prop.type = "integer";
       break;
+    case "json":
+      // A JSON document column — an object or array. OpenAPI 3.0 can't express
+      // "object OR array" in one type, so advertise the common object shape.
+      prop.type = "object";
+      break;
     default:
       prop.type = "string";
   }

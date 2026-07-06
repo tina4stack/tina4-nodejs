@@ -353,10 +353,12 @@ export class OdbcAdapter implements DatabaseAdapter {
       if (def.primaryKey) parts.push("PRIMARY KEY");
       if (def.autoIncrement) parts.push("GENERATED ALWAYS AS IDENTITY"); // ANSI SQL
       if (def.required && !def.primaryKey) parts.push("NOT NULL");
-      if (def.default !== undefined && def.default !== "now") {
+      // A json column carries no DDL DEFAULT (parity with the Python master): an
+      // object/array default is applied per instance, not a portable SQL literal.
+      if (def.type !== "json" && def.default !== undefined && def.default !== "now") {
         parts.push(`DEFAULT ${sqlDefault(def.default)}`);
       }
-      if (def.default === "now") parts.push("DEFAULT CURRENT_TIMESTAMP");
+      if (def.type !== "json" && def.default === "now") parts.push("DEFAULT CURRENT_TIMESTAMP");
       colDefs.push(parts.join(" "));
     }
     await this.connection.query(`CREATE TABLE IF NOT EXISTS "${name}" (${colDefs.join(", ")})`);
@@ -405,6 +407,7 @@ function fieldTypeToOdbc(type: string): string {
     case "boolean": return "SMALLINT";
     case "datetime": return "TIMESTAMP";
     case "text": return "CLOB";
+    case "json": return "CLOB";   // store JSON text in a CLOB
     case "string":
     default: return "VARCHAR(255)";
   }

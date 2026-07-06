@@ -27,6 +27,41 @@ export function camelToSnake(name: string): string {
 }
 
 /**
+ * Convert an in-memory field value to its database representation.
+ * A "json" field serialises its object/array to a JSON string for the driver
+ * (parity with the Python master's JSONField.to_db). A value that can't be
+ * serialised (e.g. a circular reference or a BigInt) throws — save() builds
+ * the row inside its try/catch, so it fails loud (rolls back, returns false,
+ * records the cause). null/undefined and an already-serialised string pass
+ * through untouched. Every other field type is returned as-is.
+ */
+export function toDbFieldValue(def: FieldDefinition | undefined, value: unknown): unknown {
+  if (def?.type === "json" && value !== null && value !== undefined && typeof value !== "string") {
+    return JSON.stringify(value);
+  }
+  return value;
+}
+
+/**
+ * Convert a database value to its in-memory representation for a field.
+ * A "json" column comes back from the driver as a JSON string (SQLite TEXT,
+ * MySQL JSON, PostgreSQL JSONB via the text protocol, MSSQL NVARCHAR); decode
+ * it to the object/array the property expects (parity with the Python master's
+ * JSONField parse-on-read). A value already an object/array is left untouched;
+ * null stays null; a non-decodable string keeps its raw form.
+ */
+export function fromDbFieldValue(def: FieldDefinition | undefined, value: unknown): unknown {
+  if (def?.type === "json" && typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value; // leave the raw string in place
+    }
+  }
+  return value;
+}
+
+/**
  * Check whether TINA4_ORM_PLURAL_TABLE_NAMES is enabled in .env.
  * When true, hasMany relationship keys get an "s" suffix (e.g. "posts" instead of "post").
  */
@@ -130,9 +165,15 @@ export class BaseModel {
     const fields0 = ModelClass0.fields ?? {};
     for (const [name, def] of Object.entries(fields0)) {
       if (def.default === undefined) continue;
-      this[name] = typeof def.default === "function"
+      let dv = typeof def.default === "function"
         ? (def.default as () => unknown)()
         : def.default;
+      // Deep-clone a mutable object/array default so two instances never alias
+      // the same object (e.g. a json field `default: {}` — mutating a.meta must
+      // not leak into b.meta). Parity with the Python master's per-instance
+      // deepcopy and Ruby's Marshal round-trip.
+      if (dv !== null && typeof dv === "object") dv = structuredClone(dv);
+      this[name] = dv;
     }
 
     if (data) {
@@ -153,7 +194,10 @@ export class BaseModel {
       for (const [key, value] of Object.entries(data)) {
         // Lowercase the DB column key so UPPERCASE columns (Firebird/Oracle) match the mapping
         const jsProp = reverseMapping[key] ?? reverseMapping[key.toLowerCase()] ?? key;
-        this[jsProp] = value;
+        // A json column arrives as a JSON string from the driver (or as a raw
+        // string a caller passed); decode it to the object/array the property
+        // holds. A value already an object is left as-is.
+        this[jsProp] = fromDbFieldValue(fields0[jsProp], value);
       }
     }
   }
@@ -176,7 +220,7 @@ export class BaseModel {
     for (const key of Object.keys(ModelClass.fields)) {
       if (this[key] !== undefined) {
         const dbCol = ModelClass.getDbColumn(key);
-        result[dbCol] = this[key];
+        result[dbCol] = toDbFieldValue(ModelClass.fields[key], this[key]);
       }
     }
     return result;
@@ -649,7 +693,7 @@ export class BaseModel {
         if (updateFields.length === 0) { await adapterCommit(db); return this; }
 
         const setClause = updateFields.map(([k]) => `"${ModelClass.getDbColumn(k)}" = ?`).join(", ");
-        const values = [...updateFields.map(([k]) => this[k]), pkValue];
+        const values = [...updateFields.map(([k, def]) => toDbFieldValue(def, this[k])), pkValue];
 
         await adapterExecute(db, `UPDATE "${ModelClass.tableName}" SET ${setClause} WHERE "${pkCol}" = ?`, values);
       } else {
@@ -660,7 +704,7 @@ export class BaseModel {
 
         const columns = insertFields.map(([k]) => `"${ModelClass.getDbColumn(k)}"`).join(", ");
         const placeholders = insertFields.map(() => "?").join(", ");
-        const values = insertFields.map(([k]) => this[k]);
+        const values = insertFields.map(([k, def]) => toDbFieldValue(def, this[k]));
 
         // For auto-increment PKs on engines that need it (PostgreSQL),
         // RETURNING the PK column lets us read the engine-assigned id back.

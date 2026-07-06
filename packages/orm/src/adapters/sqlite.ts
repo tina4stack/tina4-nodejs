@@ -366,8 +366,10 @@ export class SQLiteAdapter implements DatabaseAdapter {
       if (def.primaryKey) parts.push("PRIMARY KEY");
       if (def.autoIncrement) parts.push("AUTOINCREMENT");
       if (def.required && !def.primaryKey) parts.push("NOT NULL");
-      if (def.default !== undefined && def.default !== "now") parts.push(`DEFAULT ${sqlDefault(def.default)}`);
-      if (def.default === "now") parts.push("DEFAULT CURRENT_TIMESTAMP");
+      // A json column carries no DDL DEFAULT (parity with the Python master): an
+      // object/array default is applied per instance, not a portable SQL literal.
+      if (def.type !== "json" && def.default !== undefined && def.default !== "now") parts.push(`DEFAULT ${sqlDefault(def.default)}`);
+      if (def.type !== "json" && def.default === "now") parts.push("DEFAULT CURRENT_TIMESTAMP");
       colDefs.push(parts.join(" "));
     }
     this.db.exec(`CREATE TABLE IF NOT EXISTS "${name}" (${colDefs.join(", ")})`);
@@ -393,6 +395,7 @@ function fieldTypeToSQLite(type: string): string {
     case "boolean": return "INTEGER";
     case "datetime": return "TEXT";
     case "text": return "TEXT";
+    case "json": return "TEXT";   // no native JSON type; queryable via json1
     case "string": default: return "TEXT";
   }
 }
