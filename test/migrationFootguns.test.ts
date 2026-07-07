@@ -13,6 +13,7 @@ import { rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   splitStatements,
+  parseSetTerm,
   normalizeQuotes,
   sortMigrationFiles,
   shouldSkipCreateTable,
@@ -288,6 +289,73 @@ console.log("\n--- [#54] comment/string-aware split ---");
 
   closeDatabase();
   try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+}
+
+// ── SET TERM switches the terminator so PSQL bodies survive ─────────────
+console.log("\n--- SET TERM directive support ---");
+
+{
+  // A trigger body has ';'-terminated inner statements; under the default ';'
+  // runner it must survive as ONE statement, not be split on those inner ';'.
+  const sql =
+    "SET TERM ^ ;\n" +
+    "CREATE OR ALTER TRIGGER t_bi FOR t ACTIVE BEFORE INSERT AS\n" +
+    "BEGIN\n" +
+    "  IF (NEW.id IS NULL) THEN NEW.id = GEN_ID(GEN_T, 1);\n" +
+    "END^\n" +
+    "SET TERM ; ^";
+  const stmts = splitStatements(sql, ";");
+  assert("trigger body stays one statement", stmts.length === 1, `got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  assert("trigger statement starts with CREATE OR ALTER TRIGGER", stmts[0]?.startsWith("CREATE OR ALTER TRIGGER") === true);
+  assert("trigger statement ends with END", stmts[0]?.endsWith("END") === true);
+  assert("inner ';' preserved in body", stmts[0]?.includes("NEW.id = GEN_ID(GEN_T, 1);") === true);
+}
+
+{
+  const sql = "SET TERM ^ ;\nEXECUTE BLOCK AS BEGIN a; b; END^\nSET TERM ; ^";
+  const stmts = splitStatements(sql, ";");
+  assert("SET TERM script yields one statement", stmts.length === 1, JSON.stringify(stmts));
+  assert("SET TERM directives are consumed, not emitted", stmts.every((s) => !s.includes("SET TERM")), JSON.stringify(stmts));
+}
+
+{
+  // After `SET TERM ; ^`, plain ';' splitting resumes.
+  const sql =
+    "CREATE TABLE a (id INT);\n" +
+    "SET TERM ^ ;\n" +
+    "CREATE TRIGGER a_bi FOR a AS BEGIN NEW.id = 1; END^\n" +
+    "SET TERM ; ^\n" +
+    "INSERT INTO a VALUES (1);\nUPDATE a SET id = 2;";
+  const stmts = splitStatements(sql, ";");
+  assert("delimiter restored to ';' after the block (4 statements)", stmts.length === 4, JSON.stringify(stmts));
+  assert("statement order preserved",
+    stmts[0]?.startsWith("CREATE TABLE") === true &&
+    stmts[1]?.startsWith("CREATE TRIGGER") === true &&
+    stmts[2]?.startsWith("INSERT INTO") === true &&
+    stmts[3]?.startsWith("UPDATE") === true,
+    JSON.stringify(stmts));
+}
+
+{
+  const sql = "SET TERM !! ;\nCREATE TRIGGER t FOR x AS BEGIN NEW.a = 1; END!!\nSET TERM ; !!";
+  const stmts = splitStatements(sql, ";");
+  assert("multi-char terminator yields one statement", stmts.length === 1, JSON.stringify(stmts));
+  assert("terminator '!!' not left in statement", stmts[0]?.includes("!!") === false);
+  assert("no SET TERM leaked (multi-char)", stmts[0]?.includes("SET TERM") === false);
+}
+
+{
+  // No SET TERM → ordinary ';' splitting, behaviour unchanged.
+  const sql = "CREATE TABLE a (id INT);\nINSERT INTO a VALUES (1);\nUPDATE a SET id = 2;";
+  const stmts = splitStatements(sql, ";");
+  assert("plain ';' script unaffected by SET TERM support", stmts.length === 3, JSON.stringify(stmts));
+  assert("trailing ';' stripped from each statement", stmts.every((s) => !s.endsWith(";")));
+}
+
+{
+  assert("parseSetTerm reads a directive terminator", parseSetTerm("SET TERM ^") === "^");
+  assert("parseSetTerm is case-insensitive", parseSetTerm("set term !!") === "!!");
+  assert("parseSetTerm returns null for a normal statement", parseSetTerm("CREATE TABLE a (id INT)") === null);
 }
 
 // Summary

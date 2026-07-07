@@ -328,6 +328,18 @@ export async function ensureMigrationTable(): Promise<void> {
 }
 
 /**
+ * Read a `MAX(batch)` result cell regardless of adapter key-case. Firebird
+ * returns rows keyed by uppercase column names, so the `max_batch` alias comes
+ * back as `MAX_BATCH`; other engines return `max_batch`. Picks whichever key is
+ * present so a `null` (empty table) is preserved rather than collapsed.
+ */
+function maxBatchOf(row: Record<string, unknown> | undefined): number | null | undefined {
+  if (!row) return undefined;
+  const value = "max_batch" in row ? row.max_batch : row.MAX_BATCH;
+  return value as number | null | undefined;
+}
+
+/**
  * Get the current batch number (max batch + 1).
  */
 export async function getNextBatch(): Promise<number> {
@@ -335,7 +347,7 @@ export async function getNextBatch(): Promise<number> {
   const rows = await adapterQuery<{ max_batch: number | null }>(adapter,
     `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}"`,
   );
-  return (rows[0]?.max_batch ?? 0) + 1;
+  return (maxBatchOf(rows[0]) ?? 0) + 1;
 }
 
 /**
@@ -396,7 +408,7 @@ export async function getLastBatchMigrations(): Promise<Array<{ id: number; name
   const rows = await adapterQuery<{ max_batch: number | null }>(adapter,
     `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}"`,
   );
-  const lastBatch = rows[0]?.max_batch;
+  const lastBatch = maxBatchOf(rows[0]);
   if (lastBatch === null || lastBatch === undefined) return [];
 
   return adapterQuery<{ id: number; name: string; batch: number }>(adapter,
@@ -586,6 +598,9 @@ export function normalizeQuotes(sql: string): string {
  * - `'…'` single-quoted strings and `"…"` double-quoted identifiers are copied
  *   verbatim, honouring the SQL doubled-quote escape (`''` / `""`); a `;`, `--`
  *   or `/*` inside a literal is data, not a delimiter or comment.
+ * - A `SET TERM <new> <current>` directive switches the active terminator and is
+ *   consumed, never emitted, so a statement whose own body contains the default
+ *   terminator survives as one. Multi-character terminators (e.g. `!!`) supported.
  * Mirrors the tina4-python `_split_statements` / tina4-php scanner (parity).
  */
 export function splitStatements(sql: string, delimiter = ";"): string[] {
@@ -596,7 +611,7 @@ export function splitStatements(sql: string, delimiter = ";"): string[] {
   const statements: string[] = [];
   let current = "";
   const n = sql.length;
-  const dlen = delimiter.length;
+  let dlen = delimiter.length;
   let i = 0;
   let inDollarBlock = false;
   let inSlashBlock = false;
@@ -685,12 +700,22 @@ export function splitStatements(sql: string, delimiter = ";"): string[] {
       continue;
     }
 
-    // Statement delimiter — only reached outside blocks/comments/strings.
+    // Statement delimiter — only reached outside blocks/comments/strings. A SET
+    // TERM directive switches the active terminator and is consumed (never
+    // emitted); any other completed statement is collected.
     if (dlen > 0 && sql.startsWith(delimiter, i)) {
-      const stmt = current.trim();
-      if (stmt) statements.push(stmt);
-      current = "";
       i += dlen;
+      const stmt = current.trim();
+      current = "";
+      if (stmt) {
+        const newTerm = parseSetTerm(stmt);
+        if (newTerm !== null) {
+          delimiter = newTerm;
+          dlen = delimiter.length;
+        } else {
+          statements.push(stmt);
+        }
+      }
       continue;
     }
 
@@ -698,9 +723,29 @@ export function splitStatements(sql: string, delimiter = ";"): string[] {
     i += 1;
   }
 
+  // Trailing statement (may not end with a delimiter). A trailing SET TERM
+  // directive is a no-op — consume it, don't emit it.
   const stmt = current.trim();
-  if (stmt) statements.push(stmt);
+  if (stmt && parseSetTerm(stmt) === null) statements.push(stmt);
   return statements;
+}
+
+/**
+ * Parse a `SET TERM <new> <current>` statement-terminator directive.
+ *
+ * `SET TERM` is a script-level directive (recognised by isql and other
+ * InterBase/Firebird tooling, not run by the engine) that changes the terminator
+ * separating statements. Recognising it lets a statement whose own body contains
+ * the default `;` terminator — a trigger, stored procedure or `EXECUTE BLOCK` —
+ * be kept intact rather than split on those inner `;`. The terminator may be more
+ * than one character (e.g. `!!`).
+ *
+ * @param statement A single, already-trimmed statement.
+ * @returns The new terminator, or null when `statement` is not a SET TERM directive.
+ */
+export function parseSetTerm(statement: string): string | null {
+  const m = statement.trim().match(/^SET\s+TERM\s+(\S+)$/i);
+  return m ? m[1] : null;
 }
 
 /**
@@ -848,7 +893,7 @@ export async function migrate(
     const batchRows = await adapterQuery<{ max_batch: number | null }>(db,
       `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}"`,
     );
-    currentBatch = (batchRows[0]?.max_batch ?? 0) + 1;
+    currentBatch = (maxBatchOf(batchRows[0]) ?? 0) + 1;
   } catch {
     // Table may have old schema without batch column
     currentBatch = 1;
