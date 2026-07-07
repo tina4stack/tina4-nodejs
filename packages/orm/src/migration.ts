@@ -568,6 +568,27 @@ export function normalizeQuotes(sql: string): string {
   return sql.replace(SMART_QUOTE_RE, (ch) => SMART_QUOTES[ch]);
 }
 
+const SET_TERM_RE = /^SET\s+TERM\s+(\S+)$/i;
+
+/**
+ * Return the new terminator from a `SET TERM <new> <current>` directive.
+ *
+ * `SET TERM` is a script-level directive (recognised by isql and other
+ * InterBase/Firebird tooling, not run by the engine) that changes the
+ * terminator separating statements. Recognising it lets a statement whose own
+ * body contains the default `;` terminator — a trigger, stored procedure or
+ * `EXECUTE BLOCK` — be kept intact rather than split on those inner `;`. The
+ * terminator may be more than one character (e.g. `!!`).
+ *
+ * @param statement A single, already-trimmed statement.
+ * @returns The new terminator, or `null` when `statement` is not a `SET TERM`
+ *          directive.
+ */
+export function parseSetTerm(statement: string): string | null {
+  const m = statement.trim().match(SET_TERM_RE);
+  return m ? m[1] : null;
+}
+
 /**
  * Split SQL text into individual statements with a single-pass, quote- and
  * comment-aware scanner. The split decision is made character by character so
@@ -586,7 +607,11 @@ export function normalizeQuotes(sql: string): string {
  * - `'…'` single-quoted strings and `"…"` double-quoted identifiers are copied
  *   verbatim, honouring the SQL doubled-quote escape (`''` / `""`); a `;`, `--`
  *   or `/*` inside a literal is data, not a delimiter or comment.
- * Mirrors the tina4-python `_split_statements` / tina4-php scanner (parity).
+ * - A `SET TERM <new> <current>` directive switches the active terminator and is
+ *   consumed (never emitted), so a statement whose own body contains the default
+ *   terminator — a Firebird trigger, stored procedure or `EXECUTE BLOCK` —
+ *   survives as one. Multi-character terminators (e.g. `!!`) are supported.
+ * Mirrors the tina4-python `_split_statements` / tina4-php / tina4-ruby scanner (parity).
  */
 export function splitStatements(sql: string, delimiter = ";"): string[] {
   // Normalize smart/curly quotes to straight ASCII first, so SQL pasted from
@@ -596,7 +621,10 @@ export function splitStatements(sql: string, delimiter = ";"): string[] {
   const statements: string[] = [];
   let current = "";
   const n = sql.length;
-  const dlen = delimiter.length;
+  // Active statement terminator. Starts as the delimiter argument; a SET TERM
+  // directive can switch it mid-script (dlen recomputed) so a statement whose
+  // own body contains the default terminator stays intact.
+  let dlen = delimiter.length;
   let i = 0;
   let inDollarBlock = false;
   let inSlashBlock = false;
@@ -685,12 +713,22 @@ export function splitStatements(sql: string, delimiter = ";"): string[] {
       continue;
     }
 
-    // Statement delimiter — only reached outside blocks/comments/strings.
+    // Statement delimiter — only reached outside blocks/comments/strings. A
+    // SET TERM directive switches the active terminator and is consumed (never
+    // emitted); any other completed statement is collected.
     if (dlen > 0 && sql.startsWith(delimiter, i)) {
-      const stmt = current.trim();
-      if (stmt) statements.push(stmt);
-      current = "";
       i += dlen;
+      const stmt = current.trim();
+      current = "";
+      if (stmt) {
+        const newTerm = parseSetTerm(stmt);
+        if (newTerm !== null) {
+          delimiter = newTerm;
+          dlen = delimiter.length;
+        } else {
+          statements.push(stmt);
+        }
+      }
       continue;
     }
 
@@ -698,8 +736,10 @@ export function splitStatements(sql: string, delimiter = ";"): string[] {
     i += 1;
   }
 
+  // Trailing statement (may not end with a delimiter). A trailing SET TERM
+  // directive is a no-op — consume it, don't emit it.
   const stmt = current.trim();
-  if (stmt) statements.push(stmt);
+  if (stmt && parseSetTerm(stmt) === null) statements.push(stmt);
   return statements;
 }
 
