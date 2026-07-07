@@ -161,8 +161,8 @@ await (async () => {
 
     // Resilience contract #3: a FAILED file is NEVER recorded as applied — no row
     // with its name — so a fixed file re-runs on the next boot (idempotent retry).
-    const brokenRows = queryRows<{ name: string }>(
-      'SELECT name FROM "tina4_migration" WHERE name = ?',
+    const brokenRows = queryRows<{ migration_name: string }>(
+      'SELECT migration_name FROM "tina4_migration" WHERE migration_name = ?',
       ["000001_broken"],
     );
     assert(
