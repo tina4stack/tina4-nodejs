@@ -40,6 +40,7 @@ export {
   status,
   Migration,
   splitStatements,
+  parseSetTerm,
   normalizeQuotes,
   sortMigrationFiles,
   shouldSkipCreateTable,

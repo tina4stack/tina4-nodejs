@@ -13,6 +13,7 @@ import { rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   splitStatements,
+  parseSetTerm,
   normalizeQuotes,
   sortMigrationFiles,
   shouldSkipCreateTable,
@@ -288,6 +289,73 @@ console.log("\n--- [#54] comment/string-aware split ---");
 
   closeDatabase();
   try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+}
+
+// ── SET TERM switches the terminator so PSQL bodies survive ──────────────
+//
+// A Firebird trigger / procedure / EXECUTE BLOCK body has ';'-terminated inner
+// statements; under the default ';' runner it must survive as ONE statement, not
+// be split on those inner ';'. A `SET TERM <new> <cur>` directive switches the
+// terminator so the body stays intact. Mirrors Python/PHP/Ruby.
+{
+  const sql =
+    "SET TERM ^ ;\n" +
+    "CREATE OR ALTER TRIGGER t_bi FOR t ACTIVE BEFORE INSERT AS\n" +
+    "BEGIN\n" +
+    "  IF (NEW.id IS NULL) THEN NEW.id = GEN_ID(GEN_T, 1);\n" +
+    "END^\n" +
+    "SET TERM ; ^";
+  const stmts = splitStatements(sql, ";");
+  assert("SET TERM keeps a trigger body intact (1 stmt)", stmts.length === 1, JSON.stringify(stmts));
+  assert("SET TERM trigger body starts with CREATE", stmts[0]?.startsWith("CREATE OR ALTER TRIGGER") ?? false, JSON.stringify(stmts));
+  assert("SET TERM trigger body ends with END", stmts[0]?.endsWith("END") ?? false, JSON.stringify(stmts));
+  assert("SET TERM keeps inner ';' inside the body", stmts[0]?.includes("NEW.id = GEN_ID(GEN_T, 1);") ?? false, JSON.stringify(stmts));
+}
+
+{
+  const sql = "SET TERM ^ ;\nEXECUTE BLOCK AS BEGIN a; b; END^\nSET TERM ; ^";
+  const stmts = splitStatements(sql, ";");
+  assert("SET TERM directives consumed, one stmt", stmts.length === 1, JSON.stringify(stmts));
+  assert("SET TERM never emitted as SQL", stmts.every((s) => !s.includes("SET TERM")), JSON.stringify(stmts));
+}
+
+{
+  // After `SET TERM ; ^`, plain ';' splitting resumes.
+  const sql =
+    "CREATE TABLE a (id INT);\n" +
+    "SET TERM ^ ;\n" +
+    "CREATE TRIGGER a_bi FOR a AS BEGIN NEW.id = 1; END^\n" +
+    "SET TERM ; ^\n" +
+    "INSERT INTO a VALUES (1);\nUPDATE a SET id = 2;";
+  const stmts = splitStatements(sql, ";");
+  assert("SET TERM restores ';' after the block (4 stmts)", stmts.length === 4, JSON.stringify(stmts));
+  assert("SET TERM restore: stmt0 CREATE TABLE", stmts[0]?.startsWith("CREATE TABLE") ?? false, JSON.stringify(stmts));
+  assert("SET TERM restore: stmt1 CREATE TRIGGER", stmts[1]?.startsWith("CREATE TRIGGER") ?? false, JSON.stringify(stmts));
+  assert("SET TERM restore: stmt2 INSERT", stmts[2]?.startsWith("INSERT INTO") ?? false, JSON.stringify(stmts));
+  assert("SET TERM restore: stmt3 UPDATE", stmts[3]?.startsWith("UPDATE") ?? false, JSON.stringify(stmts));
+}
+
+{
+  const sql = "SET TERM !! ;\nCREATE TRIGGER t FOR x AS BEGIN NEW.a = 1; END!!\nSET TERM ; !!";
+  const stmts = splitStatements(sql, ";");
+  assert("SET TERM supports a multi-char terminator (1 stmt)", stmts.length === 1, JSON.stringify(stmts));
+  assert("SET TERM multi-char: terminator stripped", !(stmts[0]?.includes("!!") ?? true), JSON.stringify(stmts));
+  assert("SET TERM multi-char: directive not emitted", !(stmts[0]?.includes("SET TERM") ?? true), JSON.stringify(stmts));
+}
+
+{
+  // No SET TERM -> ordinary ';' splitting, behaviour unchanged.
+  const sql = "CREATE TABLE a (id INT);\nINSERT INTO a VALUES (1);\nUPDATE a SET id = 2;";
+  const stmts = splitStatements(sql, ";");
+  assert("plain ';' script unaffected by SET TERM support (3 stmts)", stmts.length === 3, JSON.stringify(stmts));
+  assert("plain ';' script: no trailing ';' kept", stmts.every((s) => !s.endsWith(";")), JSON.stringify(stmts));
+}
+
+{
+  assert("parseSetTerm recognises 'SET TERM ^'", parseSetTerm("SET TERM ^") === "^");
+  assert("parseSetTerm is case-insensitive ('set term !!')", parseSetTerm("set term !!") === "!!");
+  assert("parseSetTerm ignores ordinary DDL", parseSetTerm("CREATE TABLE a (id INT)") === null);
+  assert("parseSetTerm ignores a quoted literal", parseSetTerm("SELECT 'SET TERM ^ ;'") === null);
 }
 
 // Summary
