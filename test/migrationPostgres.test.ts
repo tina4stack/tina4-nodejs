@@ -168,8 +168,8 @@ try {
   );
 
   // A tracking row was recorded with an auto-assigned id (SERIAL).
-  const trackRows = await db.queryAsync<{ id: number; name: string; batch: number }>(
-    `SELECT id, name, batch FROM "${MIGRATION_TABLE}" ORDER BY id`,
+  const trackRows = await db.queryAsync<{ id: number; migration_name: string; batch: number }>(
+    `SELECT id, migration_name, batch FROM "${MIGRATION_TABLE}" ORDER BY id`,
   );
   assert(
     "exactly one tracking row recorded",
@@ -177,8 +177,8 @@ try {
     JSON.stringify(trackRows),
   );
   assert(
-    "tracking row name matches the migration",
-    trackRows[0]?.name === "000001_widget",
+    "tracking row migration_name matches the migration",
+    trackRows[0]?.migration_name === "000001_widget",
     JSON.stringify(trackRows),
   );
   assert(

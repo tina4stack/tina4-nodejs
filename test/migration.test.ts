@@ -112,7 +112,7 @@ console.log("\n--- Applied Migrations List ---");
 const applied = await getAppliedMigrations();
 assert("All 3 migrations recorded", applied.length === 3);
 assert("Correct batch numbers", applied[0].batch === 1 && applied[2].batch === 2);
-assert("Migration names stored", applied[0].name === "20250101120000_create_users");
+assert("Migration names stored", applied[0].migration_name === "20250101120000_create_users");
 
 // --- Last Batch Migrations ---
 console.log("\n--- Last Batch ---");

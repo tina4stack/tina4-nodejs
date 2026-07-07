@@ -272,59 +272,145 @@ function buildAddColumnSql(
 const MIGRATION_TABLE = "tina4_migration";
 
 /**
- * Ensure the migration tracking table exists with batch support.
+ * Derive a human-readable description from a migration name, matching the
+ * Python master: strip a leading numeric/timestamp prefix and turn `_` into
+ * spaces. `20250101120000_create_users` -> `create users`.
  */
-export async function ensureMigrationTable(): Promise<void> {
-  const adapter = getAdapter();
-  if (!(await adapterTableExists(adapter, MIGRATION_TABLE))) {
-    if (isFirebirdAdapter(adapter)) {
-      // Firebird: no AUTOINCREMENT, no TEXT type, use generator for IDs
+function deriveDescription(name: string): string {
+  return name.replace(/^\d+_/, "").replace(/_/g, " ");
+}
+
+/**
+ * Build an `ALTER TABLE ... ADD` statement for the tracking table. Firebird
+ * uses `ADD <col>` (no COLUMN keyword); every other engine uses `ADD COLUMN`.
+ */
+function migrationAddColumnSql(fb: boolean, col: string, type: string, extra = ""): string {
+  return `ALTER TABLE "${MIGRATION_TABLE}" ADD ${fb ? "" : "COLUMN "}${col} ${type}${extra}`;
+}
+
+/**
+ * The canonical `tina4_migration` bookkeeping shape, shared across all four
+ * Tina4 frameworks (3.13.55 parity):
+ *
+ *   id             <engine auto-increment PK — migrationIdColumn() / Firebird generator>
+ *   migration_name VARCHAR(500) NOT NULL UNIQUE
+ *   description    VARCHAR(500)
+ *   batch          INTEGER NOT NULL DEFAULT 1
+ *   executed_at    VARCHAR(50)   -- a written ISO-8601 string, NOT a CURRENT_TIMESTAMP default
+ *   passed         INTEGER NOT NULL DEFAULT 1
+ *
+ * A migration is "applied" iff a row exists with passed = 1. Operates on the
+ * passed adapter so both ensureMigrationTable() (global adapter) and migrate()
+ * (its own adapter) share ONE implementation — mirrors Python's single
+ * `_ensure_tracking_table`.
+ */
+async function ensureMigrationTableOn(db: DatabaseAdapter): Promise<void> {
+  if (!(await adapterTableExists(db, MIGRATION_TABLE))) {
+    if (isFirebirdAdapter(db)) {
+      // Firebird: no AUTOINCREMENT, no TEXT type, use a generator for IDs.
       try {
-        await adapterExecute(adapter, "CREATE GENERATOR GEN_TINA4_MIGRATION_ID");
-        try { await adapterExecute(adapter, "COMMIT"); } catch { /* ignore */ }
+        await adapterExecute(db, "CREATE GENERATOR GEN_TINA4_MIGRATION_ID");
+        try { await adapterExecute(db, "COMMIT"); } catch { /* ignore */ }
       } catch {
         // Generator may already exist
       }
-      await adapterExecute(adapter, `CREATE TABLE "${MIGRATION_TABLE}" (
+      await adapterExecute(db, `CREATE TABLE "${MIGRATION_TABLE}" (
         id INTEGER NOT NULL PRIMARY KEY,
-        name VARCHAR(500) NOT NULL,
+        migration_name VARCHAR(500) NOT NULL UNIQUE,
+        description VARCHAR(500),
         batch INTEGER NOT NULL DEFAULT 1,
-        applied_at VARCHAR(50) NOT NULL
+        executed_at VARCHAR(50) NOT NULL,
+        passed INTEGER NOT NULL DEFAULT 1
       )`);
     } else {
-      // Engine-aware bookkeeping DDL (non-Firebird) — same per-engine id column
-      // and column types as the inline `migrate()` bootstrap. Raw AUTOINCREMENT
-      // is SQLite-only and a syntax error elsewhere; SERIAL/AUTO_INCREMENT/
-      // IDENTITY(1,1) are produced via migrationIdColumn(). VARCHAR name (UNIQUE-
-      // safe on MySQL) and DATETIME applied_at on MSSQL (TIMESTAMP is rowversion
-      // there). SQLite gives VARCHAR TEXT affinity, so SQLite stays unchanged.
-      // applied_at keeps a CURRENT_TIMESTAMP default so recordMigration() (which
-      // inserts only name+batch) still works — same as the prior createTable.
-      const idCol = migrationIdColumn(adapter);
-      const engine = engineOf(adapter);
+      // Engine-aware bookkeeping DDL (non-Firebird). Each engine spells an
+      // auto-increment integer PK differently — SQLite AUTOINCREMENT, Postgres
+      // SERIAL, MySQL AUTO_INCREMENT, MSSQL IDENTITY(1,1) — via
+      // migrationIdColumn(). migration_name is VARCHAR (a TEXT column cannot
+      // carry UNIQUE on MySQL); SQLite gives VARCHAR TEXT affinity so it stays
+      // behaviour-identical there. executed_at is a plain VARCHAR(50) written
+      // explicitly (new Date().toISOString()) — NOT a CURRENT_TIMESTAMP default.
+      const idCol = migrationIdColumn(db);
+      const engine = engineOf(db);
       const ifNotExists = engine === "mssql" ? "" : "IF NOT EXISTS ";
-      const appliedType = engine === "mssql" ? "DATETIME" : "TEXT";
-      await adapterExecute(adapter, `CREATE TABLE ${ifNotExists}"${MIGRATION_TABLE}" (
+      await adapterExecute(db, `CREATE TABLE ${ifNotExists}"${MIGRATION_TABLE}" (
         ${idCol},
-        name VARCHAR(500) NOT NULL,
+        migration_name VARCHAR(500) NOT NULL UNIQUE,
+        description VARCHAR(500),
         batch INTEGER NOT NULL DEFAULT 1,
-        applied_at ${appliedType} NOT NULL DEFAULT CURRENT_TIMESTAMP
+        executed_at VARCHAR(50) NOT NULL,
+        passed INTEGER NOT NULL DEFAULT 1
       )`);
     }
-  } else {
-    // Ensure batch column exists on older tables that only had passed/description
+    return;
+  }
+  await upgradeMigrationTable(db);
+}
+
+/**
+ * Non-destructive in-place upgrade of an existing tracking table.
+ *
+ * A table created by an OLDER v3 (<= 3.13.54) has `name` + `applied_at` and no
+ * `migration_name`/`description`/`passed`. Detect that shape, ADD the canonical
+ * columns, and copy the values across (`migration_name = name`, `passed = 1`,
+ * `executed_at = applied_at`) so already-applied migrations are still seen as
+ * applied and are NOT re-run. The old `name`/`applied_at` columns are left in
+ * place (harmless, ignored from now on). Any other legacy shape only has its
+ * missing `batch` column ensured (preserves the prior behaviour).
+ */
+async function upgradeMigrationTable(db: DatabaseAdapter): Promise<void> {
+  let cols: Set<string>;
+  try {
+    const columns = (db as any).getTableColumns
+      ? (db as SQLiteAdapter).getTableColumns(MIGRATION_TABLE)
+      : await adapterColumns(db, MIGRATION_TABLE);
+    cols = new Set(columns.map((c) => c.name.toLowerCase()));
+  } catch {
+    return; // cannot introspect — leave the table untouched
+  }
+
+  const fb = isFirebirdAdapter(db);
+
+  if (cols.has("name") && !cols.has("migration_name")) {
+    // Old-v3 -> canonical. Firebird has no TEXT type, so VARCHAR there.
+    const nameType = fb ? "VARCHAR(500)" : "TEXT";
+    const tsType = fb ? "VARCHAR(50)" : "TEXT";
+
+    const tryExec = async (sql: string): Promise<void> => {
+      try { await adapterExecute(db, sql); } catch { /* column may already exist */ }
+    };
+
+    await tryExec(migrationAddColumnSql(fb, "migration_name", nameType));
+    if (!cols.has("description")) await tryExec(migrationAddColumnSql(fb, "description", nameType));
+    if (!cols.has("passed")) await tryExec(migrationAddColumnSql(fb, "passed", "INTEGER", " DEFAULT 1"));
+    if (!cols.has("executed_at")) await tryExec(migrationAddColumnSql(fb, "executed_at", tsType));
+    if (!cols.has("batch")) await tryExec(migrationAddColumnSql(fb, "batch", "INTEGER", " DEFAULT 1"));
+
+    // Copy legacy values across so applied migrations remain applied.
+    await tryExec(`UPDATE "${MIGRATION_TABLE}" SET migration_name = name WHERE migration_name IS NULL`);
+    await tryExec(`UPDATE "${MIGRATION_TABLE}" SET passed = 1 WHERE passed IS NULL`);
+    if (cols.has("applied_at")) {
+      await tryExec(`UPDATE "${MIGRATION_TABLE}" SET executed_at = applied_at WHERE executed_at IS NULL`);
+    }
+    return;
+  }
+
+  // Any other legacy shape: just ensure the batch column exists (prior behaviour).
+  if (!cols.has("batch")) {
     try {
-      const cols = (adapter as any).getTableColumns
-        ? (adapter as SQLiteAdapter).getTableColumns(MIGRATION_TABLE)
-        : await adapterColumns(adapter, MIGRATION_TABLE);
-      const colNames = new Set(cols.map((c) => c.name.toLowerCase()));
-      if (!colNames.has("batch")) {
-        await adapterExecute(adapter, `ALTER TABLE "${MIGRATION_TABLE}" ADD COLUMN batch INTEGER NOT NULL DEFAULT 1`);
-      }
+      await adapterExecute(db, migrationAddColumnSql(fb, "batch", "INTEGER", " NOT NULL DEFAULT 1"));
     } catch {
       // ignore — column may already exist
     }
   }
+}
+
+/**
+ * Ensure the migration tracking table exists in the canonical shape (creating
+ * it or upgrading an older one in place) on the global adapter.
+ */
+export async function ensureMigrationTable(): Promise<void> {
+  await ensureMigrationTableOn(getAdapter());
 }
 
 /**
@@ -333,28 +419,32 @@ export async function ensureMigrationTable(): Promise<void> {
 export async function getNextBatch(): Promise<number> {
   const adapter = getAdapter();
   const rows = await adapterQuery<{ max_batch: number | null }>(adapter,
-    `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}"`,
+    `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}" WHERE passed = 1`,
   );
   return (rows[0]?.max_batch ?? 0) + 1;
 }
 
 /**
- * Check if a migration has already been applied.
+ * Check if a migration has already been applied (a row with passed = 1).
  */
 export async function isMigrationApplied(name: string): Promise<boolean> {
   const adapter = getAdapter();
   const rows = await adapterQuery(adapter,
-    `SELECT id FROM "${MIGRATION_TABLE}" WHERE name = ?`,
+    `SELECT id FROM "${MIGRATION_TABLE}" WHERE migration_name = ? AND passed = 1`,
     [name],
   );
   return rows.length > 0;
 }
 
 /**
- * Record a migration as applied.
+ * Record a migration as applied. Writes the canonical columns: migration_name,
+ * a derived description, batch, an explicit ISO-8601 executed_at timestamp, and
+ * passed (default 1). Preserves the Firebird generator-id branch.
  */
 export async function recordMigration(name: string, batch: number, passed: number = 1): Promise<void> {
   const adapter = getAdapter();
+  const now = new Date().toISOString();
+  const description = deriveDescription(name);
   if (isFirebirdAdapter(adapter)) {
     // Firebird: generate ID from sequence
     const rows = await adapterQuery<{ NEXT_ID: number }>(adapter,
@@ -362,13 +452,13 @@ export async function recordMigration(name: string, batch: number, passed: numbe
     );
     const nextId = rows[0]?.NEXT_ID ?? 1;
     await adapterExecute(adapter,
-      `INSERT INTO "${MIGRATION_TABLE}" (id, name, batch) VALUES (?, ?, ?)`,
-      [nextId, name, batch],
+      `INSERT INTO "${MIGRATION_TABLE}" (id, migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?, ?)`,
+      [nextId, name, description, batch, now, passed],
     );
   } else {
     await adapterExecute(adapter,
-      `INSERT INTO "${MIGRATION_TABLE}" (name, batch) VALUES (?, ?)`,
-      [name, batch],
+      `INSERT INTO "${MIGRATION_TABLE}" (migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?)`,
+      [name, description, batch, now, passed],
     );
   }
 }
@@ -391,16 +481,16 @@ export async function applyMigration(
 /**
  * Get all migrations from the last batch.
  */
-export async function getLastBatchMigrations(): Promise<Array<{ id: number; name: string; batch: number }>> {
+export async function getLastBatchMigrations(): Promise<Array<{ id: number; migration_name: string; batch: number }>> {
   const adapter = getAdapter();
   const rows = await adapterQuery<{ max_batch: number | null }>(adapter,
-    `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}"`,
+    `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}" WHERE passed = 1`,
   );
   const lastBatch = rows[0]?.max_batch;
   if (lastBatch === null || lastBatch === undefined) return [];
 
-  return adapterQuery<{ id: number; name: string; batch: number }>(adapter,
-    `SELECT id, name, batch FROM "${MIGRATION_TABLE}" WHERE batch = ? ORDER BY id DESC`,
+  return adapterQuery<{ id: number; migration_name: string; batch: number }>(adapter,
+    `SELECT id, migration_name, batch FROM "${MIGRATION_TABLE}" WHERE batch = ? AND passed = 1 ORDER BY id DESC`,
     [lastBatch],
   );
 }
@@ -411,7 +501,7 @@ export async function getLastBatchMigrations(): Promise<Array<{ id: number; name
 export async function removeMigrationRecord(name: string): Promise<void> {
   const adapter = getAdapter();
   await adapterExecute(adapter,
-    `DELETE FROM "${MIGRATION_TABLE}" WHERE name = ?`,
+    `DELETE FROM "${MIGRATION_TABLE}" WHERE migration_name = ?`,
     [name],
   );
 }
@@ -449,14 +539,14 @@ export async function rollback(
     const migrations = await getLastBatchMigrations();
     const rolledBack: string[] = [];
     for (const migration of migrations) {
-      const down = downFunctions.get(migration.name);
+      const down = downFunctions.get(migration.migration_name);
       if (down) {
         await down();
       }
-      await removeMigrationRecord(migration.name);
+      await removeMigrationRecord(migration.migration_name);
       // Legacy down-FUNCTION API: no .down.sql file is involved here, so return the
       // bare migration name (the file-based path below returns "name.down.sql").
-      rolledBack.push(migration.name);
+      rolledBack.push(migration.migration_name);
     }
     return rolledBack;
   }
@@ -469,7 +559,7 @@ export async function rollback(
 
   for (const migration of migrations) {
     // Determine the .down.sql filename
-    const downFile = `${migration.name}.down.sql`;
+    const downFile = `${migration.migration_name}.down.sql`;
     const downPath = join(dir, downFile);
 
     if (existsSync(downPath)) {
@@ -489,18 +579,18 @@ export async function rollback(
             // rollback may fail if auto-rolled-back
           }
           const msg = err instanceof Error ? err.message : String(err);
-          console.error(`  Rollback failed for ${migration.name}: ${msg}`);
+          console.error(`  Rollback failed for ${migration.migration_name}: ${msg}`);
           // Still remove the record so the migration can be re-applied
         }
       }
     } else {
-      console.warn(`  Warning: No .down.sql file found for ${migration.name} — skipping SQL execution`);
+      console.warn(`  Warning: No .down.sql file found for ${migration.migration_name} — skipping SQL execution`);
     }
 
-    await removeMigrationRecord(migration.name);
+    await removeMigrationRecord(migration.migration_name);
     // Return the down-migration file that was run (e.g. "name.down.sql"), matching
     // the Python master's rollback return form.
-    rolledBack.push(`${migration.name}.down.sql`);
+    rolledBack.push(`${migration.migration_name}.down.sql`);
   }
 
   return rolledBack;
@@ -509,10 +599,10 @@ export async function rollback(
 /**
  * Get all applied migrations.
  */
-export async function getAppliedMigrations(): Promise<Array<{ id: number; name: string; batch: number; applied_at: string }>> {
+export async function getAppliedMigrations(): Promise<Array<{ id: number; migration_name: string; description: string; batch: number; executed_at: string; passed: number }>> {
   const adapter = getAdapter();
-  return adapterQuery<{ id: number; name: string; batch: number; applied_at: string }>(adapter,
-    `SELECT * FROM "${MIGRATION_TABLE}" ORDER BY id ASC`,
+  return adapterQuery<{ id: number; migration_name: string; description: string; batch: number; executed_at: string; passed: number }>(adapter,
+    `SELECT * FROM "${MIGRATION_TABLE}" WHERE passed = 1 ORDER BY id ASC`,
   );
 }
 
@@ -817,59 +907,10 @@ export async function migrate(
     return result;
   }
 
-  // Ensure tracking table with batch support
-  if (!(await adapterTableExists(db, MIGRATION_TABLE))) {
-    if (isFirebirdAdapter(db)) {
-      // Firebird: no AUTOINCREMENT, no TEXT type, use generator for IDs
-      try {
-        await adapterExecute(db, "CREATE GENERATOR GEN_TINA4_MIGRATION_ID");
-        try { await adapterExecute(db, "COMMIT"); } catch { /* ignore */ }
-      } catch {
-        // Generator may already exist
-      }
-      await adapterExecute(db, `CREATE TABLE "${MIGRATION_TABLE}" (
-        id INTEGER NOT NULL PRIMARY KEY,
-        name VARCHAR(500) NOT NULL,
-        batch INTEGER NOT NULL DEFAULT 1,
-        applied_at VARCHAR(50) NOT NULL
-      )`);
-    } else {
-      // Engine-aware bookkeeping DDL (non-Firebird). Each engine spells an
-      // auto-increment integer PK differently — SQLite AUTOINCREMENT, Postgres
-      // SERIAL, MySQL AUTO_INCREMENT, MSSQL IDENTITY(1,1) — so the id column is
-      // built per engine (raw `AUTOINCREMENT` is a syntax error on every other
-      // engine; that is the bug that made `migrate()` unusable on
-      // Postgres/MySQL/MSSQL). The `name` column is VARCHAR (not TEXT) so it can
-      // carry a UNIQUE index on MySQL; `applied_at` is DATETIME on MSSQL
-      // (TIMESTAMP there is rowversion, not a real timestamp). SQLite gives
-      // VARCHAR TEXT affinity, so SQLite behaviour is byte-for-byte unchanged.
-      // MSSQL has no IF NOT EXISTS (already guarded by the tableExists check
-      // above), so it is omitted; the other engines tolerate it being absent.
-      // applied_at keeps a CURRENT_TIMESTAMP default so the recordMigration()
-      // path (which inserts only name+batch) still works — preserving the prior
-      // engine-aware createTable behaviour that supplied that default.
-      const idCol = migrationIdColumn(db);
-      const engine = engineOf(db);
-      const ifNotExists = engine === "mssql" ? "" : "IF NOT EXISTS ";
-      const appliedType = engine === "mssql" ? "DATETIME" : "TEXT";
-      await adapterExecute(db, `CREATE TABLE ${ifNotExists}"${MIGRATION_TABLE}" (
-        ${idCol},
-        name VARCHAR(500) NOT NULL,
-        batch INTEGER NOT NULL DEFAULT 1,
-        applied_at ${appliedType} NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )`);
-    }
-  } else {
-    // Migrate old schema: if table has 'description' + 'passed' columns, migrate data
-    try {
-      await adapterQuery<Record<string, unknown>>(db,
-        `SELECT * FROM "${MIGRATION_TABLE}" LIMIT 0`,
-      );
-      // Check column names by querying pragma or just try adding batch
-    } catch {
-      // ignore
-    }
-  }
+  // Ensure the canonical tracking table exists (creates it, or upgrades an
+  // older <= 3.13.54 `name`/`applied_at` table in place). Shared with
+  // ensureMigrationTable() so both paths produce the identical schema.
+  await ensureMigrationTableOn(db);
 
   // Collect .sql files (exclude .down.sql), numeric-aware sorted (9_ before 10_).
   const files = sortMigrationFiles(
@@ -886,7 +927,7 @@ export async function migrate(
   let currentBatch = 1;
   try {
     const batchRows = await adapterQuery<{ max_batch: number | null }>(db,
-      `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}"`,
+      `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}" WHERE passed = 1`,
     );
     currentBatch = (batchRows[0]?.max_batch ?? 0) + 1;
   } catch {
@@ -897,33 +938,17 @@ export async function migrate(
   for (const file of files) {
     const migrationId = file.replace(/\.sql$/, "");
 
-    // Check if already applied — support both 'name' and legacy 'description' column
+    // Applied iff a row exists with passed = 1. ensureMigrationTableOn() above
+    // guarantees the canonical migration_name column (fresh or upgraded).
     let alreadyApplied = false;
     try {
       const existing = await adapterQuery<{ id: number }>(db,
-        `SELECT id FROM "${MIGRATION_TABLE}" WHERE name = ?`,
+        `SELECT id FROM "${MIGRATION_TABLE}" WHERE migration_name = ? AND passed = 1`,
         [migrationId],
       );
       alreadyApplied = existing.length > 0;
     } catch {
-      // Might be old schema with 'description' column instead of 'name'
-      try {
-        const existing = await adapterQuery<{ id: number; passed: number }>(db,
-          `SELECT id, passed FROM "${MIGRATION_TABLE}" WHERE description = ?`,
-          [migrationId],
-        );
-        if (existing.length > 0 && existing[0].passed === 1) {
-          alreadyApplied = true;
-        } else if (existing.length > 0 && existing[0].passed === 0) {
-          // Failed record from old schema — remove to retry
-          await adapterExecute(db,
-            `DELETE FROM "${MIGRATION_TABLE}" WHERE description = ?`,
-            [migrationId],
-          );
-        }
-      } catch {
-        // Neither column exists — continue
-      }
+      alreadyApplied = false;
     }
 
     if (alreadyApplied) {
@@ -956,30 +981,24 @@ export async function migrate(
         await adapterExecute(db, stmt);
       }
 
-      // Record as applied with batch number
+      // Record as applied (passed = 1) with the canonical columns and an
+      // explicit ISO-8601 executed_at timestamp.
       const now = new Date().toISOString();
-      try {
-        if (isFirebirdAdapter(db)) {
-          // Firebird: generate ID from sequence
-          const idRows = await adapterQuery<{ NEXT_ID: number }>(db,
-            "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB$DATABASE",
-          );
-          const nextId = idRows[0]?.NEXT_ID ?? 1;
-          await adapterExecute(db,
-            `INSERT INTO "${MIGRATION_TABLE}" (id, name, batch, applied_at) VALUES (?, ?, ?, ?)`,
-            [nextId, migrationId, currentBatch, now],
-          );
-        } else {
-          await adapterExecute(db,
-            `INSERT INTO "${MIGRATION_TABLE}" (name, batch, applied_at) VALUES (?, ?, ?)`,
-            [migrationId, currentBatch, now],
-          );
-        }
-      } catch {
-        // Old schema fallback — try description/content/passed columns
+      const description = deriveDescription(migrationId);
+      if (isFirebirdAdapter(db)) {
+        // Firebird: generate ID from sequence
+        const idRows = await adapterQuery<{ NEXT_ID: number }>(db,
+          "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB$DATABASE",
+        );
+        const nextId = idRows[0]?.NEXT_ID ?? 1;
         await adapterExecute(db,
-          `INSERT INTO "${MIGRATION_TABLE}" (description, content, passed, run_at) VALUES (?, ?, 1, ?)`,
-          [migrationId, sqlContent, now],
+          `INSERT INTO "${MIGRATION_TABLE}" (id, migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?, 1)`,
+          [nextId, migrationId, description, currentBatch, now],
+        );
+      } else {
+        await adapterExecute(db,
+          `INSERT INTO "${MIGRATION_TABLE}" (migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, 1)`,
+          [migrationId, description, currentBatch, now],
         );
       }
 
@@ -1037,32 +1056,27 @@ export async function status(
     return result;
   }
 
+  // The table exists — upgrade an older <= 3.13.54 shape in place so the
+  // canonical migration_name column is readable below (never creates a table
+  // here; the tableExists check above already returned for the absent case).
+  await ensureMigrationTableOn(db);
+
   // Collect .sql files (exclude .down.sql)
   const files = sortMigrationFiles(
     readdirSync(dir).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql")),
   );
 
-  // Get all applied migration names from the DB
+  // Get all applied migration names (passed = 1) from the DB.
   const appliedNames = new Set<string>();
   try {
-    const rows = await adapterQuery<{ name: string }>(db,
-      `SELECT name FROM "${MIGRATION_TABLE}"`,
+    const rows = await adapterQuery<{ migration_name: string }>(db,
+      `SELECT migration_name FROM "${MIGRATION_TABLE}" WHERE passed = 1`,
     );
     for (const row of rows) {
-      appliedNames.add(row.name);
+      if (row.migration_name) appliedNames.add(row.migration_name);
     }
   } catch {
-    // Old schema with 'description' column
-    try {
-      const rows = await adapterQuery<{ description: string; passed: number }>(db,
-        `SELECT description, passed FROM "${MIGRATION_TABLE}" WHERE passed = 1`,
-      );
-      for (const row of rows) {
-        appliedNames.add(row.description);
-      }
-    } catch {
-      // No valid tracking — treat all as pending
-    }
+    // No valid tracking — treat all as pending
   }
 
   for (const file of files) {

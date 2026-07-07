@@ -21,6 +21,9 @@ import {
   closeDatabase,
   getAdapter,
   migrate,
+  ensureMigrationTable,
+  adapterExecute,
+  adapterQuery,
 } from "../packages/orm/src/index.ts";
 import type { DatabaseAdapter } from "../packages/orm/src/index.ts";
 
@@ -356,6 +359,141 @@ console.log("\n--- [#54] comment/string-aware split ---");
   assert("parseSetTerm is case-insensitive ('set term !!')", parseSetTerm("set term !!") === "!!");
   assert("parseSetTerm ignores ordinary DDL", parseSetTerm("CREATE TABLE a (id INT)") === null);
   assert("parseSetTerm ignores a quoted literal", parseSetTerm("SELECT 'SET TERM ^ ;'") === null);
+}
+
+// ── 3.13.55: canonical tina4_migration schema (migration_name) ──────────
+//
+// Aligns the bookkeeping table to the shape shared across all 4 frameworks:
+//   id, migration_name (UNIQUE), description, batch, executed_at, passed.
+// A migration is "applied" iff a row exists with passed = 1. NO MOCKS — real
+// node:sqlite throughout.
+console.log("\n--- 3.13.55 canonical migration schema (NO MOCKS, real sqlite) ---");
+
+// (a) A freshly-created tracking table has the canonical 6 columns and none of
+//     the legacy `name`/`applied_at` columns.
+{
+  const TMP = "/tmp/tina4-mig-canonical-fresh";
+  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  mkdirSync(TMP, { recursive: true });
+
+  await initDatabase({ type: "sqlite", path: join(TMP, "test.db") });
+  const db = getAdapter();
+  await ensureMigrationTable();
+
+  const cols = new Set(
+    (db as any).getTableColumns("tina4_migration").map((c: any) => c.name.toLowerCase()),
+  );
+  for (const c of ["id", "migration_name", "description", "batch", "executed_at", "passed"]) {
+    assert(`fresh tina4_migration has canonical column '${c}'`, cols.has(c), JSON.stringify([...cols]));
+  }
+  assert("fresh table drops the legacy 'name' column", !cols.has("name"), JSON.stringify([...cols]));
+  assert("fresh table drops the legacy 'applied_at' column", !cols.has("applied_at"), JSON.stringify([...cols]));
+
+  // ensureMigrationTable() is idempotent — a second call must not throw or churn.
+  await ensureMigrationTable();
+  const cols2 = new Set(
+    (db as any).getTableColumns("tina4_migration").map((c: any) => c.name.toLowerCase()),
+  );
+  assert("ensureMigrationTable is idempotent (still canonical)", cols2.has("migration_name") && !cols2.has("name"), JSON.stringify([...cols2]));
+
+  closeDatabase();
+  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+}
+
+// (b) record + read round-trip; a second migrate() does NOT re-run the applied
+//     migration.
+{
+  const TMP = "/tmp/tina4-mig-canonical-rt";
+  const MIGS = join(TMP, "migrations");
+  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  mkdirSync(MIGS, { recursive: true });
+  writeFileSync(join(MIGS, "000001_widgets.sql"), "CREATE TABLE canon_widgets (id INTEGER PRIMARY KEY, name TEXT);");
+
+  await initDatabase({ type: "sqlite", path: join(TMP, "test.db") });
+  const db = getAdapter();
+
+  const r1 = await migrate(db, { migrationsDir: MIGS });
+  assert("canonical: first migrate applies the file", r1.applied.includes("000001_widgets.sql"), JSON.stringify(r1));
+  assert("canonical: migration body ran (table created)", (db as any).tableExists("canon_widgets"));
+
+  const rows = await adapterQuery<{ migration_name: string; description: string; batch: number; executed_at: string; passed: number }>(
+    db,
+    `SELECT migration_name, description, batch, executed_at, passed FROM "tina4_migration"`,
+  );
+  assert("canonical: exactly one tracking row", rows.length === 1, JSON.stringify(rows));
+  assert("canonical: migration_name stored (not name)", rows[0]?.migration_name === "000001_widgets", JSON.stringify(rows));
+  assert("canonical: description derived from the name", rows[0]?.description === "widgets", JSON.stringify(rows));
+  assert("canonical: passed = 1", Number(rows[0]?.passed) === 1, JSON.stringify(rows));
+  assert(
+    "canonical: executed_at is an explicit ISO-8601 string",
+    typeof rows[0]?.executed_at === "string" && rows[0].executed_at.includes("T") && rows[0].executed_at.endsWith("Z"),
+    JSON.stringify(rows),
+  );
+
+  const r2 = await migrate(db, { migrationsDir: MIGS });
+  assert(
+    "canonical: second migrate does NOT re-run the applied migration",
+    r2.applied.length === 0 && r2.skipped.includes("000001_widgets.sql"),
+    JSON.stringify(r2),
+  );
+
+  closeDatabase();
+  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+}
+
+// (c) An OLD-v3 table (id, name, batch, applied_at — NO migration_name /
+//     description / passed) with an already-applied row is upgraded in place:
+//     migration_name/executed_at are backfilled from name/applied_at, and the
+//     already-applied migration is NOT re-run.
+{
+  const TMP = "/tmp/tina4-mig-canonical-upgrade";
+  const MIGS = join(TMP, "migrations");
+  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  mkdirSync(MIGS, { recursive: true });
+  // The real migration file whose row we pre-seed as already applied. If it were
+  // re-run, it would (re-)create `legacy_created` — which must NOT happen.
+  writeFileSync(join(MIGS, "000001_legacy.sql"), "CREATE TABLE legacy_created (id INTEGER PRIMARY KEY);");
+
+  await initDatabase({ type: "sqlite", path: join(TMP, "test.db") });
+  const db = getAdapter();
+
+  // Manually build the OLD-v3 shaped tracking table + one applied row.
+  await adapterExecute(db, `CREATE TABLE "tina4_migration" (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name VARCHAR(500) NOT NULL,
+    batch INTEGER NOT NULL DEFAULT 1,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`);
+  await adapterExecute(db,
+    `INSERT INTO "tina4_migration" (name, batch, applied_at) VALUES (?, ?, ?)`,
+    ["000001_legacy", 1, "2026-01-01T00:00:00.000Z"],
+  );
+
+  const r = await migrate(db, { migrationsDir: MIGS });
+  assert("upgrade: already-applied legacy migration is NOT re-applied", !r.applied.includes("000001_legacy.sql"), JSON.stringify(r));
+  assert("upgrade: legacy migration reported as skipped", r.skipped.includes("000001_legacy.sql"), JSON.stringify(r));
+  assert("upgrade: legacy migration body did NOT re-execute", !(db as any).tableExists("legacy_created"));
+
+  const cols = new Set(
+    (db as any).getTableColumns("tina4_migration").map((c: any) => c.name.toLowerCase()),
+  );
+  assert("upgrade: migration_name column added in place", cols.has("migration_name"), JSON.stringify([...cols]));
+  assert("upgrade: description column added in place", cols.has("description"), JSON.stringify([...cols]));
+  assert("upgrade: passed column added in place", cols.has("passed"), JSON.stringify([...cols]));
+  assert("upgrade: executed_at column added in place", cols.has("executed_at"), JSON.stringify([...cols]));
+  assert("upgrade: legacy 'name' column left in place", cols.has("name"), JSON.stringify([...cols]));
+
+  const rows = await adapterQuery<{ name: string; migration_name: string; passed: number; executed_at: string }>(
+    db,
+    `SELECT name, migration_name, passed, executed_at FROM "tina4_migration"`,
+  );
+  assert("upgrade: exactly one row after upgrade", rows.length === 1, JSON.stringify(rows));
+  assert("upgrade: migration_name copied from name", rows[0]?.migration_name === "000001_legacy", JSON.stringify(rows));
+  assert("upgrade: passed backfilled to 1", Number(rows[0]?.passed) === 1, JSON.stringify(rows));
+  assert("upgrade: executed_at copied from applied_at", rows[0]?.executed_at === "2026-01-01T00:00:00.000Z", JSON.stringify(rows));
+
+  closeDatabase();
+  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
 }
 
 // Summary
