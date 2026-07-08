@@ -957,7 +957,16 @@ export class BaseModel {
       const mappedFields: Record<string, FieldDefinition> = {};
       for (const [fieldName, def] of Object.entries(this.fields)) {
         const dbCol = this.getDbColumn(fieldName);
-        mappedFields[dbCol] = def;
+        // A callable default (e.g. `default: () => new Date()`) is resolved per-row
+        // in the constructor; it must NOT reach the adapter DDL builder, where it
+        // stringifies to an invalid `DEFAULT () => ...` and silently fails table
+        // creation. Drop the default key so no adapter emits it (parity with Python #61).
+        if (typeof def.default === "function") {
+          const { default: _callableDefault, ...rest } = def;
+          mappedFields[dbCol] = rest;
+        } else {
+          mappedFields[dbCol] = def;
+        }
       }
       await adapterCreateTable(db, this.tableName, mappedFields);
       return true;
@@ -983,7 +992,11 @@ export class BaseModel {
       if (def.primaryKey) parts.push("PRIMARY KEY");
       if (def.autoIncrement) parts.push("AUTOINCREMENT");
       if (def.required && !def.primaryKey) parts.push("NOT NULL");
-      if (def.default !== undefined) {
+      // A callable default (e.g. `default: () => new Date()`) is resolved per-row
+      // in the constructor above; it must NOT be emitted into the CREATE TABLE
+      // DDL, where String(fn) stringifies to `DEFAULT () => ...` — invalid SQL
+      // that silently fails table creation (parity with Python #61).
+      if (def.default !== undefined && typeof def.default !== "function") {
         const dv = typeof def.default === "string" ? `'${def.default}'` : String(def.default);
         parts.push(`DEFAULT ${dv}`);
       }
