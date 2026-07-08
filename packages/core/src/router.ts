@@ -463,10 +463,35 @@ export class Router {
 
   /**
    * Match a WebSocket upgrade request path to a registered ws route.
+   * Returns the route only; use {@link matchWebSocketWithParams} when the
+   * upgrade handler needs the extracted `{param}` values.
    */
   matchWebSocket(pathname: string): WebSocketRouteDefinition | null {
+    return this.matchWebSocketWithParams(pathname)?.route ?? null;
+  }
+
+  /**
+   * Match a WebSocket upgrade path AND extract its `{param}` values, using the
+   * same pattern compiler as HTTP routes. A literal pattern (`/ws/chat`) still
+   * matches exactly with empty params; a parameterised pattern
+   * (`/ws/rtc/{room}`) matches `/ws/rtc/abc` and yields `{ room: "abc" }`.
+   * (Previously WS matching was exact-string only, so `{param}` routes never
+   * matched and `connection.params` was always empty.)
+   */
+  matchWebSocketWithParams(
+    pathname: string,
+  ): { route: WebSocketRouteDefinition; params: Record<string, string> } | null {
     for (const route of this.wsRoutes) {
-      if (route.pattern === pathname) return route;
+      if (route.pattern === pathname) return { route, params: {} };
+      const { regex, paramNames } = this.compilePattern(route.pattern);
+      const match = regex.exec(pathname);
+      if (match) {
+        const params: Record<string, string> = {};
+        paramNames.forEach((name, i) => {
+          params[name] = match[i + 1];
+        });
+        return { route, params };
+      }
     }
     return null;
   }
@@ -548,6 +573,12 @@ export class Router {
    */
   static matchWebSocket(pathname: string): WebSocketRouteDefinition | null {
     return defaultRouter.matchWebSocket(pathname);
+  }
+
+  static matchWebSocketWithParams(
+    pathname: string,
+  ): { route: WebSocketRouteDefinition; params: Record<string, string> } | null {
+    return defaultRouter.matchWebSocketWithParams(pathname);
   }
 
   /** All WebSocket route definitions on the default global router. */
