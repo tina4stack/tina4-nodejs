@@ -83,3 +83,20 @@ export { MongodbAdapter } from "./adapters/mongodb.js";
 export type { MongoConfig } from "./adapters/mongodb.js";
 export { OdbcAdapter } from "./adapters/odbc.js";
 export type { OdbcConfig } from "./adapters/odbc.js";
+
+// Realtime collaboration mount (calls + chat + files) — parity with the Python master.
+export {
+  realtime,
+  iceServers,
+  type RealtimeOptions,
+  LocalStorage,
+  S3Storage,
+  selectStorage,
+  storageKey,
+  type StorageBackend,
+  Workspace as RealtimeWorkspace,
+  Channel as RealtimeChannel,
+  ChannelMember as RealtimeChannelMember,
+  Message as RealtimeMessage,
+  Attachment as RealtimeAttachment,
+} from "./realtime/index.js";
