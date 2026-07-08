@@ -85,10 +85,13 @@ async function run(): Promise<void> {
     assert.equal(body.who, "parity", "query param must reach the handler and come back in the body");
 
     // 3. POST helper carries a JSON body through to a second real route.
+    //    .noAuth() because this asserts body PLUMBING, not auth — the TestClient
+    //    now enforces the real secure-by-default gate (#PY2 parity), so a
+    //    tokenless write to an auth-required route would 401 before the handler.
     defaultRouter.post("/__parity/sum", async (req: Tina4Request, res: Tina4Response) => {
       const b = (req.body ?? {}) as Record<string, number>;
       return res.json({ total: (b.a ?? 0) + (b.b ?? 0) });
-    });
+    }).noAuth();
     const postResp = await suite.post("/__parity/sum", { json: { a: 2, b: 3 } });
     assert.equal(postResp.status, 200);
     assert.equal((postResp.json() as Record<string, unknown>).total, 5);

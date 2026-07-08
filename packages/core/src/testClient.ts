@@ -19,6 +19,7 @@ import { Socket } from "node:net";
 import { createRequest } from "./request.js";
 import { createResponse } from "./response.js";
 import { defaultRouter, type Router } from "./router.js";
+import { enforceRouteAuth } from "./authGate.js";
 
 export class TestResponse {
   public readonly status: number;
@@ -167,8 +168,22 @@ export class TestClient {
     // Inject route params
     req.params = match.params;
 
-    // Execute handler
-    await match.handler(req, res);
+    // Route through the REAL auth gate (parity with the live server). A write to
+    // an auth-required route (secure-by-default POST/PUT/PATCH/DELETE, or any
+    // .secure() route) with no valid token / formToken / session token 401s here
+    // exactly as it would in production. The TestClient used to skip this and run
+    // the handler directly, so a green test could hide a live 401 — the
+    // verification layer lied. A public route (GET, or a write marked .noAuth())
+    // passes straight through. When rejected, enforceRouteAuth has written a 401
+    // to res.raw, so the collection below reports it just like a handler response.
+    // (#PY2 parity)
+    const isDevAdmin = cleanPath.startsWith("/__dev");
+    const rejected = enforceRouteAuth(req, res, match, isDevAdmin);
+
+    // Execute handler (only if auth passed)
+    if (!rejected) {
+      await match.handler(req, res);
+    }
 
     // Collect response
     const responseBody = Buffer.concat(chunks).toString();

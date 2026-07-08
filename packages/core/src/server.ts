@@ -9,7 +9,7 @@ import os from "node:os";
 import type { Socket } from "node:net";
 import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
 import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
-import { validToken, getPayload, refreshToken } from "./auth.js";
+import { enforceRouteAuth } from "./authGate.js";
 import { discoverRoutes } from "./routeDiscovery.js";
 import { createRequest } from "./request.js";
 import { createResponse, setDefaultTemplatesDir } from "./response.js";
@@ -1290,56 +1290,14 @@ ${reset}
           if (!proceed || res.raw.writableEnded) return;
         }
 
-        // Auth enforcement: secure routes require a valid token
-        // Check sources in priority order: Authorization header > body formToken > session token
-        // Dev admin routes (/__dev) are always public
+        // Auth enforcement: secure routes require a valid token. Extracted into
+        // enforceRouteAuth (authGate.ts) so the in-process TestClient enforces
+        // the EXACT same gate (parity with Python #PY2 — a tokenless write must
+        // 401 in tests too, or a green test hides a live 401). Dev admin routes
+        // (/__dev) are always public. Returns true when a 401 was written.
         const isDevAdmin = pathname.startsWith("/__dev");
-        if (match.secure === true && match.noAuth !== true && !isDevAdmin) {
-          const authHeader = req.headers.authorization ?? "";
-          const headerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-
-          // Priority 1: Authorization Bearer header
-          let resolvedToken = "";
-          let tokenSource: "header" | "body" | "session" | "" = "";
-
-          if (headerToken && validToken(headerToken)) {
-            resolvedToken = headerToken;
-            tokenSource = "header";
-          }
-
-          // Priority 2: formToken from request body
-          if (!resolvedToken) {
-            const bodyToken = (req.body as Record<string, unknown>)?.formToken as string | undefined;
-            if (bodyToken && validToken(bodyToken)) {
-              resolvedToken = bodyToken;
-              tokenSource = "body";
-            }
-          }
-
-          // Priority 3: Session token
-          if (!resolvedToken) {
-            const sessionToken = (req as any).session?.get?.("token") as string | undefined;
-            if (sessionToken && validToken(sessionToken)) {
-              resolvedToken = sessionToken;
-              tokenSource = "session";
-            }
-          }
-
-          if (!resolvedToken) {
-            res.raw.writeHead(401, { "Content-Type": "application/json" });
-            res.raw.end(JSON.stringify({ error: "Unauthorized" }));
-            return;
-          }
-
-          req.user = getPayload(resolvedToken) ?? {};
-
-          // When body formToken validates, return a FreshToken header with a refreshed JWT
-          if (tokenSource === "body") {
-            const fresh = refreshToken(resolvedToken);
-            if (fresh) {
-              res.header("FreshToken", fresh);
-            }
-          }
+        if (enforceRouteAuth(req, res, match, isDevAdmin)) {
+          return;
         }
 
         // Inject path params by name into handler arguments, then request/response
