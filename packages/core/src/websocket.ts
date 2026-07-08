@@ -993,6 +993,43 @@ class WsRouteManager {
     this.connections.get(id)?.rooms.delete(room);
     this.rooms.get(room)?.delete(id);
   }
+
+  /**
+   * The live connections currently in a room (open only). Returns the
+   * WebSocketConnection objects so callers can read each `.auth` (presence
+   * rosters). Mirrors Python's mgr.get_room_connections / PHP getRoomConnections.
+   */
+  getRoomConnections(room: string): WebSocketConnection[] {
+    const ids = this.rooms.get(room);
+    if (!ids) return [];
+    const result: WebSocketConnection[] = [];
+    for (const id of ids) {
+      const state = this.connections.get(id);
+      if (state && !state.closed) result.push(state.conn);
+    }
+    return result;
+  }
+
+  /**
+   * Broadcast a text frame to every connection in a room, optionally skipping
+   * one connection id (self-exclusion). A dead/slow socket is skipped, never
+   * aborting the rest.
+   */
+  broadcastToRoom(room: string, message: string, excludeId?: string): void {
+    const ids = this.rooms.get(room);
+    if (!ids) return;
+    const frame = buildFrame(OP_TEXT, Buffer.from(message, "utf-8"));
+    for (const id of ids) {
+      if (id === excludeId) continue;
+      const state = this.connections.get(id);
+      if (!state || state.closed) continue;
+      try {
+        state.socket.write(frame);
+      } catch {
+        /* dropped */
+      }
+    }
+  }
 }
 
 /** Process-wide manager for integrated-server user WS route connections. */
@@ -1027,6 +1064,9 @@ function createRouteConnection(
     send,
     sendJson: (data: unknown) => send(JSON.stringify(data)),
     broadcast: (message: string) => wsRouteManager.broadcastPath(path, message),
+    broadcastToRoom: (room: string, message: string, excludeSelf = false) =>
+      wsRouteManager.broadcastToRoom(room, message, excludeSelf ? id : undefined),
+    getRoomConnections: (room: string) => wsRouteManager.getRoomConnections(room),
     joinRoom: (room: string) => wsRouteManager.joinRoom(id, room),
     leaveRoom: (room: string) => wsRouteManager.leaveRoom(id, room),
     close: () => {
@@ -1083,8 +1123,9 @@ function rejectUpgrade(socket: Socket, statusLine: string): void {
  */
 export function serveWebSocketRoute(req: IncomingMessage, socket: Socket, head: Buffer): boolean {
   const [reqPath, reqQuery = ""] = (req.url ?? "/").split("?");
-  const route = Router.matchWebSocket(reqPath);
-  if (!route) return false;
+  const matched = Router.matchWebSocketWithParams(reqPath);
+  if (!matched) return false;
+  const { route, params } = matched;
 
   const wsKey = req.headers["sec-websocket-key"];
   if (!wsKey || (typeof wsKey === "string" && wsKey.length === 0)) {
@@ -1129,7 +1170,7 @@ export function serveWebSocketRoute(req: IncomingMessage, socket: Socket, head: 
   for (const [k, v] of Object.entries(req.headers)) {
     headerMap[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
   }
-  const conn = createRouteConnection(socket, reqPath, headerMap, {}, authPayload);
+  const conn = createRouteConnection(socket, reqPath, headerMap, params, authPayload);
   const state: RouteConnState = { conn, socket, path: reqPath, rooms: new Set(), closed: false };
   wsRouteManager.add(state);
 

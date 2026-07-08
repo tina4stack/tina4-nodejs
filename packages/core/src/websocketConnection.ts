@@ -25,6 +25,18 @@ export interface WebSocketConnection {
   sendJson(data: unknown): void;
   /** Broadcast a message to all connections on the same path (path-scoped) */
   broadcast(message: string): void;
+  /**
+   * Broadcast a message to every connection in a room. Pass `excludeSelf: true`
+   * to skip this connection (the common signalling/chat relay case). Mirrors
+   * Python `connection.broadcast_to_room(room, msg, exclude_self=...)`.
+   */
+  broadcastToRoom(roomName: string, message: string, excludeSelf?: boolean): void;
+  /**
+   * The live connections currently in a room (for presence rosters — read each
+   * returned connection's `.auth`). Mirrors the manager room enumeration used
+   * by the Python/PHP/Ruby realtime rosters.
+   */
+  getRoomConnections(roomName: string): WebSocketConnection[];
   /** Join a room */
   joinRoom(roomName: string): void;
   /** Leave a room */
