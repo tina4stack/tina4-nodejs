@@ -179,6 +179,10 @@ export function skillBlock(contextFile: string): string {
         "- **tina4-js** \u2014 Read `.claude/skills/tina4-js/SKILL.md` for frontend work.",
         "- **tina4-maintainer** \u2014 Read `.claude/skills/tina4-maintainer/SKILL.md` for framework-level changes.",
         "",
+        "If Tina4 behaves differently from what these skills describe, that is a bug in the skill.",
+        "Tell the developer, then report it at https://tina4.com/report-a-skill",
+        "(or open an issue on the matching tina4stack/* GitHub repo).",
+        "",
         "See https://tina4.com for full docs.",
       ].join("\n")
     : [
@@ -186,6 +190,8 @@ export function skillBlock(contextFile: string): string {
         "  .claude/skills/tina4-developer/SKILL.md   (feature development)",
         "  .claude/skills/tina4-js/SKILL.md          (frontend / tina4-js)",
         "  .claude/skills/tina4-maintainer/SKILL.md  (framework-level changes)",
+        "Found a skill that disagrees with how Tina4 actually behaves? Tell the developer,",
+        "then report it at https://tina4.com/report-a-skill",
         "Docs: https://tina4.com",
       ].join("\n");
   return `${start}\n${body}\n${end}`;

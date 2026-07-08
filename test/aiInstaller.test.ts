@@ -59,6 +59,7 @@ console.log("--- Marker / block helpers ---");
   assert("markdown block mentions all three skills",
     block.includes("tina4-developer") && block.includes("tina4-js") && block.includes("tina4-maintainer"));
   assert("markdown block references tina4.com", block.includes("tina4.com"));
+  assert("markdown block tells how to report a bad skill", block.includes("report-a-skill"));
 }
 {
   const block = skillBlock(".cursorules");
