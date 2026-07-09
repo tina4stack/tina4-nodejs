@@ -347,6 +347,12 @@ export function parseDatabaseUrl(url: string, username?: string, password?: stri
     // sqlite://./relative or sqlite://relative — legacy two-slash form
     const path = url.slice("sqlite://".length);
     result = { type: "sqlite", path };
+  } else if (url.startsWith("sqlite:")) {
+    // sqlite:/abs/app.db (one slash = a real absolute path) or sqlite:app.db (relative).
+    // Keep the leading slash so resolveSqlitePath's isAbsolute() sees the absolute path —
+    // this form used to fall through and throw "unsupported scheme" (the naive-abs footgun).
+    const path = url.slice("sqlite:".length);
+    result = { type: "sqlite", path };
   } else if (url.startsWith("mssql://") || url.startsWith("sqlserver://")) {
     // Handle mssql:// and sqlserver:// with custom parsing (URL class doesn't know these schemes)
     const match = url.match(/(?:mssql|sqlserver):\/\/(?:([^:]+):([^@]+)@)?([^:/]+)(?::(\d+))?\/(.*)/);
