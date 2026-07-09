@@ -753,7 +753,35 @@ export class BaseModel {
         typeof (db as any).getError === "function" ? (db as any).getError() :
         typeof (db as any).getLastError === "function" ? (db as any).getLastError() :
         null;
-      this.lastError = adapterErr || e?.message || String(e);
+      let cause = adapterErr || e?.message || String(e);
+      // ── DX hint (v3.13.60 parity with the Python master): turn a bare driver
+      // error into an actionable fix for the two commonest ORM write footguns.
+      // Matched case-insensitively (SQLite via node:sqlite: "no such table" /
+      // "no such column: is_deleted" / "has no column named is_deleted";
+      // Postgres/MySQL: "does not exist" / "doesn't exist" / "unknown column").
+      // Any OTHER error keeps its raw cause untouched so an unrelated failure
+      // (NOT NULL, duplicate PK) is never masked. ──
+      const low = cause.toLowerCase();
+      if (
+        ModelClass.softDelete && low.includes("is_deleted") &&
+        (low.includes("no such column") || low.includes("has no column") ||
+          low.includes("does not exist") || low.includes("doesn't exist") ||
+          low.includes("unknown column"))
+      ) {
+        cause +=
+          " — softDelete=true needs an is_deleted column; declare it " +
+          "(is_deleted: { type: 'integer', default: 0 }), boot the server so " +
+          "syncModels() adds it, or run a migration";
+      } else if (
+        low.includes("no such table") ||
+        ((low.includes("does not exist") || low.includes("doesn't exist")) &&
+          !low.includes("column"))
+      ) {
+        cause +=
+          ` — table '${ModelClass.tableName}' does not exist; call ` +
+          `${ModelClass.name}.createTable() or run a migration`;
+      }
+      this.lastError = cause;
       Log.error(
         `${ModelClass.name}.save() failed for table ` +
           `'${ModelClass.tableName}': ${this.lastError}`,

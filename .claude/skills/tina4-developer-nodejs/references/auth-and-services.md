@@ -74,6 +74,59 @@ const hash = Auth.hashPassword("mypassword");         // store this
 const ok   = Auth.checkPassword("mypassword", hash);  // true
 ```
 
+## Auth footguns
+
+tina4-nodejs is **secure by default**: `POST`/`PUT`/`PATCH`/`DELETE` require a valid Bearer token;
+`GET`/`HEAD`/`OPTIONS` are public. The write default and 401 are enforced in source
+(`packages/core/src/router.ts:185` sets `secure` to `true` for write methods; `authGate.ts:74`
+writes the `401 {"error":"Unauthorized"}` when no valid token resolves). Get these wrong and you
+either ship an unauthenticated write or fight phantom 401s.
+
+### An unexpected 401 means "authenticate the request", not "open the route"
+
+**`.noAuth()` is a LAST RESORT.** When a write route returns 401 in dev or from a client, the fix is
+almost always to **send the Bearer token** the route legitimately requires
+(`Authorization: Bearer <token>`) — not to strip its auth. Reserve `.noAuth()` for endpoints that
+are *genuinely* public: login, register, health-check, inbound webhooks.
+
+* **Never blanket `.noAuth()` to silence 401s.** Slapping it on every write that returns 401 doesn't
+  "fix auth" — it **ships unauthenticated writes**. A 401 on `POST /orders` means the request
+  arrived without a valid token; authenticate it, don't open the route.
+
+### A file-based write route CANNOT opt out of auth — register a public write imperatively
+
+This is the load-bearing Node divergence. Route discovery reads only the handler, `meta`, and
+`template` from a `post.ts` file (`routeDiscovery.ts`), and the server discards the `RouteRef`
+`addRoute` returns (`server.ts`). So a file-based `src/routes/login/post.ts` is
+**secure-by-default with no way to `.noAuth()` it** — it will 401 forever. A genuinely public write
+must be registered **imperatively in `app.ts`** where you can chain `.noAuth()`:
+
+```typescript
+// app.ts — the ONLY place a public write can opt out
+post("/api/login", loginHandler).noAuth();      // login has no token yet — public by necessity
+post("/api/webhooks/stripe", stripeHandler).noAuth();
+
+// A GET opts INTO auth the same way (chained on the imperative registration):
+get("/api/reports", reportsHandler).secure();   // .secure(), not .secured()
+```
+
+`.secure()` / `.noAuth()` live on the imperative `RouteRef` (`router.ts:97-106`). `.secured()` does
+not exist for HTTP routes — it's a WebSocket-upgrade concept only.
+
+### `meta.security` DOCUMENTS auth in Swagger — it does NOT enforce it
+
+A route's `meta.security` is consumed **only** by the Swagger/OpenAPI generator
+(`packages/swagger/src/generator.ts:306`) — never by `authGate.ts` or request dispatch. So it is
+**documentation, not enforcement** (the Node analogue of Python's swagger `@security()` trap):
+
+* `meta: { security: "bearerAuth" }` on a public-by-default **GET** documents that it needs a token
+  but leaves the route **open** — the worst kind of drift (Swagger claims it's secured; it isn't).
+* `meta: { security: "public" }` on a **write** documents it as public while it still **401s**.
+
+The real gate is always the method default plus `.secure()` / `.noAuth()`. Use `meta.security` to
+make the docs *match* the enforcement, never as a substitute for it. `addSecurityScheme()` (from
+`tina4-nodejs/swagger`) likewise only registers an OpenAPI scheme — it changes no enforcement.
+
 ## Sessions
 
 Configure the backend in `.env`:
