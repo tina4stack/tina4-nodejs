@@ -777,7 +777,7 @@ bindDatabase(await createAdapterFromUrl("postgres://localhost:5432/analytics"), 
 // silently falling back to the default. (initDatabase / the internal setAdapter are unchanged.)
 ```
 
-**Soft delete:** set `static softDelete = true`. Adds an `is_deleted` INTEGER column (0/1). `delete()` flips the flag, `forceDelete()` removes the row, `restore()` clears it.
+**Soft delete:** set `static softDelete = true`. Server boot (`syncModels()`) adds the `is_deleted` INTEGER column (0/1) — but **`Model.createTable()` does not**, so declare it there yourself. `delete()` flips the flag, `forceDelete()` removes the row, `restore()` clears it.
 
 ## Module: QueryBuilder (`packages/orm/src/queryBuilder.ts`)
 
