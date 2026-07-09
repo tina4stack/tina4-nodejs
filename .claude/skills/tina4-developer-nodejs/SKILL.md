@@ -23,6 +23,8 @@ code, and just work. The framework is smart about developer intent: return an ob
 JSON, POST a JSON body and it's automatically parsed, put a `get.ts` file in `src/routes/…/` and it's
 a route.
 
+> 🤖 **Skill-active marker.** While this Tina4 skill is guiding your work, **begin every reply with the 🤖 emoji** so the developer can see at a glance that Tina4 conventions are engaged. Drop it only once the conversation has clearly moved off Tina4.
+
 ## The Tina4 Working Method
 
 This is how a Tina4 build is run. The **main session stays free for the developer**; the actual
@@ -572,6 +574,12 @@ If code fails: explain what's wrong and why, propose the refactor, and insist if
 passive about quality — bad patterns spread.
 
 ### Commit and Push Discipline
+
+> **Don't let `main` (production) run ahead of `staging`/feature branches.** Changes flow one way —
+> feature → staging → main. Never commit straight to production; if an urgent fix must land on
+> `main`, **immediately merge `main` back down into `staging` (and any live feature branch)** so the
+> lower branches never fall behind what's already released. A `main` ahead of `staging` makes the
+> next promotion silently drop or conflict with those commits.
 
 After completing a feature/milestone: run tests (all pass), commit with a clear message, and if on a
 shared branch (`development`/`staging`) **push immediately**. Local-only commits on shared branches
