@@ -660,9 +660,11 @@ console.log("\n=== Dev Tools Registration Tests ===\n");
     // Node.js mirrors the Python master surface area (24 original + 21 parity
     // tools: plan_*, index_*, project_overview, file_patch, docs_*, git_status,
     // deps_list) plus 3 Live API RAG tools (api_search/class/method, parity with
-    // PHP/Python). plan_uncomplete_step is available on the Plan class but not
-    // exposed via MCP (matches Python — only plan_complete_step is a tool).
-    assert("all 48 dev tools registered", tools.length === 48);
+    // PHP/Python) plus code_search (fuzzy FTS grounding over the project's own
+    // source + docs — the DUAL of the structural api_* tools). plan_uncomplete_step
+    // is available on the Plan class but not exposed via MCP (matches Python —
+    // only plan_complete_step is a tool).
+    assert("all 49 dev tools registered", tools.length === 49);
 
     const toolNames = tools.map((t: any) => t.name).sort();
     const expectedNames = [
@@ -671,6 +673,7 @@ console.log("\n=== Dev Tools Registration Tests ===\n");
       "api_search",
       "asset_upload",
       "cache_stats",
+      "code_search",
       "database_columns",
       "database_execute",
       "database_query",

@@ -75,6 +75,8 @@ export { responseCache, clearCache, cacheStats, cacheGet, cacheSet, cacheDelete,
 export type { ResponseCacheConfig, CacheBackend } from "./cache.js";
 export { Api } from "./api.js";
 export type { ApiResult } from "./api.js";
+export { Context, defaultContext, existingContext, fts5Supported, _sharedContexts } from "./context/index.js";
+export type { SearchHit } from "./context/index.js";
 export { Events } from "./events.js";
 export { DevAdmin, MessageLog, RequestInspector, ErrorTracker, DevMailboxStore, DevQueue, WsTracker, supervisorBaseUrl, devAdminLanguage } from "./devAdmin.js";
 export {
