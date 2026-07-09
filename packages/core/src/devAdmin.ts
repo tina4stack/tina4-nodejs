@@ -703,6 +703,21 @@ const handleReload: RouteHandler = async (req, res) => {
     console.error(`  Re-discover on reload failed:`, err);
   }
 
+  // Keep the code Context index LIVE on the same reload trigger: reindex just
+  // the changed file (UPSERT) so the dev-MCP code_search reflects the edit
+  // immediately. existingContext() only touches an already-built index (it never
+  // creates one — nothing to keep fresh until code_search has run), and the
+  // whole block is guarded so a context failure never breaks the reload.
+  try {
+    if (_reloadFile) {
+      const { existingContext } = await import("./context/index.js");
+      const ctx = existingContext();
+      if (ctx) ctx.reindexFile(_reloadFile);
+    }
+  } catch (err) {
+    console.error(`  Context reindex on reload failed:`, err);
+  }
+
   // WebSocket-primary reload: push an instant message to every browser
   // connected on /__dev_reload. The toolbar client (and the dev-admin
   // dashboard) act on this immediately — the mtime poll is only a fallback for

@@ -1056,7 +1056,8 @@ function verifyNodeSyntax(absPath: string, relPath: string): string | null {
 let _lastCacheStats: Record<string, unknown> | null = null;
 
 /**
- * Register all 24 built-in dev tools on the given McpServer.
+ * Register all built-in dev tools on the given McpServer (the api_* reflection
+ * tools plus code_search, the fuzzy FTS grounding tool).
  */
 export function registerDevTools(server: McpServer): void {
   const projectRoot = path.resolve(process.cwd());
@@ -2068,6 +2069,48 @@ export function registerDevTools(server: McpServer): void {
     schemaFromParams([
       { name: "class", type: "string" },
       { name: "name", type: "string" },
+    ]),
+  );
+
+  // ── Code/doc grounding (context subsystem) ──────────────────
+  // Sibling of api_* but the DUAL of it: api_* is exact structural reflection
+  // (class/method signatures); code_search is fuzzy/semantic FTS over the
+  // project's own SOURCE + docs. Use code_search for "where/how is X done in
+  // THIS codebase?" and api_* for "what's the signature of X?". Backed by a
+  // zero-dependency node:sqlite FTS5 index at .tina4/context.db, held as a
+  // PROCESS-WIDE shared Context (context.defaultContext) so the dev-reload hook
+  // (handleReload) can keep the SAME index fresh on every file save.
+  server.registerTool(
+    "code_search",
+    (args) => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { defaultContext } = req("./context/index.js") as typeof import("./context/index.js");
+        // Index src/ when present (falls back to the project root), mirroring
+        // the Python master's _code_root().
+        const srcDir = path.join(projectRoot, "src");
+        const root = fs.existsSync(srcDir) && fs.statSync(srcDir).isDirectory() ? srcDir : projectRoot;
+        const ctx = defaultContext(root, path.join(projectRoot, ".tina4", "context.db"));
+        if (!ctx.available) {
+          return { error: "SQLite FTS5 is not available in this Node build; code_search is disabled." };
+        }
+        if (args.rebuild) {
+          ctx.reset();
+          ctx.indexRoot(root);
+        }
+        const k = parseInt(String(args.k ?? 5), 10) || 5;
+        return ctx.search((args.query as string) || "", k);
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
+    },
+    "Fuzzy/semantic search over THIS project's own source + docs (node:sqlite FTS5, zero-dep). " +
+      "Ranks definitions above tests that merely mention a symbol. Use for 'where is X done here?'; " +
+      "use api_* for exact signatures. Returns [{path, score, snippet}].",
+    schemaFromParams([
+      { name: "query", type: "string" },
+      { name: "k", type: "integer", default: 5 },
+      { name: "rebuild", type: "boolean", default: false },
     ]),
   );
 }
