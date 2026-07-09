@@ -35,14 +35,25 @@ const HELP = `
 
   Generators:
     tina4nodejs generate model <Name> [--fields "name:string,price:float"]
-    tina4nodejs generate route <name> [--model Name]
-    tina4nodejs generate crud <Name> [--fields "..."]   Model + migration + routes + form + view + test
+    tina4nodejs generate route <name> [--model Name] [--public]   Writes secure by default; --public opens them
+    tina4nodejs generate crud <Name> [--fields "..."] [--public]  Model + migration + routes + form + view + test
     tina4nodejs generate migration <description>
     tina4nodejs generate middleware <Name>
     tina4nodejs generate test <name>
     tina4nodejs generate form <Name> [--fields "..."]   Form template with inputs matching model fields
     tina4nodejs generate view <Name> [--fields "..."]   List + detail templates for viewing records
-    tina4nodejs generate auth                           Login/register/logout routes + User model + templates
+    tina4nodejs generate auth                           Login/register routes (public) + User model + templates
+    tina4nodejs generate service <Name> [--every 5m | --cron "..."]  Scheduled ServiceRunner task (src/services/)
+    tina4nodejs generate queue <topic>                  Producer + consumer daemon worker (src/services/)
+    tina4nodejs generate validator <Name>               Request-body Validator (src/validators/)
+    tina4nodejs generate seeder <Model>                 FakeData + seedOrm seeder (src/seeds/)
+    tina4nodejs generate websocket <path>               websocket() handler (src/routes/)
+    tina4nodejs generate listener <event>               Events.on(event) listener (src/listeners/)
+
+  Scaffolding-first: logic-shaped generators (route without --model, service,
+  queue, validator, seeder, websocket, listener) emit real wiring + an AI-FILL
+  placeholder (throws until filled); CRUD-shaped ones emit working code. Writes
+  are secure by default — use --public to open them.
 
   Field types: string, int, float, bool, text, datetime
   Table names: singular by default (Product → product)

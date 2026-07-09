@@ -64,8 +64,16 @@ export async function discoverRoutes(routesDir: string): Promise<RouteDefinition
 
       const meta: RouteMeta | undefined = mod.meta;
       const template: string | undefined = typeof mod.template === "string" ? mod.template : undefined;
+      // Auth opt-outs a route file can export (parity with the imperative
+      // `.noAuth()` / AutoCrud `secure: false`). A generated public write file
+      // (`generate route … --public`, or the always-public auth login/register)
+      // does `export const secure = false;`; without threading it here the
+      // router would keep its secure-by-default write gate and the opt-out
+      // would be inert. Only booleans are honoured — anything else is ignored.
+      const secure: boolean | undefined = typeof mod.secure === "boolean" ? mod.secure : undefined;
+      const noAuth: boolean | undefined = typeof mod.noAuth === "boolean" ? mod.noAuth : undefined;
 
-      definitions.push({ method, pattern, handler, filePath, meta, template });
+      definitions.push({ method, pattern, handler, filePath, meta, template, secure, noAuth });
       _seenFiles.add(filePath);
       _seenMtimes.set(filePath, currentMtime);
       registeredFromThisScan++;

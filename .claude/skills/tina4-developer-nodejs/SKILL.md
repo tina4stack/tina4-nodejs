@@ -38,7 +38,7 @@ to **scope, delegate, and report** — never to build inline.
 | 2. Plan | Write the checklist `[ ]`, Bugs section, Commit log | the plan file, approved |
 | 3. Delegate | Spawn a worker per task; the main session stays free | worker(s) running off the plan |
 | 4. Test-first | The worker writes REAL tests before any code | failing tests that pin the behaviour |
-| 5. Build | Ground with `tina4_context` → climb the reuse ladder → minimum code | tests now green |
+| 5. Scaffold + Build | **Scaffold** with `tina4nodejs generate` → fill the `AI-FILL` placeholder → ground the custom ~20% with `tina4_context` | tests now green |
 | 6. Verify | Run it for real; tick the item; log the commit | `[x]` + commit hash in the plan |
 | 7. Report | Relay worker completions to the developer as a ✅/❌ table | the status dashboard |
 
@@ -103,9 +103,20 @@ code exists**. No mocks, stubs, fakes, or "it returned 200" smoke tests — a gr
 nothing (see **No Code Without Tests** below). The passing real test is the definition of done for
 a checklist item.
 
-### 5. Build the minimum, grounded
-Only once the tests exist: ground with `tina4_context`, climb the reuse ladder (most features are
-already in the box), and write the minimum code that makes the tests pass. Nothing speculative.
+### 5. Scaffold the boilerplate, then fill only the custom logic
+Only once the tests exist: **scaffold with `tina4nodejs generate <feature>`** (model, route, crud, service,
+queue, validator, seeder, websocket, listener, form, view, auth) — the boilerplate is generated
+deterministically, correct and **secure-by-default** (write routes are token-gated; pass `--public`
+to open them) — then **fill ONLY the `// ─── AI-FILL ───` placeholder** it leaves. An unfilled one
+`throw`s an `Error` when the handler runs, so a stub can never ship silently. Each placeholder is a
+tight fill-spec — `Intent / Given / Use / Return / Ground` — that names the **real** API to call and
+the `tina4_context(...)` query to ground the fill, so an AI (or you) completes it correctly instead
+of guessing; working CRUD code carries a lighter `// ─── EXTEND ───` marker at its extension point
+instead. Node routes scaffold as method files (`get.ts`/`post.ts`); a scaffolded `websocket`/`listener`
+module has **no** file-based auto-discovery (unlike the file-based route tree), so `import` it once
+from `app.ts` to register it. That is the token-efficient split the skills evaluation validated: the
+~80% boilerplate is *generated* (no stochastic model in that path), and the ~20% custom logic is where
+you write — grounded with `tina4_context`. Climb the reuse ladder for anything the scaffolder can't express.
 
 ### 6. Verify for real, then log the commit
 An item is `[x]` only when its real tests pass against a real run. When it lands, record the
@@ -132,15 +143,16 @@ a feature.
 
 ## Before you write code — the reuse ladder
 
-Climb in order; write new code only at the last rung. Tina4 ships **built-in features, zero dependencies** — most "new code" is already in the box.
+Climb in order; write new code only at the last rung. Tina4 ships **built-in features, zero dependencies** — most "new code" is already in the box, and most of the rest can be **scaffolded**.
 
 1. **Does it need to exist?** Re-read the request and trace the actual code flow. The best change is often none.
 2. **Does Tina4 already do it?** Check built-ins first: CRUD → `auto_crud`/AutoCrud; DB → the ORM (`User.where(...)`, `User.find(...)`); Auth/JWT → `Auth`; validation → the Validator; email → the Messenger; queue → `Queue`; templates → Frond; sessions, i18n, WebSockets, GraphQL, realtime — all built in.
-3. **Does Node / the stdlib do it?** Use it before reaching further.
-4. **Is it already in THIS app?** Reuse the existing model/route/service — don't duplicate.
-5. **Adding an npm dependency? Stop.** Tina4 is zero-dependency — find the built-in.
-6. **Can it be one field / one route file / one line?** Prefer the smallest declarative form.
-7. **Only now**, write the minimum that works — no wrappers, no speculative options.
+3. **Can `tina4nodejs generate` scaffold it?** Prefer the generator over hand-writing boilerplate: `tina4nodejs generate <feature>` (model, route, crud, migration, service, queue, validator, seeder, websocket, listener, form, view, auth) emits correct, **secure-by-default** wiring (write routes token-gated; `--public` to open) and leaves a `// ─── AI-FILL ───` fill-spec placeholder — you fill only the custom logic. Routes land as method files (`get.ts`/`post.ts`); scaffolded `websocket`/`listener` modules have no file-based discovery, so `import` them from `app.ts`. Keep the stochastic model out of the boilerplate path.
+4. **Does Node / the stdlib do it?** Use it before reaching further.
+5. **Is it already in THIS app?** Reuse the existing model/route/service — don't duplicate.
+6. **Adding an npm dependency? Stop.** Tina4 is zero-dependency — find the built-in.
+7. **Can it be one field / one route file / one line?** Prefer the smallest declarative form.
+8. **Only now**, write the minimum that works — no wrappers, no speculative options.
 
 **Package names (this matters — get them right):**
 - The published package is **`tina4-nodejs`**. There is **NO package named `tina4`**.
