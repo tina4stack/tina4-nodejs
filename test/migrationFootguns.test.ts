@@ -496,6 +496,58 @@ console.log("\n--- 3.13.55 canonical migration schema (NO MOCKS, real sqlite) --
   try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
 }
 
+// ── batch applies in numeric order (real prod-incident regression) ──────
+console.log("\n--- batch applies in numeric order ---");
+
+{
+  // Several migrations pending in ONE run, all rewriting the SAME table (later
+  // supersedes earlier). If migrate() applies them in filesystem/hash order
+  // instead of numeric order, the table is left at a non-final migration's shape.
+  // End-to-end against a REAL SQLite DB (no mocks). The sort-key unit test above
+  // locks the KEY; this locks the sort actually driving apply order through
+  // migrate() (e.g. a pending filter regressed to an unordered set diff).
+  const TMP = "/tmp/tina4-migration-footgun-order";
+  const MIGS = join(TMP, "migrations");
+  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  mkdirSync(MIGS, { recursive: true });
+
+  // UNPADDED prefixes on purpose: 1..10 so a LEXICAL sort ("10" < "2") differs
+  // from numeric order. Fails under BOTH no-sort AND a lexical-only sort (a
+  // numeric-sort regression), not just total disorder. (Zero-padded names sort
+  // correctly under a plain lexical sort and would NOT catch it.)
+  writeFileSync(join(MIGS, "0_init.sql"),
+    "CREATE TABLE probe_final (n INTEGER);\n" +
+    "INSERT INTO probe_final (n) VALUES (0);\n" +
+    "CREATE TABLE probe_log (id INTEGER PRIMARY KEY AUTOINCREMENT, n INTEGER);");
+  // Write 1..10 in SCRAMBLED order so creation order != numeric order.
+  for (const n of [7, 3, 10, 1, 5, 9, 2, 8, 4, 6]) {
+    writeFileSync(join(MIGS, `${n}_step.sql`),
+      `UPDATE probe_final SET n = ${n};\nINSERT INTO probe_log (n) VALUES (${n});`);
+  }
+
+  await initDatabase({ type: "sqlite", path: join(TMP, "test.db") });
+  const db = getAdapter();
+  const result = await migrate(db, { migrationsDir: MIGS });
+
+  const expected = ["0_init.sql", ...Array.from({ length: 10 }, (_, i) => `${i + 1}_step.sql`)];
+  assert("batch: no failures", result.failed.length === 0, JSON.stringify(result));
+  assert(
+    "batch: applied in numeric order",
+    JSON.stringify(result.applied) === JSON.stringify(expected),
+    JSON.stringify(result.applied),
+  );
+
+  const log = (await adapterQuery<{ n: number }>(db, `SELECT n FROM probe_log ORDER BY id`)).map((r) => Number(r.n));
+  assert("batch: migrations ran in numeric order (lexical would put 10 before 2)",
+    JSON.stringify(log) === JSON.stringify([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), JSON.stringify(log));
+
+  const final = (await adapterQuery<{ n: number }>(db, `SELECT n FROM probe_final`))[0]?.n;
+  assert("batch: last migration wins (final=10)", Number(final) === 10, String(final));
+
+  closeDatabase();
+  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
