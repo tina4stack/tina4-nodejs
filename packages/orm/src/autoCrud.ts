@@ -14,28 +14,47 @@ import { validate } from "./validation.js";
  *   PUT    /api/{table}/{id}   — update record
  *   DELETE /api/{table}/{id}   — delete record
  */
+/**
+ * Options accepted by the AutoCrud registration API.
+ *
+ * `public` is the cross-backend escape hatch (parity with python's `public=True`
+ * and php's `bool $public`). Write routes (POST/PUT/DELETE) are secure-by-default
+ * — the router gates them unless a def sets `secure: false`. Set `public: true`
+ * to open the generated write routes explicitly. Reads (GET) are always public.
+ */
+export interface AutoCrudOptions {
+  /** When true, the generated write routes (POST/PUT/DELETE) are OPEN (secure:false). Default false → secure. */
+  public?: boolean;
+}
+
 export class AutoCrud {
   private static registered: Map<string, DiscoveredModel> = new Map();
+  /** tableName -> public-writes flag (default secure); mirrors php's `$this->public`. */
+  private static publicWrites: Map<string, boolean> = new Map();
 
   /**
    * Register a model for auto-CRUD.
+   *
+   * @param options.public If true, the generated write routes are OPEN (no auth).
+   *   Default (false) keeps them secure-by-default, matching the framework's write gate.
    */
-  static register(model: DiscoveredModel, prefix: string = "/api"): void {
+  static register(model: DiscoveredModel, prefix: string = "/api", options: AutoCrudOptions = {}): void {
     const tableName = model.definition.tableName;
     if (!tableName) {
       throw new Error(`AutoCrud: model has no tableName set.`);
     }
     AutoCrud.registered.set(tableName, model);
+    AutoCrud.publicWrites.set(tableName, options.public === true);
   }
 
   /**
    * Discover models from the provided array and register them.
    * (In Node.js, models are discovered by the server and passed in.)
    */
-  static discover(discoveredModels: DiscoveredModel[], prefix: string = "/api"): string[] {
+  static discover(discoveredModels: DiscoveredModel[], prefix: string = "/api", options: AutoCrudOptions = {}): string[] {
     const names: string[] = [];
     for (const model of discoveredModels) {
-      AutoCrud.register(model, prefix);
+      AutoCrud.register(model, prefix, options);
       names.push(model.definition.tableName);
     }
     return names;
@@ -53,14 +72,20 @@ export class AutoCrud {
    */
   static clear(): void {
     AutoCrud.registered.clear();
+    AutoCrud.publicWrites.clear();
   }
 
   /**
-   * Generate route definitions for all registered models.
+   * Generate route definitions for all registered models, honouring each
+   * model's per-table `public` flag (set at register/discover time).
    */
   static generateRoutes(): RouteDefinition[] {
-    const models = Array.from(AutoCrud.registered.values());
-    return generateCrudRoutes(models);
+    const routes: RouteDefinition[] = [];
+    for (const [tableName, model] of AutoCrud.registered) {
+      const isPublic = AutoCrud.publicWrites.get(tableName) === true;
+      routes.push(...generateCrudRoutes([model], { public: isPublic }));
+    }
+    return routes;
   }
 }
 
@@ -80,9 +105,18 @@ export function crudEligibleModels(models: DiscoveredModel[]): DiscoveredModel[]
 /**
  * Generate CRUD route definitions for the given models.
  * (Standalone function for backward compatibility.)
+ *
+ * @param options.public When true, the generated write routes (POST/PUT/DELETE)
+ *   opt OUT of the router's secure-by-default write gate (`secure: false`) — the
+ *   cross-backend escape hatch (parity with python `public=True` / php `$public`).
+ *   Default (false) leaves `secure` unset so the router gates writes (secure:true).
+ *   GET routes are unaffected (reads are already public).
  */
-export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[] {
+export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudOptions = {}): RouteDefinition[] {
   const routes: RouteDefinition[] = [];
+  // Only writes are gated; `public` flips them open. Spread this into POST/PUT/
+  // DELETE defs so the default path leaves `secure` unset (router → secure:true).
+  const writeSecurity = options.public === true ? { secure: false as const } : {};
 
   for (const { definition } of models) {
     const { tableName, fields, softDelete, tableFilter, fieldMapping } = definition;
@@ -167,10 +201,11 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
       },
     });
 
-    // POST /api/{table} -- Create
+    // POST /api/{table} -- Create (secure-by-default; secure:false only when public)
     routes.push({
       method: "POST",
       pattern: basePath,
+      ...writeSecurity,
       meta: {
         summary: `Create ${tableName}`,
         tags: [tableName],
@@ -228,10 +263,11 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
       },
     });
 
-    // PUT /api/{table}/:id -- Update
+    // PUT /api/{table}/:id -- Update (secure-by-default; secure:false only when public)
     routes.push({
       method: "PUT",
       pattern: `${basePath}/{id}`,
+      ...writeSecurity,
       meta: {
         summary: `Update ${tableName}`,
         tags: [tableName],
@@ -275,10 +311,11 @@ export function generateCrudRoutes(models: DiscoveredModel[]): RouteDefinition[]
       },
     });
 
-    // DELETE /api/{table}/:id -- Delete (soft or hard)
+    // DELETE /api/{table}/:id -- Delete (secure-by-default; secure:false only when public)
     routes.push({
       method: "DELETE",
       pattern: `${basePath}/{id}`,
+      ...writeSecurity,
       meta: {
         summary: `Delete ${tableName}`,
         tags: [tableName],
