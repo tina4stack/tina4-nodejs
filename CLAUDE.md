@@ -1246,7 +1246,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 Always read and follow the instructions in .claude/skills/tina4-maintainer/SKILL.md when working on this codebase. Read its referenced files in .claude/skills/tina4-maintainer/references/ as needed for specific subsystems.
 
 ## Tina4 Developer Skill
-Always read and follow the instructions in .claude/skills/tina4-developer/SKILL.md when building applications with this framework. Read its referenced files in .claude/skills/tina4-developer/references/ as needed.
+Always read and follow the instructions in .claude/skills/tina4-developer-nodejs/SKILL.md when building applications with this framework. Read its referenced files in .claude/skills/tina4-developer-nodejs/references/ as needed.
 
 ## Tina4-js Frontend Skill
 Always read and follow the instructions in .claude/skills/tina4-js/SKILL.md when working with tina4-js frontend code. Read its referenced files in .claude/skills/tina4-js/references/ as needed.

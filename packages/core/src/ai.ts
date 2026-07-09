@@ -6,10 +6,11 @@
  *
  *   import { showMenu, installSelected } from "@tina4/core";
  */
-import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, cpSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve, relative, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // ── Types ────────────────────────────────────────────────────
@@ -51,6 +52,156 @@ function readVersion(): string {
   } catch {
     return "0.0.0";
   }
+}
+
+// ── Skill files (the SKILL.md system) ───────────────────────────────────────
+// `tina4 ai` installs the ACTUAL skills — not just a CLAUDE.md pointer to them —
+// into BOTH the project (.claude/skills, so they travel with the repo) AND the
+// user's global ~/.claude/skills (so they're available in every project). The
+// Node developer skill lives in the tina4-nodejs repo; tina4-js + tina4-maintainer
+// are the shared skills whose canonical copy is served from tina4-python. This
+// mirrors the canonical install-skills.sh mapping exactly.
+
+export const DEV_SKILL = "tina4-developer-nodejs";
+
+interface SkillSpec {
+  repo: string;
+  references: string[];
+}
+
+const SKILLS: Record<string, SkillSpec> = {
+  [DEV_SKILL]: {
+    repo: "tina4-nodejs",
+    references: [
+      "auth-and-services.md", "data-and-orm.md", "deployment.md",
+      "routes-and-api.md", "templates-and-frontend.md", "realtime.md",
+    ],
+  },
+  "tina4-js": {
+    repo: "tina4-python",
+    references: [
+      "html-and-components.md", "signals-and-reactivity.md",
+      "persistence.md", "rtc.md",
+    ],
+  },
+  "tina4-maintainer": {
+    repo: "tina4-python",
+    references: [
+      "cli-and-deployment.md", "frond-and-frontend.md",
+      "routing-and-orm.md", "subsystems.md",
+    ],
+  },
+};
+
+/**
+ * Release ref to pull skills from — the installed framework version,
+ * overridable with TINA4_SKILLS_REF (e.g. to test a branch/tag). Falls
+ * back to "main" when the version can't be read.
+ */
+function skillsRef(): string {
+  const ref = process.env.TINA4_SKILLS_REF;
+  if (ref) return ref;
+  const v = readVersion();
+  return v && v !== "0.0.0" ? v : "main";
+}
+
+/**
+ * Fetch a set of skill files over the network SYNCHRONOUSLY.
+ *
+ * Node has no built-in synchronous HTTP, and the whole installer chain
+ * (installSelected → installForTool → installClaudeSkills) is synchronous and
+ * can't be made async without breaking its existing callers/tests. So we run
+ * ONE blocking child `node` process that fetches every URL in parallel with the
+ * global `fetch` (Node 18+) and writes each body to all of its destinations.
+ * The child prints a JSON array of the URLs it fetched successfully; any fetch
+ * failure is skipped, never fatal.
+ *
+ * @param jobs  one entry per unique URL, with every file path it should land in
+ * @returns the set of URLs that were fetched and written to disk
+ */
+function downloadSkillsSync(jobs: { url: string; dests: string[] }[]): Set<string> {
+  if (jobs.length === 0) return new Set();
+  const child = `
+    const jobs = JSON.parse(process.argv[1]);
+    const fs = require("node:fs");
+    const path = require("node:path");
+    (async () => {
+      const ok = [];
+      await Promise.all(jobs.map(async (job) => {
+        try {
+          const resp = await fetch(job.url, { signal: AbortSignal.timeout(15000) });
+          if (!resp.ok) return;
+          const buf = Buffer.from(await resp.arrayBuffer());
+          for (const dest of job.dests) {
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.writeFileSync(dest, buf);
+          }
+          ok.push(job.url);
+        } catch { /* skip this file */ }
+      }));
+      process.stdout.write(JSON.stringify(ok));
+    })();
+  `;
+  try {
+    const out = execFileSync(process.execPath, ["-e", child, JSON.stringify(jobs)], {
+      encoding: "utf-8",
+      timeout: 45000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return new Set<string>(JSON.parse(out || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Install the Tina4 SKILL.md skills into the project AND the global
+ * ~/.claude/skills, fetched from the release ref matching this framework
+ * version. Returns the skills that were fully installed. Network-dependent —
+ * on a fetch failure the skill is skipped, never fatal.
+ */
+export function installSkills(root: string = ".", targets?: string[]): string[] {
+  const ref = skillsRef();
+  const dests = targets ?? [
+    join(resolve(root), ".claude", "skills"),
+    join(homedir(), ".claude", "skills"),
+  ];
+
+  // Deduplicate: fetch each unique URL once, write it to every target path.
+  const jobs: { url: string; dests: string[] }[] = [];
+  const index = new Map<string, number>();
+  const add = (url: string, filePath: string) => {
+    let i = index.get(url);
+    if (i === undefined) {
+      i = jobs.length;
+      index.set(url, i);
+      jobs.push({ url, dests: [] });
+    }
+    jobs[i].dests.push(filePath);
+  };
+
+  const skillMdUrl: Record<string, string> = {};
+  for (const [skill, spec] of Object.entries(SKILLS)) {
+    const base = `https://raw.githubusercontent.com/tina4stack/${spec.repo}/${ref}/.claude/skills/${skill}`;
+    skillMdUrl[skill] = `${base}/SKILL.md`;
+    for (const dest of dests) {
+      add(`${base}/SKILL.md`, join(dest, skill, "SKILL.md"));
+      for (const r of spec.references) {
+        add(`${base}/references/${r}`, join(dest, skill, "references", r));
+      }
+    }
+  }
+
+  const ok = downloadSkillsSync(jobs);
+
+  // A skill counts as installed once its SKILL.md landed. downloadSkillsSync
+  // writes a fetched URL to ALL of its destinations atomically, so a hit on the
+  // SKILL.md URL means it reached every target.
+  const installed: string[] = [];
+  for (const skill of Object.keys(SKILLS)) {
+    if (ok.has(skillMdUrl[skill])) installed.push(skill);
+  }
+  return installed;
 }
 
 /**
@@ -175,7 +326,7 @@ export function skillBlock(contextFile: string): string {
         "",
         "When working on this Tina4 project, these skills give the assistant project-aware behaviour:",
         "",
-        "- **tina4-developer** \u2014 Read `.claude/skills/tina4-developer/SKILL.md` before building features.",
+        `- **${DEV_SKILL}** \u2014 Read \`.claude/skills/${DEV_SKILL}/SKILL.md\` before building features.`,
         "- **tina4-js** \u2014 Read `.claude/skills/tina4-js/SKILL.md` for frontend work.",
         "- **tina4-maintainer** \u2014 Read `.claude/skills/tina4-maintainer/SKILL.md` for framework-level changes.",
         "",
@@ -187,7 +338,7 @@ export function skillBlock(contextFile: string): string {
       ].join("\n")
     : [
         "Tina4 Skills \u2014 read these files before working on this project:",
-        "  .claude/skills/tina4-developer/SKILL.md   (feature development)",
+        `  .claude/skills/${DEV_SKILL}/SKILL.md   (feature development)`,
         "  .claude/skills/tina4-js/SKILL.md          (frontend / tina4-js)",
         "  .claude/skills/tina4-maintainer/SKILL.md  (framework-level changes)",
         "Found a skill that disagrees with how Tina4 actually behaves? Tell the developer,",
@@ -331,32 +482,21 @@ function installTina4Ai(): void {
 }
 
 /**
- * Copy Claude Code skill files from the framework's directories.
+ * Install the Claude Code skills for this project.
+ *
+ * Fetches the SKILL.md skills from the release ref matching this framework
+ * version into BOTH the project (.claude/skills) and the user's global
+ * ~/.claude/skills. (The previous code copied from frameworkRoot/.claude/skills,
+ * which exists only in a dev checkout \u2014 the npm package never ships
+ * .claude/skills, so installed users got no skill files at all, only a
+ * CLAUDE.md pointer to files that weren't there.)
  */
 function installClaudeSkills(root: string): string[] {
   const created: string[] = [];
-
-  // Determine the framework root (where packages/core/src/ lives)
-  const thisDir = dirname(fileURLToPath(import.meta.url));
-  const frameworkRoot = resolve(thisDir, "..", "..", "..");
-
-  // Copy skill directories from .claude/skills/ in the framework to the project
-  const frameworkSkillsDir = join(frameworkRoot, ".claude", "skills");
-  if (existsSync(frameworkSkillsDir)) {
-    const targetSkillsDir = join(root, ".claude", "skills");
-    mkdirSync(targetSkillsDir, { recursive: true });
-    for (const entry of readdirSync(frameworkSkillsDir)) {
-      const skillDir = join(frameworkSkillsDir, entry);
-      if (existsSync(skillDir) && statSync(skillDir).isDirectory()) {
-        const targetDir = join(targetSkillsDir, entry);
-        cpSync(skillDir, targetDir, { recursive: true, force: true });
-        const rel = relative(root, targetDir);
-        created.push(rel);
-        console.log(`  ${GREEN}\u2713${RESET} Updated ${rel}`);
-      }
-    }
+  for (const skill of installSkills(root)) {
+    created.push(join(".claude", "skills", skill));
+    console.log(`  ${GREEN}\u2713${RESET} Installed .claude/skills/${skill}  (project + global)`);
   }
-
   return created;
 }
 
