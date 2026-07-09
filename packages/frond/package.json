@@ -1,6 +1,6 @@
 {
   "name": "@tina4/frond",
-  "version": "3.13.58",
+  "version": "3.13.59",
   "description": "Tina4 Frond — zero-dependency Twig-like template engine",
   "type": "module",
   "main": "./dist/index.js",
