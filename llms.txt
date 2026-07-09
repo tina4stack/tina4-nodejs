@@ -221,3 +221,10 @@ startServer({ port, host });
 8. All packages use barrel exports — import from "@tina4/core", "@tina4/orm", not internal paths
 9. Default port: 7148 (NOT 7145)
 10. TypeScript strict mode, ES2022 target, Node16 module resolution
+
+## Scaffolding (`tina4nodejs generate`)
+Scaffold boilerplate instead of hand-writing it: `tina4nodejs generate <feature>` for model, route, crud,
+migration, service, queue, validator, seeder, websocket, listener, form, view, auth. Generated write
+routes are secure by default (token-gated; pass `--public` to open them); reads are public. Logic
+stubs carry an AI-FILL fill-spec placeholder (Intent/Given/Use/Return/Ground + a loud not-implemented
+throw) — fill only that; working CRUD carries a lighter EXTEND marker.
