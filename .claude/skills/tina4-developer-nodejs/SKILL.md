@@ -472,6 +472,13 @@ is used — the adapter is async to create.
 
 ## Testing
 
+> **SQLite URL footgun — mind the slashes.** Bind a **relative** sqlite URL for test / temp
+> databases: `sqlite:///data/test.db` (three slashes = relative to cwd — identical on every
+> backend). Never build the URL from a raw absolute path (e.g. `` `sqlite:${absPath}` ``, which
+> yields a single leading slash) — python/ruby read that as *relative* (Node detects absolute
+> paths, so it's safest to stay portable). For a genuine absolute path use the four-slash form
+> `sqlite:////abs/path.db`.
+
 Run tests with `npm test` or `tina4nodejs test [file]`. The framework ships an in-process
 `TestClient` (`import { TestClient } from "tina4-nodejs"`) that exercises the **identical** auth gate
 as the live server, so a tokenless write correctly returns 401 in a test.
