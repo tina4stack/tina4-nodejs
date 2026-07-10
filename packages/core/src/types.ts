@@ -109,7 +109,15 @@ export type Tina4Response =
   ((data?: unknown, statusCode?: number, contentType?: string) => Tina4Response)
   & Tina4ResponseMethods;
 
-export type RouteHandler = (req: Tina4Request, res: Tina4Response) => Promise<void> | void;
+// A route handler may resolve `void` (it wrote to `res` directly) OR return the
+// `Tina4Response` from `res.json(...)` / `response(...)` - the established
+// convention across the framework's own routes, realtime handlers, and the
+// `generate` scaffolding (`return res.json(...)`). The dispatcher tolerates a
+// returned response; the type just has to allow it.
+export type RouteHandler = (
+  req: Tina4Request,
+  res: Tina4Response,
+) => Tina4Response | void | Promise<Tina4Response | void>;
 
 export interface RouteDefinition {
   method: string;
