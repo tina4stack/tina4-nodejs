@@ -215,16 +215,51 @@ function isoNow(): string {
   return new Date().toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
 }
 
-const GENERATORS =
-  "model, route, crud, migration, middleware, test, form, view, auth, " +
-  "service, queue, validator, seeder, websocket, listener";
+// ── Generator registry — the single source of truth ─────────────────
+//
+// One entry per generator drives `generate` dispatch (below), the human help
+// (`bin.ts` Generators section), AND the `commands --json` manifest's
+// `generate.subcommands`. Add a generator in ONE place and it appears in
+// dispatch, help, and discovery with no second list to keep in sync.
+//
+// Every handler is normalised to `(name, flags) => void`; `auth` takes no name
+// so it drops it. Mirrors the Python master's GENERATORS registry
+// (tina4_python/cli/__init__.py).
+
+export interface GeneratorSpec {
+  handler: (name: string, flags: Record<string, string | boolean>) => void;
+  /** Arg/flag hint shown in `tina4nodejs help` (human only). */
+  usage: string;
+  summary: string;
+}
+
+export const GENERATORS: Record<string, GeneratorSpec> = {
+  model:      { handler: generateModel,                     usage: '<Name> [--fields "name:string,price:float"]', summary: "ORM model + matching migration" },
+  route:      { handler: generateRoute,                     usage: "<name> [--model Name] [--public]",            summary: "CRUD route file, secure by default (--public opens writes)" },
+  crud:       { handler: generateCrud,                      usage: '<Name> [--fields "..."] [--public]',          summary: "Model + migration + routes + form + view + test" },
+  migration:  { handler: (n, f) => generateMigration(n, f), usage: "<description>",                                summary: "Timestamped migration file (UP/DOWN)" },
+  middleware: { handler: generateMiddleware,                usage: "<Name>",                                       summary: "Middleware with before/after hooks" },
+  test:       { handler: generateTest,                      usage: "<name> [--model Name]",                        summary: "Test file" },
+  form:       { handler: generateForm,                      usage: '<Name> [--fields "..."]',                      summary: "Form template with inputs matching model fields" },
+  view:       { handler: generateView,                      usage: '<Name> [--fields "..."]',                      summary: "List + detail view templates" },
+  auth:       { handler: (_n, f) => generateAuth(f),        usage: "",                                             summary: "Login/register routes (public) + User model + templates" },
+  service:    { handler: generateService,                   usage: '<Name> [--every 5m | --cron "..."]',           summary: "Scheduled ServiceRunner task (src/services/)" },
+  queue:      { handler: generateQueue,                     usage: "<topic>",                                      summary: "Producer + consumer daemon worker (src/services/)" },
+  validator:  { handler: generateValidator,                 usage: "<Name>",                                       summary: "Request-body Validator (src/validators/)" },
+  seeder:     { handler: generateSeeder,                    usage: "<Model>",                                      summary: "FakeData + seedOrm seeder (src/seeds/)" },
+  websocket:  { handler: generateWebsocket,                 usage: "<path>",                                       summary: "websocket() handler (src/routes/)" },
+  listener:   { handler: generateListener,                  usage: "<event>",                                      summary: "Events.on(event) listener (src/listeners/)" },
+};
+
+/** Comma-separated generator names for usage/error output — derived, never a hand-kept list. */
+const GENERATOR_LIST = Object.keys(GENERATORS).join(", ");
 
 // ── Main entry point ────────────────────────────────────────────────
 
 export async function generate(what: string, name: string, extraArgs: string[] = []): Promise<void> {
   if (!what) {
     console.error("  Usage: tina4nodejs generate <what> <name> [options]");
-    console.error(`  Generators: ${GENERATORS}`);
+    console.error(`  Generators: ${GENERATOR_LIST}`);
     console.error('  Options:    --fields "name:string,price:float"  --model ModelName');
     console.error("              --public                 open a route's writes (default: secure)");
     console.error('              --every 5m | --cron "…"   service schedule');
@@ -240,56 +275,15 @@ export async function generate(what: string, name: string, extraArgs: string[] =
 
   const { flags } = parseCliArgs(extraArgs);
 
-  switch (what) {
-    case "model":
-      generateModel(name, flags);
-      break;
-    case "route":
-      generateRoute(name, flags);
-      break;
-    case "crud":
-      generateCrud(name, flags);
-      break;
-    case "migration":
-      generateMigration(name, flags);
-      break;
-    case "middleware":
-      generateMiddleware(name, flags);
-      break;
-    case "test":
-      generateTest(name, flags);
-      break;
-    case "form":
-      generateForm(name, flags);
-      break;
-    case "view":
-      generateView(name, flags);
-      break;
-    case "auth":
-      generateAuth(flags);
-      break;
-    case "service":
-      generateService(name, flags);
-      break;
-    case "queue":
-      generateQueue(name, flags);
-      break;
-    case "validator":
-      generateValidator(name, flags);
-      break;
-    case "seeder":
-      generateSeeder(name, flags);
-      break;
-    case "websocket":
-      generateWebsocket(name, flags);
-      break;
-    case "listener":
-      generateListener(name, flags);
-      break;
-    default:
-      console.error(`  Unknown generator: ${what}`);
-      console.error(`  Available: ${GENERATORS}`);
-      process.exit(1);
+  // Dispatch from the single-source-of-truth GENERATORS registry (also feeds
+  // `bin.ts` help + the `commands --json` manifest subcommands).
+  const spec = GENERATORS[what];
+  if (spec) {
+    spec.handler(name, flags);
+  } else {
+    console.error(`  Unknown generator: ${what}`);
+    console.error(`  Available: ${GENERATOR_LIST}`);
+    process.exit(1);
   }
 }
 
