@@ -6,66 +6,40 @@ import { migrateStatus } from "./commands/migrateStatus.js";
 import { migrateRollback } from "./commands/migrateRollback.js";
 import { listRoutes } from "./commands/routes.js";
 import { runTests } from "./commands/test.js";
-import { generate } from "./commands/generate.js";
+import { generate, GENERATORS } from "./commands/generate.js";
 import { runSeeds } from "./commands/seed.js";
 import { runMetrics } from "./commands/metrics.js";
 import { execSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const args = process.argv.slice(2);
-const command = args[0];
+// ── Version (cheap, side-effect-free) ───────────────────────────────
+//
+// Walk up from this file to the nearest package.json and read its version.
+// From the source tree that is packages/cli/package.json; from the built
+// dist/bin.js (or the published `tina4nodejs` package) it is the CLI package's
+// own package.json — the framework version in every layout. Only touches the
+// filesystem (JSON reads); it never bootstraps the app or opens a DB.
 
-const HELP = `
-  tina4nodejs — The Intelligent Native Application 4ramework
-
-  Usage:
-    tina4nodejs init [dir]            Create a new Tina4 project (default: current directory)
-    tina4nodejs serve                 Start the dev server with hot-reload
-    tina4nodejs migrate               Run pending SQL migrations
-    tina4nodejs migrate:create <desc> Create a new migration file pair (.sql + .down.sql)
-    tina4nodejs migrate:status        Show completed and pending migrations
-    tina4nodejs migrate:rollback      Roll back the last batch of migrations
-    tina4nodejs routes                List all registered routes
-    tina4nodejs test [file]           Run project tests
-    tina4nodejs seed [file]           Run database seed files from src/seeds/
-    tina4nodejs metrics [--top N] [--json] [--fail-on warn|error] [--path DIR]
-                                      Rank top code-quality offenders
-    tina4nodejs console               Open an interactive REPL with the framework loaded
-    tina4nodejs ai                    Install AI coding assistant context files
-    tina4nodejs help                  Show this help message
-
-  Generators:
-    tina4nodejs generate model <Name> [--fields "name:string,price:float"]
-    tina4nodejs generate route <name> [--model Name] [--public]   Writes secure by default; --public opens them
-    tina4nodejs generate crud <Name> [--fields "..."] [--public]  Model + migration + routes + form + view + test
-    tina4nodejs generate migration <description>
-    tina4nodejs generate middleware <Name>
-    tina4nodejs generate test <name>
-    tina4nodejs generate form <Name> [--fields "..."]   Form template with inputs matching model fields
-    tina4nodejs generate view <Name> [--fields "..."]   List + detail templates for viewing records
-    tina4nodejs generate auth                           Login/register routes (public) + User model + templates
-    tina4nodejs generate service <Name> [--every 5m | --cron "..."]  Scheduled ServiceRunner task (src/services/)
-    tina4nodejs generate queue <topic>                  Producer + consumer daemon worker (src/services/)
-    tina4nodejs generate validator <Name>               Request-body Validator (src/validators/)
-    tina4nodejs generate seeder <Model>                 FakeData + seedOrm seeder (src/seeds/)
-    tina4nodejs generate websocket <path>               websocket() handler (src/routes/)
-    tina4nodejs generate listener <event>               Events.on(event) listener (src/listeners/)
-
-  Scaffolding-first: logic-shaped generators (route without --model, service,
-  queue, validator, seeder, websocket, listener) emit real wiring + an AI-FILL
-  placeholder (throws until filled); CRUD-shaped ones emit working code. Writes
-  are secure by default — use --public to open them.
-
-  Field types: string, int, float, bool, text, datetime
-  Table names: singular by default (Product → product)
-
-  Options:
-    --port <number>      Server port (default: 7148)
-    --no-browser         Don't open the browser on serve
-    --no-reload          Disable file watcher / live-reload on serve
-    --all                Install AI context for all tools (with ai command)
-    --force              Overwrite existing AI context files (with ai command)
-    --help               Show this help message
-`;
+function readCliVersion(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 6; i++) {
+    const pkgPath = join(dir, "package.json");
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+        if (typeof pkg.version === "string" && pkg.version) return pkg.version;
+      } catch {
+        // keep walking — a malformed package.json isn't ours
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return "0.0.0";
+}
 
 // ── Port-kill helper ────────────────────────────────────────────────
 
@@ -90,125 +64,313 @@ function killProcessOnPort(port: number): boolean {
   return false;
 }
 
-async function main(): Promise<void> {
-  switch (command) {
-    case "init": {
-      const name = args[1] || ".";
-      await initProject(name);
-      break;
-    }
-    case "serve": {
-      const portIndex = args.indexOf("--port");
-      const port = portIndex !== -1 ? parseInt(args[portIndex + 1], 10) : 7148;
-      const noBrowser = args.includes("--no-browser");
-      const noReload = args.includes("--no-reload");
+// ── Self-describing command surface ─────────────────────────────────
 
-      // Kill any existing process on the port
-      killProcessOnPort(port);
+export interface CommandManifestEntry {
+  name: string;
+  summary: string;
+  args?: string[];
+  subcommands?: string[];
+}
 
-      await serveProject({ port, noBrowser, noReload });
-      break;
-    }
-    case "migrate": {
-      await runMigrations(args[1]);
-      break;
-    }
-    case "migrate:create": {
-      const description = args.slice(1).join(" ");
-      await createMigration(description || undefined);
-      break;
-    }
-    case "migrate:status": {
-      await migrateStatus(args[1]);
-      break;
-    }
-    case "migrate:rollback": {
-      await migrateRollback(args[1]);
-      break;
-    }
-    case "routes": {
-      await listRoutes();
-      break;
-    }
-    case "test": {
-      await runTests(args[1]);
-      break;
-    }
-    case "generate": {
-      const what = args[1];
-      const genName = args[2] || "";
-      const extraArgs = args.slice(3);
-      await generate(what, genName, extraArgs);
-      break;
-    }
-    case "seed": {
-      await runSeeds(args[1]);
-      break;
-    }
-    case "metrics": {
-      const code = runMetrics(args.slice(1));
-      process.exit(code);
-    }
-    case "console": {
-      const repl = await import("node:repl");
-      const { loadEnv, Router, Log } = await import("../../core/src/index.js");
-      const { initDatabase, Database } = await import("../../orm/src/index.js");
+export interface CommandManifest {
+  framework: string;
+  version: string;
+  commands: CommandManifestEntry[];
+}
 
-      loadEnv();
+/**
+ * Build the machine-readable manifest of the CLI's command surface.
+ *
+ * Pure data: reads the module-level COMMANDS registry plus the framework
+ * version — no bootstrap, no database, no migrations, no app imports. This is
+ * exactly what `commands --json` serialises and what the tina4 Rust client
+ * consumes to discover which commands this framework supports.
+ *
+ * Shape (identical keys to the Python master):
+ *   { framework: "nodejs", version: "<x.y.z>",
+ *     commands: [{ name, summary, args?, subcommands? }, ...] }
+ */
+export function buildCommandManifest(): CommandManifest {
+  const commands: CommandManifestEntry[] = Object.entries(COMMANDS).map(([name, spec]) => {
+    const entry: CommandManifestEntry = { name, summary: spec.summary };
+    if (spec.args && spec.args.length) entry.args = [...spec.args];
+    if (spec.subcommands && spec.subcommands.length) entry.subcommands = [...spec.subcommands];
+    return entry;
+  });
+  return { framework: "nodejs", version: readCliVersion(), commands };
+}
 
-      const dbUrl = process.env.TINA4_DATABASE_URL;
-      let db: unknown = null;
-      if (dbUrl) {
-        try {
-          db = await initDatabase({ url: dbUrl });
-        } catch {
-          console.warn("  Warning: could not connect to database — db will be null");
-        }
-      }
+/**
+ * Emit the CLI's own command surface — the self-describing manifest.
+ *
+ *   tina4nodejs commands           human-readable list
+ *   tina4nodejs commands --json    machine-readable manifest (for the tina4 CLI)
+ *
+ * CHEAP + side-effect-free by contract: it only prints the static COMMANDS
+ * registry plus the framework version. It MUST NOT bootstrap the framework,
+ * open a database, run migrations, or import app modules — the Rust client
+ * calls this on `tina4 --help`, in any directory, so it must be instant and
+ * safe to run anywhere.
+ */
+export function runCommands(args: string[] = []): void {
+  const manifest = buildCommandManifest();
 
-      console.log("\n  Tina4 Node.js Console");
-      console.log("  Type JavaScript. Framework is loaded.");
-      console.log("  Available: db, Router, Database, Log");
-      console.log("  Exit: Ctrl+D or .exit\n");
+  if (args.includes("--json")) {
+    console.log(JSON.stringify(manifest, null, 2));
+    return;
+  }
 
-      const r = repl.start({ prompt: "tina4> " });
-
-      r.context.Router = Router;
-      r.context.Database = Database;
-      r.context.Log = Log;
-      r.context.db = db;
-
-      await new Promise<void>((resolve) => r.on("exit", resolve));
-      break;
+  console.log(`\n  Tina4 ${manifest.framework} — ${manifest.version}\n`);
+  const width = Math.max(...manifest.commands.map((c) => c.name.length));
+  for (const c of manifest.commands) {
+    console.log(`  ${c.name.padEnd(width)}  ${c.summary}`);
+    if (c.subcommands && c.subcommands.length) {
+      console.log(`  ${" ".repeat(width)}    ${c.subcommands.join(", ")}`);
     }
-    case "ai": {
-      const { showMenu, installSelected, installAll } = await import("../../core/src/ai.js");
-      const root = args[1] || ".";
+  }
+  console.log("");
+}
 
-      if (args.includes("--all")) {
-        installAll(root);
-      } else {
-        const selection = await showMenu(root);
-        if (selection) {
-          installSelected(root, selection);
-        }
-      }
-      break;
+/**
+ * Print the human-readable command reference.
+ *
+ * Generated from the COMMANDS and GENERATORS registries — the SAME single
+ * source of truth that drives dispatch (`main`) and the `commands --json`
+ * manifest — so the help text can never drift from what the CLI actually does.
+ */
+function printHelp(): void {
+  const commandRows: [string, string][] = Object.entries(COMMANDS).map(
+    ([name, spec]) => [`${name}${spec.usage ? " " + spec.usage : ""}`, spec.summary],
+  );
+  const generatorRows: [string, string][] = Object.entries(GENERATORS).map(
+    ([name, spec]) => [`generate ${name}${spec.usage ? " " + spec.usage : ""}`, spec.summary],
+  );
+
+  // Align summaries in a column; a left cell longer than the cap overflows
+  // cleanly (2-space gap) rather than pushing every other summary out.
+  const pad = Math.min(46, Math.max(...[...commandRows, ...generatorRows].map(([left]) => left.length)));
+  const row = (left: string, summary: string): string => {
+    const gap = left.length <= pad ? pad : left.length;
+    return `  ${left.padEnd(gap)}  ${summary}`;
+  };
+
+  const lines: string[] = [
+    "",
+    "  tina4nodejs — The Intelligent Native Application 4ramework",
+    "",
+    "  Usage: tina4nodejs <command> [options]",
+    "",
+    "  Commands:",
+    ...commandRows.map(([left, summary]) => row(left, summary)),
+    "",
+    "  Generators:",
+    ...generatorRows.map(([left, summary]) => row(left, summary)),
+    "",
+    "  Scaffolding-first: logic-shaped generators (route without --model, service,",
+    "  queue, validator, seeder, websocket, listener) emit real wiring + an AI-FILL",
+    "  placeholder (throws until filled); CRUD-shaped ones emit working code. Writes",
+    "  are secure by default — use --public to open them.",
+    "",
+    "  Field types: string, int, float, bool, text, datetime",
+    "  Table names: singular by default (Product → product)",
+    "",
+    "  Options:",
+    "    --port <number>      Server port (default: 7148)",
+    "    --no-browser         Don't open the browser on serve",
+    "    --no-reload          Disable file watcher / live-reload on serve",
+    "    --all                Install AI context for all tools (with ai command)",
+    "    --force              Overwrite existing AI context files (with ai command)",
+    "    --help               Show this help message",
+    "",
+    "  https://tina4.com",
+    "",
+  ];
+  console.log(lines.join("\n"));
+}
+
+// ── Console REPL (heavy — imports the framework lazily on demand) ────
+
+async function openConsole(): Promise<void> {
+  const repl = await import("node:repl");
+  const { loadEnv, Router, Log } = await import("../../core/src/index.js");
+  const { initDatabase, Database } = await import("../../orm/src/index.js");
+
+  loadEnv();
+
+  const dbUrl = process.env.TINA4_DATABASE_URL;
+  let db: unknown = null;
+  if (dbUrl) {
+    try {
+      db = await initDatabase({ url: dbUrl });
+    } catch {
+      console.warn("  Warning: could not connect to database — db will be null");
     }
-    case "help":
-    case "--help":
-    case "-h":
-    case undefined:
-      console.log(HELP);
-      break;
-    default:
-      console.error(`Unknown command: ${command}`);
-      console.log(HELP);
-      process.exit(1);
+  }
+
+  console.log("\n  Tina4 Node.js Console");
+  console.log("  Type JavaScript. Framework is loaded.");
+  console.log("  Available: db, Router, Database, Log");
+  console.log("  Exit: Ctrl+D or .exit\n");
+
+  const r = repl.start({ prompt: "tina4> " });
+
+  r.context.Router = Router;
+  r.context.Database = Database;
+  r.context.Log = Log;
+  r.context.db = db;
+
+  await new Promise<void>((resolve) => r.on("exit", resolve));
+}
+
+async function installAiContext(args: string[]): Promise<void> {
+  const { showMenu, installSelected, installAll } = await import("../../core/src/ai.js");
+  const root = args[0] || ".";
+
+  if (args.includes("--all")) {
+    installAll(root);
+  } else {
+    const selection = await showMenu(root);
+    if (selection) {
+      installSelected(root, selection);
+    }
   }
 }
 
-main().catch((err) => {
-  console.error(err);
+// ── Command registry — the single source of truth ───────────────────
+//
+// One entry per command drives main() dispatch, the human help (printHelp),
+// AND the machine-readable manifest (commands --json). Add a command in ONE
+// place and it appears in dispatch, help, and discovery — there is no second
+// list to sync. Mirrors the Python master's COMMANDS registry
+// (tina4_python/cli/__init__.py).
+//
+//   COMMANDS[name] = {
+//     handler: (cmdArgs) => …,   // args AFTER the command name
+//     summary: string,
+//     usage?: string,            // arg/flag hint for printHelp (human only)
+//     args?: string[],           // positional args for the manifest ("x?" = optional)
+//     subcommands?: string[],    // sub-names for the manifest (generate)
+//   }
+
+export interface CommandSpec {
+  handler: (cmdArgs: string[]) => void | Promise<void>;
+  summary: string;
+  usage?: string;
+  args?: string[];
+  subcommands?: string[];
+}
+
+export const COMMANDS: Record<string, CommandSpec> = {
+  init: {
+    handler: async (a) => { await initProject(a[0] || "."); },
+    usage: "[dir]",
+    args: ["dir?"],
+    summary: "Create a new Tina4 project (default: current directory)",
+  },
+  serve: {
+    handler: async (a) => {
+      const portIndex = a.indexOf("--port");
+      const port = portIndex !== -1 ? parseInt(a[portIndex + 1], 10) : 7148;
+      const noBrowser = a.includes("--no-browser");
+      const noReload = a.includes("--no-reload");
+      killProcessOnPort(port);
+      await serveProject({ port, noBrowser, noReload });
+    },
+    usage: "[--port P] [--no-browser] [--no-reload]",
+    summary: "Start the dev server with hot-reload (default: 0.0.0.0:7148)",
+  },
+  migrate: {
+    handler: async (a) => { await runMigrations(a[0]); },
+    summary: "Run pending SQL migrations",
+  },
+  "migrate:create": {
+    handler: async (a) => { await createMigration(a.join(" ") || undefined); },
+    usage: "<desc>",
+    args: ["description"],
+    summary: "Create a new migration file pair (.sql + .down.sql)",
+  },
+  "migrate:status": {
+    handler: async (a) => { await migrateStatus(a[0]); },
+    summary: "Show completed and pending migrations",
+  },
+  "migrate:rollback": {
+    handler: async (a) => { await migrateRollback(a[0]); },
+    summary: "Roll back the last batch of migrations",
+  },
+  routes: {
+    handler: async () => { await listRoutes(); },
+    summary: "List all registered routes",
+  },
+  test: {
+    handler: async (a) => { await runTests(a[0]); },
+    usage: "[file]",
+    summary: "Run project tests",
+  },
+  generate: {
+    handler: async (a) => { await generate(a[0], a[1] || "", a.slice(2)); },
+    usage: "<what> <name> [options]",
+    subcommands: Object.keys(GENERATORS),
+    summary: "Generate scaffolding (see Generators below)",
+  },
+  seed: {
+    handler: async (a) => { await runSeeds(a[0]); },
+    usage: "[file]",
+    summary: "Run database seed files from src/seeds/",
+  },
+  metrics: {
+    handler: (a) => { process.exit(runMetrics(a)); },
+    usage: "[--top N] [--json] [--fail-on warn|error] [--path DIR]",
+    summary: "Rank top code-quality offenders",
+  },
+  console: {
+    handler: async () => { await openConsole(); },
+    summary: "Open an interactive REPL with the framework loaded",
+  },
+  ai: {
+    handler: async (a) => { await installAiContext(a); },
+    usage: "[--all]",
+    summary: "Install AI coding assistant context files",
+  },
+  commands: {
+    handler: (a) => { runCommands(a); },
+    usage: "[--json]",
+    summary: "List available commands (add --json for the machine manifest)",
+  },
+  help: {
+    handler: () => { printHelp(); },
+    summary: "Show this help message",
+  },
+};
+
+// ── Dispatch ────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  let command = args[0];
+  const cmdArgs = args.slice(1);
+
+  // No command or a bare help flag → the help command.
+  if (command === undefined || command === "--help" || command === "-h") {
+    command = "help";
+  }
+
+  const spec = COMMANDS[command];
+  if (spec) {
+    await spec.handler(cmdArgs);
+    return;
+  }
+
+  console.error(`Unknown command: ${command}`);
+  printHelp();
   process.exit(1);
-});
+}
+
+// Run only when invoked as the entrypoint — importing this module (e.g. in a
+// test to inspect COMMANDS / buildCommandManifest) must NOT dispatch a command.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
