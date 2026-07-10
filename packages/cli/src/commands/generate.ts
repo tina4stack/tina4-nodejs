@@ -1282,10 +1282,14 @@ export async function consume${pascal}(_context?: ServiceContext): Promise<void>
 }
 
 // Discovered by ServiceRunner.discover("src/services"); daemon:true because
-// consume${pascal} owns its own loop.
+// consume${pascal} owns its own loop. The topic + per-job handle keys let
+// \`tina4nodejs queue work ${topic}\` drive this consumer directly (own the poll
+// loop / bounded --once drain) without wiring a ServiceRunner.
 export default {
   name: "${topic}-consumer",
+  topic: "${topic}",
   handler: consume${pascal},
+  handle: handle${pascal},
   daemon: true,
 };
 `;
