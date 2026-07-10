@@ -34,7 +34,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const binPath = resolve(here, "../packages/cli/src/bin.ts");
 
 // The command set the tina4 client must be able to discover truthfully.
-const KNOWN_COMMANDS = ["migrate", "migrate:create", "seed", "test", "routes", "generate", "commands"];
+const KNOWN_COMMANDS = ["migrate", "migrate:create", "seed", "test", "routes", "generate", "commands",
+  "queue", "build"];
 
 let pass = 0;
 let fail = 0;
@@ -116,12 +117,19 @@ const initEntry = manifest.commands.find((c) => c.name === "init");
 assert("init declares an optional dir arg ['dir?']",
   JSON.stringify(initEntry?.args) === JSON.stringify(["dir?"]));
 
-// ── `queue` is a later phase: NOT a top-level command (only a generator) ──
-console.log("\n--- no invented top-level commands ---");
-assert("queue is NOT a top-level command", !names.includes("queue"));
-assert("queue IS a generate subcommand", Object.keys(GENERATORS).includes("queue"));
-assert("no invented 'build' top-level command", !names.includes("build"));
-assert("no invented top-level 'start' command", !names.includes("start"));
+// ── Phase 3: `queue` is now BOTH a top-level command AND a generator ──
+console.log("\n--- phase 3: queue + build top-level commands ---");
+const queueEntry = manifest.commands.find((c) => c.name === "queue");
+assert("queue IS a top-level command", names.includes("queue"));
+assert("queue declares subcommands [work, stats, retry, clear]",
+  JSON.stringify(queueEntry?.subcommands) === JSON.stringify(["work", "stats", "retry", "clear"]),
+  `got ${JSON.stringify(queueEntry?.subcommands)}`);
+// Still a scaffolding generator too (the two surfaces are distinct).
+assert("queue IS also a generate subcommand", Object.keys(GENERATORS).includes("queue"));
+const buildEntry = manifest.commands.find((c) => c.name === "build");
+assert("build IS a top-level command", names.includes("build"));
+assert("build declares a Docker-oriented summary",
+  (buildEntry?.summary ?? "").includes("Docker"), `got ${buildEntry?.summary}`);
 
 // ── runCommands handler emits exactly what the builder returns ──
 console.log("\n--- runCommands handler (real, in-process) ---");

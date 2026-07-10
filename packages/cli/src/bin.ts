@@ -9,6 +9,8 @@ import { runTests } from "./commands/test.js";
 import { generate, GENERATORS } from "./commands/generate.js";
 import { runSeeds } from "./commands/seed.js";
 import { runMetrics } from "./commands/metrics.js";
+import { queueCommand, QUEUE_SUBCOMMAND_NAMES } from "./commands/queue.js";
+import { buildImage } from "./commands/build.js";
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -306,6 +308,17 @@ export const COMMANDS: Record<string, CommandSpec> = {
     handler: async (a) => { await runTests(a[0]); },
     usage: "[file]",
     summary: "Run project tests",
+  },
+  queue: {
+    handler: async (a) => { await queueCommand(a); },
+    usage: "<work|stats|retry|clear> [topic]",
+    subcommands: QUEUE_SUBCOMMAND_NAMES,
+    summary: "Run queue workers and manage jobs",
+  },
+  build: {
+    handler: (a) => { buildImage(a); },
+    usage: "[--tag NAME] [--file PATH]",
+    summary: "Build the deployable Docker image",
   },
   generate: {
     handler: async (a) => { await generate(a[0], a[1] || "", a.slice(2)); },
