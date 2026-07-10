@@ -586,6 +586,7 @@ export class BaseModel {
    * @param limit      Max records (default 20)
    * @param offset     Skip records (default 0)
    * @param include    Relationship names to eager-load
+   * @param orderBy    ORDER BY clause (e.g. "name ASC")
    */
   static async where<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
@@ -594,6 +595,7 @@ export class BaseModel {
     limit: number = 20,
     offset: number = 0,
     include?: string[],
+    orderBy?: string,
   ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
@@ -607,7 +609,8 @@ export class BaseModel {
     }
     parts.push(`(${conditions})`);
 
-    const sql = `SELECT * FROM "${ModelClass.tableName}" WHERE ${parts.join(" AND ")} LIMIT ${limit} OFFSET ${offset}`;
+    const orderClause = orderBy ? ` ORDER BY ${orderBy}` : "";
+    const sql = `SELECT * FROM "${ModelClass.tableName}" WHERE ${parts.join(" AND ")}${orderClause} LIMIT ${limit} OFFSET ${offset}`;
 
     const rows = await adapterQuery(db, sql, params);
     const instances = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
