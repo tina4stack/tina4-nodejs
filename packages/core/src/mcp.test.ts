@@ -691,6 +691,44 @@ async function callTool(server: McpServer, name: string, args: Record<string, un
   }
 }
 
+// ── Database Tables Tool (regression #164) ───────────────────
+
+console.log("\nDatabase Tables Tool (#164)");
+
+{
+  // Regression (#164): the database_tables dev-tool must LIST tables. Node
+  // (db.getTables()) is already correct; this locks the contract so a future
+  // drift — like the PHP getDatabase() fatal that broke the tool from 3.13.14
+  // through 3.13.66 — is caught. Uses a REAL in-memory SQLite database via
+  // initDatabase (which sets globalThis.__tina4_db, exactly what the handler
+  // reads). No mock.
+  McpServer._instances = [];
+  const orm = await import("../../orm/src/index.js");
+  await orm.initDatabase({ url: "sqlite:///:memory:" });
+  const db = (globalThis as { __tina4_db?: { execute: (sql: string) => unknown } }).__tina4_db!;
+  await db.execute("CREATE TABLE mcp_probe_widget (id INTEGER PRIMARY KEY, name TEXT)");
+
+  const server = new McpServer("/db-tables", "DB Tables Test");
+  registerDevTools(server);
+  const { rpc, result } = await callTool(server, "database_tables", {});
+
+  assert(
+    "database_tables — no JSON-RPC error (handler did not fatal)",
+    rpc.error === undefined,
+    `Got: ${JSON.stringify(rpc)}`,
+  );
+  assert(
+    "database_tables — returns a table list",
+    Array.isArray(result),
+    `Got: ${JSON.stringify(result)}`,
+  );
+  assert(
+    "database_tables — lists the created table",
+    Array.isArray(result) && (result as unknown[]).includes("mcp_probe_widget"),
+    `Got: ${JSON.stringify(result)}`,
+  );
+}
+
 // ── Summary ──────────────────────────────────────────────────
 
 console.log(`\nMCP Tests: ${pass} passed, ${fail} failed`);
