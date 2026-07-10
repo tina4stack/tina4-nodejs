@@ -290,7 +290,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
     handler: async (a) => { await createMigration(a.join(" ") || undefined); },
     usage: "<desc>",
     args: ["description"],
-    summary: "Create a new migration file pair (.sql + .down.sql)",
+    summary: "Create a new migration file",
   },
   "migrate:status": {
     handler: async (a) => { await migrateStatus(a[0]); },
