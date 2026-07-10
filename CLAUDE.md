@@ -757,7 +757,7 @@ User.create(data);                         // construct + save
 User.all(where?, params?, include?);
 User.select(sql, params?);
 User.selectOne(sql, params?, include?);
-User.where(conditions, params?, limit?, offset?, include?);
+User.where(conditions, params?, limit?, offset?, include?, orderBy?);
 User.count(conditions?, params?);
 User.withTrashed(conditions?, params?, limit?, offset?);
 User.scope(name, filterSql, params?);     // registers a reusable named method
