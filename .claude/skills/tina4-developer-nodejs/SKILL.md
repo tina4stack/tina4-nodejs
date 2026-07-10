@@ -439,6 +439,21 @@ Target **Node.js 22+** (the framework's `engines` field requires `>=22.0.0`). Wr
 TypeScript/ESM — `import`/`export`, top-level `await`, `node:`-prefixed built-ins. Route/model files
 are `.ts` and run via `tsx`.
 
+## Staying current: check for Tina4 updates
+
+Tina4 ships fixes and features often, and a bug the user reports may already be fixed
+upstream. When you start substantial work — or whenever a user hits a bug a newer release
+might resolve — check whether the project's Tina4 is behind the latest, then surface it.
+**Never upgrade silently:** report the delta and let the user decide (a version bump can
+change behaviour).
+
+- **Installed vs latest:** `npm outdated tina4-nodejs` (the published npm package is the root
+  `tina4-nodejs`, not the `@tina4/*` workspaces). The `tina4` CLI's own version:
+  `tina4 --version`.
+- **If behind:** tell the user what changed — point them at the release notes on
+  https://tina4.com — and offer the upgrade: `npm install tina4-nodejs@latest`.
+- The `tina4` CLI self-updates with `tina4 update`; `tina4 doctor` checks your toolchain.
+
 ## Reference Files
 
 Read these when you need detailed patterns for a specific area:
