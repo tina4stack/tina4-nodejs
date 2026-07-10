@@ -74,7 +74,7 @@ export type { ServiceOptions, ServiceContext, ServiceHandler, ServiceInfo } from
 export { responseCache, clearCache, cacheStats, cacheGet, cacheSet, cacheDelete, cacheClear, cacheBackendStats, createBackend, _resetBackend } from "./cache.js";
 export type { ResponseCacheConfig, CacheBackend } from "./cache.js";
 export { Api } from "./api.js";
-export type { ApiResult } from "./api.js";
+export type { ApiResult, ApiOptions, ApiTransport, DownloadResult, UploadOptions } from "./api.js";
 export { Context, defaultContext, existingContext, fts5Supported, _sharedContexts } from "./context/index.js";
 export type { SearchHit } from "./context/index.js";
 export { Events } from "./events.js";

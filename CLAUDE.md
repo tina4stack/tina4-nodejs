@@ -877,7 +877,7 @@ frond.unsandbox();
 
 Zero-dep HTTP client over `node:http` / `node:https`. Used by integrations, queue producers, health checks, and tests.
 
-**Retry/backoff (opt-in, default off):** pass `maxRetries` (default `0`) and `retryBackoff` (default `0.5`s base, exponential) in the options bag — `new Api(url, { bearerToken, maxRetries: 3, retryBackoff: 0.5 })`. Retries a transport error (`http_code` null) or a retryable status (429/500/502/503/504); 4xx is never retried (a retried non-idempotent request may be re-sent, so retries are opt-in). Node's `node:http`/`node:https` doesn't auto-follow redirects, so there's no cross-host Authorization-leak surface (the redirect auth-strip is Python-only).
+**Retry/backoff (opt-in, default off):** pass `maxRetries` (default `0`) and `retryBackoff` (default `0.5`s base, exponential) in the options bag — `new Api(url, { bearerToken, maxRetries: 3, retryBackoff: 0.5 })`. Retries a transport error (`http_code` null) or a retryable status (429/500/502/503/504); 4xx is never retried (a retried non-idempotent request may be re-sent, so retries are opt-in).
 
 ```typescript
 import { Api } from "@tina4/core";
@@ -901,6 +901,34 @@ await api.sendRequest("OPTIONS", "/users");
 ```
 
 `error` is non-null on transport failure or timeout; `http_code` is `null` if the request never reached the server.
+
+**Multipart upload, streaming download, transport seam, cookie jar, redirects (v3.13.69, Python master parity).** All zero-dep, all opt-in and non-breaking:
+
+```typescript
+// Multipart upload — from disk OR in-memory bytes (no temp file needed).
+// Boundary is "----Tina4Boundary" + 32 hex; part Content-Type is guessed from
+// the filename (fallback application/octet-stream). A missing file / no source
+// returns a clean error result ({ http_code: null, error: ... }) — never throws.
+await api.upload("/avatars", { filePath: "/tmp/me.png", extraFields: { user_id: "42" } });
+await api.upload("/avatars", { fileBytes: buf, filename: "me.png", fieldName: "file" });
+
+// Streaming download — writes the body to disk in 64KB chunks (never buffered
+// whole). Returns { http_code, headers, error, path } (NO body field); path is
+// null and no file is written on any error.
+const dl = await api.download("/report.pdf", "/tmp/report.pdf", { q: "2026" });
+
+// Transport seam — an injectable async/sync callable
+// (method, url, headers, body, timeout) => { http_code, body, headers, error }
+// that REPLACES the node:http/https call. For APPLICATION-developer unit tests
+// only — Tina4's own suite never injects a fake (no-mock rule).
+new Api(url, { transport: async (method, u, headers, body, timeout) => ({ http_code: 200, body: {}, headers: {}, error: null }) });
+
+// Cookie jar — opt-in, in-memory, per-client. Parses Set-Cookie (leading
+// name=value, last write wins) and replays the accumulated Cookie header.
+new Api(url, { cookies: true });
+```
+
+**Redirect following (all verbs + download):** unlike bare `node:http`/`node:https`, the client now follows 3xx redirects (bounded to 10 hops). 301/302/303 on a body-bearing method become GET (body dropped, matching urllib); 307/308 preserve method + body. **Security:** the `Authorization` AND `Cookie` headers are STRIPPED when the redirect target is a different origin (scheme/host/port), so a bearer token or session cookie never leaks to a host you didn't authenticate to; same-origin redirects keep them. Full parity with Python master.
 
 ## Module: Queue (`packages/core/src/queue.ts`)
 
