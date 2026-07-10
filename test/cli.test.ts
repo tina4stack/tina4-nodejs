@@ -398,22 +398,28 @@ async function main(): Promise<void> {
     assert("queue: producer pushes a real job and returns an id", typeof id === "string" && id.length > 0);
     assert("queue: consumer default export is a daemon", mod.default.daemon === true);
   }
-  // validator
+  // validator (Phase 4: reclassified loud-stub → working-default so the
+  // co-emitted valid/invalid test is green on generation)
   {
     const src = read("src/validators/create_user.ts");
-    assert("validator: AI-FILL banner + Ground", src.includes("AI-FILL") && src.includes("// Ground:"));
+    assert("validator: EXTEND marker + ground, no throw (working default)",
+      src.includes("EXTEND:") && src.includes("ground:") && !src.includes("throw new Error"));
     assert("validator: imports the real Validator", src.includes('import { Validator } from "tina4-nodejs"'));
     const mod = await importGen("src/validators/create_user.ts");
-    assert("validator: throws until filled", await expectThrows(() => mod.validateCreateUser({})));
+    assert("validator: valid input passes (starter required rule)", mod.validateCreateUser({ name: "Ada" }).isValid());
+    assert("validator: invalid input fails", mod.validateCreateUser({}).isValid() === false);
   }
-  // seeder
+  // seeder (Phase 4: reclassified loud-stub → working-default; fieldOverrides
+  // returns {} and seedOrm auto-fills, so the co-emitted rows-created test is green)
   {
     const src = read("src/seeds/sprocket_seeder.ts");
-    assert("seeder: AI-FILL banner + Ground", src.includes("AI-FILL") && src.includes("// Ground:"));
+    assert("seeder: EXTEND marker + ground, no throw (working default)",
+      src.includes("EXTEND:") && src.includes("ground:") && !src.includes("throw new Error"));
     assert("seeder: wires seedOrm + the model (run() for `tina4nodejs seed`)",
       src.includes("seedOrm") && src.includes("function run"));
     const mod = await importGen("src/seeds/sprocket_seeder.ts"); // import must NOT seed (main-guard)
-    assert("seeder: fieldOverrides throws until filled", await expectThrows(() => mod.fieldOverrides(new FakeData())));
+    assert("seeder: fieldOverrides returns an object (auto-fill, no throw)",
+      typeof mod.fieldOverrides(new FakeData()) === "object" && mod.fieldOverrides(new FakeData()) !== null);
   }
   // websocket
   {
