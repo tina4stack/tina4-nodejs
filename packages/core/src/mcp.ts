@@ -1189,13 +1189,43 @@ export function registerDevTools(server: McpServer): void {
 
   server.registerTool(
     "route_test",
-    (args) => {
-      // Simplified: return info about what would be tested
-      return {
-        info: "Route testing requires the test client",
-        method: args.method,
-        path: args.path,
-      };
+    async (args) => {
+      // Dispatch the route through the REAL in-process TestClient (parity with
+      // the Python master's route_test, which drives its TestClient). Previously
+      // an echo stub that returned {info,method,path} and never dispatched.
+      // The TestClient builds a mock request, matches the route on the active
+      // router, runs it through the real auth gate, and executes the handler —
+      // exactly like a live request, no socket. Returns {status, body, contentType}.
+      try {
+        const { TestClient } = req("./testClient.js") as typeof import("./testClient.js");
+        const { defaultRouter } = req("./router.js") as typeof import("./router.js");
+        // Same router accessor route_list uses: prefer the running server's
+        // router, fall back to the default global router.
+        const router = (globalThis as any).__tina4_router ?? defaultRouter;
+        const client = new TestClient(router);
+        const method = String(args.method ?? "GET").toUpperCase();
+        const routePath = String(args.path ?? "");
+        const bodyStr = args.body ? String(args.body) : undefined;
+        let headers: Record<string, string> = {};
+        try {
+          headers = args.headers ? JSON.parse(String(args.headers)) : {};
+        } catch {
+          headers = {};
+        }
+        const options = { body: bodyStr, headers };
+        let resp;
+        switch (method) {
+          case "GET": resp = await client.get(routePath, options); break;
+          case "POST": resp = await client.post(routePath, options); break;
+          case "PUT": resp = await client.put(routePath, options); break;
+          case "PATCH": resp = await client.patch(routePath, options); break;
+          case "DELETE": resp = await client.delete(routePath, options); break;
+          default: return { error: `Unsupported method: ${method}` };
+        }
+        return { status: resp.status, body: resp.text(), contentType: resp.contentType };
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
     },
     "Call a route and return the response",
     schemaFromParams([
@@ -1381,18 +1411,28 @@ export function registerDevTools(server: McpServer): void {
     "migration_status",
     async (_args) => {
       try {
-        const db = (globalThis as any).__tina4_db;
-        if (!db) return { error: "No database connection" };
         // Use the real migration API (parity with the Python master, whose MCP
-        // migration_status calls MigrationRunner(db).status()). Previously a stub.
-        // Load orm via dynamic ESM import (the same mechanism server.ts uses for
-        // autoMigrateOnStartup) — reqSibling()'s createRequire fails here because
-        // @tina4/orm imports @tina4/core (no CJS "exports" main).
+        // migration_status calls status(db)). Load orm via dynamic ESM import
+        // (the same mechanism server.ts uses for autoMigrateOnStartup) —
+        // reqSibling()'s createRequire fails here because @tina4/orm imports
+        // @tina4/core (no CJS "exports" main).
         const orm = await import("../../orm/src/index.js");
         if (typeof orm.status !== "function") {
           return { error: "Migration API not available (install @tina4/orm)" };
         }
-        const st = await orm.status(db, { migrationsDir: path.join(projectRoot, "migrations") });
+        // Pass the RAW adapter, NOT globalThis.__tina4_db. status()/migrate()
+        // read applied-state via adapterQuery -> adapter.query(); the Database
+        // WRAPPER has no .query/.queryAsync (only fetch/execute/tableExists), so
+        // passing it made adapterQuery throw, got swallowed, and every migration
+        // was reported "pending". getAdapter() is the same accessor the server
+        // boot (server.ts) and the CLI (commands/migrate.ts) pass — and it works.
+        let adapter;
+        try {
+          adapter = orm.getAdapter();
+        } catch {
+          return { error: "No database connection" };
+        }
+        const st = await orm.status(adapter, { migrationsDir: path.join(projectRoot, "migrations") });
         return { completed: st.completed, pending: st.pending };
       } catch (e) {
         return { error: (e as Error).message };
@@ -1424,17 +1464,26 @@ export function registerDevTools(server: McpServer): void {
     "migration_run",
     async (_args) => {
       try {
-        const db = (globalThis as any).__tina4_db;
-        if (!db) return { error: "No database connection" };
         // Run pending migrations for real (parity with the Python master's MCP
-        // migration_run -> Migration(db).migrate()). Previously a stub. Load orm
-        // via dynamic ESM import (server.ts's mechanism); reqSibling's createRequire
-        // fails because @tina4/orm imports @tina4/core.
+        // migration_run -> migrate(db)). Load orm via dynamic ESM import
+        // (server.ts's mechanism); reqSibling's createRequire fails because
+        // @tina4/orm imports @tina4/core.
         const orm = await import("../../orm/src/index.js");
         if (typeof orm.migrate !== "function") {
           return { error: "Migration API not available (install @tina4/orm)" };
         }
-        const result = await orm.migrate(db, { migrationsDir: path.join(projectRoot, "migrations") });
+        // Pass the RAW adapter, NOT globalThis.__tina4_db (see migration_status
+        // above). Passing the wrapper made migrate() unable to read applied-state
+        // (adapterQuery threw + was swallowed), so it re-applied every migration
+        // on every call — non-idempotent. With the raw adapter the second run
+        // reads passed=1 rows and skips them (idempotent).
+        let adapter;
+        try {
+          adapter = orm.getAdapter();
+        } catch {
+          return { error: "No database connection" };
+        }
+        const result = await orm.migrate(adapter, { migrationsDir: path.join(projectRoot, "migrations") });
         return { applied: result.applied, skipped: result.skipped, failed: result.failed };
       } catch (e) {
         return { error: (e as Error).message };
@@ -1587,12 +1636,44 @@ export function registerDevTools(server: McpServer): void {
     "seed_table",
     async (args) => {
       try {
-        const { seedTable } = reqSibling("orm") as { seedTable?: (db: unknown, table: string, count: number) => number | Promise<number> };
-        const db = (globalThis as any).__tina4_db;
-        if (!db) return { error: "No database connection" };
+        // Load orm via dynamic ESM import (NOT reqSibling/createRequire): the
+        // CJS require cache is a SEPARATE module instance from the ESM one that
+        // initDatabase() populated, so its getAdapter() sees a null adapter
+        // ("No database connection"). The migration tools already use await
+        // import for exactly this reason — share the live adapter.
+        const orm = await import("../../orm/src/index.js") as {
+          seedTable?: (db: unknown, table: string, count: number, fieldMap?: Record<string, () => unknown>) => Promise<{ seeded: number; failed: number }>;
+          autoFieldMap?: (db: unknown, table: string) => Promise<Record<string, () => unknown>>;
+          getAdapter?: () => unknown;
+        };
+        if (typeof orm.seedTable !== "function" || typeof orm.autoFieldMap !== "function") {
+          return { error: "Seeder API not available (install @tina4/orm)" };
+        }
+        // RAW adapter, NOT globalThis.__tina4_db: autoFieldMap introspects via
+        // adapter.columns() and seedTable inserts via adapter.execute() — the
+        // Database WRAPPER has neither (its introspection method is getColumns).
+        // getAdapter() is the same accessor migration_* use above.
+        let adapter;
+        try {
+          adapter = orm.getAdapter?.();
+        } catch {
+          return { error: "No database connection" };
+        }
+        if (!adapter) return { error: "No database connection" };
         const count = (args.count as number) || 10;
-        const inserted = (await seedTable?.(db, args.table as string, count)) ?? 0;
-        return { table: args.table, inserted };
+        // Build a column->generator map from the table's real columns (parity
+        // with Python's seed_table, which calls auto_field_map). seedTable with
+        // NO field map is a deliberate no-op (0 rows) — this is how a caller opts
+        // into automatic generation, so the tool must supply one or nothing
+        // inserts (the exact bug this fixes).
+        const fieldMap = await orm.autoFieldMap(adapter, args.table as string);
+        if (!fieldMap || Object.keys(fieldMap).length === 0) {
+          return { error: `Table '${args.table}' not found or has no seedable columns` };
+        }
+        const summary = await orm.seedTable(adapter, args.table as string, count, fieldMap);
+        // Return an INTEGER inserted count (Python shape {table, inserted}); the
+        // seeder returns a SeedSummary, so surface .seeded (+ .failed for context).
+        return { table: args.table, inserted: summary.seeded, failed: summary.failed };
       } catch (e) {
         return { error: (e as Error).message };
       }

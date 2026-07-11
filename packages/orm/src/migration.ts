@@ -1075,8 +1075,16 @@ export async function status(
     for (const row of rows) {
       if (row.migration_name) appliedNames.add(row.migration_name);
     }
-  } catch {
-    // No valid tracking — treat all as pending
+  } catch (err) {
+    // The tracking table exists (checked above) but reading applied-state
+    // failed — do NOT silently report every migration as pending. That
+    // masked a real bug: passing the Database WRAPPER (no .query) instead of a
+    // raw adapter made adapterQuery throw here, so status() reported all-pending
+    // and the MCP migration_run re-applied everything each call. Log loud so a
+    // wrong-arg / bad adapter can never again hide as "nothing applied yet".
+    // (Python master #57 "don't swallow" lesson.) Applied-state stays empty for
+    // this call, but the cause is now visible instead of masked.
+    Log.error(`Migration status: could not read applied migrations from "${MIGRATION_TABLE}" — ${(err as Error).message}`);
   }
 
   for (const file of files) {

@@ -14,9 +14,9 @@
 //         real parent PKs, and warns on clear type mismatches.
 
 import { FakeData } from "./fakeData.js";
-import { adapterExecute, adapterFetch } from "./database.js";
+import { adapterExecute, adapterFetch, adapterColumns } from "./database.js";
 import { Log } from "../../core/src/index.js";
-import type { DatabaseAdapter, FieldDefinition } from "./types.js";
+import type { DatabaseAdapter, FieldDefinition, FieldType } from "./types.js";
 
 /**
  * Result of a seed run — `{ seeded, failed, errors }`.
@@ -73,6 +73,70 @@ async function clearTable(db: DatabaseAdapter, tableName: string): Promise<void>
   } catch (e) {
     Log.warning(`Seeder: could not clear '${tableName}': ${(e as Error).message}`);
   }
+}
+
+/**
+ * Map a raw SQL column type string to a Tina4 FieldType so FakeData.forField()
+ * can pick a generator. Substring match (case-insensitive) covers the engine
+ * spellings — INTEGER/INT, REAL/FLOAT/DOUBLE/NUMERIC/DECIMAL, BOOL, DATE/TIME,
+ * TEXT/CLOB. Anything else is a plain string.
+ */
+function sqlTypeToFieldType(sqlType: string): FieldType {
+  const t = (sqlType || "").toUpperCase();
+  if (t.includes("INT")) return "integer";
+  if (t.includes("BOOL")) return "boolean";
+  if (t.includes("REAL") || t.includes("FLOA") || t.includes("DOUB") || t.includes("NUM") || t.includes("DEC")) return "number";
+  if (t.includes("DATE") || t.includes("TIME")) return "datetime";
+  if (t.includes("TEXT") || t.includes("CLOB")) return "text";
+  return "string";
+}
+
+/**
+ * Introspect `table`'s columns and build a column->generator field map for
+ * {@link seedTable}, skipping the auto-increment / `id` primary key (the engine
+ * assigns it). Mirrors the Python master's `auto_field_map`
+ * (tina4_python/seeder/__init__.py): the shared "seed a table I did not
+ * hand-write generators for" helper that both the dev-admin seed endpoint and
+ * the MCP `seed_table` dev tool use — `seedTable` itself stays explicit
+ * (no map = no rows), and this is how a caller opts into automatic generation.
+ *
+ * Reuses `FakeData.forField()` (column-name + type heuristics) so the generated
+ * data matches every other Tina4 seeding path. Returns an empty map when the
+ * table has no seedable columns, so `seedTable` then seeds nothing rather than
+ * crashing.
+ *
+ * @param db - A DatabaseAdapter instance (pass `getAdapter()`, NOT the Database
+ *             wrapper — the wrapper has no `columns()`).
+ * @param table - The table to introspect.
+ * @param fake - Optional shared FakeData (pass one seeded via `new FakeData(n)`
+ *               for reproducible output).
+ * @returns `{ column -> () => value }`, ready to hand to `seedTable`.
+ */
+export async function autoFieldMap(
+  db: DatabaseAdapter,
+  table: string,
+  fake: FakeData = new FakeData(),
+): Promise<Record<string, () => unknown>> {
+  const columns = await adapterColumns(db, table);
+  const fieldMap: Record<string, () => unknown> = {};
+  for (const col of columns) {
+    const name = col.name;
+    const sqlType = String(col.type ?? "").toUpperCase();
+    // Skip the auto-increment surrogate key so the INSERT omits it and the
+    // engine assigns it. Mirrors Python: primary key AND (AUTO/SERIAL/IDENTITY
+    // in the type OR the column is literally `id` — SQLite reports just
+    // "INTEGER" for an AUTOINCREMENT rowid alias, so the name catch is needed).
+    if (col.primaryKey === true &&
+        (sqlType.includes("AUTO") || sqlType.includes("SERIAL") ||
+         sqlType.includes("IDENTITY") || name.toLowerCase() === "id")) {
+      continue;
+    }
+    const fieldType = sqlTypeToFieldType(sqlType);
+    // Bind the type + name per column; forField applies the name heuristics
+    // (email/phone/name/...) before falling back to the type.
+    fieldMap[name] = () => fake.forField({ type: fieldType }, name);
+  }
+  return fieldMap;
 }
 
 /**
