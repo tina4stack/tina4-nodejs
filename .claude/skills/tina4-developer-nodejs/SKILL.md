@@ -175,7 +175,7 @@ ground truth.
 - **Do:** `tina4_context("how do I define a BaseModel with a foreign key", "nodejs")` → read the
   returned context, then hand-write the model.
 - **Do NOT** call `tina4_code` to generate the code for you. In this skill you write the Node.js code
-  yourself; `tina4_context` only grounds you so you don't guess at APIs.
+  yourself; `tina4_context` only grounds you so you don't guess at APIs. tina4_code is deprecated on the tools' own evidence: in a boot-and-verify gate `tina4_code` FAILED where Claude grounded with `tina4_context` PASSED, so the tools point to grounding + a strong model, not the self-hosted coder.
 
 Still do all the reasoning, planning, debugging, and non-Tina4 code yourself. Always cross-check what
 you write against the live API index (below) and the reference files in this skill.
