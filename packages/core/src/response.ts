@@ -52,7 +52,7 @@ export async function getFrond(): Promise<InstanceType<any>> {
   const dir = _defaultTemplatesDir ?? nodePath.resolve(process.cwd(), "src/templates");
   let engine = _frondCache.get(dir);
   if (!engine) {
-    const { Frond } = await import("@tina4/frond");
+    const { Frond } = await import("../../frond/src/engine.js");
     engine = new Frond(dir);
     _frondCache.set(dir, engine);
   }
@@ -68,7 +68,7 @@ export async function getFrameworkFrond(): Promise<InstanceType<any> | null> {
   const frameworkDir = nodePath.resolve(nodePath.dirname(import.meta.url.replace("file://", "")), "..", "templates");
   if (!_frameworkFrond && fs.existsSync(frameworkDir)) {
     try {
-      const { Frond } = await import("@tina4/frond");
+      const { Frond } = await import("../../frond/src/engine.js");
       _frameworkFrond = new Frond(frameworkDir);
     } catch { return null; }
   }
@@ -332,7 +332,7 @@ export function createResponse(res: ServerResponse): Tina4Response {
     templateDir?: string,
   ): Promise<Tina4Response> {
     try {
-      const { Frond } = await import("@tina4/frond");
+      const { Frond } = await import("../../frond/src/engine.js");
       const dir = templateDir ?? _defaultTemplatesDir ?? nodePath.resolve(process.cwd(), "src/templates");
       let engine = _frondCache.get(dir);
       if (!engine) {

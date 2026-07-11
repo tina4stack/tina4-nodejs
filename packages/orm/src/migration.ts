@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { Log } from "@tina4/core";
+import { Log } from "../../core/src/index.js";
 import type { FieldDefinition, DatabaseAdapter } from "./types.js";
 import type { SQLiteAdapter } from "./adapters/sqlite.js";
 import type { DiscoveredModel } from "./model.js";
@@ -1191,7 +1191,7 @@ export async function createClassMigration(
   const content =
     `// Migration: ${description}\n` +
     `// Created: ${now.toISOString()}\n\n` +
-    `import type { DatabaseAdapter } from "@tina4/orm";\n\n` +
+    `import type { DatabaseAdapter } from "tina4-nodejs/orm";\n\n` +
     `export class ${className} {\n` +
     `  async up(db: DatabaseAdapter): Promise<void> {\n` +
     `    // db.execute("CREATE TABLE ...");\n` +

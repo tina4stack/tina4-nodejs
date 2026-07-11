@@ -39,11 +39,13 @@ const req = createRequire(import.meta.url);
  * MCP client hits /__dev/mcp from a from-source dev server.
  */
 function reqSibling(pkg: "orm" | "swagger" | "frond"): Record<string, unknown> {
-  try {
-    return req(`@tina4/${pkg}`) as Record<string, unknown>;
-  } catch {
-    return req(`../../${pkg}/src/index.ts`) as Record<string, unknown>;
-  }
+  // Resolve the sibling package from its in-repo/installed SOURCE path. A bare
+  // `@tina4/${pkg}` specifier does NOT resolve in a consumer install — the root
+  // `tina4-nodejs` package is the only thing on disk, there is no `@tina4/*` in
+  // node_modules (that was the #32 break) — so go straight to the relative src.
+  // createRequire + tsx resolves the .ts here (synchronous dev-tool path); each
+  // caller already wraps this in try/catch and degrades gracefully on failure.
+  return req(`../../${pkg}/src/index.ts`) as Record<string, unknown>;
 }
 
 // ── Types ─────────────────────────────────────────────────────

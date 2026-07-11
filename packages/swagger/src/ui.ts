@@ -1,4 +1,4 @@
-import type { Tina4Request, Tina4Response, RouteDefinition } from "@tina4/core";
+import type { Tina4Request, Tina4Response, RouteDefinition } from "../../core/src/index.js";
 
 // The UI assets load from a CDN by default (a documented architecture decision —
 // we don't vendor ~1.4MB of swagger-ui-dist, to stay small). Air-gapped

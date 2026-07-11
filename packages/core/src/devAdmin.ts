@@ -518,7 +518,7 @@ export class DevAdmin {
 
           // Auto-discover ORM models from BaseModel registry
           try {
-            const orm = await import("@tina4/orm");
+            const orm = await import("../../orm/src/index.js");
             const registry = (orm as any).BaseModel?._modelRegistry as Record<string, any> | undefined;
             if (registry) {
               for (const modelClass of Object.values(registry)) {
@@ -746,7 +746,7 @@ function handleStatus(router: Router): RouteHandler {
     const mailboxCounts = DevMailboxStore.count();
     let dbTableCount = 0;
     try {
-      const { getAdapter } = await import("@tina4/orm");
+      const { getAdapter } = await import("../../orm/src/index.js");
       const db = getAdapter();
       dbTableCount = db.tables().length;
     } catch { /* no database connected */ }
@@ -852,7 +852,7 @@ const handleSystem: RouteHandler = async (_req, res) => {
   let dbTableCount: number | undefined;
   let dbConnected = false;
   try {
-    const { getAdapter } = await import("@tina4/orm");
+    const { getAdapter } = await import("../../orm/src/index.js");
     const db = getAdapter();
     dbTableCount = db.tables().length;
     dbConnected = true;
@@ -1067,7 +1067,7 @@ const handleTable: RouteHandler = (req, res) => {
 
 const handleTables: RouteHandler = async (_req, res) => {
   try {
-    const { getAdapter } = await import("@tina4/orm");
+    const { getAdapter } = await import("../../orm/src/index.js");
     const db = getAdapter();
     const tables = db.tables();
     res.json({ tables });
@@ -1093,7 +1093,7 @@ const handleSeed: RouteHandler = async (req, res) => {
     return;
   }
   try {
-    const orm = await import("@tina4/orm");
+    const orm = await import("../../orm/src/index.js");
     const db = orm.getAdapter();
     const { seedTable } = orm;
     // A shared FakeData seeds the RNG so a `seed` makes the run reproducible.
@@ -1144,7 +1144,7 @@ const handleQuery: RouteHandler = async (req, res) => {
   }
 
   try {
-    const { getAdapter } = await import("@tina4/orm");
+    const { getAdapter } = await import("../../orm/src/index.js");
     const db = getAdapter();
 
     // Split multiple statements on semicolons
@@ -1519,7 +1519,7 @@ const handleConnectionsTest: RouteHandler = async (req, res) => {
   }
   try {
     // Try to use the ORM's initDatabase if available
-    const { initDatabase } = await import("@tina4/orm").catch(() => ({ initDatabase: null }));
+    const { initDatabase } = await import("../../orm/src/index.js").catch(() => ({ initDatabase: null }));
     if (!initDatabase) {
       res.json({ success: false, error: "Database module (@tina4/orm) not available" });
       return;

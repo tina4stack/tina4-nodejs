@@ -10,7 +10,7 @@ import {
   type WebSocketConnection,
   type Tina4Request,
   type Tina4Response,
-} from "@tina4/core";
+} from "../../../core/src/index.js";
 import Workspace from "./models/workspace.js";
 import Channel from "./models/channel.js";
 import ChannelMember from "./models/channelMember.js";

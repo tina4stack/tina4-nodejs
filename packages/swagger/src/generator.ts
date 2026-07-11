@@ -1,5 +1,5 @@
-import type { RouteDefinition } from "@tina4/core";
-import type { ModelDefinition, FieldDefinition } from "@tina4/orm";
+import type { RouteDefinition } from "../../core/src/index.js";
+import type { ModelDefinition, FieldDefinition } from "../../orm/src/index.js";
 
 interface OpenAPISpecInfo {
   title: string;

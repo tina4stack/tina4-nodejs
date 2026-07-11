@@ -1017,7 +1017,7 @@ class DatabaseBackend implements CacheBackend {
     process.env.TINA4_AUTO_CACHING = "false";
     process.env.TINA4_DB_CACHE = "false";
     try {
-      const mod: any = await import("@tina4/orm").catch(() => null);
+      const mod: any = await import("../../orm/src/index.js").catch(() => null);
       if (!mod || !mod.initDatabase) { this.available = false; return; }
       const db = await mod.initDatabase({ url: this.url });
       await db.execute(

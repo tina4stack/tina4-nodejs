@@ -60,6 +60,13 @@
   "engines": {
     "node": ">=22.0.0"
   },
+  "optionalDependencies": {
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/s3-request-presigner": "^3.600.0",
+    "mongodb": "^6.0.0",
+    "pg": "^8.20.0",
+    "redis": "^4.7.0"
+  },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "esbuild": "^0.24.0",

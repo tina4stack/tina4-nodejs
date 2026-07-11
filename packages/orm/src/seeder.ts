@@ -15,7 +15,7 @@
 
 import { FakeData } from "./fakeData.js";
 import { adapterExecute, adapterFetch } from "./database.js";
-import { Log } from "@tina4/core";
+import { Log } from "../../core/src/index.js";
 import type { DatabaseAdapter, FieldDefinition } from "./types.js";
 
 /**

@@ -1,4 +1,4 @@
-import type { RouteDefinition, Tina4Request, Tina4Response } from "@tina4/core";
+import type { RouteDefinition, Tina4Request, Tina4Response } from "../../core/src/index.js";
 import type { DiscoveredModel } from "./model.js";
 import { getAdapter, adapterQuery, adapterExecute } from "./database.js";
 import { buildQuery, parseQueryString } from "./query.js";

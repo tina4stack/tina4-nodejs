@@ -34,7 +34,7 @@
 
 import { QueryCache } from "./sqlTranslation.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "./types.js";
-import type { CacheBackend } from "@tina4/core";
+import type { CacheBackend } from "../../core/src/index.js";
 
 function isTruthy(val: string | undefined): boolean {
   return ["true", "1", "yes", "on"].includes((val ?? "").trim().toLowerCase());
@@ -148,7 +148,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
         try {
           // Dynamic import keeps @tina4/orm free of an import-time cycle with
           // @tina4/core (whose `database` backend dynamically imports @tina4/orm).
-          const core: any = await import("@tina4/core");
+          const core: any = await import("../../core/src/index.js");
           const b: CacheBackend = await core.createBackend({
             backend: this.backendName,
             cacheUrl: process.env.TINA4_DB_CACHE_URL,

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { createRequire } from "node:module";
-import { Log } from "@tina4/core";
+import { Log } from "../../../core/src/index.js";
 
 // ESM has no global `require`; create one so the OPTIONAL aws-sdk can be loaded
 // synchronously in S3Storage's constructor. A missing driver throws here and

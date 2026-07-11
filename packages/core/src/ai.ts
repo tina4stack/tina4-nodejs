@@ -4,7 +4,7 @@
  * Simple menu-driven installer for AI tool context files.
  * The user picks which tools they use, we install the appropriate files.
  *
- *   import { showMenu, installSelected } from "@tina4/core";
+ *   import { showMenu, installSelected } from "tina4-nodejs";
  */
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -693,7 +693,7 @@ Set \`TINA4_DATABASE_URL\` in \`.env\` (e.g. \`postgres://localhost:5432/mydb\`)
 
 ## Auth
 
-JWT auth built in. \`import { createToken, validateToken, hashPassword, checkPassword } from "@tina4/core"\`.
+JWT auth built in. \`import { createToken, validateToken, hashPassword, checkPassword } from "tina4-nodejs"\`.
 GET routes are public. POST/PUT/PATCH/DELETE require auth by default.
 `;
 }
@@ -862,7 +862,7 @@ Set \`TINA4_DATABASE_URL\` in \`.env\` (e.g. \`sqlite:///path/to/db.sqlite\`, \`
 
 ## Auth
 
-JWT auth built in. \`import { createToken, validateToken, hashPassword, checkPassword } from "@tina4/core"\`.
+JWT auth built in. \`import { createToken, validateToken, hashPassword, checkPassword } from "tina4-nodejs"\`.
 GET routes are public. POST/PUT/PATCH/DELETE require auth by default.
 
 ## Testing
@@ -873,7 +873,7 @@ npx tina4nodejs test      # Run all tests
 
 Add test files in \`test/\` directory. Use built-in inline testing:
 \`\`\`typescript
-import { tests, assertEqual, runAll } from "@tina4/core";
+import { tests, assertEqual, runAll } from "tina4-nodejs";
 \`\`\`
 
 ## Important
