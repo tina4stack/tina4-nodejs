@@ -701,13 +701,20 @@ export class BaseModel {
         await adapterExecute(db, `UPDATE "${ModelClass.tableName}" SET ${setClause} WHERE "${pkCol}" = ?`, values);
       } else {
         // Insert
+        //
+        // #165: an INSERT must OMIT a column the caller never assigned so a
+        // `NOT NULL DEFAULT <x>` column gets its DB default instead of an
+        // explicit NULL that violates the constraint. In TS an unset column is
+        // `undefined` (the constructor only seeds a field that declares a
+        // non-null ORM default — everything else stays `undefined`), so the
+        // `this[name] !== undefined` filter already drops unset columns; a
+        // value the caller set to `null` IS included and written as an explicit
+        // NULL (parity with Python's _assigned_fields split — JS distinguishes
+        // undefined-unset from null-explicit natively). A resolved non-null ORM
+        // default is still written (no regression).
         const insertFields = Object.entries(ModelClass.fields).filter(
           ([name, def]) => !(def.primaryKey && def.autoIncrement) && this[name] !== undefined,
         );
-
-        const columns = insertFields.map(([k]) => `"${ModelClass.getDbColumn(k)}"`).join(", ");
-        const placeholders = insertFields.map(() => "?").join(", ");
-        const values = insertFields.map(([k, def]) => toDbFieldValue(def, this[k]));
 
         // For auto-increment PKs on engines that need it (PostgreSQL),
         // RETURNING the PK column lets us read the engine-assigned id back.
@@ -715,9 +722,29 @@ export class BaseModel {
         // since 3.35) and we still prefer its lastInsertRowid; for other
         // engines extractLastInsertId() reads rows[0].id.
         const wantReturning = pkField?.autoIncrement && db.constructor.name !== "SQLiteAdapter";
-        const insertSql =
-          `INSERT INTO "${ModelClass.tableName}" (${columns}) VALUES (${placeholders})` +
-          (wantReturning ? ` RETURNING "${pkCol}"` : "");
+        const returningClause = wantReturning ? ` RETURNING "${pkCol}"` : "";
+
+        let insertSql: string;
+        let values: unknown[];
+        if (insertFields.length === 0) {
+          // #165: every insertable column was left unset — let the DB apply ALL
+          // its column defaults rather than emitting an empty column list
+          // (`() VALUES ()` is invalid on SQLite/PostgreSQL/Firebird/MSSQL, which
+          // spell the all-defaults insert `DEFAULT VALUES`; only MySQL uses the
+          // empty-parens form). Mirrors the Python master's engine split.
+          insertSql =
+            (db.constructor.name === "MysqlAdapter"
+              ? `INSERT INTO "${ModelClass.tableName}" () VALUES ()`
+              : `INSERT INTO "${ModelClass.tableName}" DEFAULT VALUES`) + returningClause;
+          values = [];
+        } else {
+          const columns = insertFields.map(([k]) => `"${ModelClass.getDbColumn(k)}"`).join(", ");
+          const placeholders = insertFields.map(() => "?").join(", ");
+          values = insertFields.map(([k, def]) => toDbFieldValue(def, this[k]));
+          insertSql =
+            `INSERT INTO "${ModelClass.tableName}" (${columns}) VALUES (${placeholders})` +
+            returningClause;
+        }
 
         const result = await adapterExecute(db, insertSql, values);
 
