@@ -78,7 +78,7 @@ export { MysqlAdapter } from "./adapters/mysql.js";
 export type { MysqlConfig } from "./adapters/mysql.js";
 export { MssqlAdapter } from "./adapters/mssql.js";
 export type { MssqlConfig } from "./adapters/mssql.js";
-export { FirebirdAdapter, normalizeFirebirdDbIdentifier } from "./adapters/firebird.js";
+export { FirebirdAdapter, normalizeFirebirdDbIdentifier, resolveFirebirdCharset } from "./adapters/firebird.js";
 export type { FirebirdConfig } from "./adapters/firebird.js";
 export { MongodbAdapter } from "./adapters/mongodb.js";
 export type { MongoConfig } from "./adapters/mongodb.js";

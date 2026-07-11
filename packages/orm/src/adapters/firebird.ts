@@ -56,6 +56,12 @@ const WIN_DRIVE_RE = /^\/?[A-Za-z]:[/\\]/;
  * slashes. Anything path-like is kept as a path.
  */
 export function normalizeFirebirdDbIdentifier(rawPath: string): string {
+  // php #160: a `?charset=` (or any query) tacked onto a connection URL must
+  // NOT leak into the Firebird database identifier — a path/alias never
+  // legitimately contains `?`. The charset itself is resolved separately by
+  // resolveFirebirdCharset(). Strip the query before decoding/normalising.
+  const queryIndex = rawPath.indexOf("?");
+  if (queryIndex >= 0) rawPath = rawPath.slice(0, queryIndex);
   let decoded = decodeURIComponent(rawPath);
 
   // Classic double-slash form: //abs/path -> /abs/path
@@ -87,6 +93,36 @@ export function normalizeFirebirdDbIdentifier(rawPath: string): string {
   return decoded.startsWith("/") ? decoded : "/" + decoded;
 }
 
+/**
+ * Resolve the Firebird connection charset (php #160 / parity with the Python
+ * master's `_resolve_firebird_charset`).
+ *
+ * The adapter used to pass NO charset, deferring to the driver's implicit
+ * default, which double-encodes UTF-8 bytes stored under a legacy `NONE`
+ * database. This resolves the charset from, in precedence order:
+ *
+ *   1. the connection URL query — `firebird://host:port/path?charset=NONE`
+ *   2. an explicit `charset` on the FirebirdConfig object passed to the adapter
+ *   3. the `TINA4_DATABASE_CHARSET` environment variable
+ *   4. the `UTF8` default
+ *
+ * Pure config resolution over its inputs (URL string, explicit charset, env) —
+ * it opens NO connection, so it is unit-testable without a live server.
+ */
+export function resolveFirebirdCharset(connectionString: string, explicitCharset?: string): string {
+  let urlCharset: string | undefined;
+  const queryIndex = (connectionString ?? "").indexOf("?");
+  if (queryIndex >= 0) {
+    urlCharset = new URLSearchParams(connectionString.slice(queryIndex + 1)).get("charset") ?? undefined;
+  }
+  return (
+    urlCharset ||
+    explicitCharset ||
+    process.env.TINA4_DATABASE_CHARSET ||
+    "UTF8"
+  );
+}
+
 export interface FirebirdConfig {
   host?: string;
   port?: number;
@@ -95,6 +131,8 @@ export interface FirebirdConfig {
   database?: string;
   role?: string;
   pageSize?: number;
+  /** Connection charset. Overridden by a `?charset=` URL query; see resolveFirebirdCharset. */
+  charset?: string;
 }
 
 export class FirebirdAdapter implements DatabaseAdapter {
@@ -120,6 +158,9 @@ export class FirebirdAdapter implements DatabaseAdapter {
         password: parsed.password ?? "masterkey",
         role: undefined,
         pageSize: 4096,
+        // php #160: honour ?charset= in the URL and TINA4_DATABASE_CHARSET so a
+        // legacy NONE database isn't force-connected under a mismatched charset.
+        charset: resolveFirebirdCharset(this.config),
       };
     } else {
       fbConfig = {
@@ -130,6 +171,8 @@ export class FirebirdAdapter implements DatabaseAdapter {
         password: this.config.password ?? "masterkey",
         role: this.config.role,
         pageSize: this.config.pageSize ?? 4096,
+        // php #160: explicit config.charset wins over env, else UTF8 default.
+        charset: resolveFirebirdCharset("", this.config.charset),
       };
     }
 
@@ -160,9 +203,10 @@ export class FirebirdAdapter implements DatabaseAdapter {
   }
 
   private parseUrl(url: string): { host?: string; port?: number; user?: string; password?: string; database?: string } {
-    // firebird://user:pass@host:port/path/to/db.fdb
+    // firebird://user:pass@host:port/path/to/db.fdb[?charset=...]
     // The path part after the host is normalised by normalizeFirebirdDbIdentifier()
-    // in connect(); here we just preserve it (with the leading "/" the regex strips).
+    // in connect() (which also strips any `?charset=` query — see php #160); here
+    // we just preserve it (with the leading "/" the regex strips).
     const match = url.match(/firebird:\/\/(?:([^:]+):([^@]+)@)?([^:/]+)(?::(\d+))?\/(.*)/);
     if (match) {
       return {
