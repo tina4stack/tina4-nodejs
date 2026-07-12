@@ -12,13 +12,14 @@
  *   GET /__dev/api/table?name=widget         → real columns + real sample rows
  *   GET /__dev/api/queue?topic=emails        → the on-disk persisted job shows
  *   GET /__dev/api/queue/dead-letters        → real (empty) dead-letter store
+ *   GET/POST /__dev/api/grounding/*          → self-contained .env token round-trip
  *   plus the negative paths (missing name, unknown table).
  *
  * Regression target: before the fix, /table always returned
  * {columns:[],rows:[],message:"Database not connected or table not found"}
  * and /queue read only the empty in-memory DevQueue.
  */
-import { rmSync, mkdirSync } from "node:fs";
+import { rmSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import http from "node:http";
@@ -59,6 +60,31 @@ function httpGetJson(path: string): Promise<{ status: number; json: any }> {
   });
 }
 
+function httpPostJson(path: string, payload: unknown): Promise<{ status: number; json: any }> {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(payload);
+    const req = http.request(
+      {
+        host: "127.0.0.1", port: PORT, path, method: "POST", timeout: 5000,
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) },
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () => {
+          let json: any = null;
+          try { json = JSON.parse(body); } catch { /* leave null */ }
+          resolve({ status: res.statusCode ?? 0, json });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(new Error("request timeout")); });
+    req.write(data);
+    req.end();
+  });
+}
+
 async function main(): Promise<void> {
   mkdirSync(join(scaffold, "data"), { recursive: true });
   process.chdir(scaffold);
@@ -70,6 +96,10 @@ async function main(): Promise<void> {
   process.env.TINA4_SUPPRESS = "true"; // quiet the ASCII banner
   process.env.TINA4_DATABASE_URL = `sqlite:///${join(scaffold, "data", "app.db")}`;
   process.env.TINA4_HOST_NAME = `localhost:${PORT}`;
+  // Clean grounding baseline — ignore any ambient token from the real shell so
+  // the self-contained .env round-trip below starts unconfigured.
+  delete process.env.TINA4_MCP_TOKEN;
+  delete process.env.TINA4_MCP_URL;
 
   const { startServer, Queue } = await import("../packages/core/src/index.ts");
   const { initDatabase, getAdapter, closeDatabase } = await import("../packages/orm/src/index.ts");
@@ -146,6 +176,35 @@ async function main(): Promise<void> {
       assert("GET /queue/dead-letters 200", status === 200, `status=${status}`);
       assert("GET /queue/dead-letters returns a real array", Array.isArray(json?.jobs) && json.count === json.jobs.length,
         JSON.stringify(json));
+    }
+
+    // 7. Grounding — self-contained .env round-trip (no Rust agent). Baseline
+    //    unconfigured, save flips it and writes .env, clear removes it.
+    const envPath = join(scaffold, ".env");
+    {
+      const { status, json } = await httpGetJson("/__dev/api/grounding/status");
+      assert("GET /grounding/status 200", status === 200, `status=${status}`);
+      assert("grounding baseline unconfigured", json?.configured === false, JSON.stringify(json));
+      assert("grounding baseline last4 empty", json?.last4 === "", JSON.stringify(json));
+      assert("grounding default url", json?.url === "https://mcp.tina4.com", JSON.stringify(json));
+    }
+    {
+      const { status, json } = await httpPostJson("/__dev/api/grounding/token", { token: "wxyz1234" });
+      assert("POST /grounding/token 200", status === 200, `status=${status}`);
+      assert("token save reports configured", json?.ok === true && json?.configured === true, JSON.stringify(json));
+      assert("token save reports last4", json?.last4 === "1234", JSON.stringify(json));
+      assert("token persisted to .env", existsSync(envPath) && readFileSync(envPath, "utf-8").includes("TINA4_MCP_TOKEN=wxyz1234"),
+        existsSync(envPath) ? readFileSync(envPath, "utf-8") : "(no .env)");
+    }
+    {
+      const { json } = await httpGetJson("/__dev/api/grounding/status");
+      assert("grounding status flips to configured", json?.configured === true && json?.last4 === "1234", JSON.stringify(json));
+    }
+    {
+      const { json } = await httpPostJson("/__dev/api/grounding/token", { token: "" });
+      assert("empty token clears configured", json?.configured === false && json?.last4 === "", JSON.stringify(json));
+      const envBody = readFileSync(envPath, "utf-8");
+      assert("cleared .env keeps empty key", /^TINA4_MCP_TOKEN=\s*$/m.test(envBody), envBody);
     }
   } finally {
     server.close();

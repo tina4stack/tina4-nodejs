@@ -550,7 +550,7 @@ export class DevAdmin {
       { method: "POST", pattern: "/__dev/api/supervise/cancel", handler: handleSuperviseStub },
       // Execute — proxies to the framework_port+2000 Rust agent (SSE passthrough)
       { method: "POST", pattern: "/__dev/api/execute", handler: handleExecute },
-      // Framework-grounding MCP token config — proxied to the Rust agent
+      // Framework-grounding MCP token config — self-contained (.env upsert)
       { method: "GET", pattern: "/__dev/api/grounding/status", handler: handleGroundingStatus },
       { method: "POST", pattern: "/__dev/api/grounding/token", handler: handleGroundingToken },
       // Scaffold run chips — project-level operations (distinct from create)
@@ -1508,18 +1508,62 @@ const handleChat: RouteHandler = async (req, res) => {
 
 // -- Framework-grounding (mcp.tina4.com) token config --
 //
-// The Rust agent owns the token: it writes TINA4_MCP_TOKEN into the project
-// .env and resolves it (process env → .env) when grounding the coder against
-// mcp.tina4.com's tina4_context. These two routes just proxy to the agent so
-// the dev-admin token panel works whether the bundle is served by Vite (dev)
-// or the framework (production).
-//   GET  /__dev/api/grounding/status → agent GET  /mcp/status
-//   POST /__dev/api/grounding/token  → agent POST /mcp/token
-const handleGroundingStatus: RouteHandler = async (req, res) => {
-  await proxyToSupervisor(req, res, "/mcp/status");
+// TINA4_MCP_TOKEN grounds the coder against mcp.tina4.com's tina4_context.
+// These routes are self-contained: they read/write the token in the project
+// .env directly (no dependency on the Rust agent being up), matching the
+// python/php/ruby dev_admin. The agent still resolves the same TINA4_MCP_TOKEN
+// (process env → .env) when it runs.
+//   GET  /__dev/api/grounding/status → {configured, last4, url}
+//   POST /__dev/api/grounding/token  → upsert TINA4_MCP_TOKEN in .env
+const DEFAULT_MCP_URL = "https://mcp.tina4.com";
+
+/** Resolve a var from the live process env, falling back to the project .env. */
+function resolveDevEnvVar(key: string): string {
+  const live = process.env[key];
+  if (live !== undefined && live !== "") return live;
+  const envPath = join(process.cwd(), ".env");
+  if (!existsSync(envPath)) return "";
+  for (const line of readFileSync(envPath, "utf-8").split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("#") || !t.includes("=")) continue;
+    const eq = t.indexOf("=");
+    if (t.slice(0, eq).trim() === key) return t.slice(eq + 1).trim();
+  }
+  return "";
+}
+
+/** Upsert KEY=value into the project .env (creates the file if absent). */
+function upsertDevEnvVar(key: string, value: string): void {
+  const envPath = join(process.cwd(), ".env");
+  const lines = existsSync(envPath) ? readFileSync(envPath, "utf-8").split("\n") : [];
+  let found = false;
+  const out: string[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || t.startsWith("#") || !t.includes("=")) { out.push(line); continue; }
+    if (t.slice(0, t.indexOf("=")).trim() === key) { out.push(`${key}=${value}`); found = true; }
+    else out.push(line);
+  }
+  if (!found) out.push(`${key}=${value}`);
+  writeFileSync(envPath, out.join("\n").replace(/\n+$/, "") + "\n");
+}
+
+const handleGroundingStatus: RouteHandler = async (_req, res) => {
+  const token = resolveDevEnvVar("TINA4_MCP_TOKEN");
+  const url = resolveDevEnvVar("TINA4_MCP_URL") || DEFAULT_MCP_URL;
+  res.json({ configured: token.length > 0, last4: token ? token.slice(-4) : "", url });
 };
 const handleGroundingToken: RouteHandler = async (req, res) => {
-  await proxyToSupervisor(req, res, "/mcp/token");
+  const body = (req.body as Record<string, unknown>) || {};
+  const token = String(body.token ?? "").trim();
+  try {
+    upsertDevEnvVar("TINA4_MCP_TOKEN", token);
+    // Reflect into the live process env so a follow-up status reads back at once.
+    process.env.TINA4_MCP_TOKEN = token;
+    res.json({ ok: true, configured: token.length > 0, last4: token ? token.slice(-4) : "" });
+  } catch (e) {
+    res.json({ ok: false, error: (e as Error).message }, 500);
+  }
 };
 
 // -- Scaffold run chips: migrate / test / seed-all --
