@@ -550,6 +550,13 @@ export class DevAdmin {
       { method: "POST", pattern: "/__dev/api/supervise/cancel", handler: handleSuperviseStub },
       // Execute — proxies to the framework_port+2000 Rust agent (SSE passthrough)
       { method: "POST", pattern: "/__dev/api/execute", handler: handleExecute },
+      // Framework-grounding MCP token config — proxied to the Rust agent
+      { method: "GET", pattern: "/__dev/api/grounding/status", handler: handleGroundingStatus },
+      { method: "POST", pattern: "/__dev/api/grounding/token", handler: handleGroundingToken },
+      // Scaffold run chips — project-level operations (distinct from create)
+      { method: "POST", pattern: "/__dev/api/migrate", handler: handleMigrate },
+      { method: "POST", pattern: "/__dev/api/test", handler: handleTest },
+      { method: "POST", pattern: "/__dev/api/seed/run", handler: handleSeedRun },
       // File browser / editor
       { method: "GET", pattern: "/__dev/api/files", handler: handleFiles },
       { method: "GET", pattern: "/__dev/api/file", handler: handleFileRead },
@@ -922,27 +929,71 @@ const handleMessagesSearch: RouteHandler = (req, res) => {
 
 // -- Queue handlers --
 
-const handleQueue: RouteHandler = (req, res) => {
+/**
+ * Map a file-backed QueueJob (LiteBackend on-disk shape) to the shared JS
+ * dev-admin format the SPA queue panel renders.
+ */
+function mapQueueJob(job: any, topic: string, status: string) {
+  return {
+    id: job?.id ?? "",
+    topic: job?.topic ?? topic,
+    status,
+    attempts: Number(job?.attempts ?? 0) || 0,
+    created_at: job?.createdAt ?? job?.created_at ?? "",
+    data: job?.payload ?? {},
+  };
+}
+
+const handleQueue: RouteHandler = async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
+  const topic = url.searchParams.get("topic") ?? "default";
   const statusFilter = url.searchParams.get("status") ?? "";
-  const data = DevQueue.stats();
-  let jobs = data.jobs;
-  if (statusFilter) {
-    jobs = jobs.filter((j) => j.status === statusFilter);
+  try {
+    const { Queue } = await import("./queue.js");
+    const queue = new Queue({ topic });
+
+    const stats = {
+      pending: queue.size("pending"),
+      completed: queue.size("completed"),
+      failed: queue.size("failed"),
+      reserved: queue.size("reserved"),
+    };
+
+    // Jobs by status — parity with Python's _api_queue: list PENDING by reading
+    // the on-disk queue files directly (data/queue/<topic>/*.queue-data), then
+    // fold in the file-backed failed() + deadLetters() jobs. This is why real
+    // persisted jobs now show even though DevQueue (in-memory) is empty.
+    const jobs: Array<ReturnType<typeof mapQueueJob>> = [];
+
+    if (!statusFilter || statusFilter === "pending") {
+      const queueDir = join(process.cwd(), "data", "queue", topic);
+      if (existsSync(queueDir)) {
+        for (const filename of readdirSync(queueDir).sort()) {
+          if (!filename.endsWith(".queue-data")) continue; // skips failed/ + reserved/ subdirs
+          try {
+            const job = JSON.parse(readFileSync(join(queueDir, filename), "utf-8"));
+            jobs.push(mapQueueJob(job, topic, "pending"));
+          } catch {
+            // skip corrupt files
+          }
+        }
+      }
+    }
+    if (!statusFilter || statusFilter === "failed") {
+      for (const j of queue.failed()) jobs.push(mapQueueJob(j, topic, "failed"));
+    }
+    if (!statusFilter || statusFilter === "dead") {
+      for (const j of queue.deadLetters()) jobs.push(mapQueueJob(j, topic, "dead_letter"));
+    }
+
+    res.json({ stats, jobs });
+  } catch (e: any) {
+    res.json({
+      stats: { pending: 0, completed: 0, failed: 0, reserved: 0 },
+      jobs: [],
+      error: String(e?.message ?? e),
+    });
   }
-  // Map to shared JS format: topic, attempts, created_at, data
-  const mappedJobs = jobs.map((j) => ({
-    id: j.id,
-    topic: j.name,
-    status: j.status,
-    attempts: 1,
-    created_at: j.timestamp,
-    data: j.payload ?? {},
-  }));
-  res.json({
-    stats: { pending: data.pending, completed: data.completed, failed: data.failed, reserved: data.reserved },
-    jobs: mappedJobs,
-  });
 };
 
 const handleQueueTopics: RouteHandler = (_req, res) => {
@@ -970,23 +1021,20 @@ const handleQueueTopics: RouteHandler = (_req, res) => {
   }
 };
 
-const handleQueueDeadLetters: RouteHandler = (req, res) => {
+const handleQueueDeadLetters: RouteHandler = async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const topic = url.searchParams.get("topic") ?? "default";
-  // DevQueue is in-memory and has no separate dead-letter store yet;
-  // surface failed jobs as dead letters until the queue backend is wired in.
-  const data = DevQueue.stats();
-  const jobs = data.jobs
-    .filter((j) => j.status === "failed")
-    .map((j) => ({
-      id: j.id,
-      topic: j.name,
-      status: "dead_letter",
-      attempts: 1,
-      created_at: j.timestamp,
-      data: j.payload ?? {},
-    }));
-  res.json({ jobs, count: jobs.length, topic });
+  // Parity with Python's _api_queue_dead_letters: read the file-backed
+  // dead-letter store (data/queue/<topic>/failed/*.queue-data) so real
+  // exhausted-retry jobs surface, not just the empty in-memory DevQueue.
+  try {
+    const { Queue } = await import("./queue.js");
+    const queue = new Queue({ topic });
+    const jobs = queue.deadLetters().map((j) => mapQueueJob(j, topic, "dead_letter"));
+    res.json({ jobs, count: jobs.length, topic });
+  } catch (e: any) {
+    res.json({ jobs: [], count: 0, topic, error: String(e?.message ?? e) });
+  }
 };
 
 const handleQueueRetry: RouteHandler = (_req, res) => {
@@ -1052,17 +1100,53 @@ const handleMailboxClear: RouteHandler = (req, res) => {
   res.json({ cleared: true, folder: folder ?? "all" });
 };
 
-// -- Database handlers (stubs) --
+// -- Database handlers --
 
-const handleTable: RouteHandler = (req, res) => {
+/**
+ * Quote a (optionally schema-qualified) table reference for safe interpolation.
+ * Returns null for anything that isn't one or two plain SQL identifiers, so a
+ * hostile ?name= can never reach the SELECT. Mirrors the identifier guard the
+ * sqlite adapter uses for PRAGMA table_info.
+ */
+function quoteTableRef(name: string): string | null {
+  const parts = name.split(".");
+  if (parts.length === 0 || parts.length > 2) return null;
+  for (const p of parts) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(p)) return null;
+  }
+  return parts.map((p) => `"${p}"`).join(".");
+}
+
+const handleTable: RouteHandler = async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const name = url.searchParams.get("name") ?? "";
   if (!name) {
     res.json({ error: "Missing table name parameter" });
     return;
   }
-  // Stub response — actual implementation will use ORM adapter
-  res.json({ table: name, columns: [], rows: [], message: "Database not connected or table not found" });
+  // Real implementation — parity with Python's _api_table_info: return the
+  // table's column list + a sample of up to 20 rows via the same DB adapter
+  // `tables`/`query` use.
+  try {
+    const { getAdapter } = await import("../../orm/src/index.js");
+    const db = getAdapter();
+    const columns = db.columns(name);
+    if (!columns.length) {
+      res.json({ table: name, columns: [], rows: [], message: "Database not connected or table not found" });
+      return;
+    }
+    const ref = quoteTableRef(name);
+    if (!ref) {
+      // Columns resolved but the name isn't a plain identifier we'll splice
+      // into SQL — surface the schema without the sample rather than risk it.
+      res.json({ table: name, columns, rows: [], count: 0, message: "Invalid table name for sampling" });
+      return;
+    }
+    const rows = db.fetch(`SELECT * FROM ${ref} LIMIT 20`);
+    res.json({ table: name, columns, rows, count: rows.length });
+  } catch (e) {
+    res.json({ table: name, columns: [], rows: [], message: (e as Error)?.message ?? "Database not connected or table not found" });
+  }
 };
 
 const handleTables: RouteHandler = async (_req, res) => {
@@ -1420,6 +1504,103 @@ async function proxyToSupervisor(
 // active_file (and any other body keys) are forwarded verbatim.
 const handleChat: RouteHandler = async (req, res) => {
   await proxyToSupervisor(req, res, "/chat");
+};
+
+// -- Framework-grounding (mcp.tina4.com) token config --
+//
+// The Rust agent owns the token: it writes TINA4_MCP_TOKEN into the project
+// .env and resolves it (process env → .env) when grounding the coder against
+// mcp.tina4.com's tina4_context. These two routes just proxy to the agent so
+// the dev-admin token panel works whether the bundle is served by Vite (dev)
+// or the framework (production).
+//   GET  /__dev/api/grounding/status → agent GET  /mcp/status
+//   POST /__dev/api/grounding/token  → agent POST /mcp/token
+const handleGroundingStatus: RouteHandler = async (req, res) => {
+  await proxyToSupervisor(req, res, "/mcp/status");
+};
+const handleGroundingToken: RouteHandler = async (req, res) => {
+  await proxyToSupervisor(req, res, "/mcp/token");
+};
+
+// -- Scaffold run chips: migrate / test / seed-all --
+//
+// The dev-admin's ▶ Migrate / ▶ Test / ▶ Seed chips are project-level
+// operations, distinct from the create endpoint (/scaffold/run). Each uses the
+// framework's own machinery so behaviour matches the CLI.
+
+/** POST /__dev/api/migrate — apply pending migrations via the ORM's migrate(). */
+const handleMigrate: RouteHandler = async (_req, res) => {
+  try {
+    const orm = await import("../../orm/src/index.js");
+    const result = await orm.migrate();
+    res.json({
+      ok: result.failed.length === 0,
+      applied: result.applied,
+      skipped: result.skipped,
+      failed: result.failed,
+    });
+  } catch (e) {
+    res.json({ ok: false, error: (e as Error).message }, 500);
+  }
+};
+
+/** POST /__dev/api/seed/run — seed every discovered model, FK-ordered. */
+const handleSeedRun: RouteHandler = async (req, res) => {
+  const body = (req.body as Record<string, unknown>) || {};
+  const count = parseInt(String(body.count ?? "10"), 10) || 10;
+  try {
+    const orm = await import("../../orm/src/index.js");
+    // Models live in src/orm/ (primary) and src/models/ (fallback) — same dirs
+    // the server discovers on startup.
+    const dirs = ["src/orm", "src/models"].map((d) => resolve(process.cwd(), d)).filter((d) => existsSync(d));
+    const classes: unknown[] = [];
+    for (const dir of dirs) {
+      for (const m of await orm.discoverModels(dir)) classes.push(m.modelClass);
+    }
+    if (classes.length === 0) {
+      res.json({ ok: false, error: "No models found in src/orm/ or src/models/" }, 400);
+      return;
+    }
+    const summaries = await orm.seedModels(classes as never[], count);
+    let seeded = 0, failed = 0;
+    for (const s of Object.values(summaries) as Array<{ seeded: number; failed: number }>) {
+      seeded += s.seeded; failed += s.failed;
+    }
+    res.json({ ok: failed === 0, seeded, failed, tables: Object.keys(summaries).length });
+  } catch (e) {
+    res.json({ ok: false, error: (e as Error).message }, 500);
+  }
+};
+
+/** POST /__dev/api/test — run the project test suite (`npm test`) and stream back
+ *  the combined output + exit code. Bounded timeout so a hung suite can't wedge
+ *  the dev server. */
+const handleTest: RouteHandler = async (_req, res) => {
+  try {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const run = promisify(execFile);
+    try {
+      const { stdout, stderr } = await run("npm", ["test"], {
+        cwd: resolve(process.cwd()),
+        timeout: 180_000,
+        encoding: "utf-8",
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      res.json({ ok: true, code: 0, output: `${stdout}${stderr}` });
+    } catch (err) {
+      // Non-zero exit (failing tests) lands here — that's a valid, reportable
+      // result, not a 500. Surface the output + code so the UI shows failures.
+      const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
+      res.json({
+        ok: false,
+        code: typeof e.code === "number" ? e.code : 1,
+        output: `${e.stdout ?? ""}${e.stderr ?? ""}` || e.message || "tests failed",
+      });
+    }
+  } catch (e) {
+    res.json({ ok: false, error: (e as Error).message }, 500);
+  }
 };
 
 // -- Threads handlers --
