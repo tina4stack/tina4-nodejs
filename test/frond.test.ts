@@ -1050,6 +1050,79 @@ console.log("\n--- filter + property chain (issue #113) ---");
   assert("parity: nl2br escapes + br/ + safe", e.renderString("{{ t | nl2br }}", { t: "a\nb" }) === "a<br />\nb");
 }
 
+// ── #170: number_format threads decimalPoint + thousandsSep ────
+// Twig signature is number_format(decimals, decimalPoint, thousandsSep).
+// Before the fix args 2 and 3 were dropped, so localized formats were
+// impossible. 1-arg calls must stay byte-identical (back-compat).
+{
+  const e = new Frond(tmpDir);
+  // positive: localized (German-style) — '.' groups thousands, ',' is the decimal point
+  assert(
+    "#170 number_format(2, ',', '.') → 1.234,50 (localized)",
+    e.renderString("{{ 1234.5 | number_format(2, ',', '.') }}", {}) === "1.234,50",
+  );
+  // negative / back-compat: 1-arg output is unchanged
+  assert(
+    "#170 number_format(2) → 1,234.50 (unchanged default)",
+    e.renderString("{{ 1234.5 | number_format(2) }}", {}) === "1,234.50",
+  );
+  // no-arg default still rounds to 0 decimals with the default separators
+  assert(
+    "#170 number_format default (no args) unchanged",
+    e.renderString("{{ 1234.5 | number_format }}", {}) === "1,235",
+  );
+  // decimalPoint only (thousandsSep defaults to ',')
+  assert(
+    "#170 number_format(2, ',') sets decimal point, keeps default group sep",
+    e.renderString("{{ 1234.5 | number_format(2, ',') }}", {}) === "1,234,50",
+  );
+}
+
+// ── #171: filter pipe `|` binds tighter than concat `~` ────────
+// `amount|number_format(2) ~ ' EUR'` must be `(amount|number_format(2)) ~ ' EUR'`.
+// The structural fix folds filter-pipe handling into the expression evaluator,
+// so precedence is correct AND a pipe inside parens/sub-expressions resolves
+// (previously it returned empty).
+{
+  const e = new Frond(tmpDir);
+  const data = { amount: 1234.5, charged: true };
+  // positive: precedence — filter binds tighter than concat
+  assert(
+    "#171 filter binds tighter than concat: amount|number_format(2) ~ ' EUR'",
+    e.renderString("{{ amount|number_format(2) ~ ' EUR' }}", data) === "1,234.50 EUR",
+  );
+  // ternary branch containing filter + concat
+  assert(
+    "#171 filter+concat inside a ternary true branch",
+    e.renderString("{{ charged ? amount|number_format(2) ~ ' EUR' : 'free' }}", data) === "1,234.50 EUR",
+  );
+  assert(
+    "#171 ternary false branch still returns the literal",
+    e.renderString("{{ charged ? amount|number_format(2) ~ ' EUR' : 'free' }}", { amount: 1234.5, charged: false }) === "free",
+  );
+  // pipe inside parentheses — was empty before the fix
+  assert(
+    "#171 pipe inside parens: (amount|number_format(2)) ~ ' EUR'",
+    e.renderString("{{ (amount|number_format(2)) ~ ' EUR' }}", data) === "1,234.50 EUR",
+  );
+  // negative: filter-only expression unchanged
+  assert(
+    "#171 filter-only still correct (no regression)",
+    e.renderString("{{ amount|number_format(2) }}", data) === "1,234.50",
+  );
+  // negative: concat-only expression unchanged
+  assert(
+    "#171 concat-only still correct (no regression)",
+    e.renderString("{{ 'a' ~ 'b' }}", {}) === "ab",
+  );
+  // a custom filter must resolve through the same folded pipe (inside parens)
+  e.addFilter("money", (v) => "$" + Number(v).toFixed(2));
+  assert(
+    "#171 custom filter resolves inside a concat sub-expression",
+    e.renderString("{{ (amount|money) ~ ' USD' }}", data) === "$1234.50 USD",
+  );
+}
+
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 

@@ -628,6 +628,41 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
     }
   }
 
+  // Filter pipe: value | filter1 | filter2(args). In Twig `|` binds TIGHTER than
+  // concat (`~`), comparisons and arithmetic, but looser than member/function
+  // access — so it is resolved here, AFTER those operators have had a chance to
+  // split the expression. Handling it inside the expression evaluator (not only
+  // at the {{ }} output layer) makes filters work at any nesting depth: concat
+  // operands, ternary branches, and parenthesised sub-expressions. This fixes
+  // both the `|`-vs-`~` precedence bug and the "pipe inside parens returns empty"
+  // defect. (#171)
+  if (findOutsideQuotes(expr, "|") >= 0) {
+    const [baseExpr, filters] = parseFilterChain(expr);
+    if (filters.length > 0) {
+      const baseValue = evalExpr(baseExpr, context);
+      const applier = (context as {
+        __frond_apply_filters__?: (
+          value: unknown,
+          filters: [string, unknown[]][],
+          context: Record<string, unknown>,
+        ) => unknown;
+      }).__frond_apply_filters__;
+      if (applier) {
+        return applier(baseValue, filters, context);
+      }
+      // No Frond instance in context (evalExpr used stand-alone) — apply the
+      // built-in filters directly so common cases still resolve.
+      let value = baseValue;
+      for (const [fname, rawArgs] of filters) {
+        if (fname === "raw" || fname === "safe") continue;
+        const args = rawArgs.map((a) => (a instanceof VarRef ? evalExpr(a.name, context) : a));
+        const fn = BUILTIN_FILTERS[fname];
+        if (fn) value = fn(value, ...args);
+      }
+      return value;
+    }
+  }
+
   // Function call: name("arg1", "arg2") — supports dotted names like user.t("key")
   const fnMatch = expr.match(FN_CALL_RE);
   if (fnMatch) {
@@ -1131,12 +1166,17 @@ function wordwrap(text: string, width: number): string {
   return lines.join("\n");
 }
 
-function numberFormat(value: unknown, decimals: number): string {
+function numberFormat(
+  value: unknown,
+  decimals: number,
+  decimalPoint = ".",
+  thousandsSep = ",",
+): string {
   const num = parseFloat(String(value));
   const fixed = num.toFixed(decimals);
   const [intPart, decPart] = fixed.split(".");
-  const formatted = intPart.replace(THOUSANDS_RE, ",");
-  return decPart ? `${formatted}.${decPart}` : formatted;
+  const formatted = intPart.replace(THOUSANDS_RE, thousandsSep);
+  return decPart ? `${formatted}${decimalPoint}${decPart}` : formatted;
 }
 
 const BUILTIN_FILTERS: Record<string, FilterFn> = {
@@ -1248,7 +1288,15 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
       return null;
     });
   },
-  number_format: (v, decimals) => numberFormat(v, decimals !== undefined ? parseInt(String(decimals), 10) : 0),
+  // Twig signature: number_format(decimals=0, decimalPoint='.', thousandsSep=',').
+  // 1-arg (or no-arg) calls keep the original output; args 2/3 enable localized
+  // formats like `1.234,50`. (#170)
+  number_format: (v, decimals, decimalPoint, thousandsSep) => numberFormat(
+    v,
+    decimals !== undefined ? parseInt(String(decimals), 10) : 0,
+    decimalPoint !== undefined ? String(decimalPoint) : ".",
+    thousandsSep !== undefined ? String(thousandsSep) : ",",
+  ),
   date: (v, fmt) => dateFilter(v, fmt !== undefined ? String(fmt) : "%Y-%m-%d"),
   truncate: (v, length) => {
     const s = String(v);
@@ -1485,6 +1533,13 @@ export class Frond {
   private compiled = new Map<string, { tokens: Token[]; mtime: number; cachedAt: number }>();
   /** Token pre-compilation cache for string templates */
   private compiledStrings = new Map<string, { tokens: Token[]; cachedAt: number }>();
+
+  /**
+   * Bound reference to `applyFilters`, stashed into the render context as
+   * `__frond_apply_filters__` so the module-level `evalExpr` can resolve a
+   * filter pipe using THIS instance's registered filters. Bound once. (#171)
+   */
+  private readonly _applyFiltersBound = this.applyFilters.bind(this);
 
   getTemplateDir(): string { return this.templateDir; }
 
@@ -1819,6 +1874,12 @@ export class Frond {
   }
 
   private renderTokens(tokens: Token[], context: Record<string, unknown>): string {
+    // Expose this instance's filter engine to the module-level evalExpr so a
+    // filter pipe resolves at any expression depth with the right (custom)
+    // filters. The currently-rendering engine always wins — an included/macro
+    // template rendered by another engine re-stamps its own here. (#171)
+    (context as { __frond_apply_filters__?: unknown }).__frond_apply_filters__ = this._applyFiltersBound;
+
     const output: string[] = [];
     let i = 0;
 
@@ -1948,6 +2009,72 @@ export class Frond {
     return i;
   }
 
+  /**
+   * Apply a parsed filter chain to an already-evaluated value. This is the
+   * instance-aware filter engine used by `evalExpr` (via the
+   * `__frond_apply_filters__` hook in the render context) so filters resolve
+   * with this Frond's registered/custom filters at ANY nesting depth — inside
+   * concat operands, ternary branches, and parenthesised sub-expressions — not
+   * only at the top-level {{ }} output. Mirrors the filter loop in
+   * `evalVarRaw`: `first`/`last` tail-paths, registered `this.filters`, and the
+   * trailing-comparison form (`length != 1`). Auto-escaping stays the caller's
+   * concern (`evalVarInner`). (#171)
+   */
+  private applyFilters(
+    value: unknown,
+    filters: [string, unknown[]][],
+    context: Record<string, unknown>,
+  ): unknown {
+    for (const [fname, rawArgs] of filters) {
+      const args = rawArgs.map((a) => (a instanceof VarRef ? evalExpr(a.name, context) : a));
+      if (fname === "raw" || fname === "safe") continue;
+
+      const [realFname, tailPath] = splitFilterNameAndPath(fname);
+      if (tailPath) {
+        let applied = false;
+        if (realFname === "first") {
+          value = Array.isArray(value) ? value[0] ?? null : null;
+          applied = true;
+        } else if (realFname === "last") {
+          value = Array.isArray(value) ? value[value.length - 1] ?? null : null;
+          applied = true;
+        } else if (this.filters[realFname]) {
+          value = this.filters[realFname](value, ...args);
+          applied = true;
+        }
+        if (applied) {
+          value = evalExpr("__frondFilterTmp." + tailPath, { __frondFilterTmp: value });
+          continue;
+        }
+      }
+
+      const fn = this.filters[fname];
+      if (fn) {
+        value = fn(value, ...args);
+      } else {
+        // The filter name may carry a trailing comparison operator, e.g.
+        // "length != 1" — apply the real filter, then evaluate the comparison.
+        const m = fname.match(FILTER_COMPARISON_RE);
+        if (m) {
+          const fn2 = this.filters[m[1]];
+          if (fn2) value = fn2(value, ...args);
+          const right = evalExpr(m[3].trim(), context);
+          switch (m[2]) {
+            case "!=": value = value !== right; break;
+            case "==": value = value === right; break;
+            case ">=": value = (value as number) >= (right as number); break;
+            case "<=": value = (value as number) <= (right as number); break;
+            case ">":  value = (value as number) > (right as number); break;
+            case "<":  value = (value as number) < (right as number); break;
+          }
+        } else {
+          value = evalExpr(fname, context);
+        }
+      }
+    }
+    return value;
+  }
+
   private evalVar(expr: string, context: Record<string, unknown>): unknown {
     // Check for top-level ternary BEFORE splitting filters so that
     // expressions like ``products|length != 1 ? "s" : ""`` work correctly.
@@ -2042,6 +2169,20 @@ export class Frond {
       if (rootVar && !this._allowedVars.has(rootVar) && rootVar !== "loop") {
         return ""; // Silently block
       }
+    }
+
+    // Concat precedence (#171): a top-level `~` means the whole expression is a
+    // concatenation, and `|` binds TIGHTER than `~`. parseFilterChain above
+    // wrongly glued the trailing `~ ...` onto the last filter, so evaluate the
+    // WHOLE expression through evalExpr (which resolves the filter pipe at the
+    // correct precedence, at any depth) and only auto-escape the result here.
+    if (findOutsideQuotes(expr, "~") >= 0) {
+      let concatValue = evalExpr(expr, context);
+      if (concatValue instanceof SafeString) return concatValue.value;
+      if (this._autoEscape && typeof concatValue === "string") {
+        concatValue = htmlEscape(concatValue);
+      }
+      return concatValue;
     }
 
     let value = evalExpr(varName, context);

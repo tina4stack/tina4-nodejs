@@ -46,10 +46,36 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   const host = (Array.isArray(xfHost) ? xfHost[0] : xfHost)
     ?? (req.headers.host ?? "localhost");
 
-  const url = new URL(req.url ?? "/", `${proto}://${host}`);
+  // Parse the request-target into path + query. The WHATWG `URL` parser THROWS
+  // `ERR_INVALID_URL` on malformed targets like `//`, `///`, and `/\` — and this
+  // runs BEFORE the dispatch try/catch, with the uncaughtException net only wired
+  // under TINA4_DEBUG, so an unguarded throw crashes the worker in production
+  // (unauthenticated remote DoS — scanners send `//` routinely). Guard it: on a
+  // parse failure, derive the path/query straight from the raw target so routing
+  // proceeds to a normal 404 instead of taking the process down. (#33)
   const query: Record<string, string> = {};
-  for (const [key, value] of url.searchParams) {
-    query[key] = value;
+  let path: string;
+  let queryString: string;
+  let fullUrl: string;
+  try {
+    const url = new URL(req.url ?? "/", `${proto}://${host}`);
+    for (const [key, value] of url.searchParams) {
+      query[key] = value;
+    }
+    path = url.pathname;
+    queryString = url.search.replace(/^\?/, "");
+    fullUrl = url.toString();
+  } catch {
+    const rawTarget = req.url ?? "/";
+    const questionIdx = rawTarget.indexOf("?");
+    path = questionIdx >= 0 ? rawTarget.slice(0, questionIdx) : rawTarget;
+    queryString = questionIdx >= 0 ? rawTarget.slice(questionIdx + 1) : "";
+    try {
+      for (const [key, value] of new URLSearchParams(queryString)) {
+        query[key] = value;
+      }
+    } catch { /* unparseable query — leave query empty, still route the path */ }
+    fullUrl = `${proto}://${host}${rawTarget}`;
   }
 
   tReq.params = {};
@@ -58,9 +84,9 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   // `path` is the URL path only; `queryString` is the raw query without "?".
   // `url` is overridden from Node's IncomingMessage.url (path+query) to the
   // full absolute URL — parity with PHP/Python/Ruby.
-  tReq.path = url.pathname;
-  tReq.queryString = url.search.replace(/^\?/, "");
-  tReq.url = url.toString();
+  tReq.path = path;
+  tReq.queryString = queryString;
+  tReq.url = fullUrl;
   tReq.body = undefined;
   tReq.files = {};
   tReq.contentType = (req.headers["content-type"] ?? "") as string;
