@@ -2029,6 +2029,12 @@ export class Frond {
       const args = rawArgs.map((a) => (a instanceof VarRef ? evalExpr(a.name, context) : a));
       if (fname === "raw" || fname === "safe") continue;
 
+      // Sandbox: a blocked filter is silently skipped (value passes through
+      // unchanged) — same gate as evalVarInner. applyFilters is reached by the
+      // folded filter pipe in evalExpr (`x|f ~ y`, #171), so without this gate a
+      // non-allow-listed filter would run in sandbox mode.
+      if (this._sandbox && this._allowedFilters !== null && !this._allowedFilters.has(fname)) continue;
+
       const [realFname, tailPath] = splitFilterNameAndPath(fname);
       if (tailPath) {
         let applied = false;
@@ -2100,6 +2106,12 @@ export class Frond {
     for (const [fname, rawArgs] of filters) {
       const args = rawArgs.map((a) => (a instanceof VarRef ? evalExpr(a.name, context) : a));
       if (fname === "raw" || fname === "safe") continue;
+
+      // Sandbox: a blocked filter is silently skipped (value passes through
+      // unchanged) — same gate as evalVarInner. evalVarRaw is reached by a
+      // ternary condition (`x|f ? a : b`), evalComparison, and set, none of
+      // which gated filters before, so a non-allow-listed filter could run.
+      if (this._sandbox && this._allowedFilters !== null && !this._allowedFilters.has(fname)) continue;
 
       // Filter + property-access chain: `first.groupSummary` — apply
       // the filter, then traverse the path on the result via a

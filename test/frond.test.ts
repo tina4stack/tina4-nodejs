@@ -432,6 +432,33 @@ assert("Sandbox blocks non-whitelisted filter", sandboxed.renderString("{{ allow
 assert("Sandbox allows loop var", sandboxed.renderString("{% for i in items %}{{ loop.index }}{% endfor %}", { items: [1] }) === "1");
 assert("Sandbox blocks non-whitelisted tag (set)", sandboxed.renderString('{% set x = "bad" %}{{ x }}', { x: "good" }) === "");
 
+// #171 concat-pipe + ternary-condition sandbox gating — a blocked filter's code
+// must never run. `spy` records each invocation so the assertion is the security
+// property (did the code run?), true across all four frameworks regardless of
+// the blocked-filter output convention.
+const spyCalls: unknown[] = [];
+const spyEngine = new Frond(tmpDir);
+spyEngine.addFilter("spy", (v) => { spyCalls.push(v); return String(v).toUpperCase() + "!"; });
+
+spyEngine.sandbox(["upper"]); // 'spy' NOT allowed
+spyCalls.length = 0;
+const blockedConcat = spyEngine.renderString("{{ x|spy ~ ' end' }}", { x: "hi" });
+assert("Sandbox blocks filter in concat-pipe (#171)", spyCalls.length === 0 && !blockedConcat.includes("HI!"));
+
+spyCalls.length = 0;
+spyEngine.renderString("{{ x|spy ? 'yes' : 'no' }}", { x: "hi" });
+assert("Sandbox blocks filter in ternary condition", spyCalls.length === 0);
+
+spyEngine.sandbox(["spy"]); // 'spy' IS allowed
+spyCalls.length = 0;
+const allowedConcat = spyEngine.renderString("{{ x|spy ~ ' end' }}", { x: "hi" });
+assert("Sandbox allows filter in concat-pipe", spyCalls.length === 1 && allowedConcat === "HI! end");
+
+spyCalls.length = 0;
+const allowedTernary = spyEngine.renderString("{{ x|spy ? 'yes' : 'no' }}", { x: "hi" });
+assert("Sandbox allows filter in ternary condition", spyCalls.length === 1 && allowedTernary === "yes");
+spyEngine.unsandbox();
+
 // Unsandbox
 sandboxed.unsandbox();
 assert("Unsandbox restores access", sandboxed.renderString("{{ secret }}", { secret: "visible" }) === "visible");
