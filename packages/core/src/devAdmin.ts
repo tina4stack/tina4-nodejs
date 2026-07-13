@@ -1753,30 +1753,33 @@ const handleConnectionsTest: RouteHandler = async (req, res) => {
     let version = "Connected";
     let tableCount = 0;
     try {
-      const tables = db.getTables();
+      // getTables() is async (Promise<string[]>) and MUST be awaited — the
+      // un-awaited call made tableCount always 0 (Array.isArray(Promise) is
+      // false). Python (db.get_tables()) and Ruby (db.tables) were correct.
+      const tables = await db.getTables();
       tableCount = Array.isArray(tables) ? tables.length : 0;
     } catch { tableCount = 0; }
     try {
       const urlLower = url.toLowerCase();
-      // NOTE: db.execute() is async; these calls are intentionally left
-      // un-awaited to preserve the exact existing runtime behaviour during
-      // this type-only cleanup. `row` is therefore a Promise and the `as any`
-      // access below evaluates to the fallback string. See report open question.
+      // fetchOne() is async and returns a single row object ({ v: ... }); it
+      // must be awaited. Previously db.execute() was left un-awaited, so `row`
+      // was a Promise and the version always fell back to the default string.
+      // Mirrors Python/Ruby which read row["v"] from a fetch_one().
       if (urlLower.includes("sqlite")) {
-        const row = db.execute("SELECT sqlite_version() as v");
-        version = `SQLite ${(row as any)?.[0]?.v ?? ""}`;
+        const row = await db.fetchOne<{ v?: string }>("SELECT sqlite_version() as v");
+        version = `SQLite ${row?.v ?? ""}`;
       } else if (urlLower.includes("postgres")) {
-        const row = db.execute("SELECT version() as v");
-        version = ((row as any)?.[0]?.v ?? "PostgreSQL").toString().split(",")[0];
+        const row = await db.fetchOne<{ v?: string }>("SELECT version() as v");
+        version = (row?.v ?? "PostgreSQL").toString().split(",")[0];
       } else if (urlLower.includes("mysql")) {
-        const row = db.execute("SELECT version() as v");
-        version = `MySQL ${(row as any)?.[0]?.v ?? ""}`;
+        const row = await db.fetchOne<{ v?: string }>("SELECT version() as v");
+        version = `MySQL ${row?.v ?? ""}`;
       } else if (urlLower.includes("mssql")) {
-        const row = db.execute("SELECT @@VERSION as v");
-        version = ((row as any)?.[0]?.v ?? "MSSQL").toString().split("\n")[0];
+        const row = await db.fetchOne<{ v?: string }>("SELECT @@VERSION as v");
+        version = (row?.v ?? "MSSQL").toString().split("\n")[0];
       } else if (urlLower.includes("firebird")) {
-        const row = db.execute("SELECT rdb$get_context('SYSTEM', 'ENGINE_VERSION') as v FROM rdb$database");
-        version = `Firebird ${(row as any)?.[0]?.v ?? ""}`;
+        const row = await db.fetchOne<{ v?: string }>("SELECT rdb$get_context('SYSTEM', 'ENGINE_VERSION') as v FROM rdb$database");
+        version = `Firebird ${row?.v ?? ""}`;
       }
     } catch { /* keep version as Connected */ }
     db.close();
