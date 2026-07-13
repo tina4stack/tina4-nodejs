@@ -7,7 +7,7 @@
  * - Request details (method, path, headers)
  * - Environment info (framework version, Node.js version)
  */
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export default async function (_req: Tina4Request, _res: Tina4Response) {
   // Simulate a realistic error — accessing a missing property

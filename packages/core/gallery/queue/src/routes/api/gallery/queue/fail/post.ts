@@ -1,5 +1,5 @@
 /** Gallery: Queue — deliberately fail the next pending message. */
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 import { getQueueDb, now } from "../../../../lib/queueDb.js";
 
 export default async function (_req: Tina4Request, res: Tina4Response) {

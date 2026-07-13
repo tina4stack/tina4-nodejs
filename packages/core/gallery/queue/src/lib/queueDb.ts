@@ -1,5 +1,5 @@
 /** Shared SQLite database helper for the queue gallery demo. */
-import type { DatabaseAdapter } from "@tina4/orm";
+import type { DatabaseAdapter } from "tina4-nodejs/orm";
 
 let _db: DatabaseAdapter | null = null;
 
@@ -7,7 +7,7 @@ export const MAX_RETRIES = 3;
 
 export async function getQueueDb(): Promise<DatabaseAdapter> {
   if (_db) return _db;
-  const orm = await import("@tina4/orm");
+  const orm = await import("tina4-nodejs/orm");
   _db = await orm.initDatabase({ type: "sqlite", path: "./data/gallery_queue.db" });
   try {
     _db.execute(`CREATE TABLE IF NOT EXISTS tina4_queue (

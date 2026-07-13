@@ -1,5 +1,5 @@
 /** Gallery: Auth — login endpoint, returns a JWT token. */
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export default async function (req: Tina4Request, res: Tina4Response) {
   const body = (req.body as Record<string, unknown>) ?? {};
@@ -7,7 +7,7 @@ export default async function (req: Tina4Request, res: Tina4Response) {
   const password = (body.password as string) ?? "";
 
   if (username && password) {
-    // In a real app: import { Auth } from "@tina4/core";
+    // In a real app: import { Auth } from "tina4-nodejs";
     // const auth = new Auth();
     // const token = auth.createToken({ username, role: "user" });
     // For the gallery demo, generate a simple base64 token

@@ -1,5 +1,5 @@
 /** Gallery: Queue — interactive queue demo with visual web UI. */
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export default async function (_req: Tina4Request, res: Tina4Response) {
   const html = `<!DOCTYPE html>

@@ -1,5 +1,5 @@
 /** Gallery: ORM — list products (demo data). */
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export default async function (_req: Tina4Request, res: Tina4Response) {
   return res.json({

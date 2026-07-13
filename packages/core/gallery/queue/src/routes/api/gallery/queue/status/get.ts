@@ -1,5 +1,5 @@
 /** Gallery: Queue — list all messages with statuses. */
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 import { getQueueDb, MAX_RETRIES } from "../../../../lib/queueDb.js";
 
 export default async function (_req: Tina4Request, res: Tina4Response) {

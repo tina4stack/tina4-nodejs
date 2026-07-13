@@ -23,10 +23,11 @@
  */
 import { execFileSync } from "node:child_process";
 import {
-  mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, rmSync,
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync,
+  statSync, copyFileSync, rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -66,6 +67,58 @@ console.log(ok ? "CONSUMER_OK" : "CONSUMER_FAIL");
 process.exit(ok ? 0 : 1);
 `;
 
+// Gallery-deploy consumer driver. The dev-admin "Deploy" button
+// (POST /__dev/api/gallery/deploy -> handleGalleryDeploy) copies a gallery
+// example's src/** verbatim into the consumer's own src/. Those files therefore
+// MUST import the PUBLIC specifiers (tina4-nodejs, tina4-nodejs/orm) — a bare
+// @tina4/* only resolves in the monorepo and reproduces #32 in the user's code.
+// This drives the deployed DATABASE gallery handlers against a REAL node:sqlite
+// DB (no mocks): create table -> insert -> list, asserting a genuine round-trip.
+const GALLERY_DRIVER_SRC = `
+import tablesHandler from "./src/routes/api/gallery/db/tables/get.ts";
+import notesPost from "./src/routes/api/gallery/db/notes/post.ts";
+import notesGet from "./src/routes/api/gallery/db/notes/get.ts";
+
+function capture() {
+  const calls: Array<{ payload: unknown; status: number }> = [];
+  const res: any = { json: (payload: unknown, status = 200) => { calls.push({ payload, status }); return res; } };
+  return { calls, res };
+}
+
+const t = capture();
+await (tablesHandler as any)({}, t.res);
+const p = capture();
+await (notesPost as any)({ body: { title: "gallery-row", body: "real sqlite" } }, p.res);
+const g = capture();
+await (notesGet as any)({}, g.res);
+
+const tables = (t.calls[0]?.payload as any)?.tables ?? [];
+const rows = g.calls[0]?.payload as any[];
+const insertStatus = p.calls[0]?.status;
+const ok =
+  t.calls[0]?.status === 200 &&
+  Array.isArray(tables) && tables.includes("gallery_notes") &&
+  (insertStatus === 200 || insertStatus === 201) &&
+  Array.isArray(rows) && rows.some((r) => r && r.title === "gallery-row");
+
+console.log("GALLERY tables status " + t.calls[0]?.status + " -> " + JSON.stringify(tables));
+console.log("GALLERY insert status " + insertStatus);
+console.log("GALLERY list rows " + (Array.isArray(rows) ? rows.length : "n/a"));
+console.log(ok ? "GALLERY_DEPLOY_OK" : "GALLERY_DEPLOY_FAIL");
+process.exit(ok ? 0 : 1);
+`;
+
+// Recursively list every file under dir (mirrors handleGalleryDeploy's walk).
+function walkFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) out.push(...walkFiles(full));
+    else out.push(full);
+  }
+  return out;
+}
+
 let passed = 0;
 let failed = 0;
 function assert(label: string, condition: boolean, detail = ""): void {
@@ -79,6 +132,27 @@ function assert(label: string, condition: boolean, detail = ""): void {
 }
 
 console.log("\n=== Pack-Install Regression (#32) — real npm pack + install, no mocks ===\n");
+
+// Static guard (#32 class): gallery examples are copied verbatim into a
+// consumer's src/ by the deploy handler, so NONE may reference a bare @tina4/*
+// specifier — that only resolves in the monorepo and throws ERR_MODULE_NOT_FOUND
+// in the user's app. Scan the real shipped source (import, import type, dynamic
+// import, and example text a user copies alike).
+{
+  const galleryDir = join(rootDir, "packages", "core", "gallery");
+  const bareSpecifier = /@tina4\/(core|orm|frond|swagger)/;
+  const offenders = existsSync(galleryDir)
+    ? walkFiles(galleryDir)
+        .filter((f) => f.endsWith(".ts"))
+        .filter((f) => bareSpecifier.test(readFileSync(f, "utf-8")))
+        .map((f) => relative(rootDir, f))
+    : [];
+  assert(
+    "no gallery example references a bare @tina4/* specifier (deploy copies them verbatim, #32)",
+    offenders.length === 0,
+    offenders.join(", "),
+  );
+}
 
 const workDir = mkdtempSync(join(tmpdir(), "tina4-pack-"));
 try {
@@ -190,6 +264,59 @@ try {
         stdout.includes("PASS response getFrond()"),
       );
       assert("consumer overall CONSUMER_OK", stdout.includes("CONSUMER_OK"));
+
+      // Gallery-deploy end-to-end (#32 residual): deploy the DATABASE gallery
+      // exactly as handleGalleryDeploy does — copy the installed package's
+      // gallery/database/src/** into the app's src/** — then run the deployed
+      // handlers against a REAL node:sqlite DB. This exercises the dynamic
+      // `await import("tina4-nodejs/orm")` the gallery makes AND a real
+      // create-table -> insert -> list round-trip. Before the fix this threw
+      // "Cannot find package '@tina4/orm'"; the whole gallery example was a 500.
+      const gallerySrc = join(
+        appDir, "node_modules", "tina4-nodejs",
+        "packages", "core", "gallery", "database", "src",
+      );
+      if (existsSync(gallerySrc)) {
+        for (const srcFile of walkFiles(gallerySrc)) {
+          const dest = join(appDir, "src", relative(gallerySrc, srcFile));
+          mkdirSync(dirname(dest), { recursive: true });
+          copyFileSync(srcFile, dest);
+        }
+        // The framework auto-creates data/ on startup; we invoke handlers
+        // directly, so create it here for the sqlite file the gallery opens.
+        mkdirSync(join(appDir, "data"), { recursive: true });
+        writeFileSync(join(appDir, "gallery-driver.ts"), GALLERY_DRIVER_SRC);
+
+        let gout = "";
+        let gran = false;
+        try {
+          gout = execFileSync(tsxBin, [join(appDir, "gallery-driver.ts")], {
+            cwd: appDir,
+            encoding: "utf-8",
+            timeout: 60_000,
+            env: { ...process.env },
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          gran = true;
+        } catch (err) {
+          const e = err as { stdout?: string; stderr?: string; message?: string };
+          gout = (e.stdout || "") + (e.stderr || "") + (e.message || "");
+        }
+        for (const line of gout.split("\n")) {
+          if (line.trim()) console.log(`    [gallery] ${line}`);
+        }
+        assert("deployed database gallery ran to completion (exit 0)", gran);
+        assert(
+          "deployed gallery: no ERR_MODULE_NOT_FOUND / missing @tina4/* (#32)",
+          !gout.includes("ERR_MODULE_NOT_FOUND") && !gout.includes("Cannot find package"),
+        );
+        assert(
+          "deployed gallery: real sqlite round-trip (create -> insert -> list)",
+          gout.includes("GALLERY_DEPLOY_OK"),
+        );
+      } else {
+        assert("installed package ships the database gallery example", false, gallerySrc);
+      }
     }
   }
 } finally {

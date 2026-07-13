@@ -1,5 +1,5 @@
 /** Gallery: Auth — JWT login with a visual demo page. */
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export default async function (_req: Tina4Request, res: Tina4Response) {
   const html = `<!DOCTYPE html>
@@ -44,7 +44,7 @@ export default async function (_req: Tina4Request, res: Tina4Response) {
     <div class="card bg-dark mt-4" style="border:1px solid #334155;">
         <div class="card-body">
             <h6 style="color:#e2e8f0;">How it works</h6>
-            <pre style="background:#0f172a;color:#4ade80;padding:1rem;border-radius:0.5rem;font-size:0.8rem;"><code>import { Auth } from "@tina4/core";
+            <pre style="background:#0f172a;color:#4ade80;padding:1rem;border-radius:0.5rem;font-size:0.8rem;"><code>import { Auth } from "tina4-nodejs";
 const auth = new Auth();
 const token = auth.createToken({ username: "admin" });
 const payload = auth.getPayload(token);

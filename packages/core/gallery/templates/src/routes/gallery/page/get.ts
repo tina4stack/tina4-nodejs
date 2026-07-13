@@ -1,5 +1,5 @@
 /** Gallery: Templates — render an HTML page with dynamic data via template export. */
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export const template = "gallery_page.twig";
 
