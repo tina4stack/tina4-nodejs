@@ -1,6 +1,6 @@
 {
   "name": "@tina4/orm",
-  "version": "3.13.72",
+  "version": "3.13.73",
   "description": "Tina4 ORM — models, auto-CRUD, query builder",
   "type": "module",
   "main": "./dist/index.js",

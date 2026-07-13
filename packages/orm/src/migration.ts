@@ -437,30 +437,64 @@ export async function isMigrationApplied(name: string): Promise<boolean> {
 }
 
 /**
- * Record a migration as applied. Writes the canonical columns: migration_name,
- * a derived description, batch, an explicit ISO-8601 executed_at timestamp, and
- * passed (default 1). Preserves the Firebird generator-id branch.
+ * Write the canonical "applied" bookkeeping row for a migration.
+ *
+ * DELETEs any existing row for this migration_name FIRST, then INSERTs the
+ * fresh row. A leftover passed=0 row (a prior failure recorded via the public
+ * recordMigration() API, or one carried over from a <= 3.13.54 upgrade) is
+ * therefore superseded, so the migration re-applies cleanly instead of colliding
+ * on the UNIQUE migration_name constraint when the fresh passed=1 row is
+ * INSERTed (that collision used to wedge a previously-failed migration).
+ * DELETE+INSERT is portable across every engine (no UPSERT dialect variance) and
+ * holds the invariant that the table carries AT MOST ONE row per migration_name -
+ * latest state wins.
+ *
+ * Operates on the passed adapter so both migrate() (its own adapter) and
+ * recordMigration() (the global adapter) share ONE implementation - mirrors the
+ * Python master's single _record_applied(). Preserves the Firebird generator-id
+ * branch (no AUTOINCREMENT on Firebird). Writes the canonical columns:
+ * migration_name, a derived description, batch, an explicit ISO-8601 executed_at
+ * timestamp, and passed (default 1).
  */
-export async function recordMigration(name: string, batch: number, passed: number = 1): Promise<void> {
-  const adapter = getAdapter();
+async function recordApplied(
+  db: DatabaseAdapter,
+  name: string,
+  batch: number,
+  passed: number = 1,
+): Promise<void> {
   const now = new Date().toISOString();
   const description = deriveDescription(name);
-  if (isFirebirdAdapter(adapter)) {
-    // Firebird: generate ID from sequence
-    const rows = await adapterQuery<{ NEXT_ID: number }>(adapter,
+  // Delete-before-insert: supersede any leftover row for this migration_name so
+  // the INSERT below never collides on the UNIQUE migration_name.
+  await adapterExecute(db,
+    `DELETE FROM "${MIGRATION_TABLE}" WHERE migration_name = ?`,
+    [name],
+  );
+  if (isFirebirdAdapter(db)) {
+    // Firebird: generate the id from the sequence.
+    const rows = await adapterQuery<{ NEXT_ID: number }>(db,
       "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB$DATABASE",
     );
     const nextId = rows[0]?.NEXT_ID ?? 1;
-    await adapterExecute(adapter,
+    await adapterExecute(db,
       `INSERT INTO "${MIGRATION_TABLE}" (id, migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?, ?)`,
       [nextId, name, description, batch, now, passed],
     );
   } else {
-    await adapterExecute(adapter,
+    await adapterExecute(db,
       `INSERT INTO "${MIGRATION_TABLE}" (migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?)`,
       [name, description, batch, now, passed],
     );
   }
+}
+
+/**
+ * Record a migration as applied (public API). Routes through recordApplied() so
+ * a leftover passed=0 row for the same migration_name is deleted before the
+ * fresh row is written (at most one row per migration_name).
+ */
+export async function recordMigration(name: string, batch: number, passed: number = 1): Promise<void> {
+  await recordApplied(getAdapter(), name, batch, passed);
 }
 
 /**
@@ -981,26 +1015,12 @@ export async function migrate(
         await adapterExecute(db, stmt);
       }
 
-      // Record as applied (passed = 1) with the canonical columns and an
-      // explicit ISO-8601 executed_at timestamp.
-      const now = new Date().toISOString();
-      const description = deriveDescription(migrationId);
-      if (isFirebirdAdapter(db)) {
-        // Firebird: generate ID from sequence
-        const idRows = await adapterQuery<{ NEXT_ID: number }>(db,
-          "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB$DATABASE",
-        );
-        const nextId = idRows[0]?.NEXT_ID ?? 1;
-        await adapterExecute(db,
-          `INSERT INTO "${MIGRATION_TABLE}" (id, migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?, 1)`,
-          [nextId, migrationId, description, currentBatch, now],
-        );
-      } else {
-        await adapterExecute(db,
-          `INSERT INTO "${MIGRATION_TABLE}" (migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, 1)`,
-          [migrationId, description, currentBatch, now],
-        );
-      }
+      // Record as applied (passed = 1) via recordApplied(), which DELETEs any
+      // leftover row for this migration_name before the fresh INSERT - so a
+      // previously-failed migration (a leftover passed=0 row) re-applies
+      // cleanly instead of colliding on the UNIQUE migration_name. Both the
+      // DELETE and INSERT run inside this file's open transaction.
+      await recordApplied(db, migrationId, currentBatch);
 
       await adapterCommit(db);
       result.applied.push(file);
