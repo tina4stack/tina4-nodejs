@@ -22,6 +22,8 @@ interface BackgroundTask {
   callback: () => unknown | Promise<unknown>;
   intervalSeconds: number;
   timer: NodeJS.Timeout;
+  /** Set by any stop path. Checked around the await so a run in flight never re-arms. */
+  stopped: boolean;
 }
 
 const _tasks: BackgroundTask[] = [];
@@ -64,32 +66,42 @@ export function background(
   _bindSignalsOnce();
 
   const ms = Math.max(1, Math.round(intervalSeconds * 1000));
-  const timer = setInterval(() => {
+
+  // A task must NEVER overlap itself. setInterval fires on a fixed schedule and
+  // does not wait for an async callback, so a run slower than the interval would
+  // have a second copy start alongside it (silent double-execution of a slow
+  // sweep, with every later tick piling on another). Re-arm a one-shot timer only
+  // AFTER the run settles — the interval is then the gap BETWEEN runs. Mirrors the
+  // Python master (background_tick_loop) and matches PHP/Ruby, which never overlap.
+  const tick = async () => {
+    if (task.stopped) return;
     try {
-      const result = callback();
-      if (result && typeof (result as Promise<unknown>).then === "function") {
-        (result as Promise<unknown>).catch((err) => {
-          Log.error?.(`background task error: ${err instanceof Error ? err.message : String(err)}`);
-        });
-      }
+      await callback();
     } catch (err) {
       Log.error?.(`background task error: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, ms);
+    // Re-check AFTER the await: a stop during the run must not re-arm.
+    if (task.stopped) return;
+    task.timer = _arm();
+  };
 
-  // Don't keep the event loop alive solely for background tasks — this matches
-  // Python's behaviour, where background tasks live in the server's loop and
-  // exit with it rather than blocking shutdown.
-  if (typeof timer.unref === "function") {
-    timer.unref();
-  }
+  const _arm = () => {
+    const t = setTimeout(() => { void tick(); }, ms);
+    // Don't keep the event loop alive solely for background tasks — this matches
+    // Python's behaviour, where background tasks live in the server's loop and
+    // exit with it rather than blocking shutdown.
+    if (typeof t.unref === "function") t.unref();
+    return t;
+  };
 
-  const task: BackgroundTask = { callback, intervalSeconds, timer };
+  const task: BackgroundTask = { callback, intervalSeconds, timer: undefined as unknown as NodeJS.Timeout, stopped: false };
+  task.timer = _arm();
   _tasks.push(task);
 
   return {
     stop: () => {
-      clearInterval(task.timer);
+      task.stopped = true;
+      clearTimeout(task.timer);
       const idx = _tasks.indexOf(task);
       if (idx !== -1) _tasks.splice(idx, 1);
     },
@@ -104,7 +116,8 @@ export function background(
 export function stopAllBackgroundTasks(): void {
   while (_tasks.length > 0) {
     const task = _tasks.pop()!;
-    clearInterval(task.timer);
+    task.stopped = true;
+    clearTimeout(task.timer);
   }
 }
 
