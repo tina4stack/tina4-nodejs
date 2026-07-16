@@ -470,21 +470,52 @@ async function recordApplied(
     `DELETE FROM "${MIGRATION_TABLE}" WHERE migration_name = ?`,
     [name],
   );
+  // Build the column list from the columns that ACTUALLY exist on the table, so
+  // a legacy column left behind by an in-place upgrade is populated rather than
+  // defaulted to NULL. Node never created a `migration_id` column, but a Node app
+  // can be pointed at a database whose tina4_migration table was created by
+  // tina4-python v3 <= 3.13.54 - there `migration_id` is NOT NULL, and an insert
+  // that omits it fails, wedging every migration on that database
+  // (tina4-python#93). Mirrors the PHP + Python masters.
+  const cols = await trackingColumns(db);
+  const insertCols = ["migration_name", "description", "batch", "executed_at", "passed"];
+  const values: unknown[] = [name, description, batch, now, passed];
+
+  if (cols.has("migration_id")) {
+    insertCols.push("migration_id");
+    values.push(name);
+  }
+
   if (isFirebirdAdapter(db)) {
     // Firebird: generate the id from the sequence.
     const rows = await adapterQuery<{ NEXT_ID: number }>(db,
       "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB$DATABASE",
     );
-    const nextId = rows[0]?.NEXT_ID ?? 1;
-    await adapterExecute(db,
-      `INSERT INTO "${MIGRATION_TABLE}" (id, migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?, ?)`,
-      [nextId, name, description, batch, now, passed],
+    insertCols.unshift("id");
+    values.unshift(rows[0]?.NEXT_ID ?? 1);
+  }
+
+  const placeholders = insertCols.map(() => "?").join(", ");
+  await adapterExecute(db,
+    `INSERT INTO "${MIGRATION_TABLE}" (${insertCols.join(", ")}) VALUES (${placeholders})`,
+    values,
+  );
+}
+
+/**
+ * Lowercased column names on the tracking table. Returns an empty set on any
+ * failure so a missing/unreadable table falls back to the canonical columns.
+ */
+async function trackingColumns(db: DatabaseAdapter): Promise<Set<string>> {
+  try {
+    // The DatabaseAdapter contract exposes columns(), not getColumns().
+    const cols = await (db as any).columns?.(MIGRATION_TABLE);
+    if (!Array.isArray(cols)) return new Set();
+    return new Set(
+      cols.map((c: any) => String(c?.name ?? c ?? "").toLowerCase()).filter(Boolean),
     );
-  } else {
-    await adapterExecute(db,
-      `INSERT INTO "${MIGRATION_TABLE}" (migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?)`,
-      [name, description, batch, now, passed],
-    );
+  } catch {
+    return new Set();
   }
 }
 
