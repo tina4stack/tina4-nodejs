@@ -48,7 +48,7 @@ export {
   ensureDevSecret,
   Auth,
 } from "./auth.js";
-export { Session, FileSessionHandler, RedisSessionHandler, buildSessionCookie, isSecureScheme } from "./session.js";
+export { Session, FileSessionHandler, RedisSessionHandler, buildSessionCookie, isSecureScheme, sessionCookieName } from "./session.js";
 export type { SessionConfig, SessionHandler } from "./session.js";
 export { I18n } from "./i18n.js";
 export { FakeData } from "./fakeData.js";

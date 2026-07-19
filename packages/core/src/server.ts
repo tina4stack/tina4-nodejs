@@ -1102,13 +1102,25 @@ ${reset}
 
     // Auto-start session — read cookie, create session, save + set cookie on response end
     {
-      const { Session, buildSessionCookie } = await import("./session.js");
+      const { Session, buildSessionCookie, sessionCookieName } = await import("./session.js");
       const cookieHeader = rawReq.headers.cookie ?? "";
-      const cookieName = process.env.TINA4_SESSION_NAME ?? "tina4_session";
-      // Build a regex from the (possibly customised) cookie name. Escape regex meta-chars.
-      const escapedName = cookieName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const sidMatch = cookieHeader.match(new RegExp(`${escapedName}=([^;]+)`));
-      const existingSid = sidMatch ? sidMatch[1] : undefined;
+      // Read the incoming session cookie by the SAME configured name the write
+      // side emits (TINA4_SESSION_NAME, default tina4_session) via the shared
+      // sessionCookieName() resolver — otherwise a renamed cookie would be
+      // written but never read back and the session would silently never
+      // resume. Match a whole cookie pair by its exact `name=` prefix (split on
+      // ";", trim, startsWith) so `tina4_session` never matches
+      // `tina4_session_foo=` nor a value mid-header. Parity with Python
+      // core/server._init_session.
+      const cookiePrefix = sessionCookieName() + "=";
+      let existingSid: string | undefined;
+      for (const part of cookieHeader.split(";")) {
+        const trimmed = part.trim();
+        if (trimmed.startsWith(cookiePrefix)) {
+          existingSid = trimmed.slice(cookiePrefix.length);
+          break;
+        }
+      }
       const sess = new Session();
       sess.start(existingSid);
       (req as any).session = sess;

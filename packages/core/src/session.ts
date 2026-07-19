@@ -618,6 +618,23 @@ export function isSecureScheme(forwardedProto?: string, socketEncrypted?: boolea
 }
 
 /**
+ * Resolve the session cookie name — the single source of truth shared by the
+ * WRITE side (`buildSessionCookie` / `Session.cookieHeader`) and the READ side
+ * (the auto-session cookie parse in `server.ts`), so a cookie written under a
+ * renamed name is read back on the next request.
+ *
+ *   TINA4_SESSION_NAME   Cookie name (default: "tina4_session")
+ *
+ * Keeping this in one place means the default can never drift between the two
+ * sides: an operator who sets `TINA4_SESSION_NAME` renames the cookie on both
+ * the emit and the parse paths at once. Parity with Python
+ * `session.session_cookie_name()`.
+ */
+export function sessionCookieName(): string {
+  return process.env.TINA4_SESSION_NAME ?? "tina4_session";
+}
+
+/**
  * Build the `Set-Cookie` header value for a Tina4 session. Centralised so
  * the auto-cookie path in server.ts and `Session.cookieHeader()` agree on
  * which env vars are honoured and what the defaults are.
@@ -644,7 +661,7 @@ export function buildSessionCookie(
   forwardedProto?: string,
   socketEncrypted?: boolean,
 ): string {
-  const name = cookieName ?? process.env.TINA4_SESSION_NAME ?? "tina4_session";
+  const name = cookieName ?? sessionCookieName();
   const sameSite = process.env.TINA4_SESSION_SAMESITE ?? "Lax";
 
   // HttpOnly defaults to TRUE (matches existing behaviour and Python parity).
