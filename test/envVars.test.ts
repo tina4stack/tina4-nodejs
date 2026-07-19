@@ -9,6 +9,7 @@
  */
 import {
   buildSessionCookie,
+  isSecureScheme,
   graphqlAutoSchemaEnabled,
   graphqlEndpoint,
   healthPath,
@@ -313,6 +314,38 @@ process.env.TINA4_SESSION_SECURE = "true";
 const cookieSecure = buildSessionCookie("abc123", 3600);
 assert("TINA4_SESSION_SECURE=true emits Secure", cookieSecure.includes("Secure"));
 delete process.env.TINA4_SESSION_SECURE;
+
+// ── session.ts: proxy-aware Secure (nodejs#34, pure-function lock-in) ─────
+// isSecureScheme — parity with PHP Request::isSecureScheme.
+assert("isSecureScheme('https') is true", isSecureScheme("https") === true);
+assert("isSecureScheme('http') is false", isSecureScheme("http") === false);
+assert("isSecureScheme('') no native TLS is false", isSecureScheme("") === false);
+assert("isSecureScheme('', encrypted) is true", isSecureScheme("", true) === true);
+assert("isSecureScheme chain 'https, http' first hop wins",
+  isSecureScheme("https, http") === true);
+assert("isSecureScheme chain 'http, https' first hop http is false",
+  isSecureScheme("http, https") === false);
+assert("isSecureScheme is case-insensitive", isSecureScheme("HTTPS") === true);
+
+// buildSessionCookie threads the scheme in and honours SameSite=None.
+const cookieXfpHttps = buildSessionCookie("abc123", 3600, undefined, "https");
+assert("buildSessionCookie(forwardedProto=https) emits Secure",
+  cookieXfpHttps.includes("Secure"));
+const cookieXfpHttp = buildSessionCookie("abc123", 3600, undefined, "http");
+assert("buildSessionCookie(forwardedProto=http) does NOT emit Secure",
+  !cookieXfpHttp.includes("Secure"));
+const cookieNativeTls = buildSessionCookie("abc123", 3600, undefined, "", true);
+assert("buildSessionCookie(socketEncrypted) emits Secure",
+  cookieNativeTls.includes("Secure"));
+const cookieNoScheme = buildSessionCookie("abc123", 3600);
+assert("buildSessionCookie with no scheme signal does NOT emit Secure",
+  !cookieNoScheme.includes("Secure"));
+
+process.env.TINA4_SESSION_SAMESITE = "None";
+const cookieSameSiteNone = buildSessionCookie("abc123", 3600);
+assert("SameSite=None forces Secure (RFC)",
+  cookieSameSiteNone.includes("SameSite=None") && cookieSameSiteNone.includes("Secure"));
+delete process.env.TINA4_SESSION_SAMESITE;
 
 // ── frond/engine.ts: TINA4_TEMPLATE_CACHE_TTL ──────────────────────
 console.log("\n--- TINA4_TEMPLATE_CACHE_TTL ---");

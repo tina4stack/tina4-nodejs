@@ -1125,7 +1125,14 @@ ${reset}
         const newSid = (sess as any).sessionId ?? (sess as any).getSessionId?.();
         if (newSid && newSid !== existingSid && !rawRes.headersSent) {
           const ttl = parseInt(process.env.TINA4_SESSION_TTL ?? "3600", 10);
-          rawRes.setHeader("Set-Cookie", buildSessionCookie(newSid, ttl));
+          // Thread the client's real scheme in so an HTTPS deploy behind a
+          // TLS-terminating proxy ships the session cookie with `Secure`
+          // (nodejs#34). `x-forwarded-proto` is the same header request.ts
+          // trusts for URL construction; native socket TLS is the fallback.
+          const xfProto = rawReq.headers["x-forwarded-proto"];
+          const forwardedProto = Array.isArray(xfProto) ? xfProto[0] : xfProto;
+          const socketEncrypted = (rawReq.socket as { encrypted?: boolean })?.encrypted === true;
+          rawRes.setHeader("Set-Cookie", buildSessionCookie(newSid, ttl, undefined, forwardedProto, socketEncrypted));
         }
         return origEnd(...args);
       } as typeof rawRes.end;

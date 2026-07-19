@@ -590,6 +590,34 @@ export class Session {
 }
 
 /**
+ * Is the client's scheme HTTPS? Proxy-aware.
+ *
+ * TLS is normally terminated at a proxy (nginx, HAProxy, ALB, Cloudflare, most
+ * container deploys) which then forwards plain HTTP to Node — so the native
+ * socket is NOT encrypted on exactly the deployments that ARE https, and it
+ * cannot be the only signal. `x-forwarded-proto` carries the scheme the client
+ * actually used; a chain of proxies appends each hop ("https, http") and the
+ * FIRST is the client-facing one, which is the scheme the browser used.
+ *
+ * Parity with PHP `Request::isSecureScheme` (tina4-php#175). Spoofable when the
+ * app is directly reachable, but the failure mode is self-limiting: a spoofed
+ * `https` only makes the cookie MORE restrictive, and `request.ts` already
+ * trusts the same header for URL construction — honouring it here is consistent.
+ *
+ * @param forwardedProto Raw `x-forwarded-proto` value (or a resolved scheme like
+ *                       "https"/"http"); "" / undefined means "absent".
+ * @param socketEncrypted True when Node terminated TLS itself (direct https, no
+ *                        proxy) — the native fallback when no forwarded header.
+ */
+export function isSecureScheme(forwardedProto?: string, socketEncrypted?: boolean): boolean {
+  const forwarded = (forwardedProto ?? "").trim();
+  if (forwarded !== "") {
+    return forwarded.split(",")[0].trim().toLowerCase() === "https";
+  }
+  return socketEncrypted === true;
+}
+
+/**
  * Build the `Set-Cookie` header value for a Tina4 session. Centralised so
  * the auto-cookie path in server.ts and `Session.cookieHeader()` agree on
  * which env vars are honoured and what the defaults are.
@@ -598,9 +626,24 @@ export class Session {
  *   TINA4_SESSION_NAME      — cookie name (default: "tina4_session")
  *   TINA4_SESSION_SAMESITE  — SameSite attribute (default: "Lax")
  *   TINA4_SESSION_HTTPONLY  — emit HttpOnly (default: true)
- *   TINA4_SESSION_SECURE    — emit Secure (default: false)
+ *   TINA4_SESSION_SECURE    — emit Secure (default: false; SameSite=None forces it on)
+ *
+ * `Secure` is emitted when ANY of: TINA4_SESSION_SECURE is truthy; SameSite is
+ * `None` (browsers reject a None cookie without Secure); OR the request scheme
+ * is https, detected proxy-aware from `forwardedProto` / `socketEncrypted`. The
+ * auto-cookie path in server.ts threads the request's scheme in so an HTTPS
+ * deploy behind a TLS-terminating proxy ships Secure without the operator
+ * having to know about TINA4_SESSION_SECURE (nodejs#34). Plain HTTP with no
+ * proxy header and no native TLS stays NOT Secure — an eager Secure would make
+ * http://localhost dev cookies undeliverable.
  */
-export function buildSessionCookie(sessionId: string | null, ttl: number, cookieName?: string): string {
+export function buildSessionCookie(
+  sessionId: string | null,
+  ttl: number,
+  cookieName?: string,
+  forwardedProto?: string,
+  socketEncrypted?: boolean,
+): string {
   const name = cookieName ?? process.env.TINA4_SESSION_NAME ?? "tina4_session";
   const sameSite = process.env.TINA4_SESSION_SAMESITE ?? "Lax";
 
@@ -611,10 +654,10 @@ export function buildSessionCookie(sessionId: string | null, ttl: number, cookie
     ? true
     : !["false", "0", "no", "off"].includes(httpOnlyRaw.trim().toLowerCase());
 
-  // Secure defaults to FALSE — only emit when the operator opts in (https
-  // deployments). Setting it eagerly would break http://localhost dev cookies.
-  const secureRaw = process.env.TINA4_SESSION_SECURE ?? "";
-  const secure = ["true", "1", "yes", "on"].includes(secureRaw.trim().toLowerCase());
+  // Secure defaults to FALSE, then turns ON for any of the three signals above.
+  const secure = isTruthy(process.env.TINA4_SESSION_SECURE)
+    || sameSite.trim().toLowerCase() === "none"
+    || isSecureScheme(forwardedProto, socketEncrypted);
 
   const parts = [`${name}=${sessionId ?? ""}`, "Path=/"];
   if (httpOnly) parts.push("HttpOnly");
