@@ -131,6 +131,14 @@ jobs:
       TINA4_TEST_RABBITMQ_URL: amqp://guest:guest@localhost:5672
       TINA4_TEST_KAFKA_URL: localhost:9092
       TINA4_KAFKA_BROKERS: localhost:9092
+      # MQTT 3.1.1 brokers started by the "Start MQTT brokers" step below;
+      # TINA4_TEST_MQTT_CA_FILE is injected there once the certs are generated.
+      TINA4_TEST_MQTT_URL: mqtt://127.0.0.1:1883
+      TINA4_TEST_MQTT_AUTH_URL: mqtt://127.0.0.1:1884
+      TINA4_TEST_MQTT_TLS_URL: mqtts://127.0.0.1:8883
+      TINA4_TEST_MQTT_EMQX_URL: mqtt://127.0.0.1:1885
+      TINA4_TEST_MQTT_USERNAME: tina4
+      TINA4_TEST_MQTT_PASSWORD: testpass
       # Turn a missing provisioned service into a hard failure (no green skips).
       # The run-all.ts gate fails the run if a real-service test skips because a
       # PROVISIONED service was unavailable. MySQL/MSSQL joined the provisioned
@@ -209,6 +217,15 @@ jobs:
             sleep 1
           done
           echo "Kafka did not become ready in 60s"; docker logs tina4-kafka | tail -40; exit 1
+
+      # MQTT 3.1.1: Mosquitto (1883 anon / 1884 auth / 8883 TLS) + EMQX 5.8 (1885,
+      # SUBACK-0x80 refusal). The vendored script generates certs + a password
+      # file, starts the brokers, and FAILS the job if any broker does not come
+      # up - so the MQTT tests never skip green in CI.
+      - name: Start MQTT brokers (Mosquitto 1883/1884/8883 + EMQX 1885)
+        run: |
+          bash test/mqtt-infra.sh "$RUNNER_TEMP/tina4-mqtt-infra"
+          echo "TINA4_TEST_MQTT_CA_FILE=$RUNNER_TEMP/tina4-mqtt-infra/certs/ca.crt" >> "$GITHUB_ENV"
 
       # Node 22+ is required — packages/orm/src/adapters/sqlite.ts uses
       # `node:sqlite` (introduced in Node 22, stable in Node 24).

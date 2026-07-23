@@ -35,6 +35,8 @@ const SERVICE_KEYWORDS = [
   "rabbit",
   "amqp",
   "kafka",
+  "mqtt", // Mosquitto (+ EMQX) for the MQTT tests; also matches "mqtts"
+  "mosquitto",
 ];
 
 // Hints that a skip was caused by the service/driver being unavailable (rather
