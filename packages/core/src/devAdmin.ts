@@ -513,7 +513,7 @@ export class DevAdmin {
       // GraphQL schema introspection (auto-discovers registered ORM models)
       { method: "GET", pattern: "/__dev/api/graphql/schema", handler: async (_req: any, res: any) => {
         try {
-          const { GraphQL } = require("./graphql.js");
+          const { GraphQL } = await import("./graphql.js");
           const gql = new GraphQL();
 
           // Auto-discover ORM models from BaseModel registry
@@ -999,18 +999,16 @@ const handleQueue: RouteHandler = async (req, res) => {
 const handleQueueTopics: RouteHandler = (_req, res) => {
   try {
     // Prefer on-disk file-queue topics under ./data/queue; fall back to "default".
-    // Using dynamic require avoids a hard dep on node:fs in tree-shaken builds.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require("node:fs");
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const path = require("node:path");
-    const queueDir = path.join(process.cwd(), "data", "queue");
+    // This module is ESM ("type": "module"), so a bare require() is a ReferenceError
+    // that the catch below swallowed - the endpoint always returned ["default"] and
+    // never listed a real topic. node:fs/node:path are already imported at the top of
+    // this file, so the "avoids a hard dep" rationale for the require() never held.
+    const queueDir = join(process.cwd(), "data", "queue");
     let topics: string[] = [];
-    if (fs.existsSync(queueDir)) {
-      topics = fs
-        .readdirSync(queueDir)
+    if (existsSync(queueDir)) {
+      topics = readdirSync(queueDir)
         .filter((d: string) => {
-          try { return fs.statSync(path.join(queueDir, d)).isDirectory(); } catch { return false; }
+          try { return statSync(join(queueDir, d)).isDirectory(); } catch { return false; }
         })
         .sort();
     }
