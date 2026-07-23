@@ -3,7 +3,7 @@
  * Run with: npx tsx test/scss.test.ts
  */
 import { ScssCompiler } from "../packages/core/src/index.ts";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 const SCSS_DIR = "/tmp/tina4-scss-test";
@@ -279,6 +279,111 @@ console.log("\n--- #{} interpolation ---");
   // Regression guard for the already-fixed half: mixed-unit calc preserved.
   const r = compiler.compile(`.z { height: calc(100vh - 170px); }`);
   assert("mixed-unit calc() still preserved", r.includes("calc(100vh - 170px)"), r);
+}
+
+// --- !default flag ---
+// The `!default` flag means "assign only if this variable is not already set".
+// It is a compiler directive and must never reach the CSS: `padding: 1.5rem
+// !default` is invalid CSS and browsers drop the whole declaration. Reference
+// behaviour for every case below was measured against Dart Sass 1.101.6.
+console.log("\n--- !default flag ---");
+{
+  const r = compiler.compile("$g: 1.5rem !default;\n.x { padding: $g; }");
+  assert("!default never reaches the output",
+    r.includes("padding: 1.5rem") && !r.includes("!default"), r);
+}
+{
+  // The themeing contract: a user sets $primary BEFORE the partial that declares
+  // it !default, and must keep their value.
+  const r = compiler.compile("$primary: red;\n$primary: blue !default;\n.y { color: $primary; }");
+  assert("!default does not overwrite an already-set variable",
+    r.includes("color: red") && !r.includes("blue") && !r.includes("!default"), r);
+}
+{
+  const r = compiler.compile("$primary: blue !default;\n.y { color: $primary; }");
+  assert("!default does assign an unset variable",
+    r.includes("color: blue") && !r.includes("!default"), r);
+}
+{
+  // Sass treats a null variable as unset, so !default fills it.
+  const r = compiler.compile("$c: null;\n$c: teal !default;\n.w { color: $c; }");
+  assert("null counts as unset", r.includes("color: teal") && !r.includes("null"), r);
+}
+{
+  const r = compiler.compile("$a: 1rem !default;\n$a: 2rem !default;\n.v { margin: $a; }");
+  assert("first !default wins over a second !default",
+    r.includes("margin: 1rem") && !r.includes("2rem"), r);
+}
+{
+  // !default only guards against being overwritten; a plain assignment wins.
+  const r = compiler.compile("$a: 1rem !default;\n$a: 2rem;\n.v { margin: $a; }");
+  assert("plain declaration after !default does overwrite", r.includes("margin: 2rem"), r);
+}
+{
+  const r = compiler.compile("$a: 5px !default !global;\n.i { top: $a; }");
+  assert("!global flag is also consumed",
+    r.includes("top: 5px") && !r.includes("!default") && !r.includes("!global"), r);
+}
+{
+  // A map literal spanning lines with the flag on the closing line — the exact
+  // shape tina4-css's _variables.scss uses.
+  const r = compiler.compile('$m: (\n  "a": 1,\n  "b": 2\n) !default;\n.m { z-index: 1; }');
+  assert("multi-line !default declaration is consumed",
+    !r.includes("!default") && !r.includes("$m"), r);
+}
+{
+  // NEGATIVE guard on the strip's scope: only a *variable declaration* value is
+  // stripped. Dart Sass keeps this string verbatim; so must we.
+  const r = compiler.compile('.s { content: "x !default y"; }');
+  assert("literal !default inside a quoted string is preserved",
+    r.includes('"x !default y"'), r);
+}
+{
+  // NEGATIVE guard: `rgba(#000 !default, .1)` is a syntax error in Dart Sass and
+  // never appears in valid SCSS. We do not silently "fix" it into something Sass
+  // would never emit — it is not a variable declaration, so it is left exactly
+  // as written and stays visibly wrong.
+  const r = compiler.compile(".z { color: rgba(#000 !default, 0.1); }");
+  assert("!default in a function argument is left verbatim", r.includes("!default"), r);
+}
+{
+  // The real-world case behind the 41 broken rgba() calls: the flag rode inside
+  // the stored value and corrupted every function call using it.
+  const r = compiler.compile("$black: #000 !default;\n.z { box-shadow: 0 1px 2px rgba($black, 0.075); }");
+  assert("a !default hex variable is usable inside rgba()",
+    r.includes("rgba(0, 0, 0, 0.075)") && !r.includes("!default"), r);
+}
+{
+  // End-to-end over REAL files: set the variable, then @import a partial that
+  // declares it !default. The override must win.
+  const dir = join(SCSS_DIR, "defaults");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "_theme.scss"), "$primary: navy !default;\n$accent: gold !default;\n");
+  writeFileSync(join(dir, "main.scss"),
+    '$primary: hotpink;\n@import "theme";\n.k { color: $primary; border-color: $accent; }\n');
+  const r = new ScssCompiler().compileFile(join(dir, "main.scss"));
+  assert("override survives an @import of a real partial",
+    r.includes("color: hotpink") && r.includes("border-color: gold")
+      && !r.includes("navy") && !r.includes("!default"), r);
+}
+{
+  const c = new ScssCompiler();
+  c.setVariable("primary", "rebeccapurple");
+  const r = c.compile("$primary: navy !default;\n.p { color: $primary; }");
+  assert("a preset variable beats a source !default",
+    r.includes("color: rebeccapurple") && !r.includes("navy"), r);
+}
+{
+  // compileScss over a real directory, writing a real file.
+  const dir = join(SCSS_DIR, "dirdefault");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "_vars.scss"), "$gap: 4px !default;\n");
+  writeFileSync(join(dir, "app.scss"), '@import "vars";\n.a { margin: $gap; }\n');
+  const out = join(dir, "out", "default.css");
+  const r = new ScssCompiler().compileScss(dir, out);
+  assert("compileScss over a directory strips the flag",
+    r.includes("margin: 4px") && !r.includes("!default")
+      && !readFileSync(out, "utf-8").includes("!default"), r);
 }
 
 // Cleanup

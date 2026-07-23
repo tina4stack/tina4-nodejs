@@ -168,9 +168,56 @@ function resolveImports(content: string, paths: string[], imported: Set<string>)
 
 // ── Variables ────────────────────────────────────────────────────
 
+/**
+ * Flags that may trail a variable declaration's value. `!default` means "assign
+ * only if this variable is not already set" — the flag that makes a variable
+ * themeable. `!global` is the scope flag. Both are compiler directives: they are
+ * consumed at the declaration and must never reach the CSS, because
+ * `padding: 1.5rem !default` is invalid CSS and browsers drop the whole
+ * declaration. Sass flag names are case-SENSITIVE (`!DEFAULT` is an error in
+ * Dart Sass), so the match is deliberately case-sensitive.
+ */
+const VARIABLE_FLAG = /\s*!(default|global)\s*$/;
+
+/**
+ * Split trailing `!default` / `!global` flags off a variable declaration value.
+ * Returns `[valueWithoutFlags, declaresDefault]`.
+ *
+ * Only ever called on the value of a `$name: value;` declaration, so a literal
+ * `!default` anywhere else — inside a quoted string (`content: "x !default y"`)
+ * or a function argument — is left untouched, exactly as Dart Sass leaves it. A
+ * blanket strip would corrupt real string content, and would silently turn
+ * `rgba(#000 !default, 0.1)` (a syntax error in Dart Sass) into valid-looking
+ * CSS that Sass would never emit.
+ */
+function stripVariableFlags(value: string): [string, boolean] {
+  let declaresDefault = false;
+  for (;;) {
+    const match = VARIABLE_FLAG.exec(value);
+    if (match === null) return [value.trim(), declaresDefault];
+    if (match[1] === "default") declaresDefault = true;
+    value = value.slice(0, match.index);
+  }
+}
+
+/**
+ * Extract `$variable: value;` declarations, honouring the `!default` flag.
+ *
+ * `$x: value !default;` assigns only when `$x` is not already set. That is what
+ * makes a variable themeable — a user who writes `$primary: red;` BEFORE
+ * importing a partial that declares `$primary: blue !default;` keeps red.
+ * Declarations are visited in source order, so "already set" means "set by an
+ * earlier declaration or by a preset variable". A value of `null` counts as
+ * unset, as in Sass.
+ */
 function extractVariables(scss: string, variables: Record<string, string>): string {
   return scss.replace(/\$([a-zA-Z_][\w-]*)\s*:\s*([^;]+);/g, (_m, name: string, value: string) => {
-    let resolved = value.trim();
+    const [stripped, declaresDefault] = stripVariableFlags(value.trim());
+    // !default must not overwrite a value that is already set.
+    if (declaresDefault && (variables[name] ?? "null") !== "null") {
+      return "";
+    }
+    let resolved = stripped;
     // Resolve variable references within the value
     for (const [vName, vVal] of Object.entries(variables)) {
       resolved = resolved.replaceAll(`$${vName}`, vVal);
