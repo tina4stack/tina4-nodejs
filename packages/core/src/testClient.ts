@@ -18,7 +18,8 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { createRequest } from "./request.js";
 import { createResponse } from "./response.js";
-import { defaultRouter, type Router } from "./router.js";
+import { defaultRouter, Router, runRouteMiddlewares } from "./router.js";
+import { MiddlewareRunner } from "./middleware.js";
 import { enforceRouteAuth } from "./authGate.js";
 
 export class TestResponse {
@@ -160,13 +161,72 @@ export class TestClient {
     const cleanPath = path.includes("?") ? path.split("?")[0] : path;
 
     // Match route
-    const match = this.router.match(method.toUpperCase(), cleanPath);
+    const httpMethod = method.toUpperCase();
+    const match = this.router.match(httpMethod, cleanPath);
     if (!match) {
-      return new TestResponse(404, { "content-type": "application/json" }, '{"error":"Not found"}');
+      // D6: dispatch through the REAL front-controller behaviour on a miss —
+      // never fabricate a body. This mirrors the live server tail
+      // (server.ts dispatch): RFC 9110 conformance first (a path registered
+      // under another method answers OPTIONS with 204 + Allow and any other
+      // method with 405 + Allow), then the framework's real 404. The old
+      // TestClient short-circuited to a hand-invented {"error":"Not found"}
+      // that the live server never sends, so a green test proved nothing about
+      // production (the same silent-success class as Python's pre-fix client).
+      const allowed = this.router.methodsAllowedForPath(cleanPath);
+      if (allowed.length > 0) {
+        const allowHeader = allowed.join(", ");
+        if (httpMethod === "OPTIONS") {
+          return new TestResponse(204, { allow: allowHeader, "content-length": "0" }, "");
+        }
+        const body405 = JSON.stringify({
+          error: "Method Not Allowed",
+          path: cleanPath,
+          method: httpMethod,
+          allow: allowed,
+          statusCode: 405,
+        });
+        return new TestResponse(405, { allow: allowHeader, "content-type": "application/json" }, body405);
+      }
+      // The framework's real 404. The live server renders an HTML error page
+      // when a project templatesDir/frondEngine exists and otherwise emits this
+      // exact JSON; a server-less TestClient has no project dir, so it produces
+      // the JSON fallback the live front controller itself falls back to.
+      // tina4: HTML-error-page + filesystem static serving are the only live
+      // front-controller steps a server-less client can't reproduce.
+      const body404 = JSON.stringify({
+        error: "Not Found",
+        statusCode: 404,
+        message: `No route found for ${httpMethod} ${cleanPath}`,
+      });
+      return new TestResponse(404, { "content-type": "application/json" }, body404);
     }
 
     // Inject route params
     req.params = match.params;
+
+    // Global class-based middleware (Router.use / MiddlewareRunner.use), run in
+    // the SAME order the live dispatcher uses (server.ts): beforeX hooks before
+    // the handler, afterX hooks after — even on a before-short-circuit. Empty
+    // when a test registers none, so this is additive/non-breaking.
+    const globalMiddleware = [
+      ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
+    ];
+    if (globalMiddleware.length > 0) {
+      const [, , proceed] = await MiddlewareRunner.runBefore(globalMiddleware, req, res);
+      if (!proceed || res.raw.writableEnded) {
+        await MiddlewareRunner.runAfter(globalMiddleware, req, res);
+        if (!res.raw.writableEnded) res.raw.end();
+        return this._collect(rawRes, chunks, socket);
+      }
+    }
+
+    // Per-route middleware, same as the live dispatcher.
+    if (match.middlewares && match.middlewares.length > 0) {
+      const proceed = await runRouteMiddlewares(match.middlewares, req, res);
+      if (!proceed || res.raw.writableEnded) {
+        return this._collect(rawRes, chunks, socket);
+      }
+    }
 
     // Route through the REAL auth gate (parity with the live server). A write to
     // an auth-required route (secure-by-default POST/PUT/PATCH/DELETE, or any
@@ -183,9 +243,17 @@ export class TestClient {
     // Execute handler (only if auth passed)
     if (!rejected) {
       await match.handler(req, res);
+      // Global afterX hooks (logging / post-processing), mirroring the live tail.
+      if (globalMiddleware.length > 0) {
+        await MiddlewareRunner.runAfter(globalMiddleware, req, res);
+      }
     }
 
-    // Collect response
+    return this._collect(rawRes, chunks, socket);
+  }
+
+  /** Gather the captured status/headers/body into a TestResponse and free the socket. */
+  private _collect(rawRes: ServerResponse, chunks: Buffer[], socket: Socket): TestResponse {
     const responseBody = Buffer.concat(chunks).toString();
     const responseHeaders: Record<string, string> = {};
     for (const [name, value] of Object.entries(rawRes.getHeaders())) {
@@ -193,10 +261,7 @@ export class TestClient {
         responseHeaders[name] = Array.isArray(value) ? value.join(", ") : String(value);
       }
     }
-
-    // Clean up the socket
     socket.destroy();
-
     return new TestResponse(rawRes.statusCode, responseHeaders, responseBody);
   }
 }
