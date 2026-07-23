@@ -58,6 +58,10 @@ export { Queue } from "./queue.js";
 export type { QueueConfig, QueueJob, ProcessOptions } from "./queue.js";
 export { createJob } from "./job.js";
 export type { JobData, JobQueueBridge } from "./job.js";
+export { Mqtt, MqttError, MqttTimeoutError } from "./mqtt.js";
+export type { MqttOptions, ParsedMqttUrl } from "./mqtt.js";
+export { MqttMessage } from "./mqttMessage.js";
+export type { MqttAcknowledger } from "./mqttMessage.js";
 export { GraphQL, ParseError, graphqlEndpoint, graphqlAutoSchemaEnabled, graphqlMaxDepth } from "./graphql.js";
 export type { GraphQLField, ResolverFn, GraphQLResult } from "./graphql.js";
 export {
