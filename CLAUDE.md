@@ -1237,7 +1237,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 
 ## v3 Features Summary
 
-- **45 built-in features**, zero third-party dependencies
+- **97 built-in features**, zero third-party dependencies
 - **5,379 tests** passing across 154 files (build + typecheck green; 9 PostgreSQL/Valkey service-gated failures)
 - **Race-safe `getNextId()`** with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)

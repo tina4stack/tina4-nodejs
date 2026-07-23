@@ -3,11 +3,11 @@
 </p>
 <h1 align="center">Tina4 Node.js</h1>
 <h3 align="center">The Intelligent Native Application 4ramework</h3>
-<p align="center">55 built-in features. Zero dependencies. One import, everything works.</p>
+<p align="center">97 built-in features. Zero dependencies. One import, everything works.</p>
 <p align="center">
   <a href="https://www.npmjs.com/package/@tina4/core"><img src="https://img.shields.io/npm/v/@tina4/core?color=7b1fa2&label=npm" alt="npm"></a>
   <img src="https://img.shields.io/badge/tests-2%2C897%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/features-55-blue" alt="Features">
+  <img src="https://img.shields.io/badge/features-97-blue" alt="Features">
   <img src="https://img.shields.io/badge/dependencies-0-brightgreen" alt="Zero Deps">
   <a href="https://tina4.com"><img src="https://img.shields.io/badge/docs-tina4.com-7b1fa2" alt="Docs"></a>
 </p>
@@ -93,7 +93,7 @@ Benchmarked with `wrk`: 5,000 requests, 50 concurrent, median of 3 runs:
 | Raw `node:http` | 91,110 | 0 | 1 |
 | **Tina4 Node.js** | **84,771** | 0 | 55 |
 
-Tina4 Node.js runs at **93% of raw Node.js speed** while providing 55 built-in features, a zero-overhead architecture.
+Tina4 Node.js runs at **93% of raw Node.js speed** while providing 97 built-in features, a zero-overhead architecture.
 
 **Across all 4 Tina4 implementations:**
 
@@ -107,7 +107,7 @@ Tina4 Node.js runs at **93% of raw Node.js speed** while providing 55 built-in f
 
 ## Cross-Framework Parity
 
-Tina4 ships identical features across four languages: same architecture, same conventions, same 55 features:
+Tina4 ships identical features across four languages: same architecture, same conventions, same 97 features:
 
 | | Python | PHP | Ruby | Node.js |
 |---|--------|-----|------|---------|
