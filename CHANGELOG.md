@@ -12,6 +12,13 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ## Unreleased
 
+### Added
+
+- **MQTT 3.1.1 client** (`Mqtt` / `MqttMessage`), zero-dependency (`node:net` + `node:tls`),
+  verified against a real broker with no mocks. Async by design: connect/publish/subscribe/receive
+  return promises and `consume` is an async generator. QoS 0/1, retained, Last Will, per-connection
+  TLS, QoS 2 refused loudly. Takes the family to **98 built-in features**.
+
 ### Changed
 
 - Internal: the SQL dialect-translation module is renamed
