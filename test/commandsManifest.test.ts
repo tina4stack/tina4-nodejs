@@ -26,6 +26,7 @@ import {
   buildCommandManifest,
   runCommands,
   COMMANDS,
+  DELEGATED,
   type CommandManifest,
 } from "../packages/cli/src/bin.ts";
 import { GENERATORS } from "../packages/cli/src/commands/generate.ts";
@@ -91,11 +92,19 @@ const names = manifest.commands.map((c) => c.name);
 const missing = KNOWN_COMMANDS.filter((k) => !names.includes(k));
 assert("all known commands present", missing.length === 0, `missing: ${missing.join(", ")}`);
 
-// ── Anti-drift: the manifest is DERIVED from the dispatch registry ──
-console.log("\n--- anti-drift (manifest == dispatch registry) ---");
-assert("manifest command names == Object.keys(COMMANDS) (same order, no separate list)",
-  JSON.stringify(names) === JSON.stringify(Object.keys(COMMANDS)),
-  `\n    manifest: ${names.join(",")}\n    COMMANDS: ${Object.keys(COMMANDS).join(",")}`);
+// ── Anti-drift: the manifest is DERIVED from the dispatch registries ──
+// Natively dispatched COMMANDS plus the DELEGATED commands the tina4 client
+// implements — one derived list, never a hand-kept second one.
+console.log("\n--- anti-drift (manifest == dispatch registries) ---");
+const expectedNames = [...Object.keys(COMMANDS), ...Object.keys(DELEGATED)];
+assert("manifest command names == COMMANDS + DELEGATED (same order, no separate list)",
+  JSON.stringify(names) === JSON.stringify(expectedNames),
+  `\n    manifest: ${names.join(",")}\n    expected: ${expectedNames.join(",")}`);
+
+const entriesByName = Object.fromEntries(manifest.commands.map((c) => [c.name, c]));
+assert("only the delegated commands carry delegated: true",
+  Object.keys(DELEGATED).every((n) => entriesByName[n]?.delegated === true)
+  && Object.keys(COMMANDS).every((n) => entriesByName[n]?.delegated === undefined));
 
 // ── generate subcommands derived from the real GENERATORS registry ──
 console.log("\n--- generate subcommands ---");
