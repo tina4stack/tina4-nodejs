@@ -1,6 +1,6 @@
 # tina4-nodejs Copilot Instructions
 
-Tina4 Node.js/TypeScript v3. 54 features, zero dependencies. ESM only.
+Tina4 Node.js/TypeScript v3. 97 features, zero dependencies. ESM only.
 
 ## Route Pattern
 
