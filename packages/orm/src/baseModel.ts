@@ -7,7 +7,7 @@ import {
 import { validate as validateFields } from "./validation.js";
 import { QueryBuilder } from "./queryBuilder.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
-import { QueryCache } from "./sqlTranslation.js";
+import { QueryCache } from "./sqlTranslator.js";
 import { Log } from "../../core/src/index.js";
 import type { DatabaseAdapter, FieldDefinition, RelationshipDefinition } from "./types.js";
 

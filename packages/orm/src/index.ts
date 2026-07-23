@@ -53,7 +53,7 @@ export { validate } from "./validation.js";
 export type { ValidationError } from "./validation.js";
 export { BaseModel, snakeToCamel, camelToSnake } from "./baseModel.js";
 export { QueryBuilder } from "./queryBuilder.js";
-export { SQLTranslator, QueryCache } from "./sqlTranslation.js";
+export { SQLTranslator, QueryCache } from "./sqlTranslator.js";
 export { CachedDatabaseAdapter } from "./cachedDatabase.js";
 export type { CachedAdapterOptions } from "./cachedDatabase.js";
 export { FakeData } from "./fakeData.js";

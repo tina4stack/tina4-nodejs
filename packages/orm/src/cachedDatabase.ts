@@ -32,7 +32,7 @@
  *   db.cacheStats();                   // { enabled, mode, hits, misses, size, ttl }
  */
 
-import { QueryCache } from "./sqlTranslation.js";
+import { QueryCache } from "./sqlTranslator.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "./types.js";
 import type { CacheBackend } from "../../core/src/index.js";
 

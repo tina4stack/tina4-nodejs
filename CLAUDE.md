@@ -51,7 +51,7 @@ tina4-nodejs/
         baseModel.ts     # Base model class
         fakeData.ts      # ORM-aware fake data (extends core, field-type heuristics)
         seeder.ts        # Database seeding (seedTable, seedOrm, seedModels)
-        sqlTranslation.ts # Cross-engine SQL translator + query cache
+        sqlTranslator.ts # Cross-engine SQL translator + query cache
     swagger/    # OpenAPI spec generator, Swagger UI
     frond/      # Zero-dependency Twig-compatible template engine
   test/
@@ -155,7 +155,7 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 - `types.ts` — `FieldDefinition`, `ModelDefinition`, `DatabaseAdapter`, `QueryOptions`
 - `fakeData.ts` — ORM-aware fake data extending core (adds `forField()` with column-name heuristics)
 - `seeder.ts` — Database seeding (`seedTable` raw SQL, `seedOrm` model-based, `seedModels` FK-ordered batch). All return a `SeedSummary { seeded, failed, errors }`; per-row failures are logged + counted + skipped (`strict` re-raises). Options: `{ overrides, clear, seed, strict }`.
-- `sqlTranslation.ts` — Cross-engine SQL translator (`SQLTranslator`) and TTL query cache (`QueryCache`)
+- `sqlTranslator.ts` — Cross-engine SQL translator (`SQLTranslator`) and TTL query cache (`QueryCache`)
 - **Instance methods:** `save(): this|false` (fluent, false on failure), `delete()`, `forceDelete()`, `restore()`, `load(sql, params?, include?): boolean`, `validate(): string[]`, `toDict(include?)`, `toAssoc(include?)`, `toObject()`, `toArray(): unknown[]`, `toList()`, `toJson(include?)`, `hasOne(class, fk)`, `hasMany(class, fk, limit?, offset?)`, `belongsTo(class, fk)`
 - **Static methods:** `find(id, include?)`, `findById(id, include?)`, `findOrFail(id)`, `create(data)`, `all(where?, params?, include?)`, `select(sql, params?)`, `selectOne(sql, params?, include?)`, `where(conditions, params?, limit?, offset?, include?)`, `count(conditions?, params?)`, `withTrashed(conditions?, params?, limit?, offset?)`, `scope(name, filterSql, params?)` (registers reusable method), `createTable()`, `query()`, `_processForeignKeys()`, `_applyFkRegistry()`
 - **Foreign key auto-wire:** Declare a field with `type: "foreignKey"` and `references: "ModelName"` to auto-wire both `belongsTo` on the declaring model and `hasMany` on the referenced model. Optional `relatedName` overrides the has-many key. Models must be registered via `BaseModel.registerModel(name, class)` for name-based resolution. Example: `user_id: { type: "foreignKey", references: "User" }` → `post.belongsTo(User, "user_id")` and `user.hasMany(Post, "user_id")` both resolve without extra wiring.
@@ -526,7 +526,7 @@ accepts `seed`/`clear`/`strict`, and returns `{ seeded, failed, errors, table }`
 
 Column-name heuristics in `forField()`: columns named `email`, `phone`, `name`, `address`, `city`, `country`, `company`, `url`, `uuid`, `ip`, `currency`, etc. get contextually appropriate fake data.
 
-## Module: SQL Translation (`packages/orm/src/sqlTranslation.ts`)
+## Module: SQL Translation (`packages/orm/src/sqlTranslator.ts`)
 
 Cross-engine SQL dialect translator and in-memory query cache. All translator methods are static on `SQLTranslator`. The `QueryCache` provides TTL-based caching with LRU eviction.
 

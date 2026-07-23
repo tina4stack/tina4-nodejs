@@ -46,7 +46,7 @@ This checklist tracks feature parity against the Python reference implementation
 | Firebird driver | [x] | [x] | `adapters/firebird.ts` |
 | ODBC driver | [ ] | [ ] | Not implemented |
 | DatabaseResult | [x] | [x] | `databaseResult.ts` |
-| SQL translation | [x] | [x] | `sqlTranslation.ts` |
+| SQL translation | [x] | [x] | `sqlTranslator.ts` |
 | Query caching | [x] | [x] | `cachedDatabase.ts` |
 | get_next_id | [x] | [x] | |
 | Transactions | [x] | [x] | |

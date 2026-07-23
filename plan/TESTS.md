@@ -63,7 +63,7 @@ Version: 3.10.37 | Last updated: 2026-03-31
 | 48 | session.test.ts | 1 | Sessions | Minimal |
 | 49 | sessionHandlers.test.ts | 1 | Session handler backends | Minimal |
 | 50 | smoke.test.ts | 4 | Smoke/integration | Minimal |
-| 51 | sqlTranslation.test.ts | 1 | SQL dialect translation | Minimal |
+| 51 | sqlTranslator.test.ts | 1 | SQL dialect translation | Minimal |
 | 52 | static.test.ts | 17 | Static file serving | Good |
 | 53 | swagger.test.ts | 1 | Swagger generation | Minimal |
 | 54 | templateRoute.test.ts | 1 | Template routes | Minimal |

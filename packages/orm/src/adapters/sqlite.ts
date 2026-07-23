@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
-import { SQLTranslator } from "../sqlTranslation.js";
+import { SQLTranslator } from "../sqlTranslator.js";
 
 /** A safe-to-interpolate SQL identifier (no quoting/escaping needed). */
 function isIdentifier(str: string): boolean {

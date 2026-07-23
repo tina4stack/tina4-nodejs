@@ -1,8 +1,8 @@
 /**
  * Unit tests for the SQL Translation module (cross-engine SQL translator + query cache).
- * Run with: npx tsx test/sqlTranslation.test.ts
+ * Run with: npx tsx test/sqlTranslator.test.ts
  */
-import { SQLTranslator, QueryCache } from "../packages/orm/src/sqlTranslation.ts";
+import { SQLTranslator, QueryCache } from "../packages/orm/src/sqlTranslator.ts";
 
 let pass = 0;
 let fail = 0;

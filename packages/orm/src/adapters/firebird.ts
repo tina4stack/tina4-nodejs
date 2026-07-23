@@ -5,7 +5,7 @@
  * URL format: firebird://user:pass@host:port/path/to/database.fdb
  */
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
-import { SQLTranslator } from "../sqlTranslation.js";
+import { SQLTranslator } from "../sqlTranslator.js";
 import { createRequire } from "node:module";
 
 let firebird: any = null;

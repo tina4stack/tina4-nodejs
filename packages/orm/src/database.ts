@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult, ColumnInfo, FieldDefinition } from "./types.js";
 import { DatabaseResult } from "./databaseResult.js";
 import { CachedDatabaseAdapter, type CachedAdapterOptions } from "./cachedDatabase.js";
-import { QueryCache } from "./sqlTranslation.js";
+import { QueryCache } from "./sqlTranslator.js";
 
 /**
  * v3.13.12 — strip trailing `;` and whitespace from user-supplied SQL

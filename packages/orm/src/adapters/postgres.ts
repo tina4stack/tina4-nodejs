@@ -5,7 +5,7 @@
  * URL format: postgresql://user:pass@host:port/database
  */
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
-import { SQLTranslator } from "../sqlTranslation.js";
+import { SQLTranslator } from "../sqlTranslator.js";
 
 import { createRequire } from "node:module";
 
