@@ -1,0 +1,15 @@
+{
+  "name": "tina4-nodejs-benchmarks",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Competitor benchmark harness for tina4-nodejs. NOT part of the published package. The competitor libraries (Knex, Drizzle) and their SQLite driver (better-sqlite3) live HERE, in this directory's own node_modules, isolated from @tina4/* and NEVER a framework dependency -- the framework itself runs on the built-in node:sqlite and stays zero-dependency. Node's upward module resolution still finds @tina4/orm in the repo-root node_modules. Run `npm install` in this directory, then `npx tsx benchFrameworks.ts` from the repo root.",
+  "scripts": {
+    "bench": "tsx benchFrameworks.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.0.0",
+    "drizzle-orm": "^0.36.0",
+    "knex": "^3.1.0"
+  }
+}

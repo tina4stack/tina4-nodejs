@@ -1,0 +1,4 @@
+# Competitor libs are dev-only and isolated here — never committed, never a
+# framework dependency. Reinstall with `npm install` in this directory.
+node_modules/
+package-lock.json
