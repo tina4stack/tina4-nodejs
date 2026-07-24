@@ -232,10 +232,10 @@ Backends: file, redis, redis-npm, valkey, mongodb, database.
 ### Database extras
 
 ```typescript
-db.execute(sql, params?): boolean | unknown  // RAISES on SQL error (never returns false; cause on getError()); on success: bool for writes, result for RETURNING/CALL/EXEC. try/catch — don't test the return.
-db.getLastId(): string | number
-db.getError(): string | null
-db.cacheStats(): { enabled, size, ttl }
+await db.execute(sql, params?): Promise<boolean | unknown>  // ASYNC — await it. RAISES on SQL error (never returns false; cause on getError()); on success: bool for writes, result for RETURNING/CALL/EXEC. try/catch — don't test the return.
+db.getLastId(): string | number   // synchronous
+db.getError(): string | null       // synchronous
+db.cacheStats(): { enabled, size, ttl }   // synchronous
 ```
 
 ### DocStore — pymongo-style document store (zero-config SQLite fallback)
@@ -627,43 +627,49 @@ import { initDatabase, bindDatabase, createAdapterFromUrl, Database, DatabaseRes
 const db = await initDatabase({ url: "sqlite:///app.db" });
 // Connection pooling: pass `pool: 4` for round-robin connections.
 
-// Reads — synchronous (node:sqlite is sync; other adapters are wrapped)
-db.fetch(sql, params?, limit?, offset?): DatabaseResult           // .records, .count, .limit, .offset
-db.fetchOne<T>(sql, params?): T | null
+// EVERY db method that touches the database is ASYNC on the Database wrapper --
+// it returns a Promise, so `await` it. (The node:sqlite ADAPTER underneath is
+// synchronous, but the wrapper is async so the query cache and the pg/mysql/
+// mssql/firebird adapters share one uniform API.) Only getLastId(), getError()
+// and close() are synchronous.
+
+// Reads — async, await them
+await db.fetch(sql, params?, limit?, offset?): Promise<DatabaseResult>   // .records, .count, .limit, .offset
+await db.fetchOne<T>(sql, params?): Promise<T | null>
 
 // Writes — execute() RAISES on a SQL error (bad SQL, constraint violation,
 // dead connection, missing driver): it records the cause on getError() then
 // re-throws — it never swallows and returns false (mirrors fetch()/fetchOne()).
-// On SUCCESS it returns boolean for simple writes, the result set for
+// On SUCCESS it resolves to boolean for simple writes, the result set for
 // RETURNING / CALL / EXEC / SELECT. Callers needing a bool (ORM save(),
 // createTable(), migration runner, dev-admin/MCP DB tools) try/catch and
 // convert — they must NOT test the return value for false.
-db.execute(sql, params?): boolean | unknown
-db.executeMany(sql, paramSets): unknown[]                         // wrapped in a transaction
-db.insert(table, data): DatabaseWriteResult
-db.update(table, data, filter?, params?): DatabaseWriteResult
-db.delete(table, filter?, params?): DatabaseWriteResult
+await db.execute(sql, params?): Promise<boolean | unknown>
+await db.executeMany(sql, paramSets): Promise<unknown[]>          // wrapped in a transaction
+await db.insert(table, data): Promise<DatabaseWriteResult>
+await db.update(table, data, filter?, params?): Promise<DatabaseWriteResult>
+await db.delete(table, filter?, params?): Promise<DatabaseWriteResult>
 
-// Last-write metadata
-db.getLastId(): string | number | null
+// Last-write metadata — SYNCHRONOUS (no await)
+db.getLastId(): string | number
 db.getError(): string | null
 
-// Transactions — autoCommit defaults to ON: a standalone write commits on its
-// own connection (durable + visible across the pool); inside startTransaction()
-// the per-statement commit is suppressed so the transaction stays atomic. Set
-// TINA4_AUTOCOMMIT=false for strict manual-commit mode.
-db.startTransaction(): void
-db.commit(): void
-db.rollback(): void
+// Transactions — async (await). autoCommit defaults to ON: a standalone write
+// commits on its own connection (durable + visible across the pool); inside
+// startTransaction() the per-statement commit is suppressed so the transaction
+// stays atomic. Set TINA4_AUTOCOMMIT=false for strict manual-commit mode.
+await db.startTransaction(): Promise<void>
+await db.commit(): Promise<void>
+await db.rollback(): Promise<void>
 
-// Schema introspection
-db.tableExists(name): boolean
-db.getTables(): string[]
-db.getColumns(table): { name, type, nullable?, default?, primaryKey? }[]
+// Schema introspection — async (await)
+await db.tableExists(name): Promise<boolean>
+await db.getTables(): Promise<string[]>
+await db.getColumns(table): Promise<{ name, type, nullable?, default?, primaryKey? }[]>
 
-// Race-safe sequence — uses tina4_sequences for SQLite/MySQL/MSSQL,
+// Race-safe sequence — async (await). Uses tina4_sequences for SQLite/MySQL/MSSQL,
 // auto-creates Postgres sequences, and uses native Firebird generators.
-db.getNextId(table, pkColumn?, generatorName?): number
+await db.getNextId(table, pkColumn?, generatorName?): Promise<number>
 
 // DB query cache — request-scoped auto cache is OFF by default (opt-in via
 // TINA4_AUTO_CACHING=true, TTL TINA4_AUTO_CACHING_TTL=5s): when enabled it dedupes
