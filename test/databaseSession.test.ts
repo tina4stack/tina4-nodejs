@@ -3,7 +3,8 @@
  * Run with: npx tsx test/databaseSession.test.ts
  *
  * Tests class structure, interface, and basic read/write/destroy via
- * an in-memory-style SQLite database (temp file). Requires better-sqlite3.
+ * an in-memory-style SQLite database (temp file). Uses Node's built-in
+ * node:sqlite (DatabaseSync) — no third-party driver, always available.
  */
 import {
   DatabaseSessionHandler,
@@ -34,33 +35,22 @@ const TEST_DB = join(TEST_DIR, "sessions.db");
 // --- Constructor ---
 console.log("--- Constructor ---");
 
-let handler: InstanceType<typeof DatabaseSessionHandler>;
-try {
-  handler = new DatabaseSessionHandler({ dbPath: TEST_DB });
-  // Behavioural: a constructed handler is never null in JS, so prove the
-  // constructor actually opened/created the backing SQLite store and the
-  // table by exercising a real write/read round-trip through it.
-  const bootId = "boot-" + Date.now();
-  handler.write(bootId, { _created: Date.now(), _accessed: Date.now(), user: "x" }, 60);
-  const boot = handler.read(bootId);
-  assert(
-    "DatabaseSessionHandler constructor opens a usable backing store (write/read round-trip)",
-    boot !== null && (boot as any).user === "x",
-    `expected user "x", got ${JSON.stringify(boot)}`,
-  );
-  handler.destroy(bootId);
-} catch (err: any) {
-  // If better-sqlite3 is not installed, skip gracefully
-  if (err.message && err.message.includes("better-sqlite3")) {
-    console.log("  SKIP — better-sqlite3 not installed");
-    console.log(`\n${"=".repeat(50)}`);
-    console.log(`  Results: \x1b[32m0 passed\x1b[0m, \x1b[31m0 failed\x1b[0m`);
-    console.log(`${"=".repeat(50)}\n`);
-    try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
-    process.exit(0);
-  }
-  throw err;
-}
+// node:sqlite is built into Node (20+), so the backing store is always
+// available — there is no "driver not installed" skip. A constructor error
+// here is a real failure and must surface loudly rather than be swallowed.
+const handler: InstanceType<typeof DatabaseSessionHandler> = new DatabaseSessionHandler({ dbPath: TEST_DB });
+// Behavioural: a constructed handler is never null in JS, so prove the
+// constructor actually opened/created the backing SQLite store and the
+// table by exercising a real write/read round-trip through it.
+const bootId = "boot-" + Date.now();
+handler.write(bootId, { _created: Date.now(), _accessed: Date.now(), user: "x" }, 60);
+const boot = handler.read(bootId);
+assert(
+  "DatabaseSessionHandler constructor opens a usable backing store (write/read round-trip)",
+  boot !== null && (boot as any).user === "x",
+  `expected user "x", got ${JSON.stringify(boot)}`,
+);
+handler.destroy(bootId);
 
 // --- Required methods (proven by behaviour, not typeof) ---
 console.log("\n--- Required Methods ---");
