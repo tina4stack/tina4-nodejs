@@ -317,27 +317,72 @@ async function runBenchmark(name: string): Promise<number> {
     await op();
     const elapsed = (performance.now() - start) / 1000;
     teardown?.();
-    console.log(`  ${pad(label, 25)} ${elapsed.toFixed(3)}s  (1 run, in-process)`);
+    console.log(
+      `  ${pad(label, 25)} ${"-".padStart(13)} ${"-".padStart(13)}   1 run, in-process (${elapsed.toFixed(3)}s)`,
+    );
     return elapsed;
   }
 
-  await op();                                  // warm-up, untimed
+  // Warm-up doubles as batch-size calibration. It must be a LOOP, and it runs
+  // TWICE keeping the second pass: one pass still pays the cold costs (first-call
+  // module resolution, lazily-built caches, an unwarmed JIT). In the PHP twin a
+  // single 64-op pass read JSON Hello World at ~50us/op against a real ~375ns --
+  // inflating the estimate 130x and collapsing the batch back to 1.
+  const CALIBRATION_OPS = 64;
+  let one = 1e-9;
+  for (let pass = 0; pass < 2; pass += 1) {
+    const c0 = process.hrtime.bigint();
+    for (let i = 0; i < CALIBRATION_OPS; i += 1) {
+      const r = op();
+      if (r) await r;
+    }
+    one = Math.max(Number(process.hrtime.bigint() - c0) / 1e9 / CALIBRATION_OPS, 1e-9);
+  }
 
+  // Sample in BATCHES sized so a batch costs >= ~50us. Two reasons:
+  //  1. A mean alone hides a fat tail. Measured in the Python twin, the CRUD cycle
+  //     has a ~108us median but ONE op per run costs ~711ms (a SQLite flush),
+  //     dragging mean throughput from ~9,300 to ~1,350 ops/sec -- a mean-only line
+  //     understates CRUD 7x.
+  //  2. Timing every single op distorts the fastest benchmarks, where the clock
+  //     reads cost the same order as the work. Batching amortises them away.
+  // hrtime.bigint() not performance.now(): the latter is a float of milliseconds,
+  // so a sub-microsecond op samples near zero and 1/x prints a fabricated rate off
+  // the divide-by-zero floor.
+  const batch = Math.min(Math.max(Math.trunc(5e-5 / one), 1), 10_000);
+
+  const batches: number[] = [];
   let iterations = 0;
-  const start = performance.now();
+  const start = process.hrtime.bigint();
   do {
-    await op();
-    iterations += 1;
+    const b0 = process.hrtime.bigint();
+    for (let i = 0; i < batch; i += 1) {
+      // Await ONLY a real promise. `await` on a sync return still defers to the
+      // microtask queue (~1-4us), which for the trivial benchmarks is the whole
+      // measurement: unconditional await reported plaintext at 246k ops/sec while
+      // Python measured 7.0M and PHP 9.6M for the same work -- a 30x artifact of
+      // the harness, not of Node. The DB benchmarks genuinely return promises and
+      // are still awaited.
+      const r = op();
+      if (r) await r;
+    }
+    batches.push(Number(process.hrtime.bigint() - b0) / 1e9 / batch);
+    iterations += batch;
   } while (
     iterations < MIN_ITERATIONS ||
-    (performance.now() - start) / 1000 < MIN_SECONDS
+    Number(process.hrtime.bigint() - start) / 1e9 < MIN_SECONDS
   );
-  const elapsed = (performance.now() - start) / 1000;
+  const elapsed = Number(process.hrtime.bigint() - start) / 1e9;
   teardown?.();
 
-  const ops = Math.round(iterations / Math.max(elapsed, 1e-9)).toLocaleString("en-US");
+  // p50 leads, mean is secondary: the mean absorbs scheduler/GC/flush stalls and
+  // swung 3x run-to-run in the Python twin while p50 held steady. A figure that
+  // moves 3x between runs cannot support a comparative claim.
+  batches.sort((a, b) => a - b);
+  const p50 = Math.max(batches[Math.trunc(batches.length / 2)], 1e-9);
+  const fmt = (n: number) => Math.round(n).toLocaleString("en-US");
   console.log(
-    `  ${pad(label, 25)} ${elapsed.toFixed(3)}s  (${ops} ops/sec, n=${iterations.toLocaleString("en-US")})`,
+    `  ${pad(label, 25)} ${fmt(1 / p50).padStart(13)} ${fmt(iterations / Math.max(elapsed, 1e-9)).padStart(13)}   ${iterations.toLocaleString("en-US")}x${batch}`,
   );
   return elapsed;
 }
@@ -507,9 +552,13 @@ const wantStartup = args.includes("--startup");
 const selected = args.filter((a) => !a.startsWith("--"));
 const toRun = selected.length ? selected : Object.keys(BENCHMARKS);
 
-console.log(`\nTina4 v3 Carbon Benchmarks (Node) - ${ITERATIONS} iterations per test\n`);
-console.log(`  ${pad("Benchmark", 25)} ${pad("Time", 10)} Throughput`);
-console.log("  " + "-".repeat(55));
+console.log(
+  `\nTina4 v3 Carbon Benchmarks (Node) - >=${MIN_SECONDS}s / >=${MIN_ITERATIONS} iterations per test\n`,
+);
+console.log(
+  `  ${pad("Benchmark", 25)} ${"p50 ops/sec".padStart(13)} ${"mean ops/sec".padStart(13)}   samples`,
+);
+console.log("  " + "-".repeat(72));
 
 let total = 0;
 for (const name of toRun) {
@@ -521,6 +570,15 @@ for (const name of toRun) {
 }
 
 console.log(`\n  Total: ${total.toFixed(3)}s`);
+console.log(
+  "\n  NOT cross-language comparable: JSON Hello World, Plaintext Response and\n" +
+    "  Large JSON Payload. Python and PHP time a standalone Response object; Node\n" +
+    "  has none -- its response is a closure over a real ServerResponse, so each op\n" +
+    "  also allocates a Socket + IncomingMessage + ServerResponse and calls\n" +
+    "  setHeader/end. That is strictly more work and reads ~30x slower for the same\n" +
+    "  framework operation. The DB, template, CRUD and paginated categories do the\n" +
+    "  same work in all three and ARE comparable.",
+);
 
 if (wantStartup) measureStartup();
 if (wantCarbon) measureCarbon(toRun);
