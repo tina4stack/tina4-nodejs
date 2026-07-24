@@ -79,7 +79,7 @@ export class OdbcAdapter implements DatabaseAdapter {
     throw new Error("Use executeAsync() for ODBC — async adapter requires async methods.");
   }
 
-  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint } {
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastId?: number | bigint } {
     throw new Error("Use executeManyAsync() for ODBC — async adapter requires async methods.");
   }
 
@@ -152,14 +152,14 @@ export class OdbcAdapter implements DatabaseAdapter {
     this.ensureConnected();
     const result = await this.connection.query(sql, params ?? []);
     // Try to capture last insert id from result metadata if present
-    if (result && typeof result === "object" && "lastInsertId" in result) {
-      this._lastInsertId = (result as any).lastInsertId;
+    if (result && typeof result === "object" && "lastId" in result) {
+      this._lastInsertId = (result as any).lastId;
     }
     return result;
   }
 
   /** Execute a statement with multiple parameter sets inside a single transaction. */
-  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastInsertId?: number | bigint }> {
+  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastId?: number | bigint }> {
     this.ensureConnected();
     let totalAffected = 0;
     let lastId: number | bigint | undefined;
@@ -177,7 +177,7 @@ export class OdbcAdapter implements DatabaseAdapter {
     }
 
     if (lastId !== undefined) this._lastInsertId = lastId;
-    return { totalAffected, lastInsertId: lastId };
+    return { totalAffected, lastId: lastId };
   }
 
   /** Run a SELECT and return all matching rows. */
@@ -224,9 +224,9 @@ export class OdbcAdapter implements DatabaseAdapter {
 
     try {
       await this.connection.query(sql, values);
-      return { success: true, rowsAffected: 1, lastInsertId: this._lastInsertId ?? undefined };
+      return { success: true, affectedRows: 1, lastId: this._lastInsertId ?? undefined };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -240,9 +240,9 @@ export class OdbcAdapter implements DatabaseAdapter {
 
     try {
       await this.connection.query(sql, values);
-      return { success: true, rowsAffected: 1 };
+      return { success: true, affectedRows: 1 };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -257,9 +257,9 @@ export class OdbcAdapter implements DatabaseAdapter {
       let totalAffected = 0;
       for (const row of filter) {
         const result = await this.deleteAsync(table, row);
-        totalAffected += result.rowsAffected;
+        totalAffected += result.affectedRows;
       }
-      return { success: true, rowsAffected: totalAffected };
+      return { success: true, affectedRows: totalAffected };
     }
 
     if (typeof filter === "string") {
@@ -268,9 +268,9 @@ export class OdbcAdapter implements DatabaseAdapter {
         : `DELETE FROM "${table}"`;
       try {
         await this.connection.query(sql, []);
-        return { success: true, rowsAffected: 1 };
+        return { success: true, affectedRows: 1 };
       } catch (e) {
-        return { success: false, rowsAffected: 0, error: (e as Error).message };
+        return { success: false, affectedRows: 0, error: (e as Error).message };
       }
     }
 
@@ -280,9 +280,9 @@ export class OdbcAdapter implements DatabaseAdapter {
 
     try {
       await this.connection.query(sql, values);
-      return { success: true, rowsAffected: 1 };
+      return { success: true, affectedRows: 1 };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 

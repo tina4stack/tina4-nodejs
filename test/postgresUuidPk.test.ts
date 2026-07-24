@@ -201,16 +201,16 @@ await withFreshDb(async (db) => {
     result?.success === true,
     `result=${JSON.stringify(result)}`);
   assert("insertAsync on UUID PK returns a non-null lastInsertId (uuid)",
-    result?.lastInsertId !== null && result?.lastInsertId !== undefined);
+    result?.lastId !== null && result?.lastId !== undefined);
   // #256: the surfaced id is the actual 36-char UUID string the row was given,
   // not a coerced number/null.
-  assert("insertAsync UUID lastInsertId is the actual uuid string",
-    typeof result?.lastInsertId === "string" &&
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result.lastInsertId),
-    `lastInsertId=${JSON.stringify(result?.lastInsertId)}`);
+  assert("insertAsync UUID lastId is the actual uuid string",
+    typeof result?.lastId === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result.lastId),
+    `lastId=${JSON.stringify(result?.lastId)}`);
 });
 
-// 7. SERIAL-PK contract guard (#256): widening lastInsertId to accept a UUID
+// 7. SERIAL-PK contract guard (#256): widening lastId to accept a UUID
 // string must NOT break the integer auto-increment path — a SERIAL PK insert
 // still returns the new integer id as a number.
 await (async () => {
@@ -225,12 +225,12 @@ await (async () => {
   try {
     const r1 = await db.insertAsync("t4_issue256_serial", { name: "g1" });
     const r2 = await db.insertAsync("t4_issue256_serial", { name: "g2" });
-    assert("insertAsync on SERIAL PK returns a numeric lastInsertId",
-      typeof r1?.lastInsertId === "number" && typeof r2?.lastInsertId === "number",
-      `r1=${JSON.stringify(r1?.lastInsertId)} r2=${JSON.stringify(r2?.lastInsertId)}`);
-    assert("SERIAL lastInsertId increments (id2 = id1 + 1)",
-      Number(r2?.lastInsertId) === Number(r1?.lastInsertId) + 1,
-      `r1=${r1?.lastInsertId} r2=${r2?.lastInsertId}`);
+    assert("insertAsync on SERIAL PK returns a numeric lastId",
+      typeof r1?.lastId === "number" && typeof r2?.lastId === "number",
+      `r1=${JSON.stringify(r1?.lastId)} r2=${JSON.stringify(r2?.lastId)}`);
+    assert("SERIAL lastId increments (id2 = id1 + 1)",
+      Number(r2?.lastId) === Number(r1?.lastId) + 1,
+      `r1=${r1?.lastId} r2=${r2?.lastId}`);
   } finally {
     try { await db.executeAsync("DROP TABLE IF EXISTS t4_issue256_serial"); } catch {}
     db.close();

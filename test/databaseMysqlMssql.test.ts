@@ -171,7 +171,7 @@ if (!(await reachable(MYSQL_HOST, MYSQL_PORT))) {
       assert(
         "MySQL getLastId() == new row id == 1 after AUTO_INCREMENT insert",
         Number(lastId) === 1 && Number(row?.id) === 1,
-        `getLastId=${JSON.stringify(lastId)} rowId=${JSON.stringify(row?.id)} insert.lastInsertId=${JSON.stringify(ins?.lastInsertId)}`,
+        `getLastId=${JSON.stringify(lastId)} rowId=${JSON.stringify(row?.id)} insert.lastId=${JSON.stringify(ins?.lastId)}`,
       );
 
       // Captured at write time, monotonic: a second insert bumps it to 2.
@@ -185,9 +185,9 @@ if (!(await reachable(MYSQL_HOST, MYSQL_PORT))) {
 
       // insert() surfaces the same id it captured.
       assert(
-        "MySQL insert() result.lastInsertId matches getLastId() (write-time capture)",
-        Number(ins?.lastInsertId) === 1,
-        `result.lastInsertId=${JSON.stringify(ins?.lastInsertId)}`,
+        "MySQL insert() result.lastId matches getLastId() (write-time capture)",
+        Number(ins?.lastId) === 1,
+        `result.lastId=${JSON.stringify(ins?.lastId)}`,
       );
     } catch (err) {
       assert("MySQL getLastId() after AUTO_INCREMENT insert", false, `error: ${(err as Error).message}`);
@@ -285,7 +285,7 @@ if (!(await reachable(MSSQL_HOST, MSSQL_PORT))) {
       assert(
         "MSSQL getLastId() == new row id == 1 after IDENTITY insert",
         Number(lastId) === 1 && Number(row?.id) === 1,
-        `getLastId=${JSON.stringify(lastId)} rowId=${JSON.stringify(row?.id)} insert.lastInsertId=${JSON.stringify(ins?.lastInsertId)}`,
+        `getLastId=${JSON.stringify(lastId)} rowId=${JSON.stringify(row?.id)} insert.lastId=${JSON.stringify(ins?.lastId)}`,
       );
 
       // Captured at write time (SCOPE_IDENTITY of the just-inserted row),
@@ -300,9 +300,9 @@ if (!(await reachable(MSSQL_HOST, MSSQL_PORT))) {
 
       // insert() surfaces the same id it captured.
       assert(
-        "MSSQL insert() result.lastInsertId matches getLastId() (SCOPE_IDENTITY, write-time)",
-        Number(ins?.lastInsertId) === 1,
-        `result.lastInsertId=${JSON.stringify(ins?.lastInsertId)}`,
+        "MSSQL insert() result.lastId matches getLastId() (SCOPE_IDENTITY, write-time)",
+        Number(ins?.lastId) === 1,
+        `result.lastId=${JSON.stringify(ins?.lastId)}`,
       );
 
       // PHP MSSQL count-probe parity: fetch() with an ORDER BY returns the

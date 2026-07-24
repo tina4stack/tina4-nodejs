@@ -51,10 +51,10 @@ export interface ColumnInfo {
 
 export interface DatabaseResult {
   success: boolean;
-  rowsAffected: number;
+  affectedRows: number;
   // string covers a non-integer primary key (e.g. a PostgreSQL UUID PK returns
   // its id as a string via RETURNING, not a SERIAL integer) — #256.
-  lastInsertId?: number | bigint | string;
+  lastId?: number | bigint | string;
   error?: string;
 }
 
@@ -63,7 +63,7 @@ export interface DatabaseAdapter {
   execute(sql: string, params?: unknown[]): unknown;
 
   /** Execute a single SQL statement with multiple parameter sets (batch). */
-  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint };
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastId?: number | bigint };
 
   /** Query rows. */
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[];
@@ -74,7 +74,7 @@ export interface DatabaseAdapter {
   /** Fetch a single row or null. */
   fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): T | null;
 
-  /** Insert one or more rows into a table, returns result with lastInsertId. */
+  /** Insert one or more rows into a table, returns result with lastId. */
   insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): DatabaseResult;
 
   /** Update rows in a table matching filter, returns affected row count. */

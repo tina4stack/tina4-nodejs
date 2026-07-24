@@ -370,11 +370,11 @@ export class MongodbAdapter implements DatabaseAdapter {
     }
   }
 
-  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint } {
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastId?: number | bigint } {
     throw new Error("Use executeManyAsync() for MongoDB — async adapter requires async methods.");
   }
 
-  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastInsertId?: number | bigint }> {
+  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastId?: number | bigint }> {
     let totalAffected = 0;
     for (const params of paramsList) {
       await this.executeAsync(sql, params);
@@ -453,14 +453,14 @@ export class MongodbAdapter implements DatabaseAdapter {
     const col = this.db.collection(table);
     try {
       if (Array.isArray(data)) {
-        if (data.length === 0) return { success: true, rowsAffected: 0 };
+        if (data.length === 0) return { success: true, affectedRows: 0 };
         const result = await col.insertMany(data, { session: this.session });
-        return { success: true, rowsAffected: result.insertedCount };
+        return { success: true, affectedRows: result.insertedCount };
       }
       const result = await col.insertOne(data, { session: this.session });
-      return { success: true, rowsAffected: 1, lastInsertId: undefined };
+      return { success: true, affectedRows: 1, lastId: undefined };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -473,9 +473,9 @@ export class MongodbAdapter implements DatabaseAdapter {
     const col = this.db.collection(table);
     try {
       const result = await col.updateMany(filter, { $set: data }, { session: this.session });
-      return { success: true, rowsAffected: result.modifiedCount };
+      return { success: true, affectedRows: result.modifiedCount };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -493,7 +493,7 @@ export class MongodbAdapter implements DatabaseAdapter {
           const r = await col.deleteMany(f, { session: this.session });
           total += r.deletedCount;
         }
-        return { success: true, rowsAffected: total };
+        return { success: true, affectedRows: total };
       }
 
       // String WHERE clause — not directly translatable; delete nothing safely
@@ -501,18 +501,18 @@ export class MongodbAdapter implements DatabaseAdapter {
         if (!filter.trim()) {
           // Empty filter = delete all documents
           const r = await col.deleteMany({}, { session: this.session });
-          return { success: true, rowsAffected: r.deletedCount };
+          return { success: true, affectedRows: r.deletedCount };
         }
         // Attempt parse via dummy SELECT wrapping
         const { filter: parsedFilter } = parseWhereClause(filter, []);
         const r = await col.deleteMany(parsedFilter, { session: this.session });
-        return { success: true, rowsAffected: r.deletedCount };
+        return { success: true, affectedRows: r.deletedCount };
       }
 
       const result = await col.deleteMany(filter as Record<string, unknown>, { session: this.session });
-      return { success: true, rowsAffected: result.deletedCount };
+      return { success: true, affectedRows: result.deletedCount };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 

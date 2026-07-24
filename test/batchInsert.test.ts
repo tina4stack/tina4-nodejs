@@ -11,12 +11,12 @@
  *
  * Full batch contract locked in here for EVERY reachable engine (engine-agnostic):
  *   1. all 3 rows land in the table (read back, count == 3)
- *   2. the result reports rowsAffected == 3
- *   3. a single-object insert still works (rowsAffected == 1)
+ *   2. the result reports affectedRows == 3
+ *   3. a single-object insert still works (affectedRows == 1)
  *   4. an empty array is a 0-row no-op, not a crash
  *   5. a bad row (NULL into a NOT NULL column) rolls the WHOLE batch back as one
  *      transaction — no partial write (post-insert count is unchanged)
- * plus a sensible lastInsertId where the engine surfaces one.
+ * plus a sensible lastId where the engine surfaces one.
  *
  * NO MOCKS: SQLite always runs (node:sqlite, temp file); PostgreSQL, MySQL and
  * MSSQL run against the live containers when reachable + their driver is
@@ -96,14 +96,14 @@ async function batchContract(
   table: string,
   lastId: "exact3" | "positive" | "none",
 ): Promise<void> {
-  // 1 + 2: all three rows land, rowsAffected == 3.
+  // 1 + 2: all three rows land, affectedRows == 3.
   const res = await db.insert(table, ROWS);
   assert(`${label} batch insert succeeds`, res.success === true, JSON.stringify(res));
-  assert(`${label} reports rowsAffected == 3`, res.rowsAffected === 3, `(got ${res.rowsAffected})`);
+  assert(`${label} reports affectedRows == 3`, res.affectedRows === 3, `(got ${res.affectedRows})`);
   if (lastId === "exact3") {
-    assert(`${label} lastInsertId is the 3rd row`, Number(res.lastInsertId) === 3, `(got ${String(res.lastInsertId)})`);
+    assert(`${label} lastId is the 3rd row`, Number(res.lastId) === 3, `(got ${String(res.lastId)})`);
   } else if (lastId === "positive") {
-    assert(`${label} lastInsertId is a positive id`, Number(res.lastInsertId) > 0, `(got ${String(res.lastInsertId)})`);
+    assert(`${label} lastId is a positive id`, Number(res.lastId) > 0, `(got ${String(res.lastId)})`);
   }
 
   const back = await db.fetch(`SELECT name, email FROM ${table} ORDER BY name`);
@@ -118,12 +118,12 @@ async function batchContract(
 
   // 3: single-object insert is unaffected.
   const single = await db.insert(table, { name: "Frank", email: "frank@example.com" });
-  assert(`${label} single-object insert still works`, single.success === true && single.rowsAffected === 1, JSON.stringify(single));
+  assert(`${label} single-object insert still works`, single.success === true && single.affectedRows === 1, JSON.stringify(single));
   assert(`${label} total is 4 after single insert`, (await count(db, table)) === 4);
 
   // 4: empty array is a 0-row no-op, not a crash.
   const empty = await db.insert(table, []);
-  assert(`${label} empty-array insert is a 0-row no-op`, empty.success === true && empty.rowsAffected === 0, JSON.stringify(empty));
+  assert(`${label} empty-array insert is a 0-row no-op`, empty.success === true && empty.affectedRows === 0, JSON.stringify(empty));
 
   // 5: a bad row (NULL into NOT NULL name) rolls the WHOLE batch back — atomic.
   // Adapters report the failure two ways (both acceptable): the sync SQLite path
@@ -195,7 +195,7 @@ const tmp = mkdtempSync(join(tmpdir(), "tina4-batch-"));
           "CREATE TABLE t4_batch_people (id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, email VARCHAR(255))",
         );
         // PG's batch path surfaces no per-row id (plain INSERTs, no RETURNING in
-        // the batch loop), so lastInsertId is not asserted for the batch.
+        // the batch loop), so lastId is not asserted for the batch.
         await batchContract("PG", db, "t4_batch_people", "none");
         await db.execute("DROP TABLE IF EXISTS t4_batch_people");
       } catch (e) {
@@ -274,7 +274,7 @@ const tmp = mkdtempSync(join(tmpdir(), "tina4-batch-"));
           "CREATE TABLE t4_batch_people (id INT IDENTITY(1,1) PRIMARY KEY, name VARCHAR(100) NOT NULL, email VARCHAR(255))",
         );
         // The MSSQL batch path surfaces no per-row id (executeManyAsync returns
-        // only totalAffected), so lastInsertId is not asserted for the batch.
+        // only totalAffected), so lastId is not asserted for the batch.
         await batchContract("MSSQL", db, "t4_batch_people", "none");
         await db.execute("IF OBJECT_ID('t4_batch_people', 'U') IS NOT NULL DROP TABLE t4_batch_people");
       } catch (e) {

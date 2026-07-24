@@ -117,7 +117,7 @@ export async function adapterCreateTable(
  *
  * SQLite returns `{ lastInsertRowid }`. PostgreSQL (pg) returns a result whose
  * `rows[0].id` holds the value when the statement had a `RETURNING` clause
- * (insertAsync adds one). MySQL/MSSQL adapters set the adapter's lastInsertId,
+ * (insertAsync adds one). MySQL/MSSQL adapters set the adapter's lastId,
  * so callers fall back to `adapter.lastInsertId()` when the result has neither.
  */
 export function extractLastInsertId(result: unknown): number | bigint | null {
@@ -125,7 +125,7 @@ export function extractLastInsertId(result: unknown): number | bigint | null {
     const r = result as any;
     if (r.lastInsertRowid !== undefined && r.lastInsertRowid !== null) return r.lastInsertRowid;
     if (r.rows?.[0]?.id !== undefined && r.rows[0].id !== null) return r.rows[0].id;
-    if (r.lastInsertId !== undefined && r.lastInsertId !== null) return r.lastInsertId;
+    if (r.lastId !== undefined && r.lastId !== null) return r.lastId;
   }
   return null;
 }

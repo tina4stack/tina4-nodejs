@@ -122,7 +122,7 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   /**
    * Normalise an `id` column value (typed `unknown` because pg row values are
-   * `unknown`) into the shape `_lastInsertId` / `DatabaseResult.lastInsertId`
+   * `unknown`) into the shape `_lastInsertId` / `DatabaseResult.lastId`
    * expect. At runtime PG returns numeric PKs as number/bigint (the int8/numeric
    * type parsers above coerce them to Number); a numeric string is coerced to a
    * number so the SERIAL path always returns the integer id.
@@ -148,12 +148,12 @@ export class PostgresAdapter implements DatabaseAdapter {
     throw new Error("Use executeAsync() for PostgreSQL — async adapter requires async methods.");
   }
 
-  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint } {
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastId?: number | bigint } {
     throw new Error("Use executeManyAsync() for PostgreSQL — async adapter requires async methods.");
   }
 
   /** Async executeMany for real usage. */
-  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastInsertId?: number | bigint }> {
+  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastId?: number | bigint }> {
     // Run the whole batch in ONE transaction so it is atomic (all-or-nothing) —
     // a bad row mid-batch rolls back the rows already inserted instead of
     // leaving a partial write. Mirrors the documented "wrapped in a transaction"
@@ -168,8 +168,8 @@ export class PostgresAdapter implements DatabaseAdapter {
       for (const params of paramsList) {
         const result = await this.executeAsync(sql, params);
         totalAffected++;
-        if (result && typeof result === "object" && "lastInsertId" in (result as any)) {
-          lastId = (result as any).lastInsertId;
+        if (result && typeof result === "object" && "lastId" in (result as any)) {
+          lastId = (result as any).lastId;
         }
       }
       if (owns) await this.commitAsync();
@@ -179,7 +179,7 @@ export class PostgresAdapter implements DatabaseAdapter {
       }
       throw e;
     }
-    return { totalAffected, lastInsertId: lastId };
+    return { totalAffected, lastId: lastId };
   }
 
   /** Async execute for real usage. */
@@ -242,17 +242,17 @@ export class PostgresAdapter implements DatabaseAdapter {
     // — producing garbage SQL (mirrors the Python `'list' has no attribute keys`
     // crash this fix addresses).
     if (Array.isArray(data)) {
-      if (data.length === 0) return { success: true, rowsAffected: 0 };
+      if (data.length === 0) return { success: true, affectedRows: 0 };
       const keys = Object.keys(data[0]);
       const placeholders = keys.map(() => "?").join(", ");
       const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
       const paramsList = data.map((row) => keys.map((k) => row[k]));
       try {
         const result = await this.executeManyAsync(sql, paramsList);
-        if (result.lastInsertId !== undefined) this._lastInsertId = result.lastInsertId;
-        return { success: true, rowsAffected: result.totalAffected, lastInsertId: result.lastInsertId };
+        if (result.lastId !== undefined) this._lastInsertId = result.lastId;
+        return { success: true, affectedRows: result.totalAffected, lastId: result.lastId };
       } catch (e) {
-        return { success: false, rowsAffected: 0, error: (e as Error).message };
+        return { success: false, affectedRows: 0, error: (e as Error).message };
       }
     }
 
@@ -268,11 +268,11 @@ export class PostgresAdapter implements DatabaseAdapter {
       if (id !== null) this._lastInsertId = id;
       return {
         success: true,
-        rowsAffected: result.rowCount ?? 1,
-        lastInsertId: id ?? undefined,
+        affectedRows: result.rowCount ?? 1,
+        lastId: id ?? undefined,
       };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -293,9 +293,9 @@ export class PostgresAdapter implements DatabaseAdapter {
 
     try {
       const result = await this.client!.query(sql, values);
-      return { success: true, rowsAffected: result.rowCount ?? 0 };
+      return { success: true, affectedRows: result.rowCount ?? 0 };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -313,9 +313,9 @@ export class PostgresAdapter implements DatabaseAdapter {
 
     try {
       const result = await this.client!.query(sql, values);
-      return { success: true, rowsAffected: result.rowCount ?? 0 };
+      return { success: true, affectedRows: result.rowCount ?? 0 };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 

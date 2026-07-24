@@ -301,7 +301,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     return this.adapter.execute(sql, params);
   }
 
-  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint } {
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastId?: number | bigint } {
     if (this.enabled) this.invalidate();
     return this.adapter.executeMany(sql, paramsList);
   }

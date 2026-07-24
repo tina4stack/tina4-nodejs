@@ -260,11 +260,11 @@ export class FirebirdAdapter implements DatabaseAdapter {
     throw new Error("Use executeAsync() for Firebird — async adapter requires async methods.");
   }
 
-  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint } {
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastId?: number | bigint } {
     throw new Error("Use executeManyAsync() for Firebird — async adapter requires async methods.");
   }
 
-  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastInsertId?: number | bigint }> {
+  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastId?: number | bigint }> {
     let totalAffected = 0;
     for (const params of paramsList) {
       await this.executeAsync(sql, params);
@@ -333,16 +333,16 @@ export class FirebirdAdapter implements DatabaseAdapter {
     // the batch reports affectedRows == row count and no lastInsertId (same as the
     // single-row path). See PostgresAdapter for the array-crash rationale.
     if (Array.isArray(data)) {
-      if (data.length === 0) return { success: true, rowsAffected: 0 };
+      if (data.length === 0) return { success: true, affectedRows: 0 };
       const keys = Object.keys(data[0]);
       const placeholders = keys.map(() => "?").join(", ");
       const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
       const paramsList = data.map((row) => keys.map((k) => row[k]));
       try {
         const result = await this.executeManyAsync(sql, paramsList);
-        return { success: true, rowsAffected: result.totalAffected, lastInsertId: result.lastInsertId };
+        return { success: true, affectedRows: result.totalAffected, lastId: result.lastId };
       } catch (e) {
-        return { success: false, rowsAffected: 0, error: (e as Error).message };
+        return { success: false, affectedRows: 0, error: (e as Error).message };
       }
     }
 
@@ -356,10 +356,10 @@ export class FirebirdAdapter implements DatabaseAdapter {
       // Firebird doesn't have a generic last_insert_id — return success without id
       return {
         success: true,
-        rowsAffected: 1,
+        affectedRows: 1,
       };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -376,9 +376,9 @@ export class FirebirdAdapter implements DatabaseAdapter {
 
     try {
       await this.executePromise(sql, values);
-      return { success: true, rowsAffected: 1 };
+      return { success: true, affectedRows: 1 };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -394,9 +394,9 @@ export class FirebirdAdapter implements DatabaseAdapter {
 
     try {
       await this.executePromise(sql, values);
-      return { success: true, rowsAffected: 1 };
+      return { success: true, affectedRows: 1 };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 

@@ -115,7 +115,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
     return result;
   }
 
-  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint } {
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastId?: number | bigint } {
     const stmt = this.db.prepare(sql);
     let totalAffected = 0;
     let lastId: number | bigint | undefined;
@@ -136,7 +136,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
       throw e;
     }
 
-    return { totalAffected, lastInsertId: lastId };
+    return { totalAffected, lastId: lastId };
   }
 
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[] {
@@ -167,13 +167,13 @@ export class SQLiteAdapter implements DatabaseAdapter {
 
   insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): DatabaseResult {
     if (Array.isArray(data)) {
-      if (data.length === 0) return { success: true, rowsAffected: 0 };
+      if (data.length === 0) return { success: true, affectedRows: 0 };
       const keys = Object.keys(data[0]);
       const placeholders = keys.map(() => "?").join(", ");
       const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
       const paramsList = data.map((row) => keys.map((k) => row[k]));
       const result = this.executeMany(sql, paramsList);
-      return { success: true, rowsAffected: result.totalAffected, lastInsertId: result.lastInsertId };
+      return { success: true, affectedRows: result.totalAffected, lastId: result.lastId };
     }
 
     const keys = Object.keys(data);
@@ -184,9 +184,9 @@ export class SQLiteAdapter implements DatabaseAdapter {
     try {
       const result = this.db.prepare(sql).run(...toSqlParams(values));
       this._lastInsertId = result.lastInsertRowid;
-      return { success: true, rowsAffected: Number(result.changes), lastInsertId: result.lastInsertRowid };
+      return { success: true, affectedRows: Number(result.changes), lastId: result.lastInsertRowid };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -198,9 +198,9 @@ export class SQLiteAdapter implements DatabaseAdapter {
 
     try {
       const result = this.db.prepare(sql).run(...toSqlParams(values));
-      return { success: true, rowsAffected: Number(result.changes) };
+      return { success: true, affectedRows: Number(result.changes) };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -209,18 +209,18 @@ export class SQLiteAdapter implements DatabaseAdapter {
       let totalAffected = 0;
       for (const row of filter) {
         const result = this.delete(table, row);
-        totalAffected += result.rowsAffected;
+        totalAffected += result.affectedRows;
       }
-      return { success: true, rowsAffected: totalAffected };
+      return { success: true, affectedRows: totalAffected };
     }
 
     if (typeof filter === "string") {
       const sql = filter ? `DELETE FROM "${table}" WHERE ${filter}` : `DELETE FROM "${table}"`;
       try {
         const result = this.db.prepare(sql).run(...toSqlParams(params ?? []));
-        return { success: true, rowsAffected: Number(result.changes) };
+        return { success: true, affectedRows: Number(result.changes) };
       } catch (e) {
-        return { success: false, rowsAffected: 0, error: (e as Error).message };
+        return { success: false, affectedRows: 0, error: (e as Error).message };
       }
     }
 
@@ -230,9 +230,9 @@ export class SQLiteAdapter implements DatabaseAdapter {
 
     try {
       const result = this.db.prepare(sql).run(...toSqlParams(values));
-      return { success: true, rowsAffected: Number(result.changes) };
+      return { success: true, affectedRows: Number(result.changes) };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 

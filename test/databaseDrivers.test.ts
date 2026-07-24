@@ -86,7 +86,7 @@ assert("SQLite columns() has primaryKey flag", cols.some((c) => c.name === "id" 
 // Test insert
 const insertResult = sqlite.insert("driver_test", { name: "Alice", active: 1 });
 assert("SQLite insert success", insertResult.success);
-assert("SQLite insert lastInsertId", insertResult.lastInsertId !== undefined && insertResult.lastInsertId !== null);
+assert("SQLite insert lastId", insertResult.lastId !== undefined && insertResult.lastId !== null);
 
 // Test fetch / fetchOne
 const rows = sqlite.fetch("SELECT * FROM driver_test WHERE name = ?", ["Alice"]);
@@ -109,12 +109,12 @@ assert("SQLite fetch with skip", page2.length === 1);
 // Test update
 const updateResult = sqlite.update("driver_test", { name: "Alice Updated" }, { name: "Alice" });
 assert("SQLite update success", updateResult.success);
-assert("SQLite update rowsAffected", updateResult.rowsAffected === 1);
+assert("SQLite update affectedRows", updateResult.affectedRows === 1);
 
 // Test delete
 const deleteResult = sqlite.delete("driver_test", { name: "Alice Updated" });
 assert("SQLite delete success", deleteResult.success);
-assert("SQLite delete rowsAffected", deleteResult.rowsAffected === 1);
+assert("SQLite delete affectedRows", deleteResult.affectedRows === 1);
 
 // Test transaction
 sqlite.startTransaction();
@@ -129,10 +129,10 @@ sqlite.commit();
 const afterCommit = sqlite.fetchOne("SELECT * FROM driver_test WHERE name = ?", ["CommitTest"]);
 assert("SQLite commit persists insert", afterCommit !== null);
 
-// Test lastInsertId
+// Test lastId
 sqlite.insert("driver_test", { name: "LastId", active: 1 });
 const lid = sqlite.lastInsertId();
-assert("SQLite lastInsertId returns number", lid !== null && typeof lid === "number" || typeof lid === "bigint");
+assert("SQLite lastId returns number", lid !== null && typeof lid === "number" || typeof lid === "bigint");
 
 closeDatabase();
 

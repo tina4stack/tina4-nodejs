@@ -178,11 +178,11 @@ export class MssqlAdapter implements DatabaseAdapter {
     throw new Error("Use executeAsync() for MSSQL — async adapter requires async methods.");
   }
 
-  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastInsertId?: number | bigint } {
+  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastId?: number | bigint } {
     throw new Error("Use executeManyAsync() for MSSQL — async adapter requires async methods.");
   }
 
-  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastInsertId?: number | bigint }> {
+  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastId?: number | bigint }> {
     // Run the whole batch in ONE transaction so it is atomic (all-or-nothing) —
     // a bad row mid-batch rolls back the rows already inserted instead of
     // leaving a partial write. Mirrors the documented "wrapped in a transaction"
@@ -268,7 +268,7 @@ export class MssqlAdapter implements DatabaseAdapter {
     // tracked for a batch — affectedRows == row count is what callers rely on).
     // See PostgresAdapter for the array-crash rationale this branch fixes.
     if (Array.isArray(data)) {
-      if (data.length === 0) return { success: true, rowsAffected: 0 };
+      if (data.length === 0) return { success: true, affectedRows: 0 };
       const keys = Object.keys(data[0]);
       // `?` placeholders — executeManyAsync -> executeAsync runs convertPlaceholders,
       // which rewrites them to @p0, @p1, ... for tedious.
@@ -277,10 +277,10 @@ export class MssqlAdapter implements DatabaseAdapter {
       const paramsList = data.map((row) => keys.map((k) => row[k]));
       try {
         const result = await this.executeManyAsync(sql, paramsList);
-        if (result.lastInsertId !== undefined) this._lastInsertId = result.lastInsertId;
-        return { success: true, rowsAffected: result.totalAffected, lastInsertId: result.lastInsertId };
+        if (result.lastId !== undefined) this._lastInsertId = result.lastId;
+        return { success: true, affectedRows: result.totalAffected, lastId: result.lastId };
       } catch (e) {
-        return { success: false, rowsAffected: 0, error: (e as Error).message };
+        return { success: false, affectedRows: 0, error: (e as Error).message };
       }
     }
 
@@ -298,12 +298,12 @@ export class MssqlAdapter implements DatabaseAdapter {
         // A single-object insert affects exactly one row. Do NOT use
         // result.rowCount here: the statement is "INSERT ...; SELECT
         // SCOPE_IDENTITY()", and tedious sums the row counts of BOTH statements
-        // (1 for the INSERT + 1 for the SELECT), which reported rowsAffected=2.
-        rowsAffected: 1,
-        lastInsertId: id ?? undefined,
+        // (1 for the INSERT + 1 for the SELECT), which reported affectedRows=2.
+        affectedRows: 1,
+        lastId: id ?? undefined,
       };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -324,9 +324,9 @@ export class MssqlAdapter implements DatabaseAdapter {
 
     try {
       const result = await this.execSqlPromise(sql, values);
-      return { success: true, rowsAffected: result.rowCount };
+      return { success: true, affectedRows: result.rowCount };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
@@ -344,9 +344,9 @@ export class MssqlAdapter implements DatabaseAdapter {
 
     try {
       const result = await this.execSqlPromise(sql, values);
-      return { success: true, rowsAffected: result.rowCount };
+      return { success: true, affectedRows: result.rowCount };
     } catch (e) {
-      return { success: false, rowsAffected: 0, error: (e as Error).message };
+      return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 

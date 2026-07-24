@@ -233,7 +233,7 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
 
         // Non-SQLite engines can't read a plain INSERT's auto-id back via
         // lastInsertId(); RETURNING the PK column lets us recover it. SQLite
-        // tolerates RETURNING but we still prefer its lastInsertId below.
+        // tolerates RETURNING but we still prefer its lastId below.
         const isSqlite = adapter.constructor.name === "SQLiteAdapter";
         const insertSql =
           `INSERT INTO "${tableName}" (${columns.map((c) => `"${c}"`).join(", ")}) VALUES (${placeholders})` +
