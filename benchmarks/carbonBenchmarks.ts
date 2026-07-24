@@ -33,7 +33,7 @@
  */
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -43,7 +43,18 @@ import { createResponse } from "@tina4/core";
 import { Frond } from "@tina4/frond";
 import { initDatabase } from "@tina4/orm";
 
+// Nominal count, still used by --single (carbonah needs fixed work, not a fixed
+// duration).
 const ITERATIONS = 1000;
+
+/** Timed runs continue until this much wall-clock has elapsed. */
+const MIN_SECONDS = 0.25;
+
+/** ...but never fewer than this many iterations, however fast the operation. */
+const MIN_ITERATIONS = 200;
+
+/** A benchmark returns the operation to time, plus optional teardown. */
+type Prepared = { op: () => void | Promise<void>; teardown?: () => void };
 
 /** A real ServerResponse over a real (unconnected) Socket - not a double. */
 function freshResponse() {
@@ -65,57 +76,50 @@ function cleanup(dir: string): void {
 
 // ── 1. JSON serialization - raw overhead ───────────────────────
 
-async function benchJson(): Promise<void> {
-  for (let i = 0; i < ITERATIONS; i++) {
-    freshResponse().json({ message: "Hello, World!", status: "ok" });
-  }
+async function benchJson(): Promise<Prepared> {
+  const payload = { message: "Hello, World!", status: "ok" };
+  return { op: () => { freshResponse().json(payload); } };
 }
 
 // ── 2. Single database query ───────────────────────────────────
 
-async function benchDbSingle(): Promise<void> {
+async function benchDbSingle(): Promise<Prepared> {
   const dir = tempDir();
-  try {
-    const db = await initDatabase({ url: `sqlite:///${dir}/bench.db` });
-    await db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)");
-    await db.execute("INSERT INTO users VALUES (1, 'Alice', 'alice@test.com')");
-    db.commit();
-    for (let i = 0; i < ITERATIONS; i++) {
-      await db.fetchOne("SELECT * FROM users WHERE id = ?", [1]);
-    }
-    db.close();
-  } finally {
-    cleanup(dir);
-  }
+  const db = await initDatabase({ url: `sqlite:///${dir}/bench.db` });
+  await db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)");
+  await db.execute("INSERT INTO users VALUES (1, 'Alice', 'alice@test.com')");
+  db.commit();
+  return {
+    op: async () => { await db.fetchOne("SELECT * FROM users WHERE id = ?", [1]); },
+    teardown: () => { db.close(); cleanup(dir); },
+  };
 }
 
 // ── 3. Multiple database queries ───────────────────────────────
 
-async function benchDbMulti(): Promise<void> {
+async function benchDbMulti(): Promise<Prepared> {
   const dir = tempDir();
-  try {
-    const db = await initDatabase({ url: `sqlite:///${dir}/bench.db` });
-    await db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price REAL)");
-    for (let i = 0; i < 100; i++) {
-      await db.execute("INSERT INTO items VALUES (?, ?, ?)", [i, `Item ${i}`, i * 1.5]);
-    }
-    db.commit();
-    for (let i = 0; i < ITERATIONS; i++) {
+  const db = await initDatabase({ url: `sqlite:///${dir}/bench.db` });
+  await db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price REAL)");
+  for (let i = 0; i < 100; i++) {
+    await db.execute("INSERT INTO items VALUES (?, ?, ?)", [i, `Item ${i}`, i * 1.5]);
+  }
+  db.commit();
+  return {
+    op: async () => {
       await db.fetch("SELECT * FROM items WHERE price > ?", [50.0], 20);
       await db.fetchOne("SELECT COUNT(*) as cnt FROM items");
       await db.fetch("SELECT * FROM items ORDER BY price DESC", [], 5);
-    }
-    db.close();
-  } finally {
-    cleanup(dir);
-  }
+    },
+    teardown: () => { db.close(); cleanup(dir); },
+  };
 }
 
 // ── 4. Template rendering ──────────────────────────────────────
 
-async function benchTemplate(): Promise<void> {
+async function benchTemplate(): Promise<Prepared> {
   const dir = tempDir();
-  try {
+  {
     const engine = new Frond(dir);
     const tpl = `<!DOCTYPE html>
 <html>
@@ -144,17 +148,21 @@ async function benchTemplate(): Promise<void> {
       footer_text:
         "This is a footer with some text that may be truncated for display purposes.",
     };
-    for (let i = 0; i < ITERATIONS; i++) {
-      engine.renderString(tpl, data);
-    }
-  } finally {
-    cleanup(dir);
+    // render() from a FILE, not renderString(). renderString recompiles on every
+    // call (Frond has no compiled-template cache), so timing it measured
+    // compile+render while a Jinja2-style comparison measures render alone.
+    // render("bench.twig") is the per-request call a real app makes.
+    writeFileSync(join(dir, "bench.twig"), tpl);
+    return {
+      op: () => { engine.render("bench.twig", data); },
+      teardown: () => cleanup(dir),
+    };
   }
 }
 
 // ── 5. Large JSON payload ──────────────────────────────────────
 
-async function benchJsonLarge(): Promise<void> {
+async function benchJsonLarge(): Promise<Prepared> {
   const payload = {
     users: Array.from({ length: 100 }, (_, i) => ({
       id: i,
@@ -167,31 +175,29 @@ async function benchJsonLarge(): Promise<void> {
     })),
     meta: { total: 100, page: 1, per_page: 100 },
   };
-  for (let i = 0; i < ITERATIONS; i++) {
-    freshResponse().json(payload);
-  }
+  return { op: () => { freshResponse().json(payload); } };
 }
 
 // ── 6. Plaintext response ──────────────────────────────────────
 
-async function benchPlaintext(): Promise<void> {
-  for (let i = 0; i < ITERATIONS; i++) {
-    freshResponse().html("Hello, World!");
-  }
+async function benchPlaintext(): Promise<Prepared> {
+  return { op: () => { freshResponse().html("Hello, World!"); } };
 }
 
 // ── 7. Full CRUD cycle ─────────────────────────────────────────
 
-async function benchCrud(): Promise<void> {
+async function benchCrud(): Promise<Prepared> {
   const dir = tempDir();
-  try {
-    const db = await initDatabase({ url: `sqlite:///${dir}/bench.db` });
-    await db.execute(
-      "CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, done INTEGER DEFAULT 0)",
-    );
-    db.commit();
-    // ITERATIONS / 10 == 100 full cycles, matching the Python and PHP suites.
-    for (let i = 0; i < ITERATIONS / 10; i++) {
+  const db = await initDatabase({ url: `sqlite:///${dir}/bench.db` });
+  await db.execute(
+    "CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, done INTEGER DEFAULT 0)",
+  );
+  db.commit();
+  // One measured op is ONE full create/read/update/delete cycle. The old code ran
+  // ITERATIONS/10 cycles inside a single timed call, so the reported ops/sec
+  // counted tenths of a cycle and read 10x too high.
+  return {
+    op: async () => {
       await db.insert("tasks", { title: "Benchmark task", done: 0 });
       const taskId = db.getLastId();
       await db.fetchOne("SELECT * FROM tasks WHERE id = ?", [taskId]);
@@ -200,39 +206,35 @@ async function benchCrud(): Promise<void> {
       await db.update("tasks", { done: 1 }, { id: taskId });
       await db.delete("tasks", { id: taskId });
       db.commit();
-    }
-    db.close();
-  } finally {
-    cleanup(dir);
-  }
+    },
+    teardown: () => { db.close(); cleanup(dir); },
+  };
 }
 
 // ── 8. Paginated query with count ──────────────────────────────
 
-async function benchPaginated(): Promise<void> {
+async function benchPaginated(): Promise<Prepared> {
   const dir = tempDir();
-  try {
-    const db = await initDatabase({ url: `sqlite:///${dir}/bench.db` });
-    await db.execute(
-      "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, category TEXT, price REAL)",
-    );
-    for (let i = 0; i < 500; i++) {
-      await db.execute("INSERT INTO products VALUES (?, ?, ?, ?)", [
-        i,
-        `Product ${i}`,
-        `Cat ${i % 10}`,
-        i * 2.5,
-      ]);
-    }
-    db.commit();
-    for (let i = 0; i < ITERATIONS; i++) {
+  const db = await initDatabase({ url: `sqlite:///${dir}/bench.db` });
+  await db.execute(
+    "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, category TEXT, price REAL)",
+  );
+  for (let i = 0; i < 500; i++) {
+    await db.execute("INSERT INTO products VALUES (?, ?, ?, ?)", [
+      i,
+      `Product ${i}`,
+      `Cat ${i % 10}`,
+      i * 2.5,
+    ]);
+  }
+  db.commit();
+  return {
+    op: async () => {
       const result = await db.fetch("SELECT * FROM products WHERE category = ?", ["Cat 3"], 20, 0);
       void result.records.length;
-    }
-    db.close();
-  } finally {
-    cleanup(dir);
-  }
+    },
+    teardown: () => { db.close(); cleanup(dir); },
+  };
 }
 
 // ── 9. Framework startup ───────────────────────────────────────
@@ -246,7 +248,7 @@ async function benchPaginated(): Promise<void> {
  * import cost was 79ms). `--startup` measures the real thing by spawning fresh
  * processes.
  */
-async function benchStartup(): Promise<void> {
+async function benchStartup(): Promise<Prepared> {
   // Everything in the core barrel is already evaluated by the time this module
   // body runs -- static ESM re-exports are eager by specification. So the honest
   // in-process measurement is what an app boot does AFTER import: construct the
@@ -255,16 +257,20 @@ async function benchStartup(): Promise<void> {
   const orm = await import("@tina4/orm");
   const swagger = await import("@tina4/swagger");
 
-  void core.Router;
-  void orm.BaseModel;
-  void swagger.generate;
-  new core.Router();
-  new Frond(tmpdir());
+  return {
+    op: () => {
+      void core.Router;
+      void orm.BaseModel;
+      void swagger.generate;
+      new core.Router();
+      new Frond(tmpdir());
+    },
+  };
 }
 
 // ── Runner ─────────────────────────────────────────────────────
 
-type Bench = [label: string, fn: () => Promise<void>];
+type Bench = [label: string, fn: () => Promise<Prepared>];
 
 const BENCHMARKS: Record<string, Bench> = {
   json: ["JSON Hello World", benchJson],
@@ -286,17 +292,53 @@ function padStart(s: string, n: number): string {
   return s.length >= n ? s : " ".repeat(n - s.length) + s;
 }
 
+/**
+ * Run one benchmark: setup and teardown OUTSIDE the clock, op timed in a loop
+ * that runs until MIN_SECONDS has elapsed.
+ *
+ * The previous version timed the whole bench function, so per-benchmark setup sat
+ * inside the measurement. Measured in the PHP twin, the equivalent db_single
+ * setup cost 11.20ms against 4.26ms for the reads it claimed to measure -- 72% of
+ * the number was setup, understating throughput 87x. Same class of bug as the
+ * Python compare harness timing its own imports.
+ *
+ * Duration-based rather than a fixed count because these categories span five
+ * orders of magnitude: 1,000 iterations is a few ms of noise for plaintext and
+ * hundreds of ms for templates.
+ */
 async function runBenchmark(name: string): Promise<number> {
   const [label, fn] = BENCHMARKS[name];
-  const start = performance.now();
-  await fn();
-  const elapsed = (performance.now() - start) / 1000;
+  const { op, teardown } = await fn();
+
+  // Startup is one-shot: looping it would time already-evaluated module lookups
+  // instead of boot work.
   if (name === "startup") {
+    const start = performance.now();
+    await op();
+    const elapsed = (performance.now() - start) / 1000;
+    teardown?.();
     console.log(`  ${pad(label, 25)} ${elapsed.toFixed(3)}s  (1 run, in-process)`);
-  } else {
-    const ops = Math.round(ITERATIONS / Math.max(elapsed, 1e-9)).toLocaleString("en-US");
-    console.log(`  ${pad(label, 25)} ${elapsed.toFixed(3)}s  (${ops} ops/sec)`);
+    return elapsed;
   }
+
+  await op();                                  // warm-up, untimed
+
+  let iterations = 0;
+  const start = performance.now();
+  do {
+    await op();
+    iterations += 1;
+  } while (
+    iterations < MIN_ITERATIONS ||
+    (performance.now() - start) / 1000 < MIN_SECONDS
+  );
+  const elapsed = (performance.now() - start) / 1000;
+  teardown?.();
+
+  const ops = Math.round(iterations / Math.max(elapsed, 1e-9)).toLocaleString("en-US");
+  console.log(
+    `  ${pad(label, 25)} ${elapsed.toFixed(3)}s  (${ops} ops/sec, n=${iterations.toLocaleString("en-US")})`,
+  );
   return elapsed;
 }
 
@@ -448,7 +490,15 @@ if (singleIdx >= 0) {
     console.error(`unknown benchmark: ${only}`);
     process.exit(1);
   }
-  await BENCHMARKS[only][1]();
+  // Benchmarks return { op, teardown }; carbonah needs a FIXED amount of work
+  // (not a fixed duration), so run the op ITERATIONS times.
+  const { op, teardown } = await BENCHMARKS[only][1]();
+  if (only === "startup") {
+    await op();
+  } else {
+    for (let i = 0; i < ITERATIONS; i++) await op();
+  }
+  teardown?.();
   process.exit(0);
 }
 
