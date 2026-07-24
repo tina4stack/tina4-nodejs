@@ -26,3 +26,22 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
   matches the `SQLTranslator` class it exports (and the sibling frameworks). Consumers import the
   class by name from the package barrel (`export { SQLTranslator, QueryCache }`), and no exports
   map ever pointed at the file path, so this is a filename alignment with no API change.
+
+### Fixed
+
+- **Security: the bundled Swagger UI static assets now honour the swagger gate.** `/swagger`,
+  `/swagger/`, `/swagger/index.html` and `/swagger/oauth2-redirect.html` were served from the
+  framework's own public directory BEFORE route matching (with directory-index resolution turning
+  `/swagger` into `swagger/index.html`), so a production server with `TINA4_SWAGGER_ENABLED=false`
+  still served the whole UI while `/swagger/openapi.json` correctly 404'd. Static serving now checks
+  the gate before it resolves an index. Bite-verified lock-in test. (python#97)
+- **The startup banner advertises only a surface that answers.** The `Swagger:` and `Dashboard:`
+  rows printed unconditionally, so a production log claimed a dev surface was exposed and a
+  developer following the link hit a 404. Each row is now built by one pure helper of
+  (port, swagger_enabled, dev_admin_enabled), unit tested rather than inferred from stdout.
+  (python#99)
+- **MQTT TLS tests verify the CA before trusting it.** A stale CA file in the shared temp directory
+  made six TLS tests FAIL instead of skip, in all four frameworks, pointing at correct TLS code.
+  The suites now confirm the CA actually validates the broker certificate before treating the TLS
+  environment as present. (python#98)
+

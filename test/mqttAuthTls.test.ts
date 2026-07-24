@@ -18,6 +18,7 @@
  * Run with: npx tsx test/mqttAuthTls.test.ts
  */
 import net from "node:net";
+import tls from "node:tls";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -85,6 +86,45 @@ function reachable(url: string): Promise<boolean> {
   });
 }
 
+/**
+ * Does the configured CA actually VERIFY the broker's certificate?
+ *
+ * The gate used to accept any CA file that merely EXISTS. A stale
+ * $TMPDIR/tina4-mqtt-infra/certs/ca.crt left behind by an earlier
+ * mqtt-infra.sh run therefore made the TLS tests RUN and then fail on a
+ * certificate mismatch -- six red tests in every framework caused purely by the
+ * environment, with an error that reads like a code regression.
+ *
+ * A CA that cannot validate the broker is functionally the same as no CA, so
+ * prove it with a real handshake and skip when it does not hold. Self-healing:
+ * regenerate the certs and the tests run again.
+ */
+function caVerifies(url: string, ca: string | null): Promise<boolean> {
+  if (ca === null || !existsSync(ca)) return Promise.resolve(false);
+  const p = Mqtt.parseUrl(url);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      sock.removeAllListeners();
+      sock.destroy();
+      resolve(ok);
+    };
+    const sock = tls.connect({
+      host: p.host,
+      port: p.port,
+      ca: readFileSync(ca),
+      servername: p.host,
+      rejectUnauthorized: true,
+    });
+    sock.setTimeout(3000);
+    sock.once("secureConnect", () => finish(sock.authorized));
+    sock.once("timeout", () => finish(false));
+    sock.once("error", () => finish(false));
+  });
+}
+
 function authUrlWith(user: string, pw: string): string {
   const p = Mqtt.parseUrl(AUTH_URL);
   const scheme = p.tls ? "mqtts" : "mqtt";
@@ -95,7 +135,8 @@ function authUrlWith(user: string, pw: string): string {
 async function main(): Promise<void> {
   const authUp = await reachable(AUTH_URL);
   const anonUp = await reachable(ANON_URL);
-  const tlsUp = (await reachable(TLS_URL)) && CA !== null;
+  // Gate on "the CA VERIFIES the broker", not merely "a CA file exists".
+  const tlsUp = (await reachable(TLS_URL)) && (await caVerifies(TLS_URL, CA));
 
   // -- auth -------------------------------------------------------------
 
@@ -153,7 +194,7 @@ async function main(): Promise<void> {
   // -- TLS --------------------------------------------------------------
 
   if (!tlsUp) {
-    console.log(`  \x1b[33mSKIP\x1b[0m TLS tests (TLS broker not reachable at ${TLS_URL} or CA not set)`);
+    console.log(`  \x1b[33mSKIP\x1b[0m TLS tests (broker not reachable at ${TLS_URL}, no CA configured, or the CA does not verify the broker -- stale certs, re-run mqtt-infra.sh)`);
     skipped++;
   } else {
     const ca = CA as string;

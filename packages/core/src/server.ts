@@ -35,6 +35,73 @@ const BUILTIN_ERROR_TEMPLATES_DIR = resolve(__dirname, "..", "templates");
 const BUILTIN_PUBLIC_DIR = resolve(__dirname, "..", "public");
 
 /**
+ * Whether the framework's bundled Swagger UI assets (public/swagger/*) may be
+ * served.
+ *
+ * Static files are resolved BEFORE routes, so the shipped
+ * public/swagger/index.html answered `GET /swagger` even when
+ * `swaggerEnabled()` was false -- serving the Swagger UI in production and
+ * bypassing the documented TINA4_SWAGGER_ENABLED / TINA4_DEBUG gate entirely.
+ * The symptom was a 200 on /swagger with a 404 on /swagger/openapi.json (the
+ * gated route never registered, the static file still won).
+ *
+ * Set from `swaggerEnabled()` at boot. Stays false when swagger is disabled OR
+ * when the swagger module fails to load -- fail closed, never expose.
+ */
+let swaggerAssetsEnabled = false;
+
+/** Bundled Swagger UI asset paths that must honour the swagger gate. */
+function isSwaggerAssetPath(pathname: string): boolean {
+  return pathname === "/swagger" || pathname.startsWith("/swagger/");
+}
+
+/**
+ * Build the startup banner's optional surface lines (issue #99).
+ *
+ * Only advertise a surface that is actually REACHABLE. In production, or with
+ * TINA4_DEBUG off, /swagger and /__dev return 404 -- printing them anyway both
+ * misleads an operator into believing a dev surface is exposed and sends a
+ * developer to a dead link.
+ *
+ * Kept as a pure function of (port, two booleans) so the contract is unit
+ * testable without booting a server and grepping stdout. Parity: Python
+ * banner_surface_lines, PHP App::bannerSurfaceLines, Ruby
+ * Tina4.banner_surface_lines.
+ *
+ * @returns [swaggerLine, dashboardLine] -- each empty, or a newline plus the
+ *          banner row, ready to interpolate.
+ */
+export function bannerSurfaceLines(
+  port: number,
+  opts: { swaggerEnabled: boolean; devAdminEnabled: boolean },
+): [string, string] {
+  return [
+    opts.swaggerEnabled ? `\n  Swagger:   http://localhost:${port}/swagger` : "",
+    opts.devAdminEnabled ? `\n  Dashboard: http://localhost:${port}/__dev` : "",
+  ];
+}
+
+/**
+ * Whether the startup banner should ADVERTISE /swagger (issue #99).
+ *
+ * Mirrors `swaggerEnabled()` in packages/swagger/src/ui.ts: an explicit
+ * TINA4_SWAGGER_ENABLED wins, otherwise fall back to TINA4_DEBUG.
+ *
+ * Read from env here rather than importing the swagger package, because the
+ * CLUSTER PRIMARY prints its banner before any optional module is loaded (and a
+ * dynamic import for one banner line is not worth the boot cost). Keep this in
+ * sync with ui.ts -- it is the same two-line contract.
+ */
+function swaggerAdvertised(): boolean {
+  const TRUTHY = ["true", "1", "yes", "on"];
+  const raw = (process.env.TINA4_SWAGGER_ENABLED ?? "").trim().toLowerCase();
+  if (raw === "") {
+    return TRUTHY.includes((process.env.TINA4_DEBUG ?? "").trim().toLowerCase());
+  }
+  return TRUTHY.includes(raw);
+}
+
+/**
  * Apply pending DB migrations on startup — NON-BREAKING.
  *
  * When a `migrations/` folder exists (with at least one `.sql` file, excluding
@@ -787,6 +854,15 @@ export async function startServer(config?: Tina4Config): Promise<{
       const logLevel = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
 
       if (!isBannerSuppressed()) {
+        // Only advertise a surface that is actually reachable (issue #99).
+        // Cluster mode is the production path: debug is OFF, so /__dev always
+        // 404s here and is never advertised; /swagger only when explicitly on.
+        // Cluster mode is the production path: debug is OFF, so /__dev never
+        // advertises here.
+        const [swaggerLine] = bannerSurfaceLines(port, {
+          swaggerEnabled: swaggerAdvertised(),
+          devAdminEnabled: false,
+        });
         console.log(`${color}
   ______ _             __ __
  /_  __/(_)___  ____ _/ // /
@@ -796,9 +872,7 @@ export async function startServer(config?: Tina4Config): Promise<{
 ${reset}
   Tina4 Node.js v${TINA4_VERSION} — The Intelligent Native Application 4ramework
 
-  Server:    http://${displayHost}:${port} (cluster, ${numCPUs} workers)
-  Swagger:   http://localhost:${port}/swagger
-  Dashboard: http://localhost:${port}/__dev
+  Server:    http://${displayHost}:${port} (cluster, ${numCPUs} workers)${swaggerLine}
   Debug:     OFF (Log level: ${logLevel})
 `);
       }
@@ -1000,7 +1074,10 @@ ${reset}
   // when disabled.
   try {
     const swagger = await import("../../swagger/src/index.js");
-    if (!swagger.swaggerEnabled()) {
+    // Single source of truth for BOTH the gated routes and the bundled
+    // public/swagger assets (which static serving would otherwise expose).
+    swaggerAssetsEnabled = swagger.swaggerEnabled();
+    if (!swaggerAssetsEnabled) {
       // Skip the rest of the swagger block when disabled.
       throw new Error("__swagger_disabled__");
     }
@@ -1273,8 +1350,14 @@ ${reset}
       if (existsSync(srcPublicDir) && tryServeStatic(srcPublicDir, req, res)) {
         return;
       }
-      if (tryServeStatic(BUILTIN_PUBLIC_DIR, req, res)) {
-        return;
+      // Framework-bundled assets. The Swagger UI lives here (public/swagger/),
+      // and static files resolve BEFORE routes -- so this path MUST honour the
+      // swagger gate or /swagger is served in production regardless of
+      // TINA4_SWAGGER_ENABLED / TINA4_DEBUG.
+      if (swaggerAssetsEnabled || !isSwaggerAssetPath(pathname)) {
+        if (tryServeStatic(BUILTIN_PUBLIC_DIR, req, res)) {
+          return;
+        }
       }
 
       // Match route
@@ -1602,6 +1685,14 @@ ${reset}
         : "";
 
       if (!isBannerSuppressed()) {
+        // Only advertise a surface that is actually reachable (issue #99). With
+        // debug off / in production these endpoints 404, and printing a dead URL
+        // both misleads an operator into believing a dev surface is exposed and
+        // sends a developer to a 404.
+        const [swaggerLine, dashboardLine] = bannerSurfaceLines(port, {
+          swaggerEnabled: swaggerAdvertised(),
+          devAdminEnabled: isDebug,
+        });
         console.log(`${color}
   ______ _             __ __
  /_  __/(_)___  ____ _/ // /
@@ -1611,9 +1702,7 @@ ${reset}
 ${reset}
   Tina4 Node.js v${TINA4_VERSION} — The Intelligent Native Application 4ramework
 
-  Server:    http://${displayHost}:${port} (${serverMode})
-  Swagger:   http://localhost:${port}/swagger
-  Dashboard: http://localhost:${port}/__dev
+  Server:    http://${displayHost}:${port} (${serverMode})${swaggerLine}${dashboardLine}
   Debug:     ${isDebug ? "ON" : "OFF"} (Log level: ${logLevel})${dualPortLines}
 `);
       }
