@@ -148,10 +148,14 @@ async function benchTemplate(): Promise<Prepared> {
       footer_text:
         "This is a footer with some text that may be truncated for display purposes.",
     };
-    // render() from a FILE, not renderString(). renderString recompiles on every
-    // call (Frond has no compiled-template cache), so timing it measured
-    // compile+render while a Jinja2-style comparison measures render alone.
-    // render("bench.twig") is the per-request call a real app makes.
+    // render() from a FILE rather than renderString(): it is the per-request call a
+    // real app makes, and the honest counterpart to a compiled-template comparison.
+    //
+    // Corrects an earlier comment here that justified this as "renderString
+    // recompiles on every call (Frond has no compiled-template cache)". Frond DOES
+    // cache compiled tokens on both paths, and measured in the Python twin
+    // tokenizing is only 1.9% of a full render. The reason to pick render(file) is
+    // fidelity to real usage, not compile overhead.
     writeFileSync(join(dir, "bench.twig"), tpl);
     return {
       op: () => { engine.render("bench.twig", data); },
