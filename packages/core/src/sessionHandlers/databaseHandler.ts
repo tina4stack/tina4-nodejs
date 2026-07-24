@@ -1,14 +1,13 @@
 /**
- * Tina4 Database Session Handler — SQLite via better-sqlite3, zero extra dependencies.
+ * Tina4 Database Session Handler — SQLite via Node's built-in node:sqlite,
+ * zero extra dependencies.
  *
- * Uses the same `better-sqlite3` library the ORM already depends on.
+ * Uses the same `node:sqlite` (DatabaseSync) the ORM's SQLite adapter uses —
+ * no third-party driver, nothing to install.
  * Stores sessions in a `tina4_session` table with JSON data and expiry.
  *
  * Configure via environment variables:
  *   TINA4_DATABASE_URL  (default: "sqlite:///data/tina4_sessions.db")
- *
- * The handler dynamically imports `better-sqlite3` and throws a clear
- * error if the package is not installed.
  */
 import { DatabaseSync } from "node:sqlite";
 import type { SessionHandler } from "../session.js";
@@ -35,7 +34,7 @@ export interface DatabaseSessionConfig {
 }
 
 /**
- * Database session handler using better-sqlite3 (synchronous SQLite).
+ * Database session handler using node:sqlite (synchronous SQLite).
  *
  * Stores session data as JSON in a `tina4_session` table.
  * Expiry is checked on read; expired rows are cleaned up lazily.

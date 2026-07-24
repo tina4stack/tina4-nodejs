@@ -2,7 +2,7 @@
  * Tina4 Session — Pluggable session backends, zero core dependencies.
  *
  * File-based sessions by default. Redis backend available via raw TCP (no ioredis needed).
- * Database (SQLite) backend available via better-sqlite3.
+ * Database (SQLite) backend available via Node's built-in node:sqlite.
  *
  *   import { Session, RedisSessionHandler } from "@tina4/core";
  *
@@ -15,7 +15,7 @@
  *     redisPort: 6379,
  *   });
  *
- *   // Database backend (SQLite via better-sqlite3)
+ *   // Database backend (SQLite via node:sqlite)
  *   const session = new Session("database");
  *   // or: new Session("db");
  *
