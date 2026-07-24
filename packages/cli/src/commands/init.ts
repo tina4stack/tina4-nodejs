@@ -133,7 +133,7 @@ COPY --from=build /app .
 ENV HOST=0.0.0.0
 ENV PORT=7148
 EXPOSE 7148
-CMD ["npx", "tsx", "app.ts"]
+CMD ["npx", "tina4nodejs", "serve", "--production"]
 `
     );
   }

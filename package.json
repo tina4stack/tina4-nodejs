@@ -1,6 +1,6 @@
 {
   "name": "tina4-nodejs",
-  "version": "3.13.83",
+  "version": "3.13.84",
   "type": "module",
   "description": "Tina4 for Node.js/TypeScript - 54 built-in features, zero dependencies",
   "keywords": [
@@ -23,7 +23,7 @@
   "workspaces": [
     "packages/*"
   ],
-  "main": "packages/core/src/index.ts",
+  "main": "packages/core/dist/index.js",
   "types": "packages/core/src/index.ts",
   "exports": {
     ".": "./packages/core/src/index.ts",
@@ -32,6 +32,11 @@
     "./frond": "./packages/frond/src/engine.ts"
   },
   "files": [
+    "packages/frond/dist/**/*",
+    "packages/swagger/dist/**/*",
+    "packages/orm/dist/**/*",
+    "packages/core/dist/**/*",
+    "packages/cli/dist/**/*",
     "packages/core/src/**/*",
     "packages/core/public/**/*",
     "packages/core/templates/**/*",
@@ -48,14 +53,16 @@
     "README.md"
   ],
   "bin": {
-    "tina4nodejs": "packages/cli/bin/tina4nodejs"
+    "tina4nodejs": "packages/cli/dist/bin.js"
   },
   "scripts": {
     "build": "npm run build --workspaces",
     "clean": "rm -rf packages/*/dist",
     "test": "tsx test/run-all.ts && npm run test:i18n",
     "test:i18n": "vitest run test/i18n.test.ts test/i18n-leaf-alias.test.ts",
-    "typecheck": "tsc -p tsconfig.typecheck.json"
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "prepublishOnly": "npm run build",
+    "prepare": "npm run build"
   },
   "engines": {
     "node": ">=22.0.0"

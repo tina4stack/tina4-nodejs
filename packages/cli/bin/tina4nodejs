@@ -1,10 +1,22 @@
 #!/bin/sh
-# Resolve symlinks to find the real script location
+# Kept for direct invocation inside the monorepo. The package `bin` points at
+# the BUILT bundle (packages/cli/dist/bin.js), which needs no TypeScript loader
+# -- tsx is a devDependency and `npm ci --omit=dev` strips it, so a production
+# container must never depend on it.
+#
+# Prefer the built bundle; fall back to tsx only for an unbuilt checkout.
 SCRIPT="$0"
 while [ -L "$SCRIPT" ]; do
-  DIR="$(cd -P "$(dirname "$SCRIPT")" && pwd)"
-  SCRIPT="$(readlink "$SCRIPT")"
-  [ "${SCRIPT%"${SCRIPT#?}"}" != "/" ] && SCRIPT="$DIR/$SCRIPT"
+  LINK="$(readlink "$SCRIPT")"
+  case "$LINK" in
+    /*) SCRIPT="$LINK" ;;
+    *)  SCRIPT="$(dirname "$SCRIPT")/$LINK" ;;
+  esac
 done
-DIR="$(cd -P "$(dirname "$SCRIPT")" && pwd)"
+DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+
+if [ -f "$DIR/../dist/bin.js" ]; then
+  exec node "$DIR/../dist/bin.js" "$@"
+fi
+echo "tina4nodejs: dist/bin.js not built, falling back to tsx (dev only)" >&2
 exec npx tsx "$DIR/../src/bin.ts" "$@"

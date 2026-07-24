@@ -45,21 +45,77 @@ function readCliVersion(): string {
 
 // ── Port-kill helper ────────────────────────────────────────────────
 
+/**
+ * Whether this process is running inside a container.
+ *
+ * Reclaiming a port makes sense on a dev machine, where a previous serve may
+ * still hold it. Inside a container the server IS the container, so there is no
+ * stale sibling to reclaim from -- and trying is dangerous (see below).
+ */
+function inContainer(): boolean {
+  if (existsSync("/.dockerenv") || existsSync("/run/.containerenv")) return true;
+  try {
+    const blob = readFileSync("/proc/1/cgroup", "utf-8");
+    return blob.includes("docker") || blob.includes("containerd") || blob.includes("kubepods");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Kill any process listening on `port`. Returns true if anything was killed.
+ *
+ * Every PID is validated first. `parseInt` on a non-numeric lsof field yields
+ * 1, and SIGTERM to PID 1 is the container's own init -- which is exactly how a
+ * production container logged "Killed existing process on port 7148 (PID: 1
+ * ...)" and then exited 143, killing itself on startup.
+ */
+/**
+ * The PIDs from `lsof -ti` output that are safe to signal.
+ *
+ * Pure so the safety rule can be tested directly. An unvalidated parse is a
+ * footgun with real teeth: where lsof prints a different shape than -ti
+ * implies, a non-numeric field becomes 0, and signalling PID 0 hits EVERY
+ * process in the caller's own process group -- the server kills itself. That
+ * is what produced "Killed existing process on port 7148 (PID: 1 ...)" in a
+ * real image, where the container then exited 143.
+ *
+ * Accepts only all-digit tokens; never PID 0 (our group), PID 1 (init),
+ * ourselves, or our own process group.
+ */
+export function selectablePids(lsofOutput: string, me: number, myGroup?: number): number[] {
+  const pids: number[] = [];
+  for (const token of lsofOutput.split(/\s+/)) {
+    if (!/^\d+$/.test(token)) continue;   // never coerce junk into a PID
+    const pid = Number(token);
+    if (pid <= 1 || pid === me) continue;  // 0 = our group, 1 = init, me = suicide
+    if (myGroup !== undefined && pid === myGroup) continue;
+    if (!pids.includes(pid)) pids.push(pid);
+  }
+  return pids;
+}
+
 function killProcessOnPort(port: number): boolean {
+  if (inContainer()) return false;
   try {
     const result = execSync(`lsof -ti :${port}`, { encoding: "utf-8", timeout: 5000 }).trim();
-    if (result) {
-      const pids = result.split("\n");
-      for (const pid of pids) {
-        try {
-          process.kill(parseInt(pid, 10), "SIGTERM");
-        } catch {
-          // ignore ProcessLookupError / PermissionError
-        }
+    if (!result) return false;
+
+    const killed: string[] = [];
+    // Node core exposes no getpgrp(), so myGroup stays unset here. The pid <= 1
+    // guard already covers the dangerous case (a junk field coercing to 0);
+    // Python and Ruby pass their real process group in addition.
+    for (const pid of selectablePids(result, process.pid)) {
+      try {
+        process.kill(pid, "SIGTERM");
+        killed.push(String(pid));
+      } catch {
+        // ignore ProcessLookupError / PermissionError
       }
-      console.log(`  Killed existing process on port ${port} (PID: ${pids.join(", ")})`);
-      return true;
     }
+    if (killed.length === 0) return false;
+    console.log(`  Killed existing process on port ${port} (PID: ${killed.join(", ")})`);
+    return true;
   } catch {
     // lsof not found or no process on port — that's fine
   }
