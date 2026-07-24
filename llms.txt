@@ -1,6 +1,6 @@
 # tina4-nodejs — LLM Context
 
-Tina4 Node.js/TypeScript v3.13.85. 98 built-in features, zero dependencies. Web framework for Node.js 20+.
+Tina4 Node.js/TypeScript v3.13.86. 98 built-in features, zero dependencies. Web framework for Node.js 20+.
 Routes, ORM, templates, auth, queue, websocket, graphql, WSDL — all built in. ESM only.
 
 Install: npm install tina4-nodejs
