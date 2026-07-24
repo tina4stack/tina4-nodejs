@@ -26,10 +26,26 @@
   "main": "packages/core/dist/index.js",
   "types": "packages/core/src/index.ts",
   "exports": {
-    ".": "./packages/core/src/index.ts",
-    "./orm": "./packages/orm/src/index.ts",
-    "./swagger": "./packages/swagger/src/index.ts",
-    "./frond": "./packages/frond/src/engine.ts"
+    ".": {
+      "types": "./packages/core/src/index.ts",
+      "import": "./packages/core/dist/index.js",
+      "default": "./packages/core/dist/index.js"
+    },
+    "./orm": {
+      "types": "./packages/orm/src/index.ts",
+      "import": "./packages/orm/dist/index.js",
+      "default": "./packages/orm/dist/index.js"
+    },
+    "./swagger": {
+      "types": "./packages/swagger/src/index.ts",
+      "import": "./packages/swagger/dist/index.js",
+      "default": "./packages/swagger/dist/index.js"
+    },
+    "./frond": {
+      "types": "./packages/frond/src/engine.ts",
+      "import": "./packages/frond/dist/index.js",
+      "default": "./packages/frond/dist/index.js"
+    }
   },
   "files": [
     "packages/frond/dist/**/*",
@@ -58,6 +74,7 @@
   "scripts": {
     "build": "npm run build --workspaces",
     "clean": "rm -rf packages/*/dist",
+    "pretest": "npm run build",
     "test": "tsx test/run-all.ts && npm run test:i18n",
     "test:i18n": "vitest run test/i18n.test.ts test/i18n-leaf-alias.test.ts",
     "typecheck": "tsc -p tsconfig.typecheck.json",

@@ -21,9 +21,14 @@ import {
   toSnake, toTableName, toPascal, parseFields, parseCliArgs, parseEvery,
   aiFill, extend, generate,
 } from "../packages/cli/src/commands/generate.ts";
-import { Router, TestClient, getToken, discoverRoutes, Events, ServiceRunner } from "../packages/core/src/index.ts";
-import { _resetRouteDiscovery } from "../packages/core/src/routeDiscovery.ts";
-import { initDatabase, FakeData } from "../packages/orm/src/index.ts";
+// Resolve the framework through the PUBLISHED specifiers, exactly as the scaffolded
+// files do (`import ... from "tina4-nodejs"[/orm]`). Because the temp project lives
+// inside the repo, Node self-resolves that specifier via the package `exports` map
+// (-> the built dist bundle). The test MUST use the same resolution or it would drive
+// a second, source-level ORM/core instance whose module-level singletons (DB adapter,
+// Router, Events bus) the dist-resolved scaffold never touches. One instance. (nodejs#32)
+import { Router, TestClient, getToken, discoverRoutes, Events, ServiceRunner } from "tina4-nodejs";
+import { initDatabase, FakeData } from "tina4-nodejs/orm";
 
 let pass = 0;
 let fail = 0;
@@ -245,7 +250,9 @@ async function main(): Promise<void> {
   assert("model imports BaseModel from tina4-nodejs/orm (not core)",
     read("src/models/Sprocket.ts").includes('from "tina4-nodejs/orm"'));
 
-  _resetRouteDiscovery();
+  // No _resetRouteDiscovery() here: run-all spawns each test file in its own process,
+  // so the route-discovery cache is empty at this first-and-only scan. (Dropping the
+  // src-internal import keeps the test on the public dist surface — see the header.)
   const router = new Router();
   const defs = await discoverRoutes(join(tmpDir, "src/routes"));
   for (const def of defs) router.addRoute(def);
@@ -425,7 +432,9 @@ async function main(): Promise<void> {
   {
     const src = read("src/routes/ws_chat.ts");
     assert("websocket: AI-FILL banner + Ground", src.includes("AI-FILL") && src.includes("// Ground:"));
-    const { defaultRouter } = await import("../packages/core/src/router.ts");
+    // defaultRouter from the specifier (dist) — the SAME instance the scaffolded
+    // ws file registers on via websocket() (which also resolves the specifier).
+    const { defaultRouter } = await import("tina4-nodejs");
     const mod = await importGen("src/routes/ws_chat.ts"); // import registers via websocket()
     assert("websocket: registered on the REAL router",
       defaultRouter.getWebSocketRoutes().some((r) => r.pattern === "/ws/chat"));
