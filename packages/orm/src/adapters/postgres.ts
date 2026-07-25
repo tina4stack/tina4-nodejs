@@ -325,6 +325,12 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   async startTransactionAsync(): Promise<void> {
     await this.executeAsync("BEGIN");
+    // Mark the connection as inside an explicit transaction so executeManyAsync's
+    // owns-guard (owns = !_inTransaction) joins THIS transaction instead of
+    // opening its own inner BEGIN/COMMIT (which would commit this outer
+    // transaction early and defeat a later rollback). Mirrors the Python master
+    // (tina4_python/database/postgres.py start_transaction -> _in_transaction = True).
+    this._inTransaction = true;
   }
 
   commit(): void {
@@ -333,6 +339,9 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   async commitAsync(): Promise<void> {
     await this.executeAsync("COMMIT");
+    // Transaction closed — clear the flag so subsequent standalone batches own
+    // their own transaction again (parity with Python master commit()).
+    this._inTransaction = false;
   }
 
   rollback(): void {
@@ -341,6 +350,8 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   async rollbackAsync(): Promise<void> {
     await this.executeAsync("ROLLBACK");
+    // Transaction closed — clear the flag (parity with Python master rollback()).
+    this._inTransaction = false;
   }
 
   tables(): string[] {
