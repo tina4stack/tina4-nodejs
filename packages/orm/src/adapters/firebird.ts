@@ -236,10 +236,36 @@ export class FirebirdAdapter implements DatabaseAdapter {
     return translated;
   }
 
+  /**
+   * The handle every statement runs on. While an explicit transaction is open
+   * (startTransactionAsync set `this.transaction`), statements MUST run on that
+   * transaction object so they are undone by rollbackAsync() / persisted by
+   * commitAsync() — node-firebird's transaction exposes the same
+   * query()/execute() as the connection. With no transaction open we run on
+   * `this.db`, whose per-statement work auto-commits on the connection.
+   *
+   * This matches the Python master's contract (tina4_python/database/firebird.py):
+   * there, ALL statements run on the single connection and start_transaction()
+   * merely suppresses the per-statement autocommit in execute() so the batch
+   * stays open until commit()/rollback(). node-firebird has no such suppression
+   * hook — its `db.query/execute` always auto-commit — so the equivalent is to
+   * route statements through the transaction object instead. Same observable
+   * behaviour: an open transaction is atomic and rolls back cleanly.
+   *
+   * Previously every statement ran on `this.db` unconditionally, so the
+   * transaction created by startTransactionAsync() never saw a single statement
+   * — rollbackAsync() rolled back an EMPTY transaction and the already
+   * auto-committed write survived (silent no-op). Twin of the PHP pdo_firebird
+   * bug fixed in 3.13.86.
+   */
+  private statementHandle(): any {
+    return this.transaction ?? this.db;
+  }
+
   private queryPromise(sql: string, params?: unknown[]): Promise<any[]> {
     return new Promise((resolve, reject) => {
       const translated = this.translateSql(sql);
-      this.db.query(translated, params ?? [], (err: Error | null, result: any[]) => {
+      this.statementHandle().query(translated, params ?? [], (err: Error | null, result: any[]) => {
         if (err) reject(err);
         else resolve(result ?? []);
       });
@@ -249,7 +275,7 @@ export class FirebirdAdapter implements DatabaseAdapter {
   private executePromise(sql: string, params?: unknown[]): Promise<void> {
     return new Promise((resolve, reject) => {
       const translated = this.translateSql(sql);
-      this.db.execute(translated, params ?? [], (err: Error | null) => {
+      this.statementHandle().execute(translated, params ?? [], (err: Error | null) => {
         if (err) reject(err);
         else resolve();
       });
