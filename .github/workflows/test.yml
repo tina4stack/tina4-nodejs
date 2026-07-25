@@ -244,3 +244,88 @@ jobs:
       - name: Report results
         if: always()
         run: echo "Test run completed with exit code $?"
+
+  # Dedicated live-Firebird job (systemic coverage-leak fix). Firebird is NOT a
+  # provisioned service in the main `test` job above — its skips stay green there
+  # BY DESIGN (EXCLUDED_KEYWORDS=["firebird"] in test/_serviceGate.ts), which is
+  # correct for that already-heavy multi-service runner. The consequence, though,
+  # was that the Firebird rollback/commit regression tests only ever SKIPPED in
+  # CI — the exact gap that let the Firebird rollback no-op ship. This job stands
+  # up a REAL Firebird 5.0.2, installs the node-firebird driver the adapter needs,
+  # and RUNS the firebird tests against it. A NO-SILENT-SKIP guard fails the job
+  # if the rollback test did not actually execute (a missing driver / unset URL /
+  # unreachable server would otherwise self-exit 0 as a green skip). This is the
+  # Node twin of the PHP `firebird:` job's `php -m | grep interbase` teeth.
+  firebird:
+    runs-on: ubuntu-latest
+    env:
+      TINA4_TEST_FIREBIRD_URL: firebird://SYSDBA:masterkey@localhost:3050//var/lib/firebird/data/test.fdb
+    steps:
+      - uses: actions/checkout@v4
+
+      # Firebird 5.0.2 as a plain container (a GitHub `services:` block cannot
+      # wait for Firebird's first-boot DB creation cleanly). FAIL the job if it
+      # never accepts a query, so the coverage has teeth.
+      - name: Start Firebird 5.0.2
+        run: |
+          docker run -d --name tina4-firebird -p 3050:3050 \
+            -e FIREBIRD_ROOT_PASSWORD=masterkey \
+            -e FIREBIRD_DATABASE=test.fdb \
+            firebirdsql/firebird:5.0.2
+          echo "Waiting for Firebird to accept connections on :3050 ..."
+          for i in $(seq 1 30); do
+            if docker exec tina4-firebird /opt/firebird/bin/isql -user SYSDBA -password masterkey \
+                 /var/lib/firebird/data/test.fdb -q -o /dev/null <<<'SELECT 1 FROM RDB$DATABASE;' 2>/dev/null; then
+              echo "Firebird ready after ${i} attempt(s)"; exit 0
+            fi
+            sleep 2
+          done
+          echo "Firebird did not become ready in time"; docker logs tina4-firebird | tail -40; exit 1
+
+      # Node 22+ — same version the main `test` job uses (node:sqlite needs 22).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      # The Firebird adapter lazily require()s node-firebird; install it here.
+      # It is NOT a core dependency (core stays zero-dependency), so the rollback
+      # test SKIPs "node-firebird package not installed" without it — a skip the
+      # guard below turns into a job failure.
+      - name: Install node-firebird driver
+        run: npm install node-firebird --no-save
+
+      # Run the live-Firebird rollback/commit regression test and PROVE it RAN.
+      # The test self-exits 0 on an all-SKIP run (Firebird is a non-provisioned
+      # engine), so a plain exit code cannot tell "passed" from "green-skipped".
+      # Strip ANSI, then assert: (a) no SKIP line, (b) the ROLLBACK-undoes-insert
+      # negative case PASSed, (c) the "4 passed, 0 failed, 0 skipped" summary.
+      # node-firebird missing / URL unset / server unreachable each print a
+      # firebird SKIP and FAIL the job here — never a silent green skip. This is
+      # the Node equivalent of PHP's `grep interbase`.
+      - name: Run Firebird rollback test against live Firebird (no-silent-skip guard)
+        run: |
+          set -o pipefail
+          out=$(npx tsx test/firebirdRollback.test.ts 2>&1 | tee /dev/stderr)
+          clean=$(printf '%s\n' "$out" | sed -E 's/\x1b\[[0-9;]*m//g')
+          if printf '%s\n' "$clean" | grep -qw SKIP; then
+            echo "::error::Firebird rollback test SKIPPED — the live-FB coverage did not run (driver/URL/server problem)."
+            exit 1
+          fi
+          printf '%s\n' "$clean" | grep -q "PASS ROLLBACK undoes the insert (row gone)" || {
+            echo "::error::The ROLLBACK-undoes-insert (negative) case did not PASS."; exit 1; }
+          printf '%s\n' "$clean" | grep -q "4 passed, 0 failed, 0 skipped" || {
+            echo "::error::Firebird rollback test did not report '4 passed, 0 failed, 0 skipped' — its 4 live cases did not all run/pass."; exit 1; }
+          echo "Firebird rollback test RAN against live Firebird and passed (4/4, 0 skipped)."
+
+      # The remaining firebird test files also run in the main `test` job (they
+      # are pure-logic), but run them here too for completeness. They self-exit
+      # non-zero on failure. firebirdUrl's optional live block targets a local
+      # dev port (53050), not this container's 3050, so it cleanly skips its live
+      # portion while its pure normaliser assertions still run.
+      - name: Run remaining Firebird test files
+        run: |
+          npx tsx test/firebirdCharset.test.ts
+          npx tsx test/firebirdUrl.test.ts
