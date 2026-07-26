@@ -643,7 +643,21 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
     }
   }
 
-  // Check for comparison/logical operators
+  // Comparison/logical operators -> evalComparison, the SAME evaluator {% if %}
+  // uses, so a condition means the same thing in a condition and in an output
+  // expression.
+  //
+  // The LEADING unary `not` needs its own check: every operator below is matched
+  // WITH surrounding spaces, so `not x` (nothing to its left) matched none of
+  // them, fell through to the variable-resolution tail, and was looked up as a
+  // variable literally named "not x" -- found nothing, rendered EMPTY.
+  // `{% if not x %}` and `x and not y` always worked; only the standalone
+  // `{{ not x }}` was dropped, and before booleans rendered lowercase a dropped
+  // expression and `false -> ''` looked identical, which is why it survived.
+  // Fixed in 3.13.87 alongside the boolean contract.
+  if (expr.startsWith("not ")) {
+    return evalComparison(expr, context);
+  }
   for (const op of [" not in ", " in ", " is not ", " is ", "!=", "==", ">=", "<=", ">", "<", " and ", " or ", " not "]) {
     if (findOutsideQuotes(expr, op) >= 0) {
       return evalComparison(expr, context);
