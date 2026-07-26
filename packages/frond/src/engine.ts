@@ -202,6 +202,40 @@ const filterChainCache = new Map<string, [string, [string, unknown[]][]]>();
 /** Cache for parsed dotted/bracket paths: expr string -> [parts, fromBracket] */
 const pathParseCache = new Map<string, [string[], boolean[]]>();
 
+/**
+ * Hard cap on the template caches — `compiled` and `compiledStrings`
+ * (ADR-0004, parity with PHP/Python/Ruby TEMPLATE_CACHE_MAX).
+ *
+ * An entry here is a whole token list, so the cap sits well below what a
+ * per-expression memo would justify. 256 is far above any real application's
+ * template count, so a normal app never evicts. The cap exists for the
+ * workload that genuinely grows without limit for the life of a worker:
+ * `renderString` keys on md5(source), so an app that builds template strings
+ * dynamically adds an entry per distinct string.
+ */
+export const TEMPLATE_CACHE_MAX = 256;
+
+/**
+ * Keep a memo cache bounded. Call immediately before inserting a new entry.
+ *
+ * Eviction is insertion-ordered (oldest first), not true LRU: a `Map`
+ * preserves insertion order, so dropping from the front is cheap, whereas
+ * refreshing recency on every cache HIT would add writes to the hottest path
+ * in a render and cost more than it saves. Half the cache is dropped at once
+ * so the sweep amortises to O(1) per insert.
+ *
+ * Evicting can never change what a render produces: every read site treats a
+ * miss as "recompute", so a swept entry is rebuilt on next use.
+ */
+function capCache(cache: Map<string, unknown>, maxEntries: number): void {
+  if (cache.size < maxEntries) return;
+  let drop = Math.floor(maxEntries / 2);
+  for (const key of cache.keys()) {
+    cache.delete(key);
+    if (--drop <= 0) break;
+  }
+}
+
 // ── Lexer ──────────────────────────────────────────────────────
 
 const TOKEN_RE = /(\{%-?\s*[\s\S]*?\s*-?%\})|(\{\{-?\s*[\s\S]*?\s*-?\}\})|(\{#[\s\S]*?#\})/g;
@@ -1685,6 +1719,7 @@ export class Frond {
     const source = readFileSync(filePath, "utf-8");
     const mtime = statSync(filePath).mtimeMs;
     const tokens = tokenize(source);
+    capCache(this.compiled as Map<string, unknown>, TEMPLATE_CACHE_MAX);
     this.compiled.set(template, { tokens, mtime, cachedAt: Date.now() });
     return this.executeWithSource(source, tokens, context);
   }
@@ -1702,6 +1737,7 @@ export class Frond {
     }
 
     const tokens = tokenize(source);
+    capCache(this.compiledStrings as Map<string, unknown>, TEMPLATE_CACHE_MAX);
     this.compiledStrings.set(key, { tokens, cachedAt: Date.now() });
     return this.executeCached(tokens, context);
   }
@@ -2587,7 +2623,7 @@ export class Frond {
     }
 
     const macroName = m[1];
-    const paramNames = m[2].split(",").map(p => p.trim()).filter(Boolean);
+    const params = Frond.parseMacroParams(m[2]);
 
     // Collect body tokens
     const bodyTokens: Token[] = [];
@@ -2606,13 +2642,44 @@ export class Frond {
     const capturedContext = { ...context };
     context[macroName] = (...args: unknown[]) => {
       const macroCtx: Record<string, unknown> = { ...capturedContext };
-      for (let pi = 0; pi < paramNames.length; pi++) {
-        macroCtx[paramNames[pi]] = pi < args.length ? args[pi] : null;
+      for (let pi = 0; pi < params.length; pi++) {
+        const [pname, pdefault] = params[pi];
+        macroCtx[pname] = pi < args.length ? args[pi] : pdefault;
       }
       return new SafeString(engine.renderTokens([...bodyTokens], macroCtx));
     };
 
     return i;
+  }
+
+  /**
+   * Parse a macro parameter list into [name, default] pairs.
+   *
+   * Handles: name, name="default", name='default'. Splitting on "," alone left a
+   * defaulted parameter literally NAMED `greeting='Hello'`, so the body's
+   * {{ greeting }} matched nothing (rendered empty) AND the caller's positional
+   * argument was stored under that junk key and lost. Mirrors the Python master's
+   * _parse_macro_params. The default is null when none is declared.
+   */
+  static parseMacroParams(rawParams: string): Array<[string, string | null]> {
+    return rawParams
+      .split(",")
+      .map(p => p.trim())
+      .filter(Boolean)
+      .map(p => {
+        const eq = p.indexOf("=");
+        if (eq === -1) return [p, null] as [string, string | null];
+        const name = p.slice(0, eq).trim();
+        let dflt = p.slice(eq + 1).trim();
+        if (
+          dflt.length >= 2 &&
+          ((dflt.startsWith('"') && dflt.endsWith('"')) ||
+            (dflt.startsWith("'") && dflt.endsWith("'")))
+        ) {
+          dflt = dflt.slice(1, -1);
+        }
+        return [name, dflt] as [string, string | null];
+      });
   }
 
   private handleFromImport(content: string, context: Record<string, unknown>): void {
@@ -2635,7 +2702,7 @@ export class Frond {
           const macroM = tagContent.match(/^macro\s+(\w+)\s*\(([^)]*)\)/);
           if (macroM && names.includes(macroM[1])) {
             const macroName = macroM[1];
-            const paramNames = macroM[2].split(",").map(p => p.trim()).filter(Boolean);
+            const paramNames = Frond.parseMacroParams(macroM[2]);
 
             const bodyTokens: Token[] = [];
             i++;
@@ -2657,7 +2724,8 @@ export class Frond {
             context[macroName] = (...args: unknown[]) => {
               const macroCtx: Record<string, unknown> = { ...capturedCtx };
               for (let pi = 0; pi < capturedParams.length; pi++) {
-                macroCtx[capturedParams[pi]] = pi < args.length ? args[pi] : null;
+                const [pname, pdefault] = capturedParams[pi];
+                macroCtx[pname] = pi < args.length ? args[pi] : pdefault;
               }
               return new SafeString(engine.renderTokens([...capturedBody], macroCtx));
             };
