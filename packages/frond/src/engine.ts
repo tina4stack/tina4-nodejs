@@ -202,6 +202,40 @@ const filterChainCache = new Map<string, [string, [string, unknown[]][]]>();
 /** Cache for parsed dotted/bracket paths: expr string -> [parts, fromBracket] */
 const pathParseCache = new Map<string, [string[], boolean[]]>();
 
+/**
+ * Hard cap on the template caches — `compiled` and `compiledStrings`
+ * (ADR-0004, parity with PHP/Python/Ruby TEMPLATE_CACHE_MAX).
+ *
+ * An entry here is a whole token list, so the cap sits well below what a
+ * per-expression memo would justify. 256 is far above any real application's
+ * template count, so a normal app never evicts. The cap exists for the
+ * workload that genuinely grows without limit for the life of a worker:
+ * `renderString` keys on md5(source), so an app that builds template strings
+ * dynamically adds an entry per distinct string.
+ */
+export const TEMPLATE_CACHE_MAX = 256;
+
+/**
+ * Keep a memo cache bounded. Call immediately before inserting a new entry.
+ *
+ * Eviction is insertion-ordered (oldest first), not true LRU: a `Map`
+ * preserves insertion order, so dropping from the front is cheap, whereas
+ * refreshing recency on every cache HIT would add writes to the hottest path
+ * in a render and cost more than it saves. Half the cache is dropped at once
+ * so the sweep amortises to O(1) per insert.
+ *
+ * Evicting can never change what a render produces: every read site treats a
+ * miss as "recompute", so a swept entry is rebuilt on next use.
+ */
+function capCache(cache: Map<string, unknown>, maxEntries: number): void {
+  if (cache.size < maxEntries) return;
+  let drop = Math.floor(maxEntries / 2);
+  for (const key of cache.keys()) {
+    cache.delete(key);
+    if (--drop <= 0) break;
+  }
+}
+
 // ── Lexer ──────────────────────────────────────────────────────
 
 const TOKEN_RE = /(\{%-?\s*[\s\S]*?\s*-?%\})|(\{\{-?\s*[\s\S]*?\s*-?\}\})|(\{#[\s\S]*?#\})/g;
@@ -1685,6 +1719,7 @@ export class Frond {
     const source = readFileSync(filePath, "utf-8");
     const mtime = statSync(filePath).mtimeMs;
     const tokens = tokenize(source);
+    capCache(this.compiled as Map<string, unknown>, TEMPLATE_CACHE_MAX);
     this.compiled.set(template, { tokens, mtime, cachedAt: Date.now() });
     return this.executeWithSource(source, tokens, context);
   }
@@ -1702,6 +1737,7 @@ export class Frond {
     }
 
     const tokens = tokenize(source);
+    capCache(this.compiledStrings as Map<string, unknown>, TEMPLATE_CACHE_MAX);
     this.compiledStrings.set(key, { tokens, cachedAt: Date.now() });
     return this.executeCached(tokens, context);
   }
