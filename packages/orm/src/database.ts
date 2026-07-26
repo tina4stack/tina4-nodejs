@@ -962,14 +962,26 @@ export class Database {
     const adapter = this.getNextAdapter();
     const results: unknown[] = [];
 
-    await adapterStartTransaction(adapter);
+    // Own the batch transaction ONLY when not already inside a caller's explicit
+    // transaction. inExplicitTransaction() is true when startTransaction() has
+    // pinned an adapter to this async context (getNextAdapter() returns that same
+    // pinned connection). If we owned a BEGIN/COMMIT here regardless, the inner
+    // COMMIT would commit the caller's OUTER transaction early and their later
+    // rollback() would undo nothing (the batch rows survive). So: standalone
+    // batch -> own BEGIN/COMMIT (atomic, all-or-nothing); nested batch -> join
+    // the caller's transaction and let their commit/rollback decide. Mirrors the
+    // sibling execute()/insert()/update()/delete() owns-guard, the PostgreSQL
+    // adapter's executeManyAsync owns-guard, and the Python master
+    // (Database.execute_many delegating to adapter.execute_many's owns_txn guard).
+    const owns = !this.inExplicitTransaction();
+    if (owns) await adapterStartTransaction(adapter);
     try {
       for (const params of paramSets) {
         results.push(await adapterExecute(adapter, sql, params));
       }
-      await adapterCommit(adapter);
+      if (owns) await adapterCommit(adapter);
     } catch (e) {
-      await adapterRollback(adapter);
+      if (owns) await adapterRollback(adapter);
       throw e;
     }
 
