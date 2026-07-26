@@ -2623,7 +2623,7 @@ export class Frond {
     }
 
     const macroName = m[1];
-    const paramNames = m[2].split(",").map(p => p.trim()).filter(Boolean);
+    const params = Frond.parseMacroParams(m[2]);
 
     // Collect body tokens
     const bodyTokens: Token[] = [];
@@ -2642,13 +2642,44 @@ export class Frond {
     const capturedContext = { ...context };
     context[macroName] = (...args: unknown[]) => {
       const macroCtx: Record<string, unknown> = { ...capturedContext };
-      for (let pi = 0; pi < paramNames.length; pi++) {
-        macroCtx[paramNames[pi]] = pi < args.length ? args[pi] : null;
+      for (let pi = 0; pi < params.length; pi++) {
+        const [pname, pdefault] = params[pi];
+        macroCtx[pname] = pi < args.length ? args[pi] : pdefault;
       }
       return new SafeString(engine.renderTokens([...bodyTokens], macroCtx));
     };
 
     return i;
+  }
+
+  /**
+   * Parse a macro parameter list into [name, default] pairs.
+   *
+   * Handles: name, name="default", name='default'. Splitting on "," alone left a
+   * defaulted parameter literally NAMED `greeting='Hello'`, so the body's
+   * {{ greeting }} matched nothing (rendered empty) AND the caller's positional
+   * argument was stored under that junk key and lost. Mirrors the Python master's
+   * _parse_macro_params. The default is null when none is declared.
+   */
+  static parseMacroParams(rawParams: string): Array<[string, string | null]> {
+    return rawParams
+      .split(",")
+      .map(p => p.trim())
+      .filter(Boolean)
+      .map(p => {
+        const eq = p.indexOf("=");
+        if (eq === -1) return [p, null] as [string, string | null];
+        const name = p.slice(0, eq).trim();
+        let dflt = p.slice(eq + 1).trim();
+        if (
+          dflt.length >= 2 &&
+          ((dflt.startsWith('"') && dflt.endsWith('"')) ||
+            (dflt.startsWith("'") && dflt.endsWith("'")))
+        ) {
+          dflt = dflt.slice(1, -1);
+        }
+        return [name, dflt] as [string, string | null];
+      });
   }
 
   private handleFromImport(content: string, context: Record<string, unknown>): void {
@@ -2671,7 +2702,7 @@ export class Frond {
           const macroM = tagContent.match(/^macro\s+(\w+)\s*\(([^)]*)\)/);
           if (macroM && names.includes(macroM[1])) {
             const macroName = macroM[1];
-            const paramNames = macroM[2].split(",").map(p => p.trim()).filter(Boolean);
+            const paramNames = Frond.parseMacroParams(macroM[2]);
 
             const bodyTokens: Token[] = [];
             i++;
@@ -2693,7 +2724,8 @@ export class Frond {
             context[macroName] = (...args: unknown[]) => {
               const macroCtx: Record<string, unknown> = { ...capturedCtx };
               for (let pi = 0; pi < capturedParams.length; pi++) {
-                macroCtx[capturedParams[pi]] = pi < args.length ? args[pi] : null;
+                const [pname, pdefault] = capturedParams[pi];
+                macroCtx[pname] = pi < args.length ? args[pi] : pdefault;
               }
               return new SafeString(engine.renderTokens([...capturedBody], macroCtx));
             };
