@@ -2013,6 +2013,9 @@ export class Frond {
         } else if (tag === "macro") {
           const skip = this.handleMacro(tokens, i, context);
           i = skip;
+        } else if (tag === "import") {
+          this.handleImportAs(content, context);
+          i++;
         } else if (tag === "from") {
           this.handleFromImport(content, context);
           i++;
@@ -2680,6 +2683,74 @@ export class Frond {
         }
         return [name, dflt] as [string, string | null];
       });
+  }
+
+  /**
+   * {% import "file" as alias %} -- load EVERY macro in a file under one namespace.
+   *
+   * The alias is bound as a plain object of macro functions, so {{ alias.greet(x) }}
+   * resolves through the engine's existing dotted-call path and each macro keeps the
+   * same argument binding, default handling and SafeString output as any other macro.
+   * A namespace object (not a class) is deliberate: a function stored as a class
+   * attribute binds as a method and would inject the namespace as the first argument,
+   * which is exactly the argument-shift bug the Python master carried (fixed there
+   * with types.SimpleNamespace). Both import forms must render identically.
+   */
+  private handleImportAs(content: string, context: Record<string, unknown>): void {
+    const m = content.match(/^import\s+["'](.+?)["']\s+as\s+(\w+)/);
+    if (!m) return;
+
+    const filename = m[1];
+    const alias = m[2];
+    const namespace: Record<string, unknown> = {};
+
+    const source = this.load(filename);
+    const tokens = tokenize(source);
+
+    let i = 0;
+    while (i < tokens.length) {
+      const [ttype, raw] = tokens[i];
+      if (ttype === "BLOCK") {
+        const [tagContent] = stripTag(raw);
+        if ((tagContent.split(/\s+/)[0] || "") === "macro") {
+          const macroM = tagContent.match(/^macro\s+(\w+)\s*\(([^)]*)\)/);
+          if (macroM) {
+            const macroName = macroM[1];
+            const params = Frond.parseMacroParams(macroM[2]);
+
+            const bodyTokens: Token[] = [];
+            i++;
+            while (i < tokens.length) {
+              if (tokens[i][0] === "BLOCK" && tokens[i][1].includes("endmacro")) {
+                i++;
+                break;
+              }
+              bodyTokens.push(tokens[i]);
+              i++;
+            }
+
+            // Own copies per macro — avoids closure-over-loop-variable sharing.
+            const capturedBody = [...bodyTokens];
+            const capturedParams = [...params];
+            const capturedCtx = { ...context };
+            const engine = this;
+
+            namespace[macroName] = (...args: unknown[]) => {
+              const macroCtx: Record<string, unknown> = { ...capturedCtx };
+              for (let pi = 0; pi < capturedParams.length; pi++) {
+                const [pname, pdefault] = capturedParams[pi];
+                macroCtx[pname] = pi < args.length ? args[pi] : pdefault;
+              }
+              return new SafeString(engine.renderTokens([...capturedBody], macroCtx));
+            };
+            continue;
+          }
+        }
+      }
+      i++;
+    }
+
+    context[alias] = namespace;
   }
 
   private handleFromImport(content: string, context: Record<string, unknown>): void {
