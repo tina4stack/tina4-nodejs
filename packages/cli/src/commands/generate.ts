@@ -115,6 +115,21 @@ export function parseFields(fieldsStr: string): Array<[string, string]> {
   return result;
 }
 
+// Called without --fields, the generators fall back to a single `name` string
+// column. That default MUST be materialised here, in one place, and then flow
+// into the model, the migration, the form, the view and the test alike. It used
+// to live only inside the model template, so `generate model X` / `generate
+// crud X` wrote a model declaring `name` while the migration - built from the
+// parsed field list, which was empty - created only id + created_at. The first
+// write then failed with "table x has no column named name".
+export const DEFAULT_FIELDS: ReadonlyArray<[string, string]> = [["name", "string"]];
+
+/** Parsed --fields, or the default single `name` column when none given. */
+export function fieldsOrDefault(fieldsStr: string): Array<[string, string]> {
+  const parsed = parseFields(fieldsStr);
+  return parsed.length > 0 ? parsed : DEFAULT_FIELDS.map(([f, t]) => [f, t] as [string, string]);
+}
+
 export function parseCliArgs(args: string[]): { flags: Record<string, string | boolean>; positional: string[] } {
   // Boolean-only flags that never take a value argument.
   const booleanFlags = new Set([
@@ -290,7 +305,7 @@ export async function generate(what: string, name: string, extraArgs: string[] =
 // ── Model ───────────────────────────────────────────────────────────
 
 function generateModel(name: string, flags: Record<string, string | boolean>, emitTest = true): void {
-  const fields = parseFields((flags.fields as string) || "");
+  const fields = fieldsOrDefault((flags.fields as string) || "");
   const table = toTableName(name);
   const dir = resolve("src/models");
   ensureDir(dir);
@@ -300,13 +315,9 @@ function generateModel(name: string, flags: Record<string, string | boolean>, em
   const fieldLines: string[] = [
     `    id: { type: "integer" as const, primaryKey: true, autoIncrement: true },`,
   ];
-  if (fields.length > 0) {
-    for (const [fname, ftype] of fields) {
-      const info = FIELD_TYPE_MAP[ftype] || FIELD_TYPE_MAP.string;
-      fieldLines.push(`    ${fname}: { type: ${info.orm} as const },`);
-    }
-  } else {
-    fieldLines.push(`    name: { type: "string" as const },`);
+  for (const [fname, ftype] of fields) {
+    const info = FIELD_TYPE_MAP[ftype] || FIELD_TYPE_MAP.string;
+    fieldLines.push(`    ${fname}: { type: ${info.orm} as const },`);
   }
   fieldLines.push(`    created_at: { type: "datetime" as const },`);
 
@@ -328,7 +339,11 @@ ${fieldLines.join("\n")}
   // (below) proves the schema through the real ORM, so the migration sub-call
   // does NOT also co-emit a migration test (emitTest=false).
   if (!flags["no-migration"]) {
-    generateMigration(`create_${table}`, flags, fields.length > 0 ? fields : undefined, table, false);
+    // Always hand over the RESOLVED field list. Passing `undefined` when the
+    // parsed list was empty made the migration fall back to its own
+    // parseFields() - also empty - so the table got only id + created_at while
+    // the model above declared `name`, and the first write 500'd.
+    generateMigration(`create_${table}`, flags, fields, table, false);
   }
 
   // Co-emit a real SQLite roundtrip test next to the model. Composite
@@ -417,7 +432,12 @@ ${modelImportBase}${secureOptOut(isPublic)}export const meta = { summary: "Creat
 export default async function (req: Tina4Request, res: Tina4Response) {
 ${extend("validate / business rules before persist",
   `e.g. reject invalid input; ground: tina4_context("validate before create", "nodejs")`)}  const item = new ${model}(req.body as Record<string, unknown>);
-  await item.save();
+  // save() returns false on failure rather than throwing - check it, or a failed
+  // write is reported to the client as a 201 carrying unsaved data.
+  if ((await item.save()) === false) {
+    res.json({ error: "Could not create ${singular}" }, 400);
+    return;
+  }
   res.json({ data: item.toObject() }, 201);
 }
 `,
@@ -499,7 +519,12 @@ export default async function (req: Tina4Request, res: Tina4Response) {
   }
 ${extend("guard which fields / who may update",
   `e.g. enforce ownership; ground: tina4_context("authorize update", "nodejs")`)}  Object.assign(item, req.body as Record<string, unknown>);
-  await item.save();
+  // save() returns false on failure rather than throwing - check it, or a failed
+  // write is reported to the client as a 200 carrying unsaved data.
+  if ((await item.save()) === false) {
+    res.json({ error: "Could not update ${singular}" }, 400);
+    return;
+  }
   res.json({ data: item.toObject() });
 }
 `,
@@ -873,7 +898,7 @@ void test${titleName};
 // ── Form ────────────────────────────────────────────────────────────
 
 function generateForm(name: string, flags: Record<string, string | boolean>): void {
-  const fields = parseFields((flags.fields as string) || "");
+  const fields = fieldsOrDefault((flags.fields as string) || "");
   const table = toTableName(name);
   const routeName = toPlural(table);
 
@@ -890,9 +915,8 @@ function generateForm(name: string, flags: Record<string, string | boolean>): vo
   const path = join(dir, `${table}.twig`);
 
   // Build form fields
-  const fieldEntries = fields.length > 0 ? fields : [["name", "string"] as [string, string]];
   let fieldHtml = "";
-  for (const [fname, ftype] of fieldEntries) {
+  for (const [fname, ftype] of fields) {
     const itype = inputTypes[ftype] || "text";
     const label = fname.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
     const step = ["float", "numeric", "decimal"].includes(ftype) ? ' step="0.01"' : "";
@@ -946,11 +970,11 @@ function generateForm(name: string, flags: Record<string, string | boolean>): vo
 // ── View ────────────────────────────────────────────────────────────
 
 function generateView(name: string, flags: Record<string, string | boolean>): void {
-  const fields = parseFields((flags.fields as string) || "");
+  const fields = fieldsOrDefault((flags.fields as string) || "");
   const table = toTableName(name);
   const routeName = toPlural(table);
 
-  const cols = fields.length > 0 ? fields.map(([f]) => f) : ["name"];
+  const cols = fields.map(([f]) => f);
 
   const dir = resolve("src/templates/pages");
   ensureDir(dir);
@@ -1591,7 +1615,9 @@ function sampleLiteral(fieldType: string): string {
 
 /** model → real SQLite roundtrip (create / read back / missing → null). */
 function emitModelTest(model: string, table: string, fields: Array<[string, string]>): void {
-  const flds = fields.length > 0 ? fields : [["name", "string"] as [string, string]];
+  // Reuse the single DEFAULT_FIELDS constant rather than re-stating the literal,
+  // so the co-emitted test can never describe a shape the model does not have.
+  const flds = fields.length > 0 ? fields : DEFAULT_FIELDS.map(([f, t]) => [f, t] as [string, string]);
   const payload = flds.map(([f, t]) => `${f}: ${sampleLiteral(t)}`).join(", ");
   const stringField = flds.find(([, t]) => ["string", "str", "text"].includes((t || "string").toLowerCase()))?.[0];
   const valueAssert = stringField
