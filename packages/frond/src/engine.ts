@@ -35,6 +35,69 @@ class SafeString {
 }
 
 /**
+ * Serialize a value to compact JSON text that is always valid JSON.
+ *
+ * Never throws and never returns an empty string. JSON.stringify already maps a
+ * non-finite number to null, but it returns the VALUE `undefined` for undefined,
+ * a function, or a symbol, and it throws on a BigInt or a circular structure --
+ * all four of which would otherwise reach the page as nothing or as a crash.
+ */
+function jsonText(value: unknown): string {
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? "null" : text;
+  } catch {
+    // Only reached when the happy path threw, so a well-formed payload never
+    // pays for the walk.
+    const seen = new WeakSet<object>();
+    const text = JSON.stringify(value, (_key, v) => {
+      if (typeof v === "bigint") return v.toString();
+      if (typeof v === "object" && v !== null) {
+        if (seen.has(v)) return null;
+        seen.add(v);
+      }
+      return v;
+    });
+    return text === undefined ? "null" : text;
+  }
+}
+
+const JSON_UNSAFE_RE = /[<>&'\u2028\u2029]/g;
+const JSON_UNSAFE_MAP: Record<string, string> = {
+  "<": "\\u003c", ">": "\\u003e", "&": "\\u0026", "'": "\\u0027",
+  "\u2028": "\\u2028", "\u2029": "\\u2029",
+};
+
+/**
+ * Serialize to JSON that is valid JSON, valid JavaScript, and safe in HTML.
+ *
+ * THE cross-framework contract for json_encode / to_json / tojson. Keep the four
+ * implementations byte-identical; frond_expression_corpus.txt locks it.
+ *
+ * Three things this must never do, each of which was a real bug in one of the
+ * four engines:
+ *
+ * 1. Never emit a non-finite literal. Python wrote a bare `Infinity`, PHP
+ *    returned false, Ruby fell back to inspect output -- none of them parse.
+ *    Node was the one that already got this right. Reported as tina4-php#184 by
+ *    justin-k-bruce.
+ * 2. Never emit nothing, and never emit something that still parses and means
+ *    something else. "var ROWS = ;" is at least a loud SyntaxError.
+ * 3. Never HTML-escape it. Entity-encoding JSON produces {&quot;a&quot;:1}, a
+ *    SyntaxError inside <script>, which is the filter's whole point. Escape only
+ *    the dangerous characters, as JSON \uXXXX escapes: the result stays valid
+ *    JSON AND valid JavaScript, </script> cannot terminate the block, and it is
+ *    safe inside a single-quoted attribute. This is what Jinja2's tojson does,
+ *    and it is why the result is a SafeString.
+ *
+ * U+2028 and U+2029 join that escape set. Both are legal inside a JSON string and
+ * both were illegal inside a JavaScript string literal before ES2019.
+ */
+function jsonSafe(value: unknown): SafeString {
+  return new SafeString(jsonText(value).replace(JSON_UNSAFE_RE, (c) => JSON_UNSAFE_MAP[c]));
+}
+
+/**
  * Produce a human-readable, debugger-friendly inspection of any value.
  *
  * Equivalent to PHP's var_dump, Python's repr, and Ruby's inspect. Unlike
@@ -1307,7 +1370,7 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   int: (v) => v ? parseInt(String(v), 10) || 0 : 0,
   float: (v) => v ? parseFloat(String(v)) || 0.0 : 0.0,
   string: (v) => String(v),
-  json_encode: (v) => JSON.stringify(v),
+  json_encode: (v) => jsonSafe(v),
   json_decode: (v) => typeof v === "string" ? JSON.parse(v) : v,
   keys: (v) => (typeof v === "object" && v !== null && !Array.isArray(v)) ? Object.keys(v) : [],
   values: (v) => (typeof v === "object" && v !== null && !Array.isArray(v)) ? Object.values(v) : [],
@@ -1431,8 +1494,12 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   form_token: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
   formTokenValue: (v?: unknown) => _generateFormTokenValue(v != null ? String(v) : ""),
   form_token_value: (v?: unknown) => _generateFormTokenValue(v != null ? String(v) : ""),
-  tojson: (v, indent) => new SafeString(indent !== undefined ? JSON.stringify(v, null, parseInt(String(indent), 10)) : JSON.stringify(v)),
-  to_json: (v, indent) => new SafeString(indent !== undefined ? JSON.stringify(v, null, parseInt(String(indent), 10)) : JSON.stringify(v)),
+  // Same serializer as json_encode -- the three names are one behaviour. The
+  // old indent argument is gone: PHP cannot honour an arbitrary indent
+  // (JSON_PRETTY_PRINT is fixed at four spaces), so honouring it here alone
+  // broke byte-parity for the one filter whose whole job is a wire format.
+  tojson: (v) => jsonSafe(v),
+  to_json: (v) => jsonSafe(v),
   js_escape: (v) => new SafeString(String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")),
 };
 
@@ -2346,7 +2413,7 @@ export class Frond {
           case "last":       value = Array.isArray(value) ? value[value.length - 1] ?? null : null; continue;
           case "keys":       value = (typeof value === "object" && value !== null && !Array.isArray(value)) ? Object.keys(value) : []; continue;
           case "values":     value = (typeof value === "object" && value !== null && !Array.isArray(value)) ? Object.values(value) : []; continue;
-          case "json_encode": value = JSON.stringify(value); continue;
+          case "json_encode": value = jsonSafe(value); continue;
           case "dump":
             // Delegates to renderDump(), which is gated on TINA4_DEBUG.
             // In production this emits an empty SafeString (no leaked state).
