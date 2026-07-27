@@ -35,6 +35,31 @@ class SafeString {
 }
 
 /**
+ * Every tag that OPENS a construct.
+ *
+ * An unknown tag is a typo, and 3.13.89 makes it throw rather than render its
+ * body: a mistyped guard -- {% iff is_admin %} instead of {% if is_admin %} --
+ * used to render the gated content UNCONDITIONALLY, so a reviewer saw a guard
+ * that was not there. Twig and Jinja2 both raise on an unknown tag; Frond now
+ * does too. There is no user-extension point for tags in any of the four
+ * frameworks, so an unknown name is always a mistake, never a plugin.
+ */
+const KNOWN_TAGS = new Set([
+  "autoescape", "block", "cache", "extends", "for", "from", "if", "import",
+  "include", "live", "macro", "raw", "set", "spaceless",
+]);
+
+/**
+ * Terminators and branch keywords. These reach the tag dispatch only when stray
+ * (their own collector consumes them in the normal case), and a stray one keeps
+ * the old render-nothing behaviour -- see the comment at the throw.
+ */
+const TERMINATOR_TAGS = new Set([
+  "elif", "else", "elseif", "endautoescape", "endblock", "endcache", "endfor",
+  "endif", "endlive", "endmacro", "endraw", "endset", "endspaceless",
+]);
+
+/**
  * Serialize a value to compact JSON text that is always valid JSON.
  *
  * Never throws and never returns an empty string. JSON.stringify already maps a
@@ -2077,8 +2102,16 @@ export class Frond {
             i = skip;
           }
         } else if (tag === "set") {
+          // An assignment has an "="; without one this is the BLOCK form,
+          // {% set name %}...{% endset %}, which captures its rendered body. A
+          // bare includes() is exact here, not a shortcut: the block form's tag
+          // content is only ever "set <name>", so an "=" anywhere -- even inside
+          // a quoted value like {% set m = "a = b" %} -- means assignment.
+          const isBlockSet = !content.includes("=");
           if (this._sandbox && this._allowedTags !== null && !this._allowedTags.has("set")) {
-            i++;
+            i = isBlockSet ? this.skipBlock(tokens, i, "set", "endset") : i + 1;
+          } else if (isBlockSet) {
+            i = this.handleSetBlock(tokens, i, context);
           } else {
             this.handleSet(content, context);
             i++;
@@ -2120,6 +2153,16 @@ export class Frond {
           i++; // Already handled
         } else {
           i++;
+          if (tag !== "" && !TERMINATOR_TAGS.has(tag)) {
+            throw new Error(
+              `Frond: unknown tag "${tag}" -- known tags are: ${[...KNOWN_TAGS].sort().join(", ")}`,
+            );
+          }
+          // An empty tag ({%  %}) or a stray terminator (an {% endif %} with
+          // no {% if %}): no output.
+          // Malformed, but it has always rendered nothing, and nothing is the
+          // safe answer -- unlike an unknown tag it cannot expose content that
+          // was meant to be gated.
         }
 
         if (stripA && i < tokens.length && tokens[i][0] === "TEXT") {
@@ -3119,6 +3162,50 @@ export class Frond {
       }
     }
     return html;
+  }
+
+  /**
+   * {% set name %}...{% endset %} -- render the body and bind it.
+   *
+   * Emits nothing itself. The captured value is a SafeString because it is
+   * template output that has already been escaped on the way in; re-escaping it
+   * at {{ name }} would double-encode every entity. Twig and Jinja2 both mark the
+   * capture safe. Returns the index just past {% endset %}.
+   */
+  private handleSetBlock(tokens: Token[], start: number, context: Record<string, unknown>): number {
+    const [content] = stripTag(tokens[start][1]);
+    const name = (content.split(/\s+/)[1] || "").trim();
+
+    const bodyTokens: Token[] = [];
+    let i = start + 1;
+    let depth = 0;
+    while (i < tokens.length) {
+      if (tokens[i][0] === "BLOCK") {
+        const [tagContent] = stripTag(tokens[i][1]);
+        const tag = tagContent.split(/\s+/)[0] || "";
+        if (tag === "set" && !tagContent.includes("=")) {
+          depth++;
+          bodyTokens.push(tokens[i]);
+        } else if (tag === "endset") {
+          if (depth === 0) {
+            i++;
+            break;
+          }
+          depth--;
+          bodyTokens.push(tokens[i]);
+        } else {
+          bodyTokens.push(tokens[i]);
+        }
+      } else {
+        bodyTokens.push(tokens[i]);
+      }
+      i++;
+    }
+
+    if (name) {
+      context[name] = new SafeString(this.renderTokens([...bodyTokens], context));
+    }
+    return i;
   }
 
   private handleSpaceless(tokens: Token[], start: number, context: Record<string, unknown>): [string, number] {
