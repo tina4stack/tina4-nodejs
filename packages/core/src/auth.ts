@@ -127,6 +127,72 @@ export function ensureDevSecret(cwd?: string): string | null {
   return newSecret;
 }
 
+// ── JWT algorithms ────────────────────────────────────────────────
+//
+// Mirrors the Python master (tina4_python/auth/__init__.py) — the digest is
+// LOOKED UP from the configured algorithm rather than hardcoded, so the "alg"
+// advertised in the header is always the one that actually produced the
+// signature (python#105). TINA4_JWT_ALGORITHM is read for real, and an
+// algorithm we cannot sign fails loudly instead of silently downgrading to
+// HS256 (python#106).
+
+/** HMAC algorithms → their node:crypto digest name. All in node:crypto — zero dependencies. */
+const HMAC_DIGESTS = new Map<string, string>([
+  ["HS256", "sha256"],
+  ["HS384", "sha384"],
+  ["HS512", "sha512"],
+]);
+
+/**
+ * RSA algorithms → their node:crypto sign/verify algorithm name.
+ *
+ * Node ships `node:crypto`, so RS256 is legitimately available here at zero
+ * dependency cost. Python and Ruby cannot do RS256 without a third-party
+ * package, so RS256 is a documented PHP/Node-only EXTRA, not a parity
+ * requirement — the HMAC family is the cross-framework contract.
+ */
+const RSA_SIGN_ALGORITHMS = new Map<string, string>([["RS256", "RSA-SHA256"]]);
+
+/** Every algorithm Tina4 for Node can sign and verify, in the order we advertise them. */
+const SUPPORTED_ALGORITHMS: readonly string[] = [
+  ...HMAC_DIGESTS.keys(),
+  ...RSA_SIGN_ALGORITHMS.keys(),
+];
+
+/**
+ * Seconds of clock skew tolerated on the "nbf" (not-before) claim.
+ *
+ * Without this, a token minted on one host and validated on another a second
+ * behind is rejected for no real reason; RFC 7519 explicitly allows "a small
+ * leeway". Same value as the Python master's `_JWT_LEEWAY_SECONDS`.
+ */
+export const JWT_LEEWAY_SECONDS = 60;
+
+/** The loud, actionable failure for an algorithm we cannot sign — names the supported set. */
+function unsupportedAlgorithmError(algorithm: string): Error {
+  return new Error(
+    `Unsupported JWT algorithm "${algorithm}". Tina4 signs with ` +
+      `${SUPPORTED_ALGORITHMS.join(", ")} (HMAC via node:crypto; RS256 needs a PEM key pair). ` +
+      `Set TINA4_JWT_ALGORITHM to one of those.`,
+  );
+}
+
+/**
+ * Pick the JWT algorithm: explicit argument, else TINA4_JWT_ALGORITHM, else HS256.
+ *
+ * Throws (naming the supported set and the env var) when asked for an algorithm
+ * we cannot sign — a silent downgrade to HS256 is the whole bug in python#106.
+ *
+ * @param algorithm - Explicit algorithm; wins over the environment when given.
+ */
+export function resolveAlgorithm(algorithm?: string): string {
+  const chosen = (algorithm || process.env.TINA4_JWT_ALGORITHM || "HS256").trim();
+  if (!HMAC_DIGESTS.has(chosen) && !RSA_SIGN_ALGORITHMS.has(chosen)) {
+    throw unsupportedAlgorithmError(chosen);
+  }
+  return chosen;
+}
+
 // ── Base64url helpers (RFC 7515) ──────────────────────────────────
 
 function base64urlEncode(data: Buffer): string {
@@ -146,12 +212,20 @@ function base64urlDecode(str: string): Buffer {
  * Create a signed JWT token.
  *
  * Secret is always read from `process.env.TINA4_SECRET`.
- * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
+ * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256");
+ * HS256 / HS384 / HS512 / RS256 are supported and anything else throws.
+ *
+ * The header's `alg` is always the algorithm that actually signed the token.
+ *
+ * No `nbf` (not-before) claim is stamped — parity with Python and PHP. Pass your
+ * own `nbf` in the payload to post-date a token; `validToken` enforces it.
  *
  * @param payload          - Claims to encode (e.g. `{ userId: 1, role: "admin" }`)
  * @param secretOrExpiresIn - Signing secret string, OR expiresIn number in MINUTES (back-compat with old 2-arg form)
  * @param expiresIn         - Lifetime in MINUTES (default 60). `0` ⇒ no `exp` claim (non-expiring). Only used when secret is a string.
+ * @param algorithm         - Overrides TINA4_JWT_ALGORITHM for this call.
  * @returns Signed JWT string: header.payload.signature
+ * @throws When the resolved algorithm is not one Tina4 can sign.
  */
 export function getToken(
   payload: Record<string, unknown>,
@@ -173,7 +247,8 @@ export function getToken(
   if (!resolvedSecret) {
     _warnBlankSecret();
   }
-  const resolvedAlgorithm = algorithm ?? process.env.TINA4_JWT_ALGORITHM ?? "HS256";
+  // Throws on an algorithm we cannot sign — never silently downgrades to HS256.
+  const resolvedAlgorithm = resolveAlgorithm(algorithm);
 
   const header = { alg: resolvedAlgorithm, typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
@@ -204,28 +279,60 @@ export function getToken(
  *
  * Secret is read from `process.env.TINA4_SECRET` when not passed explicitly.
  * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
+ *
+ * Checks, in order: the header's `alg` must BE the expected algorithm (blocks alg
+ * substitution, including `alg: "none"`, before any signature work), then the
+ * signature, then `exp`, then `nbf` (with `JWT_LEEWAY_SECONDS` of clock skew).
  */
 export function validToken(token: string, secret?: string, algorithm?: string): Record<string, unknown> | null {
   const resolvedSecret = secret ?? process.env.TINA4_SECRET ?? "";
   if (!resolvedSecret) {
     _warnBlankSecret();
   }
-  const resolvedAlgorithm = algorithm ?? process.env.TINA4_JWT_ALGORITHM ?? "HS256";
+  // Resolved OUTSIDE the try so a bad TINA4_JWT_ALGORITHM throws rather than
+  // being swallowed into a null. A misconfigured algorithm is a deployment
+  // error, not a bad token: swallowing it turns one actionable message into a
+  // silent 401 on every request, which is far harder to diagnose. It also could
+  // not hide the fault anyway - getToken() already throws on the same value, so
+  // a typo surfaces at login regardless; swallowing here only made the two paths
+  // disagree. Python (master, raises in the constructor) and PHP both throw.
+  const resolvedAlgorithm = resolveAlgorithm(algorithm);
+
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
 
     const [h, p, sig] = parts;
-    const signingInput = `${h}.${p}`;
 
+    // Pin the algorithm to OUR configured one instead of trusting the token's
+    // header. A token asking to be verified as anything else — "none", a weaker
+    // HMAC, or an RSA alg when we sign HMAC — is rejected BEFORE any signature
+    // work, which is what blocks alg substitution. Matches the Python master.
+    const header = JSON.parse(base64urlDecode(h).toString()) as Record<string, unknown>;
+    if (header.alg !== resolvedAlgorithm) return null;
+
+    const signingInput = `${h}.${p}`;
     if (!verifySignature(signingInput, sig, resolvedSecret, resolvedAlgorithm)) {
       return null;
     }
 
     const payload = JSON.parse(base64urlDecode(p).toString()) as Record<string, unknown>;
 
-    if (typeof payload.exp === "number" && Date.now() / 1000 > payload.exp) {
+    const now = Date.now() / 1000;
+    if (typeof payload.exp === "number" && now > payload.exp) {
       return null;
+    }
+
+    // "nbf" (not-before): a post-dated token is not valid YET. Was honoured only
+    // by Ruby, so Python/PHP/Node accepted tokens their issuer had explicitly
+    // marked as not-yet-usable (nodejs#39 / python#107). A token with no nbf is
+    // unaffected — that is what keeps this non-breaking. A PRESENT but
+    // non-numeric nbf is rejected (Python raises a TypeError there and returns
+    // None; a malformed not-before must never read as "no constraint").
+    if (Object.hasOwn(payload, "nbf")) {
+      const notBefore = payload.nbf;
+      if (typeof notBefore !== "number" || !Number.isFinite(notBefore)) return null;
+      if (now + JWT_LEEWAY_SECONDS < notBefore) return null;
     }
 
     return payload;
@@ -250,21 +357,23 @@ export function getPayload(token: string): Record<string, unknown> | null {
 // ── Signing helpers ───────────────────────────────────────────────
 
 function sign(input: string, secret: string, algorithm: string): string {
-  if (algorithm === "HS256") {
-    const sig = createHmac("sha256", secret).update(input).digest();
-    return base64urlEncode(sig);
+  // The digest comes from the configured algorithm, so the "alg" we advertise in
+  // the header is the one that actually produced this signature.
+  const digest = HMAC_DIGESTS.get(algorithm);
+  if (digest) {
+    return base64urlEncode(createHmac(digest, secret).update(input).digest());
   }
-  if (algorithm === "RS256") {
-    const signer = createSign("RSA-SHA256");
+  const rsaAlgorithm = RSA_SIGN_ALGORITHMS.get(algorithm);
+  if (rsaAlgorithm) {
+    const signer = createSign(rsaAlgorithm);
     signer.update(input);
-    const sig = signer.sign(secret);
-    return base64urlEncode(sig);
+    return base64urlEncode(signer.sign(secret));
   }
-  throw new Error(`Unsupported algorithm: ${algorithm}`);
+  throw unsupportedAlgorithmError(algorithm);
 }
 
 function verifySignature(input: string, sig: string, secret: string, algorithm: string): boolean {
-  if (algorithm === "HS256") {
+  if (HMAC_DIGESTS.has(algorithm)) {
     const expected = sign(input, secret, algorithm);
     // Constant-time comparison
     const a = Buffer.from(sig);
@@ -272,12 +381,13 @@ function verifySignature(input: string, sig: string, secret: string, algorithm: 
     if (a.length !== b.length) return false;
     return timingSafeEqual(a, b);
   }
-  if (algorithm === "RS256") {
-    const verifier = createVerify("RSA-SHA256");
+  const rsaAlgorithm = RSA_SIGN_ALGORITHMS.get(algorithm);
+  if (rsaAlgorithm) {
+    const verifier = createVerify(rsaAlgorithm);
     verifier.update(input);
     return verifier.verify(secret, base64urlDecode(sig));
   }
-  throw new Error(`Unsupported algorithm: ${algorithm}`);
+  throw unsupportedAlgorithmError(algorithm);
 }
 
 // ── Password Hashing (PBKDF2) ────────────────────────────────────
@@ -334,8 +444,14 @@ export function checkPassword(password: string, hash: string): boolean {
  * Auth middleware that extracts and verifies a Bearer JWT from the
  * Authorization header. On success, attaches the decoded payload to
  * `(request as any).auth`. On failure, sends a 401 JSON response.
+ *
+ * @param secret    - Signing secret / PEM public key (default: TINA4_SECRET env var).
+ * @param algorithm - JWT algorithm. Omit it to honour TINA4_JWT_ALGORITHM (then
+ *   HS256). It used to default to the literal "HS256", which SHADOWED the env
+ *   var: an app on TINA4_JWT_ALGORITHM=HS512 minted HS512 tokens and this
+ *   middleware verified them as HS256, rejecting every valid token.
  */
-export function authMiddleware(secret?: string, algorithm: string = "HS256"): Middleware {
+export function authMiddleware(secret?: string, algorithm?: string): Middleware {
   return (req: Tina4Request, res: Tina4Response, next: () => void): void => {
     const authHeader = req.headers.authorization ?? "";
 
