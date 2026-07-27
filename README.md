@@ -107,7 +107,7 @@ Tina4 Node.js runs at **93% of raw Node.js speed** while providing 98 built-in f
 
 ## Cross-Framework Parity
 
-Tina4 ships identical features across four languages: same architecture, same conventions, same 97 features:
+Tina4 ships identical features across four languages: same architecture, same conventions, same 98 features:
 
 | | Python | PHP | Ruby | Node.js |
 |---|--------|-----|------|---------|

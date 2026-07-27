@@ -64,9 +64,12 @@ not a win. Closing this gap is tracked as the ahead-of-time compile layer (ADR-0
 Reproduce: `cd benchmarks && npm install && npx tsx benchmarks/benchTemplates.ts`
 
 
-## 2. Feature Comparison (38 features)
+## 2. Feature Comparison (41 of 98 built-in features)
 
-Ships with core install, no extra packages needed.
+Tina4 ships **98 built-in features**. The table below compares the subset that has a
+meaningful equivalent in the competing frameworks, so it is a like-for-like comparison
+rather than the full inventory. Everything listed ships with the core install, with no
+extra packages needed.
 
 | Feature | Tina4 | Express | Fastify | Koa | Hapi |
 |---------|:-----:|:-------:|:-------:|:---:|:----:|
@@ -120,27 +123,38 @@ Ships with core install, no extra packages needed.
 
 | Framework | Features | Deps | JSON req/s | List req/s |
 |-----------|:-------:|:----:|:---------:|:----------:|
-| **Tina4** | **38/38** | **0** | **11,872** | **12,347** |
-| Hapi | 12/38 | 1 | 41,185 | 10,431 |
-| Fastify | 5/38 | 1 | 32,824 | 18,705 |
-| Express | 4/38 | 1 | 39,337 | 18,616 |
-| Koa | 3/38 | 2 | 23,528 | 18,205 |
+| **Tina4** | **41/41** | **0** | **11,872** | **12,347** |
+| Hapi | 12/41 | 1 | 41,185 | 10,431 |
+| Fastify | 5/41 | 1 | 32,824 | 18,705 |
+| Express | 4/41 | 1 | 39,337 | 18,616 |
+| Koa | 3/41 | 2 | 23,528 | 18,205 |
 
 ---
 
 ## 3. Deployment Size
 
-| Framework | Install Size | Dependencies |
-|-----------|:----------:|:------------:|
-| **Tina4 Node.js** | **~1.8 MB** | **0** |
-| Koa | ~2 MB | 2 |
-| Express | ~2.5 MB | 1 (+57 transitive) |
-| Fastify | ~3 MB | 1 (+14 transitive) |
-| Hapi | ~3.5 MB | 1 (+12 transitive) |
+**Measured 2026-07-27** on macOS (Apple Silicon) by installing each package for real.
+Nothing in this table is estimated. The command that produced it is named below.
 
-Zero dependencies means core size **is** deployment size. No `node_modules` bloat.
+Command: `npm install <pkg> --omit=dev` into an empty project, then `du -sh node_modules`.
 
----
+| Framework | Install Size | Packages in node_modules |
+|-----------|:----------:|:------------------------:|
+| @hapi/hapi | **2 MB** | 2 |
+| koa | 2 MB | 30 |
+| express | 4 MB | 65 |
+| **Tina4 Node.js** | **7.7 MB** package, **40 MB** as installed | **36** |
+| fastify | 13 MB | 41 |
+
+**Correction.** This table claimed **~1.8 MB**. The published package is **7.7 MB**, and a
+default `npm install tina4-nodejs` produces a **40 MB** `node_modules` holding 36 packages,
+because npm installs `optionalDependencies` unless you pass `--no-optional`.
+
+To be precise about the zero-dependency claim, which does survive: the published
+`package.json` declares **0 `dependencies`** and 5 `optionalDependencies` (AWS SDK,
+mongodb, redis, pg and friends, for the storage and cache backends). Nothing is a hard
+requirement, so the framework genuinely runs on the stdlib alone. But 40 MB is what a user
+gets by default, and quoting 1.8 MB was misleading. Use `--no-optional` for the lean path.
 
 ## 4. CO2 / Carbonah
 
