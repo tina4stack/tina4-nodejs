@@ -244,10 +244,16 @@ console.log("\n-- an unsupported algorithm fails loudly --");
     () => getToken({ userId: 1 }),
     namesEverything,
   );
-  // Validation fails CLOSED rather than throwing out of a request handler.
-  assert(
-    "validToken rejects (does not throw) when the configured algorithm is unsupported",
-    validToken(getToken({ userId: 1 }, SECRET, 60, "HS256")) === null,
+  // Validation THROWS on a misconfigured algorithm rather than swallowing it
+  // into a null. Cross-framework contract: Python (master) raises in the
+  // constructor and PHP throws out of validToken, so Node must not be the one
+  // framework that silently turns a deployment error into a 401 on every
+  // request. It cannot hide the fault anyway - getToken throws on the same
+  // value (asserted just above), so a typo surfaces at login either way.
+  assertThrows(
+    "validToken throws when the configured algorithm is unsupported",
+    () => validToken(getToken({ userId: 1 }, SECRET, 60, "HS256")),
+    namesEverything,
   );
   delete process.env.TINA4_JWT_ALGORITHM;
 
@@ -484,6 +490,40 @@ function mockResponse(): { response: Tina4Response; state: { lastStatus: number 
   });
   assert("authMiddleware(secret, 'HS256') overrides the env var", nextCalled === true);
   delete process.env.TINA4_JWT_ALGORITHM;
+}
+
+// ── A misconfigured algorithm THROWS, it is not swallowed ─────────
+// Cross-framework contract: Python (master) raises in the constructor and PHP
+// throws out of validToken, so Node must not quietly turn a deployment error
+// into a null. Swallowing it produced a silent 401 on every request while
+// getToken threw on the same value - two paths disagreeing about one typo.
+
+{
+  process.env.TINA4_JWT_ALGORITHM = "HS2566"; // a plausible typo
+  assertThrows(
+    "validToken throws on a bad TINA4_JWT_ALGORITHM instead of returning null",
+    () => validToken("a.b.c"),
+    (message) =>
+      message.includes("HS2566") &&
+      message.includes("HS256") &&
+      message.includes("HS384") &&
+      message.includes("HS512") &&
+      message.includes("TINA4_JWT_ALGORITHM"),
+  );
+  assertThrows(
+    "getToken throws on the same bad value, so both paths agree",
+    () => getToken({ userId: 1 }, SECRET),
+    (message) => message.includes("HS2566"),
+  );
+  delete process.env.TINA4_JWT_ALGORITHM;
+}
+
+{
+  // NEGATIVE: a malformed token under a VALID algorithm still returns null
+  // rather than throwing. Only the config error escapes.
+  delete process.env.TINA4_JWT_ALGORITHM;
+  assert("a malformed token under a valid alg still returns null", validToken("not.a.jwt") === null);
+  assert("an empty token still returns null", validToken("") === null);
 }
 
 // ── Summary ───────────────────────────────────────────────────────

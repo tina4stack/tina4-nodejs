@@ -289,13 +289,16 @@ export function validToken(token: string, secret?: string, algorithm?: string): 
   if (!resolvedSecret) {
     _warnBlankSecret();
   }
-  try {
-    // Resolved INSIDE the try on purpose: a typo in TINA4_JWT_ALGORITHM makes
-    // validation fail CLOSED (every token rejected) rather than throwing out of
-    // a request handler and turning a 401 into a 500. The signing path
-    // (getToken) raises loudly, which is where the misconfiguration surfaces.
-    const resolvedAlgorithm = resolveAlgorithm(algorithm);
+  // Resolved OUTSIDE the try so a bad TINA4_JWT_ALGORITHM throws rather than
+  // being swallowed into a null. A misconfigured algorithm is a deployment
+  // error, not a bad token: swallowing it turns one actionable message into a
+  // silent 401 on every request, which is far harder to diagnose. It also could
+  // not hide the fault anyway - getToken() already throws on the same value, so
+  // a typo surfaces at login regardless; swallowing here only made the two paths
+  // disagree. Python (master, raises in the constructor) and PHP both throw.
+  const resolvedAlgorithm = resolveAlgorithm(algorithm);
 
+  try {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
 
