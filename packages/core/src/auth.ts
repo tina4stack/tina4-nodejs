@@ -510,7 +510,7 @@ export function refreshToken(
 export function authenticateRequest(
   headers: Record<string, string | string[] | undefined>,
   secret?: string,
-  algorithm: string = "HS256",
+  algorithm?: string,
 ): Record<string, unknown> | null {
   const authHeader =
     (headers.authorization ?? headers.Authorization ?? "") as string;
@@ -519,8 +519,12 @@ export function authenticateRequest(
 
   const token = authHeader.slice(7);
 
-  // Try JWT first (secret/algorithm params kept for backward compat but validToken reads from env)
-  if (validToken(token)) return getPayload(token);
+  // Both overrides are FORWARDED. They used to be accepted and dropped - the
+  // body called bare validToken(token), so a caller passing secret= or
+  // algorithm= silently got the env values instead, and `algorithm` defaulted to
+  // the literal "HS256" which additionally shadowed TINA4_JWT_ALGORITHM. Python,
+  // PHP and Ruby all honour these; Node was the last one that did not.
+  if (validToken(token, secret, algorithm)) return getPayload(token);
 
   // Fallback: treat Bearer value as API key
   if (validateApiKey(token)) {
