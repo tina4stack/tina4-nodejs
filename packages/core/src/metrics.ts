@@ -646,7 +646,12 @@ function extractFunctions(source: string, filePath: string, root: string = "."):
 
       // Extract function body by brace matching (on cleaned lines).
       const funcBody = extractFunctionBody(lines, i);
-      const funcLoc = funcBody.split("\n").length;
+      // Code lines, by the exact same counter the file level uses. This was
+      // `funcBody.split("\n").length` - a raw line span - while file LOC excluded
+      // blanks and comments, so `loc` meant two different things in one payload
+      // and the dashboard sized bubbles in one unit while printing the function
+      // table in the other. Floor of 1: a one-line body must never report 0.
+      const funcLoc = Math.max(1, countLines(funcBody).loc);
       const complexity = cycloMaticComplexity(funcBody);
 
       // Parse args
@@ -674,6 +679,53 @@ function extractFunctions(source: string, filePath: string, root: string = "."):
       currentClass = null;
     }
   }
+
+  return chargeNestedComplexityToTheNestedFunction(functions);
+}
+
+/**
+ * Stop a function being charged for the complexity of the functions nested
+ * inside it.
+ *
+ * Each function's raw score is measured over its whole span, so a branch inside
+ * a nested function landed on BOTH that function and every function enclosing
+ * it. The over-count compounded with depth: an IIFE wrapper or a registrar
+ * defining twenty inner handlers absorbed the entire file's complexity and
+ * topped the offenders list, hiding the genuine hot spots.
+ *
+ * The correction is exact. A raw score is 1 + every decision in the span, so
+ * (raw - 1) is the total decision count of a function's whole subtree.
+ * Subtracting that for each DIRECT child leaves the function's own branches:
+ *
+ *     own(F) = raw(F) - sum over direct children C of (raw(C) - 1)
+ *
+ * Anything the extractor does NOT list is deliberately unaffected: nothing
+ * subtracts it, so its decisions stay with the function that contains it -
+ * moved, never lost.
+ */
+export function chargeNestedComplexityToTheNestedFunction(
+  functions: FunctionInfo[],
+): FunctionInfo[] {
+  if (functions.length < 2) return functions;
+
+  const lastLine = (f: FunctionInfo) => f.line + Math.max(1, f.loc) - 1;
+  const contains = (outer: FunctionInfo, inner: FunctionInfo) =>
+    inner.line > outer.line && lastLine(inner) <= lastLine(outer);
+
+  const raw = functions.map((f) => f.complexity);
+  functions.forEach((outer, i) => {
+    let subtract = 0;
+    functions.forEach((inner, j) => {
+      if (i === j || !contains(outer, inner)) return;
+      // Direct child only: skip it if another function sits between the two,
+      // or its complexity would be subtracted twice.
+      const nestedDeeper = functions.some(
+        (mid, k) => k !== i && k !== j && contains(outer, mid) && contains(mid, inner),
+      );
+      if (!nestedDeeper) subtract += raw[j] - 1;
+    });
+    outer.complexity = Math.max(1, raw[i] - subtract);
+  });
 
   return functions;
 }
