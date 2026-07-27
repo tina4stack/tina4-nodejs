@@ -92,7 +92,7 @@ console.log("=== Frond Expression Parity (cross-framework contract) ===\n");
 
 // Guard the guard: a corpus entry with no expected value would otherwise pass
 // by never being asserted.
-assertEq("corpus holds 79 expressions", corpus.length, 79);
+assertEq("corpus holds 82 expressions", corpus.length, 82);
 assertEq(
   "every corpus label has an answer-key entry",
   corpus.filter(([label]) => !expected.has(label)).length,
@@ -208,6 +208,79 @@ console.log("\n-- json_encode output contract --");
   // Negative case: undefined must not reach the page as the literal
   // "undefined" (JSON.stringify returns the VALUE undefined for it).
   assertEq("json_encode undefined", e.renderString("{{ v|json_encode }}", { v: undefined }), "null");
+
+  // -- 3.13.89: block set + unknown tags --------------------------------------
+  // {% set name %}...{% endset %} binds the rendered body. Core syntax in BOTH
+  // reference engines, and broken identically in all four frameworks until now:
+  // the body rendered inline where it stood and the variable was never assigned.
+  const blockSet = e.renderString("{% set g %}Hi {{ n }}{% endset %}[{{ g }}]", { n: "Andre" });
+  assertEq("block set captures its body", blockSet, "[Hi Andre]");
+  // Negative case: the old bug printed the body first and left the variable
+  // empty. Neither may happen.
+  assertEq("block set does not print the body inline", blockSet.startsWith("Hi"), false);
+  assertEq("block set does not leave the variable empty", blockSet.includes("[]"), false);
+  assertEq(
+    "block set captures a loop",
+    e.renderString("{% set g %}{% for i in [1,2] %}{{ i }}{% endfor %}{% endset %}[{{ g }}]", {}),
+    "[12]",
+  );
+  // Nesting: the inner endset must not close the outer block.
+  assertEq(
+    "block set nests",
+    e.renderString("{% set a %}A{% set b %}B{% endset %}{{ b }}{% endset %}[{{ a }}]", {}),
+    "[AB]",
+  );
+
+  // The capture is already-escaped output, so it is not escaped again. Twig and
+  // Jinja2 both mark a captured block safe. A value interpolated INTO the body is
+  // still escaped on the way in -- escaping happens once, in the right place.
+  assertEq(
+    "block set capture is not double-escaped",
+    e.renderString("{% set g %}{{ h }}{% endset %}[{{ g }}]", { h: "<b>&x</b>" }),
+    "[&lt;b&gt;&amp;x&lt;/b&gt;]",
+  );
+  assertEq(
+    "literal markup in a capture stays literal",
+    e.renderString("{% set g %}<b>hi</b>{% endset %}[{{ g }}]", {}),
+    "[<b>hi</b>]",
+  );
+  // Negative case: the inline assignment form is untouched, including an "="
+  // inside a quoted value -- that must NOT be read as the block form.
+  assertEq("inline set still works", e.renderString('{% set g = "x" %}[{{ g }}]', {}), "[x]");
+  assertEq(
+    "inline set with = inside a string",
+    e.renderString('{% set g = "a = b" %}[{{ g }}]', {}),
+    "[a = b]",
+  );
+
+  // THE security-shaped one. {% iff user.is_admin %}...{% endiff %} used to render
+  // the admin block UNCONDITIONALLY: the unknown tag emitted nothing and its body
+  // was parsed as ordinary content, so a reviewer read a guard that was not there.
+  // Twig and Jinja2 both raise on an unknown tag. There is no user-extension point
+  // for tags, so an unknown name is always a mistake.
+  let threwIff = "";
+  try { e.renderString("{% iff admin %}SECRET{% endiff %}", { admin: false }); }
+  catch (err: any) { threwIff = err.message; }
+  assertEq("unknown tag throws", threwIff.includes('unknown tag "iff"'), true);
+  assertEq("unknown tag does not leak its body", threwIff.includes("SECRET"), false);
+  let threwFrob = "";
+  try { e.renderString("{% frobnicate 42 %}", {}); }
+  catch (err: any) { threwFrob = err.message; }
+  assertEq("unknown inline tag throws", threwFrob.includes('unknown tag "frobnicate"'), true);
+  // Negative case 1: every real tag still parses.
+  assertEq(
+    "all known tags still parse",
+    e.renderString(
+      "{% if 1 %}x{% endif %}{% for i in [1] %}{{ i }}{% endfor %}" +
+      "{% raw %}{{ q }}{% endraw %}{% spaceless %} a {% endspaceless %}" +
+      "{% autoescape true %}y{% endautoescape %}", {},
+    ),
+    "x1{{ q }} a y",
+  );
+  // Negative case 2: a STRAY terminator is not an unknown tag. It stays a silent
+  // no-op -- it was always one, and unlike an unknown tag it cannot expose gated
+  // content.
+  assertEq("a stray terminator stays a no-op", e.renderString("A{% endif %}B", {}), "AB");
 
   // The three spellings share one serializer and must not drift apart.
   const ctx = { v: { a: 1, u: "a/b", n: "caf\u00e9", bad: Infinity } };
