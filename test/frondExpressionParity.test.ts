@@ -67,6 +67,10 @@ function context(): Record<string, unknown> {
     list: ["a", "b", "c"],
     map: { a: 1, b: 2 },
     html: "<b>&x</b>",
+    // Non-finite numbers: the tina4-php#184 payload. JSON has no Infinity or
+    // NaN, so both must serialize as null in every framework.
+    inf_val: Infinity,
+    nan_map: { v: NaN },
   };
 }
 
@@ -88,7 +92,7 @@ console.log("=== Frond Expression Parity (cross-framework contract) ===\n");
 
 // Guard the guard: a corpus entry with no expected value would otherwise pass
 // by never being asserted.
-assertEq("corpus holds 72 expressions", corpus.length, 72);
+assertEq("corpus holds 79 expressions", corpus.length, 79);
 assertEq(
   "every corpus label has an answer-key entry",
   corpus.filter(([label]) => !expected.has(label)).length,
@@ -155,22 +159,65 @@ console.log("\n-- the not operator --");
   assertEq("'not' inside a string is text", e.renderString('{{ "not a var" }}', ctx), "not a var");
 }
 
-console.log("\n-- json_encode escaping --");
+console.log("\n-- json_encode output contract --");
 {
   const e = new Frond();
-  const ctx = { data: { a: 1 } };
-  // `|json_encode` escapes; `|json_encode|raw` does not. Node always escaped
-  // here; PHP alone returned raw JSON and was changed to match in 3.13.87.
+  // 3.13.88 reverts 3.13.87's HTML-escaping of this filter. Entity-encoding the
+  // payload produced {&quot;a&quot;:1}, a SyntaxError inside <script>, which
+  // broke the filter's primary use in all four frameworks at once. The safe form
+  // escapes only the dangerous characters, as JSON \uXXXX escapes: valid JSON,
+  // valid JavaScript, cannot terminate a </script>, safe in a single-quoted
+  // attribute. Jinja2's tojson model.
   assertEq(
-    "json_encode escapes by default",
-    e.renderString("{{ data|json_encode }}", ctx),
-    "{&quot;a&quot;:1}",
-  );
-  assertEq(
-    "json_encode|raw opts out",
-    e.renderString("{{ data|json_encode|raw }}", ctx),
+    "json_encode is valid inside a script block",
+    e.renderString("{{ data|json_encode }}", { data: { a: 1 } }),
     '{"a":1}',
   );
+  // Negative case: escapes must be \uXXXX, never HTML entities, and </script>
+  // must not survive intact.
+  const escaped = e.renderString("{{ data|json_encode }}", { data: { x: "</script>&'" } });
+  assertEq(
+    "json_encode escapes < > & ' as \\uXXXX",
+    escaped,
+    '{"x":"\\u003c/script\\u003e\\u0026\\u0027"}',
+  );
+  assertEq("json_encode emits no HTML entities", escaped.includes("&quot;"), false);
+  assertEq("json_encode cannot close a script tag", escaped.includes("</script>"), false);
+  assertEq(
+    "json_encode|raw is now a no-op",
+    e.renderString("{{ data|json_encode|raw }}", { data: { a: 1 } }),
+    '{"a":1}',
+  );
+
+  // tina4-php#184 (justin-k-bruce): a non-finite value must become null. Node
+  // was the only framework already correct here; the assertion is mirrored into
+  // all four so the contract is enforced from one place.
+  assertEq("json_encode Infinity", e.renderString("{{ v|json_encode }}", { v: Infinity }), "null");
+  assertEq("json_encode -Infinity", e.renderString("{{ v|json_encode }}", { v: -Infinity }), "null");
+  assertEq("json_encode NaN", e.renderString("{{ v|json_encode }}", { v: NaN }), "null");
+  assertEq(
+    "json_encode nested Infinity",
+    e.renderString("{{ v|json_encode }}", { v: { a: 1, b: Infinity } }),
+    '{"a":1,"b":null}',
+  );
+  assertEq(
+    "json_encode NaN in a list",
+    e.renderString("{{ v|json_encode }}", { v: [1, NaN] }),
+    "[1,null]",
+  );
+  // Negative case: undefined must not reach the page as the literal
+  // "undefined" (JSON.stringify returns the VALUE undefined for it).
+  assertEq("json_encode undefined", e.renderString("{{ v|json_encode }}", { v: undefined }), "null");
+
+  // The three spellings share one serializer and must not drift apart.
+  const ctx = { v: { a: 1, u: "a/b", n: "caf\u00e9", bad: Infinity } };
+  const out = e.renderString("{{ v|json_encode }}", ctx);
+  assertEq("to_json matches json_encode", e.renderString("{{ v|to_json }}", ctx), out);
+  assertEq("tojson matches json_encode", e.renderString("{{ v|tojson }}", ctx), out);
+  // Slashes stay unescaped and non-ASCII stays raw -- PHP alone used to write
+  // "a\\/b", and Python alone used to write "caf\\u00e9".
+  assertEq("json_encode leaves / unescaped", out.includes('"u":"a/b"'), true);
+  assertEq("json_encode leaves non-ASCII raw", out.includes("caf\u00e9"), true);
 }
 
 // -- Summary ----------------------------------------------------------------

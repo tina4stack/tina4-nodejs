@@ -1,6 +1,6 @@
 {
   "name": "tina4-nodejs",
-  "version": "3.13.87",
+  "version": "3.13.88",
   "type": "module",
   "description": "Tina4 for Node.js/TypeScript - 54 built-in features, zero dependencies",
   "keywords": [
