@@ -1,0 +1,34 @@
+{
+  "language": "nodejs",
+  "runtime": "Node v24.9.0",
+  "page": {
+    "items": 20,
+    "engines": [
+      "Frond (Tina4)",
+      "Nunjucks",
+      "EJS"
+    ]
+  },
+  "output_equivalence": "verified",
+  "aot_compile_layer": "NOT IMPLEMENTED in Node",
+  "results": {
+    "Frond (Tina4)": {
+      "p50_ops_sec": 7015.525357616406,
+      "mean_ops_sec": 6099.068991735345,
+      "iterations": 1523,
+      "batches": 1523
+    },
+    "Nunjucks": {
+      "p50_ops_sec": 62420.02434380949,
+      "mean_ops_sec": 59159.839675068826,
+      "iterations": 14744,
+      "batches": 7372
+    },
+    "EJS": {
+      "p50_ops_sec": 53570.47195585793,
+      "mean_ops_sec": 51471.09985705514,
+      "iterations": 12844,
+      "batches": 6422
+    }
+  }
+}
