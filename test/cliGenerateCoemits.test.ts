@@ -21,7 +21,8 @@
  * (b) green on generation — a scaffolded test that fails on creation is bad DX.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -153,6 +154,92 @@ try {
     const emitted = existsSync(testsDir) ? readdirSync(testsDir).filter((f) => f.endsWith(".test.ts")) : [];
     assert("form/view: template-only generators emit NO test", emitted.length === 0,
       emitted.join(", "));
+  }
+  // ── Regression (nodejs#38 / tina4-python#101): generate model/crud WITHOUT
+  // --fields used to write a model declaring `name` while its migration created
+  // only id + created_at, so the first write died with "table todo has no column
+  // named name". Every case above passes --fields explicitly, which is exactly
+  // why the bug survived — these exercise the no-fields path.
+  {
+    /** The UP half of the single generated migration (the file holds UP + DOWN). */
+    const upSql = (project: string): string => {
+      const dir = join(project, "migrations");
+      const ups = readdirSync(dir).filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql"));
+      if (ups.length === 0) throw new Error("no UP migration was generated");
+      const body = readFileSync(join(dir, ups[0]), "utf-8");
+      return body.slice(body.indexOf("-- UP"), body.indexOf("-- DOWN"));
+    };
+
+    /** Field names declared on the generated model's `static fields = {...}`. */
+    const modelFields = (project: string, model: string): string[] => {
+      const src = readFileSync(join(project, "src/models", `${model}.ts`), "utf-8");
+      const block = src.slice(src.indexOf("static fields = {"), src.indexOf("};"));
+      return [...block.matchAll(/^\s{4}(\w+):/gm)].map((m) => m[1]);
+    };
+
+    const fresh = (id: string): string => {
+      const d = join(baseDir, id);
+      mkdirSync(join(d, "data"), { recursive: true });
+      return d;
+    };
+
+    // 1. `generate model` with no --fields
+    const mDir = fresh("nofields_model");
+    runCli(mDir, ["generate", "model", "Todo"]);
+    const declared = modelFields(mDir, "Todo");
+    const mUp = upSql(mDir);
+    assert("no --fields: model declares the default `name` field",
+      declared.includes("name"), declared.join(", "));
+    assert("no --fields: migration contains EVERY field the model declares",
+      declared.every((f) => mUp.includes(f)),
+      `declared=[${declared.join(", ")}]\n${mUp}`);
+
+    // 2. same contract through `generate crud` — the path llms.txt recommends
+    const cDir = fresh("nofields_crud");
+    runCli(cDir, ["generate", "crud", "Todo"]);
+    const crudDeclared = modelFields(cDir, "Todo");
+    const cUp = upSql(cDir);
+    assert("crud, no --fields: migration contains EVERY field the model declares",
+      crudDeclared.every((f) => cUp.includes(f)),
+      `declared=[${crudDeclared.join(", ")}]\n${cUp}`);
+
+    // 3. positive control — the explicit --fields path must not regress
+    const eDir = fresh("explicit_fields");
+    runCli(eDir, ["generate", "model", "Product", "--fields", "title:string,price:float,in_stock:bool"]);
+    const eUp = upSql(eDir);
+    assert("explicit --fields: every named field still reaches the migration",
+      ["title", "price", "in_stock"].every((f) => eUp.includes(f)), eUp);
+
+    // 4. END-TO-END against REAL sqlite: run the generated DDL, then insert a row
+    //    using the model's OWN field names. This is precisely what used to 500.
+    const cols = declared.filter((f) => f !== "id" && f !== "created_at");
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(mUp.replace("-- UP", ""));
+      db.prepare(`INSERT INTO todo (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`)
+        .run(...cols.map(() => "x"));
+      const row = db.prepare("SELECT COUNT(*) AS n FROM todo").get() as { n: number };
+      assert("generated schema accepts a row using the model's own fields (real SQLite)",
+        Number(row.n) === 1, JSON.stringify(row));
+    } catch (err) {
+      assert("generated schema accepts a row using the model's own fields (real SQLite)",
+        false, String(err));
+    } finally {
+      db.close();
+    }
+
+    // 5. the generated create route must check save() before serialising —
+    //    save() returns false rather than throwing, so an unchecked route
+    //    reports a failed write to the client as a 201 carrying unsaved data.
+    const post = readFileSync(join(cDir, "src/routes/api/todos/post.ts"), "utf-8");
+    assert("generated create route checks save() result",
+      post.includes("=== false"), post);
+    // Require presence explicitly: a bare indexOf comparison passes vacuously
+    // when the guard is ABSENT (-1 < any real offset), which would make this
+    // assertion green against the very bug it exists to catch.
+    assert("the guard comes BEFORE the success serialisation",
+      post.includes("=== false")
+      && post.indexOf("=== false") < post.indexOf("toObject() }, 201"), post);
   }
 } finally {
   rmSync(baseDir, { recursive: true, force: true });
