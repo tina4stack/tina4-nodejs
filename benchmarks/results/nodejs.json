@@ -48,5 +48,19 @@
       "features": 1,
       "server": "built-in http"
     }
-  ]
+  ],
+  "templates": {
+    "measured": true,
+    "runtime": "Node v24.9.0",
+    "output_equivalence": "verified",
+    "engines": {
+      "Frond (Tina4)": 7016,
+      "Nunjucks": 62420,
+      "EJS": 53570
+    },
+    "aot_compile_layer": "NOT IMPLEMENTED in Node",
+    "fastest_rival": "Nunjucks",
+    "frond_slower_by": 8.9,
+    "frond_faster_by": null
+  }
 }

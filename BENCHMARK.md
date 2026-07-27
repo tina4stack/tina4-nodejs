@@ -28,6 +28,42 @@ Real HTTP benchmarks — identical JSON endpoint and 100-item list endpoint. Tin
 
 ---
 
+## 1b. Template rendering, Frond vs Nunjucks and EJS
+
+**Date:** 2026-07-27 | **Machine:** Apple Silicon (ARM64), macOS | **Node:** v24.9.0 | **Tool:** `benchmarks/benchTemplates.ts` (p50 over batched samples, min 0.25s / 200 iterations)
+
+This category used to be missing, and its absence flattered us. Sections 1 and 2 above
+measure request throughput and feature count, where Tina4 competes well. Neither says
+anything about template rendering, the one axis where Frond competes head-on with the
+engines it replaced. Here are the numbers.
+
+Same page (20-row product list: loop, index, even/odd class, uppercase, 2-decimal
+money, conditional footer). **Every engine's output is compared and proven identical
+before anything is timed**; a mismatch aborts the run. Each template is compiled ONCE
+outside the clock, so this is steady-state render throughput, not compilation.
+
+| Engine | Renders/s (p50) | Renders/s (mean) | Deps |
+|--------|:---------------:|:----------------:|:----:|
+| Nunjucks | **62,420** | 59,160 | 1 |
+| EJS | **53,570** | 51,471 | 1 |
+| **Frond (Tina4)** | **7,016** | 6,099 | **0** |
+
+**Key takeaway, stated plainly: Frond is 8.90x slower than Nunjucks and 7.64x slower
+than EJS on identical output.** Nunjucks and EJS both compile a template into a real JS
+function and let V8 optimise it; Frond walks a tree and calls back into engine
+primitives per hole.
+
+Worth noting against the Python result: Node has **no** AOT compile-to-closure layer and
+sits 8.9x behind, while Python **has** one and sits 14.5x behind. So shipping that layer
+here is not by itself the fix, emitting native host-language source is the lever.
+
+What Frond does buy is the zero in the Deps column, and the fact that the same template
+syntax renders in all four Tina4 languages. That is a real trade, but it is a trade -
+not a win. Closing this gap is tracked as the ahead-of-time compile layer (ADR-0001).
+
+Reproduce: `cd benchmarks && npm install && npx tsx benchmarks/benchTemplates.ts`
+
+
 ## 2. Feature Comparison (38 features)
 
 Ships with core install, no extra packages needed.
