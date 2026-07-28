@@ -17,6 +17,7 @@
  *   TINA4_SESSION_REDIS_DB       (default: 0)
  */
 import { execFileSync } from "node:child_process";
+import { childFailureError } from "./childError.js";
 import { createRequire } from "node:module";
 import type { SessionHandler } from "../session.js";
 import { respCommandSync } from "./respClient.js";
@@ -142,9 +143,17 @@ export class RedisNpmSessionHandler implements SessionHandler {
       (async () => {
         try {
           const redis = require("redis");
+          // reconnectStrategy: false — this child runs ONE command and exits, so
+          // retrying inside it is pointless: the handler is called again on the
+          // next request anyway. With the driver's default strategy a refused
+          // connection never rejects, the child hangs until execFileSync's 5s
+          // timeout kills it, and the caller is told "timed out" when the truth
+          // is "connection refused". Off, connect() rejects in ~5ms with the real
+          // reason -- a better message AND no 5s stall per request when Redis is
+          // down.
           const clientOpts = useUrl
-            ? { url }
-            : { socket: { host, port }, password: password || undefined, database: db };
+            ? { url, socket: { reconnectStrategy: false } }
+            : { socket: { host, port, reconnectStrategy: false }, password: password || undefined, database: db };
           const client = redis.createClient(clientOpts);
           client.on("error", () => {});
           await client.connect();
@@ -158,8 +167,10 @@ export class RedisNpmSessionHandler implements SessionHandler {
           const out = (result === null || result === undefined) ? "__NULL__" : String(result);
           process.stdout.write(out, () => process.exit(0));
         } catch (err) {
-          process.stderr.write(String((err && err.message) || err));
-          process.exit(1);
+          // Exit from the write CALLBACK: stderr to a pipe is an async write and
+          // a bare process.exit() truncates it, which left the parent with an
+          // empty stderr and nothing but execFileSync's script-dump message.
+          process.stderr.write(String((err && err.message) || err), () => process.exit(1));
         }
       })();
     `;
@@ -171,7 +182,9 @@ export class RedisNpmSessionHandler implements SessionHandler {
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
-      throw new Error(`Redis command failed: ${(err as Error).message}`);
+      // The child's stderr carries the driver's real reason; execFileSync's
+      // message carries the whole generated script. Prefer the former.
+      throw childFailureError("Redis", err);
     }
     if (result === "__NULL__") return "";       // genuine key miss
     return result;

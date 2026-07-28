@@ -22,6 +22,7 @@
  * writes).
  */
 import { execFileSync } from "node:child_process";
+import { childFailureError } from "./childError.js";
 
 export interface MongoTarget {
   host: string;
@@ -90,8 +91,10 @@ export function mongoCommandSync(
           process.stdout.write(out, () => process.exit(0));
         } catch (err) {
           try { if (client) await client.close(); } catch (e) {}
-          process.stderr.write(String((err && err.message) || err));
-          process.exit(1);
+          // Exit from the write CALLBACK: stderr to a pipe is an async write and
+          // a bare process.exit() truncates it, which left the parent with an
+          // empty stderr and nothing but execFileSync's script-dump message.
+          process.stderr.write(String((err && err.message) || err), () => process.exit(1));
         }
       })();
     } else {
@@ -233,6 +236,9 @@ export function mongoCommandSync(
       stdio: ["pipe", "pipe", "pipe"],
     });
   } catch (err) {
-    throw new Error(`${label} command failed: ${(err as Error).message}`);
+    // The child's stderr carries the real reason (connection refused, auth
+    // failure, timeout); execFileSync's message carries the whole generated
+    // script. Prefer the former.
+    throw childFailureError(label, err);
   }
 }

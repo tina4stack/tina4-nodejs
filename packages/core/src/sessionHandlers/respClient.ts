@@ -16,6 +16,7 @@
  * then returns the LAST (command) reply.
  */
 import { execFileSync } from "node:child_process";
+import { childFailureError } from "./childError.js";
 
 export interface RespTarget {
   host: string;
@@ -161,7 +162,10 @@ export function respCommandSync(target: RespTarget, args: string[], label = "Red
     // Non-zero exit = socket error / timeout / closed connection: a transport
     // FAILURE, not a key miss. Surface it so the Session boundary logs + degrades
     // (or re-throws under strict mode).
-    throw new Error(`${label} command failed: ${(err as Error).message}`);
+    //
+    // Report the CHILD's stderr, not execFileSync's message -- that message
+    // embeds the whole generated script and buries the actual reason.
+    throw childFailureError(label, err);
   }
   if (result === "__NULL__") return "";       // genuine key miss
   if (result.startsWith("__ERR__")) {
