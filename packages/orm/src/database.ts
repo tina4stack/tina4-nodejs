@@ -484,6 +484,9 @@ export class Database {
   /** Factory for creating new adapters (used by pool) */
   private adapterFactory: (() => Promise<DatabaseAdapter>) | null = null;
 
+  /** table -> primary-key column name (or null), introspected once */
+  private _pkCache: Map<string, string[]> = new Map();
+
   /**
    * Whether a standalone write auto-commits. ON by default — a write made
    * outside an explicit transaction commits on its own connection before
@@ -787,28 +790,125 @@ export class Database {
     return result;
   }
 
-  /** Update rows in a table matching filter. */
-  async update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown>, params?: unknown[]): Promise<DatabaseWriteResult> {
-    const adapter = this.getNextAdapter();
-    const result = (adapter as any).updateAsync
-      ? await (adapter as any).updateAsync(table, data, filter ?? {}, params)
-      : adapter.update(table, data, filter ?? {}, params);
-    if (this.autoCommit && !this.inExplicitTransaction()) {
-      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+  /**
+   * The table's primary-key column, introspected once and cached.
+   *
+   * Uses the cross-engine getColumns() contract (v3.13.14, #48), which reports
+   * primaryKey per column on every adapter. Resolves to null when the table has
+   * no primary key or cannot be introspected.
+   */
+  async primaryKey(table: string): Promise<string[]> {
+    if (!this._pkCache.has(table)) {
+      let pk: string[] = [];
+      try {
+        const columns = await this.getColumns(table);
+        pk = columns.filter((c) => c.primaryKey).map((c) => c.name);
+      } catch {
+        pk = [];
+      }
+      this._pkCache.set(table, pk);
+    }
+    return this._pkCache.get(table) ?? [];
+  }
+
+  /**
+   * A failed write must be loud.
+   *
+   * The adapters catch a SQL error and return { success: false, affectedRows: 0 },
+   * so a filterless update produced invalid SQL ("... WHERE ") and reported
+   * nothing rather than raising. A caller who does not inspect the result
+   * believes the write landed (audit feature 4, P1).
+   */
+  private static assertWrote(result: DatabaseWriteResult, verb: string, table: string): DatabaseWriteResult {
+    if (result && (result as any).success === false) {
+      throw new Error(
+        `${verb} failed on ${table}: ${(result as any).error ?? "unknown error"}`,
+      );
     }
     return result;
   }
 
-  /** Delete rows from a table matching filter. */
-  async delete(table: string, filter?: Record<string, unknown>, params?: unknown[]): Promise<DatabaseWriteResult> {
+  /**
+   * Update rows. A write with no filter is an error, not a full-table write.
+   *
+   * With no explicit filter the primary key is taken out of `data` and used as
+   * the WHERE clause. With neither a filter nor a primary key in `data` this
+   * throws rather than silently changing nothing (audit feature 4, P1).
+   */
+  async update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown>, params?: unknown[]): Promise<DatabaseWriteResult> {
+    let effectiveFilter = filter ?? {};
+    let effectiveData = data;
+
+    if (Object.keys(effectiveFilter).length === 0) {
+      const pkColumns = await this.primaryKey(table);
+      const missing = pkColumns.filter((c) => !(c in data));
+      if (pkColumns.length === 0 || missing.length > 0) {
+        throw new Error(
+          `update requires a filter or the complete primary key in the data; pass ` +
+            `filter explicitly to update multiple rows (table=${table}, ` +
+            `primary key=[${pkColumns.join(", ")}], missing from data=[${missing.join(", ")}]). ` +
+            `To empty a table use truncate(${table}).`,
+        );
+      }
+      // EVERY key column goes into the WHERE. A composite key built from only its
+      // first column would match every row sharing that value - the data-loss bug
+      // this method exists to prevent, reintroduced.
+      effectiveData = { ...data };
+      const keyed: Record<string, unknown> = {};
+      for (const col of pkColumns) {
+        keyed[col] = effectiveData[col];
+        delete effectiveData[col];
+      }
+      if (Object.keys(effectiveData).length === 0) {
+        throw new Error(
+          `update was given only the primary key [${pkColumns.join(", ")}] and no ` +
+            `columns to set (table=${table})`,
+        );
+      }
+      effectiveFilter = keyed;
+    }
+
     const adapter = this.getNextAdapter();
-    const result = (adapter as any).deleteAsync
-      ? await (adapter as any).deleteAsync(table, filter ?? {}, params)
-      : adapter.delete(table, filter ?? {}, params);
+    const result = (adapter as any).updateAsync
+      ? await (adapter as any).updateAsync(table, effectiveData, effectiveFilter, params)
+      : adapter.update(table, effectiveData, effectiveFilter, params);
     if (this.autoCommit && !this.inExplicitTransaction()) {
       try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     }
-    return result;
+    return Database.assertWrote(result, "update", table);
+  }
+
+  /** Delete rows. A filterless delete throws; use truncate() to empty a table. */
+  async delete(table: string, filter?: Record<string, unknown>, params?: unknown[]): Promise<DatabaseWriteResult> {
+    const effectiveFilter = filter ?? {};
+    if (!Array.isArray(effectiveFilter) && typeof effectiveFilter !== "string"
+        && Object.keys(effectiveFilter).length === 0) {
+      throw new Error(
+        `delete requires a filter (table=${table}). To remove every row use truncate(${table}).`,
+      );
+    }
+
+    const adapter = this.getNextAdapter();
+    const result = (adapter as any).deleteAsync
+      ? await (adapter as any).deleteAsync(table, effectiveFilter, params)
+      : adapter.delete(table, effectiveFilter, params);
+    if (this.autoCommit && !this.inExplicitTransaction()) {
+      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+    }
+    return Database.assertWrote(result, "delete", table);
+  }
+
+  /** Remove every row. The explicit spelling of a whole-table delete. */
+  async truncate(table: string): Promise<DatabaseWriteResult> {
+    const adapter = this.getNextAdapter();
+    // The adapters' delete() already accepts a raw string WHERE clause.
+    const result = (adapter as any).deleteAsync
+      ? await (adapter as any).deleteAsync(table, "1 = 1", [])
+      : adapter.delete(table, "1 = 1" as any, []);
+    if (this.autoCommit && !this.inExplicitTransaction()) {
+      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+    }
+    return Database.assertWrote(result, "truncate", table);
   }
 
   /** Close all database connections (pool or single). */

@@ -649,6 +649,19 @@ await db.executeMany(sql, paramSets): Promise<unknown[]>          // wrapped in 
 await db.insert(table, data): Promise<DatabaseWriteResult>
 await db.update(table, data, filter?, params?): Promise<DatabaseWriteResult>
 await db.delete(table, filter?, params?): Promise<DatabaseWriteResult>
+await db.truncate(table): Promise<DatabaseWriteResult>   // remove every row, explicitly
+await db.primaryKey(table): Promise<string[]>            // introspected PK columns (cached)
+
+// A WRITE WITH NO FILTER IS AN ERROR, not a full-table operation (3.13.94).
+// update(table, data) with no filter takes the primary key out of `data` and uses
+// it as the WHERE clause; with neither a filter nor the COMPLETE primary key in
+// `data` it THROWS instead of silently changing nothing. delete(table) with no
+// filter throws too -- truncate(table) is the explicit whole-table spelling.
+// A failed write now throws rather than resolving to { success: false,
+// affectedRows: 0 }, which a caller who did not inspect the result never saw.
+// primaryKey() returns an ARRAY: a primary key may span several columns, and
+// EVERY key column goes into the WHERE. A composite key keyed on only its first
+// column would match every row sharing that value.
 
 // Last-write metadata — SYNCHRONOUS (no await)
 db.getLastId(): string | number

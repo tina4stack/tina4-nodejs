@@ -279,7 +279,10 @@ export class SQLiteAdapter implements DatabaseAdapter {
       name: string; type: string; notnull: number; dflt_value: unknown; pk: number;
     }>;
     return rows.map((r) => ({
-      name: r.name, type: r.type, nullable: r.notnull === 0, default: r.dflt_value, primaryKey: r.pk === 1,
+      // PRAGMA table_info reports `pk` as the 1-BASED POSITION within the primary
+      // key, not a boolean: a composite key gives pk=1, pk=2, ... Testing `=== 1`
+      // reported only the first column of a composite key.
+      name: r.name, type: r.type, nullable: r.notnull === 0, default: r.dflt_value, primaryKey: Number(r.pk) > 0,
     }));
   }
 
