@@ -1,9 +1,9 @@
-# ghcr.io/tina4stack/tina4-nodejs
+# docker.io/tina4stack/tina4-nodejs
 #
 # Base image for Tina4 Node apps: the Node runtime plus the framework already
 # built, so a developer injects only their own src/.
 #
-#   FROM ghcr.io/tina4stack/tina4-nodejs:3.13.92
+#   FROM docker.io/tina4stack/tina4-nodejs:3.13.92
 #   COPY src/ /app/src/
 #
 # ---------------------------------------------------------------------------
