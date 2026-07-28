@@ -4,11 +4,11 @@
   "description": "Tina4 Frond — zero-dependency Twig-like template engine",
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "types": "../../types/frond/src/index.d.ts",
   "exports": {
     ".": {
-      "import": "./src/index.ts",
-      "types": "./dist/index.d.ts"
+      "import": "./dist/index.js",
+      "types": "../../types/frond/src/index.d.ts"
     }
   },
   "scripts": {

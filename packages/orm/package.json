@@ -4,11 +4,11 @@
   "description": "Tina4 ORM — models, auto-CRUD, query builder",
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "types": "../../types/orm/src/index.d.ts",
   "exports": {
     ".": {
-      "import": "./src/index.ts",
-      "types": "./dist/index.d.ts"
+      "import": "./dist/index.js",
+      "types": "../../types/orm/src/index.d.ts"
     }
   },
   "scripts": {

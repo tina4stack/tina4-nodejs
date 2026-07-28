@@ -11,7 +11,27 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "composite": true
+    "composite": true,
+
+    // Dev and tests resolve @tina4/* to SOURCE; node resolves it to dist via
+    // each package's exports map. Both are needed; they are not interchangeable.
+    //
+    // Until now the packages' exports.import pointed at ./src/index.ts, so
+    // `import "@tina4/core"` under plain node loaded raw TypeScript -- the real
+    // reason the production Docker image had to ship a transpiler. Repointing
+    // exports.import at ./dist/index.js fixes consumers, but on its own it also
+    // moves this repo's own tsx test run onto the compiled bundle. These paths
+    // keep the test run on source, which is what it has always exercised.
+    //
+    // Must be a real comment, not a "//paths" key: tsc validates keys inside
+    // compilerOptions and rejects unknown ones (TS5025). The "//" key further
+    // down is tolerated only because it sits at the top level.
+    "paths": {
+      "@tina4/core": ["./packages/core/src/index.ts"],
+      "@tina4/orm": ["./packages/orm/src/index.ts"],
+      "@tina4/swagger": ["./packages/swagger/src/index.ts"],
+      "@tina4/frond": ["./packages/frond/src/index.ts"]
+    }
   },
   "//": "Solution-style root: files:[] means `tsc -b` compiles NOTHING here and only builds the referenced packages to their own dist/. Without this, a root composite project with no outDir/include compiles the entire tree (test/, example/, gallery/, src/) IN PLACE — which is exactly what leaked .js/.d.ts beside the sources. Per-package builds use esbuild; tests run via tsx.",
   "files": [],
