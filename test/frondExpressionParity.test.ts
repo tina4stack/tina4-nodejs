@@ -92,7 +92,7 @@ console.log("=== Frond Expression Parity (cross-framework contract) ===\n");
 
 // Guard the guard: a corpus entry with no expected value would otherwise pass
 // by never being asserted.
-assertEq("corpus holds 82 expressions", corpus.length, 82);
+assertEq("corpus holds 84 expressions", corpus.length, 84);
 assertEq(
   "every corpus label has an answer-key entry",
   corpus.filter(([label]) => !expected.has(label)).length,
