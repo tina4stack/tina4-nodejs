@@ -18,6 +18,24 @@
 # -- see the DE-WORKSPACE note. Shipping every driver instead cost 90 MB, most of
 # it the Azure and AWS SDKs pulled in transitively by the MSSQL driver.
 #
+# THREE STEPS, in this order: inherit, get the tool you need, then modify. The
+# same shape across all four Tina4 base images. Here there is NOTHING TO COPY IN:
+# npm 11.16.0 is already on PATH, so adding a driver is one line. Verified:
+# `npm install pg` builds, `pg` + `@tina4/core` + `@tina4/orm` all resolve,
+# 185 MB derived.
+#
+# Python and PHP do NOT ship a working package manager and their headers document
+# the one-line `COPY --from=` for uv / composer. Ruby, like Node, has gem built in.
+#
+# ON THIS IMAGE'S SIZE, because it invites the question: 174 MB, of which the
+# `node` binary alone is 123 MB and npm is 19 MB. Tina4 contributes 9 MB, the
+# smallest addition of the four images. node:24-alpine EMPTY is already 165 MB.
+# Removing npm would save 24 MB and break the one-liner above, and shrinking the
+# binary means compiling Node ourselves. Both rejected, with the measurements, in
+# tina4-documentation/plan/v3/DECISIONS.md ADR-0007. Note that Docker Hub lists
+# this image at 59 MB because Hub reports the COMPRESSED size; 174 MB is the
+# on-disk figure from `du -sx /` inside the container.
+#
 # ---------------------------------------------------------------------------
 # THIS FILE USED TO SHIP A TRANSPILER TO PRODUCTION. The old recipe was
 # `npm ci --production` + `CMD ["npx", "tsx", "app.ts"]`, which is wrong three
