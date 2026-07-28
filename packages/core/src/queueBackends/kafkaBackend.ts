@@ -497,12 +497,15 @@ export class KafkaBackend implements QueueBackend {
             if (errCode === 0) {
               finish("__PUBLISHED__", 0);
             } else {
+              // Report the CODE, not just "it failed" — the caller decides
+              // whether it is retriable (3/5, the async topic-creation race)
+              // or fatal (e.g. 29 TOPIC_AUTHORIZATION_FAILED).
               process.stderr.write("Produce error code " + errCode);
-              finish("__ERROR__" + errCode, 0);
+              finish("__PRODUCEERROR__" + errCode, 0);
             }
           } catch (e) {
             process.stderr.write("produce parse: " + e.message);
-            finish("__ERROR__", 0);
+            finish("__PARSEERROR__produce: " + e.message, 0);
           }
           return;
         } else if (operation === "get") {
@@ -516,6 +519,7 @@ export class KafkaBackend implements QueueBackend {
             pos += 4;                                   // throttleTimeMs (v1+)
             const topicCount = buffer.readInt32BE(pos); pos += 4;
             let out = "__EMPTY__";
+            let fatalCode = 0;
             for (let t = 0; t < topicCount; t++) {
               const tl = buffer.readInt16BE(pos); pos += 2 + tl;
               const pc = buffer.readInt32BE(pos); pos += 4;
@@ -527,6 +531,14 @@ export class KafkaBackend implements QueueBackend {
                 const abortedCount = buffer.readInt32BE(pos); pos += 4;
                 if (abortedCount > 0) pos += abortedCount * 16; // (-1 => none, skip)
                 const recSetSize = buffer.readInt32BE(pos); pos += 4;
+                // 3 = UNKNOWN_TOPIC_OR_PARTITION, 5 = LEADER_NOT_AVAILABLE:
+                // "nothing to read here yet", which a consumer that starts
+                // before its producer hits on every cold start. Any OTHER code
+                // (29 TOPIC_AUTHORIZATION_FAILED, 13 STALE_CONTROLLER_EPOCH, …)
+                // is a real failure and must NOT be reported as an empty queue.
+                if (errCode !== 0 && errCode !== 3 && errCode !== 5) {
+                  fatalCode = errCode;
+                }
                 if (errCode === 0 && recSetSize > 0) {
                   const val = firstRecordValue(buffer, pos, pos + recSetSize);
                   if (val !== null) out = val;
@@ -534,21 +546,33 @@ export class KafkaBackend implements QueueBackend {
                 pos += recSetSize > 0 ? recSetSize : 0;
               }
             }
+            if (fatalCode !== 0) {
+              process.stderr.write("Fetch error code " + fatalCode);
+              finish("__FETCHERROR__" + fatalCode, 0);
+              return;
+            }
             finish(out, 0);
           } catch (e) {
+            // A parse failure is NOT an empty queue either — say so.
             process.stderr.write("fetch parse: " + e.message);
-            finish("__EMPTY__", 0);
+            finish("__PARSEERROR__fetch: " + e.message, 0);
           }
           return;
         }
       });
 
+      // Report the reason on STDOUT and exit 0. Writing it to stderr and
+      // exiting non-zero LOST it: stderr to a pipe is an async write and
+      // process.exit() truncates it, so the parent saw an empty stderr and fell
+      // back to execFileSync's message -- which embeds this entire script.
+      // stdout is flushed by finish()'s write callback, so it survives.
       sock.on("error", (err) => {
-        process.stderr.write(err.message);
-        finish("", 1);
+        finish("__TRANSPORTERROR__" + err.message, 0);
       });
 
-      var timer = setTimeout(() => { finish("", 1); }, 10000);
+      var timer = setTimeout(() => {
+        finish("__TRANSPORTERROR__timed out after 10s talking to " + host + ":" + port, 0);
+      }, 10000);
     `;
 
     try {
@@ -558,8 +582,59 @@ export class KafkaBackend implements QueueBackend {
         stdio: ["pipe", "pipe", "pipe"],
       });
       return result;
-    } catch {
-      return "";
+    } catch (err) {
+      // Reached only when the child itself could not run (spawn failure, killed,
+      // the outer 15s timeout). The socket-level reasons come back through
+      // stdout as __TRANSPORTERROR__ instead. Swallowing this to "" made every
+      // failure indistinguishable from an empty queue.
+      //
+      // execFileSync's own message embeds the ENTIRE generated script, so it is
+      // truncated here -- a 20KB error that buries the cause is barely better
+      // than no error at all.
+      const e = err as { stderr?: Buffer | string; message?: string };
+      const reason = String(e.stderr ?? "").trim() || e.message || "unknown error";
+      const firstLine = reason.split("\n", 1)[0]!.slice(0, 200);
+      return "__TRANSPORTERROR__" + firstLine;
+    }
+  }
+
+  /**
+   * Sleep synchronously between produce retries.
+   *
+   * `push()` is synchronous (the whole backend drives its socket through a child
+   * process), so there is no event loop to await on. `Atomics.wait` on a
+   * SharedArrayBuffer is the stdlib way to block a thread for a fixed time --
+   * no dependency, no busy-wait burning CPU.
+   */
+  private static sleepSync(ms: number): void {
+    const shared = new Int32Array(new SharedArrayBuffer(4));
+    Atomics.wait(shared, 0, 0, ms);
+  }
+
+  /**
+   * Turn a sentinel from the protocol child into a thrown error, or return.
+   *
+   * The wording matches the Python and PHP backends exactly -- the parity rule
+   * covers user-visible error messages, not just behaviour.
+   */
+  private static assertNoError(result: string, operation: string, topic: string): void {
+    const fatal = /^__(PRODUCEERROR|FETCHERROR)__(\d+)/.exec(result);
+    if (fatal) {
+      throw new Error(
+        `Kafka rejected the ${operation} for topic ${topic}: error code ${fatal[2]}`,
+      );
+    }
+    if (result.startsWith("__TRANSPORTERROR__")) {
+      throw new Error(
+        `Kafka ${operation} for topic ${topic} failed: ` +
+          result.slice("__TRANSPORTERROR__".length),
+      );
+    }
+    if (result.startsWith("__PARSEERROR__")) {
+      throw new Error(
+        `Kafka ${operation} for topic ${topic} returned an unreadable response: ` +
+          result.slice("__PARSEERROR__".length),
+      );
     }
   }
 
@@ -576,15 +651,36 @@ export class KafkaBackend implements QueueBackend {
       delayUntil: null,
     };
 
-    const result = this.execSync("publish", queue, JSON.stringify(job));
-    if (!result.includes("__PUBLISHED__")) {
-      throw new Error("Kafka publish failed");
+    // Topic auto-creation is ASYNCHRONOUS, so a brand-new topic answers
+    // UNKNOWN_TOPIC_OR_PARTITION (3) or LEADER_NOT_AVAILABLE (5) on the first
+    // attempt while the controller is still electing a leader. Retry those
+    // (same 10 attempts / 200ms as the Python and PHP backends) instead of
+    // failing a cold-start push; every other code throws immediately.
+    const body = JSON.stringify(job);
+    let result = "";
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      result = this.execSync("publish", queue, body);
+      if (result.includes("__PUBLISHED__")) {
+        return id;
+      }
+      const retriable = /^__PRODUCEERROR__(3|5)\b/.test(result);
+      if (!retriable || attempt === 10) {
+        break;
+      }
+      KafkaBackend.sleepSync(200);
     }
-    return id;
+
+    KafkaBackend.assertNoError(result, "produce", queue);
+    throw new Error(`Kafka publish failed for topic ${queue}: ${result || "no response"}`);
   }
 
   pop(queue: string): QueueJob | null {
     const result = this.execSync("get", queue);
+
+    // A real failure must NOT read as an empty queue: a mis-permissioned
+    // consumer would otherwise poll an "idle" topic forever.
+    KafkaBackend.assertNoError(result, "fetch", queue);
+
     if (!result || result === "__EMPTY__" || result === "__UNSUPPORTED__") return null;
 
     try {
