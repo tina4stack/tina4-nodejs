@@ -60,6 +60,35 @@ const TERMINATOR_TAGS = new Set([
 ]);
 
 /**
+ * Author-written tags the sandbox allow-list governs. Mirrors Python's
+ * _GATEABLE_TAGS, PHP's GATEABLE_TAGS and Ruby's GATEABLE_TAGS. A tag absent from
+ * this set is structural, not an author capability, and is never gated -- `block`
+ * and `extends` are template inheritance, and `raw` is consumed by the tokenizer.
+ * Both spellings of set ({% set x = 1 %} and {% set x %}...{% endset %}) dispatch
+ * under "set", so one entry covers the pair.
+ */
+const GATEABLE_TAGS = new Set([
+  "autoescape", "cache", "for", "from", "if", "import", "include", "live",
+  "macro", "set", "spaceless",
+]);
+
+/**
+ * Gateable tags that OWN A BODY, mapped to the terminator closing it. A denied tag
+ * has to consume its body or the body's tokens render at the top level, leaking
+ * exactly the content the sandbox denied.
+ */
+const BLOCK_TAG_ENDS: Record<string, string> = {
+  autoescape: "endautoescape",
+  cache: "endcache",
+  for: "endfor",
+  if: "endif",
+  live: "endlive",
+  macro: "endmacro",
+  set: "endset",
+  spaceless: "endspaceless",
+};
+
+/**
  * Serialize a value to compact JSON text that is always valid JSON.
  *
  * Never throws and never returns an empty string. JSON.stringify already maps a
@@ -2082,48 +2111,36 @@ export class Frond {
           tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(LEADING_WS_RE, "")];
         }
 
-        if (tag === "if") {
-          // Sandbox check
-          if (this._sandbox && this._allowedTags !== null && !this._allowedTags.has("if")) {
-            const skip = this.skipBlock(tokens, i, "if", "endif");
-            i = skip;
-          } else {
-            const [result, skip] = this.handleIf(tokens, i, context);
-            output.push(result);
-            i = skip;
-          }
+        if (!this.tagPermitted(tag)) {
+          // ONE sandbox gate for the whole tag vocabulary. Previously only if, for,
+          // set and include were checked, so every other tag ignored the allow-list
+          // -- {% autoescape false %} could switch escaping off from inside a
+          // sandbox whose tags were restricted to something else entirely.
+          i = this.skipDeniedTag(tokens, i, tag, content);
+        } else if (tag === "if") {
+          const [result, skip] = this.handleIf(tokens, i, context);
+          output.push(result);
+          i = skip;
         } else if (tag === "for") {
-          if (this._sandbox && this._allowedTags !== null && !this._allowedTags.has("for")) {
-            const skip = this.skipBlock(tokens, i, "for", "endfor");
-            i = skip;
-          } else {
-            const [result, skip] = this.handleFor(tokens, i, context);
-            output.push(result);
-            i = skip;
-          }
+          const [result, skip] = this.handleFor(tokens, i, context);
+          output.push(result);
+          i = skip;
         } else if (tag === "set") {
           // An assignment has an "="; without one this is the BLOCK form,
           // {% set name %}...{% endset %}, which captures its rendered body. A
           // bare includes() is exact here, not a shortcut: the block form's tag
           // content is only ever "set <name>", so an "=" anywhere -- even inside
           // a quoted value like {% set m = "a = b" %} -- means assignment.
-          const isBlockSet = !content.includes("=");
-          if (this._sandbox && this._allowedTags !== null && !this._allowedTags.has("set")) {
-            i = isBlockSet ? this.skipBlock(tokens, i, "set", "endset") : i + 1;
-          } else if (isBlockSet) {
+          if (!content.includes("=")) {
             i = this.handleSetBlock(tokens, i, context);
           } else {
             this.handleSet(content, context);
             i++;
           }
         } else if (tag === "include") {
-          if (this._sandbox && this._allowedTags !== null && !this._allowedTags.has("include")) {
-            i++;
-          } else {
-            const result = this.handleInclude(content, context);
-            output.push(result);
-            i++;
-          }
+          const result = this.handleInclude(content, context);
+          output.push(result);
+          i++;
         } else if (tag === "macro") {
           const skip = this.handleMacro(tokens, i, context);
           i = skip;
@@ -2176,6 +2193,46 @@ export class Frond {
     return output.join("");
   }
 
+  /**
+   * May this filter RUN under the current sandbox?
+   *
+   * The escaping decision has to ask this rather than read the filter name out of
+   * the source. Node carries safety as a FLAG rather than as a value-level marker
+   * (Python and Ruby return a SafeString, PHP prepends a RAW_MARKER -- all three
+   * produced only by actually running the filter), so here the name alone was
+   * enough to suppress auto-escaping even when the filter was denied and skipped.
+   */
+  private filterPermitted(name: string): boolean {
+    if (!this._sandbox || this._allowedFilters === null) return true;
+    return this._allowedFilters.has(name);
+  }
+
+  /**
+   * May this tag run under the current sandbox?
+   *
+   * One gate for every tag, so the allow-list governs the whole tag vocabulary
+   * instead of the four names that happened to be checked individually.
+   */
+  private tagPermitted(tag: string): boolean {
+    if (!this._sandbox || this._allowedTags === null) return true;
+    if (!GATEABLE_TAGS.has(tag)) return true; // structural, not an author capability
+    return this._allowedTags.has(tag);
+  }
+
+  /**
+   * Consume a denied tag WITHOUT running it, returning the index past its body.
+   *
+   * Advancing a single token past a body-owning tag would leave the body's tokens
+   * to render at the TOP level, leaking exactly the content the sandbox denied.
+   */
+  private skipDeniedTag(tokens: Token[], start: number, tag: string, content: string): number {
+    const closeTag = BLOCK_TAG_ENDS[tag];
+    // {% set x = 1 %} is an assignment and owns no body; {% set x %}...{% endset %}
+    // captures one. Same exact-"=" test the dispatch uses.
+    if (closeTag === undefined || (tag === "set" && content.includes("="))) return start + 1;
+    return this.skipBlock(tokens, start, tag, closeTag);
+  }
+
   private skipBlock(tokens: Token[], start: number, openTag: string, closeTag: string): number {
     let depth = 0;
     let i = start + 1;
@@ -2183,7 +2240,9 @@ export class Frond {
       if (tokens[i][0] === "BLOCK") {
         const [content] = stripTag(tokens[i][1]);
         const tag = content.split(/\s+/)[0] || "";
-        if (tag === openTag) depth++;
+        // A nested assignment-form set opens no body, so it must not nest -- counting
+        // it would consume past the real {% endset %} and swallow trailing content.
+        if (tag === openTag && !(openTag === "set" && content.includes("="))) depth++;
         else if (tag === closeTag) {
           if (depth === 0) return i + 1;
           depth--;
@@ -2388,12 +2447,19 @@ export class Frond {
     for (const [fname, rawArgs] of filters) {
       const args = rawArgs.map((a) => (a instanceof VarRef ? evalExpr(a.name, context) : a));
       if (fname === "raw" || fname === "safe") {
-        isSafe = true;
+        // Decide from what was permitted to RUN, not from what the source asked
+        // for. Marking the value safe here regardless meant a DENIED raw produced
+        // byte-identical output to an allowed one -- the allow-list entry that
+        // governs XSS escaping did nothing at all.
+        if (this.filterPermitted(fname)) isSafe = true;
         continue;
       }
-      // escape/e filter marks output as safe (already escaped)
+      // escape/e filter marks output as safe (already escaped) -- but ONLY when it
+      // is permitted to run. Node's escape returns a plain string, so this flag is
+      // what suppresses auto-escaping; setting it for a DENIED escape emitted the
+      // value unescaped, having never escaped it.
       if (fname === "escape" || fname === "e") {
-        isSafe = true;
+        if (this.filterPermitted(fname)) isSafe = true;
       }
 
       // Sandbox: check filter access
