@@ -94,9 +94,9 @@ export {
   handleFeedbackWidgetJs,
   registerFeedbackRoutes,
 } from "./feedback.js";
-export { Messenger, MessengerConnectionError } from "./messenger.js";
+export { Messenger, MessengerConnectionError, createMessenger } from "./messenger.js";
 export type { SendResult, EmailMessage } from "./messenger.js";
-export { DevMailbox, createMessenger } from "./devMailbox.js";
+export { DevMailbox } from "./devMailbox.js";
 export { WSDLService, WSDLOperation } from "./wsdl.js";
 export type { WSDLOperationMeta } from "./wsdl.js";
 export { HtmlElement, htmlElement, addHtmlHelpers, Raw, SafeString } from "./htmlElement.js";

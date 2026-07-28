@@ -29,6 +29,7 @@ import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isTruthy } from "./dotenv.js";
+import { DevMailbox } from "./devMailbox.js";
 import { Log } from "./logger.js";
 
 /**
@@ -77,6 +78,10 @@ export interface EmailMessage {
   reply_to?: string;
   subject: string;
   body: string;
+  /** Plain-text alternative. Carried on the dev path too, so the captured message
+   *  is the message: a mailbox that shows you something other than what you wrote
+   *  is worse than no mailbox. */
+  text?: string;
   html: boolean;
   attachments: string[];
   date: string;
@@ -328,6 +333,10 @@ export class Messenger {
   private fromName: string;
   private encryption: string;
   private useTls: boolean;
+  /** Whether an SMTP host was actually configured (see the constructor). */
+  private smtpConfigured: boolean = false;
+  /** The local mailbox, present only when this messenger captures. */
+  public devMailbox: DevMailbox | null = null;
   private imapHost: string;
   private imapPort: number;
   private imapUser: string;
@@ -337,6 +346,11 @@ export class Messenger {
   constructor(options?: MessengerOptions) {
     // Priority: constructor > TINA4_MAIL_* > sensible default.
     // Legacy SMTP_*/IMAP_* env vars were removed in v3.12 — boot guard rejects them.
+    // Whether a host was actually CONFIGURED, which is not the same as this.host
+    // being set: it falls back to "localhost", so it is never empty and cannot
+    // answer "can this messenger send?". The capture gate needs that answer, so
+    // record it here while the real inputs are still in scope.
+    this.smtpConfigured = Boolean(options?.host ?? process.env.TINA4_MAIL_HOST);
     this.host = options?.host
       ?? process.env.TINA4_MAIL_HOST
       ?? "localhost";
@@ -399,6 +413,31 @@ export class Messenger {
   /**
    * Send an email via SMTP.
    */
+  /**
+   * Should send() capture locally instead of talking to SMTP?
+   *
+   * Availability decides, not verbosity. With no SMTP host configured sending is
+   * impossible, so simulate it into a folder rather than failing -- that is what
+   * makes a laptop with no mail server usable. TINA4_MAIL_CAPTURE forces capture
+   * even when a host IS configured.
+   *
+   * TINA4_DEBUG deliberately does NOT gate this, and neither does NODE_ENV. Debug
+   * must still be able to send, and the old `NODE_ENV !== "production"` clause
+   * silently swallowed every staging email.
+   */
+  private shouldCapture(): boolean {
+    if (isTruthy(process.env.TINA4_MAIL_CAPTURE)) return true;
+    return !this.smtpConfigured;
+  }
+
+  /** The local mailbox, created on first capture and reused after. */
+  private getDevMailbox(): DevMailbox {
+    if (this.devMailbox === null) {
+      this.devMailbox = new DevMailbox();
+    }
+    return this.devMailbox;
+  }
+
   async send(
     to: string | string[],
     subject: string,
@@ -416,6 +455,17 @@ export class Messenger {
     const ccList = Array.isArray(options.cc) ? options.cc : (options.cc ? [options.cc] : []);
     const bccList = Array.isArray(options.bcc) ? options.bcc : (options.bcc ? [options.bcc] : []);
     const allRecipients = [...toList, ...ccList, ...bccList];
+
+    // Dev capture is a BRANCH here, not a different object returned by the factory.
+    // createMessenger() used to hand back a DevMailbox, which has capture() and no
+    // send(), so the documented call threw TypeError (nodejs#41).
+    if (this.shouldCapture()) {
+      return this.getDevMailbox().capture(
+        to, subject, body, html, text, ccList, bccList, replyTo,
+        attachments, this.fromAddress || undefined,
+      );
+    }
+
     const messageId = `${randomUUID()}@${this.host}`;
 
     if (allRecipients.length === 0) {
@@ -1068,4 +1118,26 @@ function parseFullMessage(uid: string, response: string): ImapFullMessage {
     bodyHtml,
     headers,
   };
+}
+
+/**
+ * Create a Messenger configured for the current environment.
+ *
+ * Returns ONE concrete type, always. It used to return `Messenger | DevMailbox`,
+ * and those two shared NO sending method -- DevMailbox has capture(), Messenger has
+ * send() -- so the documented call threw TypeError whenever the dev branch was
+ * taken. That is nodejs#41. Capture is now a branch inside Messenger.send(), so the
+ * object you get back has one send() with one signature either way.
+ *
+ * The gate is availability, not verbosity:
+ *   - no TINA4_MAIL_HOST -> capture (sending is impossible, so simulate it)
+ *   - TINA4_MAIL_CAPTURE truthy -> capture even with SMTP configured
+ *   - otherwise -> send, EVEN WITH TINA4_DEBUG ON
+ *
+ * TINA4_DEBUG no longer forces capture: debug must still be able to send real mail.
+ * The `NODE_ENV !== "production"` clause is also gone -- it captured even with SMTP
+ * configured and debug off, which silently ate every staging email.
+ */
+export function createMessenger(): Messenger {
+  return new Messenger();
 }

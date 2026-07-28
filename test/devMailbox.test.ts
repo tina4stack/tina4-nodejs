@@ -162,7 +162,9 @@ cleanup();
 console.log("\n--- Message Structure ---");
 
 setup();
-mailbox.capture("alice@test.com", "Structure Test", "Check fields", false, [], [], undefined, [], "sender@test.com");
+// 5th slot is `text` from 3.13.94 (was cc). Passing 9 args against the old order
+// silently shifted `from` off the end -- the same class of bug as nodejs#42.
+mailbox.capture("alice@test.com", "Structure Test", "Check fields", false, undefined, [], [], undefined, [], "sender@test.com");
 const msgs = mailbox.inbox();
 assert("captured 1 message", msgs.length === 1);
 const msg = msgs[0];
@@ -205,7 +207,9 @@ console.log("\n--- CC and BCC ---");
 
 setup();
 {
-  const result = mailbox.capture("alice@test.com", "With CC", "Test CC", false, ["cc1@test.com", "cc2@test.com"], ["bcc1@test.com"], undefined, [], "sender@test.com");
+  // `undefined` in the 5th slot is `text` from 3.13.94: capture()'s parameter order
+  // now matches send(). It used to be cc there, and that mismatch WAS nodejs#42.
+  const result = mailbox.capture("alice@test.com", "With CC", "Test CC", false, undefined, ["cc1@test.com", "cc2@test.com"], ["bcc1@test.com"], undefined, [], "sender@test.com");
   assert("capture with cc/bcc succeeds", result.success === true);
 
   const msg = mailbox.read(result.id!);

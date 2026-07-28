@@ -353,7 +353,12 @@ delete process.env.TINA4_MAIL_HOST;
 process.env.NODE_ENV = "development";
 
 const devMsngr = createMessenger();
-assert("createMessenger returns DevMailbox when no TINA4_MAIL_HOST", devMsngr instanceof DevMailbox);
+// Changed in 3.13.94. This asserted the BUG: createMessenger() returned
+// `Messenger | DevMailbox`, and those two share no sending method, so the
+// documented send() call threw TypeError on the dev branch (nodejs#41). The factory
+// now returns ONE type whose send() captures internally.
+assert("createMessenger returns a Messenger even with no TINA4_MAIL_HOST", devMsngr instanceof Messenger);
+assert("createMessenger result can always send", typeof devMsngr.send === "function");
 
 // Restore
 if (origHost) process.env.TINA4_MAIL_HOST = origHost;
@@ -375,13 +380,19 @@ if (origEnv) process.env.NODE_ENV = origEnv;
   delete process.env.TINA4_DEBUG;
   process.env.NODE_ENV = "development";
   process.env.TINA4_MAILBOX_DIR = join(TEST_DIR, "factory-dev");
+  // Under the new gate an SMTP host means SEND, so a test about capturing must not
+  // have one configured. This block previously relied on NODE_ENV alone.
+  delete process.env.TINA4_MAIL_HOST;
   const inst = createMessenger();
-  assert("createMessenger returns DevMailbox when not production", inst instanceof DevMailbox);
+  // Changed in 3.13.94: one concrete type, and NODE_ENV no longer gates capture at
+  // all (that clause captured even with SMTP configured, silently eating staging
+  // mail). Capture now follows whether an SMTP host exists.
+  assert("createMessenger returns a Messenger regardless of NODE_ENV", inst instanceof Messenger);
   {
-    const cap = (inst as DevMailbox).capture("factory@test.com", "FactoryDev", "captured, no SMTP");
-    const back = (inst as DevMailbox).read(cap.id!);
+    const cap = await inst.send("factory@test.com", "FactoryDev", "captured, no SMTP");
+    const back = inst.devMailbox!.read(cap.id!);
     assert(
-      "createMessenger dev instance captures to disk without SMTP",
+      "createMessenger instance captures to disk without SMTP, through send()",
       cap.success === true && back !== null && back.subject === "FactoryDev",
       `\n    got: ${JSON.stringify(back)}`,
     );

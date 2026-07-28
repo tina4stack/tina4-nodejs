@@ -15,8 +15,6 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import type { SendResult, EmailMessage } from "./messenger.js";
-import { Messenger } from "./messenger.js";
-import { isTruthy } from "./dotenv.js";
 
 // ── DevMailbox ───────────────────────────────────────────────
 
@@ -38,20 +36,35 @@ export class DevMailbox {
 
   /**
    * Capture an email to the dev mailbox instead of sending it.
+   *
+   * The parameter order MATCHES Messenger.send() on purpose. It did not before:
+   * send()'s 5th positional was `text` and capture()'s was `cc`, so the same call
+   * meant different things depending on which door it came through -- that mismatch
+   * IS nodejs#42.
+   *
+   * BREAKING: `text` is now the 5th positional. A caller passing cc positionally
+   * must move it. Aligning the two signatures is the fix; leaving them apart would
+   * preserve the bug.
    */
   capture(
     to: string | string[],
     subject: string,
     body: string,
     html: boolean = false,
-    cc: string[] = [],
-    bcc: string[] = [],
+    text?: string,
+    cc: string | string[] = [],
+    bcc: string | string[] = [],
     replyTo?: string,
     attachments: string[] = [],
     from?: string,
   ): SendResult {
     const id = randomUUID();
     const toList = Array.isArray(to) ? to : [to];
+    // Normalised HERE, at the boundary, so a message is well formed however it
+    // arrived. A dev mailbox that stores a malformed message and reports success
+    // defeats its own purpose -- it exists to show you what you WOULD have sent.
+    const ccList = Array.isArray(cc) ? cc : (cc ? [cc] : []);
+    const bccList = Array.isArray(bcc) ? bcc : (bcc ? [bcc] : []);
     const now = new Date().toISOString();
 
     const message: EmailMessage = {
@@ -59,11 +72,12 @@ export class DevMailbox {
       type: "outbox",
       from: from ?? process.env.TINA4_MAIL_FROM ?? "dev@localhost",
       to: toList,
-      cc,
-      bcc,
+      cc: ccList,
+      bcc: bccList,
       reply_to: replyTo,
       subject,
       body,
+      text,
       html,
       attachments,
       date: now,
@@ -280,41 +294,3 @@ export class DevMailbox {
 }
 
 // ── Factory ──────────────────────────────────────────────────
-
-/**
- * Create a Messenger or DevMailbox based on the environment.
- *
- * Returns DevMailbox when:
- *   - TINA4_DEBUG is "true", OR
- *   - No TINA4_MAIL_HOST is configured
- *
- * Returns a real Messenger otherwise (SMTP configured + not debug mode).
- *
- * This follows the factory pattern from PHP's MessengerFactory.
- */
-export function createMessenger(): Messenger | DevMailbox {
-  const debug = process.env.TINA4_DEBUG;
-  const smtpHost = process.env.TINA4_MAIL_HOST;
-
-  // Production = NOT debug mode AND NODE_ENV is "production".
-  // Derived here (was previously referenced undefined → ReferenceError).
-  const isProd = !isTruthy(debug) && process.env.NODE_ENV === "production";
-
-  // Force dev mode when TINA4_DEBUG is truthy
-  if (isTruthy(debug)) {
-    return new DevMailbox();
-  }
-
-  // No SMTP configured — must use dev mailbox
-  if (!smtpHost) {
-    return new DevMailbox();
-  }
-
-  // Non-production environment — use dev mailbox
-  if (!isProd) {
-    return new DevMailbox();
-  }
-
-  // Production with SMTP configured — use real Messenger
-  return new Messenger();
-}
