@@ -103,10 +103,20 @@ console.log("\n--- fullAnalysis(): display report still caps most_complex at 15 
     analysis.most_complex_functions.length === 15,
     `got ${analysis.most_complex_functions.length}`
   );
+  // fullAnalysis no longer republishes the uncapped function list: the engine
+  // ranks offenders itself and its own --fail-on gate reads that same ranking,
+  // so the CLI and the dashboard cannot disagree. total_offenders is the honest
+  // proof nothing was lost at the display cap.
   assert(
-    `all_functions exposes the full uncapped list (${n})`,
-    analysis.all_functions.length === n,
-    `got ${analysis.all_functions?.length}`
+    "the engine owns the ranking now (no all_functions)",
+    analysis.all_functions === undefined,
+    `got ${JSON.stringify(analysis.all_functions)}`
+  );
+  const uncapped = offenders(root, Number.MAX_SAFE_INTEGER);
+  assert(
+    `total_offenders counts the whole set (>= ${n})`,
+    uncapped.summary.total_offenders >= n,
+    `got ${uncapped.summary.total_offenders}`
   );
 
   rmSync(root, { recursive: true, force: true });

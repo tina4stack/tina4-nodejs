@@ -17,7 +17,7 @@ import type { Router } from "./router.js";
 import type { RouteHandler, Tina4Request } from "./types.js";
 import { DevMailbox } from "./devMailbox.js";
 import { isTruthy } from "./dotenv.js";
-import { quickMetrics, fullAnalysis, fileDetail } from "./metrics.js";
+import { quickMetrics, fullAnalysis, fileDetail, MetricsEngineError } from "./metrics.js";
 import { registerFeedbackRoutes } from "./feedback.js";
 import { getDefaultDevServer, mcpEnabled, isRequestAllowed } from "./mcp.js";
 import { timingSafeEqual } from "node:crypto";
@@ -508,8 +508,30 @@ export class DevAdmin {
       { method: "POST", pattern: "/__dev/api/gallery/deploy", handler: handleGalleryDeploy(router) },
       // Metrics
       { method: "GET", pattern: "/__dev/api/metrics", handler: (_req: any, res: any) => { res.json(quickMetrics()); } },
-      { method: "GET", pattern: "/__dev/api/metrics/full", handler: (_req: any, res: any) => { res.json(fullAnalysis()); } },
-      { method: "GET", pattern: "/__dev/api/metrics/file", handler: (req: any, res: any) => { const url = new URL(req.url ?? "/", "http://localhost"); const p = (url.searchParams.get("path") || "").toString(); res.json(fileDetail(p)); } },
+      // No fallback (ADR-0002): a missing or stale CLI is a 503 naming the
+      // install command, never zeros that read as a healthy codebase.
+      { method: "GET", pattern: "/__dev/api/metrics/full", handler: (_req: any, res: any) => {
+        try { res.json(fullAnalysis()); }
+        catch (e) {
+          if (e instanceof MetricsEngineError) { res.status(503).json({ error: e.message }); return; }
+          throw e;
+        }
+      } },
+      { method: "GET", pattern: "/__dev/api/metrics/file", handler: (req: any, res: any) => {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        const p = (url.searchParams.get("path") || "").toString();
+        try { res.json(fileDetail(p)); }
+        catch (e) {
+          if (e instanceof MetricsEngineError) {
+            // A bad path is the caller's mistake (404); anything else is the
+            // engine being unavailable (503).
+            const badPath = /no such file|not a file|needs a path/.test(e.message);
+            res.status(badPath ? 404 : 503).json({ error: e.message });
+            return;
+          }
+          throw e;
+        }
+      } },
       // GraphQL schema introspection (auto-discovers registered ORM models)
       { method: "GET", pattern: "/__dev/api/graphql/schema", handler: async (_req: any, res: any) => {
         try {

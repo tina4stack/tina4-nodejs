@@ -35,7 +35,7 @@ async function complexityByName(source: string): Promise<Record<string, number>>
   writeFileSync(join(tmpDir, "nested.ts"), source);
   const result: any = await fullAnalysis(tmpDir);
   const byName: Record<string, number> = {};
-  for (const f of result.all_functions ?? []) byName[f.name] = f.complexity;
+  for (const f of result.most_complex_functions ?? []) byName[f.name] = f.complexity;
   return byName;
 }
 
@@ -125,7 +125,7 @@ export { A };
     const { fullAnalysis: fa } = await import("../packages/core/src/metrics.ts");
     return fa(tmpDir);
   })();
-  const withComments = (full.all_functions ?? []).find((f: any) =>
+  const withComments = (full.most_complex_functions ?? []).find((f: any) =>
     String(f.name).endsWith("withComments"),
   );
   assert(
@@ -140,8 +140,8 @@ export { A };
   full = await (await import("../packages/core/src/metrics.ts")).fullAnalysis(tmpDir);
   assert(
     "function LOC never reports zero",
-    (full.all_functions ?? [])[0]?.loc >= 1,
-    `got ${(full.all_functions ?? [])[0]?.loc}`,
+    (full.most_complex_functions ?? [])[0]?.loc >= 1,
+    `got ${(full.most_complex_functions ?? [])[0]?.loc}`,
   );
 
   rmSync(tmpDir, { recursive: true, force: true });

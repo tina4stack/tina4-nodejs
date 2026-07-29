@@ -15,7 +15,7 @@
  * Returns the intended process exit code (the caller exits). Splitting "compute
  * exit code" from "exit the process" keeps the handler unit-testable.
  */
-import { offenders } from "../../../core/src/metrics.js";
+import { offenders, MetricsEngineError } from "../../../core/src/metrics.js";
 
 type Flags = {
   top: number;
@@ -77,18 +77,24 @@ export function runMetrics(args: string[] = []): number {
   }
   const { top, json, path, failOn } = parsed;
 
-  const result = offenders(path, top);
-  const summary = result.summary;
-  const found = result.offenders;
-
-  if (summary.error) {
-    console.log(`  metrics error: ${summary.error}`);
-    return 2;
+  // ONE engine run. Ask for every offender and slice for display: the gate must
+  // read the FULL set, not the printed top-N, and the old second call re-ran the
+  // whole analysis (its "mtime-cached" comment stopped being true when the
+  // in-process analyzer and its cache were deleted -- ADR-0002).
+  let result;
+  try {
+    result = offenders(path, Number.MAX_SAFE_INTEGER);
+  } catch (e) {
+    if (e instanceof MetricsEngineError) {
+      console.error(`  metrics error: ${e.message}`);
+      return 2;
+    }
+    throw e;
   }
+  const summary = result.summary;
+  const allOffenders = result.offenders;
+  const found = allOffenders.slice(0, top);
 
-  // Decide exit code from the FULL offender set, not just the printed top-N.
-  // offenders()/fullAnalysis() is mtime-cached, so this reuses the same analysis.
-  const allOffenders = offenders(path, summary.total_offenders || 1).offenders;
   const severities = new Set(allOffenders.map((o) => o.severity));
   let exitCode = 0;
   if (failOn === "warn" && (severities.has("warn") || severities.has("error"))) {

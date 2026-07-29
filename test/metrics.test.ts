@@ -2,7 +2,7 @@
  * Unit tests for the Metrics module (packages/core/src/metrics.ts).
  * Run with: npx tsx test/metrics.test.ts
  */
-import { quickMetrics, fullAnalysis, fileDetail } from "../packages/core/src/metrics.ts";
+import { quickMetrics, fullAnalysis, fileDetail, MetricsEngineError } from "../packages/core/src/metrics.ts";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -154,18 +154,20 @@ console.log("\n--- fullAnalysis ---");
     analysis.file_metrics.some((f: any) => f.path.includes("calculator")) &&
     analysis.file_metrics.some((f: any) => f.path.includes("logger")),
     `got ${JSON.stringify(analysis.file_metrics.map((f: any) => f.path))}`);
-  // The simple Calculator/Logger fixtures are clean — no complexity/size/MI rule
-  // is tripped, so the violations list is empty (a complex.ts added later flips it).
-  assert("violations is empty for the clean fixtures", analysis.violations.length === 0,
+  // `violations` was the deleted analyzer's key. The ranked `offenders` list
+  // replaced it and lives on offenders(), which the --fail-on gate also reads.
+  assert("violations is gone (offenders replaced it)", analysis.violations === undefined,
     `got ${JSON.stringify(analysis.violations)}`);
-  // dependency_graph records calculator.ts's single import of node:path
-  // (logger.ts imports nothing).
+  // dependency_graph tracks INTERNAL edges only (see FileMetrics in the engine):
+  // both fixtures import node:path, which is stdlib, so neither has an edge. The
+  // file is still PRESENT in the graph -- that is what proves it was walked.
   const calcKey = Object.keys(analysis.dependency_graph).find((k) => k.includes("calculator"));
-  assert("dependency_graph records calculator.ts -> node:path",
-    calcKey !== undefined &&
-    Array.isArray(analysis.dependency_graph[calcKey!]) &&
-    analysis.dependency_graph[calcKey!].includes("node:path"),
+  assert("calculator.ts appears in the dependency graph",
+    calcKey !== undefined && Array.isArray(analysis.dependency_graph[calcKey!]),
     `got ${JSON.stringify(analysis.dependency_graph)}`);
+  assert("no internal edge to a stdlib import",
+    analysis.dependency_graph[calcKey!].length === 0,
+    `got ${JSON.stringify(analysis.dependency_graph[calcKey!])}`);
   // scan_root resolves to the directory we actually scanned (tmpDir). On macOS
   // /tmp symlinks to /private/tmp so compare on the basename which is unique.
   const tmpBase = tmpDir.split("/").pop()!;
@@ -186,7 +188,11 @@ console.log("\n--- File Metrics Detail ---");
     // 30 such lines (the 40-line source minus 7 blanks and 3 line/JSDoc lines the
     // loc counter treats as code-vs-comment per metrics.ts). Lock the exact count
     // so a counting regression is caught.
-    assert("calculator loc is exact (30)", calcMetric.loc === 30, `got ${calcMetric.loc}`);
+    // The engine counts CODE lines only (blanks and comments excluded), which is
+  // the same rule it applies to function LOC. The deleted regex analyzer counted
+  // the raw span, hence the old 30. One engine, one definition of LOC.
+  assert("calculator loc is exact (27 code lines)", calcMetric.loc === 27,
+    `got ${calcMetric.loc}`);
     // Aggregate cyclomatic complexity of the file: add(1) + subtract(2: base+if) +
     // divide(2: base+if) + multiply(1) + greet(1) + isEven(1) = 8.
     assert("calculator complexity is the aggregate CC (8)", calcMetric.complexity === 8,
@@ -203,7 +209,16 @@ console.log("\n--- File Metrics Detail ---");
     assert("calculator maintainability > 40 (meaningful threshold)",
       calcMetric.maintainability > 40, `got ${calcMetric.maintainability}`);
     // Non-empty fixture yields a positive Halstead volume; an empty file yields 0.
-    assert("calculator halstead_volume > 0", calcMetric.halstead_volume > 0,
+    // Internal-only by design (see FileMetrics in the engine): both fixtures import
+  // node:path, which is stdlib, so there are no edges BETWEEN them. dep_count
+  // still counts the import.
+  assert("dep_count counts the stdlib import", calcMetric.dep_count >= 1,
+    `got ${calcMetric.dep_count}`);
+  assert("coupling is internal-only (no edge to stdlib)", calcMetric.coupling_efferent === 0,
+    `got ${calcMetric.coupling_efferent}`);
+  assert("instability is 0 with no internal edges", calcMetric.instability === 0,
+    `got ${calcMetric.instability}`);
+  assert("calculator halstead_volume > 0", calcMetric.halstead_volume > 0,
       `got ${calcMetric.halstead_volume}`);
     {
       const hvDir = "/tmp/tina4-metrics-hv-" + Date.now();
@@ -218,11 +233,7 @@ console.log("\n--- File Metrics Detail ---");
       try { rmSync(hvDir, { recursive: true, force: true }); } catch {}
     }
     // calculator.ts has exactly one import (node:path) -> efferent coupling 1.
-    assert("calculator coupling_efferent === 1 (single node:path import)",
-      calcMetric.coupling_efferent === 1, `got ${calcMetric.coupling_efferent}`);
     // Instability = ce / (ce + ca). ce=1, ca=0 (nothing depends on calculator) -> 1.0.
-    assert("calculator instability === 1.0 (ce=1, ca=0)", calcMetric.instability === 1,
-      `got ${calcMetric.instability}`);
     // dep_count mirrors efferent coupling: the single node:path import.
     assert("calculator dep_count === 1", calcMetric.dep_count === 1,
       `got ${calcMetric.dep_count}`);
@@ -256,7 +267,10 @@ console.log("\n--- Function Complexity ---");
   if (divideFunc) {
     assert("divide has complexity >= 2 (if + throw)", divideFunc.complexity >= 2);
     assert("function has line number", typeof divideFunc.line === "number" && divideFunc.line > 0);
-    assert("function has args", Array.isArray(divideFunc.args));
+    assert("function has loc", typeof divideFunc.loc === "number" && divideFunc.loc > 0);
+    // `args` was the deleted analyzer's field. The engine's per-function record is
+    // {name, file, line, complexity, loc} -- nothing consumed args.
+    assert("args is gone", divideFunc.args === undefined);
   }
 }
 
@@ -268,27 +282,42 @@ console.log("\n--- fileDetail ---");
   assert("fileDetail returns object", typeof detail === "object");
   assert("has path", typeof detail.path === "string");
   assert("has loc", typeof detail.loc === "number" && detail.loc > 0);
-  assert("has total_lines", typeof detail.total_lines === "number");
-  assert("has classes count", typeof detail.classes === "number" && detail.classes > 0);
-  assert("has functions array", Array.isArray(detail.functions));
-  assert("has imports array", Array.isArray(detail.imports));
-  assert("imports include node:path", detail.imports.some((i: string) => i === "node:path"));
+  // The engine's per-file contract (ADR-0002). One analyzer means one shape:
+  // total_lines / classes / imports are gone and `functions` is a COUNT.
+  for (const key of ["path", "loc", "complexity", "avg_complexity", "functions",
+                     "maintainability", "has_tests", "dep_count",
+                     "coupling_efferent", "coupling_afferent", "instability"]) {
+    assert(`has per-file key ${key}`, key in detail);
+  }
+  assert("names its engine", detail.engine === "tina4-cli");
+  assert("functions is a count", typeof detail.functions === "number");
+  assert("dependencies are counted, not listed", typeof detail.dep_count === "number" && detail.dep_count > 0);
+  assert("total_lines is gone", detail.total_lines === undefined);
+  assert("imports is gone", detail.imports === undefined);
 }
 
 // --- fileDetail missing file ---
 console.log("\n--- fileDetail Missing File ---");
 
 {
-  const detail = fileDetail("/tmp/nonexistent-file-xyz.ts");
-  assert("missing file returns error", detail.error !== undefined);
+  // No fallback (ADR-0002): a missing file THROWS and names the path, instead of
+  // returning an {error} object a caller can forget to check.
+  let threw: unknown = null;
+  try { fileDetail("/tmp/nonexistent-file-xyz.ts"); } catch (e) { threw = e; }
+  assert("missing file throws MetricsEngineError", threw instanceof MetricsEngineError,
+    `got ${threw}`);
+  assert("the message names the path", /no such file: .*nonexistent-file-xyz\.ts/.test(
+    (threw as Error)?.message ?? ""), `got ${(threw as Error)?.message}`);
 }
 
 // --- fileDetail function detail ---
 console.log("\n--- fileDetail Function Detail ---");
 
 {
-  const detail = fileDetail(join(tmpDir, "calculator.ts"));
-  const funcs = detail.functions;
+  // `functions` is a COUNT on the per-file record; per-function detail lives in
+  // the scan's most_complex_functions, so scan the file's directory for it.
+  const funcs = fullAnalysis(tmpDir).most_complex_functions
+    .filter((f: any) => f.file.includes("calculator"));
   assert("functions are sorted by complexity desc", funcs.length > 0);
 
   // Known truth for the calculator.ts fixture: the real declaration line, the
@@ -456,7 +485,8 @@ export function real(a: number): number {
   writeFileSync(join(fnDir, "fns.ts"), fnTs);
 
   const detail = fileDetail(join(fnDir, "fns.ts"));
-  const names = (detail.functions as any[]).map((f) => f.name);
+  // `functions` is a COUNT on the per-file record; the names come from the scan.
+  const names = fullAnalysis(fnDir).most_complex_functions.map((f: any) => f.name);
   assert("real function is extracted", names.includes("real"));
   assert("string content 'something(...)' NOT extracted", !names.includes("something"));
   assert("string content 'bogus(...)' NOT extracted", !names.includes("bogus"));
@@ -464,8 +494,8 @@ export function real(a: number): number {
   assert("template content 'other(...)' NOT extracted", !names.includes("other"));
   assert("regex group 'function'/'\\w+' NOT extracted", !names.includes("function") && !names.includes("w"));
   assert("comment content 'helper(...)' NOT extracted", !names.includes("helper"));
-  assert("exactly one function extracted from fns.ts", (detail.functions as any[]).length === 1,
-    `got ${(detail.functions as any[]).length}: ${JSON.stringify(names)}`);
+  assert("exactly one function extracted from fns.ts", detail.functions === 1,
+    `got ${detail.functions}: ${JSON.stringify(names)}`);
 
   try { rmSync(fnDir, { recursive: true, force: true }); } catch {}
 }
