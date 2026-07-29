@@ -135,6 +135,26 @@ export interface FirebirdConfig {
   charset?: string;
 }
 
+/**
+ * Quote an identifier the way Firebird actually stores it: UPPERCASE.
+ *
+ * Firebird folds an UNQUOTED identifier to upper case and treats a QUOTED one as
+ * case-sensitive. So after the ordinary `CREATE TABLE probe_t (...)` the table is
+ * PROBE_T, and `INSERT INTO "probe_t"` matches nothing:
+ *
+ *     Dynamic SQL Error / Table unknown / probe_t
+ *
+ * That broke the insert path against every conventionally-created table, columns
+ * included. A name the caller has ALREADY quoted is passed through untouched,
+ * which is the escape hatch for a genuinely case-sensitive `CREATE TABLE "orders"`.
+ */
+export function fbQuote(name: string): string {
+  if (!name) return name;
+  const trimmed = name.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) return trimmed;
+  return `"${trimmed.toUpperCase().replace(/"/g, '""')}"`;
+}
+
 export class FirebirdAdapter implements DatabaseAdapter {
   private db: any = null;
   private transaction: any = null;
@@ -362,7 +382,7 @@ export class FirebirdAdapter implements DatabaseAdapter {
       if (data.length === 0) return { success: true, affectedRows: 0 };
       const keys = Object.keys(data[0]);
       const placeholders = keys.map(() => "?").join(", ");
-      const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
+      const sql = `INSERT INTO ${fbQuote(table)} (${keys.map(fbQuote).join(", ")}) VALUES (${placeholders})`;
       const paramsList = data.map((row) => keys.map((k) => row[k]));
       try {
         const result = await this.executeManyAsync(sql, paramsList);
@@ -374,7 +394,7 @@ export class FirebirdAdapter implements DatabaseAdapter {
 
     const keys = Object.keys(data);
     const placeholders = keys.map(() => "?").join(", ");
-    const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
+    const sql = `INSERT INTO ${fbQuote(table)} (${keys.map(fbQuote).join(", ")}) VALUES (${placeholders})`;
     const values = Object.values(data);
 
     try {
@@ -503,6 +523,29 @@ export class FirebirdAdapter implements DatabaseAdapter {
        WHERE RF.RDB$RELATION_NAME = ?`,
       [table.toUpperCase()],
     );
+
+    // The primary key comes from the constraint catalogue. This used to be
+    // hardcoded false for every column, so the key was invisible to anything
+    // that introspects it -- including the filterless-write guard that lifts the
+    // PK out of `data`. Same bug the Python master and the Ruby driver carried.
+    const pkNames = new Set<string>();
+    try {
+      const pkRows = await this.queryAsync<Record<string, unknown>>(
+        `SELECT SG.RDB$FIELD_NAME FROM RDB$INDEX_SEGMENTS SG
+         JOIN RDB$RELATION_CONSTRAINTS RC ON SG.RDB$INDEX_NAME = RC.RDB$INDEX_NAME
+         WHERE RC.RDB$CONSTRAINT_TYPE = 'PRIMARY KEY' AND RC.RDB$RELATION_NAME = ?
+         ORDER BY SG.RDB$FIELD_POSITION`,
+        [table.toUpperCase()],
+      );
+      for (const row of pkRows) {
+        const raw = (row["RDB$FIELD_NAME"] ?? row["rdb$field_name"] ?? "") as string;
+        const trimmed = String(raw).trim().toUpperCase();
+        if (trimmed) pkNames.add(trimmed);
+      }
+    } catch {
+      // A table with no primary key is not an error.
+    }
+
     return rows.map((r) => {
       const name = (r["RDB$FIELD_NAME"] ?? r["rdb$field_name"] ?? "") as string;
       return {
@@ -510,7 +553,9 @@ export class FirebirdAdapter implements DatabaseAdapter {
         type: firebirdFieldTypeToString(r["RDB$FIELD_TYPE"] ?? r["rdb$field_type"]),
         nullable: (r["RDB$NULL_FLAG"] ?? r["rdb$null_flag"]) === null,
         default: r["RDB$DEFAULT_SOURCE"] ?? r["rdb$default_source"],
-        primaryKey: false,
+        primaryKey: pkNames.has(
+          (typeof name === "string" ? name.trim() : String(name).trim()).toUpperCase(),
+        ),
       };
     });
   }
