@@ -88,6 +88,7 @@ const CASES = [
   "standalone insert auto-commits (no txn)",
   "updateAsync changes the row (identifier folding)",
   "deleteAsync removes the row (identifier folding)",
+  "createTableAsync round-trips with insertAsync",
 ];
 
 async function main(): Promise<void> {
@@ -179,6 +180,24 @@ async function main(): Promise<void> {
     assert(CASES[5], afterDelete === 0, `expected 0 after delete, got ${afterDelete}`);
 
     try { await db.executeAsync(`DROP TABLE ${TABLE}`); } catch { /* ignore */ }
+
+    // --- POSITIVE: the ORM's OWN path. createTableAsync used to emit
+    // lowercase-quoted "id"/"label", so the table it built had case-sensitive
+    // columns that its own fbQuote'd inserts could never address -- and
+    // tableExistsAsync (which looks up name.toUpperCase()) could not even find the
+    // table again. Nothing in the suite exercised create-then-insert, which is
+    // exactly why it survived.
+    const ORM_T = "RB_ORM_T";
+    try { await db.executeAsync(`DROP TABLE ${ORM_T}`); } catch { /* first run */ }
+    await db.createTableAsync(ORM_T, {
+      id: { type: "integer", primaryKey: true },
+      label: { type: "string", length: 32 },
+    } as never);
+    await db.insertAsync(ORM_T, { id: 1, label: "ROUNDTRIP" });
+    const back = await db.queryAsync<Record<string, unknown>>(`SELECT label FROM ${ORM_T} WHERE id = ?`, [1]);
+    const got = back[0]?.["LABEL"] ?? back[0]?.["label"];
+    assert(CASES[6], got === "ROUNDTRIP", `expected ROUNDTRIP, got ${JSON.stringify(got)}`);
+    try { await db.executeAsync(`DROP TABLE ${ORM_T}`); } catch { /* ignore */ }
   } catch (e) {
     if (!settled) {
       assert(CASES[1], false, `unexpected error: ${(e as Error).message}`);

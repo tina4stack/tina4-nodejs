@@ -588,7 +588,12 @@ export class FirebirdAdapter implements DatabaseAdapter {
 
     for (const [colName, def] of Object.entries(columns)) {
       const sqlType = fieldTypeToFirebird(def);
-      const parts = [`"${colName}" ${sqlType}`];
+      // fbQuote, not a hand-rolled `"${colName}"` — DDL must agree with the write
+      // path or the ORM creates a table it cannot write to. Lowercase-quoted "id"
+      // is a case-sensitive column; every insert/update/delete addresses ID.
+      // tableExistsAsync looks up name.toUpperCase() and would not have found it
+      // either, so createTableAsync would re-run and fail already-exists.
+      const parts = [`${fbQuote(colName)} ${sqlType}`];
 
       if (def.primaryKey && !def.autoIncrement) parts.push("PRIMARY KEY");
       if (def.required && !def.primaryKey) parts.push("NOT NULL");
@@ -604,7 +609,7 @@ export class FirebirdAdapter implements DatabaseAdapter {
       colDefs.push(parts.join(" "));
     }
 
-    const sql = `CREATE TABLE "${name}" (${colDefs.join(", ")})`;
+    const sql = `CREATE TABLE ${fbQuote(name)} (${colDefs.join(", ")})`;
     await this.executeAsync(sql);
 
     // Create sequences and triggers for auto-increment columns
@@ -615,7 +620,7 @@ export class FirebirdAdapter implements DatabaseAdapter {
 
         await this.executeAsync(`CREATE SEQUENCE "${seqName}"`);
         await this.executeAsync(
-          `CREATE TRIGGER "${trigName}" FOR "${name}" ACTIVE BEFORE INSERT POSITION 0 AS BEGIN IF (NEW."${colName}" IS NULL) THEN NEW."${colName}" = NEXT VALUE FOR "${seqName}"; END`,
+          `CREATE TRIGGER "${trigName}" FOR ${fbQuote(name)} ACTIVE BEFORE INSERT POSITION 0 AS BEGIN IF (NEW.${fbQuote(colName)} IS NULL) THEN NEW.${fbQuote(colName)} = NEXT VALUE FOR "${seqName}"; END`,
         );
       }
     }
