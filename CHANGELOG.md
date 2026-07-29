@@ -14,6 +14,29 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ### Changed
 
+- **Breaking: every ORM read path that takes a `limit` now defaults to 100 rows, and
+  four of them had no cap at all.** `db.fetch()`, `all()`, `select()` and `withTrashed()`
+  took an optional `limit` with NO default, and the adapters only append a `LIMIT` clause
+  when one is given, so each returned every row. `where()`, `cached()` and a
+  `scope()`-generated method defaulted to 20. All seven now default to 100
+  (`DEFAULT_ROW_CAP`, exported from `@tina4/orm` so the ORM and the DB layer cannot drift
+  apart on the number).
+
+  Migration: this one can change results in both directions. A caller relying (knowingly
+  or not) on an unbounded read must now ask for it: `Model.where(sql, [], 10000)`. A
+  caller relying on the old 20 gets 100. Code that already passes a limit is unaffected.
+  `all()` and `select()` gained `limit`/`offset` parameters, appended after the existing
+  ones, so positional callers keep working.
+
+  `QueryBuilder.get()` and `db.fetchAll()` are deliberately UNCHANGED and stay uncapped.
+  Neither takes a `limit`, so a cap there can only ever be silent, and that silent
+  `LIMIT 100` was the data-loss-on-read footgun removed in 3.13.39. `fetchAll` needed a
+  structural change to keep that promise: Node's adapters read `limit: 0` as `LIMIT 0`
+  (zero rows) rather than as the "no truncation" sentinel Python and PHP use, so the cap
+  could not live on `fetch`'s parameter default without `fetchAll()` silently inheriting
+  it. Both now share one internal body; `fetch` applies the cap, `fetchAll` passes the
+  limit through untouched.
+
 - Internal: the SQL dialect-translation module is renamed
   `packages/orm/src/sqlTranslation.ts` -> `packages/orm/src/sqlTranslator.ts`, so the filename
   matches the `SQLTranslator` class it exports (and the sibling frameworks). Consumers import the
