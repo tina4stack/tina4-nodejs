@@ -384,12 +384,8 @@ export class FirebirdAdapter implements DatabaseAdapter {
       const placeholders = keys.map(() => "?").join(", ");
       const sql = `INSERT INTO ${fbQuote(table)} (${keys.map(fbQuote).join(", ")}) VALUES (${placeholders})`;
       const paramsList = data.map((row) => keys.map((k) => row[k]));
-      try {
-        const result = await this.executeManyAsync(sql, paramsList);
-        return { success: true, affectedRows: result.totalAffected, lastId: result.lastId };
-      } catch (e) {
-        return { success: false, affectedRows: 0, error: (e as Error).message };
-      }
+      const result = await this.executeManyAsync(sql, paramsList);
+      return { success: true, affectedRows: result.totalAffected, lastId: result.lastId };
     }
 
     const keys = Object.keys(data);
@@ -397,16 +393,13 @@ export class FirebirdAdapter implements DatabaseAdapter {
     const sql = `INSERT INTO ${fbQuote(table)} (${keys.map(fbQuote).join(", ")}) VALUES (${placeholders})`;
     const values = Object.values(data);
 
-    try {
-      await this.executePromise(sql, values);
-      // Firebird doesn't have a generic last_insert_id — return success without id
-      return {
-        success: true,
-        affectedRows: 1,
-      };
-    } catch (e) {
-      return { success: false, affectedRows: 0, error: (e as Error).message };
-    }
+    // FAIL LOUD, like fetch/execute and the other three frameworks: a bad statement
+    // RAISES and never returns a falsy result. Swallowing it into {success:false}
+    // is what hid a wholly broken write path — the caller awaited a resolved
+    // promise, read back zero rows, and no error surfaced anywhere.
+    await this.executePromise(sql, values);
+    // Firebird doesn't have a generic last_insert_id — return success without id
+    return { success: true, affectedRows: 1 };
   }
 
   update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>, params?: unknown[]): DatabaseResult {
@@ -415,17 +408,18 @@ export class FirebirdAdapter implements DatabaseAdapter {
 
   async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): Promise<DatabaseResult> {
     this.ensureConnected();
-    const setClauses = Object.keys(data).map((k) => `"${k}" = ?`).join(", ");
-    const whereClauses = Object.keys(filter).map((k) => `"${k}" = ?`).join(" AND ");
-    const sql = `UPDATE "${table}" SET ${setClauses} WHERE ${whereClauses}`;
+    // Identifiers go through fbQuote, exactly like insertAsync. Firebird folds an
+    // UNQUOTED identifier to uppercase, so a conventional `CREATE TABLE probe_t`
+    // stores PROBE_T/ID — and a hand-rolled `"${k}"` emits lowercase-quoted "id",
+    // which is a DIFFERENT, non-existent column. update and delete were therefore
+    // broken on every conventionally-created Firebird table while insert worked.
+    const setClauses = Object.keys(data).map((k) => `${fbQuote(k)} = ?`).join(", ");
+    const whereClauses = Object.keys(filter).map((k) => `${fbQuote(k)} = ?`).join(" AND ");
+    const sql = `UPDATE ${fbQuote(table)} SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];
 
-    try {
-      await this.executePromise(sql, values);
-      return { success: true, affectedRows: 1 };
-    } catch (e) {
-      return { success: false, affectedRows: 0, error: (e as Error).message };
-    }
+    await this.executePromise(sql, values);
+    return { success: true, affectedRows: 1 };
   }
 
   delete(table: string, filter: Record<string, unknown>, params?: unknown[]): DatabaseResult {
@@ -434,16 +428,13 @@ export class FirebirdAdapter implements DatabaseAdapter {
 
   async deleteAsync(table: string, filter: Record<string, unknown>): Promise<DatabaseResult> {
     this.ensureConnected();
-    const whereClauses = Object.keys(filter).map((k) => `"${k}" = ?`).join(" AND ");
-    const sql = `DELETE FROM "${table}" WHERE ${whereClauses}`;
+    // Same fbQuote policy as insert/update — see updateAsync.
+    const whereClauses = Object.keys(filter).map((k) => `${fbQuote(k)} = ?`).join(" AND ");
+    const sql = `DELETE FROM ${fbQuote(table)} WHERE ${whereClauses}`;
     const values = Object.values(filter);
 
-    try {
-      await this.executePromise(sql, values);
-      return { success: true, affectedRows: 1 };
-    } catch (e) {
-      return { success: false, affectedRows: 0, error: (e as Error).message };
-    }
+    await this.executePromise(sql, values);
+    return { success: true, affectedRows: 1 };
   }
 
   startTransaction(): void {

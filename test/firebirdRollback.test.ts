@@ -86,6 +86,8 @@ const CASES = [
   "ROLLBACK undoes the insert (row gone)",
   "COMMIT persists the insert (row present)",
   "standalone insert auto-commits (no txn)",
+  "updateAsync changes the row (identifier folding)",
+  "deleteAsync removes the row (identifier folding)",
 ];
 
 async function main(): Promise<void> {
@@ -117,9 +119,14 @@ async function main(): Promise<void> {
   };
   process.on("uncaughtException", onUncaught);
 
+  // Identifiers are UNQUOTED throughout, which is the conventional shape a Tina4
+  // model produces: Firebird folds them to uppercase, so the stored names are
+  // RB_LOCKIN/ID/NAME and fbQuote's upper-casing matches. Creating the table with
+  // lowercase-QUOTED columns instead (as this test used to) makes "id" a distinct
+  // case-sensitive column that no adapter write can ever address.
   const countByName = async (name: string): Promise<number> => {
     const rows = await db.queryAsync<Record<string, unknown>>(
-      `SELECT COUNT(*) AS C FROM "${TABLE}" WHERE "name" = ?`, [name],
+      `SELECT COUNT(*) AS C FROM ${TABLE} WHERE name = ?`, [name],
     );
     const r = rows[0] as Record<string, unknown>;
     return Number(r["C"] ?? r["c"]);
@@ -127,9 +134,9 @@ async function main(): Promise<void> {
 
   try {
     await db.connect();
-    try { await db.executeAsync(`DROP TABLE "${TABLE}"`); } catch { /* first run */ }
+    try { await db.executeAsync(`DROP TABLE ${TABLE}`); } catch { /* first run */ }
     await db.executeAsync(
-      `CREATE TABLE "${TABLE}" ("id" INTEGER NOT NULL PRIMARY KEY, "name" VARCHAR(64))`,
+      `CREATE TABLE ${TABLE} (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(64))`,
     );
 
     // --- NEGATIVE: rollback must undo the insert (fails on the old code) ---
@@ -139,7 +146,14 @@ async function main(): Promise<void> {
     assert(CASES[0], seenInTxn === 1, `expected 1 inside txn, got ${seenInTxn}`);
     await db.rollbackAsync();
     const afterRollback = await countByName("ROLLBACK_ME");
-    assert(CASES[1], afterRollback === 0, `expected 0 after rollback, got ${afterRollback} (row SURVIVED — rollback was a no-op)`);
+    // Requires the row to have EXISTED first. Asserting only "gone afterwards"
+    // passes vacuously when the insert never landed at all — which is exactly how
+    // a wholly broken write path reported a green rollback test.
+    assert(
+      CASES[1], seenInTxn === 1 && afterRollback === 0,
+      `expected present-then-absent, got ${seenInTxn} in txn and ${afterRollback} after rollback`
+        + (seenInTxn !== 1 ? " (VACUOUS: the insert never landed)" : " (row SURVIVED — rollback was a no-op)"),
+    );
 
     // --- POSITIVE: commit must persist the insert ---
     await db.startTransactionAsync();
@@ -153,7 +167,18 @@ async function main(): Promise<void> {
     const standalone = await countByName("STANDALONE");
     assert(CASES[3], standalone === 1, `expected 1 for standalone insert, got ${standalone}`);
 
-    try { await db.executeAsync(`DROP TABLE "${TABLE}"`); } catch { /* ignore */ }
+    // --- POSITIVE: update/delete must address the same folded identifiers as insert.
+    // These hand-rolled `"${k}"` instead of fbQuote(k), so they emitted lowercase-
+    // quoted "id"/"name" and could not touch a single row on a conventional table.
+    await db.updateAsync(TABLE, { name: "RENAMED" }, { id: 3 });
+    const renamed = await countByName("RENAMED");
+    assert(CASES[4], renamed === 1, `expected 1 renamed row, got ${renamed}`);
+
+    await db.deleteAsync(TABLE, { id: 3 });
+    const afterDelete = await countByName("RENAMED");
+    assert(CASES[5], afterDelete === 0, `expected 0 after delete, got ${afterDelete}`);
+
+    try { await db.executeAsync(`DROP TABLE ${TABLE}`); } catch { /* ignore */ }
   } catch (e) {
     if (!settled) {
       assert(CASES[1], false, `unexpected error: ${(e as Error).message}`);
