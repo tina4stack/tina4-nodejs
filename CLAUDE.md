@@ -1257,7 +1257,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 ## v3 Features Summary
 
 - **98 built-in features**, zero third-party dependencies
-- **6,005 tests** passing across 191 files (build + typecheck green)
+- **6,230 tests** passing, 0 failed, across 198 files (build + typecheck green) - measured 2026-07-29 on Ubuntu 24.04.4 LTS x86_64, Node 24.18.0, live services, TINA4_REQUIRE_SERVICES=1; Firebird excluded by design
 - **Race-safe `getNextId()`** with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
