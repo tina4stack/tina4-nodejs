@@ -131,6 +131,16 @@ export function extractLastInsertId(result: unknown): number | bigint | null {
 }
 
 let activeAdapter: DatabaseAdapter | null = null;
+/**
+ * The default row cap on every read path that advertises a `limit`.
+ *
+ * One number for the whole family (Python, PHP, Ruby and Node all default to
+ * this). Pagination is a default principle: an un-paginated read of a table
+ * that grew to a million rows is a production incident waiting to happen. A
+ * caller who wants more passes a bigger limit.
+ */
+export const DEFAULT_ROW_CAP = 100;
+
 const namedAdapters: Map<string, DatabaseAdapter> = new Map();
 
 /**
@@ -675,7 +685,31 @@ export class Database {
    * the fallback resolves instantly). This is the breaking change that makes
    * the wrapper work uniformly across every engine.
    */
+  /**
+   * Fetch rows with pagination, capped at DEFAULT_ROW_CAP (100) when the
+   * caller does not pass a limit.
+   *
+   * The cap is the one row-cap number the whole family shares (Python, PHP and
+   * Ruby all default `fetch` to 100). Node was the outlier: `limit` was
+   * optional with NO default, so a bare `db.fetch("select * from big_table")`
+   * returned every row.
+   *
+   * `fetchAll` deliberately does NOT inherit the cap — see below.
+   */
   async fetch(sql: string, params?: unknown[], limit?: number, offset?: number, opts?: { noCache?: boolean }): Promise<DatabaseResult> {
+    return this._fetchWithLimit(sql, params, limit ?? DEFAULT_ROW_CAP, offset, opts);
+  }
+
+  /**
+   * The shared read body. `limit` is passed through VERBATIM: `undefined`
+   * means "no LIMIT clause at all", which is how `fetchAll` stays uncapped.
+   *
+   * This exists because Node's adapters treat `limit: 0` as `LIMIT 0` (zero
+   * rows), not as the "no truncation" sentinel Python and PHP use — so the cap
+   * cannot live on the parameter default, or `fetchAll()` would silently
+   * inherit it and stop returning every row.
+   */
+  private async _fetchWithLimit(sql: string, params?: unknown[], limit?: number, offset?: number, opts?: { noCache?: boolean }): Promise<DatabaseResult> {
     // v3.13.12: strip trailing `;` before the adapter wraps with COUNT(*)
     // or appends LIMIT/OFFSET. Without this, `"SELECT * FROM t;"` becomes
     // `"SELECT * FROM t; LIMIT 100 OFFSET 0"` — a syntax error.
@@ -741,7 +775,10 @@ export class Database {
    * SEPARATE trailing argument, never the params array.
    */
   async fetchAll<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, offset?: number, opts?: { noCache?: boolean }): Promise<T[]> {
-    return (await this.fetch(sql, params, limit, offset, opts)).records as T[];
+    // Routes through _fetchWithLimit, NOT fetch(), so `limit` stays verbatim.
+    // Going through fetch() would apply the 100-row cap and make a method
+    // called "fetchAll" quietly stop returning them all.
+    return (await this._fetchWithLimit(sql, params, limit, offset, opts)).records as T[];
   }
 
   /**

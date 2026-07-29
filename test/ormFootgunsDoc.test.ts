@@ -228,17 +228,22 @@ async function run() {
     try { await closeDatabase(); } catch { /* ignore */ }
   }
 
-  // ── 6. No default ordering; where() caps at LIMIT 20 and takes no orderBy ──
-  console.log("\n--- 6. ordering: find/all take orderBy; where() defaults to LIMIT 20 ---");
+  // ── 6. No default ordering; where() caps at LIMIT 100 and takes no orderBy ──
+  console.log("\n--- 6. ordering: find/all take orderBy; where() defaults to LIMIT 100 ---");
   {
     const db = await freshDb("f6.db");
     for (let i = 1; i <= 25; i++) {
       await db.execute("INSERT INTO fusers (name) VALUES (?)", [`u${i}`]);
     }
 
-    // where() with no limit arg silently returns at most 20 rows (documented default).
+    // where() with no limit arg caps at 100 rows -- the one row cap the whole
+    // family shares. It was 20 until 3.13.95; the footgun is unchanged in KIND
+    // (the cap is a default, so a caller who wants more must ask), only in
+    // number. 25 rows is now under the cap, so the cap is demonstrated with a
+    // fixture that exceeds it.
     const w = await FUser.where("1 = 1");
-    assert("where() defaults to LIMIT 20 (only 20 of 25 rows)", w.length === 20, `got ${w.length}`);
+    assert("where() returns all 25 rows when the table is under the 100 cap",
+      w.length === 25, `got ${w.length}`);
 
     // find({}, n) is the way to lift the cap.
     const everyone = await FUser.find({}, 100);
@@ -248,6 +253,17 @@ async function run() {
     const desc = await FUser.find({}, 3, 0, "id DESC");
     assert("find() honours the orderBy arg (id DESC)",
       desc.length === 3 && Number(desc[0].id) > Number(desc[2].id), `ids: ${desc.map((d) => d.id)}`);
+
+    // LAST in this block on purpose: it grows the table past the cap, which
+    // would break the 25-row assertions above if it ran earlier.
+    for (let i = 26; i <= 130; i++) {
+      await db.execute("INSERT INTO fusers (name) VALUES (?)", [`u${i}`]);
+    }
+    const capped = await FUser.where("1 = 1");
+    assert("where() caps at 100 once the table exceeds it (105 of 130 dropped silently)",
+      capped.length === 100, `got ${capped.length}`);
+    assert("an explicit limit still reaches past the cap",
+      (await FUser.where("1 = 1", [], 130)).length === 130);
 
     db.close();
     try { await closeDatabase(); } catch { /* ignore */ }

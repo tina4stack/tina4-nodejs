@@ -3,6 +3,7 @@ import {
   adapterQuery, adapterFetch, adapterExecute, adapterFetchOne,
   adapterStartTransaction, adapterCommit, adapterRollback,
   adapterTableExists, adapterCreateTable, extractLastInsertId,
+  DEFAULT_ROW_CAP,
 } from "./database.js";
 import { validate as validateFields } from "./validation.js";
 import { QueryBuilder } from "./queryBuilder.js";
@@ -550,6 +551,8 @@ export class BaseModel {
     params?: unknown[],
     include?: string[],
     orderBy?: string,
+    limit: number = DEFAULT_ROW_CAP,
+    offset: number = 0,
   ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
@@ -567,7 +570,8 @@ export class BaseModel {
 
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const orderClause = orderBy ? ` ORDER BY ${orderBy}` : "";
-    const sql = `SELECT * FROM "${ModelClass.tableName}"${whereClause}${orderClause}`;
+    const sql = `SELECT * FROM "${ModelClass.tableName}"${whereClause}${orderClause}`
+      + ` LIMIT ${limit} OFFSET ${offset}`;
 
     const rows = await adapterQuery(db, sql, params);
     const instances = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
@@ -583,7 +587,7 @@ export class BaseModel {
    *
    * @param conditions WHERE clause (e.g. "age > ? AND active = ?")
    * @param params     Bind parameters
-   * @param limit      Max records (default 20)
+   * @param limit      Max records (default 100)
    * @param offset     Skip records (default 0)
    * @param include    Relationship names to eager-load
    * @param orderBy    ORDER BY clause (e.g. "name ASC")
@@ -592,7 +596,7 @@ export class BaseModel {
     this: new (data?: Record<string, unknown>) => T,
     conditions: string,
     params?: unknown[],
-    limit: number = 20,
+    limit: number = DEFAULT_ROW_CAP,
     offset: number = 0,
     include?: string[],
     orderBy?: string,
@@ -1099,7 +1103,7 @@ export class BaseModel {
    * @param sql     SQL query string.
    * @param params  Bind parameters.
    * @param ttl     Cache TTL in seconds (default 60).
-   * @param limit   Max records to return (default 20).
+   * @param limit   Max records to return (default 100).
    * @param offset  Records to skip (default 0).
    * @param include Relationship names to eager-load on cache miss.
    */
@@ -1108,7 +1112,7 @@ export class BaseModel {
     sql: string,
     params?: unknown[],
     ttl = 60,
-    limit = 20,
+    limit = DEFAULT_ROW_CAP,
     offset = 0,
     include?: string[],
   ): Promise<T[]> {
@@ -1149,10 +1153,16 @@ export class BaseModel {
     this: new (data?: Record<string, unknown>) => T,
     sql: string,
     params?: unknown[],
+    limit: number = DEFAULT_ROW_CAP,
+    offset: number = 0,
   ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
-    const rows = await adapterQuery(db, sql, params);
+    // Skip appending when the caller's SQL already carries its own LIMIT --
+    // a second one is a syntax error on every engine.
+    const hasOwnLimit = sql.toUpperCase().split("--")[0].includes("LIMIT");
+    const paged = hasOwnLimit ? sql : `${sql} LIMIT ${limit} OFFSET ${offset}`;
+    const rows = await adapterQuery(db, paged, params);
     return rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
   }
 
@@ -1239,8 +1249,8 @@ export class BaseModel {
     this: new (data?: Record<string, unknown>) => T,
     conditions?: string,
     params?: unknown[],
-    limit?: number,
-    offset?: number,
+    limit: number = DEFAULT_ROW_CAP,
+    offset: number = 0,
   ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
@@ -1309,7 +1319,7 @@ export class BaseModel {
     params?: unknown[],
   ): void {
     const ModelClass = this as unknown as typeof BaseModel;
-    (ModelClass as any)[name] = (limit: number = 20, offset: number = 0) => {
+    (ModelClass as any)[name] = (limit: number = DEFAULT_ROW_CAP, offset: number = 0) => {
       return ModelClass.where.call(ModelClass as any, filterSql, params, limit, offset);
     };
   }

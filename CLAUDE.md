@@ -157,7 +157,7 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 - `seeder.ts` — Database seeding (`seedTable` raw SQL, `seedOrm` model-based, `seedModels` FK-ordered batch). All return a `SeedSummary { seeded, failed, errors }`; per-row failures are logged + counted + skipped (`strict` re-raises). Options: `{ overrides, clear, seed, strict }`.
 - `sqlTranslator.ts` — Cross-engine SQL translator (`SQLTranslator`) and TTL query cache (`QueryCache`)
 - **Instance methods:** `save(): this|false` (fluent, false on failure), `delete()`, `forceDelete()`, `restore()`, `load(sql, params?, include?): boolean`, `validate(): string[]`, `toDict(include?)`, `toAssoc(include?)`, `toObject()`, `toArray(): unknown[]`, `toList()`, `toJson(include?)`, `hasOne(class, fk)`, `hasMany(class, fk, limit?, offset?)`, `belongsTo(class, fk)`
-- **Static methods:** `find(id, include?)`, `findById(id, include?)`, `findOrFail(id)`, `create(data)`, `all(where?, params?, include?)`, `select(sql, params?)`, `selectOne(sql, params?, include?)`, `where(conditions, params?, limit?, offset?, include?)`, `count(conditions?, params?)`, `withTrashed(conditions?, params?, limit?, offset?)`, `scope(name, filterSql, params?)` (registers reusable method), `createTable()`, `query()`, `_processForeignKeys()`, `_applyFkRegistry()`
+- **Static methods:** `find(id, include?)`, `findById(id, include?)`, `findOrFail(id)`, `create(data)`, `all(where?, params?, include?, orderBy?, limit=100, offset=0)`, `select(sql, params?, limit=100, offset=0)`, `selectOne(sql, params?, include?)`, `where(conditions, params?, limit=100, offset=0, include?, orderBy?)`, `count(conditions?, params?)`, `withTrashed(conditions?, params?, limit=100, offset=0)`, `scope(name, filterSql, params?)` (registers reusable method), `createTable()`, `query()`, `_processForeignKeys()`, `_applyFkRegistry()`
 - **Foreign key auto-wire:** Declare a field with `type: "foreignKey"` and `references: "ModelName"` to auto-wire both `belongsTo` on the declaring model and `hasMany` on the referenced model. Optional `relatedName` overrides the has-many key. Models must be registered via `BaseModel.registerModel(name, class)` for name-based resolution. Example: `user_id: { type: "foreignKey", references: "User" }` → `post.belongsTo(User, "user_id")` and `user.hasMany(Post, "user_id")` both resolve without extra wiring.
 - QueryBuilder supports `toMongo()` for generating MongoDB query documents from the same fluent API
 - `getNextId(table: string, pkColumn?: string, generatorName?: string): Promise<number>` — Race-safe ID generation using atomic sequence table (`tina4_sequences`). SQLite/MySQL/MSSQL use `tina4_sequences` with atomic UPDATE+SELECT. PostgreSQL auto-creates sequences if missing. Firebird uses existing generators (unchanged).
@@ -627,6 +627,9 @@ import { initDatabase, bindDatabase, createAdapterFromUrl, Database, DatabaseRes
 const db = await initDatabase({ url: "sqlite:///app.db" });
 // Connection pooling: pass `pool: 4` for round-robin connections.
 
+// db.fetch() caps at 100 rows when no limit is passed (one number across all
+// four frameworks). db.fetchAll() deliberately does NOT inherit the cap -- its
+// name is the request for every row -- so it routes around fetch()'s default.
 // EVERY db method that touches the database is ASYNC on the Database wrapper --
 // it returns a Promise, so `await` it. (The node:sqlite ADAPTER underneath is
 // synchronous, but the wrapper is async so the query cache and the pg/mysql/
@@ -634,7 +637,7 @@ const db = await initDatabase({ url: "sqlite:///app.db" });
 // and close() are synchronous.
 
 // Reads — async, await them
-await db.fetch(sql, params?, limit?, offset?): Promise<DatabaseResult>   // .records, .count, .limit, .offset
+await db.fetch(sql, params?, limit?, offset?): Promise<DatabaseResult>   // limit defaults to DEFAULT_ROW_CAP (100)   // .records, .count, .limit, .offset
 await db.fetchOne<T>(sql, params?): Promise<T | null>
 
 // Writes — execute() RAISES on a SQL error (bad SQL, constraint violation,
@@ -773,8 +776,8 @@ User.find(id, include?);
 User.findById(id, include?);
 User.findOrFail(id);                       // throws if missing
 User.create(data);                         // construct + save
-User.all(where?, params?, include?);
-User.select(sql, params?);
+User.all(where?, params?, include?, orderBy?, limit?, offset?);  // limit defaults to 100
+User.select(sql, params?, limit?, offset?);       // limit defaults to 100
 User.selectOne(sql, params?, include?);
 User.where(conditions, params?, limit?, offset?, include?, orderBy?);
 User.count(conditions?, params?);
