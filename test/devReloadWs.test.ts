@@ -154,10 +154,32 @@ await (async () => {
   });
 
   const log: string[] = [];
+  // `npx tsx app.ts` is a THREE-process tree (npx -> tsx -> node app.ts).
+  // Without `detached`, proc.kill() signals only npx and the two children are
+  // reparented to init: every run of this file leaked a live dev server holding
+  // its port, and an orphan inheriting the pipe makes a `npm test | tee`
+  // pipeline never return. `detached` makes the child a process-GROUP leader so
+  // killTree() below can take the whole tree down -- the same killpg lesson the
+  // Rust CLI learned for its own `npx -> tsx -> node` respawn.
   const proc = spawn("npx", ["tsx", "app.ts"], {
     cwd: proj,
+    detached: true,
     env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules"), PORT: String(port) },
   });
+
+  /** Kill the child's whole process group; safe to call twice. */
+  const killTree = () => {
+    if (proc.pid === undefined) return;
+    try {
+      process.kill(-proc.pid, "SIGKILL");   // negative pid = the group
+    } catch {
+      /* already gone */
+    }
+  };
+  // A detached child OUTLIVES this process, so a crash or an abort between here
+  // and the finally block would strand it. Reap on exit as well.
+  const reapOnExit = () => killTree();
+  process.once("exit", reapOnExit);
   proc.stdout.on("data", (d) => log.push(d.toString()));
   proc.stderr.on("data", (d) => log.push(d.toString()));
 
@@ -249,7 +271,8 @@ await (async () => {
     assert("server PID unchanged (no respawn)", proc.pid === pidBefore, `${pidBefore} -> ${proc.pid}`);
     assert("no shutdown logged", !/shutting down|shutdown/i.test(log.join("")));
   } finally {
-    proc.kill("SIGKILL");
+    killTree();
+    process.removeListener("exit", reapOnExit);
     try { rmSync(proj, { recursive: true, force: true }); } catch { /* best effort */ }
   }
 })();
