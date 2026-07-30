@@ -231,7 +231,8 @@ assert("seedOrm produced rows in the table", (await Widget.count()) === 7);
 // Overrides applied to every row
 const inserted2 = (await seedOrm(Widget as any, 3, { name: "FixedName" }, 42)).seeded;
 assert("seedOrm with overrides returns count", inserted2 === 3);
-const fixed = await Widget.all('name = ?', ["FixedName"]);
+// all() no longer takes a filter (3.13.95 parity) -- that is where()'s job.
+const fixed = await Widget.where('name = ?', ["FixedName"]);
 assert("seedOrm overrides land in the database", fixed.length === 3);
 
 // Determinism with seed

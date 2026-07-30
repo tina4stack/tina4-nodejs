@@ -174,7 +174,7 @@ console.log("\n--- 10. limit() sets LIMIT and OFFSET ---");
 
   // Verify limit actually works via get()
   const rows = await qb.get();
-  assert("limit(3, 1) returns 3 rows skipping 1", rows.length === 3);
+  assert("limit(3, 1) returns 3 rows skipping 1", rows.records.length === 3);
 }
 
 // ---------- 11. toSql() generates correct SQL ----------
@@ -218,20 +218,20 @@ console.log("\n--- 12. Method chaining returns this ---");
 console.log("\n--- 13. get() returns results ---");
 {
   const rows = await QueryBuilder.fromTable("users", db).get();
-  assert("get() returns all 5 users", rows.length === 5);
-  assert("get() returns objects with name", (rows[0] as any).name === "Alice");
+  assert("get() returns all 5 users", rows.records.length === 5);
+  assert("get() returns objects with name", (rows.records[0] as any).name === "Alice");
 
   const filtered = await QueryBuilder.fromTable("users", db)
     .where("role = ?", ["admin"])
     .get();
-  assert("get() with where returns filtered rows", filtered.length === 2);
+  assert("get() with where returns filtered rows", filtered.records.length === 2);
 
   const selected = await QueryBuilder.fromTable("users", db)
     .select("name", "email")
     .where("id = ?", [1])
     .get();
-  assert("get() with select returns correct columns", (selected[0] as any).name === "Alice");
-  assert("get() with select has email", (selected[0] as any).email === "alice@example.com");
+  assert("get() with select returns correct columns", (selected.records[0] as any).name === "Alice");
+  assert("get() with select has email", (selected.records[0] as any).email === "alice@example.com");
 }
 
 // ---------- 14. first() returns single record or null ----------
@@ -347,8 +347,8 @@ console.log("\n--- 18. Complex multi-clause query ---");
     .having("SUM(orders.amount) > ?", [50])
     .orderBy("total DESC")
     .get();
-  assert("complex query executes without error", Array.isArray(rows));
-  assert("complex query returns results", rows.length > 0);
+  assert("complex query executes without error", Array.isArray(rows.records));
+  assert("complex query returns results", rows.records.length > 0);
 }
 
 // ---------- 19. Empty results ----------
@@ -357,7 +357,7 @@ console.log("\n--- 19. Empty results ---");
   const rows = await QueryBuilder.fromTable("users", db)
     .where("age > ?", [200])
     .get();
-  assert("get() returns empty array for no matches", Array.isArray(rows) && rows.length === 0);
+  assert("get() returns an empty result for no matches", Array.isArray(rows.records) && rows.records.length === 0);
 
   const first = await QueryBuilder.fromTable("users", db)
     .where("age > ?", [200])
@@ -384,7 +384,7 @@ console.log("\n--- Bonus: LEFT JOIN includes unmatched rows ---");
     .orderBy("users.name ASC")
     .get();
   // Eve and Diana have no orders; all 5 users should still appear
-  const names = rows.map((r: any) => r.name);
+  const names = rows.records.map((r: any) => r.name);
   assert("left join includes users without orders", names.includes("Eve"));
   assert("left join returns at least 5 rows (some users have multiple orders)", rows.length >= 5);
 }
