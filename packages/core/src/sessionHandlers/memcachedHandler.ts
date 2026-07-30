@@ -5,12 +5,12 @@
  * but was NOT a session backend in any of them, even though it is the classic
  * PHP session store. This closes that gap.
  *
- * The SessionHandler interface is synchronous and node:net is async-only, so a
- * command runs in a short-lived `node -e` child (execFileSync) that blocks the
- * caller until it exits — the same transport the Redis/Valkey handlers use (see
- * respClient.ts). The child parses the reply INCREMENTALLY on the "data" event:
- * memcached keeps the connection open after a reply, so waiting for "end" would
- * hang until the timeout.
+ * The SessionHandler interface is synchronous and node:net is async-only, so
+ * commands go through the shared persistent-connection transport (syncSocket) —
+ * one long-lived socket behind a worker thread, the same transport the
+ * Redis/Valkey handlers use. Memcached keeps the connection open after a reply
+ * and its text protocol carries no length prefix, so the reply is complete when
+ * one of the caller's terminators appears.
  *
  * BACKEND-FAILURE POLICY. A genuine key miss returns `null` silently (no session
  * yet is normal). A TRANSPORT failure — server unreachable, connection dropped
@@ -27,10 +27,9 @@
  *   TINA4_SESSION_MEMCACHED_PREFIX (default: "tina4:session:")
  *   TINA4_SESSION_TTL              (default: 3600)
  */
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { SessionHandler } from "../session.js";
-import { childFailureError } from "./childError.js";
+import { syncTextCommand } from "./syncSocket.js";
 
 interface SessionData {
   _created: number;
@@ -87,72 +86,23 @@ export class MemcachedSessionHandler implements SessionHandler {
   /**
    * Run one memcached command synchronously and return the raw reply.
    *
-   * @param payload Bytes to send
-   * @param terminators Any of these ends the reply
+   * Delegates to the shared persistent-connection transport (syncSocket) rather
+   * than spawning a child per command: that cost a process spawn plus a fresh
+   * TCP connection every time (p50 41ms, p99 487ms) and its tail tripped the
+   * deadline under load — the same defect that made the Valkey session tests
+   * flaky, which this handler inherited on the day it was written.
+   *
    * @throws Error on any transport failure — never swallowed to an empty
    *         result, because for a session an outage must be distinguishable
    *         from "no session yet".
    */
   private command(payload: string, terminators: string[]): string {
-    const script = `
-      const net = require("node:net");
-      const host = ${JSON.stringify(this.host)};
-      const port = ${this.port};
-      const payload = ${JSON.stringify(payload)};
-      const terminators = ${JSON.stringify(terminators)};
-
-      const sock = net.createConnection({ host, port });
-      sock.setNoDelay(true);
-      let buffer = "";
-      let done = false;
-      const timer = setTimeout(() => {
-        if (done) return;
-        done = true;
-        try { sock.destroy(); } catch (e) {}
-        process.stderr.write("timeout");
-        process.exitCode = 1;
-      }, 3000);
-
-      function finish(s) {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        // The write callback guarantees stdout is flushed before exit (a bare
-        // process.exit can truncate piped stdout).
-        process.stdout.write(s, () => { try { sock.destroy(); } catch (e) {} });
-      }
-      function fail(msg) {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        try { sock.destroy(); } catch (e) {}
-        process.stderr.write(msg || "");
-        process.exitCode = 1;
-      }
-
-      sock.on("connect", () => sock.write(payload, "binary"));
-      sock.on("data", (chunk) => {
-        buffer += chunk.toString("binary");
-        for (const t of terminators) {
-          if (buffer.includes(t)) { finish(buffer); return; }
-        }
-      });
-      sock.on("error", (err) => fail(err.message));
-      sock.on("close", () => { if (!done) fail("connection closed before a complete reply"); });
-    `;
-
-    try {
-      return execFileSync(process.execPath, ["-e", script], {
-        encoding: "binary",
-        timeout: 5000,
-        stdio: ["pipe", "pipe", "pipe"],
-      }) as unknown as string;
-    } catch (err) {
-      // Non-zero exit = socket error / timeout / closed connection: a transport
-      // FAILURE, not a key miss. Surface it so the Session boundary logs +
-      // degrades (or re-throws under strict mode).
-      throw childFailureError("Memcached", err);
-    }
+    return syncTextCommand(
+      { host: this.host, port: this.port },
+      payload,
+      terminators,
+      "Memcached",
+    );
   }
 
   read(sessionId: string): SessionData | null {
@@ -163,7 +113,7 @@ export class MemcachedSessionHandler implements SessionHandler {
     if (split === -1) return null;
     const header = resp.slice(0, split).split(" ");
     const bytes = parseInt(header[3] ?? "0", 10);
-    const body = Buffer.from(resp.slice(split + 2), "binary").subarray(0, bytes).toString("utf-8");
+    const body = Buffer.from(resp.slice(split + 2), "utf-8").subarray(0, bytes).toString("utf-8");
     try {
       return JSON.parse(body) as SessionData;
     } catch {
