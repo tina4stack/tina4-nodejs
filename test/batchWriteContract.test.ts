@@ -204,6 +204,30 @@ for (const [alias, canonical] of Object.entries(contract.engine_aliases)) {
   assert("and binds every value", statements[0]?.[1].length === 150);
 }
 
+// Regression: collapsing a batch silently changed lastId on MySQL. MySQL's
+// LAST_INSERT_ID() reports the FIRST generated id of a multi-row INSERT, not the
+// last (verified live: a 3-row insert into a fresh table reports 1 while MAX(id)
+// is 3). Node's executeMany returns per-row results and its insert(list) goes
+// through the adapter, so Node was not affected - but the helper is shared
+// across all four so the rule is pinned identically here.
+console.log("\n--- a collapsed batch still reports the LAST row's id ---");
+assert("mysql: first id 1 over 3 rows -> 3", SQLTranslator.batchLastId(1, 3, "mysql") === 3);
+assert("mariadb alias resolves too", SQLTranslator.batchLastId(10, 5, "mariadb") === 14);
+for (const engine of ["sqlite", "postgres", "postgresql", "mssql"]) {
+  // Adding the offset here would push lastId PAST the real row.
+  assert(`negative: ${engine} already reports the last id, left alone`,
+    SQLTranslator.batchLastId(7, 3, engine) === 7);
+}
+for (const engine of ["mysql", "sqlite", "postgres", "mssql"]) {
+  assert(`negative: ${engine} single-row chunk never shifts the id`,
+    SQLTranslator.batchLastId(42, 1, engine) === 42);
+}
+// A UUID/ULID primary key has no arithmetic successor.
+assert("negative: a non-numeric lastId passes through unchanged",
+  SQLTranslator.batchLastId("018f-2b7c-uuid", 3, "mysql") === "018f-2b7c-uuid");
+assert("negative: a null lastId passes through unchanged",
+  SQLTranslator.batchLastId(null, 3, "mysql") === null);
+
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
 console.log(`${"=".repeat(50)}\n`);

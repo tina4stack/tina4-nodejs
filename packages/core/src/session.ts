@@ -32,13 +32,14 @@ import { isTruthy } from "./dotenv.js";
 import { respCommandSync } from "./sessionHandlers/respClient.js";
 import { RedisNpmSessionHandler } from "./sessionHandlers/redisHandler.js";
 import { ValkeySessionHandler } from "./sessionHandlers/valkeyHandler.js";
+import { MemcachedSessionHandler } from "./sessionHandlers/memcachedHandler.js";
 import { MongoSessionHandler } from "./sessionHandlers/mongoHandler.js";
 import { DatabaseSessionHandler } from "./sessionHandlers/databaseHandler.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
 export interface SessionConfig {
-  /** Session backend type: "file", "redis", "valkey", "mongo", "database" (or "db") */
+  /** Session backend type: "file", "redis", "valkey", "mongo", "memcached", "database" (or "db") */
   backend?: string;
   /** File storage path (default: "data/sessions") */
   path?: string;
@@ -292,6 +293,11 @@ export class Session {
       case "mongo":
       case "mongodb": {
         this.handler = new MongoSessionHandler(config);
+        break;
+      }
+      case "memcached":
+      case "memcache": {
+        this.handler = new MemcachedSessionHandler(config);
         break;
       }
       case "database":

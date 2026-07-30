@@ -210,6 +210,35 @@ export class SQLTranslator {
     /^\s*INSERT\s+INTO\s+.+?\s+VALUES\s*\(([^()]*)\)\s*$/dis;
 
   /**
+   * Engines whose lastInsertId reports the FIRST generated id of a multi-row
+   * INSERT rather than the last. Verified live, not assumed: a 3-row insert
+   * into a fresh MySQL table reports 1 while MAX(id) is 3. SQLite, PostgreSQL
+   * and MSSQL already report the last, so collapsing does not change them.
+   */
+  static readonly FIRST_ID_ENGINES: readonly string[] = ["mysql"];
+
+  /**
+   * Normalise a collapsed batch's last id to the LAST row's id.
+   *
+   * A row-at-a-time batch reports the last row's id simply because the last
+   * statement inserted the last row. Collapsing rows into one statement changes
+   * that on any engine that reports the FIRST generated id, so this restores
+   * the contract instead of quietly redefining it. The ids in one statement are
+   * consecutive, so the last is `first + rows - 1`.
+   */
+  static batchLastId(reportedId: unknown, rowsInChunk: number, engine: string): unknown {
+    const lower = (engine ?? "").toLowerCase();
+    const name = SQLTranslator.ENGINE_ALIASES[lower] ?? lower;
+    if (!SQLTranslator.FIRST_ID_ENGINES.includes(name)) return reportedId;
+
+    const n = typeof reportedId === "bigint" ? Number(reportedId) : Number(reportedId);
+    if (reportedId === null || reportedId === undefined || Number.isNaN(n)) {
+      return reportedId;                    // UUID/ULID key — no successor
+    }
+    return n + Math.max(rowsInChunk, 1) - 1;
+  }
+
+  /**
    * Collapse a row-at-a-time INSERT batch into chunked multi-row VALUES.
    *
    * A batch that loops one INSERT per row pays a full network round-trip per
