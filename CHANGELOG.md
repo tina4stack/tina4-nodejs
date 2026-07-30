@@ -14,6 +14,54 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ### Changed
 
+- **Breaking: `Messenger.inbox()` takes the folder FIRST.** The signature is now
+  `inbox(folder = "INBOX", limit = 20, offset = 0)`, matching the Python master
+  (`inbox(folder="INBOX", limit=20, offset=0)`), PHP (`inbox($folder, $limit, $offset)`)
+  and Ruby (`inbox(folder:, limit:, offset:)`). Node was the sole outlier at
+  `inbox(limit, offset, folder)`, and because it is positional-only, the same
+  positional call meant something different in Node than in every other language.
+
+  Migration -- move the folder to the front:
+
+  ```ts
+  // before
+  const archived = await messenger.inbox(20, 0, "Archive");
+  // after
+  const archived = await messenger.inbox("Archive", 20, 0);
+  ```
+
+  `inbox()` with no arguments is unchanged, which is the common call. A
+  TypeScript caller passing the old form gets a compile error (`TS2345:
+  Argument of type 'number' is not assignable to parameter of type 'string'`),
+  so the break surfaces at build time rather than as a silently-wrong folder at
+  runtime. Plain-JavaScript callers get no such warning -- grep for `.inbox(`
+  before upgrading.
+
+- **Breaking: `Messenger.read()` returns `null` for a UID that does not exist.**
+  It previously returned a fully-shaped-but-blank `ImapFullMessage` (the uid
+  echoed back, every other field `""`), under a comment claiming "parity with
+  Python's `{}`". That object is TRUTHY, whereas Python's `{}`, PHP's `null` and
+  Ruby's `nil` are all falsy -- so Node was the one framework where
+  `if (!message)` could not distinguish "no such message" from a real one, and a
+  caller had to inspect individual fields to find out. A missing UID is still
+  NOT an error and still does not throw; the return type is now
+  `Promise<ImapFullMessage | null>`.
+
+  Migration -- null-check the result:
+
+  ```ts
+  // before
+  const message = await messenger.read(uid);
+  if (!message.subject) { /* might be missing, might be a blank subject */ }
+  // after
+  const message = await messenger.read(uid);
+  if (!message) { /* definitively no such UID */ }
+  ```
+
+  TypeScript flags every unchecked property access on the result
+  (`TS18047: 'message' is possibly 'null'`), so the break is caught at build
+  time. The now-unreachable `emptyFullMessage()` helper is deleted.
+
 - **Breaking: `QueryBuilder.get()` returns a `DatabaseResult`, not a bare array.** All
   three other frameworks return the `DatabaseResult` that `db.fetch()` produces (Python
   `orm/query_builder/__init__.py`, PHP `QueryBuilder::get()`, Ruby `QueryBuilder#get`).

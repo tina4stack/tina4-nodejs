@@ -717,7 +717,7 @@ export class Messenger {
    * Fetch latest messages from a folder.
    * Returns list of message summaries.
    */
-  async inbox(limit: number = 20, offset: number = 0, folder: string = "INBOX"): Promise<ImapMessage[]> {
+  async inbox(folder: string = "INBOX", limit: number = 20, offset: number = 0): Promise<ImapMessage[]> {
     let socket: net.Socket | tls.TLSSocket;
     try {
       socket = await this.imapConnect();
@@ -755,7 +755,7 @@ export class Messenger {
   /**
    * Read a single message by sequence number or UID.
    */
-  async read(uid: string, folder: string = "INBOX"): Promise<ImapFullMessage> {
+  async read(uid: string, folder: string = "INBOX"): Promise<ImapFullMessage | null> {
     let socket: net.Socket | tls.TLSSocket;
     try {
       socket = await this.imapConnect();
@@ -767,9 +767,14 @@ export class Messenger {
       const fetchResp = await imapCommand(socket, `FETCH ${uid} (FLAGS BODY[])`);
 
       // A genuinely missing UID is a tagged OK with no message body literal —
-      // that is NOT an error: return an empty message (parity with Python's {}).
+      // that is NOT an error, so it must not throw. It returns null: FALSY, so
+      // `if (!msg)` detects it. This used to return emptyFullMessage(uid) under
+      // a comment claiming "parity with Python's {}" -- but that object is
+      // TRUTHY, while Python's {} , PHP's null and Ruby's nil are all falsy, so
+      // Node was the one framework where a caller could not tell "no such
+      // message" from a real one without inspecting individual fields.
       if (!/\{\d+\}/.test(fetchResp)) {
-        return emptyFullMessage(uid);
+        return null;
       }
 
       // Mark as seen
@@ -1037,15 +1042,6 @@ function parseHeaderResponse(uid: string, response: string): ImapMessage {
     snippet: "",
     seen,
   };
-}
-
-/**
- * An empty full message — returned when a FETCH succeeds (tagged OK) but the
- * UID does not exist, so there is no message body. Mirrors Python's {} return:
- * a missing UID is NOT an error.
- */
-function emptyFullMessage(uid: string): ImapFullMessage {
-  return { uid, subject: "", from: "", to: "", cc: "", date: "", bodyText: "", bodyHtml: "", headers: {} };
 }
 
 function parseFullMessage(uid: string, response: string): ImapFullMessage {
