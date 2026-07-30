@@ -801,36 +801,72 @@ class MemcachedBackend implements CacheBackend {
     return undefined;
   }
 
+  /**
+   * Keys THIS backend wrote, mapped to the moment each expires (0 = never).
+   * Memcached has no KEYS/prefix scan, so neither a scoped count nor a scoped
+   * clear can be driven from the server - both come from this log.
+   */
+  private own = new Map<string, number>();
+
   async set(key: string, value: unknown, ttl: number): Promise<void> {
     const data = JSON.stringify(value);
     const exptime = ttl > 0 ? ttl : 0;
-    const payload = `set ${this.mcKey(key)} 0 ${exptime} ${Buffer.byteLength(data)}\r\n${data}\r\n`;
+    const mcKey = this.mcKey(key);
+    const payload = `set ${mcKey} 0 ${exptime} ${Buffer.byteLength(data)}\r\n${data}\r\n`;
     await this.client.command(payload, "\r\n");
+    this.own.set(mcKey, exptime > 0 ? Date.now() + exptime * 1000 : 0);
   }
 
   async delete(key: string): Promise<boolean> {
-    const resp = await this.client.command(`delete ${this.mcKey(key)}\r\n`, "\r\n");
+    const mcKey = this.mcKey(key);
+    const resp = await this.client.command(`delete ${mcKey}\r\n`, "\r\n");
+    this.own.delete(mcKey);
     return resp.startsWith("DELETED");
   }
 
+  /**
+   * Remove OUR entries, not the whole server's — and actually remove them.
+   *
+   * This was a no-op: it reset the counters and deleted nothing, so a cleared
+   * cache still served every key it had written. The comment claimed parity
+   * with the Python master "which also avoids destructive flushes"; Python was
+   * in fact sending flush_all, so the two had silently diverged AND both were
+   * wrong in opposite directions - Node cleared nothing, Python wiped the whole
+   * shared server including other tenants' keys.
+   *
+   * Tracking our own keys fixes both: delete exactly what we wrote. A key this
+   * backend never wrote is not its to remove.
+   */
   async clear(): Promise<void> {
     this.hits = 0;
     this.misses = 0;
-    // No flush_all — the harness is shared with other agents. We rely on TTL
-    // expiry + per-key deletes (parity with the Python master's clear, which
-    // also avoids destructive flushes when keys can't be enumerated cheaply).
+    for (const mcKey of this.own.keys()) {
+      await this.client.command(`delete ${mcKey}\r\n`, "\r\n");
+    }
+    this.own.clear();
   }
 
+  /**
+   * Report OUR entries, not the whole server's.
+   *
+   * This used to read memcached's `curr_items`, a GLOBAL counter that includes
+   * every key written by every other tenant of that server. Every other backend
+   * here is scoped - memory counts its own map, redis/valkey scan their own
+   * prefix, file counts its own directory, mongo its own collection, database
+   * its own table. Memcached was the only one leaking.
+   *
+   * The count comes from our own write log, filtered by the TTLs we set. That
+   * is exact for the keys this process wrote; a key EVICTED early under memory
+   * pressure is invisible to us and would be over-counted, which is a far
+   * smaller and more honest error than counting another application's keys.
+   */
   async stats() {
-    let size = 0;
-    const resp = await this.client.command(`stats\r\n`, "END\r\n");
-    for (const line of resp.split("\r\n")) {
-      if (line.startsWith("STAT curr_items ")) {
-        const n = parseInt(line.split(/\s+/)[2], 10);
-        if (!isNaN(n)) size = n;
-      }
+    const now = Date.now();
+    // Drop the expired ones so the log cannot grow without bound.
+    for (const [k, expires] of this.own) {
+      if (expires !== 0 && expires <= now) this.own.delete(k);
     }
-    return { hits: this.hits, misses: this.misses, size, backend: "memcached" };
+    return { hits: this.hits, misses: this.misses, size: this.own.size, backend: "memcached" };
   }
 
   name() { return "memcached"; }

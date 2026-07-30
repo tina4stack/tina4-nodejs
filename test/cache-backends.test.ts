@@ -245,7 +245,52 @@ async function main() {
 
   await persistentBackendDistributed();
 
-  console.log(`\n${"=".repeat(50)}`);
+  // ── memcached scoping (regression) ───────────────────────────────────────
+// Two bugs, both from memcached having no KEYS/prefix scan:
+//   size  read the GLOBAL curr_items, counting every other tenant's keys.
+//   clear did NOTHING here (Python was worse - it sent flush_all and wiped the
+//         whole shared server), so a cleared cache still served its own keys.
+// NO MOCK: a second REAL client writes to the same REAL server.
+if (await reachable("localhost", 11211)) {
+  console.log("\n--- memcached scoping (regression) ---");
+  const net = await import("node:net");
+
+  const raw = (payload: string, terminator: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const sock = net.createConnection({ host: "localhost", port: 11211 });
+      let buf = "";
+      sock.on("connect", () => sock.write(payload));
+      sock.on("data", (c) => {
+        buf += c.toString("utf-8");
+        if (buf.includes(terminator)) { sock.destroy(); resolve(buf); }
+      });
+      sock.on("error", reject);
+    });
+
+  const b = await createBackend({ backend: "memcached", cacheUrl: "memcached://localhost:11211" });
+  await b.clear();
+  assert("memcached: a cleared backend reports 0", (await b.stats()).size === 0);
+
+  for (let i = 0; i < 6; i++) await raw(`set other:tenant:${i} 0 60 5\r\nhello\r\n`, "STORED\r\n");
+  assert("memcached: size ignores ANOTHER tenant's keys", (await b.stats()).size === 0,
+    `got ${(await b.stats()).size}`);
+
+  await b.set("mine", { a: 1 }, 60);
+  assert("memcached: size counts OUR entry", (await b.stats()).size === 1);
+
+  // clear must actually remove our key...
+  await b.clear();
+  assert("memcached: clear REALLY removes our entry", (await b.get("mine")) === undefined);
+  assert("memcached: clear leaves size at 0", (await b.stats()).size === 0);
+
+  // ...and must NOT touch anyone else's.
+  const survived = await raw("get other:tenant:0\r\n", "END\r\n");
+  assert("memcached: clear does NOT wipe another tenant's keys", survived.includes("hello"), survived.slice(0, 40));
+
+  for (let i = 0; i < 6; i++) await raw(`delete other:tenant:${i}\r\n`, "\r\n");
+}
+
+console.log(`\n${"=".repeat(50)}`);
   console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m, \x1b[33m${skipped} skipped\x1b[0m`);
   console.log(`${"=".repeat(50)}\n`);
   process.exit(fail > 0 ? 1 : 0);
