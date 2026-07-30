@@ -12,13 +12,52 @@ import { resolve } from "node:path";
  *   - Empty lines
  *   - Multi-line with trailing backslash \
  */
+const VALID_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+/** Emit a parse warning. dotenv loads before the logger exists, so stderr. */
+function warnEnv(message: string): void {
+  process.stderr.write(`[tina4] ${message}\n`);
+}
+
+/**
+ * Expand ${VAR} against already-loaded keys plus the real environment.
+ *
+ * `process.env` is checked FIRST so the effective value wins: loading is
+ * first-wins, so a key already in the real environment is what the process will
+ * actually see, and an interpolation that resolved against the file's value
+ * instead would disagree with it. `parsed` then supplies keys set earlier in
+ * this same file, which are not in process.env until the whole file is applied.
+ *
+ * An unresolved name stays LITERAL and is warned about once per name, so a typo
+ * is visible without breaking the load.
+ */
+function interpolate(
+  value: string,
+  parsed: Record<string, string>,
+  lineNo: number,
+  warnedRefs: Set<string>
+): string {
+  return value.replace(REFERENCE, (whole, name: string) => {
+    const resolved = process.env[name] ?? parsed[name];
+    if (resolved !== undefined) return resolved;
+    if (!warnedRefs.has(name)) {
+      warnedRefs.add(name);
+      warnEnv(`.env:${lineNo}: \${${name}} is not set, left as-is`);
+    }
+    return whole;
+  });
+}
+
 function parseEnvContent(content: string): Record<string, string> {
   const result: Record<string, string> = {};
   const lines = content.split("\n");
+  const warnedRefs = new Set<string>();
   let i = 0;
 
   while (i < lines.length) {
     let line = lines[i].trim();
+    const lineNo = i + 1;
     i++;
 
     // Skip empty lines and comments
@@ -31,16 +70,23 @@ function parseEnvContent(content: string): Record<string, string> {
       line = line.slice(7).trim();
     }
 
-    // Find the first = sign
+    // Find the first = sign. A line with no "=" sets nothing, so say so rather
+    // than dropping it in silence.
     const eqIndex = line.indexOf("=");
     if (eqIndex === -1) {
+      warnEnv(`.env:${lineNo}: no '=' in "${line}", line skipped`);
       continue;
     }
 
     const key = line.slice(0, eqIndex).trim();
+    if (!VALID_KEY.test(key)) {
+      warnEnv(`.env:${lineNo}: invalid key "${key}", line skipped`);
+      continue;
+    }
     let value = line.slice(eqIndex + 1).trim();
 
-    // Handle quoted values
+    // Handle quoted values. Quoting decides escapes AND interpolation, in that
+    // order -- the cross-framework behaviour table (feature 1 of the audit).
     if (value.startsWith('"') && value.endsWith('"')) {
       value = value.slice(1, -1);
       // Process escape sequences in double-quoted values
@@ -50,8 +96,10 @@ function parseEnvContent(content: string): Record<string, string> {
         .replace(/\\t/g, "\t")
         .replace(/\\"/g, '"')
         .replace(/\\\\/g, "\\");
+      value = interpolate(value, result, lineNo, warnedRefs);
     } else if (value.startsWith("'") && value.endsWith("'")) {
-      // Single-quoted: literal, no escape processing
+      // Single-quoted: verbatim. No escape processing, and NO interpolation --
+      // shell semantics, and the documented way to keep a literal ${...}.
       value = value.slice(1, -1);
     } else {
       // Unquoted: handle multi-line with trailing backslash
@@ -64,6 +112,7 @@ function parseEnvContent(content: string): Record<string, string> {
       if (commentIndex !== -1) {
         value = value.slice(0, commentIndex).trim();
       }
+      value = interpolate(value, result, lineNo, warnedRefs);
     }
 
     result[key] = value;
