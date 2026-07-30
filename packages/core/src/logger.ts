@@ -128,6 +128,66 @@ function stripAnsi(text: string): string {
  *
  * Otherwise the directory is `TINA4_LOG_DIR` and filename is `tina4.log`.
  */
+// The logger must never be surprised by what it is handed, and must never be
+// the reason a request dies. Same numbers in all four frameworks (feature 2).
+const STDOUT_MAX_CHARS = 2000;
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+
+/**
+ * Turn anything into a single safe line of text.
+ *
+ * A string passes through. A Buffer is decoded when it is valid UTF-8 and
+ * described when it is not: raw bytes at a terminal garble it and can emit
+ * escape sequences. Anything else becomes JSON, because an object rendered as
+ * text is the whole reason the caller logged it, falling back to String() for a
+ * value JSON cannot represent (a circular reference, a BigInt). Without this an
+ * object logged as a message reached the output as "[object Object]".
+ */
+function coerceMessage(message: unknown): string {
+  let text: string;
+  if (typeof message === "string") {
+    text = message;
+  } else if (message instanceof Uint8Array) {
+    const decoded = new TextDecoder("utf-8", { fatal: false }).decode(message);
+    text = decoded.includes("�") ? `<binary ${message.byteLength} bytes>` : decoded;
+  } else if (message === null || message === undefined) {
+    text = "";
+  } else if (typeof message === "object") {
+    try {
+      text = JSON.stringify(message) ?? String(message);
+    } catch {
+      text = String(message);
+    }
+  } else {
+    text = String(message);
+  }
+  return text.replace(CONTROL_CHARS, "");
+}
+
+/** Cap a console line. The file keeps the whole thing; a terminal does not. */
+function truncateForStdout(line: string): string {
+  if (line.length <= STDOUT_MAX_CHARS) return line;
+  return `${line.slice(0, STDOUT_MAX_CHARS)}... (truncated, ${line.length} chars)`;
+}
+
+/**
+ * Is this target a FILE PATH or a DIRECTORY?
+ *
+ * An existing directory is always a directory, extension or not. Otherwise a
+ * basename with an extension (app.log, app.txt) is a file and anything else is
+ * a directory to create. That keeps `configure("/var/log/myapp")` a directory
+ * and `configure("/var/log/myapp/app.log")` a file without the path needing to
+ * exist yet. Identical rule in all four frameworks.
+ */
+function targetIsFile(path: string): boolean {
+  try {
+    if (existsSync(path) && statSync(path).isDirectory()) return false;
+  } catch { /* fall through to the extension test */ }
+  const base = path.split(/[\\/]/).pop() ?? "";
+  return base.includes(".") && !base.startsWith(".");
+}
+
 function resolveLogFilePath(logDir: string, logFile: string): string {
   if (isAbsolute(logFile)) return logFile;
   return join(logDir, logFile);
@@ -177,6 +237,8 @@ export class Log {
     format: "text" | "json";
     output: "stdout" | "file" | "both";
     fileEnabled: boolean;
+    /** True when the operator named ONE file, so no error.log sibling appears. */
+    explicitFile: boolean;
   } {
     const logDir = process.env.TINA4_LOG_DIR ?? DEFAULT_LOG_DIR;
     const explicitFile = (process.env.TINA4_LOG_FILE ?? "").trim();
@@ -225,7 +287,10 @@ export class Log {
       fileEnabled = !Log.isProduction();
     }
 
-    return { logDir, logFile, rotateSize, rotateKeep, minLevel, format, output, fileEnabled };
+    return {
+      logDir, logFile, rotateSize, rotateKeep, minLevel, format, output, fileEnabled,
+      explicitFile: explicitFile !== "",
+    };
   }
 
   /**
@@ -277,36 +342,84 @@ export class Log {
   }
 
   /**
-   * Configure the log directory / filename. Mostly a no-op now —
-   * env vars are re-read on every call. Kept for backwards compatibility.
+   * Configure where logs are written.
+   *
+   * Logs land in a `logs/` folder by default. The argument OVERRIDES that, and
+   * it accepts a DIRECTORY or a FILE PATH:
+   *
+   *   configure()                              -> ./logs/tina4.log + ./logs/error.log
+   *   configure("/var/log/myapp")              -> /var/log/myapp/tina4.log + error.log
+   *   configure("/var/log/myapp/app.log")      -> that exact file (no error.log sibling)
+   *   configure({ logDir, logFile })           -> the explicit object form still works
+   *
+   * A plain string used to be accepted and silently ignored, because only the
+   * object form was read - so the call that works in the other three
+   * frameworks produced no log file here and said nothing (feature 2 of the
+   * audit, D4). Both forms now work.
    */
-  static configure(options: { logDir?: string; logFile?: string }): void {
-    if (options.logDir) process.env.TINA4_LOG_DIR = options.logDir;
-    if (options.logFile) process.env.TINA4_LOG_FILE = options.logFile;
+  static configure(options?: string | { logDir?: string; logFile?: string }): void {
+    if (typeof options === "string") {
+      if (targetIsFile(options)) {
+        process.env.TINA4_LOG_DIR = dirname(options);
+        process.env.TINA4_LOG_FILE = options;
+      } else {
+        process.env.TINA4_LOG_DIR = options;
+      }
+      Log.applyAppendMode();
+      return;
+    }
+    if (options) {
+      if (options.logDir) process.env.TINA4_LOG_DIR = options.logDir;
+      if (options.logFile) process.env.TINA4_LOG_FILE = options.logFile;
+    }
+    Log.applyAppendMode();
+  }
+
+  /**
+   * TINA4_LOG_APPEND — append (default) or overwrite on startup.
+   *
+   * APPEND IS THE DEFAULT: a log you can lose by restarting the process is not
+   * a log. Set it false for one file per run (a short CLI, a test fixture, a
+   * container shipping logs elsewhere); the files are truncated once here at
+   * configure time, never per line.
+   */
+  private static applyAppendMode(): void {
+    const raw = process.env.TINA4_LOG_APPEND;
+    const append = raw === undefined || isTruthy(raw);
+    if (append) return;
+    const cfg = Log.readEnv();
+    const targets = cfg.explicitFile
+      ? [resolveLogFilePath(cfg.logDir, cfg.logFile)]
+      : [resolveLogFilePath(cfg.logDir, cfg.logFile), join(cfg.logDir, "error.log")];
+    for (const path of targets) {
+      try {
+        if (existsSync(path)) writeFileSync(path, "", "utf-8");
+      } catch { /* logging must never crash the app */ }
+    }
   }
 
   /** Log an informational message. */
-  static info(message: string, data?: unknown): void {
+  static info(message: unknown, data?: unknown): void {
     Log.log("INFO", message, data);
   }
 
   /** Log a debug message. */
-  static debug(message: string, data?: unknown): void {
+  static debug(message: unknown, data?: unknown): void {
     Log.log("DEBUG", message, data);
   }
 
   /** Log a warning message. */
-  static warning(message: string, data?: unknown): void {
+  static warning(message: unknown, data?: unknown): void {
     Log.log("WARNING", message, data);
   }
 
   /** Backwards-compat alias for warning(). */
-  static warn(message: string, data?: unknown): void {
+  static warn(message: unknown, data?: unknown): void {
     Log.log("WARNING", message, data);
   }
 
   /** Log an error message. */
-  static error(message: string, data?: unknown): void {
+  static error(message: unknown, data?: unknown): void {
     Log.log("ERROR", message, data);
   }
 
@@ -318,7 +431,7 @@ export class Log {
    * critical 4 >= warning 2 so it would be in error.log on a split-file model).
    * Matches Python master parity — there is no enable toggle.
    */
-  static critical(message: string, data?: unknown): void {
+  static critical(message: unknown, data?: unknown): void {
     Log.log("CRITICAL", message, data);
   }
 
@@ -409,8 +522,13 @@ export class Log {
   }
 
   /** Core log method */
-  private static log(level: LogLevel, message: string, data?: unknown): void {
+  private static log(level: LogLevel, rawMessage: unknown, data?: unknown): void {
     const cfg = Log.readEnv();
+
+    // Coerce FIRST, into the local the human line is built from further down.
+    // Anything can arrive as a message: an object from a handler, a Buffer off
+    // a socket, a 10MB string. See coerceMessage.
+    const message = coerceMessage(rawMessage);
 
     const entry: LogEntry = {
       timestamp: Log.timestamp(),
@@ -455,12 +573,14 @@ export class Log {
     // production we print the clean structured line (JSON, no ANSI) so it
     // stays parseable; in dev we keep the coloured human-readable line.
     // TINA4_LOG_OUTPUT="file" still opts out of stdout entirely.
+    // Truncate on the CONSOLE only. The file keeps the full line so a consumer
+    // parsing it loses nothing; a terminal does not need 10MB.
     if (shouldLog && cfg.output !== "file") {
       if (Log.isProduction()) {
-        console.log(fileLine);
+        console.log(truncateForStdout(fileLine));
       } else {
         const color = COLORS[level];
-        console.log(`${color}${humanLine}${RESET}`);
+        console.log(`${color}${truncateForStdout(humanLine)}${RESET}`);
       }
     }
 
@@ -478,6 +598,17 @@ export class Log {
     if (cfg.fileEnabled) {
       const filePath = resolveLogFilePath(cfg.logDir, cfg.logFile);
       Log.writeToFile(filePath, fileLine, cfg.rotateSize, cfg.rotateKeep);
+
+      // Mirror WARNING and above into a dedicated error.log so
+      // `tail -f logs/error.log` gives just the stuff worth looking at. Node
+      // wrote ONE file where Python and PHP wrote two, so anyone whose
+      // alerting tails error.log got silence here (feature 2 of the audit, D3).
+      // Skipped when the operator named ONE file explicitly: they asked for a
+      // single path, so a sibling error.log appearing beside it is a surprise.
+      if (!cfg.explicitFile && LEVEL_PRIORITY[level] >= LEVEL_PRIORITY.WARNING) {
+        const errorPath = join(cfg.logDir, "error.log");
+        Log.writeToFile(errorPath, fileLine, cfg.rotateSize, cfg.rotateKeep);
+      }
     }
   }
 }
