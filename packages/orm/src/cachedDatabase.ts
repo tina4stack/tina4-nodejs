@@ -389,12 +389,12 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     this.adapter.rollback();
   }
 
-  tables(): string[] {
-    return this.adapter.tables();
+  getTables(): string[] {
+    return this.adapter.getTables();
   }
 
-  columns(table: string): ColumnInfo[] {
-    return this.adapter.columns(table);
+  getColumns(table: string): ColumnInfo[] {
+    return this.adapter.getColumns(table);
   }
 
   lastInsertId(): number | bigint | string | null {
@@ -570,13 +570,13 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   async tablesAsync(): Promise<string[]> {
     return (this.adapter as any).tablesAsync
       ? await (this.adapter as any).tablesAsync()
-      : this.adapter.tables();
+      : this.adapter.getTables();
   }
 
   async columnsAsync(table: string): Promise<ColumnInfo[]> {
     return (this.adapter as any).columnsAsync
       ? await (this.adapter as any).columnsAsync(table)
-      : this.adapter.columns(table);
+      : this.adapter.getColumns(table);
   }
 
   async createTableAsync(name: string, columns: Record<string, FieldDefinition>): Promise<void> {

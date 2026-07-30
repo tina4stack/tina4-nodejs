@@ -354,7 +354,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     this._inTransaction = false;
   }
 
-  tables(): string[] {
+  getTables(): string[] {
     throw new Error("Use tablesAsync() for PostgreSQL.");
   }
 
@@ -371,7 +371,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     );
   }
 
-  columns(table: string): ColumnInfo[] {
+  getColumns(table: string): ColumnInfo[] {
     throw new Error("Use columnsAsync() for PostgreSQL.");
   }
 

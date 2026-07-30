@@ -260,14 +260,14 @@ export class SQLiteAdapter implements DatabaseAdapter {
     this._inTransaction = false;
   }
 
-  tables(): string[] {
+  getTables(): string[] {
     const rows = this.query<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
     );
     return rows.map((r) => r.name);
   }
 
-  columns(table: string): ColumnInfo[] {
+  getColumns(table: string): ColumnInfo[] {
     // v3.13.14 (#48): a SQLite "schema" is an ATTACH alias ("extra.widget").
     // PRAGMA accepts a schema prefix when both parts are plain identifiers.
     const [schema, tbl] = SQLTranslator.splitSchema(table);

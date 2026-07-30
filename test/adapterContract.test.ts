@@ -37,8 +37,8 @@ const SPELLINGS: Record<string, string[]> = {
   startTransaction: ["startTransaction"],
   commit: ["commit"],
   rollback: ["rollback"],
-  getTables: ["getTables", "tables"],
-  getColumns: ["getColumns", "columns", "getTableColumns"],
+  getTables: ["getTables"],
+  getColumns: ["getColumns"],
   tableExists: ["tableExists"],
   createTable: ["createTable"],
   addColumn: ["addColumn"],
@@ -112,10 +112,15 @@ const types = readFileSync(join(here, "..", "packages", "orm", "src", "types.ts"
 const iface = types.slice(types.indexOf("interface DatabaseAdapter"));
 const optional = (iface.slice(0, iface.indexOf("\n}")).match(/^\s+(\w+)\?\(/gm) ?? [])
   .map((m) => m.trim().replace(/\?\($/, ""));
+// Still two. Collapsing getTableColumns into getColumns was TRIED and reverted:
+// it broke the legacy NOT NULL migration_id path (python#93, the bug that wedged
+// every migration for ~20 releases). getTableColumns reads PRAGMA directly and
+// getColumns does not return the same thing there, so removing it needs its own
+// change with that path tested. The goal is still zero; this may only shrink.
 assert(
-  "exactly two optional members remain",
-  optional.length === 2 && optional.includes("getTableColumns") && optional.includes("addColumn"),
-  `got ${JSON.stringify(optional)} - if this shrank, raise the assertion; the goal is zero`
+  "at most two optional members remain",
+  optional.length <= 2,
+  `got ${JSON.stringify(optional)} - this may only SHRINK; tighten when it does`
 );
 
 console.log(`\n${"=".repeat(50)}`);

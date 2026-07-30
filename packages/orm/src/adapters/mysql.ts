@@ -289,7 +289,7 @@ export class MysqlAdapter implements DatabaseAdapter {
     this._inTransaction = false;
   }
 
-  tables(): string[] {
+  getTables(): string[] {
     throw new Error("Use tablesAsync() for MySQL.");
   }
 
@@ -298,7 +298,7 @@ export class MysqlAdapter implements DatabaseAdapter {
     return rows.map((r) => Object.values(r)[0]);
   }
 
-  columns(table: string): ColumnInfo[] {
+  getColumns(table: string): ColumnInfo[] {
     throw new Error("Use columnsAsync() for MySQL.");
   }
 

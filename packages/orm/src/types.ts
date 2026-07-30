@@ -93,10 +93,10 @@ export interface DatabaseAdapter {
   rollback(): void;
 
   /** List all tables in the database. */
-  tables(): string[];
+  getTables(): string[];
 
   /** List columns with types for a table. */
-  columns(table: string): ColumnInfo[];
+  getColumns(table: string): ColumnInfo[];
 
   /** Get the last inserted id (auto-increment integer, or a UUID/string PK). */
   lastInsertId(): number | bigint | string | null;

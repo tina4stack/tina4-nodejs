@@ -216,7 +216,7 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
     if (!this._adapter) return this._fallbackColumnInfo();
 
     try {
-      const rawCols: ColumnInfo[] = this._adapter.columns(table);
+      const rawCols: ColumnInfo[] = this._adapter.getColumns(table);
       return this._normalizeColumns(rawCols);
     } catch {
       return this._fallbackColumnInfo();

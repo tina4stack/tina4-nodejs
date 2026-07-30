@@ -488,7 +488,7 @@ export class FirebirdAdapter implements DatabaseAdapter {
     });
   }
 
-  tables(): string[] {
+  getTables(): string[] {
     throw new Error("Use tablesAsync() for Firebird.");
   }
 
@@ -502,7 +502,7 @@ export class FirebirdAdapter implements DatabaseAdapter {
     });
   }
 
-  columns(table: string): ColumnInfo[] {
+  getColumns(table: string): ColumnInfo[] {
     throw new Error("Use columnsAsync() for Firebird.");
   }
 

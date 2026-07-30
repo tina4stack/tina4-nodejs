@@ -777,7 +777,7 @@ function handleStatus(router: Router): RouteHandler {
     try {
       const { getAdapter } = await import("../../orm/src/index.js");
       const db = getAdapter();
-      dbTableCount = db.tables().length;
+      dbTableCount = db.getTables().length;
     } catch { /* no database connected */ }
     res.json({
       nodeVersion: process.version,
@@ -883,7 +883,7 @@ const handleSystem: RouteHandler = async (_req, res) => {
   try {
     const { getAdapter } = await import("../../orm/src/index.js");
     const db = getAdapter();
-    dbTableCount = db.tables().length;
+    dbTableCount = db.getTables().length;
     dbConnected = true;
   } catch { /* no database connected */ }
   // Respond in both the shared-JS format and the Node-specific format
@@ -1150,7 +1150,7 @@ const handleTable: RouteHandler = async (req, res) => {
   try {
     const { getAdapter } = await import("../../orm/src/index.js");
     const db = getAdapter();
-    const columns = db.columns(name);
+    const columns = db.getColumns(name);
     if (!columns.length) {
       res.json({ table: name, columns: [], rows: [], message: "Database not connected or table not found" });
       return;
@@ -1173,7 +1173,7 @@ const handleTables: RouteHandler = async (_req, res) => {
   try {
     const { getAdapter } = await import("../../orm/src/index.js");
     const db = getAdapter();
-    const tables = db.tables();
+    const tables = db.getTables();
     res.json({ tables });
   } catch {
     res.json({ tables: [], message: "Database not connected" });
@@ -1202,7 +1202,7 @@ const handleSeed: RouteHandler = async (req, res) => {
     const { seedTable } = orm;
     // A shared FakeData seeds the RNG so a `seed` makes the run reproducible.
     const fake = new orm.FakeData(seed);
-    const columns = db.columns(table);
+    const columns = db.getColumns(table);
     if (!columns.length) {
       res.json({ error: `Table '${table}' not found or has no columns` });
       return;

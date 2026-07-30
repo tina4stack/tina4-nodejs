@@ -217,7 +217,14 @@ export async function syncModels(models: DiscoveredModel[]): Promise<void> {
       console.log(`    Created table: ${tableName}`);
     } else {
       // Check for new columns. SQLite exposes the legacy getTableColumns/
-      // addColumn helpers; other engines use columns()/ALTER TABLE.
+      // addColumn helpers; other engines use getColumns()/ALTER TABLE.
+      //
+      // Collapsing this into getColumns() looks obviously right and is NOT:
+      // it broke the legacy NOT NULL migration_id path, which is the bug that
+      // wedged every migration for ~20 releases (python#93). getTableColumns
+      // reads PRAGMA directly; getColumns goes through schema splitting and
+      // does not return the same thing here. Removing it needs its own change
+      // with that path tested, not a drive-by in an interface tidy-up.
       const existingCols = (adapter as any).getTableColumns
         ? (adapter as SQLiteAdapter).getTableColumns(tableName)
         : await adapterColumns(adapter, tableName);
@@ -508,8 +515,16 @@ async function recordApplied(
  */
 async function trackingColumns(db: DatabaseAdapter): Promise<Set<string>> {
   try {
-    // The DatabaseAdapter contract exposes columns(), not getColumns().
-    const cols = await (db as any).columns?.(MIGRATION_TABLE);
+    // The DatabaseAdapter contract exposes getColumns() (feature 3: renamed from
+    // columns() to match the other three frameworks and the get- prefix used
+    // everywhere else).
+    //
+    // This reads through `as any`, so the compiler could not catch the rename
+    // here - it went silently to undefined, `cols` came back empty, migration_id
+    // was left out of the insert and every migration failed on the legacy
+    // NOT NULL column. Exactly the failure python#93 caused, from the opposite
+    // direction. Kept optional-chained for adapters that predate the contract.
+    const cols = await (db as any).getColumns?.(MIGRATION_TABLE);
     if (!Array.isArray(cols)) return new Set();
     return new Set(
       cols.map((c: any) => String(c?.name ?? c ?? "").toLowerCase()).filter(Boolean),

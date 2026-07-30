@@ -119,11 +119,11 @@ export class OdbcAdapter implements DatabaseAdapter {
     throw new Error("Use rollbackAsync() for ODBC — async adapter requires async methods.");
   }
 
-  tables(): string[] {
+  getTables(): string[] {
     throw new Error("Use tablesAsync() for ODBC — async adapter requires async methods.");
   }
 
-  columns(table: string): ColumnInfo[] {
+  getColumns(table: string): ColumnInfo[] {
     throw new Error("Use columnsAsync() for ODBC — async adapter requires async methods.");
   }
 
@@ -326,7 +326,7 @@ export class OdbcAdapter implements DatabaseAdapter {
   /** Get column metadata for a table using ODBC catalog functions. */
   async columnsAsync(table: string): Promise<ColumnInfo[]> {
     this.ensureConnected();
-    // odbc.Connection.columns(catalog, schema, table, column)
+    // odbc.Connection.getColumns(catalog, schema, table, column)
     const rows: any[] = await this.connection.columns(null, null, table, null);
     return rows.map((r: any) => ({
       name: r.COLUMN_NAME ?? r.column_name,

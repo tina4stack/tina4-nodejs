@@ -87,7 +87,7 @@ await test("does not add migration_id to a fresh canonical table", async () => {
   const db = await freshEnv(false);
   await migrate(db, { migrationsDir: join(root, "migrations") });
 
-  const cols = db.columns("tina4_migration").map((c: any) => String(c.name).toLowerCase());
+  const cols = db.getColumns("tina4_migration").map((c: any) => String(c.name).toLowerCase());
   assert.ok(!cols.includes("migration_id"), "a fresh table must never grow the legacy column");
   const row: any = db.fetchOne("SELECT migration_name FROM tina4_migration");
   assert.ok(row?.migration_name, "the canonical row must still be written");

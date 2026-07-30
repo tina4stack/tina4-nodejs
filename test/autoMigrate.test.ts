@@ -51,7 +51,7 @@ function tableExists(name: string): boolean {
 
 /** The current set of user tables, via the real adapter introspection. */
 function listTables(): string[] {
-  return (getAdapter() as { tables(): string[] }).tables();
+  return (getAdapter() as { getTables(): string[] }).getTables();
 }
 
 /** Run a raw query against the real adapter (used to inspect tina4_migration rows). */

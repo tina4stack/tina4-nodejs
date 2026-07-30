@@ -76,9 +76,9 @@ sqlite.createTable("driver_test", {
 });
 
 assert("SQLite tableExists", sqlite.tableExists("driver_test"));
-assert("SQLite tables() lists table", sqlite.tables().includes("driver_test"));
+assert("SQLite tables() lists table", sqlite.getTables().includes("driver_test"));
 
-const cols = sqlite.columns("driver_test");
+const cols = sqlite.getColumns("driver_test");
 assert("SQLite columns() returns columns", cols.length === 3);
 assert("SQLite columns() has id", cols.some((c) => c.name === "id"));
 assert("SQLite columns() has primaryKey flag", cols.some((c) => c.name === "id" && c.primaryKey === true));

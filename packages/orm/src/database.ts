@@ -97,13 +97,13 @@ export async function adapterTableExists(adapter: DatabaseAdapter, name: string)
 export async function adapterTables(adapter: DatabaseAdapter): Promise<string[]> {
   return (adapter as any).tablesAsync
     ? await (adapter as any).tablesAsync()
-    : adapter.tables();
+    : adapter.getTables();
 }
 
 export async function adapterColumns(adapter: DatabaseAdapter, table: string): Promise<ColumnInfo[]> {
   return (adapter as any).columnsAsync
     ? await (adapter as any).columnsAsync(table)
-    : adapter.columns(table);
+    : adapter.getColumns(table);
 }
 
 export async function adapterCreateTable(

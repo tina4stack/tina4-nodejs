@@ -556,7 +556,7 @@ export class MongodbAdapter implements DatabaseAdapter {
     this._inTransaction = false;
   }
 
-  tables(): string[] {
+  getTables(): string[] {
     throw new Error("Use tablesAsync() for MongoDB — async adapter requires async methods.");
   }
 
@@ -566,7 +566,7 @@ export class MongodbAdapter implements DatabaseAdapter {
     return collections.map((c: any) => c.name as string);
   }
 
-  columns(table: string): ColumnInfo[] {
+  getColumns(table: string): ColumnInfo[] {
     throw new Error("Use columnsAsync() for MongoDB — async adapter requires async methods.");
   }
 

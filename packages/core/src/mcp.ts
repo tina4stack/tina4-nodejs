@@ -1650,7 +1650,7 @@ export function registerDevTools(server: McpServer): void {
           return { error: "Seeder API not available (install @tina4/orm)" };
         }
         // RAW adapter, NOT globalThis.__tina4_db: autoFieldMap introspects via
-        // adapter.columns() and seedTable inserts via adapter.execute() — the
+        // adapter.getColumns() and seedTable inserts via adapter.execute() — the
         // Database WRAPPER has neither (its introspection method is getColumns).
         // getAdapter() is the same accessor migration_* use above.
         let adapter;

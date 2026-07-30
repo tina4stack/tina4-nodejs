@@ -389,7 +389,7 @@ export class MssqlAdapter implements DatabaseAdapter {
     this._inTransaction = false;
   }
 
-  tables(): string[] {
+  getTables(): string[] {
     throw new Error("Use tablesAsync() for MSSQL.");
   }
 
@@ -400,7 +400,7 @@ export class MssqlAdapter implements DatabaseAdapter {
     return rows.map((r) => r.TABLE_NAME);
   }
 
-  columns(table: string): ColumnInfo[] {
+  getColumns(table: string): ColumnInfo[] {
     throw new Error("Use columnsAsync() for MSSQL.");
   }
 
