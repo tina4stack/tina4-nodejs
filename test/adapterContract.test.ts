@@ -27,35 +27,30 @@ const contract = JSON.parse(readFileSync(join(here, "fixtures", "adapter_contrac
 const SPELLINGS: Record<string, string[]> = {
   open: ["open", "connect"],
   close: ["close"],
+  getDatabaseType: ["getDatabaseType"],
   execute: ["execute"],
-  executeMany: ["executeMany"],
   fetch: ["fetch"],
-  fetchOne: ["fetchOne"],
-  insert: ["insert"],
-  update: ["update"],
-  delete: ["delete"],
   startTransaction: ["startTransaction"],
   commit: ["commit"],
   rollback: ["rollback"],
+  autocommit: ["autocommit", "setAutocommit"],
   getTables: ["getTables"],
   getColumns: ["getColumns"],
   tableExists: ["tableExists"],
-  createTable: ["createTable"],
-  addColumn: ["addColumn"],
   lastInsertId: ["lastInsertId"],
   error: ["error", "lastError"],
-  autocommit: ["autocommit", "setAutocommit"],
 };
 
 /** Measured 2026-07-30. Raise when you implement; never lower. */
+/** Against the REDESIGNED 14-method contract, measured 2026-07-30. */
 const FLOORS: Record<string, number> = {
-  SQLiteAdapter: 17,
-  PostgresAdapter: 16,
-  MysqlAdapter: 16,
-  MssqlAdapter: 16,
-  FirebirdAdapter: 16,
-  MongodbAdapter: 16,
-  OdbcAdapter: 17,
+  SQLiteAdapter: 10,
+  PostgresAdapter: 10,
+  MysqlAdapter: 10,
+  MssqlAdapter: 10,
+  FirebirdAdapter: 10,
+  MongodbAdapter: 10,
+  OdbcAdapter: 10,
 };
 
 let pass = 0;
@@ -81,7 +76,17 @@ function implementedCount(proto: any): number {
 
 console.log("=== adapter contract ===\n");
 
-assert("the fixture declares twenty methods", contract.methods.length === 20);
+const METHODS: string[] = Object.values(contract.contracts)
+  .flatMap((c: any) => c.methods.map((m: any) => m.name));
+assert("the fixture declares five contracts", Object.keys(contract.contracts).length === 5);
+assert("the fixture declares fourteen methods", METHODS.length === 14);
+
+// The redesign's central claim, pinned. CRUD and DDL are composable above the
+// adapter and were duplicated per adapter in three of four frameworks.
+for (const gone of ["insert","update","delete","createTable","addColumn","executeMany","fetchOne","query"]) {
+  assert(`${gone} is not on the adapter contract`,
+    !METHODS.includes(gone) && gone in contract.not_on_the_adapter);
+}
 
 const found: Record<string, number> = {};
 const files = readdirSync(join(here, "..", "packages", "orm", "src", "adapters"))
