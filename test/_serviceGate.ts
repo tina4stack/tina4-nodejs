@@ -37,6 +37,12 @@ const SERVICE_KEYWORDS = [
   "kafka",
   "mqtt", // Mosquitto (+ EMQX) for the MQTT tests; also matches "mqtts"
   "mosquitto",
+  // GreenMail (real SMTP 3025 / IMAP 3143) for the Messenger round-trip tests
+  // in messengerGreenMail.test.ts. No mail keyword existed here before, so a
+  // "not reachable" mail skip passed green in CI.
+  "greenmail",
+  "smtp",
+  "imap",
 ];
 
 // Hints that a skip was caused by the service/driver being unavailable (rather

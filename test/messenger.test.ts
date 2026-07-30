@@ -43,144 +43,15 @@ function cleanup() {
 
 cleanup();
 
-// ── Real local TCP servers (NOT mocks) ───────────────────────
-// These are real listening sockets created with node:net. The Messenger
-// connects to them over a real TCP socket and speaks the real SMTP/IMAP
-// wire protocol; the servers RECORD what the client actually sent so the
-// tests can assert on the protocol traffic the real Messenger produced.
-
-interface FakeImap {
-  port: number;
-  close: () => void;
-  /** Every full command line the client wrote (tag + command). */
-  commands: string[];
-}
-
-/**
- * Tiny real IMAP server. `mode` controls SELECT/SEARCH/FETCH behaviour; the
- * server records every command line it receives so a test can assert the
- * Messenger emitted e.g. `STORE <uid> +FLAGS (\Seen)`.
- */
-function fakeImapServer(
-  mode: "empty" | "protocolFail" | "missingUid" | "loginOk" | "oneMessage",
-): Promise<FakeImap> {
-  return new Promise((resolve) => {
-    const commands: string[] = [];
-    const server = net.createServer((socket) => {
-      socket.write("* OK fake IMAP ready\r\n");
-      socket.on("data", (chunk) => {
-        const text = chunk.toString("utf-8");
-        for (const rawLine of text.split("\r\n")) {
-          if (!rawLine) continue;
-          const tagMatch = rawLine.match(/^(T\d+)\s+(\w+)/);
-          if (!tagMatch) continue;
-          commands.push(rawLine);
-          const [, tag, cmd] = tagMatch;
-          const c = cmd.toUpperCase();
-
-          if (c === "LOGIN") { socket.write(`${tag} OK LOGIN completed\r\n`); continue; }
-          if (c === "LOGOUT") { socket.write(`* BYE\r\n${tag} OK LOGOUT completed\r\n`); continue; }
-
-          if (c === "SELECT") {
-            if (mode === "protocolFail") { socket.write(`${tag} NO mailbox unavailable\r\n`); continue; }
-            const exists = mode === "oneMessage" ? 1 : 0;
-            socket.write(`* ${exists} EXISTS\r\n${tag} OK [READ-WRITE] SELECT completed\r\n`);
-            continue;
-          }
-          if (c === "SEARCH") {
-            if (mode === "oneMessage") { socket.write(`* SEARCH 7\r\n${tag} OK SEARCH completed\r\n`); continue; }
-            // Empty result set — successful, just no UIDs.
-            socket.write(`* SEARCH\r\n${tag} OK SEARCH completed\r\n`);
-            continue;
-          }
-          if (c === "FETCH") {
-            if (mode === "oneMessage") {
-              // A header FETCH for the summary list.
-              const header = "From: bob@test.com\r\nTo: alice@test.com\r\nSubject: Greetings\r\nDate: Mon, 1 Jan 2024 00:00:00 +0000\r\n";
-              socket.write(`* 7 FETCH (FLAGS () BODY[HEADER.FIELDS (FROM TO SUBJECT DATE)] {${header.length}}\r\n${header})\r\n${tag} OK FETCH completed\r\n`);
-              continue;
-            }
-            // Missing UID: tagged OK, no message body literal.
-            socket.write(`${tag} OK FETCH completed\r\n`);
-            continue;
-          }
-          if (c === "STORE") { socket.write(`${tag} OK STORE completed\r\n`); continue; }
-          if (c === "EXPUNGE") { socket.write(`${tag} OK EXPUNGE completed\r\n`); continue; }
-          socket.write(`${tag} OK\r\n`);
-        }
-      });
-    });
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      resolve({ port, close: () => server.close(), commands });
-    });
-  });
-}
-
-interface FakeSmtp {
-  port: number;
-  close: () => void;
-  /** Commands the client sent (MAIL FROM / RCPT TO / DATA / QUIT ...). */
-  commands: string[];
-  /** The raw DATA payload (the MIME message) the client transmitted (live read). */
-  getData: () => string;
-}
-
-/**
- * Tiny real SMTP sink. Speaks just enough of SMTP to accept a message and
- * records the envelope + DATA payload so a test can assert the real Messenger
- * sent the RCPT TO + message body for the recipient.
- */
-function fakeSmtpServer(): Promise<FakeSmtp> {
-  return new Promise((resolve) => {
-    const state = { commands: [] as string[], data: "" };
-    const server = net.createServer((socket) => {
-      let inData = false;
-      let dataBuf = "";
-      socket.write("220 fake SMTP ready\r\n");
-      socket.on("data", (chunk) => {
-        const text = chunk.toString("utf-8");
-        if (inData) {
-          dataBuf += text;
-          // DATA ends with <CRLF>.<CRLF>
-          const endIdx = dataBuf.indexOf("\r\n.\r\n");
-          if (endIdx !== -1) {
-            state.data = dataBuf.substring(0, endIdx);
-            inData = false;
-            socket.write("250 OK message accepted\r\n");
-          }
-          return;
-        }
-        for (const rawLine of text.split("\r\n")) {
-          if (!rawLine) continue;
-          state.commands.push(rawLine);
-          const upper = rawLine.toUpperCase();
-          if (upper.startsWith("EHLO") || upper.startsWith("HELO")) {
-            socket.write("250 fake SMTP\r\n");
-          } else if (upper.startsWith("MAIL FROM")) {
-            socket.write("250 OK\r\n");
-          } else if (upper.startsWith("RCPT TO")) {
-            socket.write("250 OK\r\n");
-          } else if (upper.startsWith("DATA")) {
-            inData = true;
-            socket.write("354 End data with <CRLF>.<CRLF>\r\n");
-          } else if (upper.startsWith("QUIT")) {
-            socket.write("221 Bye\r\n");
-            socket.end();
-          } else {
-            socket.write("250 OK\r\n");
-          }
-        }
-      });
-    });
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      resolve({ port, close: () => server.close(), commands: state.commands, getData: () => state.data });
-    });
-  });
-}
+// ── Real endpoints only ──────────────────────────────────────
+// This file used to define fakeImapServer() / fakeSmtpServer(): real listening
+// sockets that replied with canned strings ("* OK fake IMAP ready", "250 fake
+// SMTP") chosen by a `mode` switch. A hand-rolled in-test backend is a double
+// under the no-mock rule, and it could only ever confirm the client parses
+// strings this file wrote -- never that a message leaves, lands and reads back.
+// The SMTP/IMAP behaviour now runs against a real GreenMail in
+// test/messengerGreenMail.test.ts. What stays here needs no mail server: pure
+// config/encryption resolution and the REAL refused-connection failure paths.
 
 /** Bind+immediately-close a TCP server to obtain a port guaranteed refused. */
 function refusedPort(): Promise<number> {
@@ -464,223 +335,57 @@ if (origEnv) process.env.NODE_ENV = origEnv;
     else process.env.TINA4_MAIL_TLS_INSECURE = savedInsecure;
   }
 
-  // ── Messenger send + IMAP method behaviour (real local servers) ──
-  // These replace the former row of `typeof messenger.X === "function"`
-  // existence smoke checks: each now drives the real Messenger socket code
-  // against a real local SMTP/IMAP server and asserts the observable result
-  // or the protocol traffic the Messenger actually emitted.
-  console.log("\n--- Messenger send + IMAP behaviour ---");
+  // --- Real refused-connection failure paths ---
+  // The SMTP/IMAP SUCCESS paths (send, inbox, read, search, markRead,
+  // deleteMessage, folders, empty-mailbox) moved to
+  // test/messengerGreenMail.test.ts, where they run against a real GreenMail.
+  // What is left needs no mail server: a port nothing listens on is a genuine
+  // connection failure, so these exercise the real error paths.
+  console.log("\n--- Messenger failure paths (real refused connections) ---");
 
-  // send(): against a real local SMTP sink the SendResult is success and the
-  // server received MAIL FROM / RCPT TO for the recipient + the DATA payload.
   {
-    const smtp = await fakeSmtpServer();
+    const refused = await refusedPort();
+    const m = new Messenger({ host: "127.0.0.1", port: refused, encryption: "none" });
+    const r = await m.testConnection();
+    assert("testConnection() fails against a refused port", r.success === false,
+      `\n    got: ${JSON.stringify(r)}`);
+  }
+
+  {
+    const refused = await refusedPort();
     const m = new Messenger({
-      host: "127.0.0.1", port: smtp.port, encryption: "none",
-      fromAddress: "sender@test.com",
-    });
-    const r: SendResult = await m.send("alice@test.com", "Hello SMTP", "Body text here");
-    assert("send() returns success against real SMTP sink", r.success === true, `\n    got: ${JSON.stringify(r)}`);
-    // Let the server finish flushing the DATA buffer before asserting on it.
-    await new Promise((res) => setTimeout(res, 50));
-    assert("send() emitted MAIL FROM for the sender",
-      smtp.commands.some((c) => /^MAIL FROM:<sender@test\.com>/i.test(c)),
-      `\n    commands: ${JSON.stringify(smtp.commands)}`);
-    assert("send() emitted RCPT TO for the recipient",
-      smtp.commands.some((c) => /^RCPT TO:<alice@test\.com>/i.test(c)),
-      `\n    commands: ${JSON.stringify(smtp.commands)}`);
-    const sentData = smtp.getData();
-    assert("send() transmitted the subject + body in DATA",
-      sentData.includes("Subject: Hello SMTP") && sentData.includes("Body text here"),
-      `\n    data: ${JSON.stringify(sentData)}`);
-    smtp.close();
-  }
-
-  // testConnection(): false against a refused port, true against the real SMTP
-  // server. (Returns a { success, message } object — assert on .success.)
-  {
-    const refused = await refusedPort();
-    const mBad = new Messenger({ host: "127.0.0.1", port: refused, encryption: "none" });
-    const bad = await mBad.testConnection();
-    assert("testConnection() fails against a refused port", bad.success === false, `\n    got: ${JSON.stringify(bad)}`);
-
-    const smtp = await fakeSmtpServer();
-    const mOk = new Messenger({ host: "127.0.0.1", port: smtp.port, encryption: "none" });
-    const ok = await mOk.testConnection();
-    assert("testConnection() succeeds against the real SMTP server", ok.success === true, `\n    got: ${JSON.stringify(ok)}`);
-    smtp.close();
-  }
-
-  // testImapConnection(): true against the real IMAP server (login OK), false
-  // against a refused port.
-  {
-    const imap = await fakeImapServer("loginOk");
-    const mOk = new Messenger({
-      imapHost: "127.0.0.1", imapPort: imap.port, imapUser: "u", imapPass: "p",
-      imapEncryption: "none",
-    });
-    const ok = await mOk.testImapConnection();
-    assert("testImapConnection() succeeds against real IMAP server", ok.success === true, `\n    got: ${JSON.stringify(ok)}`);
-    assert("testImapConnection() actually logged in (LOGIN sent)",
-      imap.commands.some((c) => /\bLOGIN\b/i.test(c)), `\n    commands: ${JSON.stringify(imap.commands)}`);
-    imap.close();
-
-    const refused = await refusedPort();
-    const mBad = new Messenger({
       imapHost: "127.0.0.1", imapPort: refused, imapUser: "u", imapPass: "p",
       imapEncryption: "none",
     });
-    const bad = await mBad.testImapConnection();
-    assert("testImapConnection() fails against a refused port", bad.success === false, `\n    got: ${JSON.stringify(bad)}`);
+    const r = await m.testImapConnection();
+    assert("testImapConnection() fails against a refused port", r.success === false,
+      `\n    got: ${JSON.stringify(r)}`);
   }
 
-  // inbox(): against a real IMAP server holding one message, returns that
-  // message with the parsed subject. (Behaviour, not a typeof check.)
+  // Fail-loud contract: an IMAP read must RAISE on a connection failure, never
+  // swallow it into an empty result (a caller cannot tell "no mail" from "server
+  // down"). PHP asserts this for all five readers; Node now does too.
   {
-    const imap = await fakeImapServer("oneMessage");
+    const refused = await refusedPort();
     const m = new Messenger({
-      imapHost: "127.0.0.1", imapPort: imap.port, imapUser: "u", imapPass: "p",
+      imapHost: "127.0.0.1", imapPort: refused, imapUser: "u", imapPass: "p",
       imapEncryption: "none",
     });
-    const msgs = await m.inbox();
-    assert("inbox() returns the message from a non-empty mailbox",
-      Array.isArray(msgs) && msgs.length === 1 && msgs[0].uid === "7" && msgs[0].subject === "Greetings",
-      `\n    got: ${JSON.stringify(msgs)}`);
-    imap.close();
+    const readers: [string, () => Promise<unknown>][] = [
+      ["inbox()", () => m.inbox()],
+      ["read()", () => m.read("1")],
+      ["unread()", () => m.unread()],
+      ["search()", () => m.search()],
+      ["folders()", () => m.folders()],
+    ];
+    for (const [name, call] of readers) {
+      await assertAsync(`${name} RAISES on a refused IMAP connection`, async () => {
+        try { await call(); return false; }
+        catch (e) { return e instanceof MessengerConnectionError; }
+      });
+    }
   }
 
-  // search(): against the real IMAP server returns the matched UID.
-  {
-    const imap = await fakeImapServer("oneMessage");
-    const m = new Messenger({
-      imapHost: "127.0.0.1", imapPort: imap.port, imapUser: "u", imapPass: "p",
-      imapEncryption: "none",
-    });
-    const found = await m.search("INBOX", "Greetings");
-    assert("search() returns the matched UID from the real server",
-      Array.isArray(found) && found.length === 1 && found[0].uid === "7",
-      `\n    got: ${JSON.stringify(found)}`);
-    // The Messenger built the SEARCH with the SUBJECT criterion.
-    assert("search() emitted the SUBJECT search criterion",
-      imap.commands.some((c) => /SEARCH .*SUBJECT "Greetings"/i.test(c)),
-      `\n    commands: ${JSON.stringify(imap.commands)}`);
-    imap.close();
-  }
-
-  // markRead(): the server receives STORE <uid> +FLAGS (\Seen).
-  {
-    const imap = await fakeImapServer("loginOk");
-    const m = new Messenger({
-      imapHost: "127.0.0.1", imapPort: imap.port, imapUser: "u", imapPass: "p",
-      imapEncryption: "none",
-    });
-    await m.markRead("42");
-    assert("markRead() sent STORE <uid> +FLAGS (\\Seen)",
-      imap.commands.some((c) => /STORE 42 \+FLAGS \(\\Seen\)/.test(c)),
-      `\n    commands: ${JSON.stringify(imap.commands)}`);
-    imap.close();
-  }
-
-  // deleteMessage(): the server receives STORE <uid> +FLAGS (\Deleted) then EXPUNGE.
-  {
-    const imap = await fakeImapServer("loginOk");
-    const m = new Messenger({
-      imapHost: "127.0.0.1", imapPort: imap.port, imapUser: "u", imapPass: "p",
-      imapEncryption: "none",
-    });
-    await m.deleteMessage("99");
-    const storedDeleted = imap.commands.findIndex((c) => /STORE 99 \+FLAGS \(\\Deleted\)/.test(c));
-    const expunged = imap.commands.findIndex((c) => /\bEXPUNGE\b/.test(c));
-    assert("deleteMessage() sent STORE +FLAGS (\\Deleted) then EXPUNGE",
-      storedDeleted >= 0 && expunged > storedDeleted,
-      `\n    commands: ${JSON.stringify(imap.commands)}`);
-    imap.close();
-  }
-
-  // createMessenger() production branch: the returned Messenger is a WORKING
-  // SMTP client built from the configured host:port — point the env at a real
-  // local SMTP server and assert createMessenger() yields a Messenger that
-  // actually connects there. (Strengthens the former no-throw smoke check.)
-  {
-    const savedHost = process.env.TINA4_MAIL_HOST;
-    const savedPort = process.env.TINA4_MAIL_PORT;
-    const savedDebug = process.env.TINA4_DEBUG;
-    const savedEnv = process.env.NODE_ENV;
-    const savedEnc = process.env.TINA4_MAIL_ENCRYPTION;
-
-    const smtp = await fakeSmtpServer();
-    process.env.TINA4_MAIL_HOST = "127.0.0.1";
-    process.env.TINA4_MAIL_PORT = String(smtp.port);
-    process.env.TINA4_MAIL_ENCRYPTION = "none";
-    delete process.env.TINA4_DEBUG;
-    process.env.NODE_ENV = "production";
-
-    const prod = createMessenger();
-    assert("createMessenger() prod branch yields a real Messenger", prod instanceof Messenger);
-    const conn = await (prod as Messenger).testConnection();
-    assert("createMessenger() prod Messenger connects to its configured SMTP host",
-      conn.success === true, `\n    got: ${JSON.stringify(conn)}`);
-    smtp.close();
-
-    if (savedHost === undefined) delete process.env.TINA4_MAIL_HOST; else process.env.TINA4_MAIL_HOST = savedHost;
-    if (savedPort === undefined) delete process.env.TINA4_MAIL_PORT; else process.env.TINA4_MAIL_PORT = savedPort;
-    if (savedDebug === undefined) delete process.env.TINA4_DEBUG; else process.env.TINA4_DEBUG = savedDebug;
-    if (savedEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = savedEnv;
-    if (savedEnc === undefined) delete process.env.TINA4_MAIL_ENCRYPTION; else process.env.TINA4_MAIL_ENCRYPTION = savedEnc;
-  }
-
-  // --- M1: protocol failure (NO/BAD) raises, empty mailbox returns empty ---
-  console.log("\n--- IMAP fail-loud + empty-mailbox (M1) ---");
-
-  // protocolFail: SELECT returns NO → must RAISE (not return []).
-  {
-    const srv = await fakeImapServer("protocolFail");
-    const m = new Messenger({
-      imapHost: "127.0.0.1", imapPort: srv.port, imapUser: "u", imapPass: "p",
-      imapEncryption: "none",
-    });
-    await assertAsync("inbox() RAISES on IMAP NO protocol error", async () => {
-      try { await m.inbox(); return false; }
-      catch (e) { return e instanceof MessengerConnectionError; }
-    });
-    srv.close();
-  }
-
-  // empty: successful SELECT + empty SEARCH → returns [] / 0 (NOT an error).
-  {
-    const srv = await fakeImapServer("empty");
-    const m = new Messenger({
-      imapHost: "127.0.0.1", imapPort: srv.port, imapUser: "u", imapPass: "p",
-      imapEncryption: "none",
-    });
-    await assertAsync("inbox() empty mailbox returns []", async () => {
-      const r = await m.inbox();
-      return Array.isArray(r) && r.length === 0;
-    });
-    await assertAsync("unread() with no unseen returns 0", async () => {
-      const r = await m.unread();
-      return r === 0;
-    });
-    await assertAsync("search() with no matches returns []", async () => {
-      const r = await m.search();
-      return Array.isArray(r) && r.length === 0;
-    });
-    srv.close();
-  }
-
-  // missingUid: successful FETCH for a non-existent UID → returns empty message (not error).
-  {
-    const srv = await fakeImapServer("missingUid");
-    const m = new Messenger({
-      imapHost: "127.0.0.1", imapPort: srv.port, imapUser: "u", imapPass: "p",
-      imapEncryption: "none",
-    });
-    await assertAsync("read() of missing UID returns empty message", async () => {
-      const r = await m.read("999");
-      return r.uid === "999" && r.subject === "" && r.bodyText === "" && r.bodyHtml === "";
-    });
-    srv.close();
-  }
 
   // Cleanup
   cleanup();
