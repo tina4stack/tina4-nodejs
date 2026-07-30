@@ -329,10 +329,16 @@ jobs:
       # The test self-exits 0 on an all-SKIP run (Firebird is a non-provisioned
       # engine), so a plain exit code cannot tell "passed" from "green-skipped".
       # Strip ANSI, then assert: (a) no SKIP line, (b) the ROLLBACK-undoes-insert
-      # negative case PASSed, (c) the "4 passed, 0 failed, 0 skipped" summary.
-      # node-firebird missing / URL unset / server unreachable each print a
-      # firebird SKIP and FAIL the job here — never a silent green skip. This is
-      # the Node equivalent of PHP's `grep interbase`.
+      # negative case PASSed, (c) a summary of "0 failed, 0 skipped" over at
+      # least one case. node-firebird missing / URL unset / server unreachable
+      # each print a firebird SKIP and FAIL the job here — never a silent green
+      # skip. This is the Node equivalent of PHP's `grep interbase`.
+      #
+      # The summary assertion pins the INVARIANT (everything ran, nothing failed,
+      # nothing skipped), NOT a literal total. It used to grep for the exact
+      # string "4 passed, 0 failed, 0 skipped"; the test then legitimately grew
+      # to 7 cases and this job went red while every live case was passing. A
+      # guard that a passing test can break is a guard that gets deleted.
       - name: Run Firebird rollback test against live Firebird (no-silent-skip guard)
         run: |
           set -o pipefail
@@ -344,9 +350,15 @@ jobs:
           fi
           printf '%s\n' "$clean" | grep -q "PASS ROLLBACK undoes the insert (row gone)" || {
             echo "::error::The ROLLBACK-undoes-insert (negative) case did not PASS."; exit 1; }
-          printf '%s\n' "$clean" | grep -q "4 passed, 0 failed, 0 skipped" || {
-            echo "::error::Firebird rollback test did not report '4 passed, 0 failed, 0 skipped' — its 4 live cases did not all run/pass."; exit 1; }
-          echo "Firebird rollback test RAN against live Firebird and passed (4/4, 0 skipped)."
+          summary=$(printf '%s\n' "$clean" | grep -Eo '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' | tail -1 || true)
+          case "$summary" in
+            *"0 failed, 0 skipped") ;;
+            *) echo "::error::Firebird rollback test did not report '0 failed, 0 skipped' (got: '${summary:-no summary line}')."; exit 1 ;;
+          esac
+          passed=${summary%% passed*}
+          [ "${passed:-0}" -ge 1 ] 2>/dev/null || {
+            echo "::error::Firebird rollback test reported no passing cases (got: '${summary:-no summary line}')."; exit 1; }
+          echo "Firebird rollback test RAN against live Firebird: $summary."
 
       # The remaining firebird test files also run in the main `test` job (they
       # are pure-logic), but run them here too for completeness. They self-exit

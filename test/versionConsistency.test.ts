@@ -12,10 +12,12 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf-8")).version as string;
 const claude = readFileSync(join(root, "CLAUDE.md"), "utf-8");
 
+let passed = 0;
 let failed = 0;
 function assert(label: string, condition: boolean) {
   console.log((condition ? "  PASS " : "  FAIL ") + label);
-  if (!condition) failed++;
+  if (condition) passed++;
+  else failed++;
 }
 
 // The two current-version markers in CLAUDE.md (the H1 title and the intro line).
@@ -23,5 +25,8 @@ function assert(label: string, condition: boolean) {
 assert(`CLAUDE.md title shows (v${version})`, claude.includes(`tina4-nodejs (v${version})`));
 assert(`CLAUDE.md intro shows v${version}`, claude.includes(`Tina4 for Node.js/TypeScript v${version} -`));
 
-console.log(`\n=== versionConsistency: ${failed === 0 ? "ok" : `${failed} failed`} ===`);
+// The runner reads this exact "N passed, M failed" shape to aggregate the grand
+// total. Without it the file contributed nothing to the counts and was reported
+// as "PASS versionConsistency.test (0 passed)" — green, but proving nothing.
+console.log(`\n  Results: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

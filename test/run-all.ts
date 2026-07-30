@@ -11,6 +11,7 @@ import { readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { requireServices, findProvisionedServiceSkips } from "./_serviceGate.ts";
+import { summarizeTestOutput } from "./_testSummary.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, "..");
@@ -21,8 +22,30 @@ const rootDir = join(__dirname, "..");
 // so skip them here (tsx can't execute a vitest suite — it errors on the
 // `vitest` import). The root `npm test` runs this runner THEN `test:i18n`.
 const VITEST_FILES = new Set(["i18n.test.ts", "i18n-leaf-alias.test.ts"]);
+
+// Metrics is measured by the NATIVE engine in the tina4 Rust CLI (ADR-0002) and
+// has no in-framework fallback, so these files need that binary on PATH and
+// simply cannot run in CI. The engine is tested where it lives — tina4stack/tina4
+// src/metrics.rs, exercised by `cargo test` in its own pipeline — so skipping
+// them here loses no coverage; installing a second toolchain in four framework
+// pipelines to re-test one Rust binary would only duplicate it. Set
+// TINA4_SKIP_METRICS=0 to run them locally with the CLI installed.
+const METRICS_FILES = new Set([
+  "metrics.test.ts",
+  "metrics-cli.test.ts",
+  "metrics-nested-complexity.test.ts",
+  "metrics-offender-cap.test.ts",
+  "metricsCoverage.test.ts",
+]);
+const skipMetrics = (process.env.TINA4_SKIP_METRICS ?? "1") !== "0";
+
 const testFiles = readdirSync(__dirname)
-  .filter((f) => f.endsWith(".test.ts") && !VITEST_FILES.has(f))
+  .filter(
+    (f) =>
+      f.endsWith(".test.ts") &&
+      !VITEST_FILES.has(f) &&
+      !(skipMetrics && METRICS_FILES.has(f))
+  )
   .sort();
 
 // Also include integration.ts
@@ -64,9 +87,7 @@ for (const file of allFiles) {
     });
 
     // Parse "Results: N passed, M failed" from output
-    const match = output.match(/(\d+)\s+passed.*?(\d+)\s+failed/);
-    const passed = match ? parseInt(match[1], 10) : 0;
-    const failed = match ? parseInt(match[2], 10) : 0;
+    const { passed, failed, reported } = summarizeTestOutput(output);
 
     totalPass += passed;
     totalFail += failed;
@@ -74,7 +95,18 @@ for (const file of allFiles) {
 
     collectServiceSkips(label, output);
 
-    if (failed > 0) {
+    if (!reported) {
+      // Exit 0 with no summary line: the file never reported a result, so
+      // nothing here proves it ran. A test file that does not SELF-EXECUTE its
+      // cases exits clean and silent, and reporting that as `PASS (0 passed)`
+      // is how a suite of dead tests reads green.
+      filesFailed++;
+      failures.push(label);
+      console.log(
+        `  \x1b[31mFAIL\x1b[0m ${label} (exited 0 but reported no results — did its cases run?)`
+      );
+      console.log(output);
+    } else if (failed > 0) {
       console.log(`  \x1b[31mFAIL\x1b[0m ${label} (${passed} passed, ${failed} failed)`);
       filesFailed++;
       failures.push(label);
@@ -87,18 +119,23 @@ for (const file of allFiles) {
     filesRun++;
     filesFailed++;
 
-    // The process exited non-zero — parse output for counts anyway
+    // The process exited non-zero — parse output for counts anyway. A file that
+    // died before it could report (a bad import, a throwing top-level await) is
+    // charged one failure by summarizeTestOutput, so the grand total can never
+    // read "0 failed" for a run that just listed failed files.
     const output = (err.stdout || "") + (err.stderr || "");
-    const match = output.match(/(\d+)\s+passed.*?(\d+)\s+failed/);
-    const passed = match ? parseInt(match[1], 10) : 0;
-    const failed = match ? parseInt(match[2], 10) : 0;
+    const { passed, failed, reported } = summarizeTestOutput(output);
 
     totalPass += passed;
     totalFail += failed;
 
     collectServiceSkips(label, output);
 
-    console.log(`  \x1b[31mFAIL\x1b[0m ${label} (${passed} passed, ${failed} failed)`);
+    console.log(
+      reported
+        ? `  \x1b[31mFAIL\x1b[0m ${label} (${passed} passed, ${failed} failed)`
+        : `  \x1b[31mFAIL\x1b[0m ${label} (died before reporting — no summary line)`
+    );
     failures.push(label);
 
     // Print output for debugging
@@ -119,8 +156,12 @@ for (const file of allFiles) {
 
 // Grand summary
 console.log(`\n${"=".repeat(60)}`);
+// The file-level count is part of the headline, not a footnote: case counts
+// come from each file's own summary, so a file that dies before printing one
+// contributes no cases and would otherwise vanish from the number a human reads.
 console.log(
-  `  Grand Total: \x1b[32m${totalPass} passed\x1b[0m, \x1b[31m${totalFail} failed\x1b[0m across ${filesRun} files`
+  `  Grand Total: \x1b[32m${totalPass} passed\x1b[0m, \x1b[31m${totalFail} failed\x1b[0m` +
+    ` across ${filesRun} files (\x1b[31m${filesFailed} files failed\x1b[0m)`
 );
 if (failures.length > 0) {
   console.log(`  Failed files: ${failures.join(", ")}`);

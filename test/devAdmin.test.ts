@@ -522,13 +522,23 @@ const queueHandler = findHandler("GET", "/__dev/api/queue");
 assert("handleQueue handler is registered", queueHandler !== undefined);
 
 if (queueHandler) {
-  // Clear and seed some queue jobs
-  // DevQueue has no public clear, so we work with what's there
-  DevQueue.add("send-email", { to: "test@example.com" });
-  DevQueue.add("process-image", { file: "photo.jpg" });
+  // Seed the REAL file-backed queue, not the in-memory DevQueue: handleQueue
+  // lists pending jobs by reading data/queue/<topic>/*.queue-data directly (see
+  // its comment "this is why real persisted jobs now show even though DevQueue
+  // is empty"). The test still seeded DevQueue, so the handler correctly
+  // reported zero jobs and these assertions had been failing unseen.
+  const { Queue } = await import("../packages/core/src/queue.ts");
+  const devQueue = new Queue({ topic: "default" });
+  devQueue.push({ job: "send-email", to: "test@example.com" });
+  devQueue.push({ job: "process-image", file: "photo.jpg" });
 
+  // handleQueue is async — without the await, res.result is still undefined and
+  // the very next assert dereferences it, killing the file mid-run. That is how
+  // this block went unnoticed: the file died before printing a summary, the
+  // runner read the missing summary as "0 passed, 0 failed", and a genuinely
+  // failing assertion was reported as PASS devAdmin.test (0 passed).
   const res = mockRes();
-  queueHandler(mockReq("/__dev/api/queue"), res);
+  await queueHandler(mockReq("/__dev/api/queue"), res);
   const data = res.result;
 
   assert("handleQueue returns an object", typeof data === "object" && data !== null);
@@ -554,7 +564,7 @@ if (queueHandler) {
 
   // Test status filter
   const resFiltered = mockRes();
-  queueHandler(mockReq("/__dev/api/queue?status=completed"), resFiltered);
+  await queueHandler(mockReq("/__dev/api/queue?status=completed"), resFiltered);
   const filteredData = resFiltered.result;
   assert("handleQueue status filter returns only matching jobs",
     filteredData.jobs.every((j: any) => j.status === "completed") || filteredData.jobs.length === 0);
