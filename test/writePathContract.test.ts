@@ -16,6 +16,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initDatabase } from "../packages/orm/src/database.js";
+import { SQLTranslator } from "../packages/orm/src/sqlTranslator.js";
 
 let passed = 0;
 let failed = 0;
@@ -37,13 +38,59 @@ function assert(cond: unknown, message: string): void {
   if (!cond) throw new Error(message);
 }
 
+/**
+ * RUN THIS AGAINST EVERY LIVE ENGINE. SQLite alone proves almost nothing here:
+ * the whole reason per-adapter write SQL exists is that placeholder style,
+ * RETURNING support and identifier quoting differ exactly where the engine
+ * differs. Point it at a real engine with:
+ *
+ *   TINA4_TEST_WRITE_PATH_URL=postgres://host:5432/db \
+ *   TINA4_TEST_WRITE_PATH_USERNAME=u TINA4_TEST_WRITE_PATH_PASSWORD=p \
+ *     npx tsx test/writePathContract.test.ts
+ *
+ * Unset, it falls back to a temp SQLite file so the suite still runs anywhere.
+ */
+const ENGINE_URL = process.env.TINA4_TEST_WRITE_PATH_URL || "";
+
 async function withDb(fn: (db: any) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "tina4-writepath-"));
   try {
-    const db = await initDatabase({ url: `sqlite://${join(dir, "contract.db")}` });
-    await db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)");
-    await db.insert("t", { id: 1, name: "one" });
-    await db.insert("t", { id: 2, name: "two" });
+    const db = ENGINE_URL
+      ? await initDatabase({
+          url: ENGINE_URL,
+          username: process.env.TINA4_TEST_WRITE_PATH_USERNAME ?? "",
+          password: process.env.TINA4_TEST_WRITE_PATH_PASSWORD ?? "",
+        })
+      : await initDatabase({ url: `sqlite://${join(dir, "contract.db")}` });
+
+    try {
+      await db.execute("DROP TABLE t");
+    } catch {
+      /* first run against this engine */
+    }
+
+    // AUTOINCREMENT is SQLite's spelling; the translator rewrites it per engine.
+    // `id INTEGER PRIMARY KEY` self-increments on SQLite and is a plain NOT NULL
+    // column everywhere else - writing it by hand is how a suite silently stays
+    // SQLite-only.
+    const ddl = "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(80))";
+    // The engine comes from the URL: Database.dbType is private, and reading it
+    // as `any` silently yielded undefined, so the DDL went out with SQLite's
+    // AUTOINCREMENT and PostgreSQL rejected it outright.
+    // autoIncrementSyntax keys off the "-ql" spelling for PostgreSQL, so
+    // "postgres" alone silently does nothing and the DDL keeps SQLite's
+    // AUTOINCREMENT. Ruby's runner normalises the same way.
+    const scheme = ENGINE_URL ? (ENGINE_URL.split(":")[0] || "sqlite") : "sqlite";
+    const engine = scheme === "postgres" ? "postgresql" : scheme;
+    await db.execute(SQLTranslator.autoIncrementSyntax(ddl, engine));
+
+    // Let the SEQUENCE assign the ids. The assertions key on id 1 and 2, and a
+    // fresh sequence yields exactly those in insertion order on every engine.
+    // Hand-seeding id: 1, 2 instead leaves a real sequence still pointing at 1,
+    // so the first insert that omits an id collides on the primary key - SQLite
+    // hides that because its rowid follows the max.
+    await db.insert("t", { name: "one" });
+    await db.insert("t", { name: "two" });
     await fn(db);
   } finally {
     rmSync(dir, { recursive: true, force: true });
