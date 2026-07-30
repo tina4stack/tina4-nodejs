@@ -161,14 +161,16 @@ async function run() {
   // A path with NO limit parameter must stay UNCAPPED: a cap the signature
   // cannot express is a silent cap, which is the footgun.
   {
-    // SHAPE DIVERGENCE, recorded not fixed: Node's QueryBuilder.get() returns a
-    // plain array, while Python/PHP/Ruby return a DatabaseResult (.records).
+    // Node's QueryBuilder.get() now returns a DatabaseResult, matching
+    // Python/PHP/Ruby (3.13.95). Rows come off `.records`; the object is also
+    // iterable. The former plain-array shape was the last of the three recorded
+    // ORM parity gaps.
     // Out of scope for the row cap; noted so the next reader is not surprised.
     const all = await QueryBuilder.fromTable("cap_widgets").get();
-    assert("QueryBuilder.get() returns every row", all.length === ROWS, `got ${all.length}`);
+    assert("QueryBuilder.get() returns every row", all.records.length === ROWS, `got ${all.records.length}`);
 
     const nine = await QueryBuilder.fromTable("cap_widgets").limit(9).get();
-    assert("QueryBuilder.get() honours an explicit limit", nine.length === 9, `got ${nine.length}`);
+    assert("QueryBuilder.get() honours an explicit limit", nine.records.length === 9, `got ${nine.records.length}`);
   }
 
   await closeDatabase();

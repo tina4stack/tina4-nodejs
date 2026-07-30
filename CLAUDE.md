@@ -815,7 +815,7 @@ const orders = QueryBuilder.fromTable("orders o")
   .where("o.status = ?", ["pending"])
   .orderBy("o.created_at DESC")
   .limit(20)
-  .get();                       // → row[]
+  .get();                       // → DatabaseResult (.records, .count, .limit, .offset)
 
 // LEFT JOIN
 QueryBuilder.fromTable("products p")

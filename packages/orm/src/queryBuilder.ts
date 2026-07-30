@@ -19,6 +19,7 @@
 
 import type { DatabaseAdapter } from "./types.js";
 import { getAdapter, adapterFetch, adapterFetchOne } from "./database.js";
+import { DatabaseResult } from "./databaseResult.js";
 
 export class QueryBuilder {
   private table: string;
@@ -198,21 +199,54 @@ export class QueryBuilder {
   }
 
   /**
-   * Execute the query and return all matching rows.
+   * Execute the query and return a DatabaseResult.
    *
-   * @returns Array of row objects.
+   * BREAKING (3.13.95, parity): this returned a bare array of rows. The other
+   * three frameworks all return the DatabaseResult that `db.fetch()` produces:
+   *   Python  get() -> DatabaseResult   (orm/query_builder/__init__.py)
+   *   PHP     get(): mixed -> $this->db->fetch(...)
+   *   Ruby    get -> @db.fetch(...)
+   * Node was the odd one out, so the same builder chain returned a different
+   * TYPE per language and portable code could not read `.records`, `.count`,
+   * `.limit` or `.offset` off it.
+   *
+   * MIGRATION: read `.records` for the rows.
+   *   before: const rows = await qb.get();          rows.length
+   *   after:  const result = await qb.get();        result.records.length
+   * DatabaseResult is iterable, so `for (const row of result)` and
+   * `[...result]` work unchanged, and `response()`/`res.json()` already
+   * auto-serialize it to a JSON array.
+   *
+   * No default LIMIT is applied when `.limit()` was never called (v3.13.39) --
+   * a silent cap here was a data-loss-on-read footgun. That is unchanged.
+   *
+   * @returns DatabaseResult carrying `.records`, `.count`, `.limit`, `.offset`.
    */
-  async get<T = Record<string, unknown>>(): Promise<T[]> {
+  async get(): Promise<DatabaseResult> {
     this.ensureDb();
     const sql = this.toSql();
     const allParams = [...this.params, ...this.havingParams];
 
-    return adapterFetch<T>(
+    const rows = await adapterFetch(
       this.db!,
       sql,
       allParams.length > 0 ? allParams : undefined,
       this.limitVal,
       this.offsetVal,
+    );
+
+    // Constructed exactly as Database._fetchWithLimit does, so a QueryBuilder
+    // result and a db.fetch() result are the same object in the same state --
+    // including leaving `count` to default to the row count and handing the
+    // adapter + sql through.
+    return new DatabaseResult(
+      rows as Record<string, unknown>[],
+      undefined,
+      undefined,
+      this.limitVal,
+      this.offsetVal,
+      this.db!,
+      sql,
     );
   }
 

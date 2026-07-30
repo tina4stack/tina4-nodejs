@@ -14,6 +14,29 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ### Changed
 
+- **Breaking: `QueryBuilder.get()` returns a `DatabaseResult`, not a bare array.** All
+  three other frameworks return the `DatabaseResult` that `db.fetch()` produces (Python
+  `orm/query_builder/__init__.py`, PHP `QueryBuilder::get()`, Ruby `QueryBuilder#get`).
+  Node returned a plain array, so the same builder chain produced a different type per
+  language and portable code could not read `.records`, `.count`, `.limit` or `.offset`.
+
+  Migration -- read `.records` for the rows:
+
+  ```ts
+  // before
+  const rows = await User.query().where("age > ?", [28]).get();
+  rows.length;
+  // after
+  const result = await User.query().where("age > ?", [28]).get();
+  result.records.length;
+  ```
+
+  `DatabaseResult` is iterable, so `for (const row of result)` and `[...result]` keep
+  working unchanged, and `response()` / `res.json()` already auto-serialize it to a JSON
+  array -- a route returning `.get()` directly needs no change at all. Only code that
+  called an Array method (`.length`, `.map`, `.filter`) on the result must move to
+  `.records`. The no-default-LIMIT behaviour from v3.13.39 is unchanged.
+
 - **Breaking: `Model.all()` no longer takes a `where`/`params` filter.** The signature
   is now `all(limit = 100, offset = 0, include?, orderBy?)`, matching the Python master,
   PHP and Ruby. Node was the sole outlier of the four: its extra leading `where`/`params`

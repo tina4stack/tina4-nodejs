@@ -214,10 +214,10 @@ async function run() {
     }
 
     const all = await QueryBuilder.fromTable("cwidgets", getAdapter()).get();
-    assert("get() with no .limit() returns all 150 rows (not 100)", all.length === 150, `got ${all.length}`);
+    assert("get() with no .limit() returns all 150 rows (not 100)", all.records.length === 150, `got ${all.records.length}`);
 
     const limited = await QueryBuilder.fromTable("cwidgets", getAdapter()).limit(10).get();
-    assert("explicit .limit(10) is still honoured", limited.length === 10, `got ${limited.length}`);
+    assert("explicit .limit(10) is still honoured", limited.records.length === 10, `got ${limited.records.length}`);
 
     const sql = QueryBuilder.fromTable("cwidgets", getAdapter()).toSql().toUpperCase();
     assert("toSql() injects no default LIMIT", !sql.includes("LIMIT"), `sql: ${sql}`);

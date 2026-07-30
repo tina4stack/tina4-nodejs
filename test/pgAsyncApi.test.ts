@@ -158,7 +158,7 @@ try {
     .where("active = ?", [true])
     .orderBy("id")
     .get();
-  assert("QueryBuilder.get() returns active rows", activeRows.length === 1);
+  assert("QueryBuilder.get() returns active rows", activeRows.records.length === 1);
 
   const qbCount = await QueryBuilder.fromTable("t4_async_widgets").count();
   assert("QueryBuilder.count() returns 2", qbCount === 2);
