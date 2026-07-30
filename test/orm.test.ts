@@ -167,8 +167,10 @@ await charlie.save();
 const allUsers = await User.all();
 assert("all returns all users", allUsers.length === 3);
 
-const filtered = await User.all("age > ?", [28]);
-assert("all with WHERE clause", filtered.length === 2);
+// all() no longer takes a filter (3.13.95 parity: Python/PHP/Ruby never did).
+// A filtered read is where()'s job, and it takes the conditions first.
+const filtered = await User.where("age > ?", [28]);
+assert("where filters rows", filtered.length === 2);
 
 // --- Soft Delete ---
 console.log("\n--- Soft Delete ---");
@@ -401,11 +403,13 @@ console.log("\n--- all Variations ---");
     `all=${allUsersNow.length} raw=${rawCount}`,
   );
 
-  const withWhere = await User.all("age > ?", [0]);
-  assert("all with WHERE clause returns filtered", withWhere.length >= 1);
+  // Filtered reads moved off all() to where() in 3.13.95 (parity: the master,
+  // PHP and Ruby never accepted a filter on all()).
+  const withWhere = await User.where("age > ?", [0]);
+  assert("where returns filtered rows", withWhere.length >= 1);
 
-  const withEmpty = await User.all("age > ?", [99999]);
-  assert("all with no matches returns empty", withEmpty.length === 0);
+  const withEmpty = await User.where("age > ?", [99999]);
+  assert("where with no matches returns empty", withEmpty.length === 0);
 }
 
 // --- Validation Edge Cases ---

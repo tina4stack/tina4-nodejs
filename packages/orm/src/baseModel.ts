@@ -539,20 +539,39 @@ export class BaseModel {
   }
 
   /**
-   * Find all records, optionally with a where clause.
-   * Alias: all()
-   * @param where Optional WHERE clause.
-   * @param params Optional query parameters.
-   * @param include Optional array of relationship names to eager-load.
+   * Find all records.
+   *
+   * BREAKING (3.13.95, parity): the signature is now
+   * `all(limit?, offset?, include?, orderBy?)`. It NO LONGER accepts leading
+   * `where`/`params`.
+   *
+   * Node was the sole outlier of the four. The master and the other two never
+   * had a filter on `all()`:
+   *   Python  all(limit=100, offset=0, include=None, order_by=None)
+   *   PHP     all(int $limit = 100, int $offset = 0, ?array $include, ?string $orderBy)
+   *   Ruby    all(limit: 100, offset: nil, order_by: nil, include: nil)
+   * Node's extra leading parameters shifted every argument, so the same
+   * positional call meant different things in different languages -- which is
+   * precisely what the parity mandate exists to prevent.
+   *
+   * MIGRATION: a filtered read moves to `where()`, which already exists and
+   * takes the conditions first:
+   *   before: User.all("age > ?", [28])
+   *   after:  User.where("age > ?", [28])
+   * TypeScript callers get a compile error (string is not assignable to number),
+   * so the break is loud rather than silent.
+   *
+   * @param limit   Max records (default 100, the shared cross-framework cap).
+   * @param offset  Records to skip (default 0).
+   * @param include Relationship names to eager-load.
+   * @param orderBy ORDER BY clause (e.g. "name ASC").
    */
   static async all<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
-    where?: string,
-    params?: unknown[],
-    include?: string[],
-    orderBy?: string,
     limit: number = DEFAULT_ROW_CAP,
     offset: number = 0,
+    include?: string[],
+    orderBy?: string,
   ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
@@ -564,16 +583,16 @@ export class BaseModel {
     if (ModelClass.tableFilter) {
       conditions.push(ModelClass.tableFilter);
     }
-    if (where) {
-      conditions.push(where);
-    }
 
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const orderClause = orderBy ? ` ORDER BY ${orderBy}` : "";
     const sql = `SELECT * FROM "${ModelClass.tableName}"${whereClause}${orderClause}`
       + ` LIMIT ${limit} OFFSET ${offset}`;
 
-    const rows = await adapterQuery(db, sql, params);
+    // No bind parameters: the only conditions left are the framework's own
+    // softDelete / tableFilter literals. A caller-supplied filter belongs on
+    // where(), which binds its params properly.
+    const rows = await adapterQuery(db, sql, []);
     const instances = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
     if (include) {
       await ModelClass._eagerLoad(instances, include);

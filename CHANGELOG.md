@@ -14,6 +14,28 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ### Changed
 
+- **Breaking: `Model.all()` no longer takes a `where`/`params` filter.** The signature
+  is now `all(limit = 100, offset = 0, include?, orderBy?)`, matching the Python master,
+  PHP and Ruby. Node was the sole outlier of the four: its extra leading `where`/`params`
+  shifted every following argument, so the same positional call meant different things
+  in different languages.
+
+  Migration -- a filtered read moves to `where()`, which already exists and takes the
+  conditions first:
+
+  ```ts
+  // before
+  const adults = await User.all("age > ?", [28]);
+  // after
+  const adults = await User.where("age > ?", [28]);
+  ```
+
+  `all()` with no arguments is unchanged, which is the overwhelmingly common call. A
+  TypeScript caller passing the old form gets a compile error (`TS2345: Argument of type
+  'string' is not assignable to parameter of type 'number'`), so the break surfaces at
+  build time rather than as malformed SQL at runtime. Plain-JavaScript callers get no
+  such warning -- grep for `.all("` before upgrading.
+
 - **Breaking: the metrics payload is now the native engine's shape.** `fullAnalysis` no
   longer returns a `violations` key. The ranked `offenders` list replaces it and
   `--fail-on` reads that same list, so one concept has one name instead of two.
