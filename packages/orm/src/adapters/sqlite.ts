@@ -363,10 +363,16 @@ export class SQLiteAdapter implements DatabaseAdapter {
 
   createTable(name: string, columns: Record<string, FieldDefinition>): void {
     const colDefs: string[] = [];
+    // A COMPOSITE key is declared ONCE, at table level (below). An inline
+    // PRIMARY KEY per column is invalid DDL - SQLite rejects it outright with
+    // "table X has more than one primary key", so a composite-key model could
+    // not create its own table at all.
+    const pkCols = Object.entries(columns).filter(([, d]) => d.primaryKey).map(([c]) => c);
+    const composite = pkCols.length > 1;
     for (const [colName, def] of Object.entries(columns)) {
       const sqlType = fieldTypeToSQLite(def.type);
       const parts = [`"${colName}" ${sqlType}`];
-      if (def.primaryKey) parts.push("PRIMARY KEY");
+      if (def.primaryKey && !composite) parts.push("PRIMARY KEY");
       if (def.autoIncrement) parts.push("AUTOINCREMENT");
       if (def.required && !def.primaryKey) parts.push("NOT NULL");
       // A json column carries no DDL DEFAULT (parity with the Python master): an
@@ -374,6 +380,9 @@ export class SQLiteAdapter implements DatabaseAdapter {
       if (def.type !== "json" && def.default !== undefined && def.default !== "now") parts.push(`DEFAULT ${sqlDefault(def.default)}`);
       if (def.type !== "json" && def.default === "now") parts.push("DEFAULT CURRENT_TIMESTAMP");
       colDefs.push(parts.join(" "));
+    }
+    if (composite) {
+      colDefs.push(`PRIMARY KEY (${pkCols.map((c) => `"${c}"`).join(", ")})`);
     }
     this.db.exec(`CREATE TABLE IF NOT EXISTS "${name}" (${colDefs.join(", ")})`);
   }

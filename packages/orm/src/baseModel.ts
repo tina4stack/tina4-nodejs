@@ -344,6 +344,34 @@ export class BaseModel {
   }
 
   /**
+   * EVERY primary-key field name, in declaration order.
+   *
+   * A key may span several columns. `getPkField()` returns only the FIRST and
+   * is kept for the auto-increment paths, which are single-column by
+   * definition. Anything that ADDRESSES a row must use this: keying on one
+   * column of a composite key matches every row sharing that value, which is
+   * the data-loss shape feature 4 removed from the raw write path below.
+   */
+  protected static getPkFields(): string[] {
+    const keys = Object.entries(this.fields)
+      .filter(([, def]) => def.primaryKey)
+      .map(([name]) => name);
+    return keys.length > 0 ? keys : ["id"];
+  }
+
+  /** A WHERE naming EVERY primary-key column, and its bound params. */
+  protected pkWhere(): { sql: string; params: unknown[] } {
+    const ModelClass = this.constructor as typeof BaseModel;
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    for (const name of ModelClass.getPkFields()) {
+      clauses.push(`${ModelClass.getDbColumn(name)} = ?`);
+      params.push((this as Record<string, unknown>)[name]);
+    }
+    return { sql: clauses.join(" AND "), params };
+  }
+
+  /**
    * Get the primary key database column name (applies fieldMapping).
    */
   protected static getPkColumn(): string {
@@ -699,7 +727,23 @@ export class BaseModel {
         isUpdate = true;
       } else {
         try {
-          isUpdate = await ModelClass.exists(pkValue);
+          // This asked exists(pkValue), which tests only the FIRST key column.
+          // On a composite key that is true for any row sharing that column, so
+          // inserting a genuinely NEW row was decided to be an UPDATE and
+          // silently OVERWROTE a different row: saving (acme, a2) rewrote
+          // (acme, a1). The check has to name the whole key, like the write
+          // that follows it.
+          const probe = this.pkWhere();
+          if (ModelClass.getPkFields().length > 1 && probe.sql) {
+            const found = await db.fetch(
+              `SELECT 1 AS present FROM ${ModelClass.tableName} WHERE ${probe.sql}`,
+              probe.params,
+              1,
+            );
+            isUpdate = (found as unknown as { length: number }).length > 0;
+          } else {
+            isUpdate = await ModelClass.exists(pkValue);
+          }
         } catch {
           // If we can't tell (e.g. table doesn't exist yet), fall back
           // to INSERT so the user sees the real driver error rather
@@ -712,16 +756,22 @@ export class BaseModel {
     await adapterStartTransaction(db);
     try {
       if (isUpdate) {
-        // Update
+        // Update — keyed on the WHOLE primary key (see pkWhere).
         const updateFields = Object.entries(ModelClass.fields).filter(
           ([name, def]) => !def.primaryKey && this[name] !== undefined,
         );
         if (updateFields.length === 0) { await adapterCommit(db); return this; }
 
         const setClause = updateFields.map(([k]) => `"${ModelClass.getDbColumn(k)}" = ?`).join(", ");
-        const values = [...updateFields.map(([k, def]) => toDbFieldValue(def, this[k])), pkValue];
+        // The key params come from pkWhere() below; appending pkValue here too
+        // would bind the first key column twice and shift every placeholder.
+        const values = [...updateFields.map(([k, def]) => toDbFieldValue(def, this[k]))];
 
-        await adapterExecute(db, `UPDATE "${ModelClass.tableName}" SET ${setClause} WHERE "${pkCol}" = ?`, values);
+        // Keyed on the WHOLE primary key: one column of a composite key matches
+        // every row sharing that value.
+        const uw = this.pkWhere();
+        values.push(...uw.params);
+        await adapterExecute(db, `UPDATE "${ModelClass.tableName}" SET ${setClause} WHERE ${uw.sql}`, values);
       } else {
         // Insert
         //
@@ -877,14 +927,14 @@ export class BaseModel {
     try {
       if (ModelClass.softDelete) {
         await adapterExecute(db,
-          `UPDATE "${ModelClass.tableName}" SET is_deleted = 1 WHERE "${pkCol}" = ?`,
-          [pkValue],
+          `UPDATE "${ModelClass.tableName}" SET is_deleted = 1 WHERE ${this.pkWhere().sql}`,
+          this.pkWhere().params,
         );
         this.is_deleted = 1;
       } else {
         await adapterExecute(db,
-          `DELETE FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`,
-          [pkValue],
+          `DELETE FROM "${ModelClass.tableName}" WHERE ${this.pkWhere().sql}`,
+          this.pkWhere().params,
         );
       }
       await adapterCommit(db);
@@ -1070,7 +1120,10 @@ export class BaseModel {
       const dbCol = this.getDbColumn(fieldName);
       const sqlType = typeMap[def.type] || "TEXT";
       const parts = [`"${dbCol}" ${sqlType}`];
-      if (def.primaryKey) parts.push("PRIMARY KEY");
+      // A COMPOSITE key is declared ONCE, at table level (below). An inline
+      // PRIMARY KEY per column is invalid DDL - SQLite, PostgreSQL and MySQL
+      // all reject two of them in one table.
+      if (def.primaryKey && this.getPkFields().length === 1) parts.push("PRIMARY KEY");
       if (def.autoIncrement) parts.push("AUTOINCREMENT");
       if (def.required && !def.primaryKey) parts.push("NOT NULL");
       // A callable default (e.g. `default: () => new Date()`) is resolved per-row
@@ -1082,6 +1135,15 @@ export class BaseModel {
         parts.push(`DEFAULT ${dv}`);
       }
       colDefs.push(parts.join(" "));
+    }
+
+    // A COMPOSITE key is declared ONCE, at table level; the per-column inline
+    // form above is suppressed for it, because two inline primary keys is
+    // invalid DDL on every engine.
+    const pkFields = this.getPkFields();
+    if (pkFields.length > 1) {
+      const pkCols = pkFields.map((f) => this.getDbColumn(f));
+      colDefs.push(`PRIMARY KEY (${pkCols.join(", ")})`);
     }
 
     const sql = `CREATE TABLE IF NOT EXISTS "${this.tableName}" (${colDefs.join(", ")})`;
@@ -1217,8 +1279,8 @@ export class BaseModel {
     await adapterStartTransaction(db);
     try {
       await adapterExecute(db,
-        `DELETE FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`,
-        [pkValue],
+        `DELETE FROM "${ModelClass.tableName}" WHERE ${this.pkWhere().sql}`,
+        this.pkWhere().params,
       );
       await adapterCommit(db);
     } catch (e) {
@@ -1249,8 +1311,8 @@ export class BaseModel {
     await adapterStartTransaction(db);
     try {
       await adapterExecute(db,
-        `UPDATE "${ModelClass.tableName}" SET is_deleted = 0 WHERE "${pkCol}" = ?`,
-        [pkValue],
+        `UPDATE "${ModelClass.tableName}" SET is_deleted = 0 WHERE ${this.pkWhere().sql}`,
+        this.pkWhere().params,
       );
       await adapterCommit(db);
     } catch (e) {
