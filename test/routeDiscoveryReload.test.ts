@@ -306,5 +306,61 @@ console.log("=== Route Discovery — Reload Behaviour ===\n");
   rmSync(dir, { recursive: true });
 }
 
+// ── Test: EVERY new file added one at a time is seen by a later rediscover ──
+// Parity with tina4-python's test_every_new_route_file_is_seen_by_a_later_discover.
+// Python had a real intermittent bug here: importlib served a cached directory
+// listing, so a file created after a prior discover warmed that cache was
+// invisible to the importer and its route silently never registered (~50% of
+// the time). Node reads the directory fresh via readdirSync and cache-busts the
+// module URL on mtime, so it should hold -- this proves it under repetition. A
+// single add-then-rediscover would pass half the time on a broken
+// implementation, which is exactly how the Python bug stayed hidden.
+{
+  const { dir, routes } = makeTempProject();
+  _resetRouteDiscovery();
+
+  writeRouteFile(
+    routes,
+    "get.ts",
+    `export default async function (req: any, res: any) { res.json({ ok: true }); }\n`,
+  );
+  const { defaultRouter } = await import("../packages/core/src/router.ts");
+  for (const r of await discoverRoutes(routes)) defaultRouter.addRoute(r);
+
+  const NEW_FILES = 12;
+  let everyIterationRegistered = true;
+  let firstMiss = "";
+
+  for (let i = 0; i < NEW_FILES; i++) {
+    writeRouteFile(
+      routes,
+      join(`added${i}`, "get.ts"),
+      `export default async function (req: any, res: any) { res.json({ n: ${i} }); }\n`,
+    );
+    const added = await rediscoverRoutes();
+    for (const r of added) defaultRouter.addRoute(r);
+    const patterns = added.map((r) => r.pattern);
+    if (!patterns.includes(`/added${i}`)) {
+      everyIterationRegistered = false;
+      if (!firstMiss) firstMiss = `iteration ${i} returned [${patterns.join(", ")}]`;
+    }
+  }
+
+  assert(
+    "every new route file added one at a time is registered by the next rediscover",
+    everyIterationRegistered,
+    firstMiss,
+  );
+
+  // All of them still resolve on the router at the end.
+  let allStillResolve = true;
+  for (let i = 0; i < NEW_FILES; i++) {
+    if (defaultRouter.match("GET", `/added${i}`) === null) allStillResolve = false;
+  }
+  assert("all added routes still resolve after the final rediscover", allStillResolve);
+
+  rmSync(dir, { recursive: true });
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 if (fail > 0) process.exit(1);
