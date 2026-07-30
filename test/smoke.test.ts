@@ -148,11 +148,11 @@ console.log("\n=== 3. Database ===\n");
 // For absolute paths, use four slashes: sqlite:////X.
 // See tina4-python plan/sqlite-url-relative-to-project-root.md.
 const sqliteUrl = parseDatabaseUrl("sqlite:////tmp/test.db");
-assert("parseDatabaseUrl sqlite type", sqliteUrl.type === "sqlite");
-assert("parseDatabaseUrl sqlite path", sqliteUrl.path === "/tmp/test.db");
+assert("parseDatabaseUrl sqlite engine", sqliteUrl.engine === "sqlite");
+assert("parseDatabaseUrl sqlite database", sqliteUrl.database === "/tmp/test.db");
 
 const pgUrl = parseDatabaseUrl("postgresql://admin:secret@db.example.com:5432/myapp");
-assert("parseDatabaseUrl pg type", pgUrl.type === "postgres");
+assert("parseDatabaseUrl pg engine", pgUrl.engine === "postgres");
 assert("parseDatabaseUrl pg host", pgUrl.host === "db.example.com");
 assert("parseDatabaseUrl pg port", pgUrl.port === 5432);
 

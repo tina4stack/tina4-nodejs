@@ -50,8 +50,8 @@ const footgunUrl = "sqlite:" + absDbPath; // ONE leading slash after the scheme
 
 // Parse: the absolute path must survive untouched (this branch used to throw).
 const parsedAbs = parseDatabaseUrl(footgunUrl);
-assert("sqlite:/<abs> parses as type sqlite", parsedAbs.type === "sqlite");
-assert("sqlite:/<abs> keeps the absolute path", parsedAbs.path === absDbPath, `got "${parsedAbs.path}"`);
+assert("sqlite:/<abs> parses as type sqlite", parsedAbs.engine === "sqlite");
+assert("sqlite:/<abs> keeps the absolute path", parsedAbs.database === absDbPath, `got "${parsedAbs.database}"`);
 
 // The cwd-relative shadow a naive join(cwd, path) would have produced.
 const shadowPath = join(process.cwd(), absDbPath.replace(/^[/\\]+/, ""));
@@ -93,16 +93,16 @@ console.log("\n--- Documented forms unchanged (no regression) ---");
 
 // Three-slash → relative to cwd; keep raw string form.
 assert("sqlite:///data/app.db → relative 'data/app.db'",
-  parseDatabaseUrl("sqlite:///data/app.db").path === "data/app.db",
-  `got "${parseDatabaseUrl("sqlite:///data/app.db").path}"`);
+  parseDatabaseUrl("sqlite:///data/app.db").database === "data/app.db",
+  `got "${parseDatabaseUrl("sqlite:///data/app.db").database}"`);
 
 // Four-slash → absolute. Verify via parse AND a real connect into a temp dir.
 const tmpDir2 = mkdtempSync(join(tmpdir(), "tina4-sqlite-fourslash-"));
 const absDbPath2 = join(tmpDir2, "four.db");     // starts with "/"
 const fourSlashUrl = "sqlite:///" + absDbPath2;  // "sqlite:///" + "/var/..." = "sqlite:////var/..."
 assert("sqlite:////<abs> → absolute path (parse)",
-  parseDatabaseUrl(fourSlashUrl).path === absDbPath2,
-  `got "${parseDatabaseUrl(fourSlashUrl).path}"`);
+  parseDatabaseUrl(fourSlashUrl).database === absDbPath2,
+  `got "${parseDatabaseUrl(fourSlashUrl).database}"`);
 
 let db3: Database | undefined;
 try {
@@ -117,8 +117,8 @@ try {
 }
 
 // :memory: — both spellings parse to ":memory:" and a real connect works.
-assert("sqlite::memory: → ':memory:'", parseDatabaseUrl("sqlite::memory:").path === ":memory:");
-assert("sqlite:///:memory: → ':memory:'", parseDatabaseUrl("sqlite:///:memory:").path === ":memory:");
+assert("sqlite::memory: → ':memory:'", parseDatabaseUrl("sqlite::memory:").database === ":memory:");
+assert("sqlite:///:memory: → ':memory:'", parseDatabaseUrl("sqlite:///:memory:").database === ":memory:");
 
 let mem: Database | undefined;
 try {

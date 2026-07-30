@@ -29,60 +29,62 @@ console.log("--- SQLite URLs ---");
 //   sqlite::memory:   → in-memory
 
 const sqlite1 = parseDatabaseUrl("sqlite:///data/app.db");
-assert("sqlite:/// is relative (type)", sqlite1.type === "sqlite");
-assert("sqlite:/// is relative (path)", sqlite1.path === "data/app.db");
+assert("sqlite:/// is relative (type)", sqlite1.engine === "sqlite");
+assert("sqlite:/// is relative (path)", sqlite1.database === "data/app.db");
 
 const sqlite1a = parseDatabaseUrl("sqlite:///app.db");
-assert("sqlite:///app.db bare relative", sqlite1a.path === "app.db");
+assert("sqlite:///app.db bare relative", sqlite1a.database === "app.db");
 
 const sqlite1b = parseDatabaseUrl("sqlite:////var/data/app.db");
-assert("sqlite:////X is absolute", sqlite1b.path === "/var/data/app.db");
+assert("sqlite:////X is absolute", sqlite1b.database === "/var/data/app.db");
 
 const sqlite1c = parseDatabaseUrl("sqlite:///C:/Users/app.db");
-assert("sqlite:///C:/ is Windows absolute", sqlite1c.path === "C:/Users/app.db");
+assert("sqlite:///C:/ is Windows absolute", sqlite1c.database === "C:/Users/app.db");
 
 const sqlite1m1 = parseDatabaseUrl("sqlite::memory:");
-assert("sqlite::memory: short form", sqlite1m1.path === ":memory:");
+assert("sqlite::memory: short form", sqlite1m1.database === ":memory:");
 const sqlite1m2 = parseDatabaseUrl("sqlite:///:memory:");
-assert("sqlite:///:memory: URL form", sqlite1m2.path === ":memory:");
+assert("sqlite:///:memory: URL form", sqlite1m2.database === ":memory:");
 
 const sqlite2 = parseDatabaseUrl("sqlite://./data/app.db");
-assert("sqlite:// two-slash legacy relative path type", sqlite2.type === "sqlite");
-assert("sqlite:// two-slash legacy relative path", sqlite2.path === "./data/app.db");
+assert("sqlite:// two-slash legacy relative path type", sqlite2.engine === "sqlite");
+assert("sqlite:// two-slash legacy relative path", sqlite2.database === "./data/app.db");
 
 // --- PostgreSQL ---
 console.log("\n--- PostgreSQL URLs ---");
 
 const pg1 = parseDatabaseUrl("postgresql://admin:secret@db.example.com:5432/myapp");
-assert("postgresql type", pg1.type === "postgres");
+assert("postgresql type", pg1.engine === "postgres");
 assert("postgresql host", pg1.host === "db.example.com");
 assert("postgresql port", pg1.port === 5432);
-assert("postgresql user", pg1.user === "admin");
+assert("postgresql user", pg1.username === "admin");
 assert("postgresql password", pg1.password === "secret");
 assert("postgresql database", pg1.database === "myapp");
 
 // pgsql:// is the PDO/Laravel/Doctrine scheme name (issue #58)
 const pgsql = parseDatabaseUrl("pgsql://user:pass@localhost:5432/testdb");
-assert("pgsql:// scheme type", pgsql.type === "postgres");
+assert("pgsql:// scheme type", pgsql.engine === "postgres");
 assert("pgsql:// scheme host", pgsql.host === "localhost");
 assert("pgsql:// scheme port", pgsql.port === 5432);
 assert("pgsql:// scheme database", pgsql.database === "testdb");
 
 const pg2 = parseDatabaseUrl("postgres://user:pass@localhost/testdb");
-assert("postgres:// shorthand type", pg2.type === "postgres");
+assert("postgres:// shorthand type", pg2.engine === "postgres");
 assert("postgres:// shorthand host", pg2.host === "localhost");
-assert("postgres:// shorthand no port", pg2.port === undefined);
-assert("postgres:// shorthand user", pg2.user === "user");
+// The engine default is applied AT PARSE now: the port is part of our
+// contract, not the third-party driver's business (feature 5, D2).
+assert("postgres:// shorthand gets the default port", pg2.port === 5432);
+assert("postgres:// shorthand user", pg2.username === "user");
 assert("postgres:// shorthand database", pg2.database === "testdb");
 
 // --- MySQL ---
 console.log("\n--- MySQL URLs ---");
 
 const mysql1 = parseDatabaseUrl("mysql://root:password@mysql-host:3306/production");
-assert("mysql type", mysql1.type === "mysql");
+assert("mysql type", mysql1.engine === "mysql");
 assert("mysql host", mysql1.host === "mysql-host");
 assert("mysql port", mysql1.port === 3306);
-assert("mysql user", mysql1.user === "root");
+assert("mysql user", mysql1.username === "root");
 assert("mysql password", mysql1.password === "password");
 assert("mysql database", mysql1.database === "production");
 
@@ -90,7 +92,7 @@ assert("mysql database", mysql1.database === "production");
 console.log("\n--- Special Characters ---");
 
 const encoded = parseDatabaseUrl("postgresql://user%40domain:p%40ss%23word@host/db");
-assert("URL-encoded user", encoded.user === "user@domain");
+assert("URL-encoded user", encoded.username === "user@domain");
 assert("URL-encoded password", encoded.password === "p@ss#word");
 
 // --- Error handling ---

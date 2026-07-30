@@ -141,25 +141,30 @@ closeDatabase();
 console.log("\n--- URL Parsing: MSSQL ---");
 
 const mssql1 = parseDatabaseUrl("mssql://sa:password@dbhost:1433/mydb");
-assert("mssql URL type", mssql1.type === "mssql");
+assert("mssql URL type", mssql1.engine === "mssql");
 assert("mssql URL host", mssql1.host === "dbhost");
 assert("mssql URL port", mssql1.port === 1433);
-assert("mssql URL user", mssql1.user === "sa");
+assert("mssql URL user", mssql1.username === "sa");
 assert("mssql URL password", mssql1.password === "password");
 assert("mssql URL database", mssql1.database === "mydb");
 
 const mssql2 = parseDatabaseUrl("sqlserver://admin:secret@localhost/testdb");
-assert("sqlserver:// alias type", mssql2.type === "mssql");
-assert("sqlserver:// alias user", mssql2.user === "admin");
+assert("sqlserver:// alias type", mssql2.engine === "mssql");
+assert("sqlserver:// alias user", mssql2.username === "admin");
 
 console.log("\n--- URL Parsing: Firebird ---");
 
 const fb1 = parseDatabaseUrl("firebird://SYSDBA:masterkey@localhost:3050/var/data/test.fdb");
-assert("firebird URL type", fb1.type === "firebird");
+assert("firebird URL type", fb1.engine === "firebird");
 assert("firebird URL host", fb1.host === "localhost");
 assert("firebird URL port", fb1.port === 3050);
-assert("firebird URL user", fb1.user === "SYSDBA");
-assert("firebird URL database", fb1.database === "/var/data/test.fdb");
+assert("firebird URL user", fb1.username === "SYSDBA");
+// ONE slash after the port is the URL path separator, so this path is
+// RELATIVE. The old parser did `"/" + path`, silently promoting every
+// Firebird path to absolute; the documented absolute form uses two.
+assert("firebird one slash stays relative", fb1.database === "var/data/test.fdb");
+const fb1abs = parseDatabaseUrl("firebird://SYSDBA:masterkey@localhost:3050//var/data/test.fdb");
+assert("firebird two slashes is absolute", fb1abs.database === "/var/data/test.fdb");
 
 // ── Missing Package Errors ───────────────────────────────────
 

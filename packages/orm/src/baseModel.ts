@@ -318,15 +318,15 @@ export class BaseModel {
       const url = process.env.TINA4_DATABASE_URL;
       if (url) {
         const parsed = parseDatabaseUrl(url);
-        if (parsed.type === "sqlite") {
+        if (parsed.engine === "sqlite") {
           // SQLite adapter is synchronous — create it inline and register as default
-          const dbPath = parsed.path ?? "./data/tina4.db";
+          const dbPath = parsed.database || "./data/tina4.db";
           const adapter = new SQLiteAdapter(dbPath);
           setAdapter(adapter);
           return adapter;
         }
         throw new Error(
-          `TINA4_DATABASE_URL is set to a non-SQLite engine ("${parsed.type}"). ` +
+          `TINA4_DATABASE_URL is set to a non-SQLite engine ("${parsed.engine}"). ` +
           `Call await initDatabase() at startup before using ORM models.`,
         );
       }

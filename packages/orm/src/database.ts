@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult, ColumnInfo, FieldDefinition } from "./types.js";
 import { DatabaseResult } from "./databaseResult.js";
+import { DatabaseUrl } from "./databaseUrl.js";
 import { CachedDatabaseAdapter, type CachedAdapterOptions } from "./cachedDatabase.js";
 import { QueryCache } from "./sqlTranslator.js";
 
@@ -299,166 +300,20 @@ export interface DatabaseConfig {
 /**
  * Parsed result from a TINA4_DATABASE_URL connection string.
  */
-export interface ParsedDatabaseUrl {
-  type: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird" | "mongodb" | "odbc";
-  path?: string;
-  host?: string;
-  port?: number;
-  user?: string;
-  password?: string;
-  database?: string;
-  /** ODBC-specific: raw connection string passed to odbc.connect() */
-  connectionString?: string;
-}
-
 /**
- * Parse a TINA4_DATABASE_URL connection string into its components.
+ * Parse a connection URL into a `DatabaseUrl` value.
  *
- * Supported formats:
- *   sqlite:///path/to/db.sqlite
- *   sqlite://./relative/path.db
- *   postgresql://user:pass@host:port/dbname
- *   postgres://user:pass@host:port/dbname
- *   mysql://user:pass@host:port/dbname
+ * Breaking (feature 5): this returned a `ParsedDatabaseUrl` struct whose fields
+ * were `type`, `user` and `path`. It now returns a `DatabaseUrl`, whose fields
+ * are `engine`, `username` and `database` - the same names PHP, Python and Ruby
+ * use, and the same names as the TINA4_DATABASE_USERNAME env var they come from.
+ * `ParsedDatabaseUrl` is gone rather than kept as an alias.
  *
- * @param url - The connection URL string.
- * @param username - Optional username to merge when the URL has no credentials.
- * @param password - Optional password to merge when the URL has no credentials.
- * @returns Parsed database configuration.
- * @throws Error if the URL scheme is not supported.
+ * The 43-CC body that used to live here - the worst function measured anywhere
+ * in the audit - is now one small parser per engine inside the value type.
  */
-export function parseDatabaseUrl(url: string, username?: string, password?: string): ParsedDatabaseUrl {
-  let result: ParsedDatabaseUrl;
-
-  // Handle sqlite:// separately because URL class mangles the path.
-  //
-  // Convention (matches tina4-python, tina4-php, and the docs):
-  //   sqlite::memory:              → in-memory
-  //   sqlite:///:memory:           → in-memory (URL form)
-  //   sqlite:///app.db             → ./app.db (relative to cwd)
-  //   sqlite:///data/app.db        → ./data/app.db (relative)
-  //   sqlite:////absolute/app.db   → /absolute/app.db (absolute)
-  //   sqlite:///C:/Users/app.db    → C:/Users/app.db (Windows absolute)
-  if (url === "sqlite::memory:" || url === "sqlite:///:memory:") {
-    result = { type: "sqlite", path: ":memory:" };
-  } else if (url.startsWith("sqlite:///")) {
-    // Strip the "sqlite://" prefix (leaving one "/" + path)
-    let rest = url.slice("sqlite://".length); // e.g. "/data/app.db" or "//abs/app.db" or "/C:/Users/..."
-    // Drop exactly one leading "/"
-    if (rest.startsWith("/")) rest = rest.slice(1);
-    // Windows absolute: C:/Users/app.db or C:\...
-    const isWindowsAbs = /^[A-Za-z]:[\/\\]/.test(rest);
-    // Unix absolute: still starts with "/" after the strip (four-slash URL form)
-    const isUnixAbs = rest.startsWith("/");
-    result = { type: "sqlite", path: isWindowsAbs || isUnixAbs ? rest : rest };
-    // Relative paths are resolved against cwd by the SQLite adapter at connect time;
-    // keep the string as-is here so tests can inspect the raw form.
-  } else if (url.startsWith("sqlite://")) {
-    // sqlite://./relative or sqlite://relative — legacy two-slash form
-    const path = url.slice("sqlite://".length);
-    result = { type: "sqlite", path };
-  } else if (url.startsWith("sqlite:")) {
-    // sqlite:/abs/app.db (one slash = a real absolute path) or sqlite:app.db (relative).
-    // Keep the leading slash so resolveSqlitePath's isAbsolute() sees the absolute path —
-    // this form used to fall through and throw "unsupported scheme" (the naive-abs footgun).
-    const path = url.slice("sqlite:".length);
-    result = { type: "sqlite", path };
-  } else if (url.startsWith("mssql://") || url.startsWith("sqlserver://")) {
-    // Handle mssql:// and sqlserver:// with custom parsing (URL class doesn't know these schemes)
-    const match = url.match(/(?:mssql|sqlserver):\/\/(?:([^:]+):([^@]+)@)?([^:/]+)(?::(\d+))?\/(.*)/);
-    if (!match) throw new Error(`Invalid MSSQL URL: ${url}`);
-    result = {
-      type: "mssql",
-      user: match[1] ? decodeURIComponent(match[1]) : undefined,
-      password: match[2] ? decodeURIComponent(match[2]) : undefined,
-      host: match[3],
-      port: match[4] ? parseInt(match[4], 10) : undefined,
-      database: match[5],
-    };
-  } else if (url.startsWith("firebird://")) {
-    const match = url.match(/firebird:\/\/(?:([^:]+):([^@]+)@)?([^:/]+)(?::(\d+))?\/(.*)/);
-    if (!match) throw new Error(`Invalid Firebird URL: ${url}`);
-    result = {
-      type: "firebird",
-      user: match[1] ? decodeURIComponent(match[1]) : undefined,
-      password: match[2] ? decodeURIComponent(match[2]) : undefined,
-      host: match[3],
-      port: match[4] ? parseInt(match[4], 10) : undefined,
-      database: "/" + match[5],
-    };
-  } else if (url.startsWith("odbc:///")) {
-    // odbc:///DSN=MyDSN  or  odbc:///DRIVER={driver};SERVER=host;DATABASE=db
-    // Strip the "odbc:///" prefix and pass the rest directly as the connection string
-    const connectionString = url.slice("odbc:///".length);
-    result = { type: "odbc", connectionString };
-  } else if (url.startsWith("mongodb://") || url.startsWith("mongodb+srv://")) {
-    // Pass through as-is; MongodbAdapter handles the full connection string
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new Error(`Invalid MongoDB URL: ${url}`);
-    }
-    const database = parsed.pathname.replace(/^\//, "") || "tina4";
-    result = {
-      type: "mongodb",
-      host: parsed.hostname || undefined,
-      port: parsed.port ? parseInt(parsed.port, 10) : undefined,
-      user: parsed.username ? decodeURIComponent(parsed.username) : undefined,
-      password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
-      database,
-    };
-  } else {
-    // Normalize postgres:// and pgsql:// (the PDO/Laravel/Doctrine scheme
-    // name, issue #58) to postgresql:// for URL parsing.
-    const normalizedUrl = /^(postgres|pgsql):\/\//.test(url)
-      ? url.replace(/^(postgres|pgsql):\/\//, "postgresql://")
-      : url;
-
-    let parsed: URL;
-    try {
-      parsed = new URL(normalizedUrl);
-    } catch {
-      throw new Error(`Invalid database URL: ${url}`);
-    }
-
-    const scheme = parsed.protocol.replace(/:$/, "");
-    let type: "sqlite" | "postgres" | "mysql" | "mssql" | "firebird";
-
-    switch (scheme) {
-      case "postgresql":
-        type = "postgres";
-        break;
-      case "mysql":
-        type = "mysql";
-        break;
-      default:
-        throw new Error(`Unsupported database URL scheme: "${scheme}". Supported: sqlite, postgres/postgresql, mysql, mssql/sqlserver, firebird.`);
-    }
-
-    const database = parsed.pathname.startsWith("/")
-      ? parsed.pathname.slice(1)
-      : parsed.pathname;
-
-    result = {
-      type,
-      host: parsed.hostname || undefined,
-      port: parsed.port ? parseInt(parsed.port, 10) : undefined,
-      user: parsed.username ? decodeURIComponent(parsed.username) : undefined,
-      password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
-      database: database || undefined,
-    };
-  }
-
-  // Merge separate username/password when the URL contained no credentials
-  if (!result.user && username) {
-    result.user = username;
-  }
-  if (!result.password && password) {
-    result.password = password;
-  }
-
-  return result;
+export function parseDatabaseUrl(url: string, username?: string, password?: string): DatabaseUrl {
+  return new DatabaseUrl(url, username, password);
 }
 
 /**
@@ -584,7 +439,7 @@ export class Database {
       db.poolIndex = 0;
       db.adapter = null;  // Don't use single-adapter path
       db.adapterFactory = async () => wrapWithCache(await createAdapterFromUrl(url, username, password), { sharedCache });
-      db.dbType = parsed.type;
+      db.dbType = parsed.engine;
       return exposeDb(db);
     }
 
@@ -594,7 +449,7 @@ export class Database {
     const adapter = await createAdapterFromUrl(url, username, password);
     const wrapped = setAdapter(adapter);
     const db = new Database(wrapped);
-    db.dbType = parsed.type;
+    db.dbType = parsed.engine;
     return exposeDb(db);
   }
 
@@ -1455,19 +1310,19 @@ export class Database {
 export async function createAdapterFromUrl(url: string, username?: string, password?: string): Promise<DatabaseAdapter> {
   const parsed = parseDatabaseUrl(url, username, password);
 
-  switch (parsed.type) {
+  switch (parsed.engine) {
     case "sqlite": {
       const { SQLiteAdapter } = await import("./adapters/sqlite.js");
-      return new SQLiteAdapter(parsed.path ?? "./data/tina4.db");
+      return new SQLiteAdapter(parsed.database || "./data/tina4.db");
     }
     case "postgres": {
       const { PostgresAdapter } = await import("./adapters/postgres.js");
       const adapter = new PostgresAdapter({
-        host: parsed.host,
-        port: parsed.port,
-        user: parsed.user,
-        password: parsed.password,
-        database: parsed.database,
+        host: parsed.host ?? undefined,
+        port: parsed.port ?? undefined,
+        user: parsed.username ?? undefined,
+        password: parsed.password ?? undefined,
+        database: parsed.database || undefined,
       });
       await adapter.connect();
       return adapter;
@@ -1475,11 +1330,11 @@ export async function createAdapterFromUrl(url: string, username?: string, passw
     case "mysql": {
       const { MysqlAdapter } = await import("./adapters/mysql.js");
       const adapter = new MysqlAdapter({
-        host: parsed.host,
-        port: parsed.port,
-        user: parsed.user,
-        password: parsed.password,
-        database: parsed.database,
+        host: parsed.host ?? undefined,
+        port: parsed.port ?? undefined,
+        user: parsed.username ?? undefined,
+        password: parsed.password ?? undefined,
+        database: parsed.database || undefined,
       });
       await adapter.connect();
       return adapter;
@@ -1487,11 +1342,11 @@ export async function createAdapterFromUrl(url: string, username?: string, passw
     case "mssql": {
       const { MssqlAdapter } = await import("./adapters/mssql.js");
       const adapter = new MssqlAdapter({
-        host: parsed.host,
-        port: parsed.port,
-        user: parsed.user,
-        password: parsed.password,
-        database: parsed.database,
+        host: parsed.host ?? undefined,
+        port: parsed.port ?? undefined,
+        user: parsed.username ?? undefined,
+        password: parsed.password ?? undefined,
+        database: parsed.database || undefined,
       });
       await adapter.connect();
       return adapter;
@@ -1499,11 +1354,11 @@ export async function createAdapterFromUrl(url: string, username?: string, passw
     case "firebird": {
       const { FirebirdAdapter } = await import("./adapters/firebird.js");
       const adapter = new FirebirdAdapter({
-        host: parsed.host,
-        port: parsed.port,
-        user: parsed.user,
-        password: parsed.password,
-        database: parsed.database,
+        host: parsed.host ?? undefined,
+        port: parsed.port ?? undefined,
+        user: parsed.username ?? undefined,
+        password: parsed.password ?? undefined,
+        database: parsed.database || undefined,
       });
       await adapter.connect();
       return adapter;
@@ -1614,7 +1469,7 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
     const parsed = parseDatabaseUrl(url, resolvedUser, resolvedPassword);
     const adapter = await createAdapterFromUrl(url, resolvedUser, resolvedPassword);
     const db = new Database(setAdapter(adapter));
-    db.setDbType(parsed.type);
+    db.setDbType(parsed.engine);
     return exposeDb(db);
   }
 
