@@ -30,7 +30,6 @@ import { join } from "node:path";
 import { Log } from "./logger.js";
 import { isTruthy } from "./dotenv.js";
 import { respCommandSync } from "./sessionHandlers/respClient.js";
-import { RedisNpmSessionHandler } from "./sessionHandlers/redisHandler.js";
 import { ValkeySessionHandler } from "./sessionHandlers/valkeyHandler.js";
 import { MemcachedSessionHandler } from "./sessionHandlers/memcachedHandler.js";
 import { MongoSessionHandler } from "./sessionHandlers/mongoHandler.js";
@@ -282,10 +281,24 @@ export class Session {
       case "redis":
         this.handler = new RedisSessionHandler(config);
         break;
-      case "redis-npm": {
-        this.handler = new RedisNpmSessionHandler(config);
-        break;
-      }
+      // RETIRED 2026-07-31. `redis-npm` was a Node-only session BACKEND NAME that
+      // drove Redis through the optional `redis` npm package. Python and Ruby also
+      // prefer that driver when it is installed, but they choose it INSIDE their one
+      // `redis` handler; only Node made it a user-selectable backend, and only
+      // Node's copy still ran execFileSync per command - the spawn-per-command
+      // pattern replaced everywhere else by the persistent worker in syncSocket
+      // (p50 80ms -> 10.5ms, and the cause of the sessionHandlers flake).
+      //
+      // This THROWS rather than falling through to `default`, which is `file`.
+      // A silent demotion to file sessions would log every user out on deploy and
+      // look like an outage, not a config change. Loud beats silent when the old
+      // name is retired.
+      case "redis-npm":
+        throw new Error(
+          'TINA4_SESSION_BACKEND="redis-npm" was removed on 2026-07-31. Use "redis": '
+          + "it is the same Redis backend and reads the same TINA4_SESSION_REDIS_* "
+          + "settings, over a faster persistent connection.",
+        );
       case "valkey": {
         this.handler = new ValkeySessionHandler(config);
         break;

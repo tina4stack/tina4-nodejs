@@ -225,7 +225,17 @@ session.getSessionId(): string | null
 session.gc(): void
 ```
 
-Backends: file, redis, redis-npm, valkey, mongodb, database.
+Backends: file, redis, valkey, mongodb, database, memcached.
+
+**`redis-npm` was removed on 2026-07-31.** It was a Node-only backend name that drove
+Redis through the optional `redis` npm package. Python and Ruby also prefer that
+driver when installed, but they choose it inside their single `redis` handler; only
+Node exposed it as a selectable backend, and only Node's copy still ran
+`execFileSync` per command instead of the persistent worker connection every other
+handler moved to. Use `redis` — same backend, same `TINA4_SESSION_REDIS_*`
+settings, faster transport. Setting `TINA4_SESSION_BACKEND=redis-npm` now **throws**
+rather than falling through to the `file` default, because a silent demotion to disk
+would log every user out on deploy and look like an outage.
 
 **Backend-failure policy (all 4 frameworks): log-loud + degrade.** A backend (Redis/Valkey/Mongo/DB) that becomes unreachable mid-request is logged via `Log.error` and degraded rather than crashing the app or losing data silently. The external handlers now **throw** a transport error on an unreachable server (previously they swallowed it to an empty string — silent data loss); the `Session` boundary catches it: a read failure yields an empty session (the request still serves), and `save()` returns `false` (best-effort, dirty flag retained for a later retry). A genuine key/doc miss still returns empty **without** logging — empty is not a failure. Set `TINA4_SESSION_STRICT=true` to re-throw instead. Call `regenerate()` right after a successful login or privilege change to defeat session fixation.
 

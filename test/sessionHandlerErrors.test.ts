@@ -1,8 +1,11 @@
 /**
  * Session-handler error reporting — the cause, not a dump of the generated script.
  *
- * Each session handler runs its backend command in a short-lived `node -e` child
- * (the handler interface is synchronous; every client is async). When the child
+ * Each session handler USED TO run its backend command in a short-lived `node -e`
+ * child (the handler interface is synchronous; every client is async). Redis and
+ * Valkey no longer do - they share one persistent worker connection via
+ * respClient/syncSocket - but Mongo still does, and the contract below holds for
+ * both transports. When the child
  * failed, the handlers threw `execFileSync`'s own error message -- which begins
  * "Command failed:" and then embeds THE ENTIRE GENERATED SCRIPT. An operator
  * debugging a Redis outage got kilobytes of JavaScript with
@@ -21,7 +24,8 @@
 import net from "node:net";
 import { spawn } from "node:child_process";
 import {
-  RedisNpmSessionHandler,
+  RedisSessionHandler,
+  Session,
   ValkeySessionHandler,
 } from "../packages/core/src/index.ts";
 import { mongoCommandSync } from "../packages/core/src/sessionHandlers/mongoClient.ts";
@@ -121,7 +125,17 @@ console.log("=== Session Handler Error Reporting ===\n");
 
 {
   const port = await closedPort();
-  const handler = new RedisNpmSessionHandler({ host: "127.0.0.1", port });
+  // Was RedisNpmSessionHandler until 2026-07-31. That handler is gone (see the
+  // retired-backend cases at the end of this file); the contract it proved is
+  // not, so the same assertions now run against the REAL Redis handler, which is
+  // where they always mattered more.
+  // NOTE the config keys: RedisSessionHandler takes a SessionConfig
+  // (redisHost/redisPort), not the {host, port} shape the retired handler used.
+  // Passing {host, port} is silently ignored and the handler talks to the DEFAULT
+  // 127.0.0.1:6379 - which, on a machine with a real Redis, is a clean key miss
+  // and no throw. The assertions below then fail for a reason that has nothing to
+  // do with what they test.
+  const handler = new RedisSessionHandler({ redisHost: "127.0.0.1", redisPort: port });
   const err = caught(() => handler.read("sid-does-not-matter"));
 
   assert("Redis read() on a closed port throws", err !== null, "did not throw");
@@ -274,6 +288,64 @@ console.log("=== Session Handler Error Reporting ===\n");
     "only the first line of stderr is used",
     childFailureReason({ stderr: "real cause\nstack frame 1\nstack frame 2" }) === "real cause",
     childFailureReason({ stderr: "real cause\nstack frame 1" }),
+  );
+}
+
+// ── 5. The retired `redis-npm` backend fails LOUD, never silently ──
+//
+// `redis-npm` was a Node-only backend name removed on 2026-07-31 as drift: it
+// exposed a driver choice as a backend, and drove it with execFileSync per
+// command. The danger in removing a backend name is not the removal, it is the
+// switch's `default: file`. A config left saying "redis-npm" would quietly start
+// writing sessions to disk instead of Redis - every user logged out on deploy,
+// presenting as an outage rather than a config error. These cases pin the loud
+// failure so the silent one can never come back.
+//
+// Pure construction against a name, so there is no dependency and no double.
+
+{
+  // Session's signature is (backend?: string, config?: SessionConfig) - the
+  // backend name is POSITIONAL. Passing { backend: "..." } puts an object in the
+  // string slot, which matches no case and lands on `default: file`.
+  const retired = caught(() => new Session("redis-npm"));
+
+  assert(
+    "the retired redis-npm backend throws",
+    retired !== null,
+    "constructed silently - it would be writing FILE sessions",
+  );
+  // NEGATIVE: the whole point. Never demote to file.
+  assert(
+    "redis-npm does NOT silently fall back to the file backend",
+    retired !== null && !/^$/.test(retired.message),
+    "no error at all",
+  );
+  assert(
+    "the error names the replacement backend",
+    retired !== null && /"redis"/.test(retired.message),
+    retired?.message ?? "",
+  );
+  assert(
+    "the error says the settings carry over",
+    retired !== null && /TINA4_SESSION_REDIS_/.test(retired.message),
+    retired?.message ?? "",
+  );
+
+  // POSITIVE: the surviving backend name still constructs. A retirement that
+  // also broke `redis` would pass every assertion above.
+  const live = caught(() => new Session("redis"));
+  assert(
+    'the "redis" backend still constructs after the retirement',
+    live === null,
+    live?.message ?? "",
+  );
+
+  // POSITIVE: an unrelated backend is untouched by the new throw.
+  const file = caught(() => new Session("file"));
+  assert(
+    'the "file" backend still constructs after the retirement',
+    file === null,
+    file?.message ?? "",
   );
 }
 
