@@ -30,6 +30,11 @@ import { join } from "node:path";
 import { startServer } from "../packages/core/src/index.ts";
 import { freePort } from "./freePort.ts";
 
+// ADR-0018 made the CORS default DENY. These assertions are about the CORS
+// POLICY headers, which did not change, so the suite declares the wildcard
+// policy it used to inherit from the old permissive default.
+process.env.TINA4_CORS_ORIGINS = "*";
+
 let pass = 0;
 let fail = 0;
 function assert(name: string, condition: boolean, detail = "") {
