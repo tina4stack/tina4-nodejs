@@ -6,11 +6,15 @@
  * next person to inline a stage should get a red test, not a slightly worse
  * number in a report nobody reads.
  *
- * Every assertion is derived from the code or from `tina4 metrics`, never from
- * a hand-maintained copy of the answer - a list duplicated into a test drifts
- * from the list it is meant to guard.
+ * Every assertion is derived from the code, never from a hand-maintained copy
+ * of the answer - a list duplicated into a test drifts from the list it is
+ * meant to guard. The stage NAMES are data in dispatchPipeline.ts; the checks
+ * below tie each list back to what dispatch actually runs, so the data and the
+ * runner cannot diverge silently.
  *
- * Twin of tina4-ruby/spec/dispatch_pipeline_spec.rb.
+ * Twin of tina4-ruby/spec/dispatch_pipeline_spec.rb,
+ * tina4-php/tests/DispatchPipelineTest.php and
+ * tina4-python/tests/test_dispatch_pipeline.py.
  */
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -26,30 +30,126 @@ function assert(name: string, condition: boolean, detail = "") {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const coreSrc = join(here, "..", "packages", "core", "src");
+const serverSrc = readFileSync(join(coreSrc, "server.ts"), "utf-8");
+const pipelineSrc = readFileSync(join(coreSrc, "dispatchPipeline.ts"), "utf-8");
+
+const ALL_STAGES = [
+  ...pipeline.PROLOGUE_STAGES,
+  ...pipeline.REQUEST_STAGES,
+  ...pipeline.ROUTE_STAGES,
+  ...pipeline.FALLBACK_STAGES,
+  ...pipeline.ERROR_STAGES,
+];
+const UNIQUE_STAGES = [...new Set<string>(ALL_STAGES)];
+
+/**
+ * Slice out one function's body by brace matching from its declaration.
+ *
+ * Deliberately NOT a regex over the whole declaration: these signatures carry
+ * arrow types (`(ctx) => boolean`), and a lazy pattern like `[^=]*` stops dead
+ * at the first `=>` and silently matches nothing. A gate that parses to empty
+ * asserts nothing while reporting green, so every extraction below is checked
+ * for a non-empty result before it is trusted.
+ */
+function functionBody(source: string, decl: string): string {
+  const start = source.indexOf(decl);
+  if (start === -1) return "";
+  const open = source.indexOf("{", start);
+  if (open === -1) return "";
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}" && --depth === 0) return source.slice(open, i + 1);
+  }
+  return "";
+}
+
+/** Names that are CALLED in a body, ordered by first mention. */
+function callOrder(body: string, names: readonly string[]): string[] {
+  return names
+    .map((n) => ({ n, at: body.search(new RegExp(`(?<![.\\w])${n}\\s*\\(`)) }))
+    .filter((x) => x.at >= 0)
+    .sort((a, b) => a.at - b.at)
+    .map((x) => x.n);
+}
+
+const eq = (a: readonly string[], b: readonly string[]) =>
+  JSON.stringify([...a]) === JSON.stringify([...b]);
 
 console.log("=== Dispatch pipeline contract (Node) ===\n");
 
-// ── The stage list is DATA ─────────────────────────────────────────
+// ── The stage lists are DATA ───────────────────────────────────────
 {
   assert("the pipeline declares its stages in order",
-    JSON.stringify(pipeline.PROLOGUE_STAGES) ===
-      JSON.stringify(["resetRequestCaches", "headStripIntercept", "sessionAutoStart"]),
-    JSON.stringify(pipeline.PROLOGUE_STAGES));
+    eq(pipeline.PROLOGUE_STAGES, ["resetRequestCaches", "headStripIntercept", "sessionAutoStart"]) &&
+    eq(pipeline.REQUEST_STAGES, ["blockAiPortReload", "wrapResponseEnd", "runGlobalMiddlewarePass"]) &&
+    eq(pipeline.ROUTE_STAGES, ["runGlobalMiddlewarePass", "enforceRouteAuth", "runRouteMiddlewares",
+      "invokeRouteHandler", "renderIfTemplateRoute"]) &&
+    eq(pipeline.FALLBACK_STAGES, ["serveTemplateFallback", "serveLandingPage", "serveMethodNotAllowed",
+      "serveStaticAsset", "serveNotFound"]) &&
+    eq(pipeline.ERROR_STAGES, ["renderDispatchError"]),
+    JSON.stringify(ALL_STAGES));
 }
 
-// NEGATIVE: a name in the list with no function behind it, or a stage quietly
+// NEGATIVE: a name in a list with no function behind it, or a stage quietly
 // deleted, must fail here rather than at 3am on a real request.
 {
-  const missing = pipeline.PROLOGUE_STAGES.filter(
-    (s) => typeof (pipeline as Record<string, unknown>)[s] !== "function");
+  const both = serverSrc + pipelineSrc;
+  const missing = UNIQUE_STAGES.filter(
+    (s) => !new RegExp(`(?:export )?(?:async )?function ${s}\\s*\\(`).test(both) &&
+           !new RegExp(`\\b${s}\\b[^;]*?from "`, "s").test(serverSrc));
   assert("has no unnamed stage", missing.length === 0,
-    `listed but not defined: ${missing.join(", ")}`);
+    `listed but neither defined nor imported: ${missing.join(", ")}`);
+}
+
+// ── The data list IS the runner ────────────────────────────────────
+//
+// The assertion that matters most. server.ts holds FALLBACK_STAGES as an array
+// of the real FUNCTIONS - that is what dispatch walks. If the names here ever
+// drifted from it, every other check in this file would guard a fiction.
+{
+  const from = serverSrc.indexOf("const FALLBACK_STAGES");
+  const open = serverSrc.indexOf("[", from);
+  const close = serverSrc.indexOf("];", open);
+  const real = from === -1 || open === -1 || close === -1
+    ? []
+    : serverSrc.slice(open + 1, close).split(",").map((s) => s.trim()).filter(Boolean);
+
+  assert("the fallback data list matches the array dispatch really walks",
+    real.length > 0 && eq(real, pipeline.FALLBACK_STAGES),
+    `server.ts has [${real.join(", ")}]`);
+}
+
+// The prologue and request stages are called in dispatch, in list order.
+{
+  const body = functionBody(serverSrc, "async function dispatch(");
+  const prologue = callOrder(body, pipeline.PROLOGUE_STAGES);
+  const request = callOrder(body, pipeline.REQUEST_STAGES);
+  assert("dispatch calls the prologue and request stages in list order",
+    body.length > 0 && eq(prologue, pipeline.PROLOGUE_STAGES) && eq(request, pipeline.REQUEST_STAGES),
+    `prologue=[${prologue}] request=[${request}]`);
+}
+
+// Every route stage is really called by runMatchedRoute.
+//
+// Membership, not source order: the handler call is NESTED as an argument -
+// `renderIfTemplateRoute(match, res, await invokeRouteHandler(...))` - so it
+// READS right-to-left while it RUNS left-to-right. Asserting source order here
+// would encode a falsehood. ROUTE_STAGES holds EXECUTION order, and that order
+// is proven by behaviour in globalMiddlewareSplit and dispatchCharacterisation.
+{
+  const body = functionBody(serverSrc, "async function runMatchedRoute(");
+  const missing = pipeline.ROUTE_STAGES.filter(
+    (s) => !new RegExp(`(?<![.\\w])${s}\\s*\\(`).test(body));
+  assert("runMatchedRoute calls every route stage",
+    body.length > 0 && missing.length === 0,
+    `not called: ${missing.join(", ")}`);
 }
 
 // ── Isolation ──────────────────────────────────────────────────────
 //
 // The prologue stages take only the raw request/response - that is WHY they
-// were extractable first, and it is worth pinning: a stage that grows a
+// were extractable first, and it is worth pinning: a stage that grew a
 // dependency on startServer's scope would need another parameter.
 {
   const arities: Record<string, number> = {
@@ -59,25 +159,56 @@ console.log("=== Dispatch pipeline contract (Node) ===\n");
   };
   const wrong = pipeline.PROLOGUE_STAGES.filter(
     (s) => ((pipeline as any)[s] as Function).length !== arities[s]);
-  assert("each stage is callable on its own", wrong.length === 0,
+  assert("each prologue stage is callable on its own", wrong.length === 0,
     `unexpected arity: ${wrong.join(", ")}`);
 }
 
-// NEGATIVE: ordering lives in the list, not in calls between stages.
+// A stage is an internal step, not public API. If one leaked onto the package
+// surface it would become something callers depend on, and the list would stop
+// being the only thing that decides ordering.
+//
+// KNOWN EXCEPTION, listed rather than hidden so a NEW leak still fails here.
+// `runRouteMiddlewares` is exported from index.ts, and Node is alone in that:
+// PHP has `private static function runRouteMiddleware`, Ruby keeps
+// `route_middleware` inside the DispatchPipeline module, Python's is
+// `_run_before_middleware`. It is not in the documented public API either -
+// four of this repo's own test files import it, which is how it stuck.
+// Un-exporting it is a public-surface change, so it is FLAGGED here, not made
+// as a side effect of a refactor.
+const SURFACE_EXCEPTIONS = new Set(["runRouteMiddlewares"]);
 {
-  const source = readFileSync(join(coreSrc, "dispatchPipeline.ts"), "utf-8");
-  // Strip the doc comments - they NAME the stages when explaining the order,
-  // and matching those would report an offence that does not exist.
-  const code = source.replace(/\/\*\*[\s\S]*?\*\//g, "");
-  const bodies = code.split(/export (?:async )?function /).slice(1);
+  const index = readFileSync(join(coreSrc, "index.ts"), "utf-8");
+  const leaked = UNIQUE_STAGES.filter(
+    (s) => !SURFACE_EXCEPTIONS.has(s) && new RegExp(`\\b${s}\\b`).test(index));
+  assert("keeps every stage out of the package surface", leaked.length === 0,
+    `exported from index.ts: ${leaked.join(", ")}`);
 
+  // The exception must stay REAL: if someone un-exports it, this list is stale
+  // and should shrink. A permanent allow-list that no longer allows anything is
+  // how an exception outlives its reason.
+  const stale = [...SURFACE_EXCEPTIONS].filter((s) => !new RegExp(`\\b${s}\\b`).test(index));
+  assert("no stale surface exception", stale.length === 0,
+    `no longer exported, drop from SURFACE_EXCEPTIONS: ${stale.join(", ")}`);
+}
+
+// NEGATIVE: ordering lives in the lists, not in calls between stages.
+//
+// A stage calling another directly hides an edge the list does not show -
+// exactly the coupling the extraction removed. `dispatch` and `runMatchedRoute`
+// are the RUNNERS, not stages, so they are the ones allowed to call.
+{
   const offenders: string[] = [];
-  for (const body of bodies) {
-    const name = body.match(/^(\w+)/)?.[1];
-    if (!name || !(pipeline.PROLOGUE_STAGES as readonly string[]).includes(name)) continue;
-    for (const other of pipeline.PROLOGUE_STAGES) {
-      if (other !== name && new RegExp(`(?<![.\\w])${other}\\s*\\(`).test(body)) {
-        offenders.push(`${name} calls ${other}`);
+  for (const src of [pipelineSrc, serverSrc]) {
+    // Strip doc comments - they NAME the stages when explaining the order, and
+    // matching those would report an offence that does not exist.
+    const code = src.replace(/\/\*\*[\s\S]*?\*\//g, "");
+    for (const stage of UNIQUE_STAGES) {
+      const body = functionBody(code, `function ${stage}(`);
+      if (!body) continue;
+      for (const other of UNIQUE_STAGES) {
+        if (other !== stage && new RegExp(`(?<![.\\w])${other}\\s*\\(`).test(body)) {
+          offenders.push(`${stage} calls ${other}`);
+        }
       }
     }
   }

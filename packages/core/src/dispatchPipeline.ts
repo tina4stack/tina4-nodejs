@@ -37,6 +37,65 @@ export const PROLOGUE_STAGES = [
 ] as const;
 
 /**
+ * After the prologue, before a route is looked up.
+ *
+ * `wrapResponseEnd` MUST come before the global pass: it installs the end()
+ * wrapper that injects the dev toolbar and captures the request, and a
+ * middleware that short-circuits still has to be captured.
+ */
+export const REQUEST_STAGES = [
+  "blockAiPortReload",
+  "wrapResponseEnd",
+  "runGlobalMiddlewarePass",
+] as const;
+
+/**
+ * A matched route, in order - and the order is BEHAVIOUR (ADR-0012):
+ * POST-MATCH globals -> auth gate -> the route's OWN middleware -> handler.
+ *
+ * The globals run BEFORE the gate so a rate limiter can throttle a brute-force
+ * login and an access log records the 401 - neither is possible if they only
+ * run on authenticated requests. The route's own middleware stays AFTER the
+ * gate, so middleware attached to a secured route never processes an
+ * unauthenticated request.
+ *
+ * `runGlobalMiddlewarePass` appears here AND in REQUEST_STAGES on purpose:
+ * one function, two phases. That split IS ADR-0012.
+ */
+export const ROUTE_STAGES = [
+  "runGlobalMiddlewarePass",
+  "enforceRouteAuth",
+  "runRouteMiddlewares",
+  "invokeRouteHandler",
+  "renderIfTemplateRoute",
+] as const;
+
+/**
+ * Nothing matched a route: the fallback chain, walked until one answers.
+ *
+ * Order is BEHAVIOUR: a template beats the landing page (so a project's own
+ * pages/index.twig wins at "/"), 405 beats static (a known path with the wrong
+ * method is not a missing file), and the 404 is terminal.
+ *
+ * This chain runs AFTER matching because routes beat files (ADR-0010): a file
+ * from a build step or a careless deploy must never shadow a reviewed route.
+ *
+ * server.ts holds the same order as an array of the real FUNCTIONS - that is
+ * what dispatch actually walks. dispatchPipeline.test.ts asserts the two agree,
+ * so this list cannot drift from the runner.
+ */
+export const FALLBACK_STAGES = [
+  "serveTemplateFallback",
+  "serveLandingPage",
+  "serveMethodNotAllowed",
+  "serveStaticAsset",
+  "serveNotFound",
+] as const;
+
+/** The catch arm. Everything above throws into this one. */
+export const ERROR_STAGES = ["renderDispatchError"] as const;
+
+/**
  * Memoised import of the ORM's cache reset. Resolves once on first use;
  * subsequent requests reuse the resolved module.
  */
