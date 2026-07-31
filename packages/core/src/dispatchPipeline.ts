@@ -1,0 +1,170 @@
+/**
+ * The dispatch pipeline: the concerns of `dispatch`, named and extracted.
+ *
+ * `dispatch` was a 485-line closure at cyclomatic complexity 65 against a
+ * ceiling of 10, on the path of every request, nested inside `startServer`
+ * (which is why that measured 45 as well). These are its concerns as
+ * standalone functions, so each can be read and tested without standing up a
+ * server.
+ *
+ * PROLOGUE_STAGES run before the dispatch try-block, in order. They are
+ * extracted FIRST because they close over nothing from `startServer` - only the
+ * raw request/response - so no context object is needed for them at all. The
+ * later stages need `router`, `staticDir`, `port` and `middleware`, and follow.
+ *
+ * Ordering here is BEHAVIOUR, not taste:
+ *   * `headStripIntercept` MUST run before anything can write. Node streams its
+ *     response, so there is no single exit point to strip at - the interception
+ *     IS the mechanism (ADR-0011: the CONTRACT is the outcome, and Ruby and
+ *     Python satisfy it by stripping late at their single return instead).
+ *   * `sessionAutoStart` wraps `end` after that, so its save-and-set-cookie
+ *     runs on the real `end` rather than on the HEAD interceptor's.
+ *
+ * @see tina4-ruby/lib/tina4/dispatch_pipeline.rb - the same extraction, and
+ *      the source of the stage-list-as-data pattern.
+ */
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Tina4Request } from "./types.js";
+
+/**
+ * The prologue, in order. Exported as DATA so the pipeline can be asserted and
+ * compared across frameworks without reading an implementation.
+ */
+export const PROLOGUE_STAGES = [
+  "resetRequestCaches",
+  "headStripIntercept",
+  "sessionAutoStart",
+] as const;
+
+/**
+ * Memoised import of the ORM's cache reset. Resolves once on first use;
+ * subsequent requests reuse the resolved module.
+ */
+let _resetRequestCaches: Promise<(() => void) | null> | undefined;
+
+/**
+ * Request-scoped DB query cache boundary.
+ *
+ * Clears the request-scoped cache on every live connection at the START of each
+ * request so it never serves rows across requests (persistent-mode connections
+ * are left alone). The ORM is loaded lazily and may be absent, so this is
+ * best-effort: a failure here must never break a request. Mirrors Python's
+ * dispatcher calling `Database.reset_request_caches()`.
+ */
+export async function resetRequestCaches(): Promise<void> {
+  if (_resetRequestCaches === undefined) {
+    _resetRequestCaches = import("../../orm/src/index.js")
+      .then((orm) => orm.resetRequestCaches as () => void)
+      .catch(() => null);
+  }
+  try {
+    const reset = await _resetRequestCaches;
+    if (reset) reset();
+  } catch {
+    /* ORM not installed / cache unavailable — non-fatal */
+  }
+}
+
+/**
+ * RFC 9110 s9.3.2: the server MUST NOT send content in a HEAD response.
+ *
+ * Intercepts `write` / `end` so every code path - an explicit `Router.head()`
+ * handler, the GET auto-fallback, 405 and 404 responses - drops its body.
+ * Content-Length is preserved when present, so cache validators, link checkers
+ * and monitoring probes still see the size the equivalent GET would have sent.
+ *
+ * No-op for any method other than HEAD.
+ *
+ * @param rawReq Node's incoming message, read for the method
+ * @param rawRes Node's server response, whose write/end are replaced in place
+ */
+export function headStripIntercept(rawReq: IncomingMessage, rawRes: ServerResponse): void {
+  if ((rawReq.method ?? "GET").toUpperCase() !== "HEAD") return;
+
+  const origEnd = rawRes.end.bind(rawRes);
+  const origWrite = rawRes.write.bind(rawRes);
+  let accumulated = 0;
+
+  rawRes.write = ((chunk?: any, _enc?: any, cb?: any): boolean => {
+    if (chunk != null) {
+      accumulated += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
+    }
+    if (typeof cb === "function") cb();
+    return true;
+  }) as typeof rawRes.write;
+
+  rawRes.end = ((chunk?: any, _enc?: any, cb?: any): any => {
+    if (chunk != null && typeof chunk !== "function") {
+      accumulated += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
+    }
+    if (accumulated > 0 && !rawRes.headersSent && !rawRes.hasHeader("Content-Length")) {
+      rawRes.setHeader("Content-Length", String(accumulated));
+    }
+    const realCb = typeof chunk === "function" ? chunk : cb;
+    void origWrite; // referenced to keep tsc happy
+    return typeof realCb === "function" ? origEnd(realCb) : origEnd();
+  }) as typeof rawRes.end;
+}
+
+/**
+ * Auto-start the session: read the cookie, create the session, then save it and
+ * set the cookie when the response ends.
+ *
+ * The incoming cookie is read by the SAME configured name the write side emits
+ * (`TINA4_SESSION_NAME`, default `tina4_session`) via the shared
+ * `sessionCookieName()` resolver - otherwise a renamed cookie would be written
+ * but never read back and the session would silently never resume. A whole
+ * cookie pair is matched by its exact `name=` prefix (split on ";", trim,
+ * startsWith) so `tina4_session` never matches `tina4_session_foo=` nor a value
+ * mid-header. Parity with Python `core/server._init_session`.
+ *
+ * @param rawReq Node's incoming message, read for cookies and the proxy scheme
+ * @param rawRes Node's server response, whose `end` is wrapped
+ * @param req    The Tina4 request the session is attached to
+ */
+export async function sessionAutoStart(
+  rawReq: IncomingMessage,
+  rawRes: ServerResponse,
+  req: Tina4Request,
+): Promise<void> {
+  const { Session, buildSessionCookie, sessionCookieName } = await import("./session.js");
+  const cookieHeader = rawReq.headers.cookie ?? "";
+
+  const cookiePrefix = sessionCookieName() + "=";
+  let existingSid: string | undefined;
+  for (const part of cookieHeader.split(";")) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(cookiePrefix)) {
+      existingSid = trimmed.slice(cookiePrefix.length);
+      break;
+    }
+  }
+
+  const sess = new Session();
+  sess.start(existingSid);
+  (req as any).session = sess;
+
+  const origEnd = rawRes.end.bind(rawRes);
+  rawRes.end = function (...args: any[]) {
+    sess.save();
+
+    // Probabilistic garbage collection (~1% of requests)
+    if (Math.floor(Math.random() * 100) === 0) {
+      try { sess.gc(); } catch { /* GC failure is non-critical */ }
+    }
+
+    const newSid = (sess as any).sessionId ?? (sess as any).getSessionId?.();
+    if (newSid && newSid !== existingSid && !rawRes.headersSent) {
+      const ttl = parseInt(process.env.TINA4_SESSION_TTL ?? "3600", 10);
+      // Thread the client's real scheme in so an HTTPS deploy behind a
+      // TLS-terminating proxy ships the session cookie with `Secure`
+      // (nodejs#34). `x-forwarded-proto` is the same header request.ts trusts
+      // for URL construction; native socket TLS is the fallback.
+      const xfProto = rawReq.headers["x-forwarded-proto"];
+      const forwardedProto = Array.isArray(xfProto) ? xfProto[0] : xfProto;
+      const socketEncrypted = (rawReq.socket as { encrypted?: boolean })?.encrypted === true;
+      rawRes.setHeader("Set-Cookie", buildSessionCookie(newSid, ttl, undefined, forwardedProto, socketEncrypted));
+    }
+    return origEnd(...args);
+  } as typeof rawRes.end;
+}

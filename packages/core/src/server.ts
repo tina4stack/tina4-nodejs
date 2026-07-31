@@ -12,6 +12,11 @@ import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
 import { enforceRouteAuth } from "./authGate.js";
 import { discoverRoutes } from "./routeDiscovery.js";
 import { createRequest } from "./request.js";
+import {
+  resetRequestCaches,
+  headStripIntercept,
+  sessionAutoStart,
+} from "./dispatchPipeline.js";
 import { createResponse, setDefaultTemplatesDir } from "./response.js";
 import { MiddlewareChain, MiddlewareRunner, cors, requestLogger } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
@@ -754,7 +759,6 @@ let _dispatchFn: ((rawReq: IncomingMessage, rawRes: ServerResponse) => Promise<v
 // not installed). Memoised so the dynamic import happens once, then every
 // request reuses the resolved function — see the request-scoped cache boundary
 // in dispatch().
-let _resetRequestCaches: Promise<(() => void) | null> | undefined;
 
 /** Module-level server handle for start()/stop() parity. */
 let _serverHandle: { close: () => void; router: Router; port: number } | null = null;
@@ -1128,104 +1132,13 @@ ${reset}
     const req = createRequest(rawReq);
     const res = createResponse(rawRes);
 
-    // Request-scoped DB query cache boundary: clear the request-scoped cache on
-    // every live connection at the START of each request so it never serves
-    // rows across requests (persistent-mode connections are left alone). The
-    // ORM is loaded lazily and may be absent — failures here must never break a
-    // request, so this is best-effort. Mirrors Python's dispatcher calling
-    // Database.reset_request_caches(). The cached() promise resolves once on
-    // first use; subsequent requests reuse the resolved module.
-    if (_resetRequestCaches === undefined) {
-      _resetRequestCaches = import("../../orm/src/index.js")
-        .then((orm) => orm.resetRequestCaches as () => void)
-        .catch(() => null);
-    }
-    try {
-      const reset = await _resetRequestCaches;
-      if (reset) reset();
-    } catch {
-      /* ORM not installed / cache unavailable — non-fatal */
-    }
-
-    // RFC 9110 §9.3.2: the server MUST NOT send content in a HEAD response.
-    // Intercept rawRes.write / rawRes.end so every code path — explicit
-    // Router.head() handler, GET auto-fallback, 405 / 404 responses — drops
-    // its body. Content-Length is preserved when present, so cache
-    // validators / link checkers / monitoring probes still see the size
-    // the equivalent GET would have sent.
-    if ((rawReq.method ?? "GET").toUpperCase() === "HEAD") {
-      const origEnd = rawRes.end.bind(rawRes);
-      const origWrite = rawRes.write.bind(rawRes);
-      let accumulated = 0;
-      rawRes.write = ((chunk?: any, _enc?: any, cb?: any): boolean => {
-        if (chunk != null) {
-          accumulated += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
-        }
-        if (typeof cb === "function") cb();
-        return true;
-      }) as typeof rawRes.write;
-      rawRes.end = ((chunk?: any, _enc?: any, cb?: any): any => {
-        if (chunk != null && typeof chunk !== "function") {
-          accumulated += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
-        }
-        if (accumulated > 0 && !rawRes.headersSent && !rawRes.hasHeader("Content-Length")) {
-          rawRes.setHeader("Content-Length", String(accumulated));
-        }
-        const realCb = typeof chunk === "function" ? chunk : cb;
-        void origWrite; // referenced to keep tsc happy
-        return typeof realCb === "function" ? origEnd(realCb) : origEnd();
-      }) as typeof rawRes.end;
-    }
-
-    // Auto-start session — read cookie, create session, save + set cookie on response end
-    {
-      const { Session, buildSessionCookie, sessionCookieName } = await import("./session.js");
-      const cookieHeader = rawReq.headers.cookie ?? "";
-      // Read the incoming session cookie by the SAME configured name the write
-      // side emits (TINA4_SESSION_NAME, default tina4_session) via the shared
-      // sessionCookieName() resolver — otherwise a renamed cookie would be
-      // written but never read back and the session would silently never
-      // resume. Match a whole cookie pair by its exact `name=` prefix (split on
-      // ";", trim, startsWith) so `tina4_session` never matches
-      // `tina4_session_foo=` nor a value mid-header. Parity with Python
-      // core/server._init_session.
-      const cookiePrefix = sessionCookieName() + "=";
-      let existingSid: string | undefined;
-      for (const part of cookieHeader.split(";")) {
-        const trimmed = part.trim();
-        if (trimmed.startsWith(cookiePrefix)) {
-          existingSid = trimmed.slice(cookiePrefix.length);
-          break;
-        }
-      }
-      const sess = new Session();
-      sess.start(existingSid);
-      (req as any).session = sess;
-
-      const origEnd = rawRes.end.bind(rawRes);
-      rawRes.end = function (...args: any[]) {
-        sess.save();
-
-        // Probabilistic garbage collection (~1% of requests)
-        if (Math.floor(Math.random() * 100) === 0) {
-          try { sess.gc(); } catch { /* GC failure is non-critical */ }
-        }
-
-        const newSid = (sess as any).sessionId ?? (sess as any).getSessionId?.();
-        if (newSid && newSid !== existingSid && !rawRes.headersSent) {
-          const ttl = parseInt(process.env.TINA4_SESSION_TTL ?? "3600", 10);
-          // Thread the client's real scheme in so an HTTPS deploy behind a
-          // TLS-terminating proxy ships the session cookie with `Secure`
-          // (nodejs#34). `x-forwarded-proto` is the same header request.ts
-          // trusts for URL construction; native socket TLS is the fallback.
-          const xfProto = rawReq.headers["x-forwarded-proto"];
-          const forwardedProto = Array.isArray(xfProto) ? xfProto[0] : xfProto;
-          const socketEncrypted = (rawReq.socket as { encrypted?: boolean })?.encrypted === true;
-          rawRes.setHeader("Set-Cookie", buildSessionCookie(newSid, ttl, undefined, forwardedProto, socketEncrypted));
-        }
-        return origEnd(...args);
-      } as typeof rawRes.end;
-    }
+    // PROLOGUE STAGES. Extracted to dispatchPipeline.ts - see PROLOGUE_STAGES
+    // there for the ordered list and why the order is behaviour, not taste.
+    // These three close over nothing from startServer, which is why they went
+    // first: no context object is needed for them at all.
+    await resetRequestCaches();
+    headStripIntercept(rawReq, rawRes);
+    await sessionAutoStart(rawReq, rawRes, req);
 
     // res.render() is handled natively by response.ts via Frond
 
