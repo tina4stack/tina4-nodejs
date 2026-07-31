@@ -1342,6 +1342,24 @@ ${reset}
         res.raw.end = wrappedEnd;
       }
 
+      // PRE-MATCH global middleware: runs before a route is even looked up, so
+      // CORS and anything else that must survive a short-circuit can set
+      // headers that outlive a 401/403. Opt in with `static preMatch = true`.
+      const allGlobalMiddleware = [
+        ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
+      ];
+      const { pre: preMatchMiddleware, post: postMatchMiddleware } =
+        MiddlewareRunner.partitionByMatchPhase(allGlobalMiddleware);
+
+      if (preMatchMiddleware.length > 0) {
+        const [, , proceed] = await MiddlewareRunner.runBefore(preMatchMiddleware, req, res);
+        if (!proceed || res.raw.writableEnded) {
+          await MiddlewareRunner.runAfter(preMatchMiddleware, req, res);
+          if (!res.raw.writableEnded) res.raw.end();
+          return;
+        }
+      }
+
       // Match route. ROUTES BEAT FILES (ADR-0010): static assets resolve in
       // the not-found fallback below, only once no route has claimed the path.
       // A file in public/ can arrive from a build step, an upload directory or
@@ -1356,9 +1374,10 @@ ${reset}
         // beforeX may set response headers (they persist through the handler's
         // write), mutate the request, or short-circuit on a >= 400 status.
         // (Parity with Python/PHP/Ruby, whose Router.use class middleware runs.)
-        const globalMiddleware = [
-          ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
-        ];
+        // POST-MATCH global middleware: the default. It runs here, after the
+        // route matched, because middleware like CSRF reads the matched route's
+        // metadata to honour noAuth. The pre-match set already ran above.
+        const globalMiddleware = postMatchMiddleware;
         if (globalMiddleware.length > 0) {
           const [, , proceed] = await MiddlewareRunner.runBefore(globalMiddleware, req, res);
           if (!proceed || res.raw.writableEnded) {
@@ -1382,6 +1401,14 @@ ${reset}
         // the EXACT same gate (parity with Python #PY2 — a tokenless write must
         // 401 in tests too, or a green test hides a live 401). Dev admin routes
         // (/__dev) are always public. Returns true when a 401 was written.
+        //
+        // The gate is LATE, after global and route middleware, so a rate
+        // limiter or access log registered globally still sees a rejected
+        // request. Every mainstream framework places it here: Django enforces
+        // in a view decorator after MIDDLEWARE, Laravel's `auth` is route
+        // middleware after the global + group passes, ASP.NET puts
+        // UseAuthorization last before the endpoint. Middleware that runs only
+        // after the gate cannot throttle a brute-force login or log a 401.
         const isDevAdmin = pathname.startsWith("/__dev");
         if (enforceRouteAuth(req, res, match, isDevAdmin)) {
           return;

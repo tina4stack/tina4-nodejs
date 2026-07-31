@@ -126,6 +126,33 @@ export class MiddlewareRunner {
   }
 
   /** Return the list of globally registered middleware classes. */
+  /**
+   * Global middleware that runs BEFORE route matching.
+   *
+   * A middleware opts in with `static preMatch = true`. Everything else stays
+   * where it has always run - after matching - so this is additive and no
+   * existing middleware changes behaviour.
+   *
+   * The two groups need opposite things. CORS must run before matching so its
+   * headers survive a short-circuited 401/403; a browser shown a 401 without
+   * them reports a CORS error and the real status never reaches the developer.
+   * CSRF must run AFTER, because it reads the matched route's metadata to
+   * honour a route marked noAuth - PHP shipped exactly that bypass as dead
+   * code once, because the metadata was not assigned yet.
+   *
+   * NOT named `beforeMatch` - hook discovery treats every `before*` static as
+   * a middleware hook and would call the flag itself with (req, res).
+   */
+  static partitionByMatchPhase(all: any[]): { pre: any[]; post: any[] } {
+    const pre: any[] = [];
+    const post: any[] = [];
+    for (const m of all) {
+      if (m && m.preMatch === true) pre.push(m);
+      else post.push(m);
+    }
+    return { pre, post };
+  }
+
   static getGlobal(): any[] {
     return [...MiddlewareRunner.globalMiddleware];
   }
