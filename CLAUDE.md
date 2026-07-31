@@ -997,6 +997,37 @@ for await (const job of queue.consume("emails")) {
 // pollInterval=0 for single-pass drain (tests).
 ```
 
+## Graceful shutdown (`packages/core/src/server.ts`)
+
+`startServer()` owns signal handling. It is the ONLY place that registers
+`process.on("SIGTERM"/"SIGINT")` — `background.ts` and the CLI's `serve.ts`
+deliberately register none.
+
+On SIGTERM or SIGINT it: stops background tasks, sends RFC 6455 close code
+**1001 ("going away")** to every live WebSocket, closes the listeners so new
+connections get a clean refusal, waits for in-flight requests to finish (up to
+`TINA4_SHUTDOWN_TIMEOUT`), closes the database, and exits **0**.
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `TINA4_SHUTDOWN_TIMEOUT` | `30` | Seconds to wait for in-flight requests before force-closing them. Matches Kubernetes' default `terminationGracePeriodSeconds` and Gunicorn's `graceful_timeout`, and is the same env var and default as tina4-python / tina4-php / tina4-ruby. A non-numeric or negative value warns and falls back to 30. |
+| `TINA4_DEFAULT_WEBSERVER` | unset | **Accepted and ignored in Node.** `TRUE` pins the built-in server. Node has only one server (`node:http`), so there is nothing to switch and this is a genuine no-op. It exists here so the env surface is identical across all four frameworks: in tina4-python it forces the built-in asyncio server instead of uvicorn/hypercorn/granian, and in tina4-ruby it forces WEBrick instead of Puma. Setting it must never be an error. |
+
+**SIGHUP is deliberately NOT trapped** — the default disposition terminates the
+process. The Rust CLI owns file watching and production logs go to stdout, so
+neither Puma's log-reopen nor gunicorn's config-reload use for SIGHUP applies.
+`test/gracefulShutdown.test.ts` pins this so it is not restored by accident.
+
+**Never register a signal handler that does not exit.** Adding any listener for
+SIGTERM REPLACES Node's default disposition, so a handler that only cleans up
+does not "add" to the default, it CANCELS it — the process then ignores SIGTERM
+and runs until SIGKILL. `background.ts` shipped exactly that bug: a server with
+one registered `background()` task hung forever on SIGTERM, burning the whole
+Kubernetes grace period on every rolling deploy.
+
+Set `terminationGracePeriodSeconds` ABOVE `TINA4_SHUTDOWN_TIMEOUT` in your pod
+spec so the drain finishes before SIGKILL.
+
 ## Module: Background Tasks (`packages/core/src/background.ts`)
 
 Periodic callbacks that run alongside the HTTP server. Use this instead of bare `setInterval` so timers integrate with the server lifecycle and clear on graceful shutdown.
@@ -1014,11 +1045,11 @@ background(async () => {
 }, 30);
 
 task.stop();              // stop just this one
-stopAllBackgroundTasks(); // stop everything (also runs on SIGTERM/SIGINT)
+stopAllBackgroundTasks(); // stop everything (the server's shutdown calls this on SIGTERM/SIGINT)
 backgroundTaskCount();    // test helper
 ```
 
-**Never use bare `setInterval` for periodic work in a Tina4 app.** `background()` catches errors, integrates with shutdown signals, calls `timer.unref()` so it doesn't block process exit, and matches Python's `background()` API exactly.
+**Never use bare `setInterval` for periodic work in a Tina4 app.** `background()` catches errors, is cleared by the server's graceful shutdown (which owns the signal handlers), calls `timer.unref()` so it doesn't block process exit, and matches Python's `background()` API exactly.
 
 ## Module: DI Container (`packages/core/src/container.ts`)
 

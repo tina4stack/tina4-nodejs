@@ -27,21 +27,23 @@ interface BackgroundTask {
 }
 
 const _tasks: BackgroundTask[] = [];
-let _signalsBound = false;
 
-/**
- * Register signal handlers exactly once so SIGTERM/SIGINT during a long-running
- * process clears all background timers before the runtime exits. The handler
- * is additive — it does not call `process.exit()` or interfere with other
- * shutdown logic registered by the CLI or user code.
- */
-function _bindSignalsOnce(): void {
-  if (_signalsBound) return;
-  _signalsBound = true;
-  const cleanup = () => stopAllBackgroundTasks();
-  process.on("SIGTERM", cleanup);
-  process.on("SIGINT", cleanup);
-}
+// This module deliberately installs NO signal handlers.
+//
+// It used to bind `process.on("SIGTERM"/"SIGINT", stopAllBackgroundTasks)`,
+// described as "additive - it does not call process.exit()". That description
+// was the bug. Registering ANY listener for SIGTERM REPLACES Node's default
+// disposition, so a handler that does not exit does not "add" to the default,
+// it CANCELS it: measured against a real signal, a server with one registered
+// background task ignored SIGTERM entirely and ran forever, still answering
+// 200s, until SIGKILL. Under Kubernetes that burns the whole
+// terminationGracePeriodSeconds on every rolling deploy.
+//
+// It also bought nothing: `_arm()` unrefs every timer, so a background task
+// never holds the event loop open and never needed clearing to let the process
+// exit. The server's own graceful shutdown (server.ts) calls
+// stopAllBackgroundTasks() as its first step, and a process using background()
+// without a server keeps Node's correct default (terminate on SIGTERM).
 
 /**
  * Register a callback to run periodically alongside the HTTP server.
@@ -62,8 +64,6 @@ export function background(
       `background(callback, interval): interval must be a positive number (got ${intervalSeconds})`,
     );
   }
-
-  _bindSignalsOnce();
 
   const ms = Math.max(1, Math.round(intervalSeconds * 1000));
 
@@ -109,9 +109,9 @@ export function background(
 }
 
 /**
- * Clear every registered background task. Called automatically on SIGTERM/SIGINT;
- * also called from the server's `close()` so a manual server shutdown stops
- * the timer wheel along with HTTP listeners.
+ * Clear every registered background task. Called by the server's graceful
+ * shutdown (its first step on SIGTERM/SIGINT) and by its `close()`, so both a
+ * signal and a manual shutdown stop the timer wheel along with the listeners.
  */
 export function stopAllBackgroundTasks(): void {
   while (_tasks.length > 0) {

@@ -40,13 +40,14 @@ export async function serveProject(options: ServeOptions): Promise<void> {
   // only needs POST /__dev/api/reload to update the mtime counter for browser polling.
   // No internal file watcher.
 
-  // Graceful shutdown
-  const shutdown = () => {
-    console.log("\n  Shutting down...");
-    server.close();
-    process.exit(0);
-  };
-
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  // Graceful shutdown is owned by startServer() (packages/core/src/server.ts),
+  // which traps SIGTERM/SIGINT, stops accepting, DRAINS in-flight requests
+  // within TINA4_SHUTDOWN_TIMEOUT, closes the database and exits 0.
+  //
+  // This function used to install its own `server.close(); process.exit(0)`.
+  // Node's docs are explicit that close() is asynchronous and "keeps existing
+  // connections", so exiting on the very next line killed every request the
+  // close was waiting to drain - measured, a request 0.6s into a 2s handler
+  // came back as "connection closed without response".
+  void server;
 }
