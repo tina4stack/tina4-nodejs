@@ -83,6 +83,20 @@ assert("Response has framework 'tina4-nodejs'", health.data.framework === "tina4
 assert("Response has uptime as number", typeof health.data.uptime === "number");
 assert("Uptime is positive", health.data.uptime > 0);
 
+// The wire contract: EXACTLY these four keys, identical in all four frameworks
+// (ADR-0014, plan/v3/fixtures/health_contract.json). Kubernetes never reads the
+// body - HTTPGetAction has no body-matching field and decides on the status code
+// alone - so every extra key is weight on a probe path with no consumer. Python
+// carried `errors`/`latest_error` until feature 8; this stops Node growing them.
+{
+  const keys = Object.keys(health.data).sort().join(",");
+  assert(
+    "the body is exactly the four contract keys",
+    keys === "framework,status,uptime,version",
+    `got: ${keys}`,
+  );
+}
+
 // Cleanup
 server.close();
 delete process.env.TINA4_RATE_LIMIT;
