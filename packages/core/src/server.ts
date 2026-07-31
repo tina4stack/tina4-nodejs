@@ -813,6 +813,221 @@ export async function handle(rawReq: IncomingMessage, rawRes: ServerResponse): P
   return _dispatchFn(rawReq, rawRes);
 }
 
+/**
+ * Turn an uncaught dispatch error into a response, and surface it.
+ *
+ * v3.13.7: log structured + surface to observability BEFORE rendering.
+ * Listeners get the canonical {exception, request} payload mirrored by Python /
+ * PHP / Ruby. Listener errors are swallowed and warning-logged so a broken
+ * listener cannot break the 500 page.
+ *
+ * SECURITY (CWE-209): the production response body must NOT contain the stack
+ * trace or the exception message. `error_message` is passed empty - 500.twig
+ * only renders the trace block when it is truthy. The rich overlay with stack
+ * and source context is dev-only.
+ *
+ * @param err          The thrown value (not necessarily an Error)
+ * @param req          The request, for the log line and the error page
+ * @param res          The response; untouched if it has already ended
+ * @param templatesDir Where to look for 500.twig
+ */
+async function renderDispatchError(
+  err: unknown,
+  req: Tina4Request,
+  res: Tina4Response,
+  templatesDir: string,
+): Promise<void> {
+  Log.error(`Route error: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`, {
+    method: req?.method,
+    path: req?.path,
+  });
+
+  try {
+    const { Events } = await import("./events.js");
+    Events.emit("tina4.request.error", { exception: err, request: req });
+  } catch (listenerErr) {
+    try {
+      Log.warn(
+        `Listener for tina4.request.error raised: ${
+          listenerErr instanceof Error
+            ? `${listenerErr.name}: ${listenerErr.message}`
+            : String(listenerErr)
+        }`
+      );
+    } catch {
+      // Log failures must never block the 500 render.
+    }
+  }
+
+  if (res.raw.writableEnded) return;
+
+  if (isDevMode() && err instanceof Error) {
+    // Rich error overlay with stack trace, source context, and line numbers
+    const { renderErrorOverlay } = await import("./errorOverlay.js");
+    res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+    res.raw.end(renderErrorOverlay(err, req));
+    return;
+  }
+
+  const html500 = await renderErrorPage(500, {
+    error_message: "",
+    request_id: `${Date.now().toString(36)}`,
+    path: req.path,
+  }, templatesDir);
+  if (html500) {
+    res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+    res.raw.end(html500);
+  } else {
+    res({ error: "Internal Server Error", statusCode: 500 }, 500);
+  }
+}
+
+/**
+ * State the not-found fallback stages need.
+ *
+ * Passed explicitly rather than closed over, so each stage is callable on its
+ * own instead of only from inside `dispatch`. That coupling is what the
+ * extraction removes.
+ */
+interface FallbackContext {
+  req: Tina4Request;
+  res: Tina4Response;
+  pathname: string;
+  router: Router;
+  port: number;
+  staticDir: string;
+  srcPublicDir: string;
+  templatesDir: string;
+  frondEngine: { render(file: string, data: Record<string, unknown>): string } | null;
+  swaggerAssetsEnabled: boolean;
+}
+
+/**
+ * Serve a template file for a GET (e.g. /hello -> src/templates/pages/hello.twig).
+ *
+ * Rendered through Frond so {% include %} / {% extends %} work, rather than a
+ * raw readFileSync.
+ */
+function serveTemplateFallback(ctx: FallbackContext): boolean {
+  if ((ctx.req.method ?? "GET") !== "GET") return false;
+
+  const tplFile = resolveTemplate(ctx.pathname, ctx.templatesDir);
+  if (!tplFile) return false;
+
+  const html = ctx.frondEngine
+    ? ctx.frondEngine.render(tplFile, {})
+    : readFileSync(resolve(ctx.templatesDir, tplFile), "utf-8");
+  ctx.res.raw.writeHead(200, undefined, { "Content-Type": "text/html; charset=utf-8" });
+  ctx.res.raw.end(html);
+  return true;
+}
+
+/**
+ * The branded landing page.
+ *
+ * Renders only at "/" AND only when TINA4_DEBUG=true. In production "/" with no
+ * static index.html and no pages/index.twig falls through to a clean 404, so
+ * the framework's welcome, gallery and version never leak to real users.
+ */
+function serveLandingPage(ctx: FallbackContext): boolean {
+  if ((ctx.req.method ?? "GET") !== "GET") return false;
+  if (ctx.pathname !== "/" || !isDevMode()) return false;
+
+  const allRoutes = ctx.router.getRoutes().map((r) => ({
+    method: r.method,
+    pattern: r.pattern,
+    flags: [] as string[],
+  }));
+  ctx.res.raw.writeHead(200, undefined, { "Content-Type": "text/html; charset=utf-8" });
+  ctx.res.raw.end(renderLandingPage(allRoutes, ctx.port));
+  return true;
+}
+
+/**
+ * RFC 9110 conformance - before falling through to 404, check whether the PATH
+ * is registered under any OTHER method.
+ *   - OPTIONS -> 204 with Allow (s9.3.7)
+ *   - Any other method (PUT on GET-only, TRACE, CONNECT) -> 405 with Allow
+ *     (s15.5.6 + s10.2.1)
+ */
+function serveMethodNotAllowed(ctx: FallbackContext): boolean {
+  const allowedMethods = ctx.router.methodsAllowedForPath(ctx.pathname);
+  if (allowedMethods.length === 0) return false;
+
+  const allowHeader = allowedMethods.join(", ");
+  const requestMethod = (ctx.req.method ?? "GET").toUpperCase();
+
+  if (requestMethod === "OPTIONS") {
+    ctx.res.raw.writeHead(204, undefined, { Allow: allowHeader, "Content-Length": "0" });
+    ctx.res.raw.end();
+    return true;
+  }
+
+  const body = JSON.stringify({
+    error: "Method Not Allowed",
+    path: ctx.pathname,
+    method: requestMethod,
+    allow: allowedMethods,
+    statusCode: 405,
+  });
+  ctx.res.raw.writeHead(405, httpReason(405), {
+    Allow: allowHeader,
+    "Content-Type": "application/json",
+    "Content-Length": String(Buffer.byteLength(body)),
+  });
+  ctx.res.raw.end(body);
+  return true;
+}
+
+/**
+ * No route claimed the path, so NOW try the filesystem (ADR-0010).
+ *
+ * Index resolution: "/" or "/foo/" picks up index.html so SPA builds Just Work.
+ * The framework-bundled directory holds the Swagger UI (public/swagger/), so
+ * that lookup MUST honour the swagger gate or /swagger is served in production
+ * regardless of TINA4_SWAGGER_ENABLED / TINA4_DEBUG.
+ */
+function serveStaticAsset(ctx: FallbackContext): boolean {
+  if (existsSync(ctx.staticDir) && tryServeStatic(ctx.staticDir, ctx.req, ctx.res)) return true;
+  if (existsSync(ctx.srcPublicDir) && tryServeStatic(ctx.srcPublicDir, ctx.req, ctx.res)) return true;
+
+  if (ctx.swaggerAssetsEnabled || !isSwaggerAssetPath(ctx.pathname)) {
+    if (tryServeStatic(BUILTIN_PUBLIC_DIR, ctx.req, ctx.res)) return true;
+  }
+  return false;
+}
+
+/** Terminal stage: 404, with the canonical reason phrase so the status line is well-formed. */
+async function serveNotFound(ctx: FallbackContext): Promise<boolean> {
+  const html404 = await renderErrorPage(404, { path: ctx.pathname }, ctx.templatesDir);
+  if (html404) {
+    ctx.res.raw.writeHead(404, httpReason(404), { "Content-Type": "text/html; charset=utf-8" });
+    ctx.res.raw.end(html404);
+  } else {
+    ctx.res(
+      { error: "Not Found", statusCode: 404, message: `No route found for ${ctx.req.method} ${ctx.pathname}` },
+      404,
+    );
+  }
+  return true;
+}
+
+/**
+ * The not-found fallback chain, in order. Data, so the pipeline can be read and
+ * compared across frameworks without reading an implementation.
+ *
+ * Order is BEHAVIOUR: a template beats the landing page (so a project's own
+ * pages/index.twig wins at "/"), 405 beats static (a known path with the wrong
+ * method is not a missing file), and the 404 is terminal.
+ */
+const FALLBACK_STAGES: Array<(ctx: FallbackContext) => boolean | Promise<boolean>> = [
+  serveTemplateFallback,
+  serveLandingPage,
+  serveMethodNotAllowed,
+  serveStaticAsset,
+  serveNotFound,
+];
+
 export async function startServer(config?: Tina4Config): Promise<{
   close: () => void;
   router: Router;
@@ -1380,147 +1595,22 @@ ${reset}
         return;
       }
 
-      // Try serving a template file (e.g. /hello -> src/templates/pages/hello.twig)
-      if ((req.method ?? "GET") === "GET") {
-        const tplFile = resolveTemplate(pathname, templatesDir);
-        if (tplFile) {
-          // Render through Frond so {% include %} / {% extends %} work,
-          // not raw readFileSync.
-          if (frondEngine) {
-            const html = frondEngine.render(tplFile, {});
-            res.raw.writeHead(200, undefined, { "Content-Type": "text/html; charset=utf-8" });
-            res.raw.end(html);
-          } else {
-            const html = readFileSync(resolve(templatesDir, tplFile), "utf-8");
-            res.raw.writeHead(200, undefined, { "Content-Type": "text/html; charset=utf-8" });
-            res.raw.end(html);
-          }
-          return;
-        }
-
-        // Landing page renders only at "/" AND only when TINA4_DEBUG=true.
-        // In production "/" with no static index.html and no pages/index.twig
-        // falls through to a clean 404 — the framework's branded welcome,
-        // gallery and version never leak to real users.
-        if (pathname === "/" && isDevMode()) {
-          const allRoutes = router.getRoutes().map((r) => ({
-            method: r.method,
-            pattern: r.pattern,
-            flags: [] as string[],
-          }));
-          const html = renderLandingPage(allRoutes, port);
-          res.raw.writeHead(200, undefined, { "Content-Type": "text/html; charset=utf-8" });
-          res.raw.end(html);
-          return;
-        }
-      }
-
-      // RFC 9110 conformance — before falling through to 404, check whether
-      // the PATH is registered under any OTHER method.
-      //   - OPTIONS request → 204 with Allow header (§9.3.7)
-      //   - Any other method (PUT on GET-only, TRACE, CONNECT, etc.)
-      //     → 405 with Allow header (§15.5.6 + §10.2.1)
-      const allowedMethods = router.methodsAllowedForPath(pathname);
-      if (allowedMethods.length > 0) {
-        const allowHeader = allowedMethods.join(", ");
-        const requestMethod = (req.method ?? "GET").toUpperCase();
-        if (requestMethod === "OPTIONS") {
-          res.raw.writeHead(204, undefined, { Allow: allowHeader, "Content-Length": "0" });
-          res.raw.end();
-          return;
-        }
-        const body = JSON.stringify({
-          error: "Method Not Allowed",
-          path: pathname,
-          method: requestMethod,
-          allow: allowedMethods,
-          statusCode: 405,
-        });
-        res.raw.writeHead(405, httpReason(405), {
-          Allow: allowHeader,
-          "Content-Type": "application/json",
-          "Content-Length": String(Buffer.byteLength(body)),
-        });
-        res.raw.end(body);
-        return;
-      }
-
-      // No route claimed the path. NOW try the filesystem, per ADR-0010.
-      // Index resolution: "/" or "/foo/" picks up index.html so SPA builds Just Work.
-      if (existsSync(staticDir) && tryServeStatic(staticDir, req, res)) {
-        return;
-      }
-      if (existsSync(srcPublicDir) && tryServeStatic(srcPublicDir, req, res)) {
-        return;
-      }
-      // Framework-bundled assets. The Swagger UI lives here (public/swagger/),
-      // so this path MUST honour the swagger gate or /swagger is served in
-      // production regardless of TINA4_SWAGGER_ENABLED / TINA4_DEBUG.
-      if (swaggerAssetsEnabled || !isSwaggerAssetPath(pathname)) {
-        if (tryServeStatic(BUILTIN_PUBLIC_DIR, req, res)) {
-          return;
-        }
-      }
-
-      // 404 — pass canonical reason phrase so the status line is well-formed
-      const html404 = await renderErrorPage(404, { path: pathname }, templatesDir);
-      if (html404) {
-        res.raw.writeHead(404, httpReason(404), { "Content-Type": "text/html; charset=utf-8" });
-        res.raw.end(html404);
-      } else {
-        res({ error: "Not Found", statusCode: 404, message: `No route found for ${req.method} ${pathname}` }, 404);
+      // NOT-FOUND FALLBACK STAGES. Nothing matched a route, so walk the
+      // fallback chain in order - see FALLBACK_STAGES. Each returns true when
+      // it has answered the request.
+      //
+      // ADR-0010 (routes beat files) is why this chain runs AFTER matching: a
+      // file dropped into public/ by a build step or a careless deploy must
+      // never shadow a reviewed route.
+      const fallback: FallbackContext = {
+        req, res, pathname, router, port, staticDir, srcPublicDir,
+        templatesDir, frondEngine, swaggerAssetsEnabled,
+      };
+      for (const stage of FALLBACK_STAGES) {
+        if (await stage(fallback)) return;
       }
     } catch (err) {
-      // v3.13.7: log structured + surface to observability BEFORE rendering.
-      // Listeners get the canonical {exception, request} payload mirrored
-      // by Python / PHP / Ruby. Listener errors are swallowed + warning-
-      // logged so a broken listener can't break the 500 page.
-      Log.error(`Route error: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`, {
-        method: req?.method,
-        path: req?.path,
-      });
-      try {
-        const { Events } = await import("./events.js");
-        Events.emit("tina4.request.error", { exception: err, request: req });
-      } catch (listenerErr) {
-        try {
-          Log.warn(
-            `Listener for tina4.request.error raised: ${
-              listenerErr instanceof Error
-                ? `${listenerErr.name}: ${listenerErr.message}`
-                : String(listenerErr)
-            }`
-          );
-        } catch {
-          // Log failures must never block the 500 render.
-        }
-      }
-
-      if (!res.raw.writableEnded) {
-        if (isDevMode() && err instanceof Error) {
-          // Rich error overlay with stack trace, source context, and line numbers
-          const { renderErrorOverlay } = await import("./errorOverlay.js");
-          const overlayHtml = renderErrorOverlay(err, req);
-          res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
-          res.raw.end(overlayHtml);
-        } else {
-          // v3.13.7 SECURITY (CWE-209): production response body must NOT
-          // contain the stack trace or exception message. Pass an empty
-          // error_message — the 500.twig template only renders the trace
-          // block when error_message is truthy.
-          const html500 = await renderErrorPage(500, {
-            error_message: "",
-            request_id: `${Date.now().toString(36)}`,
-            path: req.path,
-          }, templatesDir);
-          if (html500) {
-            res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
-            res.raw.end(html500);
-          } else {
-            res({ error: "Internal Server Error", statusCode: 500 }, 500);
-          }
-        }
-      }
+      await renderDispatchError(err, req, res, templatesDir);
     }
   }
 
