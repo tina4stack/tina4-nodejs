@@ -49,6 +49,14 @@ route("/only-get", '"ok"');
 route("/clash", '{ from: "route" }');
 route("/api/thing", '"routed"');
 
+// A write route marked noAuth - the matched route's metadata has to reach the
+// auth gate for the marker to be honoured. PHP shipped this bypass as DEAD
+// CODE once, because the metadata was assigned after the check.
+mkdirSync(join(routesDir, "public-write"), { recursive: true });
+writeFileSync(join(routesDir, "public-write", "post.ts"),
+  'export const noAuth = true;\n' +
+  'export default async function (_req: any, res: any) { return res("open", 200); }\n');
+
 // A file at the SAME path as a route - it would win under file-first.
 writeFileSync(join(publicDir, "clash"), '{"from":"file"}');
 // A file with no competing route.
@@ -168,6 +176,20 @@ try {
     assert("a head response carries no body on any path",
       onRoute.body === "" && on404.body === "" && on405.body === "",
       `route=${JSON.stringify(onRoute.body)} 404=${JSON.stringify(on404.body)} 405=${JSON.stringify(on405.body)}`);
+  }
+
+  // ── 9. Matched-route metadata is visible to the auth stage ─────
+  //
+  // A write route is secured by default; the noAuth marker on the MATCHED
+  // route is what opens it, so the metadata must reach the gate. PHP's own
+  // comment records that this assignment was once missing and the bypass was
+  // dead code on a real dispatch.
+  {
+    const r = await req("POST", "/public-write");
+    assert("dispatch noauth write route is not blocked by csrf",
+      r.status === 200,
+      `${r.status} - a route marked noAuth was still blocked; the matched route's ` +
+      `metadata did not reach the auth stage`);
   }
 } finally {
   // We started it, we own its death - a leaked listener holds the port forever.
