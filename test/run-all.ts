@@ -36,6 +36,7 @@ const METRICS_FILES = new Set([
   "metrics-nested-complexity.test.ts",
   "metrics-offender-cap.test.ts",
   "metricsCoverage.test.ts",
+  "metrics-dispatch-pipeline.test.ts",
 ]);
 const skipMetrics = (process.env.TINA4_SKIP_METRICS ?? "1") !== "0";
 
