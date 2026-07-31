@@ -48,7 +48,9 @@ class PreMatchStamp {
   }
 }
 class PlainStamp {
+  // It MUST stamp, or the negative case below passes vacuously.
   static beforePlain(req: any, res: any): [any, any] {
+    res.header?.("X-Ran-After-Match", "yes");
     return [req, res];
   }
 }
@@ -75,6 +77,10 @@ try {
   }
 
   MiddlewareRunner.use(PreMatchStamp);
+  // PlainStamp is registered too: the ordering cases below need a REAL
+  // post-match middleware in the chain, and it also proves the pre-match pass
+  // does not drag the post-match set along with it.
+  MiddlewareRunner.use(PlainStamp);
   server = await startServer({ port: PORT, routesDir, staticDir: publicDir } as never);
 
   // ── POSITIVE: it runs when NO route matches at all ──────────────
@@ -100,6 +106,30 @@ try {
     const r = await req("POST", "/secured");
     assert("pre match middleware does not open a secured route",
       r.status === 401, `${r.status} - registering pre-match middleware relaxed the auth gate`);
+  }
+
+  // ── The order: post-match globals -> auth gate -> route middleware ───
+  //
+  // Decided 2026-07-31 (ADR-0012) against how the mainstream frameworks build
+  // the same pipeline. Python and Ruby ran the gate first, Node and PHP did
+  // not; all four now run the globals first. Node additionally moved its
+  // ROUTE middleware to after the gate, so middleware on a secured route no
+  // longer processes a request that is about to be rejected.
+  {
+    const r = await req("POST", "/secured");
+    assert("post match middleware runs on a 401",
+      r.status === 401 && r.headers.get("x-ran-after-match") === "yes",
+      `${r.status} stamp=${r.headers.get("x-ran-after-match")} - a global ` +
+      `middleware did not run on a 401; the gate is ahead of the global pass`);
+  }
+  {
+    // NEGATIVE, and the case that actually discriminates the two groups: a
+    // post-match middleware CANNOT run when nothing matched. Not the 401,
+    // which both groups now survive by design.
+    const r = await req("GET", "/no/such/route");
+    assert("post match middleware does not run when no route matched",
+      r.status === 404 && r.headers.get("x-ran-after-match") === null,
+      `${r.status} stamp=${r.headers.get("x-ran-after-match")}`);
   }
 } finally {
   try { server?.close?.(); } catch { /* already down */ }

@@ -12,6 +12,30 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ## Unreleased
 
+### Breaking: route middleware now runs after the auth gate
+
+Dispatch order is now identical in all four frameworks:
+
+```
+pre-match globals -> match -> post-match globals -> auth gate -> route middleware -> handler
+```
+
+Node previously ran the route's OWN middleware BEFORE the gate, so middleware
+attached to a secured route processed requests that were about to be rejected -
+a body parser or audit hook saw unauthenticated traffic. The other three run it
+after, as does the mainstream convention (Laravel orders
+`->middleware(['auth', ...])` this way; Django puts `@login_required`
+outermost). See ADR-0012.
+
+Global middleware is unaffected: it already ran before the gate and still does,
+so a global rate limiter or access log continues to see 401s.
+
+**Migration:** middleware passed per-route now only runs for requests that pass
+auth. If yours must see rejected requests (rate limiting, access logging),
+register it globally with `MiddlewareRunner.use()` instead - and add
+`static preMatch = true` if it must also run when no route matched.
+
+
 ### Changed
 
 - **Breaking: `Messenger.inbox()` takes the folder FIRST.** The signature is now

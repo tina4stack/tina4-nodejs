@@ -1390,28 +1390,36 @@ ${reset}
           }
         }
 
-        // Run per-route middlewares if any
-        if (match.middlewares && match.middlewares.length > 0) {
-          const proceed = await runRouteMiddlewares(match.middlewares, req, res);
-          if (!proceed || res.raw.writableEnded) return;
-        }
-
         // Auth enforcement: secure routes require a valid token. Extracted into
         // enforceRouteAuth (authGate.ts) so the in-process TestClient enforces
         // the EXACT same gate (parity with Python #PY2 — a tokenless write must
         // 401 in tests too, or a green test hides a live 401). Dev admin routes
         // (/__dev) are always public. Returns true when a 401 was written.
         //
-        // The gate is LATE, after global and route middleware, so a rate
-        // limiter or access log registered globally still sees a rejected
-        // request. Every mainstream framework places it here: Django enforces
-        // in a view decorator after MIDDLEWARE, Laravel's `auth` is route
-        // middleware after the global + group passes, ASP.NET puts
-        // UseAuthorization last before the endpoint. Middleware that runs only
-        // after the gate cannot throttle a brute-force login or log a 401.
+        // Order: post-match globals -> THIS GATE -> the route's own middleware.
+        //
+        // The globals run BEFORE the gate so a rate limiter can throttle a
+        // brute-force login and an access log records the 401 - neither is
+        // possible if they only run on authenticated requests (Django enforces
+        // in a view decorator after all MIDDLEWARE; Laravel's `web` group runs
+        // before the `auth` route middleware; ASP.NET puts UseAuthorization
+        // last before the endpoint).
+        //
+        // The route's OWN middleware runs AFTER, so middleware attached to a
+        // secured route never processes an unauthenticated request - Node used
+        // to run it first, which meant a body-parsing or audit middleware on a
+        // secured route saw traffic that was about to be rejected. Laravel
+        // orders `->middleware(['auth', ...])` the same way; Django puts
+        // @login_required outermost. Aligned across all four (ADR-0012).
         const isDevAdmin = pathname.startsWith("/__dev");
         if (enforceRouteAuth(req, res, match, isDevAdmin)) {
           return;
+        }
+
+        // Run per-route middlewares if any
+        if (match.middlewares && match.middlewares.length > 0) {
+          const proceed = await runRouteMiddlewares(match.middlewares, req, res);
+          if (!proceed || res.raw.writableEnded) return;
         }
 
         // Inject path params by name into handler arguments, then request/response
