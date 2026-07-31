@@ -62,6 +62,72 @@ interface SessionData {
   [key: string]: unknown;
 }
 
+// ── Backend name resolution ───────────────────────────────────────
+
+/**
+ * Every accepted backend name, aliases included. Byte-identical membership in
+ * all four frameworks. Written once here so the switch below and the error
+ * message cannot disagree.
+ */
+export const VALID_SESSION_BACKENDS = [
+  "file", "filesystem",
+  "redis",
+  "valkey",
+  "mongodb", "mongo",
+  "memcached", "memcache",
+  "database", "db",
+] as const;
+
+/** Canonical name of each backend, for the error message (aliases omitted). */
+export const CANONICAL_SESSION_BACKENDS = [
+  "file", "redis", "valkey", "mongodb", "memcached", "database",
+] as const;
+
+/**
+ * Names that USED to work, mapped to the message a caller needs to migrate.
+ *
+ * A retired name must not fall into the generic "unknown backend" message: the
+ * operator had a working config, and telling them what replaced it is the whole
+ * point. Checked before the membership test so the specific message wins.
+ */
+const RETIRED_SESSION_BACKENDS: Record<string, string> = {
+  "redis-npm":
+    'TINA4_SESSION_BACKEND="redis-npm" was removed on 2026-07-31. Use "redis": '
+    + "it is the same Redis backend and reads the same TINA4_SESSION_REDIS_* "
+    + "settings, over a faster persistent connection.",
+};
+
+/**
+ * Normalise a backend name and reject anything unrecognised.
+ *
+ * An UNKNOWN name used to fall through to `default:` in the switch below, which
+ * is the file handler. A typo in TINA4_SESSION_BACKEND ("redsi") - or, before
+ * this normalisation existed, merely a capital ("Redis") - produced a running
+ * app writing sessions to local disk while the operator believed they were in
+ * Redis. Nothing logged, nothing failed, and the symptom surfaced much later as
+ * users being logged out whenever a request landed on another instance.
+ *
+ * A BLANK name still means file. An env var set to "" is a SET variable, so it
+ * never reaches the `??` default; rejecting blank would break every deployment
+ * that clears the var to take the default.
+ */
+function resolveBackend(name: string): string {
+  const normalised = String(name).trim().toLowerCase();
+  if (normalised === "") return "file";
+
+  const retired = RETIRED_SESSION_BACKENDS[normalised];
+  if (retired) throw new Error(retired);
+
+  if (!(VALID_SESSION_BACKENDS as readonly string[]).includes(normalised)) {
+    throw new Error(
+      `Unknown session backend "${normalised}". `
+      + `Valid backends: ${CANONICAL_SESSION_BACKENDS.join(", ")}. `
+      + "Leave TINA4_SESSION_BACKEND unset for the file default.",
+    );
+  }
+  return normalised;
+}
+
 // ── Session Handler Interface ─────────────────────────────────────
 
 /**
@@ -266,10 +332,12 @@ export class Session {
   private strict: boolean;
 
   constructor(backend?: string, config?: SessionConfig) {
-    const backendType = backend
-      ?? config?.backend
-      ?? process.env.TINA4_SESSION_BACKEND
-      ?? "file";
+    const backendType = resolveBackend(
+      backend
+        ?? config?.backend
+        ?? process.env.TINA4_SESSION_BACKEND
+        ?? "file",
+    );
 
     this.ttl = config?.ttl
       ?? (process.env.TINA4_SESSION_TTL ? parseInt(process.env.TINA4_SESSION_TTL, 10) : 3600);
@@ -281,24 +349,11 @@ export class Session {
       case "redis":
         this.handler = new RedisSessionHandler(config);
         break;
-      // RETIRED 2026-07-31. `redis-npm` was a Node-only session BACKEND NAME that
-      // drove Redis through the optional `redis` npm package. Python and Ruby also
-      // prefer that driver when it is installed, but they choose it INSIDE their one
-      // `redis` handler; only Node made it a user-selectable backend, and only
-      // Node's copy still ran execFileSync per command - the spawn-per-command
-      // pattern replaced everywhere else by the persistent worker in syncSocket
-      // (p50 80ms -> 10.5ms, and the cause of the sessionHandlers flake).
-      //
-      // This THROWS rather than falling through to `default`, which is `file`.
-      // A silent demotion to file sessions would log every user out on deploy and
-      // look like an outage, not a config change. Loud beats silent when the old
-      // name is retired.
-      case "redis-npm":
-        throw new Error(
-          'TINA4_SESSION_BACKEND="redis-npm" was removed on 2026-07-31. Use "redis": '
-          + "it is the same Redis backend and reads the same TINA4_SESSION_REDIS_* "
-          + "settings, over a faster persistent connection.",
-        );
+      // `redis-npm` was RETIRED here on 2026-07-31 (a Node-only backend NAME for
+      // the optional `redis` npm driver, still running execFileSync per command).
+      // Its rejection now lives in RETIRED_SESSION_BACKENDS above, so the helpful
+      // migration message survives the generic unknown-name check rather than
+      // being swallowed by it.
       case "valkey": {
         this.handler = new ValkeySessionHandler(config);
         break;
@@ -319,9 +374,19 @@ export class Session {
         break;
       }
       case "file":
-      default:
+      case "filesystem":
         this.handler = new FileSessionHandler(config?.path);
         break;
+      default:
+        // Unreachable for a user's typo - resolveBackend already rejected it.
+        // Only a name that IS in VALID_SESSION_BACKENDS but has no case above can
+        // land here, which is a bug in this switch rather than a configuration
+        // error, so it must not be swallowed into a file handler either.
+        throw new Error(
+          `Session backend "${backendType}" is listed in VALID_SESSION_BACKENDS `
+          + "but has no handler case. This is a framework bug, not a "
+          + "configuration error.",
+        );
     }
   }
 
