@@ -813,6 +813,120 @@ export async function handle(rawReq: IncomingMessage, rawRes: ServerResponse): P
   return _dispatchFn(rawReq, rawRes);
 }
 
+/** State the response-end wrappers need. */
+interface ResponseWrapContext {
+  req: Tina4Request;
+  res: Tina4Response;
+  pathname: string;
+  router: Router;
+  reqStartTime: number;
+  requestId: string;
+  /** Holder, because the wrapper reads this at end() time - after route matching. */
+  matchedPattern: { value: string };
+  isAiPortRequest: boolean;
+}
+
+/**
+ * Block /__dev_reload on the AI port so AI tools never trigger a browser reload.
+ *
+ * @returns true when the request was answered
+ */
+function blockAiPortReload(res: Tina4Response, pathname: string, isAiPortRequest: boolean): boolean {
+  if (!isAiPortRequest || pathname !== "/__dev_reload") return false;
+
+  res.raw.writeHead(404, { "Content-Type": "application/json" });
+  res.raw.end(JSON.stringify({ error: "Not available on AI port" }));
+  return true;
+}
+
+/**
+ * Rebuild the arguments `end` was called with.
+ *
+ * Node's `end` has three overloads and the wrappers must forward exactly the
+ * shape they were given, or a callback lands in the encoding slot.
+ */
+function callOriginalEnd(
+  originalEnd: (...args: any[]) => any,
+  chunk: unknown,
+  encodingOrCb?: BufferEncoding | (() => void),
+  cb?: () => void,
+): any {
+  if (typeof encodingOrCb === "function") return originalEnd(chunk, encodingOrCb);
+  if (encodingOrCb !== undefined) return originalEnd(chunk, encodingOrCb, cb);
+  return originalEnd(chunk, cb);
+}
+
+/**
+ * Wrap `res.raw.end` to inject the dev toolbar and/or the feedback widget, and
+ * to capture the request for the dev inspector.
+ *
+ * Two modes, and the distinction is deliberate:
+ *   * dev mode (off the AI port, outside /__dev) gets the toolbar, the feedback
+ *     widget and inspector capture;
+ *   * otherwise a whitelisted user still gets the feedback widget alone. The
+ *     injector re-checks the whitelist, path and html marker itself, so the
+ *     wrapper is cheap when it no-ops.
+ *
+ * Content-Length is removed on injection because the body size changes.
+ */
+function wrapResponseEnd(ctx: ResponseWrapContext): void {
+  const { req, res, pathname } = ctx;
+  const devToolbar = isDevMode() && !pathname.startsWith("/__dev") && !ctx.isAiPortRequest;
+  const feedbackOnly =
+    !devToolbar &&
+    feedbackEnabled() &&
+    !pathname.startsWith("/__dev") &&
+    !pathname.startsWith("/__feedback");
+
+  if (!devToolbar && !feedbackOnly) return;
+
+  const originalEnd = res.raw.end.bind(res.raw);
+  res.raw.end = function (
+    chunk?: unknown,
+    encodingOrCb?: BufferEncoding | (() => void),
+    cb?: () => void,
+  ) {
+    if (devToolbar && ctx.reqStartTime > 0) {
+      RequestInspector.capture(
+        req.method ?? "GET",
+        pathname,
+        res.raw.statusCode ?? 200,
+        Date.now() - ctx.reqStartTime,
+      );
+    }
+
+    const contentType = res.raw.getHeader("content-type");
+    if (typeof contentType === "string" && contentType.includes("text/html")) {
+      const html = typeof chunk === "string"
+        ? chunk
+        : Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : null;
+
+      if (html !== null) {
+        if (devToolbar) {
+          const toolbarCtx: DevToolbarContext = {
+            version: TINA4_VERSION,
+            method: req.method ?? "GET",
+            path: pathname,
+            matchedPattern: ctx.matchedPattern.value || pathname,
+            requestId: ctx.requestId,
+            routeCount: ctx.router.getRoutes().length,
+          };
+          chunk = injectFeedbackWidget(req, injectDevToolbar(html, toolbarCtx));
+        } else {
+          chunk = injectFeedbackWidget(req, html);
+        }
+      }
+      // Dropped for ANY html response, not only one carrying a body: that is
+      // what the two original wrappers did, and a refactor does not get to
+      // narrow it. An end() with no chunk on a text/html response still has
+      // its stale content-length removed.
+      if (!res.raw.headersSent) res.raw.removeHeader("content-length");
+    }
+
+    return callOriginalEnd(originalEnd, chunk, encodingOrCb, cb);
+  } as typeof res.raw.end;
+}
+
 /**
  * Turn an uncaught dispatch error into a response, and surface it.
  *
@@ -1371,104 +1485,26 @@ ${reset}
       const reqStartTime = DevAdmin.isEnabled() ? Date.now() : 0;
 
       // Mutable ref so wrappedEnd can read the matched pattern after route matching
-      let matchedPattern = "";
+      // A HOLDER, not a plain string: the end-wrapper below reads it at end()
+      // time, after route matching has assigned it.
+      const matchedPattern = { value: "" };
       const requestId = Date.now().toString(36);
 
       // Wrap res.raw.end to inject dev toolbar and capture requests
       // Skip toolbar injection on the AI port (no-reload behaviour)
       const isAiPortRequest = !!(rawReq as any)._tina4AiPort;
 
-      // AI port: block /__dev_reload so AI tools never trigger a browser reload
-      if (isAiPortRequest && pathname === "/__dev_reload") {
-        res.raw.writeHead(404, { "Content-Type": "application/json" });
-        res.raw.end(JSON.stringify({ error: "Not available on AI port" }));
-        return;
-      }
+      // AI port: block /__dev_reload so AI tools never trigger a browser reload.
+      if (blockAiPortReload(res, pathname, isAiPortRequest)) return;
 
-      if (isDevMode() && !pathname.startsWith("/__dev") && !isAiPortRequest) {
-        const originalEnd = res.raw.end.bind(res.raw);
-
-        const wrappedEnd: typeof res.raw.end = function (
-          chunk?: unknown,
-          encodingOrCb?: BufferEncoding | (() => void),
-          cb?: () => void,
-        ) {
-          // Capture request for dev inspector
-          if (reqStartTime > 0) {
-            const duration = Date.now() - reqStartTime;
-            const status = res.raw.statusCode ?? 200;
-            RequestInspector.capture(req.method ?? "GET", pathname, status, duration);
-          }
-
-          const contentType = res.raw.getHeader("content-type");
-          if (typeof contentType === "string" && contentType.includes("text/html")) {
-            const toolbarCtx: DevToolbarContext = {
-              version: TINA4_VERSION,
-              method: req.method ?? "GET",
-              path: pathname,
-              matchedPattern: matchedPattern || pathname,
-              requestId,
-              routeCount: router.getRoutes().length,
-            };
-            if (typeof chunk === "string") {
-              chunk = injectDevToolbar(chunk, toolbarCtx);
-              chunk = injectFeedbackWidget(req, chunk as string);
-            } else if (Buffer.isBuffer(chunk)) {
-              const html = chunk.toString("utf-8");
-              chunk = injectFeedbackWidget(req, injectDevToolbar(html, toolbarCtx));
-            }
-            // Remove content-length since toolbar injection changes body size
-            if (!res.raw.headersSent) {
-              res.raw.removeHeader("content-length");
-            }
-          }
-          if (typeof encodingOrCb === "function") {
-            return originalEnd(chunk, encodingOrCb);
-          }
-          if (encodingOrCb !== undefined) {
-            return originalEnd(chunk, encodingOrCb, cb);
-          }
-          return originalEnd(chunk, cb);
-        };
-        res.raw.end = wrappedEnd;
-      } else if (
-        feedbackEnabled() &&
-        !pathname.startsWith("/__dev") &&
-        !pathname.startsWith("/__feedback")
-      ) {
-        // Production / non-dev path: still inject the feedback widget for
-        // whitelisted users. The injector itself re-checks the whitelist,
-        // path, and html marker so the wrapper is cheap when it no-ops.
-        const originalEnd = res.raw.end.bind(res.raw);
-        const wrappedEnd: typeof res.raw.end = function (
-          chunk?: unknown,
-          encodingOrCb?: BufferEncoding | (() => void),
-          cb?: () => void,
-        ) {
-          const contentType = res.raw.getHeader("content-type");
-          if (
-            typeof contentType === "string" &&
-            contentType.includes("text/html")
-          ) {
-            if (typeof chunk === "string") {
-              chunk = injectFeedbackWidget(req, chunk);
-            } else if (Buffer.isBuffer(chunk)) {
-              chunk = injectFeedbackWidget(req, chunk.toString("utf-8"));
-            }
-            if (!res.raw.headersSent) {
-              res.raw.removeHeader("content-length");
-            }
-          }
-          if (typeof encodingOrCb === "function") {
-            return originalEnd(chunk, encodingOrCb);
-          }
-          if (encodingOrCb !== undefined) {
-            return originalEnd(chunk, encodingOrCb, cb);
-          }
-          return originalEnd(chunk, cb);
-        };
-        res.raw.end = wrappedEnd;
-      }
+      // Wrap res.raw.end so the dev toolbar / feedback widget can be injected
+      // and the request captured for the inspector. Extracted - see
+      // wrapResponseEnd. matchedPattern is a HOLDER because the wrapper reads
+      // it at end() time, long after route matching has assigned it.
+      wrapResponseEnd({
+        req, res, pathname, router,
+        reqStartTime, requestId, matchedPattern, isAiPortRequest,
+      });
 
       // PRE-MATCH global middleware: runs before a route is even looked up, so
       // CORS and anything else that must survive a short-circuit can set
@@ -1495,7 +1531,7 @@ ${reset}
       const match = router.match(req.method ?? "GET", pathname);
       if (match) {
         req.params = match.params;
-        matchedPattern = match.pattern;
+        matchedPattern.value = match.pattern;
 
         // Global class-based middleware registered via Router.use(...) /
         // MiddlewareRunner.use(...) — run the beforeX hooks before the handler.
