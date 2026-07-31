@@ -2,7 +2,7 @@ import type { Tina4Request, Tina4Response, Middleware } from "./types.js";
 import { validToken, getPayload } from "./auth.js";
 import { Log } from "./logger.js";
 import { isTruthy } from "./dotenv.js";
-import { defaultRouter } from "./router.js";
+import { defaultRouter, type Router } from "./router.js";
 
 /**
  * Whether to emit a per-request log line (v3.13.14). TINA4_LOG_REQUESTS is
@@ -274,7 +274,7 @@ export class MiddlewareRunner {
 
 /** Configuration for the CORS middleware */
 export interface CorsConfig {
-  /** Allowed origins. Default: "*" (or TINA4_CORS_ORIGINS env, comma-separated) */
+  /** Allowed origins. Default: NONE (deny) — or TINA4_CORS_ORIGINS env, comma-separated. "*" allows any. */
   origins?: string | string[];
   /** Allowed methods. Default: standard REST methods (or TINA4_CORS_METHODS env) */
   methods?: string | string[];
@@ -282,110 +282,218 @@ export interface CorsConfig {
   headers?: string | string[];
   /** Access-Control-Max-Age in seconds. Default: 86400 (or TINA4_CORS_MAX_AGE env) */
   maxAge?: number;
+  /** Send Access-Control-Allow-Credentials. Default: false (or TINA4_CORS_CREDENTIALS env). Never sent with a wildcard origin. */
+  credentials?: boolean;
+}
+
+/** Warn-once ledger so a scripted probe cannot flood the log. */
+const corsWarned = new Set<string>();
+
+/** Reset the CORS warn-once ledger. Test seam. */
+export function resetCorsWarnings(): void {
+  corsWarned.clear();
+}
+
+function corsWarnOnce(key: string, message: string): void {
+  if (corsWarned.has(key)) return;
+  corsWarned.add(key);
+  Log.warning(message);
+}
+
+/**
+ * The resolved CORS policy — ONE implementation of the rules.
+ *
+ * Both the function middleware `cors()` and the class middleware
+ * `CorsMiddleware` build one of these and apply what it returns. They used to
+ * be two independent implementations that had already drifted: `cors()` never
+ * read TINA4_CORS_CREDENTIALS at all, so the DEFAULT always-on pipeline
+ * silently ignored a documented env var (measured 2026-07-31). One feature,
+ * one code path.
+ *
+ * DENY BY DEFAULT (ADR-0014). With no origins configured, NO
+ * Access-Control-Allow-Origin is emitted and the browser's own CORS check
+ * blocks the cross-origin request. "*" still works, it just has to be asked for.
+ *
+ * CREDENTIALS AND THE WILDCARD ARE MUTUALLY EXCLUSIVE. The Fetch Standard's
+ * CORS check treats "*" as a literal (not a wildcard) once the request's
+ * credentials mode is "include", so ACAO: * with
+ * Access-Control-Allow-Credentials: true is rejected by every browser.
+ *
+ * VARY: ORIGIN whenever the ACAO value is COMPUTED from the request's Origin,
+ * i.e. whenever an allow-list is configured — on a MISS as well as a match.
+ * RFC 9110 s12.5.5: a Vary field name list tells cache recipients they "MUST
+ * NOT use this response to satisfy a later request unless the later request
+ * has the same values for the listed header fields as the original request".
+ * The miss case matters most: without it a shared cache can store the no-ACAO
+ * response for origin B and serve it to origin A. A constant "*" genuinely
+ * does not vary and gets no Vary, which would only fragment a CDN's cache.
+ *
+ * Access-Control-Allow-Methods / -Allow-Headers are static configured lists
+ * here, never derived from the request's Access-Control-Request-* headers, so
+ * those field names do NOT belong in Vary.
+ */
+export class CorsPolicy {
+  readonly allowedOrigins: string[];
+  readonly allowedMethods: string;
+  readonly allowedHeaders: string;
+  readonly maxAge: number;
+  readonly credentials: boolean;
+
+  constructor(config?: CorsConfig) {
+    // Default is EMPTY, not "*" — deny by default (ADR-0014).
+    const originsRaw = config?.origins ?? process.env.TINA4_CORS_ORIGINS ?? "";
+    const list = Array.isArray(originsRaw) ? originsRaw : originsRaw.split(",");
+    this.allowedOrigins = list.map((o) => o.trim()).filter((o) => o !== "");
+
+    const methodsRaw = config?.methods
+      ?? process.env.TINA4_CORS_METHODS
+      ?? "GET, POST, PUT, DELETE, PATCH, OPTIONS";
+    this.allowedMethods = Array.isArray(methodsRaw) ? methodsRaw.join(", ") : methodsRaw;
+
+    const headersRaw = config?.headers
+      ?? process.env.TINA4_CORS_HEADERS
+      ?? "Content-Type,Authorization,X-Request-ID";
+    this.allowedHeaders = Array.isArray(headersRaw) ? headersRaw.join(", ") : headersRaw;
+
+    this.maxAge = config?.maxAge
+      ?? (process.env.TINA4_CORS_MAX_AGE ? parseInt(process.env.TINA4_CORS_MAX_AGE, 10) : 86400);
+
+    this.credentials = config?.credentials
+      ?? ["true", "1", "yes"].includes((process.env.TINA4_CORS_CREDENTIALS ?? "false").toLowerCase());
+  }
+
+  /** Whether an operator has actually declared a CORS policy. */
+  isConfigured(): boolean {
+    return this.allowedOrigins.length > 0;
+  }
+
+  /** The origin to send in Access-Control-Allow-Origin, or undefined for none. */
+  resolveOrigin(requestOrigin: string): string | undefined {
+    if (this.allowedOrigins.length === 0) return undefined;
+    if (this.allowedOrigins.includes("*")) return "*";
+    if (requestOrigin && this.allowedOrigins.includes(requestOrigin)) return requestOrigin;
+    return undefined;
+  }
+
+  /**
+   * The CORS headers for a request origin. `isPreflight` adds Max-Age, which
+   * the Fetch Standard only defines for a preflight response.
+   */
+  headersFor(requestOrigin: string, isPreflight: boolean): Record<string, string> {
+    if (this.allowedOrigins.length === 0) {
+      if (requestOrigin) {
+        corsWarnOnce("unconfigured",
+          `CORS: refused cross-origin request from ${requestOrigin} — no policy is configured. `
+          + "Set TINA4_CORS_ORIGINS to the origins you want to allow, e.g. "
+          + "TINA4_CORS_ORIGINS=https://app.example.com (or '*' to allow any origin).");
+      }
+      return {};
+    }
+
+    const out: Record<string, string> = {};
+    if (!this.allowedOrigins.includes("*")) {
+      out["Vary"] = "Origin";
+    }
+
+    const origin = this.resolveOrigin(requestOrigin);
+    if (origin === undefined) {
+      if (requestOrigin) {
+        corsWarnOnce(`denied:${requestOrigin}`,
+          `CORS: origin ${requestOrigin} is not in TINA4_CORS_ORIGINS `
+          + `(${this.allowedOrigins.join(",")}) — the browser will block this response.`);
+      }
+      return out;
+    }
+
+    out["Access-Control-Allow-Origin"] = origin;
+    out["Access-Control-Allow-Methods"] = this.allowedMethods;
+    out["Access-Control-Allow-Headers"] = this.allowedHeaders;
+    if (isPreflight) out["Access-Control-Max-Age"] = String(this.maxAge);
+
+    if (this.credentials) {
+      if (origin === "*") {
+        corsWarnOnce("wildcard-credentials",
+          "CORS: TINA4_CORS_CREDENTIALS is true but TINA4_CORS_ORIGINS is '*'. The Fetch Standard "
+          + "forbids Access-Control-Allow-Origin: * with credentials, so credentials are NOT being "
+          + "sent. Credentialed CORS requires an explicit origin list, e.g. "
+          + "TINA4_CORS_ORIGINS=https://app.example.com.");
+      } else {
+        out["Access-Control-Allow-Credentials"] = "true";
+      }
+    }
+    return out;
+  }
+}
+
+/** Fold a Vary field name into whatever Vary the response already carries. */
+function applyCorsHeaders(res: Tina4Response, headers: Record<string, string>): void {
+  for (const [name, value] of Object.entries(headers)) {
+    if (name === "Vary") {
+      const current = String((res as { raw?: { getHeader?(n: string): unknown } }).raw?.getHeader?.("Vary") ?? "");
+      const parts = current.split(",").map((p) => p.trim()).filter((p) => p !== "");
+      if (!parts.some((p) => p.toLowerCase() === value.toLowerCase())) parts.push(value);
+      res.header(name, parts.join(", "));
+      continue;
+    }
+    res.header(name, value);
+  }
+}
+
+/**
+ * Is this a REAL CORS preflight (as opposed to a bare protocol-introspection
+ * OPTIONS)? A preflight carries an Origin — browsers always send one. A bare
+ * OPTIONS does not, and belongs to the RFC 9110 s9.3.7 handler in dispatch.
+ */
+function isCorsPreflight(method: string | undefined, requestOrigin: string): boolean {
+  return method === "OPTIONS" && requestOrigin !== "";
+}
+
+/** The Allow header for a path, from the LIVE router. */
+function allowHeaderForUrl(url: string | undefined): string {
+  const pathname = new URL(url ?? "/", "http://localhost").pathname;
+  // startServer builds its own Router and publishes it on globalThis;
+  // defaultRouter is the module-level instance used by the standalone
+  // get()/post() helpers. A file-routed app registers nothing in the latter,
+  // so reading it alone returned an empty method set and stamped Allow: "".
+  const liveRouter = (globalThis as { __tina4_router?: Router }).__tina4_router ?? defaultRouter;
+  return liveRouter.methodsAllowedForPath(pathname).join(", ");
 }
 
 /**
  * Built-in CORS middleware (function form).
- * Reads configuration from env vars if not provided:
+ *
+ * A thin adapter over CorsPolicy — see that class for the rules and the
+ * standards behind them. Reads configuration from env vars when not provided:
  *   TINA4_CORS_ORIGINS — comma-separated list of allowed origins, or "*"
  *   TINA4_CORS_METHODS — comma-separated list of allowed methods
  *   TINA4_CORS_HEADERS — comma-separated list of allowed headers
  *   TINA4_CORS_MAX_AGE — preflight cache duration in seconds
+ *   TINA4_CORS_CREDENTIALS — send Access-Control-Allow-Credentials
  *
- * Preflight (OPTIONS) returns 204 with appropriate headers.
- * Supports wildcard ("*") and specific origin matching.
+ * A real preflight is answered 204. The status is the same whether the origin
+ * was allowed or denied — the browser does the blocking.
  */
 export function cors(config?: CorsConfig): Middleware {
-  const originsRaw = config?.origins
-    ?? process.env.TINA4_CORS_ORIGINS
-    ?? "*";
-  const allowedOrigins = Array.isArray(originsRaw)
-    ? originsRaw
-    : originsRaw.split(",").map((o) => o.trim());
-
-  const methodsRaw = config?.methods
-    ?? process.env.TINA4_CORS_METHODS
-    ?? "GET, POST, PUT, DELETE, PATCH, OPTIONS";
-  const allowedMethods = Array.isArray(methodsRaw)
-    ? methodsRaw.join(", ")
-    : methodsRaw;
-
-  const headersRaw = config?.headers
-    ?? process.env.TINA4_CORS_HEADERS
-    ?? "Content-Type,Authorization,X-Request-ID";
-  const allowedHeaders = Array.isArray(headersRaw)
-    ? headersRaw.join(", ")
-    : headersRaw;
-
-  const maxAge = config?.maxAge
-    ?? (process.env.TINA4_CORS_MAX_AGE ? parseInt(process.env.TINA4_CORS_MAX_AGE, 10) : 86400);
+  const policy = new CorsPolicy(config);
 
   return (req, res, next) => {
     const requestOrigin = req.headers.origin ?? "";
+    const preflight = isCorsPreflight(req.method, requestOrigin);
 
-    // Determine the correct origin header value
-    let originHeader: string;
-    if (allowedOrigins.includes("*")) {
-      originHeader = "*";
-    } else if (allowedOrigins.includes(requestOrigin)) {
-      originHeader = requestOrigin;
-      // When responding with a specific origin, add Vary: Origin
-      res.header("Vary", "Origin");
-    } else {
-      // Origin not allowed - no CORS headers. A preflight from a disallowed
-      // origin is still answered 204 (the browser rejects it for the missing
-      // headers); a bare OPTIONS falls through to the RFC 9110 handler.
-      if (req.method === "OPTIONS" && requestOrigin !== "") {
-        res(null, 204);
-        return;
-      }
-      next();
-      return;
-    }
+    applyCorsHeaders(res as Tina4Response, policy.headersFor(requestOrigin, preflight));
 
-    res.header("Access-Control-Allow-Origin", originHeader);
-    res.header("Access-Control-Allow-Methods", allowedMethods);
-    res.header("Access-Control-Allow-Headers", allowedHeaders);
-
-    // Only a REAL preflight short-circuits here. A preflight carries an Origin
-    // (browsers always send one); a bare OPTIONS does not, and belongs to the
-    // RFC 9110 s9.3.7 handler in dispatch, which answers 204 WITH an Allow
-    // header listing the path's method set.
-    //
-    // The default origin list is "*", so this used to fire on EVERY OPTIONS
-    // request including ones with no Origin at all - swallowing the RFC 9110
-    // path entirely and returning a 204 that told the client nothing. Node was
-    // the only framework of the four that did this; Ruby, Python and PHP all
-    // answer a bare OPTIONS with Allow.
-    if (req.method === "OPTIONS" && requestOrigin !== "") {
-      res.header("Access-Control-Max-Age", String(maxAge));
+    if (preflight) {
       // Carry the resource's REAL method set as Allow (RFC 9110 s9.3.7): a
-      // preflight IS an OPTIONS response, so it should answer the same
-      // question a bare OPTIONS does, on top of the CORS policy headers.
-      //
-      // This is CONFORMANCE, not a deviation. The frameworks' own OPTIONS
-      // handlers already do it - Django's View.options() sets Allow from
-      // _allowed_methods(), Express's router auto-answers OPTIONS with Allow.
-      // The add-on CORS libraries (cors npm, django-cors-headers, rack-cors,
-      // stack-cors, ASP.NET CORS) omit it, but that is a LAYERING artifact:
-      // each sits ahead of the framework, so short-circuiting the preflight
-      // also skips the framework's OPTIONS handler and the header it would
-      // have produced. Tina4 owns both paths. See ADR-0013.
+      // preflight IS an OPTIONS response, so it answers the same question a
+      // bare OPTIONS does, on top of the CORS policy headers. This is
+      // CONFORMANCE, not a deviation — Django's View.options() and Express's
+      // router already emit Allow; the add-on CORS libraries lose it only
+      // because they short-circuit ahead of the framework. See ADR-0013.
       //
       // Allow and Access-Control-Allow-Methods are NOT interchangeable: Allow
       // is what the resource supports, ACAM is what the CORS policy permits
       // cross-origin. A policy allowing DELETE on a GET-only route still 405s.
-      // An unknown path yields "", matching the bare-OPTIONS branch, so a
-      // client can tell "nothing here" from "not told".
-      //
-      // Resolve the LIVE router the same way mcp.ts and devAdmin.ts do:
-      // startServer builds its own Router and publishes it on globalThis.
-      // defaultRouter is the module-level instance used by the standalone
-      // get()/post() helpers, and a file-routed app registers nothing in it -
-      // reading it here returned an empty method set and stamped Allow: "".
-      const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
-      const liveRouter = (globalThis as any).__tina4_router ?? defaultRouter;
-      res.header("Allow", liveRouter.methodsAllowedForPath(pathname).join(", "));
+      res.header("Allow", allowHeaderForUrl(req.url));
       res(null, 204);
       return;
     }
@@ -396,53 +504,21 @@ export function cors(config?: CorsConfig): Middleware {
 
 /**
  * Class-based CORS middleware using the before/after convention.
- * Wraps the same CORS logic as the `cors()` function middleware.
+ *
+ * The same CorsPolicy as `cors()` — one implementation, one set of semantics.
  *
  * Usage:
  *   Router.use(CorsMiddleware);
  */
 export class CorsMiddleware {
   static beforeCors(req: Tina4Request, res: Tina4Response): [Tina4Request, Tina4Response] {
-    const originsRaw = process.env.TINA4_CORS_ORIGINS ?? "*";
-    const allowedOrigins = originsRaw.split(",").map((o) => o.trim());
-
-    const allowedMethods = process.env.TINA4_CORS_METHODS
-      ?? "GET, POST, PUT, DELETE, PATCH, OPTIONS";
-
-    const allowedHeaders = process.env.TINA4_CORS_HEADERS
-      ?? "Content-Type,Authorization,X-Request-ID";
-
-    const credentials = process.env.TINA4_CORS_CREDENTIALS ?? "false";
-
-    const maxAge = process.env.TINA4_CORS_MAX_AGE
-      ? parseInt(process.env.TINA4_CORS_MAX_AGE, 10)
-      : 86400;
-
     const requestOrigin = req.headers.origin ?? "";
+    const preflight = isCorsPreflight(req.method, requestOrigin);
 
-    let originHeader: string | undefined;
-    if (allowedOrigins.includes("*")) {
-      originHeader = "*";
-    } else if (allowedOrigins.includes(requestOrigin)) {
-      originHeader = requestOrigin;
-      res.header("Vary", "Origin");
-    }
+    applyCorsHeaders(res, new CorsPolicy().headersFor(requestOrigin, preflight));
 
-    if (originHeader) {
-      res.header("Access-Control-Allow-Origin", originHeader);
-      res.header("Access-Control-Allow-Methods", allowedMethods);
-      res.header("Access-Control-Allow-Headers", allowedHeaders);
-
-      // Add credentials header when enabled and origin is not wildcard
-      if (credentials === "true" && originHeader !== "*") {
-        res.header("Access-Control-Allow-Credentials", "true");
-      }
-
-      if (req.method === "OPTIONS") {
-        res.header("Access-Control-Max-Age", String(maxAge));
-        res(null, 204);
-      }
-    } else if (req.method === "OPTIONS") {
+    if (preflight) {
+      res.header("Allow", allowHeaderForUrl(req.url));
       res(null, 204);
     }
 
@@ -451,6 +527,10 @@ export class CorsMiddleware {
 
   /**
    * Check if a request is an OPTIONS preflight.
+   *
+   * NOTE: returns true for ANY OPTIONS, with no Origin check, so the name
+   * overstates what it tests. The real short-circuit uses isCorsPreflight().
+   * Kept because existing tests pin this meaning.
    */
   static isPreflight(method: string): boolean {
     return method?.toUpperCase() === "OPTIONS";
