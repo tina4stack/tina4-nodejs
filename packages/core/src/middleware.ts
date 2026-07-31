@@ -2,6 +2,7 @@ import type { Tina4Request, Tina4Response, Middleware } from "./types.js";
 import { validToken, getPayload } from "./auth.js";
 import { Log } from "./logger.js";
 import { isTruthy } from "./dotenv.js";
+import { defaultRouter } from "./router.js";
 
 /**
  * Whether to emit a per-request log line (v3.13.14). TINA4_LOG_REQUESTS is
@@ -358,6 +359,33 @@ export function cors(config?: CorsConfig): Middleware {
     // answer a bare OPTIONS with Allow.
     if (req.method === "OPTIONS" && requestOrigin !== "") {
       res.header("Access-Control-Max-Age", String(maxAge));
+      // Carry the resource's REAL method set as Allow (RFC 9110 s9.3.7): a
+      // preflight IS an OPTIONS response, so it should answer the same
+      // question a bare OPTIONS does, on top of the CORS policy headers.
+      //
+      // This is CONFORMANCE, not a deviation. The frameworks' own OPTIONS
+      // handlers already do it - Django's View.options() sets Allow from
+      // _allowed_methods(), Express's router auto-answers OPTIONS with Allow.
+      // The add-on CORS libraries (cors npm, django-cors-headers, rack-cors,
+      // stack-cors, ASP.NET CORS) omit it, but that is a LAYERING artifact:
+      // each sits ahead of the framework, so short-circuiting the preflight
+      // also skips the framework's OPTIONS handler and the header it would
+      // have produced. Tina4 owns both paths. See ADR-0013.
+      //
+      // Allow and Access-Control-Allow-Methods are NOT interchangeable: Allow
+      // is what the resource supports, ACAM is what the CORS policy permits
+      // cross-origin. A policy allowing DELETE on a GET-only route still 405s.
+      // An unknown path yields "", matching the bare-OPTIONS branch, so a
+      // client can tell "nothing here" from "not told".
+      //
+      // Resolve the LIVE router the same way mcp.ts and devAdmin.ts do:
+      // startServer builds its own Router and publishes it on globalThis.
+      // defaultRouter is the module-level instance used by the standalone
+      // get()/post() helpers, and a file-routed app registers nothing in it -
+      // reading it here returned an empty method set and stamped Allow: "".
+      const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+      const liveRouter = (globalThis as any).__tina4_router ?? defaultRouter;
+      res.header("Allow", liveRouter.methodsAllowedForPath(pathname).join(", "));
       res(null, 204);
       return;
     }
