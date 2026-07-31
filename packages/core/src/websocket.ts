@@ -82,6 +82,20 @@ type EventHandler = (...args: unknown[]) => void;
 /**
  * Compute Sec-WebSocket-Accept from Sec-WebSocket-Key per RFC 6455.
  */
+/**
+ * Build an RFC 6455 close frame carrying a status code and optional reason.
+ *
+ * The code is a big-endian uint16 in the first two payload bytes (s5.5.1), so
+ * a peer that only reads the code still gets a valid one.
+ */
+export function buildCloseFrame(code: number, reason: string = ""): Buffer {
+  const reasonBytes = Buffer.from(reason, "utf-8");
+  const payload = Buffer.alloc(2 + reasonBytes.length);
+  payload.writeUInt16BE(code, 0);
+  reasonBytes.copy(payload, 2);
+  return buildFrame(OP_CLOSE, payload);
+}
+
 export function computeAcceptKey(key: string): string {
   return createHash("sha1")
     .update(key + MAGIC_STRING)
@@ -957,6 +971,35 @@ class WsRouteManager {
     if (state.trackerId && this.onRemove) this.onRemove(state.trackerId);
   }
 
+  /**
+   * Close every open route connection with an RFC 6455 status code.
+   *
+   * Used by graceful shutdown with 1001 "going away", which is the code RFC
+   * 6455 s7.4.1 defines for exactly this case ("a server going down"). A
+   * client that is told 1001 can reconnect on a schedule; a socket that just
+   * vanishes looks like a network fault and produces an error instead.
+   *
+   * Best-effort per connection: a dead socket is skipped, never aborting the
+   * rest. Returns how many were signalled.
+   */
+  closeAll(code: number = CLOSE_GOING_AWAY, reason: string = "server shutting down"): number {
+    const frame = buildCloseFrame(code, reason);
+    let closed = 0;
+    for (const state of [...this.connections.values()]) {
+      if (state.closed) continue;
+      state.closed = true;
+      try {
+        state.socket.write(frame);
+        state.socket.end();
+        closed++;
+      } catch {
+        /* already gone */
+      }
+      this.remove(state.conn.id);
+    }
+    return closed;
+  }
+
   /** Send a text frame to one connection (best-effort). */
   sendTo(id: string, message: string): void {
     const state = this.connections.get(id);
@@ -1264,6 +1307,29 @@ class DevReloadWsManager {
   /** Number of currently-open dev-reload sockets (test/diagnostic helper). */
   get size(): number {
     return this.clients.size;
+  }
+
+  /**
+   * Close every open dev-reload socket with an RFC 6455 status code (1001
+   * "going away" on shutdown). The browser client reconnects on a schedule
+   * when it is told the server went away, rather than reporting an error.
+   * Best-effort per socket. Returns how many were signalled.
+   */
+  closeAll(code: number = CLOSE_GOING_AWAY, reason: string = "server shutting down"): number {
+    const frame = buildCloseFrame(code, reason);
+    let closed = 0;
+    for (const client of [...this.clients]) {
+      try {
+        client.socket.write(frame);
+        client.socket.end();
+        closed++;
+      } catch {
+        /* already gone */
+      }
+      this.clients.delete(client);
+      if (client.trackerId && this.onRemove) this.onRemove(client.trackerId);
+    }
+    return closed;
   }
 
   /**

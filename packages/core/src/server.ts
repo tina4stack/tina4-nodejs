@@ -25,7 +25,7 @@ import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
 import { DevAdmin, RequestInspector, WsTracker } from "./devAdmin.js";
-import { devReloadWs, serveWebSocketRoute, wsRouteManager } from "./websocket.js";
+import { CLOSE_GOING_AWAY, devReloadWs, serveWebSocketRoute, wsRouteManager } from "./websocket.js";
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
 import { stopAllBackgroundTasks } from "./background.js";
@@ -58,6 +58,34 @@ let swaggerAssetsEnabled = false;
 /** Bundled Swagger UI asset paths that must honour the swagger gate. */
 function isSwaggerAssetPath(pathname: string): boolean {
   return pathname === "/swagger" || pathname.startsWith("/swagger/");
+}
+
+/** How long a graceful shutdown waits for in-flight requests, in seconds. */
+export const DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 30;
+
+/**
+ * Resolve the shutdown budget from `TINA4_SHUTDOWN_TIMEOUT` (seconds).
+ *
+ * 30s matches Kubernetes' default `terminationGracePeriodSeconds` and
+ * Gunicorn's `graceful_timeout`, so the drain finishes just BEFORE the
+ * orchestrator's SIGKILL rather than being truncated by it. Same env var and
+ * same default as tina4-ruby's `Tina4::Shutdown`.
+ *
+ * A non-numeric or negative value falls back to the default rather than
+ * silently disabling the drain - a typo must not turn shutdown into a
+ * zero-second force-kill.
+ */
+export function shutdownTimeoutSeconds(): number {
+  const raw = process.env.TINA4_SHUTDOWN_TIMEOUT;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_SHUTDOWN_TIMEOUT_SECONDS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    Log.warning(
+      `TINA4_SHUTDOWN_TIMEOUT="${raw}" is not a valid number of seconds - using ${DEFAULT_SHUTDOWN_TIMEOUT_SECONDS}`,
+    );
+    return DEFAULT_SHUTDOWN_TIMEOUT_SECONDS;
+  }
+  return parsed;
 }
 
 /**
@@ -1878,8 +1906,115 @@ ${reset}
         // Open the browser on the MAIN port — that's the hot-reload port.
         openBrowser(`http://${displayHost}:${port}`);
       }
+      // ── Graceful shutdown ─────────────────────────────────────────────
+      // A container orchestrator sends SIGTERM and SIGKILLs after a grace
+      // period, so dropping in-flight requests here is a production defect,
+      // not a style question. The order below mirrors Python/PHP/Ruby:
+      // stop accepting -> let in-flight requests finish -> release resources
+      // -> exit 0.
+      //
+      // Two traps this replaces, both measured against a real signal:
+      //
+      //  1. Nothing here trapped the signal at all, so a plain startServer()
+      //     app died on SIGTERM's DEFAULT disposition: process gone in ~150ms,
+      //     every in-flight response dropped, exit 143.
+      //  2. `server.close()` is ASYNCHRONOUS and, in Node's own words, "keeps
+      //     existing connections". The CLI's `server.close(); process.exit(0)`
+      //     therefore killed the very requests close() was waiting to drain.
+      //     The close CALLBACK is the only honest "everything drained" signal.
+      let shuttingDown = false;
+
+      const closeListeners = (): Promise<void> =>
+        new Promise((done) => {
+          let pending = aiServer ? 2 : 1;
+          const one = (): void => {
+            if (--pending === 0) done();
+          };
+          server.close(one);
+          if (aiServer) aiServer.close(one);
+          // A keep-alive socket with no request on it still counts as an open
+          // connection, so close() would sit on it until the client wandered
+          // off. Without this a fully drained server still burns the whole
+          // shutdown budget.
+          server.closeIdleConnections();
+          aiServer?.closeIdleConnections();
+        });
+
+      const gracefulShutdown = async (signal: string): Promise<void> => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        Log.info(`Received ${signal}, shutting down gracefully...`);
+
+        stopAllBackgroundTasks();
+
+        // Tell live WebSocket peers we are going away (RFC 6455 s7.4.1 code
+        // 1001) BEFORE closing the listeners. A WS connection never "finishes"
+        // the way a request does, so waiting for one to drain would burn the
+        // whole budget every time; the honest move is a proper close frame so
+        // a tina4-js client reconnects on a schedule instead of erroring on a
+        // socket that simply vanished.
+        const wsClosed =
+          wsRouteManager.closeAll(CLOSE_GOING_AWAY, "server shutting down") +
+          devReloadWs.closeAll(CLOSE_GOING_AWAY, "server shutting down");
+        if (wsClosed > 0) {
+          Log.info(`Closed ${wsClosed} WebSocket connection(s) with 1001 going away`);
+        }
+
+        // Race the drain against the shutdown budget. Whatever is still in
+        // flight when the budget expires gets force-closed: SIGKILL is what
+        // arrives next, so a bounded drain is strictly better than an
+        // unbounded one that the orchestrator truncates anyway.
+        const budgetSeconds = shutdownTimeoutSeconds();
+        let timer: NodeJS.Timeout | undefined;
+        const outcome = await Promise.race([
+          closeListeners().then(() => "drained" as const),
+          new Promise<"timeout">((r) => {
+            timer = setTimeout(() => r("timeout"), budgetSeconds * 1000);
+            timer.unref();
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+
+        if (outcome === "timeout") {
+          Log.warning(
+            `Shutdown timeout (${budgetSeconds}s) reached with requests still in flight - forcing close`,
+          );
+          server.closeAllConnections();
+          aiServer?.closeAllConnections();
+        }
+
+        try {
+          const orm = await import("../../orm/src/index.js");
+          await orm.closeDatabase();
+        } catch {
+          /* ORM never initialised - nothing to close */
+        }
+
+        Log.info("Server stopped.");
+        // Exit 0: this process was ASKED to stop and did so cleanly. 128+signum
+        // is what waitpid reports for a process killed BY a signal, i.e. one
+        // that did NOT handle it - it is a diagnosis, not a target. Gunicorn
+        // and Puma both halt 0 on a handled TERM, and a container exiting 0 is
+        // a clean termination rather than a signal-kill.
+        process.exit(0);
+      };
+
+      const onSigterm = (): void => {
+        void gracefulShutdown("SIGTERM");
+      };
+      const onSigint = (): void => {
+        void gracefulShutdown("SIGINT");
+      };
+      process.on("SIGTERM", onSigterm);
+      process.on("SIGINT", onSigint);
+
       resolvePromise({
         close: () => {
+          // An explicit close() is not a signal shutdown: drop the handlers so
+          // a test that starts many servers in one process does not pile up
+          // listeners (and trip Node's MaxListeners warning).
+          process.off("SIGTERM", onSigterm);
+          process.off("SIGINT", onSigint);
           // Clear any registered background timers so graceful shutdown actually exits.
           stopAllBackgroundTasks();
           if (aiServer) aiServer.close();
