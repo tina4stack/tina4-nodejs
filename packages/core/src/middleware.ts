@@ -304,8 +304,10 @@ export function cors(config?: CorsConfig): Middleware {
       // When responding with a specific origin, add Vary: Origin
       res.header("Vary", "Origin");
     } else {
-      // Origin not allowed — still call next() but don't set CORS headers
-      if (req.method === "OPTIONS") {
+      // Origin not allowed - no CORS headers. A preflight from a disallowed
+      // origin is still answered 204 (the browser rejects it for the missing
+      // headers); a bare OPTIONS falls through to the RFC 9110 handler.
+      if (req.method === "OPTIONS" && requestOrigin !== "") {
         res(null, 204);
         return;
       }
@@ -317,7 +319,17 @@ export function cors(config?: CorsConfig): Middleware {
     res.header("Access-Control-Allow-Methods", allowedMethods);
     res.header("Access-Control-Allow-Headers", allowedHeaders);
 
-    if (req.method === "OPTIONS") {
+    // Only a REAL preflight short-circuits here. A preflight carries an Origin
+    // (browsers always send one); a bare OPTIONS does not, and belongs to the
+    // RFC 9110 s9.3.7 handler in dispatch, which answers 204 WITH an Allow
+    // header listing the path's method set.
+    //
+    // The default origin list is "*", so this used to fire on EVERY OPTIONS
+    // request including ones with no Origin at all - swallowing the RFC 9110
+    // path entirely and returning a 204 that told the client nothing. Node was
+    // the only framework of the four that did this; Ruby, Python and PHP all
+    // answer a bare OPTIONS with Allow.
+    if (req.method === "OPTIONS" && requestOrigin !== "") {
       res.header("Access-Control-Max-Age", String(maxAge));
       res(null, 204);
       return;

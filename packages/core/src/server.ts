@@ -1342,25 +1342,10 @@ ${reset}
         res.raw.end = wrappedEnd;
       }
 
-      // Try static files first (project public dir, src/public dir, then framework built-in)
-      // Index resolution: "/" or "/foo/" picks up index.html so SPA builds Just Work.
-      if (existsSync(staticDir) && tryServeStatic(staticDir, req, res)) {
-        return;
-      }
-      if (existsSync(srcPublicDir) && tryServeStatic(srcPublicDir, req, res)) {
-        return;
-      }
-      // Framework-bundled assets. The Swagger UI lives here (public/swagger/),
-      // and static files resolve BEFORE routes -- so this path MUST honour the
-      // swagger gate or /swagger is served in production regardless of
-      // TINA4_SWAGGER_ENABLED / TINA4_DEBUG.
-      if (swaggerAssetsEnabled || !isSwaggerAssetPath(pathname)) {
-        if (tryServeStatic(BUILTIN_PUBLIC_DIR, req, res)) {
-          return;
-        }
-      }
-
-      // Match route
+      // Match route. ROUTES BEAT FILES (ADR-0010): static assets resolve in
+      // the not-found fallback below, only once no route has claimed the path.
+      // A file in public/ can arrive from a build step, an upload directory or
+      // a careless deploy, and it must never silently shadow a reviewed route.
       const match = router.match(req.method ?? "GET", pathname);
       if (match) {
         req.params = match.params;
@@ -1510,6 +1495,23 @@ ${reset}
         });
         res.raw.end(body);
         return;
+      }
+
+      // No route claimed the path. NOW try the filesystem, per ADR-0010.
+      // Index resolution: "/" or "/foo/" picks up index.html so SPA builds Just Work.
+      if (existsSync(staticDir) && tryServeStatic(staticDir, req, res)) {
+        return;
+      }
+      if (existsSync(srcPublicDir) && tryServeStatic(srcPublicDir, req, res)) {
+        return;
+      }
+      // Framework-bundled assets. The Swagger UI lives here (public/swagger/),
+      // so this path MUST honour the swagger gate or /swagger is served in
+      // production regardless of TINA4_SWAGGER_ENABLED / TINA4_DEBUG.
+      if (swaggerAssetsEnabled || !isSwaggerAssetPath(pathname)) {
+        if (tryServeStatic(BUILTIN_PUBLIC_DIR, req, res)) {
+          return;
+        }
       }
 
       // 404 — pass canonical reason phrase so the status line is well-formed
