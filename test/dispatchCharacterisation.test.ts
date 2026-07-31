@@ -22,6 +22,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../packages/core/src/index.ts";
+import { freePort } from "./freePort.ts";
 
 let pass = 0;
 let fail = 0;
@@ -62,7 +63,7 @@ writeFileSync(join(publicDir, "clash"), '{"from":"file"}');
 // A file with no competing route.
 writeFileSync(join(publicDir, "plain.json"), '{"from":"file"}');
 
-const PORT = 7900 + (process.pid % 90);
+const PORT = await freePort();
 let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
 async function req(method: string, path: string, headers: Record<string, string> = {}) {

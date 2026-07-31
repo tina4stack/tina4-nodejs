@@ -38,6 +38,7 @@ const dbDir = mkdtempSync(join(tmpdir(), "tina4-rt-"));
 process.env.TINA4_DATABASE_URL = "sqlite:///" + join(dbDir, "rt.db");
 
 import { startServer, getToken, Router, defaultRouter } from "../packages/core/src/index.ts";
+import { freePort } from "./freePort.ts";
 import {
   initDatabase,
   realtime,
@@ -236,7 +237,7 @@ async function seedChannel(name: string, members: string[]): Promise<number> {
 const CH1 = await seedChannel("general", ["1", "2"]);
 const CH2 = await seedChannel("private", ["1"]);
 
-const srv = await startServer({ port: 7361, host: "127.0.0.1" });
+const srv = await startServer({ port: await freePort(), host: "127.0.0.1" });
 const port = srv.port;
 const base = `http://127.0.0.1:${port}`;
 const tok = (user: number) => getToken({ user_id: user });

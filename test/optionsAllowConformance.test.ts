@@ -28,6 +28,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../packages/core/src/index.ts";
+import { freePort } from "./freePort.ts";
 
 let pass = 0;
 let fail = 0;
@@ -49,7 +50,7 @@ const PREFLIGHT = {
   "Access-Control-Request-Method": "POST",
 };
 
-const PORT = 7940 + (process.pid % 50);
+const PORT = await freePort();
 let server: any;
 
 async function options(headers: Record<string, string> = {}) {

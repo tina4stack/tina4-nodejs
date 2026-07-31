@@ -23,6 +23,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../packages/core/src/index.ts";
+import { freePort } from "./freePort.ts";
 
 let pass = 0;
 let fail = 0;
@@ -40,7 +41,7 @@ writeFileSync(join(publicDir, "asset.css"), "body { color: red; }");
 writeFileSync(join(routesDir, "routed", "get.ts"),
   'export default async function (_q: any, r: any) { return r("hello from the route", 200); }\n');
 
-const PORT = 7650 + (process.pid % 35);
+const PORT = await freePort();
 let server: any;
 
 async function req(method: string, path: string) {

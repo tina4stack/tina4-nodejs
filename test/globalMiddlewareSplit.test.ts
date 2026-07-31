@@ -23,6 +23,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer, MiddlewareRunner } from "../packages/core/src/index.ts";
+import { freePort } from "./freePort.ts";
 
 let pass = 0;
 let fail = 0;
@@ -55,7 +56,7 @@ class PlainStamp {
   }
 }
 
-const PORT = 7990 + (process.pid % 8);
+const PORT = await freePort();
 let server: any;
 
 async function req(method: string, path: string) {

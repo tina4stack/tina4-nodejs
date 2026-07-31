@@ -24,6 +24,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer, MiddlewareRunner } from "../packages/core/src/index.ts";
+import { freePort } from "./freePort.ts";
 
 let pass = 0;
 let fail = 0;
@@ -53,7 +54,7 @@ mkdirSync(join(routesDir, "hello"), { recursive: true });
 writeFileSync(join(routesDir, "hello", "get.ts"),
   'export default async function (_q: any, r: any) { return r("ok", 200); }\n');
 
-const PORT = 7690 + (process.pid % 40);
+const PORT = await freePort();
 let server: any;
 
 console.log("=== Global after-hook coverage (Node) ===\n");
