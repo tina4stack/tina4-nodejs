@@ -57,6 +57,84 @@ register it globally with `MiddlewareRunner.use()` instead - and add
 `static preMatch = true` if it must also run when no route matched.
 
 
+### Breaking: a middleware CLASS attached per-route now RUNS
+
+`.middleware(SomeMiddlewareClass)` was inert in Node. `runRouteMiddlewares`
+invoked every spec as `mw(req, res, next)`, which for a class throws
+`TypeError: Class constructor SomeMiddlewareClass cannot be invoked without
+'new'` - so the route answered 500, and `MiddlewareSpec` (`Middleware | string`)
+did not admit a class in the first place. Python and PHP have always run
+per-route class hooks.
+
+A class attached per-route now runs its `beforeX` hooks through the SAME
+`MiddlewareRunner.runBefore` as global middleware - same discovery, same
+return-value table, no second runner - and its `afterX` hooks with the global
+after pass once the handler is done. Function middleware `(req, res, next)` and
+string specs (`"ResponseCache:300"`) behave exactly as before.
+
+**Migration, and the risk here is Node-specific:** a middleware class attached
+to a route currently does nothing, so any that were attached speculatively (or
+left behind after a refactor) will START EXECUTING. Grep for `.middleware(` and
+check every argument that is a class - its `beforeX` hooks can now deny a
+request and its `afterX` hooks now run. The equivalent call is broken rather
+than silent in the other frameworks (Ruby raises `NoMethodError`), so there the
+same change is broken-to-working, not inert-to-live.
+
+Related: the after pass now also runs when a route's middleware
+short-circuits. It used to return early, so a response-cache HIT skipped every
+global `afterX` hook, and a route middleware that short-circuited WITHOUT ending
+the response left the request hanging with no `end()` at all.
+
+
+### Breaking: what a middleware hook RETURNS decides the pipeline
+
+One table, for every `beforeX`/`afterX` hook, at every scope (global and
+per-route):
+
+| the hook returns    | what happens                                                              |
+|---------------------|---------------------------------------------------------------------------|
+| a Response object   | SHORT-CIRCUIT. That object IS the response, at ANY status.                |
+| the `[req, res]` pair | rebind both, continue                                                   |
+| `false`             | SHORT-CIRCUIT. Send the response as set; if still default and unwritten, 403. |
+| `undefined` / `null`  | continue                                                                |
+
+Node previously honoured only the `[req, res]` pair and IGNORED both a returned
+Response object and a returned `false` - a hook that did
+`return response.redirect("/login")` had its redirect overwritten by the handler
+that then ran anyway.
+
+The Response rule is the PRIMARY mechanism because it is the only one that can
+express a 3xx. The old "status >= 400 short-circuits" behaviour is RETAINED as a
+legacy compatibility path, so middleware written before this contract keeps
+working - but it cannot express a redirect, which is exactly why it is no longer
+the main mechanism.
+
+**Migration:** a hook that returned `false` or a Response object was previously
+ignored and the handler ran anyway; now it stops the pipeline. That is the
+intent of both returns, but if any hook returns a response object
+*incidentally* - e.g. `return res.header("X-Trace", id)`, which returns the
+response for chaining - it now short-circuits the request. Return `[req, res]`
+(or nothing) from a hook that means "continue".
+
+
+### Fixed: hook discovery dropped every INHERITED hook
+
+`MiddlewareRunner` discovered hooks with `Object.getOwnPropertyNames(cls)`,
+which returns a class's OWN statics only. For `class Sub extends Base` with
+`static beforeBase` on the base, discovery returned `["beforeSub"]` and the
+inherited hook simply never ran - silently, with no error, even though
+`Sub.beforeBase` is a live function. A shared base middleware class (the normal
+way to share an auth or audit hook) was therefore dead code in Node. Python
+returns `['before_base', 'before_sub']` and Ruby `[:before_base, :before_sub]`;
+Node was the only one of the four that lost hooks.
+
+Discovery now walks the prototype chain and runs BASE-class hooks first, then
+each derived class's own, de-duping an override to its first (base) position -
+the same semantics as Python's `_discover_methods` (`reversed(__mro__)` over
+`__dict__`) and Ruby's `discover_methods` (`ancestors.reverse_each`).
+Within a class, source-declaration order is unchanged.
+
+
 ### Changed
 
 - **Breaking: `Messenger.inbox()` takes the folder FIRST.** The signature is now

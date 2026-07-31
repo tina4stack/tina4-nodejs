@@ -194,8 +194,15 @@ export type Middleware = (
 ) => void | Promise<void>;
 
 /**
- * A route middleware entry: either a middleware function, or a string spec
- * resolved by the router to a built-in middleware.
+ * A class-based middleware: static `beforeX` / `afterX` hooks discovered by
+ * `MiddlewareRunner`. The hooks are a NAMING CONVENTION, not an interface —
+ * exactly as in Python/PHP/Ruby — so this is deliberately just "a class".
+ */
+export type MiddlewareClass = abstract new (...args: never[]) => unknown;
+
+/**
+ * A route middleware entry: a middleware function, a middleware CLASS, or a
+ * string spec resolved by the router to a built-in middleware.
  *
  * String forms (parity with Python/PHP/Ruby):
  *   "ResponseCache"      → responseCache() with the default/env TTL
@@ -203,9 +210,12 @@ export type Middleware = (
  *
  * The router resolves string specs to middleware functions when the route
  * runs, so callers can register a response-cache middleware without importing
- * `responseCache`.
+ * `responseCache`. A CLASS runs its beforeX/afterX hooks through the same
+ * `MiddlewareRunner` as global middleware — Python and PHP already ran
+ * per-route class hooks; Node used to invoke every spec as `mw(req, res, next)`
+ * and a class was therefore inert.
  */
-export type MiddlewareSpec = Middleware | string;
+export type MiddlewareSpec = Middleware | MiddlewareClass | string;
 
 /**
  * Handler for WebSocket routes.
