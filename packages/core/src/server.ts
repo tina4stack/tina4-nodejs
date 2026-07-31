@@ -813,6 +813,137 @@ export async function handle(rawReq: IncomingMessage, rawRes: ServerResponse): P
   return _dispatchFn(rawReq, rawRes);
 }
 
+/**
+ * Run one global-middleware pass.
+ *
+ * The pre-match and post-match passes had byte-identical bodies; this is that
+ * body, once.
+ *
+ * AFTER-ON-4xx RULE (M2): the after_* hooks ALWAYS run when a before_*
+ * short-circuited (4xx, a clean 500, or the response already ended), so they
+ * can still add headers and logging. Consistent across all four frameworks.
+ *
+ * @returns true when the pass answered the request and the handler must be skipped
+ */
+async function runGlobalMiddlewarePass(
+  middleware: unknown[],
+  req: Tina4Request,
+  res: Tina4Response,
+): Promise<boolean> {
+  if (middleware.length === 0) return false;
+
+  const [, , proceed] = await MiddlewareRunner.runBefore(middleware as never, req, res);
+  if (proceed && !res.raw.writableEnded) return false;
+
+  await MiddlewareRunner.runAfter(middleware as never, req, res);
+  if (!res.raw.writableEnded) res.raw.end();
+  return true;
+}
+
+/**
+ * Invoke a matched route's handler, binding path params BY NAME.
+ *
+ * A handler declares whatever it needs - `(id, request, response)`, `(req, res)`,
+ * or nothing - and each parameter is resolved by its name: a path param wins,
+ * then `request`/`req`, then the response.
+ */
+async function invokeRouteHandler(
+  match: { handler: unknown },
+  req: Tina4Request,
+  res: Tina4Response,
+): Promise<unknown> {
+  const routeParams = req.params || {};
+  const fnStr = (match.handler as { toString(): string }).toString();
+  const argMatch = fnStr.match(/^(?:async\s*)?(?:function\s*\w*)?\s*\(([^)]*)\)/);
+  const argNames = argMatch?.[1]?.split(",").map((a: string) => a.trim().replace(/[:=].*/, "")) ?? [];
+  const filteredArgs = argNames.filter((n: string) => n.length > 0);
+
+  if (filteredArgs.length === 0) return await (match.handler as any)();
+
+  const args = filteredArgs.map((name: string) => {
+    if (name in routeParams) return routeParams[name];
+    if (name === "request" || name === "req") return req;
+    return res;
+  });
+  return await (match.handler as any)(...args);
+}
+
+/**
+ * Render a template route's return value, when it is one.
+ *
+ * A route that exports a template AND whose handler returned a plain object
+ * renders through the template engine instead of being sent as JSON. Every
+ * other shape - a handler that already wrote, no template, null/undefined, a
+ * string, a Buffer - is left exactly as it was.
+ */
+async function renderIfTemplateRoute(
+  match: { template?: string },
+  res: Tina4Response,
+  result: unknown,
+): Promise<void> {
+  if (res.raw.writableEnded) return;
+  if (!match.template) return;
+  if (result === null || result === undefined) return;
+  if (typeof result !== "object" || Buffer.isBuffer(result)) return;
+
+  await res.render(match.template, result as Record<string, unknown>);
+}
+
+/** State the matched-route pipeline needs. */
+interface MatchedRouteContext {
+  req: Tina4Request;
+  res: Tina4Response;
+  pathname: string;
+  match: { params?: Record<string, unknown>; handler: unknown; template?: string; middlewares?: unknown[] };
+  postMatchMiddleware: unknown[];
+}
+
+/**
+ * Run a matched route end to end.
+ *
+ * Order, and it is BEHAVIOUR (ADR-0012):
+ *   post-match globals -> auth gate -> the route's own middleware -> handler
+ *
+ * The globals run BEFORE the gate so a rate limiter can throttle a brute-force
+ * login and an access log records the 401 - neither is possible if they only
+ * run on authenticated requests (Django enforces auth in a view decorator after
+ * all MIDDLEWARE; Laravel's `web` group runs before the `auth` route
+ * middleware; ASP.NET puts UseAuthorization last before the endpoint).
+ *
+ * The route's OWN middleware runs AFTER, so middleware attached to a secured
+ * route never processes an unauthenticated request. Node used to run it first,
+ * which meant a body-parsing or audit middleware on a secured route saw traffic
+ * that was about to be rejected.
+ */
+async function runMatchedRoute(ctx: MatchedRouteContext): Promise<void> {
+  const { req, res, match, postMatchMiddleware } = ctx;
+  req.params = match.params as never;
+
+  if (await runGlobalMiddlewarePass(postMatchMiddleware, req, res)) return;
+
+  // Auth enforcement lives in enforceRouteAuth (authGate.ts) so the in-process
+  // TestClient enforces the EXACT same gate - parity with Python #PY2, where a
+  // tokenless write must 401 in tests too, or a green test hides a live 401.
+  // Dev admin routes (/__dev) are always public.
+  if (enforceRouteAuth(req, res, match as never, ctx.pathname.startsWith("/__dev"))) return;
+
+  if (match.middlewares && match.middlewares.length > 0) {
+    const proceed = await runRouteMiddlewares(match.middlewares as never, req, res);
+    if (!proceed || res.raw.writableEnded) return;
+  }
+
+  await renderIfTemplateRoute(match, res, await invokeRouteHandler(match, req, res));
+
+  // Global afterX hooks (logging / post-processing). Header mutations here are
+  // no-ops once the response is flushed - Node sends headers with the body - so
+  // response headers belong in beforeX.
+  if (postMatchMiddleware.length > 0) {
+    await MiddlewareRunner.runAfter(postMatchMiddleware as never, req, res);
+  }
+
+  if (!res.raw.writableEnded) res.raw.end();
+}
+
 /** State the response-end wrappers need. */
 interface ResponseWrapContext {
   req: Tina4Request;
@@ -856,6 +987,39 @@ function callOriginalEnd(
   return originalEnd(chunk, cb);
 }
 
+/** Whether the response is declaring itself as HTML. */
+function isHtmlResponse(res: Tina4Response): boolean {
+  const contentType = res.raw.getHeader("content-type");
+  return typeof contentType === "string" && contentType.includes("text/html");
+}
+
+/** The chunk as an HTML string, or null when it is neither a string nor a Buffer. */
+function asHtmlString(chunk: unknown): string | null {
+  if (typeof chunk === "string") return chunk;
+  if (Buffer.isBuffer(chunk)) return chunk.toString("utf-8");
+  return null;
+}
+
+/**
+ * Inject the dev toolbar (dev mode only) and the feedback widget into an HTML body.
+ *
+ * The feedback injector re-checks the whitelist, path and html marker itself,
+ * so calling it unconditionally is cheap when it no-ops.
+ */
+function injectIntoHtml(ctx: ResponseWrapContext, devToolbar: boolean, html: string): string {
+  if (!devToolbar) return injectFeedbackWidget(ctx.req, html);
+
+  const toolbarCtx: DevToolbarContext = {
+    version: TINA4_VERSION,
+    method: ctx.req.method ?? "GET",
+    path: ctx.pathname,
+    matchedPattern: ctx.matchedPattern.value || ctx.pathname,
+    requestId: ctx.requestId,
+    routeCount: ctx.router.getRoutes().length,
+  };
+  return injectFeedbackWidget(ctx.req, injectDevToolbar(html, toolbarCtx));
+}
+
 /**
  * Wrap `res.raw.end` to inject the dev toolbar and/or the feedback widget, and
  * to capture the request for the dev inspector.
@@ -895,27 +1059,9 @@ function wrapResponseEnd(ctx: ResponseWrapContext): void {
       );
     }
 
-    const contentType = res.raw.getHeader("content-type");
-    if (typeof contentType === "string" && contentType.includes("text/html")) {
-      const html = typeof chunk === "string"
-        ? chunk
-        : Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : null;
-
-      if (html !== null) {
-        if (devToolbar) {
-          const toolbarCtx: DevToolbarContext = {
-            version: TINA4_VERSION,
-            method: req.method ?? "GET",
-            path: pathname,
-            matchedPattern: ctx.matchedPattern.value || pathname,
-            requestId: ctx.requestId,
-            routeCount: ctx.router.getRoutes().length,
-          };
-          chunk = injectFeedbackWidget(req, injectDevToolbar(html, toolbarCtx));
-        } else {
-          chunk = injectFeedbackWidget(req, html);
-        }
-      }
+    if (isHtmlResponse(res)) {
+      const html = asHtmlString(chunk);
+      if (html !== null) chunk = injectIntoHtml(ctx, devToolbar, html);
       // Dropped for ANY html response, not only one carrying a body: that is
       // what the two original wrappers did, and a refactor does not get to
       // narrow it. An end() with no chunk on a text/html response still has
@@ -1506,23 +1652,16 @@ ${reset}
         reqStartTime, requestId, matchedPattern, isAiPortRequest,
       });
 
-      // PRE-MATCH global middleware: runs before a route is even looked up, so
-      // CORS and anything else that must survive a short-circuit can set
-      // headers that outlive a 401/403. Opt in with `static preMatch = true`.
-      const allGlobalMiddleware = [
-        ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
-      ];
+      // Global middleware, split by what it depends on (ADR-0012). The
+      // PRE-match set runs before a route is even looked up, so CORS and
+      // anything else that must survive a short-circuit can set headers that
+      // outlive a 401/403; opt in with `static preMatch = true`.
       const { pre: preMatchMiddleware, post: postMatchMiddleware } =
-        MiddlewareRunner.partitionByMatchPhase(allGlobalMiddleware);
+        MiddlewareRunner.partitionByMatchPhase([
+          ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
+        ]);
 
-      if (preMatchMiddleware.length > 0) {
-        const [, , proceed] = await MiddlewareRunner.runBefore(preMatchMiddleware, req, res);
-        if (!proceed || res.raw.writableEnded) {
-          await MiddlewareRunner.runAfter(preMatchMiddleware, req, res);
-          if (!res.raw.writableEnded) res.raw.end();
-          return;
-        }
-      }
+      if (await runGlobalMiddlewarePass(preMatchMiddleware, req, res)) return;
 
       // Match route. ROUTES BEAT FILES (ADR-0010): static assets resolve in
       // the not-found fallback below, only once no route has claimed the path.
@@ -1530,104 +1669,8 @@ ${reset}
       // a careless deploy, and it must never silently shadow a reviewed route.
       const match = router.match(req.method ?? "GET", pathname);
       if (match) {
-        req.params = match.params;
         matchedPattern.value = match.pattern;
-
-        // Global class-based middleware registered via Router.use(...) /
-        // MiddlewareRunner.use(...) — run the beforeX hooks before the handler.
-        // beforeX may set response headers (they persist through the handler's
-        // write), mutate the request, or short-circuit on a >= 400 status.
-        // (Parity with Python/PHP/Ruby, whose Router.use class middleware runs.)
-        // POST-MATCH global middleware: the default. It runs here, after the
-        // route matched, because middleware like CSRF reads the matched route's
-        // metadata to honour noAuth. The pre-match set already ran above.
-        const globalMiddleware = postMatchMiddleware;
-        if (globalMiddleware.length > 0) {
-          const [, , proceed] = await MiddlewareRunner.runBefore(globalMiddleware, req, res);
-          if (!proceed || res.raw.writableEnded) {
-            // AFTER-ON-4xx RULE (M2): after_* ALWAYS run even when a before_*
-            // short-circuited (4xx / clean 500 / response ended), so they can
-            // still add headers / logging. Run them, then stop the handler.
-            await MiddlewareRunner.runAfter(globalMiddleware, req, res);
-            if (!res.raw.writableEnded) res.raw.end();
-            return;
-          }
-        }
-
-        // Auth enforcement: secure routes require a valid token. Extracted into
-        // enforceRouteAuth (authGate.ts) so the in-process TestClient enforces
-        // the EXACT same gate (parity with Python #PY2 — a tokenless write must
-        // 401 in tests too, or a green test hides a live 401). Dev admin routes
-        // (/__dev) are always public. Returns true when a 401 was written.
-        //
-        // Order: post-match globals -> THIS GATE -> the route's own middleware.
-        //
-        // The globals run BEFORE the gate so a rate limiter can throttle a
-        // brute-force login and an access log records the 401 - neither is
-        // possible if they only run on authenticated requests (Django enforces
-        // in a view decorator after all MIDDLEWARE; Laravel's `web` group runs
-        // before the `auth` route middleware; ASP.NET puts UseAuthorization
-        // last before the endpoint).
-        //
-        // The route's OWN middleware runs AFTER, so middleware attached to a
-        // secured route never processes an unauthenticated request - Node used
-        // to run it first, which meant a body-parsing or audit middleware on a
-        // secured route saw traffic that was about to be rejected. Laravel
-        // orders `->middleware(['auth', ...])` the same way; Django puts
-        // @login_required outermost. Aligned across all four (ADR-0012).
-        const isDevAdmin = pathname.startsWith("/__dev");
-        if (enforceRouteAuth(req, res, match, isDevAdmin)) {
-          return;
-        }
-
-        // Run per-route middlewares if any
-        if (match.middlewares && match.middlewares.length > 0) {
-          const proceed = await runRouteMiddlewares(match.middlewares, req, res);
-          if (!proceed || res.raw.writableEnded) return;
-        }
-
-        // Inject path params by name into handler arguments, then request/response
-        let result: unknown;
-        const routeParams = req.params || {};
-        const fnStr = match.handler.toString();
-        const argMatch = fnStr.match(/^(?:async\s*)?(?:function\s*\w*)?\s*\(([^)]*)\)/);
-        const argNames = argMatch?.[1]?.split(",").map((s: string) => s.trim().replace(/[:=].*/,"")) ?? [];
-        const filteredArgs = argNames.filter((n: string) => n.length > 0);
-
-        if (filteredArgs.length === 0) {
-          result = await (match.handler as any)();
-        } else {
-          const args = filteredArgs.map((name: string) => {
-            if (name in routeParams) return routeParams[name];
-            if (name === "request" || name === "req") return req;
-            return res;
-          });
-          result = await (match.handler as any)(...args);
-        }
-
-        // If the route exports a template and the handler returned a plain object,
-        // render it through the template engine instead of sending as JSON.
-        if (
-          !res.raw.writableEnded &&
-          match.template &&
-          result !== null &&
-          result !== undefined &&
-          typeof result === "object" &&
-          !Buffer.isBuffer(result)
-        ) {
-          await res.render(match.template, result as Record<string, unknown>);
-        }
-
-        // Global class-based middleware afterX hooks (logging / post-processing).
-        // Header mutations here are no-ops once the response is flushed (Node
-        // sends headers with the body) — set response headers in beforeX.
-        if (globalMiddleware.length > 0) {
-          await MiddlewareRunner.runAfter(globalMiddleware, req, res);
-        }
-
-        if (!res.raw.writableEnded) {
-          res.raw.end();
-        }
+        await runMatchedRoute({ req, res, pathname, match, postMatchMiddleware });
         return;
       }
 
