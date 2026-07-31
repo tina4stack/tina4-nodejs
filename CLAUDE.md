@@ -1174,8 +1174,15 @@ Set `TINA4_DATABASE_URL` in your `.env` file using `driver://host:port/database`
 
 ```bash
 # SQLite (default if nothing configured)
-TINA4_DATABASE_URL=sqlite:///path/to/db.sqlite
+# Slash count decides relative vs absolute (the SQLAlchemy convention,
+# identical in all four frameworks). THREE slashes is RELATIVE to the working
+# directory; an absolute path needs FOUR.
+TINA4_DATABASE_URL=sqlite:///app.db                 # relative: ./app.db
+TINA4_DATABASE_URL=sqlite:////var/data/app.db       # absolute: /var/data/app.db
+TINA4_DATABASE_URL=sqlite:/var/data/app.db          # absolute (one slash) too
 TINA4_DATABASE_URL=sqlite://./data/tina4.db
+# FOOTGUN: "sqlite://" + an absolute path yields THREE slashes, so the file is
+# created UNDER the working directory and a stray ./var/data/ tree appears.
 
 # PostgreSQL
 TINA4_DATABASE_URL=postgres://localhost:5432/mydb
