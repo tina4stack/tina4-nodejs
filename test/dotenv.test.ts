@@ -96,7 +96,8 @@ assert("getEnv returns undefined for unset without default", getEnv("MISSING_VAR
 // --- requireEnv ---
 console.log("\n--- requireEnv ---");
 
-assert("requireEnv returns set value", requireEnv("DB_HOST") === "localhost");
+// Returns a MAP now, and takes varargs - parity with Python, PHP and Ruby.
+assert("requireEnv returns the requested map", requireEnv("DB_HOST").DB_HOST === "localhost");
 
 let threwError = false;
 try {
@@ -107,6 +108,18 @@ try {
     (e as Error).message.includes("DEFINITELY_NOT_SET_XYZ"));
 }
 assert("requireEnv throws for missing var", threwError);
+
+// An operator fixing a deployment wants the whole list, not one name per
+// restart. The old single-key signature could not express this.
+let multiMessage = "";
+try {
+  requireEnv("MISSING_X_1", "MISSING_Y_2");
+} catch (e) {
+  multiMessage = (e as Error).message;
+}
+assert("requireEnv names EVERY missing var in one throw",
+  multiMessage.includes("MISSING_X_1") && multiMessage.includes("MISSING_Y_2"),
+  multiMessage);
 
 // --- Non-existent file ---
 console.log("\n--- Edge Cases ---");
