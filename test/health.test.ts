@@ -84,7 +84,7 @@ assert("Response has uptime as number", typeof health.data.uptime === "number");
 assert("Uptime is positive", health.data.uptime > 0);
 
 // The wire contract: EXACTLY these four keys, identical in all four frameworks
-// (ADR-0014, plan/v3/fixtures/health_contract.json). Kubernetes never reads the
+// (ADR-0016, plan/v3/fixtures/health_contract.json). Kubernetes never reads the
 // body - HTTPGetAction has no body-matching field and decides on the status code
 // alone - so every extra key is weight on a probe path with no consumer. Python
 // carried `errors`/`latest_error` until feature 8; this stops Node growing them.
