@@ -91,7 +91,15 @@ async function withDb(fn: (db: any) => Promise<void>): Promise<void> {
     // hides that because its rowid follows the max.
     await db.insert("t", { name: "one" });
     await db.insert("t", { name: "two" });
-    await fn(db);
+    try {
+      await fn(db);
+    } finally {
+      // A live engine keeps a real socket open, and an unclosed socket pins the
+      // Node event loop: the file only ever exited because a FAILING run hit
+      // process.exit(1) at the end. An all-green run hung forever with its
+      // connections idle - the green path was untestable.
+      try { db.close(); } catch { /* already closed */ }
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -236,7 +244,11 @@ async function main(): Promise<void> {
       await db.insert("order_items", { order_id: 1, product_id: 5, qty: 1 });
       await db.insert("order_items", { order_id: 1, product_id: 6, qty: 2 });
       await db.insert("order_items", { order_id: 2, product_id: 5, qty: 3 });
-      await fn(db);
+      try {
+        await fn(db);
+      } finally {
+        try { db.close(); } catch { /* already closed */ }
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

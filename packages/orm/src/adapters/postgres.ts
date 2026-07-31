@@ -112,8 +112,11 @@ export class PostgresAdapter implements DatabaseAdapter {
     return row;
   }
 
-  private convertPlaceholders(sql: string): string {
-    let count = 0;
+  // `startAt` lets a caller that has already consumed N placeholders (an UPDATE
+  // whose SET values are $1..$N) continue the numbering into a raw WHERE
+  // fragment instead of restarting at $1.
+  private convertPlaceholders(sql: string, startAt = 1): string {
+    let count = startAt - 1;
     return sql.replace(/\?/g, () => {
       count++;
       return `$${count}`;
@@ -280,13 +283,31 @@ export class PostgresAdapter implements DatabaseAdapter {
     throw new Error("Use updateAsync() for PostgreSQL.");
   }
 
-  async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): Promise<DatabaseResult> {
+  async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseResult> {
     this.ensureConnected();
     const dataKeys = Object.keys(data);
-    const filterKeys = Object.keys(filter);
     let paramIndex = 1;
-
     const setClauses = dataKeys.map((k) => `"${k}" = $${paramIndex++}`).join(", ");
+
+    // A raw WHERE fragment + params is half the write_path contract's filter
+    // form ("a string filter with params works the same as a hash filter").
+    // Without this branch Object.keys("id = ?") yields the STRING INDICES
+    // ["0","1",...], producing `WHERE "0" = $2 AND "1" = $3` — the engine then
+    // reports `column "0" does not exist`. sqlite/mongodb/odbc already carried
+    // this branch; postgres/mysql/mssql/firebird did not.
+    if (typeof filter === "string") {
+      const where = filter ? ` WHERE ${this.convertPlaceholders(filter, paramIndex)}` : "";
+      const sql = `UPDATE "${table}" SET ${setClauses}${where}`;
+      const values = [...Object.values(data), ...(params ?? [])];
+      try {
+        const result = await this.client!.query(sql, values);
+        return { success: true, affectedRows: result.rowCount ?? 0 };
+      } catch (e) {
+        return { success: false, affectedRows: 0, error: (e as Error).message };
+      }
+    }
+
+    const filterKeys = Object.keys(filter);
     const whereClauses = filterKeys.map((k) => `"${k}" = $${paramIndex++}`).join(" AND ");
     const sql = `UPDATE "${table}" SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];
@@ -303,8 +324,25 @@ export class PostgresAdapter implements DatabaseAdapter {
     throw new Error("Use deleteAsync() for PostgreSQL.");
   }
 
-  async deleteAsync(table: string, filter: Record<string, unknown>): Promise<DatabaseResult> {
+  async deleteAsync(table: string, filter: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseResult> {
     this.ensureConnected();
+
+    // See updateAsync: a raw WHERE fragment must not be walked as an object.
+    // truncate() calls this with "1 = 1", which became `WHERE "0" = $1 AND
+    // "1" = $2 ...` and failed with `column "0" does not exist` — db.truncate()
+    // was broken outright on PostgreSQL.
+    if (typeof filter === "string") {
+      const sql = filter
+        ? `DELETE FROM "${table}" WHERE ${this.convertPlaceholders(filter)}`
+        : `DELETE FROM "${table}"`;
+      try {
+        const result = await this.client!.query(sql, params ?? []);
+        return { success: true, affectedRows: result.rowCount ?? 0 };
+      } catch (e) {
+        return { success: false, affectedRows: 0, error: (e as Error).message };
+      }
+    }
+
     const filterKeys = Object.keys(filter);
     let paramIndex = 1;
     const whereClauses = filterKeys.map((k) => `"${k}" = $${paramIndex++}`).join(" AND ");
@@ -378,21 +416,45 @@ export class PostgresAdapter implements DatabaseAdapter {
   async columnsAsync(table: string): Promise<ColumnInfo[]> {
     // v3.13.14 (#48): honour a schema-qualified name; default to public.
     const [schema, tbl] = SQLTranslator.splitSchema(table);
+    // primaryKey was hardcoded false, so primaryKey(table) introspected NOTHING
+    // on PostgreSQL. The filterless-write guard (feature 4) reads it, so
+    // update(table, data) keyed on the primary key in `data` threw "update
+    // requires a filter or the complete primary key in the data" against every
+    // PostgreSQL table. Port the Python master's LEFT JOIN so the cross-engine
+    // columns() contract (#48) actually holds here — the subquery yields every
+    // column of the PK, so a COMPOSITE key reports true on each of its columns,
+    // not just the first.
     const rows = await this.queryAsync<{
       column_name: string;
       data_type: string;
       is_nullable: string;
       column_default: string | null;
+      is_primary: boolean | string;
     }>(
-      "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1 AND table_schema = $2",
-      [tbl, schema ?? "public"],
+      `SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
+              CASE WHEN pk.column_name IS NOT NULL THEN true ELSE false END AS is_primary
+       FROM information_schema.columns c
+       LEFT JOIN (
+         SELECT ku.column_name
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage ku
+           ON tc.constraint_name = ku.constraint_name
+          AND tc.table_schema = ku.table_schema
+         WHERE tc.table_name = $1 AND tc.table_schema = $2
+           AND tc.constraint_type = 'PRIMARY KEY'
+       ) pk ON c.column_name = pk.column_name
+       WHERE c.table_name = $3 AND c.table_schema = $4
+       ORDER BY c.ordinal_position`,
+      [tbl, schema ?? "public", tbl, schema ?? "public"],
     );
     return rows.map((r) => ({
       name: r.column_name,
       type: r.data_type,
       nullable: r.is_nullable === "YES",
       default: r.column_default,
-      primaryKey: false,
+      // node-postgres decodes bool to true/false; stay tolerant of the raw
+      // "t" text form in case the type parser is bypassed.
+      primaryKey: r.is_primary === true || r.is_primary === "t",
     }));
   }
 

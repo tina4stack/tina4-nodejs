@@ -229,9 +229,27 @@ export class MysqlAdapter implements DatabaseAdapter {
     throw new Error("Use updateAsync() for MySQL.");
   }
 
-  async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): Promise<DatabaseResult> {
+  async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseResult> {
     this.ensureConnected();
     const setClauses = Object.keys(data).map((k) => `\`${k}\` = ?`).join(", ");
+
+    // A raw WHERE fragment + params is half the write_path contract's filter
+    // form. Without this branch Object.keys("id = ?") yields the STRING INDICES
+    // ["0","1",...], producing `WHERE \`0\` = ? AND \`1\` = ?` — MySQL then
+    // reports an unknown column '0'. MySQL already uses `?`, so the fragment
+    // needs no placeholder rewriting.
+    if (typeof filter === "string") {
+      const where = filter ? ` WHERE ${filter}` : "";
+      const sql = `UPDATE \`${table}\` SET ${setClauses}${where}`;
+      const values = [...Object.values(data), ...(params ?? [])];
+      try {
+        const result = await this.queryPromise(sql, values);
+        return { success: true, affectedRows: result.affectedRows ?? 0 };
+      } catch (e) {
+        return { success: false, affectedRows: 0, error: (e as Error).message };
+      }
+    }
+
     const whereClauses = Object.keys(filter).map((k) => `\`${k}\` = ?`).join(" AND ");
     const sql = `UPDATE \`${table}\` SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];
@@ -248,8 +266,23 @@ export class MysqlAdapter implements DatabaseAdapter {
     throw new Error("Use deleteAsync() for MySQL.");
   }
 
-  async deleteAsync(table: string, filter: Record<string, unknown>): Promise<DatabaseResult> {
+  async deleteAsync(table: string, filter: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseResult> {
     this.ensureConnected();
+
+    // See updateAsync: truncate() calls this with "1 = 1", which became
+    // `WHERE \`0\` = ? AND \`1\` = ? ...` — db.truncate() was broken outright.
+    if (typeof filter === "string") {
+      const sql = filter
+        ? `DELETE FROM \`${table}\` WHERE ${filter}`
+        : `DELETE FROM \`${table}\``;
+      try {
+        const result = await this.queryPromise(sql, params ?? []);
+        return { success: true, affectedRows: result.affectedRows ?? 0 };
+      } catch (e) {
+        return { success: false, affectedRows: 0, error: (e as Error).message };
+      }
+    }
+
     const whereClauses = Object.keys(filter).map((k) => `\`${k}\` = ?`).join(" AND ");
     const sql = `DELETE FROM \`${table}\` WHERE ${whereClauses}`;
     const values = Object.values(filter);

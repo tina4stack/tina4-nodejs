@@ -166,9 +166,15 @@ export class MssqlAdapter implements DatabaseAdapter {
     });
   }
 
-  /** Convert ? placeholders to @p0, @p1, ... for tedious. */
-  private convertPlaceholders(sql: string): string {
-    let count = 0;
+  /**
+   * Convert ? placeholders to @p0, @p1, ... for tedious.
+   *
+   * `startAt` lets a caller that has already consumed N placeholders (an UPDATE
+   * whose SET values are @p0..@p{N-1}) continue the numbering into a raw WHERE
+   * fragment instead of restarting at @p0.
+   */
+  private convertPlaceholders(sql: string, startAt = 0): string {
+    let count = startAt;
     return sql.replace(/\?/g, () => {
       return `@p${count++}`;
     });
@@ -311,13 +317,29 @@ export class MssqlAdapter implements DatabaseAdapter {
     throw new Error("Use updateAsync() for MSSQL.");
   }
 
-  async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): Promise<DatabaseResult> {
+  async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseResult> {
     this.ensureConnected();
     const dataKeys = Object.keys(data);
-    const filterKeys = Object.keys(filter);
     let paramIndex = 0;
-
     const setClauses = dataKeys.map((k) => `[${k}] = @p${paramIndex++}`).join(", ");
+
+    // A raw WHERE fragment + params is half the write_path contract's filter
+    // form. Without this branch Object.keys("id = ?") yields the STRING INDICES
+    // ["0","1",...], producing `WHERE [0] = @p1 AND [1] = @p2` — SQL Server then
+    // reports an invalid column name '0'.
+    if (typeof filter === "string") {
+      const where = filter ? ` WHERE ${this.convertPlaceholders(filter, paramIndex)}` : "";
+      const sql = `UPDATE [${table}] SET ${setClauses}${where}`;
+      const values = [...Object.values(data), ...(params ?? [])];
+      try {
+        const result = await this.execSqlPromise(sql, values);
+        return { success: true, affectedRows: result.rowCount };
+      } catch (e) {
+        return { success: false, affectedRows: 0, error: (e as Error).message };
+      }
+    }
+
+    const filterKeys = Object.keys(filter);
     const whereClauses = filterKeys.map((k) => `[${k}] = @p${paramIndex++}`).join(" AND ");
     const sql = `UPDATE [${table}] SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];
@@ -334,8 +356,23 @@ export class MssqlAdapter implements DatabaseAdapter {
     throw new Error("Use deleteAsync() for MSSQL.");
   }
 
-  async deleteAsync(table: string, filter: Record<string, unknown>): Promise<DatabaseResult> {
+  async deleteAsync(table: string, filter: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseResult> {
     this.ensureConnected();
+
+    // See updateAsync: truncate() calls this with "1 = 1", which became
+    // `WHERE [0] = @p0 AND [1] = @p1 ...` — db.truncate() was broken outright.
+    if (typeof filter === "string") {
+      const sql = filter
+        ? `DELETE FROM [${table}] WHERE ${this.convertPlaceholders(filter)}`
+        : `DELETE FROM [${table}]`;
+      try {
+        const result = await this.execSqlPromise(sql, params ?? []);
+        return { success: true, affectedRows: result.rowCount };
+      } catch (e) {
+        return { success: false, affectedRows: 0, error: (e as Error).message };
+      }
+    }
+
     const filterKeys = Object.keys(filter);
     let paramIndex = 0;
     const whereClauses = filterKeys.map((k) => `[${k}] = @p${paramIndex++}`).join(" AND ");
@@ -413,17 +450,32 @@ export class MssqlAdapter implements DatabaseAdapter {
       DATA_TYPE: string;
       IS_NULLABLE: string;
       COLUMN_DEFAULT: string | null;
+      is_primary: number;
     }>(
-      "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS " +
-        "WHERE TABLE_NAME = ? AND (? IS NULL OR TABLE_SCHEMA = ?)",
-      [tbl, schema, schema],
+      `SELECT c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT,
+              CASE WHEN pk.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END AS is_primary
+       FROM INFORMATION_SCHEMA.COLUMNS c
+       LEFT JOIN (
+         SELECT ku.COLUMN_NAME
+         FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+         JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE ku
+           ON tc.CONSTRAINT_NAME = ku.CONSTRAINT_NAME
+         WHERE tc.TABLE_NAME = ? AND (? IS NULL OR tc.TABLE_SCHEMA = ?)
+           AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+       ) pk ON c.COLUMN_NAME = pk.COLUMN_NAME
+       WHERE c.TABLE_NAME = ? AND (? IS NULL OR c.TABLE_SCHEMA = ?)
+       ORDER BY c.ORDINAL_POSITION`,
+      [tbl, schema, schema, tbl, schema, schema],
     );
     return rows.map((r) => ({
       name: r.COLUMN_NAME,
       type: r.DATA_TYPE,
       nullable: r.IS_NULLABLE === "YES",
       default: r.COLUMN_DEFAULT,
-      primaryKey: false,
+      // Same hole PostgreSQL had: hardcoded false meant primaryKey(table)
+      // introspected NOTHING on SQL Server, so the feature-4 filterless-write
+      // guard rejected every PK-keyed update. Ported from the Python master.
+      primaryKey: Number(r.is_primary) === 1,
     }));
   }
 

@@ -406,7 +406,7 @@ export class FirebirdAdapter implements DatabaseAdapter {
     throw new Error("Use updateAsync() for Firebird.");
   }
 
-  async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): Promise<DatabaseResult> {
+  async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseResult> {
     this.ensureConnected();
     // Identifiers go through fbQuote, exactly like insertAsync. Firebird folds an
     // UNQUOTED identifier to uppercase, so a conventional `CREATE TABLE probe_t`
@@ -414,6 +414,20 @@ export class FirebirdAdapter implements DatabaseAdapter {
     // which is a DIFFERENT, non-existent column. update and delete were therefore
     // broken on every conventionally-created Firebird table while insert worked.
     const setClauses = Object.keys(data).map((k) => `${fbQuote(k)} = ?`).join(", ");
+
+    // A raw WHERE fragment + params is half the write_path contract's filter
+    // form. Without this branch Object.keys("id = ?") yields the STRING INDICES
+    // ["0","1",...] and the statement addresses columns that do not exist.
+    // Firebird already uses `?`, so the fragment needs no rewriting.
+    if (typeof filter === "string") {
+      const where = filter ? ` WHERE ${filter}` : "";
+      await this.executePromise(
+        `UPDATE ${fbQuote(table)} SET ${setClauses}${where}`,
+        [...Object.values(data), ...(params ?? [])],
+      );
+      return { success: true, affectedRows: 1 };
+    }
+
     const whereClauses = Object.keys(filter).map((k) => `${fbQuote(k)} = ?`).join(" AND ");
     const sql = `UPDATE ${fbQuote(table)} SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];
@@ -426,8 +440,17 @@ export class FirebirdAdapter implements DatabaseAdapter {
     throw new Error("Use deleteAsync() for Firebird.");
   }
 
-  async deleteAsync(table: string, filter: Record<string, unknown>): Promise<DatabaseResult> {
+  async deleteAsync(table: string, filter: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseResult> {
     this.ensureConnected();
+
+    // See updateAsync: truncate() calls this with "1 = 1", which walked the
+    // string as an object — db.truncate() was broken outright.
+    if (typeof filter === "string") {
+      const where = filter ? ` WHERE ${filter}` : "";
+      await this.executePromise(`DELETE FROM ${fbQuote(table)}${where}`, params ?? []);
+      return { success: true, affectedRows: 1 };
+    }
+
     // Same fbQuote policy as insert/update — see updateAsync.
     const whereClauses = Object.keys(filter).map((k) => `${fbQuote(k)} = ?`).join(" AND ");
     const sql = `DELETE FROM ${fbQuote(table)} WHERE ${whereClauses}`;
