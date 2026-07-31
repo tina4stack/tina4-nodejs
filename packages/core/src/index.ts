@@ -6,6 +6,7 @@ export type {
   RouteMeta,
   Tina4Config,
   Middleware,
+  MiddlewareClass,
   MiddlewareSpec,
   UploadedFile,
   CookieOptions,

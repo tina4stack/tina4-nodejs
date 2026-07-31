@@ -1,4 +1,5 @@
 import type { Tina4Request, Tina4Response, Middleware } from "./types.js";
+import { HTTP_OK, HTTP_FORBIDDEN } from "./constants.js";
 import { validToken, getPayload } from "./auth.js";
 import { Log } from "./logger.js";
 import { isTruthy } from "./dotenv.js";
@@ -66,24 +67,86 @@ export class MiddlewareChain {
 }
 
 // ── Class-based middleware runner ────────────────────────────────
+//
+// Class-based middleware follows the beforeX / afterX naming convention:
+// statics named before* run before the route handler (MiddlewareRunner.runBefore),
+// statics named after* run once it is done (runAfter). Each hook receives
+// (req, res); what it RETURNS is interpreted by the one table in
+// interpretHookResult below.
 
 /**
- * Runs class-based middleware that follows the beforeX / afterX naming convention.
+ * True when a middleware spec is a CLASS (the beforeX/afterX convention)
+ * rather than a plain `(req, res, next)` middleware function.
  *
- * Static methods whose names start with "before" are executed by runBefore
- * (prior to the route handler). Static methods starting with "after" are
- * executed by runAfter (after the handler).
- *
- * Each static method receives (req, res) and returns [req, res].
- * If a "before" method returns a response whose status code is >= 400
- * the chain short-circuits and runBefore returns shouldContinue = false.
+ * A class's `prototype` property is non-writable by the language spec
+ * (ClassDefinitionEvaluation); an ordinary function's is writable, and an
+ * arrow function, async function or bound function has no `prototype` at all.
+ * That is a language-level distinction rather than a name or source-string
+ * sniff, so a class named `cors` and a function named `Cors` both classify
+ * correctly.
  */
+export function isMiddlewareClass(spec: unknown): boolean {
+  if (typeof spec !== "function") return false;
+  const proto = Object.getOwnPropertyDescriptor(spec, "prototype");
+  return proto !== undefined && proto.writable === false;
+}
+
+/**
+ * The Tina4 response object — callable, and carrying the raw ServerResponse.
+ * Structural, so a rebound response is recognised too.
+ */
+function isResponse(value: unknown): value is Tina4Response {
+  return typeof value === "function"
+    && typeof (value as Tina4Response).raw?.end === "function";
+}
+
+/**
+ * ONE return-value table, for EVERY beforeX/afterX hook, at EVERY scope
+ * (global and per-route):
+ *
+ *   a Response object   SHORT-CIRCUIT. That object IS the response, at ANY
+ *                       status. This is the PRIMARY rule and the only return
+ *                       that can express a 302 redirect.
+ *   the [req, res] pair rebind both, continue (length >= 2, mirroring Python's
+ *                       `isinstance(result, tuple) and len(result) >= 2`)
+ *   false               SHORT-CIRCUIT. Send the response AS SET; a still
+ *                       default and still unwritten response becomes a 403,
+ *                       because a bare `return false` is a deny.
+ *   undefined / null    continue
+ *
+ * Returns [req, res, stop].
+ */
+function interpretHookResult(
+  result: unknown,
+  req: Tina4Request,
+  res: Tina4Response,
+): [Tina4Request, Tina4Response, boolean] {
+  if (Array.isArray(result)) {
+    return result.length >= 2
+      ? [result[0] as Tina4Request, result[1] as Tina4Response, false]
+      : [req, res, false];
+  }
+  if (isResponse(result)) return [req, result, true];
+  if (result === false) {
+    if (!res.raw.writableEnded && res.raw.statusCode === HTTP_OK) {
+      res.raw.statusCode = HTTP_FORBIDDEN;
+    }
+    return [req, res, true];
+  }
+  return [req, res, false];
+}
+
 /**
  * Produce the deterministic clean 500 for a throwing class-based middleware
- * (M2). Mirrors Python's _middleware_500: LOG via Log.error (class + method +
- * error type + message — never silent) then return a 500 with the exact JSON
- * body shape shared across all four frameworks. The worker never crashes and
- * no unhandled exception leaks.
+ * (M2): LOG via Log.error (class + method + error type + message — never
+ * silent) then return a 500 with the exact JSON body shape shared across all
+ * four frameworks. The worker never crashes and no unhandled exception leaks.
+ *
+ * The counterpart is Python's `Middleware.middleware_500`
+ * (tina4_python/core/middleware.py), called from its own run_before/run_after.
+ * This used to cite `_middleware_500`, which is not a symbol in tina4-python at
+ * all — that name belonged to its dispatcher, back when its orchestrator had no
+ * exception handling to mirror.
  */
 function middleware500(
   res: Tina4Response,
@@ -164,19 +227,59 @@ export class MiddlewareRunner {
   }
 
   /**
-   * Discover the before-prefixed / after-prefixed method names on a
-   * middleware class in DEFINITION order (M1).
-   * `Object.getOwnPropertyNames` returns a class's own
-   * static method names in source-declaration order — we deliberately do NOT
-   * sort() them, so within a class the hooks run in the order they were
-   * written (parity with Python walking __dict__, PHP get_class_methods, Ruby
+   * Discover the before-prefixed / after-prefixed hook names on a middleware
+   * class, INHERITED HOOKS INCLUDED, base class first (M1).
+   *
+   * `Object.getOwnPropertyNames` returns a class's OWN statics only, in
+   * source-declaration order. On its own that silently DROPPED every hook a
+   * subclass inherited: for `class Sub extends Base` with `static beforeBase`
+   * on the base, discovery returned only ["beforeSub"] even though
+   * `Sub.beforeBase` is a live function — so a shared base middleware simply
+   * never ran, with no error. Python returns ['before_base','before_sub'] and
+   * Ruby [:before_base,:before_sub]; Node was the only one of the four that
+   * lost hooks.
+   *
+   * So walk the prototype chain (the STATIC side: Sub -> Base -> ...) and emit
+   * base-class hooks BEFORE the subclass's own, de-duping an override to its
+   * first (base) position. That is exactly Python's `_discover_methods`
+   * walking `reversed(__mro__)` over each `__dict__`, and Ruby's
+   * `discover_methods` walking `ancestors.reverse_each`.
+   *
+   * Within one class the order is still source-declaration order — we
+   * deliberately do NOT sort(), so hooks run in the order they were written
+   * (parity with Python walking __dict__, PHP get_class_methods, Ruby
    * instance_methods(false)). Cross-class order is the natural iteration of
    * the registered classes = REGISTRATION order.
+   *
+   * The chain walk stops at Function.prototype / Object.prototype, so the
+   * built-in members are never scanned. A plain object registered as
+   * middleware still works: its own keys are level 0.
    */
   private static methodNames(cls: any, prefix: string): string[] {
-    return Object.getOwnPropertyNames(cls).filter(
-      (name) => typeof cls[name] === "function" && name.startsWith(prefix),
-    );
+    const levels: string[][] = [];
+    for (
+      let level: any = cls;
+      level && level !== Function.prototype && level !== Object.prototype;
+      level = Object.getPrototypeOf(level)
+    ) {
+      levels.push(
+        Object.getOwnPropertyNames(level).filter(
+          (name) => name.startsWith(prefix) && typeof cls[name] === "function",
+        ),
+      );
+    }
+
+    const seen = new Set<string>();
+    const names: string[] = [];
+    // Reverse the levels: base class first, then each derived class.
+    for (let i = levels.length - 1; i >= 0; i--) {
+      for (const name of levels[i]) {
+        if (seen.has(name)) continue;
+        seen.add(name);
+        names.push(name);
+      }
+    }
+    return names;
   }
 
   /**
@@ -200,6 +303,10 @@ export class MiddlewareRunner {
    * a synchronous hook that returns an array is harmless (the array resolves
    * immediately), so existing sync hooks keep working unchanged.
    *
+   * RETURN VALUE — see `interpretHookResult` for the one table every hook at
+   * every scope obeys. A returned Response object is the PRIMARY
+   * short-circuit; `false` is a deny.
+   *
    * Returns [req, res, shouldContinue].
    */
   static async runBefore(
@@ -210,16 +317,22 @@ export class MiddlewareRunner {
     for (const cls of classes) {
       for (const method of MiddlewareRunner.methodNames(cls, "before")) {
         try {
-          const result = await cls[method](req, res);
-          if (Array.isArray(result)) {
-            [req, res] = result as [Tina4Request, Tina4Response];
-          }
+          const [nextReq, nextRes, stop] =
+            interpretHookResult(await cls[method](req, res), req, res);
+          req = nextReq;
+          res = nextRes;
+          if (stop) return [req, res, false];
         } catch (error) {
           // Throw → logged clean 500, skip the handler (deterministic).
           res = middleware500(res, cls, method, error);
           return [req, res, false];
         }
-        // Short-circuit if the middleware set an error status
+        // LEGACY COMPAT PATH — retained, but NOT the main mechanism. A hook
+        // that returns nothing and merely leaves an error status (or an ended
+        // response) still short-circuits, so middleware written before the
+        // return-value contract keeps working. It cannot express a 3xx
+        // redirect, which is exactly why a returned Response is the primary
+        // rule above.
         if (res.raw.statusCode >= 400 || res.raw.writableEnded) {
           return [req, res, false];
         }
@@ -246,6 +359,12 @@ export class MiddlewareRunner {
    * ASYNC — each hook is awaited (e.g. the responseCache after-hook awaiting
    * `backend.set`). Awaiting a synchronous hook is harmless, so existing sync
    * after-hooks keep working unchanged.
+   *
+   * RETURN VALUE — the SAME table as runBefore (`interpretHookResult`): the
+   * contract is one table for every hook at every scope. There is nothing left
+   * to skip after the handler, so a short-circuit here ends the after chain.
+   * A THROW is different and unchanged: it is logged, becomes a clean 500, and
+   * the remaining after hooks still run.
    */
   static async runAfter(
     classes: any[],
@@ -255,10 +374,11 @@ export class MiddlewareRunner {
     for (const cls of classes) {
       for (const method of MiddlewareRunner.methodNames(cls, "after")) {
         try {
-          const result = await cls[method](req, res);
-          if (Array.isArray(result)) {
-            [req, res] = result as [Tina4Request, Tina4Response];
-          }
+          const [nextReq, nextRes, stop] =
+            interpretHookResult(await cls[method](req, res), req, res);
+          req = nextReq;
+          res = nextRes;
+          if (stop) return [req, res];
         } catch (error) {
           // Throw → logged clean 500, but remaining after* STILL run.
           res = middleware500(res, cls, method, error);

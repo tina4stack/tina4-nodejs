@@ -19,7 +19,7 @@ import { Socket } from "node:net";
 import { createRequest } from "./request.js";
 import { createResponse } from "./response.js";
 import { defaultRouter, Router, runRouteMiddlewares } from "./router.js";
-import { MiddlewareRunner } from "./middleware.js";
+import { MiddlewareRunner, isMiddlewareClass } from "./middleware.js";
 import { enforceRouteAuth } from "./authGate.js";
 
 export class TestResponse {
@@ -220,10 +220,21 @@ export class TestClient {
       }
     }
 
-    // Per-route middleware, same as the live dispatcher.
+    // Per-route middleware: functions, string specs, and CLASSES, through the
+    // same runner the live dispatcher uses. A route class's afterX hooks join
+    // the after pass below, exactly as in server.ts.
+    //
+    // ORDER DRIFT, stated rather than hidden: the live dispatcher runs the auth
+    // gate BEFORE the route's own middleware (ADR-0012 — middleware on a
+    // secured route must never process a request that is about to be rejected);
+    // here it still runs before the gate. Aligning the two is a behaviour
+    // change to the test surface and belongs in its own change.
+    const routeMiddlewareClasses = (match.middlewares ?? []).filter(isMiddlewareClass);
     if (match.middlewares && match.middlewares.length > 0) {
       const proceed = await runRouteMiddlewares(match.middlewares, req, res);
       if (!proceed || res.raw.writableEnded) {
+        await MiddlewareRunner.runAfter([...globalMiddleware, ...routeMiddlewareClasses], req, res);
+        if (!res.raw.writableEnded) res.raw.end();
         return this._collect(rawRes, chunks, socket);
       }
     }
@@ -243,9 +254,11 @@ export class TestClient {
     // Execute handler (only if auth passed)
     if (!rejected) {
       await match.handler(req, res);
-      // Global afterX hooks (logging / post-processing), mirroring the live tail.
-      if (globalMiddleware.length > 0) {
-        await MiddlewareRunner.runAfter(globalMiddleware, req, res);
+      // Global + route-class afterX hooks (logging / post-processing),
+      // mirroring the live tail.
+      const afterMiddleware = [...globalMiddleware, ...routeMiddlewareClasses];
+      if (afterMiddleware.length > 0) {
+        await MiddlewareRunner.runAfter(afterMiddleware, req, res);
       }
     }
 

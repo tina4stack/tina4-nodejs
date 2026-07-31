@@ -1,5 +1,6 @@
 import type { RouteHandler, RouteDefinition, RouteMeta, Middleware, MiddlewareSpec, Tina4Request, Tina4Response, WebSocketRouteHandler, WebSocketRouteDefinition } from "./types.js";
 import { isTruthy } from "./dotenv.js";
+import { MiddlewareRunner, isMiddlewareClass } from "./middleware.js";
 
 /**
  * Whether `TINA4_TRAILING_SLASH_REDIRECT` is enabled.
@@ -821,16 +822,29 @@ export async function resolveStringMiddleware(spec: string): Promise<Middleware>
 /**
  * Resolve a single route-middleware spec to a middleware function. Functions
  * pass through unchanged; strings are resolved via resolveStringMiddleware.
+ * A middleware CLASS never reaches here — runRouteMiddlewares runs it through
+ * the MiddlewareRunner instead.
  */
 async function resolveMiddlewareSpec(spec: MiddlewareSpec): Promise<Middleware> {
-  return typeof spec === "string" ? resolveStringMiddleware(spec) : spec;
+  return typeof spec === "string" ? resolveStringMiddleware(spec) : spec as Middleware;
 }
 
 /**
- * Run per-route middleware chain, then call the handler.
+ * Run the per-route middleware chain. Returns false when it short-circuited
+ * and the handler must be skipped.
  *
- * Accepts middleware functions and/or string specs (e.g. "ResponseCache:300").
- * Each spec is resolved to a middleware function just before it runs.
+ * Accepts middleware functions, middleware CLASSES, and string specs
+ * (e.g. "ResponseCache:300"). A function or string spec is resolved and
+ * invoked as `mw(req, res, next)` exactly as before.
+ *
+ * A CLASS runs its beforeX hooks through the SAME `MiddlewareRunner.runBefore`
+ * and the SAME return-value table as global middleware — no parallel runner.
+ * Its afterX hooks run with the global after pass once the handler is done
+ * (server.ts / testClient.ts append the route's classes to that list), because
+ * "after" means after the handler, not after this function. Every spec used to
+ * be invoked as `mw(req, res, next)`, which for a class throws "Class
+ * constructor cannot be invoked without 'new'", so a class attached per-route
+ * was inert. Python and PHP both ran per-route class hooks already.
  */
 export async function runRouteMiddlewares(
   middlewares: MiddlewareSpec[],
@@ -838,6 +852,17 @@ export async function runRouteMiddlewares(
   res: Tina4Response,
 ): Promise<boolean> {
   for (const spec of middlewares) {
+    if (isMiddlewareClass(spec)) {
+      // tina4: a class hook that returns a DIFFERENT [req, res] pair cannot be
+      // rebound here — this returns a bool and is public API (four of this
+      // repo's own test files import it). Node's req/res are per-request
+      // singletons, so every built-in returns the same pair back; widen the
+      // return type if that ever stops being true.
+      const [, , proceed] = await MiddlewareRunner.runBefore([spec], req, res);
+      if (!proceed || res.raw.writableEnded) return false;
+      continue;
+    }
+
     const mw = await resolveMiddlewareSpec(spec);
     let nextCalled = false;
     await mw(req, res, () => {

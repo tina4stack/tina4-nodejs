@@ -18,7 +18,7 @@ import {
   sessionAutoStart,
 } from "./dispatchPipeline.js";
 import { createResponse, setDefaultTemplatesDir } from "./response.js";
-import { MiddlewareChain, MiddlewareRunner, cors, requestLogger } from "./middleware.js";
+import { MiddlewareChain, MiddlewareRunner, cors, requestLogger, isMiddlewareClass } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
 import { loadEnv, isTruthy } from "./dotenv.js";
 import { createHealthRoutes } from "./health.js";
@@ -932,18 +932,35 @@ async function runMatchedRoute(ctx: MatchedRouteContext): Promise<void> {
   // Dev admin routes (/__dev) are always public.
   if (enforceRouteAuth(req, res, match as never, ctx.pathname.startsWith("/__dev"))) return;
 
+  // The route's OWN class middleware: its beforeX hooks run inside
+  // runRouteMiddlewares, its afterX hooks join the after pass below - one
+  // effective list for the response phase, the way Python merges the globals
+  // and the route's middleware into `_effective_middleware` for both passes.
+  const routeMiddlewareClasses = (match.middlewares ?? []).filter(isMiddlewareClass);
+
+  let handlerSkipped = false;
   if (match.middlewares && match.middlewares.length > 0) {
     const proceed = await runRouteMiddlewares(match.middlewares as never, req, res);
-    if (!proceed || res.raw.writableEnded) return;
+    handlerSkipped = !proceed || res.raw.writableEnded;
   }
 
-  await renderIfTemplateRoute(match, res, await invokeRouteHandler(match, req, res));
+  if (!handlerSkipped) {
+    await renderIfTemplateRoute(match, res, await invokeRouteHandler(match, req, res));
+  }
 
   // Global afterX hooks (logging / post-processing), over EVERY global
-  // middleware - both phases, not just the post-match group.
+  // middleware - both phases, not just the post-match group - PLUS the route's
+  // own middleware classes.
   //
-  // The response phase must cover everything the request phase entered. Running
-  // only the post-match group meant a `preMatch` middleware's afterX NEVER ran
+  // The response phase must cover everything the request phase entered, so it
+  // also runs when the ROUTE's middleware short-circuited - the after hooks of a
+  // middleware whose before hook denied the request are exactly what add the
+  // headers and the access-log line for that denial. Dispatch used to return
+  // early there, so a cache HIT (a route middleware that answers and ends)
+  // skipped every global after hook, and a route middleware that short-circuited
+  // WITHOUT ending the response left the request hanging with no end() at all.
+  //
+  // Running only the post-match group meant a `preMatch` middleware's afterX NEVER ran
   // on a successful request: measured 0 runs in 5 requests. An acquire/release
   // pair leaked one slot per request, unbounded; a timer started in beforeX was
   // never stopped; an access log saw the request and never the response - the
@@ -964,8 +981,9 @@ async function runMatchedRoute(ctx: MatchedRouteContext): Promise<void> {
   //
   // Header mutations here are no-ops once the response is flushed - Node sends
   // headers with the body - so response headers belong in beforeX.
-  if (ctx.allGlobalMiddleware.length > 0) {
-    await MiddlewareRunner.runAfter(ctx.allGlobalMiddleware as never, req, res);
+  const afterMiddleware = [...ctx.allGlobalMiddleware, ...routeMiddlewareClasses];
+  if (afterMiddleware.length > 0) {
+    await MiddlewareRunner.runAfter(afterMiddleware as never, req, res);
   }
 
   if (!res.raw.writableEnded) res.raw.end();
