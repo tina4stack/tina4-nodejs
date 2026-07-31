@@ -118,8 +118,8 @@ function summaryAndExit(code = 0): never {
 // ── 5. LIVE two-database check (skipped if PG unreachable) ───────────
 const PG_HOST = process.env.TINA4_TEST_PG_HOST ?? "localhost";
 const PG_PORT = parseInt(process.env.TINA4_TEST_PG_PORT ?? "5432", 10);
-const PG_USER = process.env.TINA4_TEST_PG_USER ?? "tina4";
-const PG_PASS = process.env.TINA4_TEST_PG_PASS ?? "tina4";
+const PG_USER = process.env.TINA4_TEST_PG_USERNAME ?? "tina4";
+const PG_PASS = process.env.TINA4_TEST_PG_PASSWORD ?? "tina4";
 const PG_DEFAULT_DB = process.env.TINA4_TEST_PG_DB ?? "tina4_node";
 const PG_NAMED_DB = process.env.TINA4_TEST_PG_DB_2 ?? "tina4_py";
 

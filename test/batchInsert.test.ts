@@ -172,8 +172,8 @@ const tmp = mkdtempSync(join(tmpdir(), "tina4-batch-"));
   console.log("\n-- PostgreSQL (live) --");
   const PG_HOST = process.env.TINA4_TEST_PG_HOST ?? "localhost";
   const PG_PORT = parseInt(process.env.TINA4_TEST_PG_PORT ?? "5432", 10);
-  const PG_USER = process.env.TINA4_TEST_PG_USER ?? "tina4";
-  const PG_PASS = process.env.TINA4_TEST_PG_PASS ?? "tina4";
+  const PG_USER = process.env.TINA4_TEST_PG_USERNAME ?? "tina4";
+  const PG_PASS = process.env.TINA4_TEST_PG_PASSWORD ?? "tina4";
   const PG_DB = process.env.TINA4_TEST_PG_DB ?? "tina4_node";
 
   if (!(await reachable(PG_HOST, PG_PORT))) {
@@ -212,8 +212,8 @@ const tmp = mkdtempSync(join(tmpdir(), "tina4-batch-"));
   console.log("\n-- MySQL (live) --");
   const HOST = process.env.TINA4_TEST_MYSQL_HOST ?? "localhost";
   const PORT = parseInt(process.env.TINA4_TEST_MYSQL_PORT ?? "3306", 10);
-  const USER = process.env.TINA4_TEST_MYSQL_USER ?? "tina4";
-  const PASS = process.env.TINA4_TEST_MYSQL_PASS ?? "tina4";
+  const USER = process.env.TINA4_TEST_MYSQL_USERNAME ?? "tina4";
+  const PASS = process.env.TINA4_TEST_MYSQL_PASSWORD ?? "tina4";
   const DB = process.env.TINA4_TEST_MYSQL_DB ?? "tina4_test";
 
   if (!(await reachable(HOST, PORT))) {
@@ -251,8 +251,8 @@ const tmp = mkdtempSync(join(tmpdir(), "tina4-batch-"));
   console.log("\n-- MSSQL (live) --");
   const HOST = process.env.TINA4_TEST_MSSQL_HOST ?? "localhost";
   const PORT = parseInt(process.env.TINA4_TEST_MSSQL_PORT ?? "1433", 10);
-  const USER = process.env.TINA4_TEST_MSSQL_USER ?? "sa";
-  const PASS = process.env.TINA4_TEST_MSSQL_PASS ?? "TinaSQL123!Secure";
+  const USER = process.env.TINA4_TEST_MSSQL_USERNAME ?? "sa";
+  const PASS = process.env.TINA4_TEST_MSSQL_PASSWORD ?? "TinaSQL123!Secure";
   const DB = process.env.TINA4_TEST_MSSQL_DB ?? "tina4_test";
 
   if (!(await reachable(HOST, PORT))) {

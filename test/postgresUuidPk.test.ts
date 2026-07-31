@@ -24,8 +24,8 @@ import net from "node:net";
 
 const PG_HOST = process.env.TINA4_TEST_PG_HOST ?? "localhost";
 const PG_PORT = parseInt(process.env.TINA4_TEST_PG_PORT ?? "55432", 10);
-const PG_USER = process.env.TINA4_TEST_PG_USER ?? "tina4";
-const PG_PASS = process.env.TINA4_TEST_PG_PASS ?? "tina4";
+const PG_USER = process.env.TINA4_TEST_PG_USERNAME ?? "tina4";
+const PG_PASS = process.env.TINA4_TEST_PG_PASSWORD ?? "tina4";
 const PG_DB = process.env.TINA4_TEST_PG_DB ?? "tina4";
 
 let pass = 0;

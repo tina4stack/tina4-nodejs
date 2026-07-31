@@ -30,14 +30,14 @@ import net from "node:net";
 
 const MYSQL_HOST = process.env.TINA4_TEST_MYSQL_HOST ?? "localhost";
 const MYSQL_PORT = parseInt(process.env.TINA4_TEST_MYSQL_PORT ?? "3306", 10);
-const MYSQL_USER = process.env.TINA4_TEST_MYSQL_USER ?? "tina4";
-const MYSQL_PASS = process.env.TINA4_TEST_MYSQL_PASS ?? "tina4";
+const MYSQL_USER = process.env.TINA4_TEST_MYSQL_USERNAME ?? "tina4";
+const MYSQL_PASS = process.env.TINA4_TEST_MYSQL_PASSWORD ?? "tina4";
 const MYSQL_DB = process.env.TINA4_TEST_MYSQL_DB ?? "tina4_test";
 
 const MSSQL_HOST = process.env.TINA4_TEST_MSSQL_HOST ?? "localhost";
 const MSSQL_PORT = parseInt(process.env.TINA4_TEST_MSSQL_PORT ?? "1433", 10);
-const MSSQL_USER = process.env.TINA4_TEST_MSSQL_USER ?? "sa";
-const MSSQL_PASS = process.env.TINA4_TEST_MSSQL_PASS ?? "TinaSQL123!Secure";
+const MSSQL_USER = process.env.TINA4_TEST_MSSQL_USERNAME ?? "sa";
+const MSSQL_PASS = process.env.TINA4_TEST_MSSQL_PASSWORD ?? "TinaSQL123!Secure";
 const MSSQL_DB = process.env.TINA4_TEST_MSSQL_DB ?? "tina4_test";
 
 const TABLE = "_tina4_test_bool";
