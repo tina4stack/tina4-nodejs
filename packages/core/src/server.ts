@@ -896,6 +896,11 @@ interface MatchedRouteContext {
   pathname: string;
   match: { params?: Record<string, unknown>; handler: unknown; template?: string; middlewares?: unknown[] };
   postMatchMiddleware: unknown[];
+  /**
+   * EVERY global middleware, both phases. The after pass runs over all of it,
+   * not just the post-match group - see runMatchedRoute.
+   */
+  allGlobalMiddleware: unknown[];
 }
 
 /**
@@ -934,11 +939,33 @@ async function runMatchedRoute(ctx: MatchedRouteContext): Promise<void> {
 
   await renderIfTemplateRoute(match, res, await invokeRouteHandler(match, req, res));
 
-  // Global afterX hooks (logging / post-processing). Header mutations here are
-  // no-ops once the response is flushed - Node sends headers with the body - so
-  // response headers belong in beforeX.
-  if (postMatchMiddleware.length > 0) {
-    await MiddlewareRunner.runAfter(postMatchMiddleware as never, req, res);
+  // Global afterX hooks (logging / post-processing), over EVERY global
+  // middleware - both phases, not just the post-match group.
+  //
+  // The response phase must cover everything the request phase entered. Running
+  // only the post-match group meant a `preMatch` middleware's afterX NEVER ran
+  // on a successful request: measured 0 runs in 5 requests. An acquire/release
+  // pair leaked one slot per request, unbounded; a timer started in beforeX was
+  // never stopped; an access log saw the request and never the response - the
+  // very hole ADR-0012 moved the globals ahead of the auth gate to close.
+  //
+  // Worse, it inverted: the pre-match afterX DID run when the pre-match pass
+  // short-circuited, so it fired on the error path and not the happy one.
+  //
+  // Django unwinds its single MIDDLEWARE list in reverse, Laravel runs the
+  // response/terminate phase for global, group AND route middleware, Rails runs
+  // every declared after_action, ASP.NET unwinds through every component
+  // entered. Ruby and PHP already did this. Splitting the BEFORE pass by
+  // dependency (ADR-0012) says nothing about the after pass: an after hook adds
+  // headers or logging and needs no route metadata either way.
+  //
+  // No double-run: when the pre-match pass short-circuits, dispatch returns
+  // before ever reaching this.
+  //
+  // Header mutations here are no-ops once the response is flushed - Node sends
+  // headers with the body - so response headers belong in beforeX.
+  if (ctx.allGlobalMiddleware.length > 0) {
+    await MiddlewareRunner.runAfter(ctx.allGlobalMiddleware as never, req, res);
   }
 
   if (!res.raw.writableEnded) res.raw.end();
@@ -1670,7 +1697,10 @@ ${reset}
       const match = router.match(req.method ?? "GET", pathname);
       if (match) {
         matchedPattern.value = match.pattern;
-        await runMatchedRoute({ req, res, pathname, match, postMatchMiddleware });
+        await runMatchedRoute({
+          req, res, pathname, match, postMatchMiddleware,
+          allGlobalMiddleware: [...preMatchMiddleware, ...postMatchMiddleware],
+        });
         return;
       }
 
