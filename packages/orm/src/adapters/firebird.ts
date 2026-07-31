@@ -4,6 +4,7 @@
  * Install: npm install node-firebird
  * URL format: firebird://user:pass@host:port/path/to/database.fdb
  */
+import { firebirdDialect, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslator.js";
 import { createRequire } from "node:module";
@@ -154,6 +155,13 @@ export function fbQuote(name: string): string {
   if (trimmed.startsWith('"') && trimmed.endsWith('"')) return trimmed;
   return `"${trimmed.toUpperCase().replace(/"/g, '""')}"`;
 }
+
+/**
+ * Firebird's dialect for the shared CRUD builder: its own upper-casing quoter,
+ * plain "?" markers. Defined here rather than in sqlDialect.ts because the
+ * quoting rule is a Firebird fact, not a generic one.
+ */
+const FB_DIALECT = firebirdDialect(fbQuote);
 
 export class FirebirdAdapter implements DatabaseAdapter {
   private db: any = null;
@@ -381,16 +389,14 @@ export class FirebirdAdapter implements DatabaseAdapter {
     if (Array.isArray(data)) {
       if (data.length === 0) return { success: true, affectedRows: 0 };
       const keys = Object.keys(data[0]);
-      const placeholders = keys.map(() => "?").join(", ");
-      const sql = `INSERT INTO ${fbQuote(table)} (${keys.map(fbQuote).join(", ")}) VALUES (${placeholders})`;
+      const sql = buildInsert(FB_DIALECT, table, keys);
       const paramsList = data.map((row) => keys.map((k) => row[k]));
       const result = await this.executeManyAsync(sql, paramsList);
       return { success: true, affectedRows: result.totalAffected, lastId: result.lastId };
     }
 
     const keys = Object.keys(data);
-    const placeholders = keys.map(() => "?").join(", ");
-    const sql = `INSERT INTO ${fbQuote(table)} (${keys.map(fbQuote).join(", ")}) VALUES (${placeholders})`;
+    const sql = buildInsert(FB_DIALECT, table, keys);
     const values = Object.values(data);
 
     // FAIL LOUD, like fetch/execute and the other three frameworks: a bad statement
@@ -413,7 +419,7 @@ export class FirebirdAdapter implements DatabaseAdapter {
     // stores PROBE_T/ID — and a hand-rolled `"${k}"` emits lowercase-quoted "id",
     // which is a DIFFERENT, non-existent column. update and delete were therefore
     // broken on every conventionally-created Firebird table while insert worked.
-    const setClauses = Object.keys(data).map((k) => `${fbQuote(k)} = ?`).join(", ");
+    const setClauses = buildSetClause(FB_DIALECT, Object.keys(data));
 
     // A raw WHERE fragment + params is half the write_path contract's filter
     // form. Without this branch Object.keys("id = ?") yields the STRING INDICES
@@ -428,8 +434,8 @@ export class FirebirdAdapter implements DatabaseAdapter {
       return { success: true, affectedRows: 1 };
     }
 
-    const whereClauses = Object.keys(filter).map((k) => `${fbQuote(k)} = ?`).join(" AND ");
-    const sql = `UPDATE ${fbQuote(table)} SET ${setClauses} WHERE ${whereClauses}`;
+    const whereClauses = buildWhereClause(FB_DIALECT, Object.keys(filter));
+    const sql = `UPDATE ${FB_DIALECT.quote(table)} SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];
 
     await this.executePromise(sql, values);
@@ -452,8 +458,8 @@ export class FirebirdAdapter implements DatabaseAdapter {
     }
 
     // Same fbQuote policy as insert/update — see updateAsync.
-    const whereClauses = Object.keys(filter).map((k) => `${fbQuote(k)} = ?`).join(" AND ");
-    const sql = `DELETE FROM ${fbQuote(table)} WHERE ${whereClauses}`;
+    const whereClauses = buildWhereClause(FB_DIALECT, Object.keys(filter));
+    const sql = `DELETE FROM ${FB_DIALECT.quote(table)} WHERE ${whereClauses}`;
     const values = Object.values(filter);
 
     await this.executePromise(sql, values);

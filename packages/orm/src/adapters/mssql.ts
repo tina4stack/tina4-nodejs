@@ -4,6 +4,7 @@
  * Install: npm install tedious
  * URL format: mssql://user:pass@host:port/database
  */
+import { ANSI_DIALECT, MSSQL_DIALECT, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslator.js";
 import { createRequire } from "node:module";
@@ -278,8 +279,8 @@ export class MssqlAdapter implements DatabaseAdapter {
       const keys = Object.keys(data[0]);
       // `?` placeholders — executeManyAsync -> executeAsync runs convertPlaceholders,
       // which rewrites them to @p0, @p1, ... for tedious.
-      const placeholders = keys.map(() => "?").join(", ");
-      const sql = `INSERT INTO [${table}] ([${keys.join("], [")}]) VALUES (${placeholders})`;
+      // The batch path binds through executeMany, which converts "?" itself.
+      const sql = buildInsert({ quote: MSSQL_DIALECT.quote, marker: ANSI_DIALECT.marker }, table, keys);
       const paramsList = data.map((row) => keys.map((k) => row[k]));
       try {
         const result = await this.executeManyAsync(sql, paramsList);
@@ -291,8 +292,9 @@ export class MssqlAdapter implements DatabaseAdapter {
     }
 
     const keys = Object.keys(data);
-    const placeholders = keys.map((_, i) => `@p${i}`).join(", ");
-    const sql = `INSERT INTO [${table}] ([${keys.join("], [")}]) VALUES (${placeholders}); SELECT SCOPE_IDENTITY() AS id`;
+    // startAt 0: MSSQL BINDS by the marker name, so @p must start where the
+    // binding loop starts. Shifting to 1 would name parameters that do not exist.
+    const sql = buildInsert(MSSQL_DIALECT, table, keys, "; SELECT SCOPE_IDENTITY() AS id", 0);
     const values = Object.values(data);
 
     try {
@@ -321,7 +323,8 @@ export class MssqlAdapter implements DatabaseAdapter {
     this.ensureConnected();
     const dataKeys = Object.keys(data);
     let paramIndex = 0;
-    const setClauses = dataKeys.map((k) => `[${k}] = @p${paramIndex++}`).join(", ");
+    const setClauses = buildSetClause(MSSQL_DIALECT, dataKeys, paramIndex);
+    paramIndex += dataKeys.length;
 
     // A raw WHERE fragment + params is half the write_path contract's filter
     // form. Without this branch Object.keys("id = ?") yields the STRING INDICES
@@ -329,7 +332,7 @@ export class MssqlAdapter implements DatabaseAdapter {
     // reports an invalid column name '0'.
     if (typeof filter === "string") {
       const where = filter ? ` WHERE ${this.convertPlaceholders(filter, paramIndex)}` : "";
-      const sql = `UPDATE [${table}] SET ${setClauses}${where}`;
+      const sql = `UPDATE ${MSSQL_DIALECT.quote(table)} SET ${setClauses}${where}`;
       const values = [...Object.values(data), ...(params ?? [])];
       try {
         const result = await this.execSqlPromise(sql, values);
@@ -340,8 +343,9 @@ export class MssqlAdapter implements DatabaseAdapter {
     }
 
     const filterKeys = Object.keys(filter);
-    const whereClauses = filterKeys.map((k) => `[${k}] = @p${paramIndex++}`).join(" AND ");
-    const sql = `UPDATE [${table}] SET ${setClauses} WHERE ${whereClauses}`;
+    const whereClauses = buildWhereClause(MSSQL_DIALECT, filterKeys, paramIndex);
+    paramIndex += filterKeys.length;
+    const sql = `UPDATE ${MSSQL_DIALECT.quote(table)} SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];
 
     try {
@@ -375,8 +379,9 @@ export class MssqlAdapter implements DatabaseAdapter {
 
     const filterKeys = Object.keys(filter);
     let paramIndex = 0;
-    const whereClauses = filterKeys.map((k) => `[${k}] = @p${paramIndex++}`).join(" AND ");
-    const sql = `DELETE FROM [${table}] WHERE ${whereClauses}`;
+    const whereClauses = buildWhereClause(MSSQL_DIALECT, filterKeys, paramIndex);
+    paramIndex += filterKeys.length;
+    const sql = `DELETE FROM ${MSSQL_DIALECT.quote(table)} WHERE ${whereClauses}`;
     const values = Object.values(filter);
 
     try {

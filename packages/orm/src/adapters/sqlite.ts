@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { ANSI_DIALECT, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
 import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
@@ -169,16 +170,14 @@ export class SQLiteAdapter implements DatabaseAdapter {
     if (Array.isArray(data)) {
       if (data.length === 0) return { success: true, affectedRows: 0 };
       const keys = Object.keys(data[0]);
-      const placeholders = keys.map(() => "?").join(", ");
-      const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
+      const sql = buildInsert(ANSI_DIALECT, table, keys);
       const paramsList = data.map((row) => keys.map((k) => row[k]));
       const result = this.executeMany(sql, paramsList);
       return { success: true, affectedRows: result.totalAffected, lastId: result.lastId };
     }
 
     const keys = Object.keys(data);
-    const placeholders = keys.map(() => "?").join(", ");
-    const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
+    const sql = buildInsert(ANSI_DIALECT, table, keys);
     const values = Object.values(data);
 
     try {
@@ -191,7 +190,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
   }
 
   update(table: string, data: Record<string, unknown>, filter: Record<string, unknown> | string, params?: unknown[]): DatabaseResult {
-    const setClauses = Object.keys(data).map((k) => `"${k}" = ?`).join(", ");
+    const setClauses = buildSetClause(ANSI_DIALECT, Object.keys(data));
 
     // A raw WHERE fragment + params is half the write_path contract's filter
     // form ("a string filter with params works the same as a hash filter").
@@ -202,7 +201,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
     // mssql/firebird adapters, still open here on the DEFAULT engine.
     if (typeof filter === "string") {
       const where = filter ? ` WHERE ${filter}` : "";
-      const sql = `UPDATE "${table}" SET ${setClauses}${where}`;
+      const sql = `UPDATE ${ANSI_DIALECT.quote(table)} SET ${setClauses}${where}`;
       const values = [...Object.values(data), ...(params ?? [])];
       try {
         const result = this.db.prepare(sql).run(...toSqlParams(values));
@@ -212,8 +211,8 @@ export class SQLiteAdapter implements DatabaseAdapter {
       }
     }
 
-    const whereClauses = Object.keys(filter).map((k) => `"${k}" = ?`).join(" AND ");
-    const sql = `UPDATE "${table}" SET ${setClauses} WHERE ${whereClauses}`;
+    const whereClauses = buildWhereClause(ANSI_DIALECT, Object.keys(filter));
+    const sql = `UPDATE ${ANSI_DIALECT.quote(table)} SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];
 
     try {
@@ -244,8 +243,8 @@ export class SQLiteAdapter implements DatabaseAdapter {
       }
     }
 
-    const whereClauses = Object.keys(filter).map((k) => `"${k}" = ?`).join(" AND ");
-    const sql = `DELETE FROM "${table}" WHERE ${whereClauses}`;
+    const whereClauses = buildWhereClause(ANSI_DIALECT, Object.keys(filter));
+    const sql = `DELETE FROM ${ANSI_DIALECT.quote(table)} WHERE ${whereClauses}`;
     const values = Object.values(filter);
 
     try {

@@ -8,6 +8,7 @@
  * The connection string after stripping the "odbc:///" prefix is passed
  * directly to odbc.connect(), so any valid ODBC connection string works.
  */
+import { ANSI_DIALECT, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { createRequire } from "node:module";
 
@@ -218,8 +219,7 @@ export class OdbcAdapter implements DatabaseAdapter {
   async insertAsync(table: string, data: Record<string, unknown>): Promise<DatabaseResult> {
     this.ensureConnected();
     const keys = Object.keys(data);
-    const placeholders = keys.map(() => "?").join(", ");
-    const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
+    const sql = buildInsert(ANSI_DIALECT, table, keys);
     const values = Object.values(data);
 
     try {
@@ -233,9 +233,9 @@ export class OdbcAdapter implements DatabaseAdapter {
   /** Update rows in a table matching filter. */
   async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): Promise<DatabaseResult> {
     this.ensureConnected();
-    const setClauses = Object.keys(data).map((k) => `"${k}" = ?`).join(", ");
-    const whereClauses = Object.keys(filter).map((k) => `"${k}" = ?`).join(" AND ");
-    const sql = `UPDATE "${table}" SET ${setClauses} WHERE ${whereClauses}`;
+    const setClauses = buildSetClause(ANSI_DIALECT, Object.keys(data));
+    const whereClauses = buildWhereClause(ANSI_DIALECT, Object.keys(filter));
+    const sql = `UPDATE ${ANSI_DIALECT.quote(table)} SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];
 
     try {
@@ -274,8 +274,8 @@ export class OdbcAdapter implements DatabaseAdapter {
       }
     }
 
-    const whereClauses = Object.keys(filter).map((k) => `"${k}" = ?`).join(" AND ");
-    const sql = `DELETE FROM "${table}" WHERE ${whereClauses}`;
+    const whereClauses = buildWhereClause(ANSI_DIALECT, Object.keys(filter));
+    const sql = `DELETE FROM ${ANSI_DIALECT.quote(table)} WHERE ${whereClauses}`;
     const values = Object.values(filter);
 
     try {

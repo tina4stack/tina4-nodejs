@@ -4,6 +4,7 @@
  * Install: npm install pg @types/pg
  * URL format: postgresql://user:pass@host:port/database
  */
+import { ANSI_DIALECT, POSTGRES_DIALECT, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslator.js";
 
@@ -247,8 +248,8 @@ export class PostgresAdapter implements DatabaseAdapter {
     if (Array.isArray(data)) {
       if (data.length === 0) return { success: true, affectedRows: 0 };
       const keys = Object.keys(data[0]);
-      const placeholders = keys.map(() => "?").join(", ");
-      const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders})`;
+      // The batch path binds through executeManyAsync, which converts "?" itself.
+      const sql = buildInsert(ANSI_DIALECT, table, keys);
       const paramsList = data.map((row) => keys.map((k) => row[k]));
       try {
         const result = await this.executeManyAsync(sql, paramsList);
@@ -260,8 +261,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
 
     const keys = Object.keys(data);
-    const placeholders = keys.map((_, i) => `$${i + 1}`).join(", ");
-    const sql = `INSERT INTO "${table}" ("${keys.join('", "')}") VALUES (${placeholders}) RETURNING *`;
+    const sql = buildInsert(POSTGRES_DIALECT, table, keys, " RETURNING *");
     const values = Object.values(data);
 
     try {
@@ -287,7 +287,8 @@ export class PostgresAdapter implements DatabaseAdapter {
     this.ensureConnected();
     const dataKeys = Object.keys(data);
     let paramIndex = 1;
-    const setClauses = dataKeys.map((k) => `"${k}" = $${paramIndex++}`).join(", ");
+    const setClauses = buildSetClause(POSTGRES_DIALECT, dataKeys, paramIndex);
+    paramIndex += dataKeys.length;
 
     // A raw WHERE fragment + params is half the write_path contract's filter
     // form ("a string filter with params works the same as a hash filter").
@@ -297,7 +298,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     // this branch; postgres/mysql/mssql/firebird did not.
     if (typeof filter === "string") {
       const where = filter ? ` WHERE ${this.convertPlaceholders(filter, paramIndex)}` : "";
-      const sql = `UPDATE "${table}" SET ${setClauses}${where}`;
+      const sql = `UPDATE ${POSTGRES_DIALECT.quote(table)} SET ${setClauses}${where}`;
       const values = [...Object.values(data), ...(params ?? [])];
       try {
         const result = await this.client!.query(sql, values);
@@ -308,8 +309,9 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
 
     const filterKeys = Object.keys(filter);
-    const whereClauses = filterKeys.map((k) => `"${k}" = $${paramIndex++}`).join(" AND ");
-    const sql = `UPDATE "${table}" SET ${setClauses} WHERE ${whereClauses}`;
+    const whereClauses = buildWhereClause(POSTGRES_DIALECT, filterKeys, paramIndex);
+    paramIndex += filterKeys.length;
+    const sql = `UPDATE ${POSTGRES_DIALECT.quote(table)} SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];
 
     try {
@@ -345,8 +347,9 @@ export class PostgresAdapter implements DatabaseAdapter {
 
     const filterKeys = Object.keys(filter);
     let paramIndex = 1;
-    const whereClauses = filterKeys.map((k) => `"${k}" = $${paramIndex++}`).join(" AND ");
-    const sql = `DELETE FROM "${table}" WHERE ${whereClauses}`;
+    const whereClauses = buildWhereClause(POSTGRES_DIALECT, filterKeys, paramIndex);
+    paramIndex += filterKeys.length;
+    const sql = `DELETE FROM ${POSTGRES_DIALECT.quote(table)} WHERE ${whereClauses}`;
     const values = Object.values(filter);
 
     try {
