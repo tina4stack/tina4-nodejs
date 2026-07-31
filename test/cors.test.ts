@@ -61,7 +61,7 @@ export default async function(req: any, res: any) {
 // Disable rate limiter for CORS testing and prevent cluster mode
 process.env.TINA4_RATE_LIMIT = "10000";
 process.env.TINA4_DEBUG = "true";
-// ADR-0014 made the CORS default DENY. This suite asserts what the server
+// ADR-0018 made the CORS default DENY. This suite asserts what the server
 // EMITS for an allowed origin, which did not change, so it declares the
 // wildcard policy it used to inherit from the old permissive default.
 // No assertion below was altered.

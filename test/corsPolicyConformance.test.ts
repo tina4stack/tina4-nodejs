@@ -1,7 +1,7 @@
 /**
  * CORS policy conformance - deny by default, no wildcard+credentials, Vary: Origin.
  *
- * Feature 10 (CORS middleware) conformance suite. See ADR-0014.
+ * Feature 10 (CORS middleware) conformance suite. See ADR-0018.
  *
  * Three rules, each pinned positive AND negative, driven through a REAL HTTP
  * server started by the REAL startServer() with REAL http.request calls.

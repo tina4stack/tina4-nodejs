@@ -310,7 +310,7 @@ function corsWarnOnce(key: string, message: string): void {
  * silently ignored a documented env var (measured 2026-07-31). One feature,
  * one code path.
  *
- * DENY BY DEFAULT (ADR-0014). With no origins configured, NO
+ * DENY BY DEFAULT (ADR-0018). With no origins configured, NO
  * Access-Control-Allow-Origin is emitted and the browser's own CORS check
  * blocks the cross-origin request. "*" still works, it just has to be asked for.
  *
@@ -340,7 +340,7 @@ export class CorsPolicy {
   readonly credentials: boolean;
 
   constructor(config?: CorsConfig) {
-    // Default is EMPTY, not "*" — deny by default (ADR-0014).
+    // Default is EMPTY, not "*" — deny by default (ADR-0018).
     const originsRaw = config?.origins ?? process.env.TINA4_CORS_ORIGINS ?? "";
     const list = Array.isArray(originsRaw) ? originsRaw : originsRaw.split(",");
     this.allowedOrigins = list.map((o) => o.trim()).filter((o) => o !== "");

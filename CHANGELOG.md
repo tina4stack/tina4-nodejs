@@ -46,7 +46,7 @@ Also in this change:
   origin, the environment variable, and the fix. Silence was the common thread
   in every defect this audit found.
 
-See ADR-0014.
+See ADR-0018.
 
 ### Fixed: the default CORS pipeline now honours `TINA4_CORS_CREDENTIALS`
 
