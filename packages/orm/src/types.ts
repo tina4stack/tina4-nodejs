@@ -77,8 +77,8 @@ export interface DatabaseAdapter {
   /** Insert one or more rows into a table, returns result with lastId. */
   insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): DatabaseResult;
 
-  /** Update rows in a table matching filter, returns affected row count. */
-  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>, params?: unknown[]): DatabaseResult;
+  /** Update rows in a table matching filter (object or string WHERE), returns affected row count. */
+  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown> | string, params?: unknown[]): DatabaseResult;
 
   /** Delete rows from a table matching filter (object, string WHERE, or array of objects). */
   delete(table: string, filter: Record<string, unknown> | string | Record<string, unknown>[], params?: unknown[]): DatabaseResult;

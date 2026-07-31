@@ -367,14 +367,20 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     return this.adapter.insert(table, data);
   }
 
-  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): DatabaseResult {
+  // `params` MUST be forwarded. This wrapper sits in front of EVERY adapter, so
+  // dropping it silently unbinds a string filter: `delete(t, "id = ?", [2])`
+  // reached the adapter as `delete(t, "id = ?")`, ran `DELETE ... WHERE id = ?`
+  // with nothing bound, matched no row, and returned
+  // { success: true, affectedRows: 0 } — a silent no-op on a documented calling
+  // form, caught by the shared write-path contract.
+  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown> | string, params?: unknown[]): DatabaseResult {
     if (this.enabled) this.invalidate();
-    return this.adapter.update(table, data, filter);
+    return this.adapter.update(table, data, filter, params);
   }
 
-  delete(table: string, filter: Record<string, unknown> | string | Record<string, unknown>[]): DatabaseResult {
+  delete(table: string, filter: Record<string, unknown> | string | Record<string, unknown>[], params?: unknown[]): DatabaseResult {
     if (this.enabled) this.invalidate();
-    return this.adapter.delete(table, filter);
+    return this.adapter.delete(table, filter, params);
   }
 
   startTransaction(): void {
@@ -532,18 +538,21 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       : this.adapter.insert(table, data);
   }
 
-  async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown>, params?: unknown[]): Promise<DatabaseResult> {
+  // The SYNC fallback must forward `params` too. An adapter without an async
+  // variant (sqlite) took this branch, so a string filter arrived unbound — the
+  // same silent no-op as above, on the default engine.
+  async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseResult> {
     if (this.enabled) await this.invalidateAsync();
     return (this.adapter as any).updateAsync
       ? await (this.adapter as any).updateAsync(table, data, filter, params)
-      : this.adapter.update(table, data, filter);
+      : this.adapter.update(table, data, filter, params);
   }
 
   async deleteAsync(table: string, filter: Record<string, unknown> | string | Record<string, unknown>[], params?: unknown[]): Promise<DatabaseResult> {
     if (this.enabled) await this.invalidateAsync();
     return (this.adapter as any).deleteAsync
       ? await (this.adapter as any).deleteAsync(table, filter, params)
-      : this.adapter.delete(table, filter as Record<string, unknown>);
+      : this.adapter.delete(table, filter, params);
   }
 
   async startTransactionAsync(): Promise<void> {

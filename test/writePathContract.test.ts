@@ -1,22 +1,41 @@
 /**
- * Write-path contract: a write with no filter is an error, not a full-table operation.
+ * The write-path contract (feature 3/4 of the feature audit).
  *
- * Audit feature 4 (plan/v3/features/004-sqlite-adapter.md), P1.
+ * `test/fixtures/write_path_contract.json` is byte-identical in all four
+ * frameworks and is the shared answer key: the same cases, the same seeds, the
+ * same expectations, executed identically in python, php, ruby and node.
  *
- * Node's failure mode differs from the others. Python, PHP and Ruby build
- * "UPDATE t SET ..." with NO WHERE and overwrite every row. Node builds
- * "UPDATE t SET ... WHERE " with an empty clause, which is invalid SQL, catches
- * the error, and returns { success: false, affectedRows: 0 } -- so a caller who
- * does not inspect the result believes the write landed. Silent either way.
+ * The bug these lock in: db.update(table, data) with no explicit filter used to
+ * build "UPDATE table SET ... WHERE " with an empty clause — invalid SQL, which
+ * the adapters caught and reported as { success: false, affectedRows: 0 }, so a
+ * caller who did not inspect the result believed the write landed. A write with
+ * no filter is now an error.
  *
- * Real SQLite files in a temp dir via node:sqlite. No mocks.
+ * The fixture used to be ORPHANED — nothing read it, and the four runners were
+ * hand-written independently. They drifted to 17/16/15/14 cases with different
+ * names, and the case "a_string_filter_with_params_works_the_same_as_a_hash_filter"
+ * was executed by NONE of them while exactly that shape shipped broken HERE:
+ * the postgres/mysql/mssql/firebird adapters walked a string filter with
+ * Object.keys(), so Object.keys("1 = 1") yielded ["0","1",...] and PostgreSQL
+ * answered `column "0" does not exist`. Every case now runs in every framework.
+ *
+ * RUN IT AGAINST EVERY LIVE ENGINE. SQLite alone proves nothing: the whole
+ * reason per-adapter write SQL exists is that placeholder style, RETURNING
+ * support and identifier quoting differ exactly where the engine differs.
+ *
+ *   TINA4_TEST_WRITE_PATH_URL=postgres://host:5432/db \
+ *   TINA4_TEST_WRITE_PATH_USERNAME=u TINA4_TEST_WRITE_PATH_PASSWORD=p \
+ *     npx tsx test/writePathContract.test.ts
+ *
+ * Unset, it falls back to a temp SQLite file so the suite still runs anywhere.
+ * No mocks — a database is a real dependency and CI provisions it.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { initDatabase } from "../packages/orm/src/database.js";
-import { SQLTranslator } from "../packages/orm/src/sqlTranslator.js";
 
 let passed = 0;
 let failed = 0;
@@ -38,268 +57,260 @@ function assert(cond: unknown, message: string): void {
   if (!cond) throw new Error(message);
 }
 
-/**
- * RUN THIS AGAINST EVERY LIVE ENGINE. SQLite alone proves almost nothing here:
- * the whole reason per-adapter write SQL exists is that placeholder style,
- * RETURNING support and identifier quoting differ exactly where the engine
- * differs. Point it at a real engine with:
- *
- *   TINA4_TEST_WRITE_PATH_URL=postgres://host:5432/db \
- *   TINA4_TEST_WRITE_PATH_USERNAME=u TINA4_TEST_WRITE_PATH_PASSWORD=p \
- *     npx tsx test/writePathContract.test.ts
- *
- * Unset, it falls back to a temp SQLite file so the suite still runs anywhere.
- */
+const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "write_path_contract.json");
+const CONTRACT = JSON.parse(readFileSync(FIXTURE, "utf-8"));
+
+const TABLE: string = CONTRACT.table.name;
+const COMPOSITE_TABLE: string = CONTRACT.composite_table.name;
+
+// Cases and errors are one flat list: both halves are contract cases, they only
+// differ in whether the expectation is a raise.
+const ALL_CASES: any[] = [...CONTRACT.cases, ...CONTRACT.errors];
+
+// Every op the dispatcher below implements. A fixture case naming an op that is
+// not here fails loudly rather than being silently skipped — the orphan guard.
+const IMPLEMENTED_OPS = new Set([
+  "insert", "insert_batch", "update", "delete", "truncate", "primary_key",
+  "transaction_rollback", "transaction_commit", "execute_raw",
+]);
+
 const ENGINE_URL = process.env.TINA4_TEST_WRITE_PATH_URL || "";
+const ENGINE_USERNAME = process.env.TINA4_TEST_WRITE_PATH_USERNAME ?? "";
+const ENGINE_PASSWORD = process.env.TINA4_TEST_WRITE_PATH_PASSWORD ?? "";
 
-async function withDb(fn: (db: any) => Promise<void>): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "tina4-writepath-"));
-  try {
-    const db = ENGINE_URL
-      ? await initDatabase({
-          url: ENGINE_URL,
-          username: process.env.TINA4_TEST_WRITE_PATH_USERNAME ?? "",
-          password: process.env.TINA4_TEST_WRITE_PATH_PASSWORD ?? "",
-        })
-      : await initDatabase({ url: `sqlite://${join(dir, "contract.db")}` });
+let dir = "";
+let url = "";
 
-    try {
-      await db.execute("DROP TABLE t");
-    } catch {
-      /* first run against this engine */
-    }
+/** Open a connection to the engine under test. */
+async function connect(): Promise<any> {
+  return ENGINE_URL
+    ? await initDatabase({ url, username: ENGINE_USERNAME, password: ENGINE_PASSWORD })
+    : await initDatabase({ url });
+}
 
-    // AUTOINCREMENT is SQLite's spelling; the translator rewrites it per engine.
-    // `id INTEGER PRIMARY KEY` self-increments on SQLite and is a plain NOT NULL
-    // column everywhere else - writing it by hand is how a suite silently stays
-    // SQLite-only.
-    const ddl = "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(80))";
-    // The engine comes from the URL: Database.dbType is private, and reading it
-    // as `any` silently yielded undefined, so the DDL went out with SQLite's
-    // AUTOINCREMENT and PostgreSQL rejected it outright.
-    // autoIncrementSyntax keys off the "-ql" spelling for PostgreSQL, so
-    // "postgres" alone silently does nothing and the DDL keeps SQLite's
-    // AUTOINCREMENT. Ruby's runner normalises the same way.
-    const scheme = ENGINE_URL ? (ENGINE_URL.split(":")[0] || "sqlite") : "sqlite";
-    const engine = scheme === "postgres" ? "postgresql" : scheme;
-    await db.execute(SQLTranslator.autoIncrementSyntax(ddl, engine));
+function tableFor(kase: any): string {
+  return kase.table === "composite" ? COMPOSITE_TABLE : TABLE;
+}
 
-    // Let the SEQUENCE assign the ids. The assertions key on id 1 and 2, and a
-    // fresh sequence yields exactly those in insertion order on every engine.
-    // Hand-seeding id: 1, 2 instead leaves a real sequence still pointing at 1,
-    // so the first insert that omits an id collides on the primary key - SQLite
-    // hides that because its rowid follows the max.
-    await db.insert("t", { name: "one" });
-    await db.insert("t", { name: "two" });
-    try {
-      await fn(db);
-    } finally {
-      // A live engine keeps a real socket open, and an unclosed socket pins the
-      // Node event loop: the file only ever exited because a FAILING run hit
-      // process.exit(1) at the end. An all-green run hung forever with its
-      // connections idle - the green path was untestable.
-      try { db.close(); } catch { /* already closed */ }
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+async function rows(db: any, table: string): Promise<Record<string, unknown>[]> {
+  const r = await db.fetch(`SELECT * FROM ${table}`, [], 1000);
+  return r.records as Record<string, unknown>[];
+}
+
+/**
+ * Engine-tolerant value comparison. Engines disagree on the JS type of an
+ * INTEGER column (number, bigint, string on some drivers); this contract is
+ * about WHICH rows a write touched, not about type mapping, which the adapter
+ * contract owns.
+ */
+function same(actual: unknown, expected: unknown): boolean {
+  return actual === expected || String(actual) === String(expected);
+}
+
+/** Both tables empty. Raw DELETE, never truncate() — that is under test. */
+async function resetTables(db: any): Promise<void> {
+  for (const table of [TABLE, COMPOSITE_TABLE]) {
+    await db.execute(`DELETE FROM ${table}`);
   }
 }
 
-async function rows(db: any): Promise<Record<string, unknown>[]> {
-  const r = await db.fetch("SELECT * FROM t ORDER BY id");
-  return r.records as Record<string, unknown>[];
+async function seed(db: any, kase: any, table: string): Promise<void> {
+  for (const row of kase.seed ?? []) {
+    await db.insert(table, row);
+  }
+}
+
+async function runOp(db: any, kase: any, table: string): Promise<any> {
+  const data = kase.data;
+
+  switch (kase.op) {
+    case "insert":
+    case "insert_batch":
+      return await db.insert(table, data);
+
+    case "update":
+      if ("filter_sql" in kase) return await db.update(table, { ...data }, kase.filter_sql, kase.filter_params);
+      if ("filter" in kase) return await db.update(table, { ...data }, kase.filter);
+      return await db.update(table, { ...data });
+
+    case "delete":
+      if ("filter_sql" in kase) return await db.delete(table, kase.filter_sql, kase.filter_params);
+      if ("filter" in kase) return await db.delete(table, kase.filter);
+      return await db.delete(table);
+
+    case "truncate":
+      return await db.truncate(table);
+
+    case "primary_key":
+      return await db.primaryKey(table);
+
+    case "transaction_rollback":
+    case "transaction_commit":
+      await db.startTransaction();
+      await db.insert(table, data);
+      if (kase.op === "transaction_commit") await db.commit();
+      else await db.rollback();
+      return null;
+
+    case "execute_raw":
+      return await db.execute(kase.sql);
+  }
+
+  throw new Error(`unimplemented op ${kase.op} in case ${kase.name}`);
+}
+
+/** Every expectation the fixture declares, checked by name. */
+async function checkExpectations(db: any, kase: any, table: string, result: any): Promise<void> {
+  const name = kase.name;
+  const expect = kase.expect ?? {};
+
+  if ("affected_rows" in expect) {
+    assert(
+      result.affectedRows === expect.affected_rows,
+      `${name}: expected affectedRows ${expect.affected_rows}, got ${result.affectedRows}`,
+    );
+  }
+
+  const current = ("rows_after" in expect || "unchanged" in expect) ? await rows(db, table) : [];
+
+  if ("rows_after" in expect) {
+    assert(
+      current.length === expect.rows_after,
+      `${name}: expected ${expect.rows_after} row(s) after, got ${current.length}: ${JSON.stringify(current)}`,
+    );
+  }
+
+  for (const matcher of expect.unchanged ?? []) {
+    const matched = current.filter((row) =>
+      Object.entries(matcher).every(([key, value]) => same(row[key], value)),
+    );
+    assert(
+      matched.length === 1,
+      `${name}: expected exactly one row matching ${JSON.stringify(matcher)}, ` +
+        `found ${matched.length} in ${JSON.stringify(current)}`,
+    );
+  }
+
+  if ("primary_key" in expect) {
+    assert(
+      JSON.stringify(result) === JSON.stringify(expect.primary_key),
+      `${name}: expected primary key ${JSON.stringify(expect.primary_key)}, got ${JSON.stringify(result)}`,
+    );
+  }
+
+  if (expect.last_id_is_null) {
+    assert(
+      result.lastId === undefined || result.lastId === null,
+      `${name}: lastId is insert-only, but this write reported ${result.lastId}`,
+    );
+  }
+
+  if ("last_id_is_not_stale" in expect) {
+    const reported = result.lastId;
+    // undefined / null / 0 / "" all mean "this engine cannot report one", which
+    // the contract allows. A stale value is the failure being pinned.
+    const unreported = reported === undefined || reported === null || Number(reported) === 0 || reported === "";
+    if (!unreported) {
+      assert(
+        !same(reported, expect.last_id_is_not_stale),
+        `${name}: lastId came back as the EARLIER row's id (${expect.last_id_is_not_stale}) — ` +
+          `the adapter is reporting a stale id rather than null`,
+      );
+    }
+  }
+
+  if (expect.visible_after_reconnect) {
+    // A write only visible on the connection that made it is not durable, and
+    // reading it back on the same handle cannot tell the difference.
+    const other = await connect();
+    try {
+      const seen = await rows(other, table);
+      assert(
+        seen.length === (expect.rows_after ?? 1),
+        `${name}: the write is not visible on a second connection — it was never durable`,
+      );
+    } finally {
+      try { other.close(); } catch { /* already closed */ }
+    }
+  }
 }
 
 async function main(): Promise<void> {
   console.log("write-path contract");
 
-  // --- pair 1: keyed update ---------------------------------------------
+  dir = mkdtempSync(join(tmpdir(), "tina4-writepath-"));
+  url = ENGINE_URL || `sqlite://${join(dir, "contract.db")}`;
 
-  await check("updates only the row named by the primary key in the data", async () => {
-    await withDb(async (db) => {
-      await db.update("t", { id: 1, name: "CHANGED" });
-      const r = await rows(db);
-      assert(r.length === 2, `expected 2 rows, got ${r.length}`);
-      assert(r[0].name === "CHANGED", `row 1 not updated: ${JSON.stringify(r[0])}`);
-      assert(r[1].name === "two", `row 2 was touched: ${JSON.stringify(r[1])}`);
-    });
+  // The orphan guard, checked before any connection: a case naming an op the
+  // dispatcher does not implement must FAIL, never be quietly skipped. Silent
+  // skipping is how the fixture went unread for its whole life while the four
+  // runners drifted apart.
+  await check("implements every op the shared fixture uses", () => {
+    const missing = [...new Set(ALL_CASES.map((k) => k.op))].filter((op) => !IMPLEMENTED_OPS.has(op));
+    assert(missing.length === 0, `the shared fixture declares op(s) this runner cannot execute: ${missing}`);
   });
 
-  await check("negative: an update without a filter or primary key throws", async () => {
-    await withDb(async (db) => {
-      const before = await rows(db);
-      let threw = false;
+  const db = await connect();
+  try {
+    for (const table of [TABLE, COMPOSITE_TABLE]) {
       try {
-        await db.update("t", { name: "NOPK" });
-      } catch {
-        threw = true;
-      }
-      assert(threw, "a filterless update did not throw");
-      const after = await rows(db);
-      assert(
-        JSON.stringify(before) === JSON.stringify(after),
-        `a filterless update modified rows: ${JSON.stringify(after)}`,
-      );
-    });
-  });
-
-  // --- pair 2: no silent no-op -----------------------------------------
-
-  await check("reports the rows it changed", async () => {
-    await withDb(async (db) => {
-      const result = await db.update("t", { name: "X" }, { id: 1 });
-      assert(result.affectedRows === 1, `expected affectedRows 1, got ${result.affectedRows}`);
-    });
-  });
-
-  await check("negative: never reports zero affected when a matching row exists", async () => {
-    await withDb(async (db) => {
-      const result = await db.update("t", { id: 2, name: "TWO" });
-      assert(
-        result.affectedRows !== 0,
-        "update reported zero affected rows while a matching row existed - " +
-          "a caller who does not check affectedRows believes the write landed",
-      );
-    });
-  });
-
-  // --- pair 3: filter forms -------------------------------------------
-
-  await check("accepts an object filter on delete", async () => {
-    await withDb(async (db) => {
-      await db.delete("t", { id: 2 });
-      const r = await rows(db);
-      assert(r.length === 1 && r[0].id === 1, `unexpected rows: ${JSON.stringify(r)}`);
-    });
-  });
-
-  // --- pair 4: no accidental truncate ---------------------------------
-
-  await check("truncate removes every row", async () => {
-    await withDb(async (db) => {
-      await db.truncate("t");
-      const r = await rows(db);
-      assert(r.length === 0, `truncate left rows: ${JSON.stringify(r)}`);
-    });
-  });
-
-  await check("negative: a delete without a filter throws", async () => {
-    await withDb(async (db) => {
-      const before = await rows(db);
-      let threw = false;
-      try {
-        await db.delete("t");
-      } catch {
-        threw = true;
-      }
-      assert(threw, "a filterless delete did not throw");
-      const after = await rows(db);
-      assert(
-        JSON.stringify(before) === JSON.stringify(after),
-        "a filterless delete removed rows",
-      );
-    });
-  });
-
-  // --- pair 5: write result contract ----------------------------------
-
-  await check("insert reports a lastId", async () => {
-    await withDb(async (db) => {
-      const result = await db.insert("t", { name: "three" });
-      assert(result.lastId !== undefined && result.lastId !== null, "insert reported no lastId");
-    });
-  });
-
-  await check("negative: update and delete do not report a lastId", async () => {
-    await withDb(async (db) => {
-      const u = await db.update("t", { id: 1, name: "CHANGED" });
-      assert(u.lastId === undefined || u.lastId === null, `update reported a lastId: ${u.lastId}`);
-      const d = await db.delete("t", { id: 2 });
-      assert(d.lastId === undefined || d.lastId === null, `delete reported a lastId: ${d.lastId}`);
-    });
-  });
-
-  // --- primary-key introspection --------------------------------------
-
-  await check("introspects the primary key rather than assuming id", async () => {
-    await withDb(async (db) => {
-      const pk = await db.primaryKey("t");
-      assert(JSON.stringify(pk) === '["id"]', `expected primary key ["id"], got ${JSON.stringify(pk)}`);
-    });
-  });
-
-  // --- composite primary keys -----------------------------------------
-  // A PK resolver returning only the FIRST key column reintroduces the whole
-  // data-loss bug for composite-key tables: WHERE order_id = 1 matches every
-  // row in that order.
-
-  async function withComposite(fn: (db: any) => Promise<void>): Promise<void> {
-    const dir = mkdtempSync(join(tmpdir(), "tina4-composite-"));
-    try {
-      const db = await initDatabase({ url: `sqlite://${join(dir, "composite.db")}` });
-      await db.execute(
-        "CREATE TABLE order_items (order_id INTEGER, product_id INTEGER, qty INTEGER," +
-          " PRIMARY KEY (order_id, product_id))",
-      );
-      await db.insert("order_items", { order_id: 1, product_id: 5, qty: 1 });
-      await db.insert("order_items", { order_id: 1, product_id: 6, qty: 2 });
-      await db.insert("order_items", { order_id: 2, product_id: 5, qty: 3 });
-      try {
-        await fn(db);
-      } finally {
-        try { db.close(); } catch { /* already closed */ }
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
+        await db.execute(`DROP TABLE ${table}`);
+      } catch { /* first run against this engine */ }
     }
-  }
+    // The DDL lives in the shared fixture so all four frameworks create
+    // literally the same table. Ids come from the case data, not a sequence —
+    // an identity column would fight the explicit ids the cases name.
+    await db.execute(CONTRACT.table.ddl);
+    await db.execute(CONTRACT.composite_table.ddl);
 
-  const items = async (db: any) =>
-    (await db.fetch("SELECT * FROM order_items ORDER BY order_id, product_id")).records;
+    // Not a gate — the record. A reader must be able to see whether this
+    // contract was checked against a real engine or only against the one that
+    // shares nothing with them.
+    console.log(`  ---- covered: ${ENGINE_URL ? (ENGINE_URL.split(":")[0] || "?") : "sqlite"} ----`);
 
-  await check("composite: returns every key column", async () => {
-    await withComposite(async (db) => {
-      const pk = await db.primaryKey("order_items");
-      assert(
-        JSON.stringify(pk) === '["order_id","product_id"]',
-        `expected both key columns, got ${JSON.stringify(pk)}`,
-      );
-    });
-  });
+    for (const kase of ALL_CASES) {
+      await check(`${kase.name} (shared fixture)`, async () => {
+        const table = tableFor(kase);
+        await resetTables(db);
+        await seed(db, kase, table);
 
-  await check("composite negative: never returns only the first key column", async () => {
-    await withComposite(async (db) => {
-      const pk = await db.primaryKey("order_items");
-      assert(pk.length === 2, `a composite key collapsed to ${JSON.stringify(pk)}`);
-    });
-  });
+        if (kase.expect_raises) {
+          let threw = false;
+          try {
+            await runOp(db, kase, table);
+          } catch {
+            threw = true;
+          }
+          assert(threw, `${kase.name}: the op did not throw`);
+          // The write must not have landed. This is the data-loss property.
+          await checkExpectations(db, kase, table, null);
+          if (kase.expect_error_recorded) {
+            assert(
+              !!db.getError(),
+              `${kase.name}: the statement threw but getError() was empty — ` +
+                `the cause has to stay readable after the throw`,
+            );
+          }
+          return;
+        }
 
-  await check("composite: a keyed update touches exactly one row", async () => {
-    await withComposite(async (db) => {
-      await db.update("order_items", { order_id: 1, product_id: 5, qty: 99 });
-      const r = await items(db);
-      assert(r[0].qty === 99, `target row not updated: ${JSON.stringify(r[0])}`);
-      assert(r[1].qty === 2, `sibling row was touched: ${JSON.stringify(r[1])}`);
-      assert(r[2].qty === 3, `other order was touched: ${JSON.stringify(r[2])}`);
-    });
-  });
+        await checkExpectations(db, kase, table, await runOp(db, kase, table));
+      });
+    }
 
-  await check("composite negative: a partial key throws rather than matching many", async () => {
-    await withComposite(async (db) => {
-      const before = JSON.stringify(await items(db));
-      let threw = false;
+    for (const table of [TABLE, COMPOSITE_TABLE]) {
       try {
-        await db.update("order_items", { order_id: 1, qty: 42 });
-      } catch {
-        threw = true;
-      }
-      assert(threw, "a partial composite key did not throw");
-      assert(
-        JSON.stringify(await items(db)) === before,
-        "a partial composite key modified rows - it matched on the first column",
-      );
-    });
-  });
+        await db.execute(`DROP TABLE ${table}`);
+      } catch { /* teardown must never mask a failure */ }
+    }
+  } finally {
+    // A live engine keeps a real socket open, and an unclosed socket pins the
+    // Node event loop: the file only ever exited because a FAILING run hit
+    // process.exit(1) at the end. An all-green run hung forever with its
+    // connections idle — the green path was untestable.
+    try { db.close(); } catch { /* already closed */ }
+    rmSync(dir, { recursive: true, force: true });
+  }
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);

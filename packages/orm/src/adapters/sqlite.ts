@@ -190,8 +190,28 @@ export class SQLiteAdapter implements DatabaseAdapter {
     }
   }
 
-  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>, params?: unknown[]): DatabaseResult {
+  update(table: string, data: Record<string, unknown>, filter: Record<string, unknown> | string, params?: unknown[]): DatabaseResult {
     const setClauses = Object.keys(data).map((k) => `"${k}" = ?`).join(", ");
+
+    // A raw WHERE fragment + params is half the write_path contract's filter
+    // form ("a string filter with params works the same as a hash filter").
+    // Without this branch Object.keys("id = ?") yields the STRING INDICES
+    // ["0","1",...], producing `WHERE "0" = ? AND "1" = ?` and SQLite reports
+    // `no such column: "0"`. delete() below already carried this branch and
+    // update() did not — the same gap 3.13.94 closed in the postgres/mysql/
+    // mssql/firebird adapters, still open here on the DEFAULT engine.
+    if (typeof filter === "string") {
+      const where = filter ? ` WHERE ${filter}` : "";
+      const sql = `UPDATE "${table}" SET ${setClauses}${where}`;
+      const values = [...Object.values(data), ...(params ?? [])];
+      try {
+        const result = this.db.prepare(sql).run(...toSqlParams(values));
+        return { success: true, affectedRows: Number(result.changes) };
+      } catch (e) {
+        return { success: false, affectedRows: 0, error: (e as Error).message };
+      }
+    }
+
     const whereClauses = Object.keys(filter).map((k) => `"${k}" = ?`).join(" AND ");
     const sql = `UPDATE "${table}" SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];

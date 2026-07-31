@@ -727,11 +727,20 @@ export class Database {
    * the WHERE clause. With neither a filter nor a primary key in `data` this
    * throws rather than silently changing nothing (audit feature 4, P1).
    */
-  async update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown>, params?: unknown[]): Promise<DatabaseWriteResult> {
-    let effectiveFilter = filter ?? {};
+  async update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseWriteResult> {
+    let effectiveFilter: Record<string, unknown> | string = filter ?? {};
     let effectiveData = data;
 
-    if (Object.keys(effectiveFilter).length === 0) {
+    // A string filter is the OTHER documented form ("id = ?" + params), so it
+    // must be tested as a string: Object.keys("id = ?") is ["0",..,"5"], which
+    // is non-empty by accident rather than by meaning — and an EMPTY string
+    // filter would then be treated as a real filter instead of falling through
+    // to the primary key.
+    const filterIsEmpty = typeof effectiveFilter === "string"
+      ? effectiveFilter.trim() === ""
+      : Object.keys(effectiveFilter).length === 0;
+
+    if (filterIsEmpty) {
       const pkColumns = await this.primaryKey(table);
       const missing = pkColumns.filter((c) => !(c in data));
       if (pkColumns.length === 0 || missing.length > 0) {
@@ -771,10 +780,19 @@ export class Database {
   }
 
   /** Delete rows. A filterless delete throws; use truncate() to empty a table. */
-  async delete(table: string, filter?: Record<string, unknown>, params?: unknown[]): Promise<DatabaseWriteResult> {
+  async delete(table: string, filter?: Record<string, unknown> | string | Record<string, unknown>[], params?: unknown[]): Promise<DatabaseWriteResult> {
     const effectiveFilter = filter ?? {};
-    if (!Array.isArray(effectiveFilter) && typeof effectiveFilter !== "string"
-        && Object.keys(effectiveFilter).length === 0) {
+    // A BLANK string counts as no filter. The old guard skipped the emptiness
+    // test for anything typed string, so `delete(t, "")` fell through to the
+    // adapter, which renders an empty WHERE as `DELETE FROM "t"` — a silent
+    // whole-table delete through the very method that exists to make that
+    // impossible. truncate() is the explicit spelling.
+    const filterIsEmpty = Array.isArray(effectiveFilter)
+      ? effectiveFilter.length === 0
+      : typeof effectiveFilter === "string"
+        ? effectiveFilter.trim() === ""
+        : Object.keys(effectiveFilter).length === 0;
+    if (filterIsEmpty) {
       throw new Error(
         `delete requires a filter (table=${table}). To remove every row use truncate(${table}).`,
       );
