@@ -312,18 +312,20 @@ export function createResponse(res: ServerResponse): Tina4Response {
     // check that closes it; containment then catches absolute paths and
     // symlinks, neither of which carries a ".." segment. Same shape as
     // static.ts's startsWith guard, which this function never had.
-    const base = nodePath.resolve(options?.root ?? process.cwd());
+    // Containment ONLY when a root is declared. Defaulting to cwd broke every
+    // legitimate absolute path.
+    const base = options?.root ? nodePath.resolve(options.root) : null;
     let forbidden = filePath.split(/[\\/]/).includes("..");
 
     if (!forbidden) {
-      const candidate = nodePath.isAbsolute(filePath) ? filePath : nodePath.join(base, filePath);
+      const candidate = (base === null || nodePath.isAbsolute(filePath)) ? filePath : nodePath.join(base, filePath);
       let resolved = candidate;
       try {
         resolved = fs.realpathSync(candidate);
       } catch {
         /* missing file: fall through to the 404 below with the joined path */
       }
-      if (base !== nodePath.sep && resolved !== base && !resolved.startsWith(base + nodePath.sep)) {
+      if (base !== null && base !== nodePath.sep && resolved !== base && !resolved.startsWith(base + nodePath.sep)) {
         forbidden = true;
       } else {
         filePath = resolved;

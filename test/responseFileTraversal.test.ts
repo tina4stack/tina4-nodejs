@@ -74,15 +74,40 @@ assert("single-hop escape leaks no secret bytes", !hop.body.includes("super-secr
 const deep = await get("../../../../../../../etc/passwd");
 assert("refuses a deep traversal chain", deep.status === 403, `got ${deep.status}`);
 
-// Absolute path with no ".." at all - containment, not the ".." check,
-// has to catch this one. Served through its own server since the handler
-// above always prefixes "downloads/".
-const absServer = http.createServer((_req, res) => createResponse(res).file("/etc/passwd"));
+// Absolute path with no ".." at all - containment, not the ".." check, has to
+// catch this one. Containment applies ONLY when the caller declared a root, so
+// the root is what makes it 403. Served through its own server since the
+// handler above always prefixes "downloads/".
+const absServer = http.createServer((_req, res) => createResponse(res).file("/etc/passwd", { root }));
 await new Promise<void>((resolve) => absServer.listen(0, "127.0.0.1", resolve));
 const absPort = (absServer.address() as { port: number }).port;
 const abs = await fetch(`http://127.0.0.1:${absPort}/`);
-assert("refuses an absolute path outside the root (no '..' at all)", abs.status === 403, `got ${abs.status}`);
+assert("refuses an absolute path outside a DECLARED root (no '..' at all)", abs.status === 403, `got ${abs.status}`);
 await abs.text();
+
+// REGRESSION CONTROL. Confinement once defaulted to process.cwd(), so every
+// legitimate absolute path outside the project answered 403 - a missing file
+// reported Forbidden instead of Not Found. Unrooted, an absolute path is the
+// caller's business (Express res.sendFile, Rails send_file, ASP.NET
+// PhysicalFile all serve one), so this must NOT be 403.
+const outsideFile = join(tmpdir(), `tina4-outside-${process.pid}.txt`);
+writeFileSync(outsideFile, "OUTSIDE\n");
+const unrootedServer = http.createServer((req, res) => {
+  const name = new URL(req.url!, "http://x").searchParams.get("name") ?? "";
+  createResponse(res).file(name);
+});
+await new Promise<void>((resolve) => unrootedServer.listen(0, "127.0.0.1", resolve));
+const unrootedPort = (unrootedServer.address() as { port: number }).port;
+const unrootedGet = async (name: string) =>
+  fetch(`http://127.0.0.1:${unrootedPort}/?name=${encodeURIComponent(name)}`);
+const outsideRes = await unrootedGet(outsideFile);
+const outsideBody = await outsideRes.text();
+assert("serves an absolute path when NO root is declared", outsideRes.status === 200 && outsideBody === "OUTSIDE\n", `got ${outsideRes.status} ${JSON.stringify(outsideBody)}`);
+const missingRes = await unrootedGet("/nonexistent/path/to/file.css");
+assert("a MISSING absolute path is 404, not 403", missingRes.status === 404, `got ${missingRes.status}`);
+await missingRes.text();
+unrootedServer.close();
+rmSync(outsideFile, { force: true });
 
 // An explicit root wins over the working directory.
 const rootServer = http.createServer((req, res) => {
