@@ -16,6 +16,14 @@ import { summarizeTestOutput } from "./_testSummary.ts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, "..");
 
+// A test run must never launch a browser. `startServer()` opens one 2s after
+// listen unless TINA4_NO_BROWSER is set (server.ts), and only 6 of the ~27
+// test files that spawn a server set it — so a full run threw a fistful of
+// tabs, each of them blank, because the ephemeral-port server was already
+// closed by the time the tab loaded. Setting it here covers every child: the
+// spawns below inherit this process's env.
+process.env.TINA4_NO_BROWSER = "true";
+
 // Discover all test files.
 // The i18n suites are vitest tests (describe/it/expect) — they are run by the
 // `test:i18n` npm script (`vitest run …`), NOT by this tsx-spawning runner,
