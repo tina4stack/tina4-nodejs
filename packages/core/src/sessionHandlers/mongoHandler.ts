@@ -103,7 +103,21 @@ export class MongoSessionHandler implements SessionHandler {
     const result = mongoCommandSync(this.target(), "find", { filter: { _id: sessionId } });
     if (!result || result === "__EMPTY__") return null;   // genuine miss
     try {
-      const doc = JSON.parse(result) as { data?: unknown };
+      const doc = JSON.parse(result) as { data?: unknown; expires_at?: number };
+
+      // Expiry is an ABSOLUTE deadline stamped at write time, and an absent or
+      // zero stamp means "never expires" - so it is guarded OUT of the
+      // comparison, never fed INTO it. Before this, read() consulted NOTHING:
+      // no stamp was stored, no TTL index was created, and write() took the ttl
+      // as `_ttl` and discarded it, so a mongodb-backed session never expired at
+      // all. Measured: write with ttl=1, sleep 3s, read still returned the data
+      // while file/redis/valkey/memcached/database all returned null.
+      const expiresAt = Number(doc?.expires_at ?? 0);
+      if (expiresAt > 0 && Date.now() / 1000 > expiresAt) {
+        this.destroy(sessionId);
+        return null;
+      }
+
       const data = doc?.data;
       // Stored as a nested document (parity with the Python master); read returns it.
       return data && typeof data === "object" ? (data as SessionData) : null;
@@ -112,10 +126,22 @@ export class MongoSessionHandler implements SessionHandler {
     }
   }
 
-  write(sessionId: string, data: SessionData, _ttl: number): void {
+  /**
+   * Write session data.
+   *
+   * The ttl is consumed HERE, at write time, and baked into an absolute deadline,
+   * so nothing at read time needs to know what the ttl was. The parameter used to
+   * be named `_ttl` and thrown away.
+   *
+   * @param sessionId - the session id
+   * @param data - the payload to store
+   * @param ttl - lifetime in seconds; 0 or less means never expires
+   */
+  write(sessionId: string, data: SessionData, ttl: number = 0): void {
     mongoCommandSync(this.target(), "update", {
       filter: { _id: sessionId },
       data,
+      expires_at: ttl > 0 ? Math.floor(Date.now() / 1000) + ttl : 0,
       last_accessed: Date.now() / 1000,
     });
   }
