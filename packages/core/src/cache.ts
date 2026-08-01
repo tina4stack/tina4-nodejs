@@ -121,6 +121,10 @@ interface CacheEntry {
   contentType: string;
   statusCode: number;
   expiresAt: number;
+  /** RFC 9111 s4.1 — the field names the origin nominated in its Vary header. */
+  vary?: string[];
+  /** The values those fields had on the request that caused this to be stored. */
+  varyValues?: Record<string, string | undefined>;
 }
 
 interface DirectEntry {
@@ -1209,8 +1213,18 @@ export async function createBackend(config?: {
     }
     case "file":
       return new FileBackend(cacheDir(), maxEntries);
-    default:
+    case "memory":
+    case "":
       return new MemoryBackend(maxEntries);
+    default:
+      // An UNRECOGNISED name THROWS, naming the bad value and the valid ones —
+      // the contract the session layer already settled on. Falling through to
+      // memory turned a typo (TINA4_CACHE_BACKEND=redsi) into a running app
+      // with a per-process cache while the operator believed it was Redis.
+      throw new Error(
+        `Unknown cache backend '${backendName}'. Valid backends: ` +
+        "memory, file, redis, valkey, memcached, mongodb, database.",
+      );
   }
 
   // Wait for the async connect/probe to settle before deciding availability.
@@ -1281,6 +1295,65 @@ function _getResponseBackend(config?: ResponseCacheConfig): Promise<CacheBackend
  * maxEntries. With the default `memory` backend behaviour is unchanged; a
  * redis/etc. backend distributes cross-instance.
  */
+/**
+ * Response directives that let a SHARED cache store a response to a request
+ * carrying Authorization (RFC 9111 s3.5).
+ */
+const SHARED_CACHE_DIRECTIVES = ["public", "s-maxage", "must-revalidate"];
+
+/** Case-insensitive request header lookup. */
+function requestHeader(req: { headers?: Record<string, unknown> }, name: string): string | undefined {
+  const headers = req?.headers;
+  if (!headers) return undefined;
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === target) {
+      return Array.isArray(value) ? value.join(", ") : String(value);
+    }
+  }
+  return undefined;
+}
+
+/** The lower-cased field names in a response's Vary header. */
+function varyFields(raw: unknown): string[] {
+  if (raw === undefined || raw === null) return [];
+  const text = Array.isArray(raw) ? raw.join(",") : String(raw);
+  return text.split(",").map((f) => f.trim().toLowerCase()).filter((f) => f !== "");
+}
+
+/**
+ * May a SHARED cache store this response? (RFC 9111 s3, s4.1)
+ *
+ * s3 — "if the cache is shared: the Authorization header field is not present
+ * in the request ... or a response directive is present that explicitly allows
+ * shared caching". The key is method + URL only, and on Node the cache answers
+ * BEFORE the auth gate, so without this an anonymous caller was served an
+ * authenticated caller's body with a 200.
+ *
+ * s4.1 — a stored response whose Vary contains "*" "always fails to match", so
+ * storing one is pointless.
+ */
+function mayStore(req: { headers?: Record<string, unknown> }, vary: string[], cacheControl: unknown): boolean {
+  if (vary.includes("*")) return false;
+  if (requestHeader(req, "authorization") === undefined) return true;
+  const cc = String(cacheControl ?? "").toLowerCase();
+  return SHARED_CACHE_DIRECTIVES.some((directive) => cc.includes(directive));
+}
+
+/**
+ * Do the nominated request headers match the ones recorded on the entry?
+ *
+ * RFC 9111 s4.1 — the cache MUST NOT use a stored response unless every request
+ * header field nominated by its Vary value matches. An absent field only
+ * matches an absent field.
+ */
+function varyMatches(entry: CacheEntry, req: { headers?: Record<string, unknown> }): boolean {
+  const vary = entry.vary ?? [];
+  if (vary.length === 0) return true;
+  const recorded = entry.varyValues ?? {};
+  return vary.every((field) => requestHeader(req, field) === recorded[field]);
+}
+
 export function responseCache(config?: ResponseCacheConfig): Middleware {
   const ttl = config?.ttl
     ?? (process.env.TINA4_CACHE_TTL ? parseInt(process.env.TINA4_CACHE_TTL, 10) : 60);
@@ -1302,7 +1375,8 @@ export function responseCache(config?: ResponseCacheConfig): Middleware {
     const cacheKey = `response:GET:${req.url}`;
     const cached = (await backend.get(cacheKey)) as CacheEntry | undefined;
 
-    if (cached && typeof cached === "object" && typeof cached.body === "string") {
+    if (cached && typeof cached === "object" && typeof cached.body === "string"
+        && varyMatches(cached, req as any)) {
       // Cache HIT — serve from the (possibly distributed) backend.
       res.header("X-Cache", "HIT");
       // X-Cache-TTL advertises the configured cache lifetime in seconds
@@ -1318,10 +1392,14 @@ export function responseCache(config?: ResponseCacheConfig): Middleware {
     let captured = false;
 
     res.raw.end = function (chunk?: any, ...args: any[]) {
-      if (!captured && allowedCodes.has(res.raw.statusCode)) {
+      const vary = varyFields(res.raw.getHeader("Vary"));
+      if (!captured && allowedCodes.has(res.raw.statusCode)
+          && mayStore(req as any, vary, res.raw.getHeader("Cache-Control"))) {
         captured = true;
         const body = typeof chunk === "string" ? chunk : chunk?.toString() ?? "";
         const contentType = String(res.raw.getHeader("Content-Type") ?? "application/octet-stream");
+        const varyValues: Record<string, string | undefined> = {};
+        for (const field of vary) varyValues[field] = requestHeader(req as any, field);
 
         // backend.set is async; the captured end() must stay synchronous (Node
         // flushes the body here), so fire-and-forget the store. The backend's
@@ -1332,6 +1410,8 @@ export function responseCache(config?: ResponseCacheConfig): Middleware {
           contentType,
           statusCode: res.raw.statusCode,
           expiresAt: Date.now() + ttl * 1000,
+          vary,
+          varyValues,
         } as CacheEntry, ttl).catch(() => { /* best effort */ });
       }
 
