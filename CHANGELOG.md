@@ -12,6 +12,36 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ## Unreleased
 
+### Breaking: the rate limiter keys on the socket peer, not X-Forwarded-For
+
+`X-Forwarded-For` is written by whoever sends it. Reading it unconditionally let
+any client pick its own rate-limit bucket, and - worse - pick SOMEONE ELSE'S,
+exhausting a third party's quota. Measured with `TINA4_RATE_LIMIT=3`: a rotating
+`X-Forwarded-For` scored 200,200,200,200,200,200 where a fixed one correctly
+scored 200,200,200,429,429,429.
+
+`X-Forwarded-For` and `X-Real-IP` are now read ONLY when the raw socket peer is
+listed in the new `TINA4_TRUSTED_PROXIES`. Within the chain the RIGHTMOST hop
+that is not itself a trusted proxy wins, matching Rack and Express (a client can
+prepend its own hop, so the leftmost entry is attacker-controlled even behind a
+real proxy).
+
+**Migration.** If your app runs behind a proxy, load balancer or ingress, set
+`TINA4_TRUSTED_PROXIES` to that proxy's address or range. It accepts a
+comma-separated mix of exact addresses and CIDR ranges, IPv4 and IPv6:
+
+```
+TINA4_TRUSTED_PROXIES=10.0.0.0/8
+TINA4_TRUSTED_PROXIES=192.168.1.5, ::1, fd00::/8
+```
+
+It is EMPTY by default, which means trust nothing. If you leave it unset behind a
+proxy, every client is bucketed under the proxy's address and you will
+over-limit. That is deliberate: over-limiting is a degraded service, while the
+previous behaviour was an open door. Direct-to-internet apps need no change.
+
+See ADR-0019.
+
 ### CORS denies by default, and never pairs the wildcard with credentials
 
 **Breaking:** `TINA4_CORS_ORIGINS` defaulted to `*`, which allowed every origin
