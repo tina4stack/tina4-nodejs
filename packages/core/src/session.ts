@@ -24,7 +24,7 @@
  *   session.get("user");  // { name: "Alice" }
  *   session.destroy();
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { Log } from "./logger.js";
@@ -60,6 +60,38 @@ interface SessionData {
   _created: number;
   _accessed: number;
   [key: string]: unknown;
+}
+
+// ── Session id validation ─────────────────────────────────────────
+
+/**
+ * A session id is OPAQUE — an unguessable lookup token and nothing else. It is
+ * never a filename, a path, a SQL fragment or a Redis key fragment, so the only
+ * characters it may contain are the ones every backend treats as inert.
+ *
+ * The alphabet is the RFC 4648 base64url set, which is exactly what all four
+ * frameworks already mint: Python `secrets.token_urlsafe(32)`, Ruby
+ * `SecureRandom.hex(32)`, PHP/Node `hex(16)`. Validation is therefore
+ * non-breaking for every id the family has ever issued, while rejecting the
+ * `.` and `/` that turn a cookie into a path traversal.
+ *
+ * The rule is the ALPHABET, not the length. The vulnerability was `.` and `/`
+ * turning a cookie into a path; entropy is not something this check can supply,
+ * because unguessability comes from the framework's own minting and an app that
+ * calls `start("my-session-id")` is a trusted caller managing its own id, not an
+ * attacker. So the floor is 1, and only the 128-character ceiling remains — it
+ * bounds what an attacker can push through a backend key.
+ */
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * Is `sessionId` a well-formed opaque session identifier?
+ *
+ * Callers pass UNTRUSTED input here (the session cookie is attacker-chosen), so
+ * anything that is not a string of the opaque alphabet is rejected.
+ */
+export function isValidSessionId(sessionId: unknown): boolean {
+  return typeof sessionId === "string" && SESSION_ID_PATTERN.test(sessionId);
 }
 
 // ── Backend name resolution ───────────────────────────────────────
@@ -159,8 +191,38 @@ export class FileSessionHandler implements SessionHandler {
     }
   }
 
+  /**
+   * Derive the file backing a session id. TWO independent guards, both required.
+   *
+   * This is the one place a session id becomes a filesystem path, and it used to
+   * interpolate the id RAW: `join(storagePath, "../../OUTSIDE/appconfig.json")`
+   * left the session directory entirely, so a cookie could read an existing
+   * .json from anywhere on disk into `session.all()` and then OVERWRITE it on
+   * save. Reproduced on Node 24.9.0 / macOS.
+   *
+   *  1. VALIDATE — a malformed id is refused outright. It throws rather than
+   *     returning null so a hostile id can never be mistaken for an ordinary
+   *     cache miss (the Session layer catches it, logs it, and degrades).
+   *  2. HASH — the filename is a SHA-256 of the id, matching the Python master
+   *     (`hashlib.sha256(session_id.encode()).hexdigest()`). A hex digest cannot
+   *     contain a separator or a dot, so even an id that somehow passed the
+   *     validator can only ever name a file inside `storagePath`.
+   *
+   * DEPLOY NOTE: hashing CHANGES the filename for every id, so existing on-disk
+   * sessions are orphaned and every logged-in user is logged out ONCE on the
+   * deploy that ships this. That is accepted: under strict session mode an old
+   * cookie is discarded on a read miss anyway, so the sessions were going to be
+   * dropped regardless.
+   */
   private filePath(id: string): string {
-    return join(this.storagePath, `${id}.json`);
+    if (!isValidSessionId(id)) {
+      throw new Error(
+        `Invalid session id ${JSON.stringify(id)} — a session id is opaque and must match `
+        + `${SESSION_ID_PATTERN.source}. It is never a path, so it is refused rather than `
+        + "resolved to a file.",
+      );
+    }
+    return join(this.storagePath, `${createHash("sha256").update(id).digest("hex")}.json`);
   }
 
   read(sessionId: string): SessionData | null {
@@ -330,6 +392,11 @@ export class Session {
    * frameworks. Strict mode is the escape hatch (same as events/seeding).
    */
   private strict: boolean;
+  /**
+   * True when the LAST backend read RAISED rather than returning a miss.
+   * Lets `start()` tell "no such session" from "the store is unreachable".
+   */
+  private lastReadFailed = false;
 
   constructor(backend?: string, config?: SessionConfig) {
     const backendType = resolveBackend(
@@ -413,11 +480,23 @@ export class Session {
     Log.error(`Session backend ${op} failed (${handlerName}): ${message}`);
   }
 
-  /** Read through the backend; on FAILURE log + degrade to empty (or re-throw under strict). */
+  /**
+   * Read through the backend; on FAILURE log + degrade to empty (or re-throw
+   * under strict).
+   *
+   * Sets {@link lastReadFailed} so `start()` can tell "the store answered, and
+   * has no such session" from "the store did not answer at all". Strict mode
+   * must discard an id only on the first: treating an outage as an unknown id
+   * rotates the session id on EVERY request for the whole outage, logging the
+   * entire userbase out over one Redis blip and orphaning their stored
+   * sessions. The policy is log-loud + degrade, never rotate.
+   */
   private safeRead(sessionId: string): SessionData | null {
+    this.lastReadFailed = false;
     try {
       return this.handler.read(sessionId);
     } catch (err) {
+      this.lastReadFailed = true;
       this.logBackendError("read", err);
       if (this.strict) throw err;
       return null;
@@ -450,12 +529,44 @@ export class Session {
 
   /**
    * Start or resume a session.
+   *
+   * `sessionId` is UNTRUSTED — it arrives from the session cookie, which the
+   * client fully controls. An id that is not a well-formed opaque identifier is
+   * DISCARDED and a fresh one minted, never adopted: adopting it let a cookie
+   * steer a filesystem path (a `tina4_session=../../OUTSIDE/appconfig` cookie
+   * read an existing .json from outside the session directory into
+   * `session.all()`, then OVERWROTE it on save) and let an attacker pre-plant a
+   * session id that survived the victim's login (session fixation).
+   *
+   * The check runs BEFORE the read, so a hostile id never reaches a handler at
+   * all. A legitimate id from any of the four frameworks passes unchanged.
+   *
+   * STRICT SESSION MODE (deliberate, and Node is the family reference for it):
+   * an id that is WELL-FORMED but UNKNOWN to the backend is also discarded and
+   * a fresh one minted — the `if (loaded)` below only adopts an id the store
+   * actually knows. That is OWASP's strict mode and PHP's own
+   * `session.use_strict_mode=1` default, and it is what stops an attacker
+   * planting a session id that survives the victim's login. The validation
+   * above sits IN FRONT of it; neither replaces the other.
+   *
    * @param sessionId - Existing session ID to resume (optional)
    * @returns The session ID
    */
   start(sessionId?: string): string {
+    if (sessionId !== undefined && !isValidSessionId(sessionId)) {
+      sessionId = undefined;
+    }
     if (sessionId) {
       const loaded = this.safeRead(sessionId);
+      if (!loaded && this.lastReadFailed) {
+        // The store did not ANSWER. That is not evidence the id is unknown, so
+        // keep it and degrade to an empty session rather than rotating.
+        this.sessionId = sessionId;
+        const now = Math.floor(Date.now() / 1000);
+        this.data = { _created: now, _accessed: now };
+        this.dirty = false;
+        return sessionId;
+      }
       if (loaded) {
         // Check TTL for file backend (Redis handles TTL natively)
         const now = Math.floor(Date.now() / 1000);

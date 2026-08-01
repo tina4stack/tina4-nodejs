@@ -3,8 +3,21 @@
  * Run with: npx tsx test/session.test.ts
  */
 import { Session } from "../packages/core/src/session.ts";
+import { createHash } from "node:crypto";
 import { existsSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+
+/**
+ * On-disk path of a session, mirroring `FileSessionHandler.filePath()`.
+ *
+ * The filename is a SHA-256 of the session id, not the id itself (ADR-0021):
+ * the id is attacker-supplied via the cookie, and interpolating it raw let
+ * `../../OUTSIDE/appconfig` name a file outside the session directory. These
+ * assertions are about "a file exists / was removed for this session", so they
+ * follow the derivation rather than pinning the old raw-id filename.
+ */
+const sessionFile = (id: string): string =>
+  join(TEST_PATH, `${createHash("sha256").update(id).digest("hex")}.json`);
 
 let passed = 0;
 let failed = 0;
@@ -72,7 +85,7 @@ console.log("\n-- Destroy --");
 const s2 = new Session("file", { path: TEST_PATH });
 const id2 = s2.start();
 s2.set("key", "value");
-const filePath2 = join(TEST_PATH, `${id2}.json`);
+const filePath2 = sessionFile(id2);
 assert("Session file exists before destroy", existsSync(filePath2));
 
 s2.destroy();
@@ -87,14 +100,14 @@ console.log("\n-- Regenerate --");
 const s3 = new Session("file", { path: TEST_PATH });
 const id3 = s3.start();
 s3.set("keep", "this");
-const oldFile = join(TEST_PATH, `${id3}.json`);
+const oldFile = sessionFile(id3);
 
 const id3new = s3.regenerate();
 assert("regenerate returns new ID", id3new !== id3);
 assert("New ID is 32 hex chars", /^[0-9a-f]{32}$/.test(id3new));
 assert("Old file removed", !existsSync(oldFile));
 assert("Data preserved after regenerate", s3.get("keep") === "this");
-assert("New file exists", existsSync(join(TEST_PATH, `${id3new}.json`)));
+assert("New file exists", existsSync(sessionFile(id3new)));
 
 // ── Flash Data ───────────────────────────────────────────────────
 
@@ -123,7 +136,7 @@ assert("Resume returns same ID", resumedId === id5);
 assert("Resumed session has persisted data", s5b.get("persistent") === "data");
 
 // Verify actual file content (wrapped in {_data, _expires})
-const rawFile = readFileSync(join(TEST_PATH, `${id5}.json`), "utf-8");
+const rawFile = readFileSync(sessionFile(id5), "utf-8");
 const parsed = JSON.parse(rawFile);
 assert("File contains data as JSON", (parsed._data ?? parsed).persistent === "data");
 
@@ -136,7 +149,7 @@ const id6 = s6.start();
 s6.set("temp", "value");
 
 // Manually backdate the _expires timestamp to simulate expiration
-const filePath6 = join(TEST_PATH, `${id6}.json`);
+const filePath6 = sessionFile(id6);
 const data6 = JSON.parse(readFileSync(filePath6, "utf-8"));
 data6._expires = Math.floor(Date.now() / 1000) - 10; // expired 10 seconds ago
 const { writeFileSync: wfs } = await import("node:fs");
