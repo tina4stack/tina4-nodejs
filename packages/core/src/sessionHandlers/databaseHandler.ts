@@ -52,14 +52,45 @@ export class DatabaseSessionHandler implements SessionHandler {
 
   /**
    * Resolve the database file path from TINA4_DATABASE_URL or use the default.
+   *
+   * A NON-SQLITE URL RAISES. It used to fall through to the literal default
+   * `"data/tina4_sessions.db"`, so `TINA4_DATABASE_URL=postgres://...` with
+   * `TINA4_SESSION_BACKEND=database` round-tripped happily while writing SQLite
+   * files into the process working directory. Measured from a clean temp cwd:
+   * round-trip true, and `data/` contained `tina4_sessions.db`, `-shm` and
+   * `-wal`. Every horizontally-scaled instance therefore had its own private
+   * session store and a user was logged out on every request that landed
+   * elsewhere - an outage that looks exactly like success.
+   *
+   * This is the same rule `resolveBackend()` already applies one layer up, where
+   * an unknown backend name raises rather than falling through to disk, and for
+   * the same reason: a silent demotion to local disk is indistinguishable from
+   * working until users start losing their sessions.
+   *
+   * This handler is SQLite-only by construction - it drives `node:sqlite`
+   * directly - so a non-sqlite URL is a configuration error, not something to
+   * paper over.
+   *
+   * @throws Error naming the offending URL scheme and the two ways out.
    */
   private resolveDbPath(): string {
     const url = process.env.TINA4_DATABASE_URL;
-    if (url && url.startsWith("sqlite://")) {
+    if (!url) return "data/tina4_sessions.db";
+
+    if (url.startsWith("sqlite:")) {
       // sqlite:///path/to/db  or  sqlite://./relative/path
-      return url.replace(/^sqlite:\/\//, "");
+      return url.replace(/^sqlite:(\/\/)?/, "");
     }
-    return "data/tina4_sessions.db";
+
+    const scheme = url.split(":", 1)[0];
+    throw new Error(
+      `The "database" session backend is SQLite-only, but TINA4_DATABASE_URL is a `
+      + `"${scheme}" URL. It used to silently write a local SQLite file instead, which `
+      + `gives every instance its own private session store. Either point `
+      + `TINA4_DATABASE_URL at a sqlite:// URL, or pass an explicit dbPath in the `
+      + `session config, or choose a session backend that speaks ${scheme} `
+      + `(redis, valkey, mongodb, memcached).`,
+    );
   }
 
   /**
@@ -86,9 +117,16 @@ export class DatabaseSessionHandler implements SessionHandler {
 
     if (!row) return null;
 
-    // Check expiry
+    // Check expiry.
+    //
+    // An ABSENT or ZERO deadline means "never expires" and is guarded OUT of the
+    // comparison. Without the `> 0` test, a row carrying no expiry (0) satisfies
+    // `0 < now` against every clock and is DESTROYED on read — the same shape
+    // that made tina4-php's file backend delete records. gc() below has always
+    // had this guard (`WHERE expires_at > 0 AND expires_at < ?`); this read path
+    // did not, so the two disagreed about what a zero meant.
     const now = Date.now() / 1000;
-    if (row.expires_at < now) {
+    if (row.expires_at > 0 && row.expires_at < now) {
       // Expired — clean up and return null
       this.destroy(sessionId);
       return null;
@@ -105,7 +143,10 @@ export class DatabaseSessionHandler implements SessionHandler {
     this.ensureTable();
 
     const json = JSON.stringify(data);
-    const expiresAt = (Date.now() / 1000) + (ttl > 0 ? ttl : 3600);
+    // A ttl of 0 (or less) means NEVER EXPIRES and is stored as the 0 that read()
+    // and gc() both guard out. It used to silently substitute 3600, so asking for
+    // a non-expiring session quietly got a one-hour one.
+    const expiresAt = ttl > 0 ? (Date.now() / 1000) + ttl : 0;
 
     const existing = this.db
       .prepare("SELECT 1 FROM tina4_session WHERE session_id = ?")

@@ -568,20 +568,27 @@ export class Session {
         return sessionId;
       }
       if (loaded) {
-        // Check TTL for file backend (Redis handles TTL natively)
+        // Expiry is the HANDLER's job, and it is decided from the record's own
+        // absolute deadline. There used to be a SECOND, relative check here —
+        // `loaded._accessed && (now - loaded._accessed) > this.ttl` followed by
+        // safeDestroy() — running in series with the handler's absolute one.
+        //
+        // That is the exact shape that made tina4-php's file backend destroy
+        // records on read (a missing stamp fed into a subtraction, failure branch
+        // deletes). It was defused here only by the leading `loaded._accessed &&`
+        // short-circuit, and it was a landmine: two expiry mechanisms on the same
+        // data, one of them the broken shape, and this one judged a stored record
+        // against whatever ttl the READER happened to carry rather than the
+        // deadline the record was written with.
         const now = Math.floor(Date.now() / 1000);
-        if (loaded._accessed && (now - loaded._accessed) > this.ttl) {
-          this.safeDestroy(sessionId);
-        } else {
-          this.sessionId = sessionId;
-          this.data = loaded;
-          this.data._accessed = now;
-          this.dirty = false;
-          // Refresh the accessed timestamp; a write failure here is logged but
-          // must not abort the resume — the request still serves.
-          this.safeWrite(this.sessionId, this.data, this.ttl);
-          return sessionId;
-        }
+        this.sessionId = sessionId;
+        this.data = loaded;
+        this.data._accessed = now;
+        this.dirty = false;
+        // Refresh the accessed timestamp; a write failure here is logged but
+        // must not abort the resume — the request still serves.
+        this.safeWrite(this.sessionId, this.data, this.ttl);
+        return sessionId;
       }
     }
 

@@ -41,10 +41,19 @@ export interface MongoTarget {
   collection: string;
 }
 
-/** Command args: `filter` (always), plus `data`/`last_accessed` for an update. */
+/**
+ * Command args: `filter` (always), plus `data`/`expires_at`/`last_accessed` for
+ * an update.
+ *
+ * `expires_at` is an ABSOLUTE epoch-seconds deadline computed at write time. It
+ * is what makes the session actually expire: this handler previously stored no
+ * expiry at all, created no TTL index, and never consulted anything on read, so
+ * MongoDB sessions lived forever.
+ */
 export interface MongoCommandArgs {
   filter: Record<string, unknown>;
   data?: unknown;
+  expires_at?: number;
   last_accessed?: number;
 }
 
@@ -97,7 +106,7 @@ async function driverCall(command, args) {
     if (command === "update") {
       await coll.updateOne(
         args.filter,
-        { $set: { data: args.data, last_accessed: args.last_accessed } },
+        { $set: { data: args.data, expires_at: args.expires_at, last_accessed: args.last_accessed } },
         { upsert: true },
       );
     } else {
@@ -238,7 +247,7 @@ function buildMessage(command, args) {
   if (command === "find") {
     cmdDoc = { find: collection, filter: args.filter, limit: 1, "$db": database };
   } else if (command === "update") {
-    const u = { _id: args.filter._id, data: args.data, last_accessed: args.last_accessed };
+    const u = { _id: args.filter._id, data: args.data, expires_at: args.expires_at, last_accessed: args.last_accessed };
     cmdDoc = { update: collection, updates: [{ q: args.filter, u: u, upsert: true }], "$db": database };
   } else {
     cmdDoc = { delete: collection, deletes: [{ q: args.filter, limit: 1 }], "$db": database };
