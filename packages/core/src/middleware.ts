@@ -4,6 +4,7 @@ import { validToken, getPayload } from "./auth.js";
 import { Log } from "./logger.js";
 import { isTruthy } from "./dotenv.js";
 import { defaultRouter, type Router } from "./router.js";
+import { resolveClientIp } from "./trustedProxy.js";
 
 /**
  * Whether to emit a per-request log line (v3.13.14). TINA4_LOG_REQUESTS is
@@ -703,10 +704,9 @@ export class RateLimiterMiddleware {
     const now = Date.now();
     const cutoff = now - windowMs;
 
-    const forwarded = req.headers["x-forwarded-for"];
-    const ip = (typeof forwarded === "string" ? forwarded.split(",")[0].trim() : undefined)
-      ?? req.socket?.remoteAddress
-      ?? "unknown";
+    // Client key. X-Forwarded-For is honoured ONLY when the socket peer is a
+    // declared trusted proxy (TINA4_TRUSTED_PROXIES). ADR-0019.
+    const ip = resolveClientIp(req.headers, req.socket?.remoteAddress ?? "") || "unknown";
 
     let entry = RateLimiterMiddleware.store.get(ip);
     if (!entry) {

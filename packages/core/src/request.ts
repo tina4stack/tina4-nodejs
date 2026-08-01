@@ -1,5 +1,6 @@
 import type { IncomingMessage, IncomingHttpHeaders } from "node:http";
 import type { Tina4Request, UploadedFile } from "./types.js";
+import { resolveClientIp } from "./trustedProxy.js";
 
 /**
  * Wrap Node's `IncomingHttpHeaders` in a Proxy so mixed-case lookups
@@ -102,15 +103,11 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   }
   tReq.cookies = cookies;
 
-  // Determine client IP with X-Forwarded-For support
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string") {
-    tReq.ip = forwarded.split(",")[0].trim();
-  } else if (Array.isArray(forwarded) && forwarded.length > 0) {
-    tReq.ip = forwarded[0].split(",")[0].trim();
-  } else {
-    tReq.ip = req.socket?.remoteAddress ?? "127.0.0.1";
-  }
+  // Raw socket peer — NEVER honours a forwarding header, so it can be trusted
+  // for security decisions. Resolved BEFORE .ip: the peer decides whether the
+  // forwarding headers may be believed at all (TINA4_TRUSTED_PROXIES, ADR-0019).
+  tReq.remoteIp = req.socket?.remoteAddress ?? "";
+  tReq.ip = resolveClientIp(req.headers, tReq.remoteIp) || "127.0.0.1";
 
   // Add convenience methods
   tReq.header = function (name: string): string | undefined {

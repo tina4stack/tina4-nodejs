@@ -30,6 +30,7 @@ export { Env } from "./env.js";
 export { Log } from "./logger.js";
 export { createHealthRoute, createHealthRoutes, healthPath } from "./health.js";
 export { rateLimiter } from "./rateLimiter.js";
+export { isTrustedProxy, trustedProxyNetworks, resolveClientIp, resetTrustedProxyCache } from "./trustedProxy.js";
 export type { RateLimiterConfig } from "./rateLimiter.js";
 export {
   HTTP_OK, HTTP_CREATED, HTTP_ACCEPTED, HTTP_NO_CONTENT,
