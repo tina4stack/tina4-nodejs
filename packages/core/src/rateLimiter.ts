@@ -1,4 +1,5 @@
 import type { Middleware, Tina4Request, Tina4Response } from "./types.js";
+import { resolveClientIp } from "./trustedProxy.js";
 
 /** Per-IP sliding window entry */
 interface RateLimitEntry {
@@ -59,11 +60,15 @@ export function rateLimiter(config?: RateLimiterConfig): Middleware {
     const now = Date.now();
     const cutoff = now - windowMs;
 
-    // Extract client IP — check x-forwarded-for, then socket
-    const forwarded = req.headers["x-forwarded-for"];
-    const ip = (typeof forwarded === "string" ? forwarded.split(",")[0].trim() : undefined)
-      ?? req.socket?.remoteAddress
-      ?? "unknown";
+    // Client key. X-Forwarded-For is honoured ONLY when the socket peer is a
+    // declared trusted proxy (TINA4_TRUSTED_PROXIES) - otherwise any client
+    // could pick its own bucket, and pick someone else's. ADR-0019.
+    //
+    // This derived the key itself rather than reading req.ip, and its
+    // `typeof forwarded === "string"` test meant a REPEATED header (which
+    // arrives as an array) silently fell through to the socket address -
+    // inconsistent with req.ip, which did read the array.
+    const ip = resolveClientIp(req.headers, req.socket?.remoteAddress ?? "") || "unknown";
 
     // Get or create entry
     let entry = store.get(ip);

@@ -45,6 +45,13 @@ export interface Tina4Request extends IncomingMessage {
   url: string;
   body: unknown;
   ip: string;
+  /**
+   * Raw socket peer address - NEVER honours X-Forwarded-For (which any
+   * caller can spoof), so it can be trusted for security decisions.
+   * Empty for in-process / synthetic requests. Parity with Python's
+   * request.remote_ip and PHP's Request::$remoteIp.
+   */
+  remoteIp: string;
   files: Record<string, UploadedFile | UploadedFile[]>;
   cookies: Record<string, string>;
   contentType: string;

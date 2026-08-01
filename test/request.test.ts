@@ -3,6 +3,7 @@
  * Run with: npx tsx test/request.test.ts
  */
 import { createRequest } from "../packages/core/src/index.ts";
+import { resetTrustedProxyCache } from "../packages/core/src/trustedProxy.ts";
 import type { Tina4Request } from "../packages/core/src/index.ts";
 import { IncomingMessage } from "node:http";
 import { Socket } from "node:net";
@@ -96,11 +97,50 @@ assert("No query string => empty query", Object.keys(reqNoQuery.query).length ==
 // --- IP address detection ---
 console.log("\n--- IP Address ---");
 
-const reqXFF = createRequest(fakeIncoming("/", "GET", { "x-forwarded-for": "10.0.0.1, 10.0.0.2" }));
-assert("X-Forwarded-For extracts first IP", reqXFF.ip === "10.0.0.1");
+// ADR-0019: X-Forwarded-For is honoured ONLY behind a declared trusted proxy,
+// and the RIGHTMOST non-trusted hop wins.
+//
+// This block used to assert `X-Forwarded-For extracts first IP` - it pinned the
+// vulnerable behaviour on BOTH counts: the header was believed with no proxy
+// declared at all, and the LEFTMOST hop won. A client can prepend a hop (the
+// proxy appends rather than replaces), so the leftmost entry is
+// attacker-controlled even behind a real proxy. Replaced with the pair below.
+function fakeIncomingFrom(peer: string, headers: Record<string, string> = {}): IncomingMessage {
+  const socket = new Socket();
+  Object.defineProperty(socket, "remoteAddress", { value: peer, configurable: true });
+  const req = new IncomingMessage(socket);
+  req.url = "/";
+  req.method = "GET";
+  req.headers = { host: "localhost:3000", ...headers };
+  return req;
+}
+
+delete process.env.TINA4_TRUSTED_PROXIES;
+resetTrustedProxyCache();
+const reqXFFUntrusted = createRequest(
+  fakeIncomingFrom("198.51.100.9", { "x-forwarded-for": "10.0.0.1, 10.0.0.2" }),
+);
+assert("X-Forwarded-For is ignored from an untrusted peer",
+  reqXFFUntrusted.ip === "198.51.100.9",
+  `got ${reqXFFUntrusted.ip}`);
+
+process.env.TINA4_TRUSTED_PROXIES = "198.51.100.9";
+resetTrustedProxyCache();
+const reqXFFTrusted = createRequest(
+  fakeIncomingFrom("198.51.100.9", { "x-forwarded-for": "10.0.0.1, 10.0.0.2" }),
+);
+assert("X-Forwarded-For takes the rightmost hop behind a trusted proxy",
+  reqXFFTrusted.ip === "10.0.0.2",
+  `got ${reqXFFTrusted.ip}`);
+delete process.env.TINA4_TRUSTED_PROXIES;
+resetTrustedProxyCache();
 
 const reqNoXFF = createRequest(fakeIncoming("/", "GET"));
 assert("No X-Forwarded-For uses socket address", typeof reqNoXFF.ip === "string");
+
+assert("remoteIp is always the raw socket peer",
+  createRequest(fakeIncomingFrom("203.0.113.4", { "x-forwarded-for": "10.0.0.1" })).remoteIp
+    === "203.0.113.4");
 
 // --- parseBody with JSON ---
 console.log("\n--- parseBody JSON ---");
