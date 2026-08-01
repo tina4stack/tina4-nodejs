@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnv } from "../packages/core/src/dotenv.ts";
+import { isTruthy, loadEnv } from "../packages/core/src/dotenv.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = JSON.parse(readFileSync(join(here, "fixtures", "dotenv_corpus.json"), "utf-8"));
@@ -131,6 +131,56 @@ function freshLoadKeepingRealEnv(content: string, local: string): string {
   loadEnv(join(d, ".env"));
   return d;
 }
+
+// ---------------------------------------------------------------------------
+// One truthiness table, every subsystem, every framework.
+//
+// The parser is only half the contract - the other half is what a parsed value
+// MEANS as a boolean. It was not one table: Ruby's Env.bool also accepted
+// y/t/n/f while its own Log and Mcp checks did not, so one .env gave two
+// answers in one process. Node holds TWO copies of the table (core/dotenv.ts
+// and orm/cachedDatabase.ts) because @tina4/orm has no dependencies and core
+// dynamically imports orm - a value import the other way would be a package
+// cycle, which is worse than the duplicate. So the corpus is the control:
+// both copies are asserted against it.
+// ---------------------------------------------------------------------------
+console.log("\n--- Env truthiness (shared corpus) ---");
+
+for (const value of corpus.truthiness.truthy) {
+  assert(`isTruthy(${JSON.stringify(value)}) is true`, isTruthy(value) === true);
+}
+for (const value of corpus.truthiness.falsy) {
+  assert(`isTruthy(${JSON.stringify(value)}) is false`, isTruthy(value) === false);
+}
+
+// The ORM's private copy, exercised through real behaviour rather than by
+// exporting it: TINA4_DB_CACHE is read through that copy to default the
+// persistent-cache mode. A real sqlite database, no doubles.
+async function ormCopyAgrees() {
+  const { initDatabase, closeDatabase } = await import("../packages/orm/src/index.ts");
+  const saved = process.env.TINA4_DB_CACHE;
+  const savedAuto = process.env.TINA4_AUTO_CACHING;
+  delete process.env.TINA4_AUTO_CACHING;
+  try {
+    for (const [value, wantMode] of [["true", "persistent"], ["y", "off"]] as const) {
+      process.env.TINA4_DB_CACHE = value;
+      closeDatabase();
+      const db = await initDatabase({ url: `sqlite:///tmp/tina4_truthiness_${value}_${process.pid}.db` });
+      const mode = db.cacheStats().mode;
+      assert(
+        `orm copy: TINA4_DB_CACHE=${JSON.stringify(value)} -> mode "${wantMode}"`,
+        mode === wantMode,
+        `got "${mode}"`,
+      );
+      closeDatabase();
+    }
+  } finally {
+    if (saved === undefined) delete process.env.TINA4_DB_CACHE; else process.env.TINA4_DB_CACHE = saved;
+    if (savedAuto === undefined) delete process.env.TINA4_AUTO_CACHING; else process.env.TINA4_AUTO_CACHING = savedAuto;
+  }
+}
+
+await ormCopyAgrees();
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
