@@ -127,37 +127,121 @@ export function ensureDevSecret(cwd?: string): string | null {
   return newSecret;
 }
 
-// ── JWT algorithms ────────────────────────────────────────────────
+// ── JWT algorithms + runtime capability ───────────────────────────
 //
-// Mirrors the Python master (tina4_python/auth/__init__.py) — the digest is
-// LOOKED UP from the configured algorithm rather than hardcoded, so the "alg"
-// advertised in the header is always the one that actually produced the
-// signature (python#105). TINA4_JWT_ALGORITHM is read for real, and an
-// algorithm we cannot sign fails loudly instead of silently downgrading to
-// HS256 (python#106).
+// HMAC — HS256 / HS384 / HS512 — is THE Tina4 JWT algorithm family, and it is
+// zero-dependency in all four frameworks:
+//     python  hmac + hashlib          (stdlib)
+//     php     hash_hmac               (ext-hash, PHP core)
+//     ruby    OpenSSL::HMAC           (stdlib default gem, NOT the jwt gem)
+//     node    node:crypto createHmac  (builtin)
+//
+// RS256 is an OPT-IN EXTRA, offered only where the RUNTIME provides asymmetric
+// crypto natively — never as a third-party dependency. Node gets it from the
+// same builtin node:crypto, so tina4-nodejs is the REFERENCE for what RS256
+// looks like when available; tina4-php has it from core ext-openssl and
+// tina4-ruby from its stdlib openssl default gem. tina4-python does NOT offer
+// it, because Python's standard library has no asymmetric crypto at all and
+// Tina4 will not add a package for it. That is not an outlier: HMAC is the
+// standard, not a fallback.
+//
+// The capability is PROBED rather than assumed (see `capabilityFailure`). A
+// table says what we intend to support; only running the primitive says what
+// THIS build can do. A crypto provider that refuses RSA-SHA256 must produce the
+// same loud, actionable failure a developer gets from tina4-python — never a
+// silent downgrade to HMAC, never a mysterious `false`.
+//
+// SECURITY, documented rather than buried: HMAC is SYMMETRIC. Every service
+// that VERIFIES a token holds the SAME secret that signs it, so any verifier
+// can also MINT tokens. That is fine for one app or a fleet you control, and
+// WRONG for handing tokens to a third party you do not — RS256 exists so a
+// verifier can hold only the public key.
+//
+// The digest is LOOKED UP from the configured algorithm rather than hardcoded,
+// so the "alg" advertised in the header is always the one that actually
+// produced the signature (python#105). TINA4_JWT_ALGORITHM is read for real,
+// and an algorithm we cannot sign fails loudly instead of silently downgrading
+// to HS256 (python#106).
 
-/** HMAC algorithms → their node:crypto digest name. All in node:crypto — zero dependencies. */
+/** HMAC algorithms → their node:crypto digest name. The cross-framework standard. */
 const HMAC_DIGESTS = new Map<string, string>([
   ["HS256", "sha256"],
   ["HS384", "sha384"],
   ["HS512", "sha512"],
 ]);
 
-/**
- * RSA algorithms → their node:crypto sign/verify algorithm name.
- *
- * Node ships `node:crypto`, so RS256 is legitimately available here at zero
- * dependency cost. Python and Ruby cannot do RS256 without a third-party
- * package, so RS256 is a documented PHP/Node-only EXTRA, not a parity
- * requirement — the HMAC family is the cross-framework contract.
- */
+/** RSA algorithms → their node:crypto sign/verify algorithm name. The opt-in extra. */
 const RSA_SIGN_ALGORITHMS = new Map<string, string>([["RS256", "RSA-SHA256"]]);
 
-/** Every algorithm Tina4 for Node can sign and verify, in the order we advertise them. */
-const SUPPORTED_ALGORITHMS: readonly string[] = [
+/** Every algorithm Tina4 for Node KNOWS, available in this runtime or not. */
+const KNOWN_ALGORITHMS: readonly string[] = [
   ...HMAC_DIGESTS.keys(),
   ...RSA_SIGN_ALGORITHMS.keys(),
 ];
+
+/**
+ * How to get an algorithm back when this runtime cannot provide it. Only the
+ * remedy differs between frameworks; the sentence around it is identical, so
+ * "RS256 is not available" reads the same everywhere.
+ */
+const ALGORITHM_REMEDY = new Map<string, string>([
+  [
+    "RS256",
+    "RS256 comes from builtin node:crypto, so no package installs it — this build's " +
+      'crypto provider refused RSA-SHA256 (check `node -p "process.versions.openssl"`)',
+  ],
+]);
+
+/** Probe results, memoised: algorithm → null when usable here, else the runtime's own reason. */
+const capabilityCache = new Map<string, string | null>();
+
+/**
+ * Ask the RUNTIME — not a lookup table — whether it can actually sign and
+ * verify with `algorithm`, and remember the answer.
+ *
+ * Only meaningful for a KNOWN algorithm; every caller checks membership first.
+ *
+ * @returns `null` when the algorithm works here, else the runtime's own reason.
+ */
+function capabilityFailure(algorithm: string): string | null {
+  const cached = capabilityCache.get(algorithm);
+  if (cached !== undefined) return cached;
+
+  let failure: string | null = null;
+  try {
+    const digest = HMAC_DIGESTS.get(algorithm);
+    if (digest !== undefined) {
+      createHmac(digest, "tina4-capability-probe").update("").digest();
+    } else {
+      const rsaAlgorithm = RSA_SIGN_ALGORITHMS.get(algorithm) as string;
+      createSign(rsaAlgorithm).update("");
+      createVerify(rsaAlgorithm).update("");
+    }
+  } catch (error) {
+    failure = error instanceof Error ? error.message : String(error);
+  }
+  capabilityCache.set(algorithm, failure);
+  return failure;
+}
+
+/**
+ * Can this runtime actually sign and verify `algorithm` right now?
+ *
+ * The cross-framework capability check — same question, same answer shape, in
+ * all four frameworks. HMAC answers `true` everywhere. RS256 answers `true`
+ * only where the runtime ships asymmetric crypto natively (node:crypto here,
+ * core ext-openssl in PHP, the stdlib openssl gem in Ruby) and `false` in
+ * tina4-python. An algorithm Tina4 does not know at all answers `false`.
+ */
+export function algorithmAvailable(algorithm: string): boolean {
+  const chosen = String(algorithm ?? "").trim();
+  return KNOWN_ALGORITHMS.includes(chosen) && capabilityFailure(chosen) === null;
+}
+
+/** Every algorithm this runtime can sign and verify right now, in advertised order. */
+export function availableAlgorithms(): string[] {
+  return KNOWN_ALGORITHMS.filter((algorithm) => capabilityFailure(algorithm) === null);
+}
 
 /**
  * Seconds of clock skew tolerated on the "nbf" (not-before) claim.
@@ -186,27 +270,58 @@ function numericDate(value: unknown): number | null {
   return Math.floor(value);
 }
 
-/** The loud, actionable failure for an algorithm we cannot sign — names the supported set. */
+/** The loud, actionable failure for an algorithm Tina4 does not know at all. */
 function unsupportedAlgorithmError(algorithm: string): Error {
   return new Error(
-    `Unsupported JWT algorithm "${algorithm}". Tina4 signs with ` +
-      `${SUPPORTED_ALGORITHMS.join(", ")} (HMAC via node:crypto; RS256 needs a PEM key pair). ` +
-      `Set TINA4_JWT_ALGORITHM to one of those.`,
+    `Unsupported JWT algorithm "${algorithm}". Tina4 knows ${KNOWN_ALGORITHMS.join(", ")} ` +
+      `(HMAC via node:crypto; RS256 needs a PEM key pair); available in this runtime: ` +
+      `${availableAlgorithms().join(", ") || "(none)"}. ` +
+      `Set TINA4_JWT_ALGORITHM to one of the available ones.`,
+  );
+}
+
+/**
+ * The loud, actionable failure for an algorithm Tina4 knows but this RUNTIME
+ * cannot provide.
+ *
+ * Never a silent fallback to HMAC and never a bare `false`: the message names
+ * WHAT is missing and HOW to get it. The sentence skeleton is identical in
+ * tina4-python / tina4-php / tina4-ruby — only `reason` and the remedy differ —
+ * so "RS256 is not available" is one recognisable experience in all four.
+ */
+function unavailableAlgorithmError(algorithm: string, reason: string): Error {
+  const remedy =
+    ALGORITHM_REMEDY.get(algorithm) ??
+    `${algorithm} comes from builtin node:crypto, so no package installs it — this ` +
+      `build's crypto provider refused it`;
+  return new Error(
+    `JWT algorithm "${algorithm}" is not available in this runtime: ${reason}. ${remedy}. ` +
+      `Available right now: ${availableAlgorithms().join(", ") || "(none)"}. ` +
+      `HMAC (HS256/HS384/HS512) is the Tina4 standard in all four frameworks and ` +
+      `needs no extra dependency.`,
   );
 }
 
 /**
  * Pick the JWT algorithm: explicit argument, else TINA4_JWT_ALGORITHM, else HS256.
  *
- * Throws (naming the supported set and the env var) when asked for an algorithm
- * we cannot sign — a silent downgrade to HS256 is the whole bug in python#106.
+ * Throws when asked for an algorithm Tina4 does not know (naming the known set,
+ * what is available here, and the env var), and throws again — with the runtime's
+ * own reason and a remedy — when it knows the algorithm but this build cannot
+ * provide it. A silent downgrade to HS256 is the whole bug in python#106, and a
+ * silent downgrade from RS256 would be worse: it would quietly turn asymmetric
+ * verification into a shared secret.
  *
  * @param algorithm - Explicit algorithm; wins over the environment when given.
  */
 export function resolveAlgorithm(algorithm?: string): string {
   const chosen = (algorithm || process.env.TINA4_JWT_ALGORITHM || "HS256").trim();
-  if (!HMAC_DIGESTS.has(chosen) && !RSA_SIGN_ALGORITHMS.has(chosen)) {
+  if (!KNOWN_ALGORITHMS.includes(chosen)) {
     throw unsupportedAlgorithmError(chosen);
+  }
+  const failure = capabilityFailure(chosen);
+  if (failure !== null) {
+    throw unavailableAlgorithmError(chosen, failure);
   }
   return chosen;
 }
@@ -230,8 +345,11 @@ function base64urlDecode(str: string): Buffer {
  * Create a signed JWT token.
  *
  * Secret is always read from `process.env.TINA4_SECRET`.
- * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256");
- * HS256 / HS384 / HS512 / RS256 are supported and anything else throws.
+ * Algorithm is read from `process.env.TINA4_JWT_ALGORITHM` (default "HS256").
+ * HS256 / HS384 / HS512 is the cross-framework standard; RS256 is an opt-in
+ * extra that Node provides from builtin node:crypto (pass the PEM private key
+ * as the secret). An unknown algorithm, or one this runtime cannot provide,
+ * throws — see `resolveAlgorithm`.
  *
  * The header's `alg` is always the algorithm that actually signed the token.
  *
@@ -534,7 +652,8 @@ export function refreshToken(
  *
  * @param headers   - Object with header keys (e.g. `{ authorization: "Bearer ..." }`)
  * @param secret    - HMAC secret or PEM public key
- * @param algorithm - "HS256" or "RS256" (default "HS256")
+ * @param algorithm - Omit it to honour TINA4_JWT_ALGORITHM (then HS256). HS256 /
+ *   HS384 / HS512 everywhere; RS256 where the runtime provides it (it does here).
  * @returns Decoded payload, or null if missing/invalid
  */
 export function authenticateRequest(
@@ -603,6 +722,9 @@ export function validateApiKey(
 export class Auth {
   static getToken = getToken;
   static validToken = validToken;
+  static resolveAlgorithm = resolveAlgorithm;
+  static algorithmAvailable = algorithmAvailable;
+  static availableAlgorithms = availableAlgorithms;
   static getPayload = getPayload;
   static hashPassword = hashPassword;
   static checkPassword = checkPassword;
