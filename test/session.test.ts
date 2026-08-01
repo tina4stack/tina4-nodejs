@@ -148,6 +148,44 @@ const id6b = s6b.start(id6);
 assert("Expired session gets new ID", id6b !== id6);
 assert("Expired session data is gone", s6b.get("temp", "gone") === "gone");
 
+// ── Falsy Values (cross-framework contract) ──────────────────────
+//
+// `false` is a legitimate stored value, not an absent one. Reading it back
+// must yield `false`, never the caller's default — a session holding
+// `accepted_terms: false` or `is_admin: false` would otherwise read back as
+// the permissive default and silently grant what it was meant to withhold.
+// Node reads through `??` (nullish), which is already correct here; this
+// pins it so a refactor to `||` cannot land green. The same test name exists
+// in tina4-python, tina4-php and tina4-ruby.
+
+console.log("\n-- Falsy Values --");
+
+const FALSY_PATH = join(TEST_PATH, "falsy");
+const s7 = new Session("file", { path: FALSY_PATH });
+const id7 = s7.start();
+s7.set("flag", false);
+
+assert(
+  "session get returns a stored false instead of the default",
+  s7.get("flag", true) === false,
+);
+
+// Negative control. Without this half, a "fix" that simply never returned the
+// default would pass the assertion above — a worse bug than the one it closes.
+assert(
+  "session get returns a stored false instead of the default (negative control: an absent key still returns the default)",
+  s7.get("never_set", true) === true,
+);
+
+// The stored false must survive the real write/read round-trip, not just live
+// in the in-memory record: resume the same ID in a brand-new Session instance.
+const s7b = new Session("file", { path: FALSY_PATH });
+s7b.start(id7);
+assert(
+  "session get returns a stored false instead of the default (after a real filesystem resume)",
+  s7b.get("flag", true) === false,
+);
+
 // ── Cleanup ──────────────────────────────────────────────────────
 
 try { rmSync(TEST_PATH, { recursive: true }); } catch { /* ignore */ }
