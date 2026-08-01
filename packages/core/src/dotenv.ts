@@ -87,8 +87,24 @@ function parseEnvContent(content: string): Record<string, string> {
 
     // Handle quoted values. Quoting decides escapes AND interpolation, in that
     // order -- the cross-framework behaviour table (feature 1 of the audit).
-    if (value.startsWith('"') && value.endsWith('"')) {
-      value = value.slice(1, -1);
+    // A QUOTED value ends at its CLOSING QUOTE, and anything after it is a
+    // comment. Testing the LAST character instead was wrong: a trailing comment
+    // makes the last character non-quote, so `PW="s3cret" # note` fell to the
+    // unquoted branch, which strips only the ` #` and left the QUOTE CHARACTERS
+    // in the value -- a credential handed to a driver as '"s3cret"'. PHP already
+    // scanned for the terminator; this is that mechanism, and the scan SKIPS a
+    // quote preceded by a backslash so an escaped \" cannot end the value early.
+    const quote = value[0];
+    let closing = -1;
+    if (quote === '"' || quote === "'") {
+      for (let j = 1; j < value.length; j++) {
+        if (value[j] === "\\" && quote === '"' && j + 1 < value.length) { j++; continue; }
+        if (value[j] === quote) { closing = j; break; }
+      }
+    }
+
+    if (closing !== -1 && quote === '"') {
+      value = value.slice(1, closing);
       // Process escape sequences in double-quoted values
       value = value
         .replace(/\\n/g, "\n")
@@ -97,16 +113,18 @@ function parseEnvContent(content: string): Record<string, string> {
         .replace(/\\"/g, '"')
         .replace(/\\\\/g, "\\");
       value = interpolate(value, result, lineNo, warnedRefs);
-    } else if (value.startsWith("'") && value.endsWith("'")) {
+    } else if (closing !== -1 && quote === "'") {
       // Single-quoted: verbatim. No escape processing, and NO interpolation --
       // shell semantics, and the documented way to keep a literal ${...}.
-      value = value.slice(1, -1);
+      value = value.slice(1, closing);
     } else {
-      // Unquoted: handle multi-line with trailing backslash
-      while (value.endsWith("\\") && i < lines.length) {
-        value = value.slice(0, -1) + lines[i].trim();
-        i++;
-      }
+      // NOTE: the backslash line-continuation loop that used to live here is
+      // GONE. It was a Node-only extension -- absent from Python, PHP and Ruby,
+      // absent from the shared corpus, and undocumented -- so the SAME .env file
+      // produced a DIFFERENT SET OF VARIABLES on Node than on the other three.
+      // That is the strongest form of swap break (ADR-0024), and the least-code
+      // fix is deletion: four lines removed, nothing added.
+
       // Strip inline comments (only for unquoted values)
       const commentIndex = value.indexOf(" #");
       if (commentIndex !== -1) {

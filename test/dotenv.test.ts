@@ -42,7 +42,7 @@ SINGLE_QUOTED='no escape \\n here'
 # Export prefix
 export MY_API_KEY=abc123
 
-# Multi-line with backslash
+# A trailing backslash does NOT continue onto the next line
 LONG_VALUE=hello\\
 world
 
@@ -69,7 +69,12 @@ assert("Parses numeric value as string", parsed.DB_PORT === "5432");
 assert("Parses double-quoted value", parsed.DB_PASSWORD === "s3cret with spaces");
 assert("Parses single-quoted value literally", parsed.SINGLE_QUOTED === "no escape \\n here");
 assert("Strips export prefix", parsed.MY_API_KEY === "abc123");
-assert("Handles multi-line with backslash", parsed.LONG_VALUE === "helloworld");
+// ADR-0024: Node alone joined these lines, so one .env produced a DIFFERENT SET
+// OF VARIABLES here than on Python/PHP/Ruby. The value keeps the literal
+// backslash and the next line is parsed on its own. Pinned in dotenv_corpus.json
+// (no_line_continuation) so all four are held to it.
+assert("Trailing backslash does not continue the line", parsed.LONG_VALUE === "hello\\");
+assert("Line after a trailing backslash is parsed on its own", parsed.world === undefined);
 assert("Handles empty value", parsed.EMPTY_VAR === "");
 assert("Skips comments", parsed["# This is a comment"] === undefined);
 
