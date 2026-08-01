@@ -140,8 +140,8 @@ const savedDebug = process.env.TINA4_DEBUG;
 delete process.env.TINA4_DEBUG;
 
 // v3.13.14: production MUST write to stdout — containers read PID 1 stdout
-// (docker logs / k8s). Capture stdout and verify the line is present AND
-// is clean structured JSON (no ANSI colour codes) so aggregators can parse it.
+// (docker logs / k8s). Capture stdout and verify the line is present AND has no
+// ANSI colour codes, so a log shipper gets clean bytes.
 const originalLog = console.log;
 let consoleOutput = "";
 console.log = (...args: unknown[]) => {
@@ -155,19 +155,66 @@ console.log = originalLog;
 assert("Production writes to stdout (docker logs)", consoleOutput.includes("Production log message"));
 assert("Production stdout has no ANSI colour codes", !consoleOutput.includes("\x1b["));
 {
-  // Production stdout is structured JSON (parity with Python/Ruby).
-  const stdoutEntry = JSON.parse(consoleOutput.trim());
-  assert("Production stdout is JSON with level INFO", stdoutEntry.level === "INFO");
-  assert("Production stdout JSON carries the message", stdoutEntry.message === "Production log message");
+  // SETTLED CONTRACT (2026-08-01): format is TEXT by default and
+  // TINA4_LOG_FORMAT is the ONLY thing that selects JSON. An unset TINA4_DEBUG
+  // used to silently reformat every line — the same .env produced four
+  // different formats across the four frameworks. These two assertions are the
+  // deliberate INVERSE of the pre-3.13.95 pair: they are the regression gate on
+  // the DELETED switch, not a relaxation of it. TINA4_DEBUG now decides colour
+  // only (asserted directly above).
+  let prodStdoutIsJson = true;
+  try { JSON.parse(consoleOutput.trim()); } catch { prodStdoutIsJson = false; }
+  assert(
+    "Production stdout is TEXT by default (implicit prod→JSON deleted)",
+    !prodStdoutIsJson,
+    `line was: ${consoleOutput}`,
+  );
+  assert(
+    "Production stdout text line carries level + message",
+    consoleOutput.includes("INFO") && consoleOutput.includes("Production log message"),
+    `line was: ${consoleOutput}`,
+  );
 }
 
 const prodLogPath = join(TEST_LOG_DIR, "prod.log");
 assert("Production log file created", existsSync(prodLogPath));
 
 const prodContent = readFileSync(prodLogPath, "utf-8");
-// Production file is JSON too (parity with Python/Ruby — was text pre-v3.13.14).
-const prodEntry = JSON.parse(prodContent.trim());
+// The FILE follows the SAME single format rule — one decision, both sinks.
+const prodLine = prodContent.trim().split("\n").pop()!;
+let prodFileIsJson = true;
+try { JSON.parse(prodLine); } catch { prodFileIsJson = false; }
+assert("Production log FILE is TEXT by default too", !prodFileIsJson, `line was: ${prodLine}`);
+const prodEntry = parseLogLine(prodLine);
 assert("Production log has level INFO", prodEntry.level === "INFO");
+
+// The explicit opt-in still works in production — that is the ONE switch.
+{
+  process.env.TINA4_LOG_FORMAT = "json";
+  let jsonStdout = "";
+  const restore = console.log;
+  console.log = (...args: unknown[]) => { jsonStdout += args.join(" "); };
+  Log.info("Production explicit json");
+  console.log = restore;
+
+  let stdoutEntry: any = null;
+  try { stdoutEntry = JSON.parse(jsonStdout.trim()); } catch { /* leave null */ }
+  assert(
+    "TINA4_LOG_FORMAT=json in production: stdout IS JSON with level INFO",
+    stdoutEntry?.level === "INFO" && stdoutEntry?.message === "Production explicit json",
+    `line was: ${jsonStdout}`,
+  );
+
+  const jsonFileLine = readFileSync(prodLogPath, "utf-8").trim().split("\n").pop()!;
+  let fileEntry: any = null;
+  try { fileEntry = JSON.parse(jsonFileLine); } catch { /* leave null */ }
+  assert(
+    "TINA4_LOG_FORMAT=json in production: FILE line IS JSON",
+    fileEntry?.message === "Production explicit json",
+    `line was: ${jsonFileLine}`,
+  );
+  delete process.env.TINA4_LOG_FORMAT;
+}
 
 // Restore
 if (savedDebug !== undefined) {

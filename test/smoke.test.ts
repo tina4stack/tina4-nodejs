@@ -608,7 +608,7 @@ const savedLogFormat = process.env.TINA4_LOG_FORMAT;
 const logFile = join(TMP, "logger", "tina4.log");
 process.env.TINA4_LOG_OUTPUT = "file";       // file-only sink; keeps test stdout clean
 process.env.TINA4_LOG_FILE = logFile;
-delete process.env.TINA4_DEBUG;               // production format → structured JSON line
+delete process.env.TINA4_DEBUG;               // no colour codes in the file lines
 
 const readLog = (): string => (existsSync(logFile) ? readFileSync(logFile, "utf-8") : "");
 

@@ -405,7 +405,7 @@ export class SQLTranslator {
    * @param sql Raw SQL; literals and comments are scrubbed before matching.
    */
   static hasTrailingLimit(sql: string): boolean {
-    const val = String.raw`(?:\d+|\?|\$\d+|:\w+)`;
+    const val = String.raw`(?:\d+|\?|\$\d+|:\w+|%s)`;
     const re = new RegExp(
       String.raw`\bLIMIT\s+${val}(?:\s*,\s*${val})?(?:\s+OFFSET\s+${val})?\s*;?\s*$`,
       "i",
