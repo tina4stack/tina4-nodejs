@@ -293,11 +293,54 @@ export function createResponse(res: ServerResponse): Tina4Response {
     return response.json({ error: true, code, message, status: statusCode }, statusCode);
   };
 
-  response.file = function (filePath: string, options?: { download?: boolean; contentType?: string }): Tina4Response {
+  response.file = function (
+    filePath: string,
+    options?: { download?: boolean; contentType?: string; root?: string },
+  ): Tina4Response {
     if (res.headersSent) return response;
+
+    // SECURITY: confine the read. The natural spelling of a download route,
+    //
+    //     response.file("downloads/" + name)   // name = "../secret.env"
+    //
+    // served any file the process could read - measured over real HTTP at 200
+    // with the contents of a .env one directory above the intended one.
+    //
+    // TWO checks. Containment ALONE does not close it: that payload resolves to
+    // <project>/secret.env, which IS inside the project root, and the project
+    // root is exactly where .env lives. Rejecting ".." on the way in is the
+    // check that closes it; containment then catches absolute paths and
+    // symlinks, neither of which carries a ".." segment. Same shape as
+    // static.ts's startsWith guard, which this function never had.
+    const base = nodePath.resolve(options?.root ?? process.cwd());
+    let forbidden = filePath.split(/[\\/]/).includes("..");
+
+    if (!forbidden) {
+      const candidate = nodePath.isAbsolute(filePath) ? filePath : nodePath.join(base, filePath);
+      let resolved = candidate;
+      try {
+        resolved = fs.realpathSync(candidate);
+      } catch {
+        /* missing file: fall through to the 404 below with the joined path */
+      }
+      if (base !== nodePath.sep && resolved !== base && !resolved.startsWith(base + nodePath.sep)) {
+        forbidden = true;
+      } else {
+        filePath = resolved;
+      }
+    }
+
+    if (forbidden) {
+      // Refuse BEFORE reading: never load bytes we will not send.
+      res.statusCode = 403;
+      safeSetHeader("Content-Type", "text/plain");
+      safeEnd("Forbidden");
+      return response;
+    }
 
     if (!fs.existsSync(filePath)) {
       res.statusCode = 404;
+      safeSetHeader("Content-Type", "text/plain");
       safeEnd("File not found");
       return response;
     }
