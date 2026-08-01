@@ -1490,6 +1490,73 @@ await (async () => {
   }
 })();
 
+// ── ADR-0022: Node refuses the two backends it cannot acknowledge ──
+//
+// Node drives RabbitMQ and Kafka through a child process per operation, so no
+// connection survives between pop() and complete(). RabbitMQ was therefore
+// at-most-once (Basic.Get with no-ack=true, so a consumer that died after
+// pop() lost the job) and Kafka always fetched offset 0 (the topic could never
+// drain). Both lost work silently. Constructing either must now THROW.
+//
+// These need no broker: the refusal happens before any socket is opened, which
+// is the point - it cannot be reached even by someone with a live broker.
+{
+  for (const backendName of ["rabbitmq", "kafka"]) {
+    let threw = false;
+    let message = "";
+    try {
+      new Queue({ topic: "adr0022", backend: backendName });
+    } catch (err) {
+      threw = true;
+      message = String((err as Error).message);
+    }
+    assert(
+      `queue refuses backend ${backendName} instead of losing work silently`,
+      threw,
+      `constructing Queue({ backend: "${backendName}" }) must throw`
+    );
+    assert(
+      `queue refusal for ${backendName} names the backend`,
+      message.includes(backendName),
+      message
+    );
+    assert(
+      `queue refusal for ${backendName} explains the child-process cause`,
+      message.includes("separate child process"),
+      message
+    );
+    assert(
+      `queue refusal for ${backendName} points at the tracking decision`,
+      message.includes("ADR-0022"),
+      message
+    );
+    assert(
+      `queue refusal for ${backendName} offers a working alternative`,
+      message.includes("mongodb") && message.includes("file"),
+      message
+    );
+  }
+
+  // The refusal must also fire through the env var and the legacy string form,
+  // which are the two ways a deployment actually selects a backend.
+  const savedBackend = process.env.TINA4_QUEUE_BACKEND;
+  process.env.TINA4_QUEUE_BACKEND = "rabbitmq";
+  let envThrew = false;
+  try { new Queue({ topic: "adr0022env" }); } catch { envThrew = true; }
+  assert("queue refuses rabbitmq selected via TINA4_QUEUE_BACKEND", envThrew);
+  if (savedBackend === undefined) delete process.env.TINA4_QUEUE_BACKEND;
+  else process.env.TINA4_QUEUE_BACKEND = savedBackend;
+
+  let legacyThrew = false;
+  try { new Queue("kafka", { topic: "adr0022legacy" }); } catch { legacyThrew = true; }
+  assert("queue refuses kafka via the legacy string constructor", legacyThrew);
+
+  // The backends Node CAN acknowledge must keep working.
+  let fileOk = true;
+  try { new Queue({ topic: "adr0022file", backend: "file" }); } catch { fileOk = false; }
+  assert("queue still accepts the file backend", fileOk);
+}
+
 // Summary
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m, \x1b[33m${skipped} skipped\x1b[0m`);

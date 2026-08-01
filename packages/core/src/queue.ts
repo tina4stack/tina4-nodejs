@@ -1,17 +1,23 @@
 /**
  * Tina4 Queue — Unified job queue with pluggable backends, zero dependencies.
  *
- * Switching from file to RabbitMQ or Kafka is a .env change — no code change needed.
+ * Switching from file to MongoDB is a .env change — no code change needed.
  *
  * Supported backends:
  *   - 'file'     — JSON files on disk (default)
- *   - 'rabbitmq' — RabbitMQ via raw TCP (AMQP 0-9-1)
- *   - 'kafka'    — Kafka via raw TCP
  *   - 'mongodb'  — MongoDB via `mongodb` npm package (also 'mongo')
  *
+ * REFUSED backends (ADR-0022):
+ *   - 'rabbitmq' and 'kafka' THROW on construction. Node drives both through a
+ *     child process per operation, so no connection survives between pop() and
+ *     complete() and acknowledgement is impossible: RabbitMQ was at-most-once
+ *     (a dead consumer lost the job) and Kafka could never drain a topic. They
+ *     lost work silently, so they now refuse. tina4-python, tina4-php and
+ *     tina4-ruby still offer both. See unsupportedBrokerMessage() below.
+ *
  * Environment variables:
- *   TINA4_QUEUE_BACKEND — 'file', 'rabbitmq', 'kafka', or 'mongodb'
- *   TINA4_QUEUE_URL     — connection URL for rabbitmq/kafka
+ *   TINA4_QUEUE_BACKEND — 'file' or 'mongodb'
+ *   TINA4_QUEUE_URL     — connection URL for mongodb
  *   TINA4_QUEUE_PATH    — file backend storage path (default: data/queue)
  *
  * Usage:
@@ -22,14 +28,12 @@
  *   queue.push({ to: "alice@test.com", subject: "Hello" });
  *
  *   // Explicit backend
- *   const queue = new Queue({ topic: "tasks", backend: "rabbitmq" });
+ *   const queue = new Queue({ topic: "tasks", backend: "mongodb" });
  *
  *   // Legacy usage (still works — uses file backend)
  *   const queue = new Queue();
  *   queue.push("emails", { to: "alice@test.com" });
  */
-import { RabbitMQBackend } from "./queueBackends/rabbitmqBackend.js";
-import { KafkaBackend } from "./queueBackends/kafkaBackend.js";
 import { MongoBackend } from "./queueBackends/mongoBackend.js";
 import { LiteBackend } from "./queueBackends/liteBackend.js";
 import { type QueueJob, type JobData, createJob } from "./job.js";
@@ -58,8 +62,8 @@ export interface QueueConfig {
    * re-enqueuing, or dead-lettering past maxRetries (at-least-once delivery).
    * Falls back to TINA4_QUEUE_VISIBILITY_TIMEOUT, else 300 (5 min). <= 0
    * disables the reclaim (a reservation then lasts until the consumer acks —
-   * the old at-most-once behaviour). File + MongoDB backends only;
-   * RabbitMQ/Kafka delegate visibility to the broker. Parity with Python's
+   * the old at-most-once behaviour). File + MongoDB backends, which are the
+   * only backends Node offers (ADR-0022). Parity with Python's
    * visibility_timeout.
    */
   visibilityTimeout?: number;
@@ -105,9 +109,14 @@ export interface QueueBackendInterface {
   clear(queue: string): void;
   // Optional full lifecycle. Reservation-based backends (MongoDB) implement
   // these so complete()/fail() ack the ACTIVE store — without complete(), a
-  // reserved Mongo job is re-delivered after the visibility window. Backends
-  // that auto-ack on pop (RabbitMQ no-ack) or delegate to the broker (Kafka
-  // offsets) omit them, and the Queue keeps its prior behaviour for them.
+  // reserved Mongo job is re-delivered after the visibility window.
+  //
+  // Optional is a wart, not a design: a backend that omitted them silently fell
+  // through to the LOCAL FILE store, so a fail() on a broker-backed queue wrote
+  // JSON to disk while the broker still held the message. The only backends
+  // that did that were RabbitMQ and Kafka, and ADR-0022 now refuses both, so
+  // nothing in tree relies on the fallback. Make these required when the
+  // persistent-connection rewrite lands.
   complete?(queue: string, id: string): void;
   fail?(queue: string, id: string, error: string, maxRetries: number, retryBackoff: number): void;
   retry?(queue: string, id: string, delaySeconds?: number): void;
@@ -115,6 +124,50 @@ export interface QueueBackendInterface {
   failed?(queue: string, maxRetries?: number): QueueJob[];
   retryFailed?(queue: string, maxRetries?: number): number;
   purge?(queue: string, status?: string): number;
+}
+
+/**
+ * Why `backend: "rabbitmq"` and `backend: "kafka"` are refused in Node (ADR-0022).
+ *
+ * Both backends drive the wire protocol through `execFileSync`, spawning a fresh
+ * child process for EVERY operation. The child connects, performs one operation,
+ * destroys its socket and exits, so no connection, channel, consumer or session
+ * survives between push, pop and complete.
+ *
+ * That makes acknowledgement impossible, not merely unimplemented. An AMQP
+ * delivery tag identifies a delivery on a CHANNEL that is already closed by the
+ * time pop() returns, and a Kafka consumer-group offset belongs to a SESSION
+ * that never existed. So RabbitMQ ran Basic.Get with no-ack=true (at-most-once:
+ * a consumer that dies after pop() loses the job outright) and Kafka fetched
+ * from offset 0 every time (the topic could never drain).
+ *
+ * Refusing loudly follows the same call the session backend already made for
+ * `redis-npm`: a silent demotion looks like it is working while the operator
+ * believes otherwise, which is worse than an outage you can see. Anyone
+ * "successfully" running these today is already losing jobs and does not know it.
+ *
+ * This is a HOLDING POSITION, not the design. The fix is a persistent
+ * connection held on the backend instance, the way Python, PHP and Ruby already
+ * do it. There is deliberately no opt-in escape hatch: nobody has asked for
+ * fire-and-forget, and a knob for a hypothetical user is not worth its weight.
+ */
+function unsupportedBrokerMessage(backendName: string): string {
+  const broker = backendName === "kafka" ? "Kafka" : "RabbitMQ";
+  const lost = backendName === "kafka"
+    ? "every pop() re-read offset 0, so the topic could never drain"
+    : "pop() destroyed the message with no acknowledgement, so a consumer that died lost the job";
+  return (
+    `Queue backend "${backendName}" is not available in tina4-nodejs.\n\n` +
+    `Reason: the ${broker} backend runs each operation in a separate child ` +
+    `process, so no connection survives between pop() and complete(). ` +
+    `Acknowledgement is therefore impossible, and ${lost}. It was losing work ` +
+    `silently, so it now refuses instead.\n\n` +
+    `Use backend "mongodb" (at-least-once, with a real reservation and ` +
+    `visibility timeout) or the default "file" backend. tina4-python, ` +
+    `tina4-php and tina4-ruby still offer ${broker}.\n\n` +
+    `Tracking: ADR-0022 in tina4-documentation/plan/v3/DECISIONS.md, ` +
+    `findings in plan/v3/features/048-queue-backends.md.`
+  );
 }
 
 // ── Queue ────────────────────────────────────────────────────
@@ -133,15 +186,17 @@ export class Queue {
    * Unified Queue constructor.
    *
    * Accepts either:
-   *   - new Queue({ topic: "tasks", backend: "rabbitmq" })
-   *   - new Queue("rabbitmq", { path: "data/queue" })  // legacy
+   *   - new Queue({ topic: "tasks", backend: "mongodb" })
+   *   - new Queue("mongodb", { path: "data/queue" })  // legacy
    *   - new Queue()  // file backend, default topic
+   *
+   * Throws on backend "rabbitmq" or "kafka" (ADR-0022).
    */
   constructor(backendOrConfig?: string | QueueConfig, config?: QueueConfig) {
     let resolvedConfig: QueueConfig = {};
 
     if (typeof backendOrConfig === "string") {
-      // Legacy: new Queue("rabbitmq", { ... })
+      // Legacy: new Queue("mongodb", { ... })
       resolvedConfig = { ...(config ?? {}), backend: backendOrConfig };
     } else if (typeof backendOrConfig === "object" && backendOrConfig !== null) {
       resolvedConfig = backendOrConfig;
@@ -160,13 +215,8 @@ export class Queue {
     this.liteBackend = new LiteBackend(this.basePath, this._visibilityTimeout);
 
     // Initialize external backends
-    if (this.backendName === "rabbitmq") {
-      // Broker manages visibility/redelivery (unacked messages requeue on
-      // channel close) — the framework timeout is accepted but not used.
-      this.externalBackend = new RabbitMQBackend({ visibilityTimeout: this._visibilityTimeout });
-    } else if (this.backendName === "kafka") {
-      // Consumer-group offsets manage redelivery — framework timeout N/A.
-      this.externalBackend = new KafkaBackend({ visibilityTimeout: this._visibilityTimeout });
+    if (this.backendName === "rabbitmq" || this.backendName === "kafka") {
+      throw new Error(unsupportedBrokerMessage(this.backendName));
     } else if (this.backendName === "mongodb" || this.backendName === "mongo") {
       this.externalBackend = new MongoBackend({ visibilityTimeout: this._visibilityTimeout });
     }
