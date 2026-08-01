@@ -6,9 +6,10 @@ import { startServer, getToken } from "../packages/core/src/index.ts";
 import http from "node:http";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { freePort } from "./freePort.ts";
 
 const TEST_DIR = "/tmp/tina4-integration-test";
-const PORT = 3399;
+const PORT = await freePort();
 
 // Clean slate
 try { rmSync(TEST_DIR, { recursive: true }); } catch {}

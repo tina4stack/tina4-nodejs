@@ -25,6 +25,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import http from "node:http";
+import { freePort } from "./freePort.ts";
 
 let passed = 0;
 let failed = 0;
@@ -38,7 +39,7 @@ function assert(label: string, condition: boolean, detail = ""): void {
   }
 }
 
-const PORT = 24000 + Math.floor(Math.random() * 8000);
+const PORT = await freePort();
 const scaffold = join(tmpdir(), `tina4-devadmin-esm-${Date.now()}-${process.pid}`);
 const originalCwd = process.cwd();
 

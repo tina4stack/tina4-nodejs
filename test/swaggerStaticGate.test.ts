@@ -28,6 +28,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { freePort } from "./freePort.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_PUBLIC = resolve(__dirname, "..", "packages", "core", "public");
@@ -116,7 +117,7 @@ assert(
 
 // NEGATIVE — swagger explicitly disabled: nothing under /swagger may serve.
 {
-  const codes = await statusesFor("false", "false", 7931);
+  const codes = await statusesFor("false", "false", await freePort());
   for (const path of GATED_PATHS) {
     assert(
       `NEGATIVE swagger disabled: ${path} is not served`,
@@ -133,7 +134,7 @@ assert(
 
 // POSITIVE — swagger enabled: the assets must still serve (dev must not break).
 {
-  const codes = await statusesFor("true", "true", 7932);
+  const codes = await statusesFor("true", "true", await freePort());
   for (const path of GATED_PATHS) {
     assert(
       `POSITIVE swagger enabled: ${path} serves`,
@@ -145,7 +146,7 @@ assert(
 
 // Documented fallback: flag unset -> follow TINA4_DEBUG.
 {
-  const codes = await statusesFor(undefined, "false", 7933);
+  const codes = await statusesFor(undefined, "false", await freePort());
   assert(
     "flag unset + debug off: /swagger/index.html is not served",
     codes["/swagger/index.html"] === 404,

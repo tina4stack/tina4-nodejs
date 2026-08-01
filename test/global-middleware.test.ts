@@ -6,6 +6,7 @@
  */
 import { startServer, get, Router } from "../packages/core/src/index.ts";
 import http from "node:http";
+import { freePort } from "./freePort.ts";
 
 let pass = 0;
 let fail = 0;
@@ -14,7 +15,7 @@ function assert(name: string, condition: boolean, detail = "") {
   else { console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`); fail++; }
 }
 
-const PORT = 7191;
+const PORT = await freePort();
 
 class PoweredBy {
   static beforePoweredBy(req: any, res: any) {

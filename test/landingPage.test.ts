@@ -19,6 +19,7 @@
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import http from "node:http";
+import { freePort } from "./freePort.ts";
 import {
   resolveTemplate,
   resetTemplateCache,
@@ -269,8 +270,8 @@ console.log("\n--- D. Landing page only in dev mode (live HTTP) ---");
 // We need to flip TINA4_DEBUG between server starts. Each pass uses a
 // distinct port to avoid the "kill the existing process on this port"
 // behaviour stomping on our own server.
-const PORT_DEV = 3501;
-const PORT_PROD = 3502;
+const PORT_DEV = await freePort();
+const PORT_PROD = await freePort();
 
 async function httpGet(port: number, path: string): Promise<{
   status: number;

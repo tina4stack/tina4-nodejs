@@ -17,11 +17,12 @@ import http from "node:http";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { freePort } from "./freePort.ts";
 
 const TEST_DIR = join(tmpdir(), "tina4-static-cache-test-" + Date.now());
 const PUBLIC_DIR = join(TEST_DIR, "public");
 const ASSET_BODY = "body { color: rebeccapurple; }";
-const PORT = 3419;
+const PORT = await freePort();
 
 let pass = 0;
 let fail = 0;

@@ -22,13 +22,14 @@ import net from "node:net";
 import http from "node:http";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { freePort } from "./freePort.ts";
 
 // The fix must work with the dev-only ErrorTracker absent — force prod-shape env.
 delete process.env.TINA4_DEBUG;
 delete process.env.TINA4_PRODUCTION;
 
 const TEST_DIR = "/tmp/tina4-malformed-path-test";
-const PORT = 3418;
+const PORT = await freePort();
 let pass = 0;
 let fail = 0;
 

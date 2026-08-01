@@ -29,6 +29,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer, MiddlewareRunner, get } from "../packages/core/src/index.ts";
+import { freePort } from "./freePort.ts";
 import type { Tina4Request, Tina4Response } from "../packages/core/src/index.ts";
 
 let pass = 0;
@@ -258,7 +259,7 @@ const publicDir = join(root, "public");
 mkdirSync(routesDir, { recursive: true });
 mkdirSync(publicDir, { recursive: true });
 
-const PORT = 7930 + (process.pid % 8);
+const PORT = await freePort();
 let server: { close?: () => void } | undefined;
 
 async function hit(path: string, init?: RequestInit) {
