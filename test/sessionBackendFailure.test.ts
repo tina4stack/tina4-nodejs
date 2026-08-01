@@ -1,134 +1,191 @@
 /**
- * Lock-in tests for the Session backend-failure policy: log-loud + degrade.
+ * Session backend-failure policy: log-loud + degrade. NO DOUBLES.
  * Run with: npx tsx test/sessionBackendFailure.test.ts
  *
  * Contract (parity across all 4 frameworks): when a session backend
  * (Redis/Valkey/Mongo/Database) becomes unreachable mid-request, the framework
- * must LOG LOUDLY and DEGRADE — never silently lose data, and never let one
+ * must LOG LOUDLY and DEGRADE -- never silently lose data, and never let one
  * backend blip 500 every request (cascade outage). The default is:
  *
  *   * read failure    -> log an error, return an empty session (request still serves)
  *   * write failure   -> log an error, best-effort (dirty flag retained for retry)
- *   * destroy/gc fail  -> log an error, swallow
+ *   * destroy/gc fail -> log an error, swallow
  *
- * A GENUINELY EMPTY result (no such session yet) is NOT a failure — the handler
- * returns null WITHOUT throwing, so it must never be logged as an error.
+ * A GENUINELY EMPTY result (no such session yet) is NOT a failure and must
+ * never be logged as an error.
  *
- * `TINA4_SESSION_STRICT=true` flips this to re-raise (the escape hatch that
- * mirrors the `strict` flag on events/seeding).
+ * `TINA4_SESSION_STRICT=true` flips this to re-raise.
  *
- * These mirror the 5 Python invariants in
- * tina4-python/tests/test_session_backend_failure.py (commit cefc738) plus the
- * new "transport failure now LOGS (no longer silent)" assertion.
+ * ---------------------------------------------------------------------------
+ * WHAT THIS FILE USED TO BE -- and why every line of it was untrustworthy.
+ *
+ * It declared three in-test classes implementing SessionHandler
+ * (`ExplodingHandler`, `WriteFailsAfterStartHandler`, `EmptyHandler`) and
+ * injected them through the real `setHandler()`. It is the exact twin of
+ * tina4-python's `_ExplodingHandler`, tina4-php's `ThrowingSessionHandler` and
+ * tina4-ruby's `RaisingHandler` -- the same double, ported four ways.
+ *
+ * A fabricated synchronous `throw new Error("backend unreachable")` is not what
+ * an unreachable Redis produces. The real path runs through respClient/
+ * syncSocket and surfaces ECONNREFUSED, ETIMEDOUT, or a partial RESP reply --
+ * different exception types, different messages, different timing. If the
+ * framework's catch were narrower than the test assumed, this file stayed green
+ * while production 500'd on every request: the precise cascade outage it exists
+ * to prevent.
+ *
+ * The `EmptyHandler` positive control was the worst of the three. It asserted
+ * "an empty healthy read logs ZERO errors" against a handler that CANNOT fail,
+ * so it could never catch the regression it existed for: a real server's
+ * `$-1\r\n` null bulk reply being misclassified by the TRANSPORT as an error.
+ * That misclassification lives in the transport, and the transport never ran.
+ *
+ * `captureErrors()` reassigned `Log.error` to a closure. Every "is LOGGED
+ * (never silent)" claim was therefore a substring check on a function the test
+ * itself installed. Log.error's real body -- level gating, TINA4_LOG_OUTPUT
+ * routing, JSON structuring, the file write -- never executed, so a regression
+ * that made Log.error silently drop the record in production still read PASS.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT IT IS NOW -- three real drivers, one real log sink, no stand-ins.
+ *
+ *  (1) UNREACHABLE BACKEND: the REAL RedisSessionHandler pointed at a genuinely
+ *      closed port, obtained by bind-then-release. Every operation fails with a
+ *      real ECONNREFUSED through the real transport. Needs no service, so it
+ *      never skips.
+ *  (2) EMPTY-BUT-HEALTHY: the REAL RedisSessionHandler against LIVE Redis,
+ *      reading a fresh randomUUID key that genuinely does not exist -- a real
+ *      `$-1\r\n` null bulk reply off the wire. Skips loudly naming host+port.
+ *  (3) WRITE FAILS AFTER START: the REAL FileSessionHandler in a real temp dir.
+ *      start() writes successfully, then the directory is chmod 0500 so the
+ *      NEXT write takes a real EACCES from the real kernel.
+ *
+ *  LOGGING is measured by pointing the REAL logger at a real file
+ *  (TINA4_LOG_OUTPUT=file + TINA4_LOG_DIR) and reading the bytes it actually
+ *  wrote. Each scenario reads only the delta appended since it began.
  */
-import { Session } from "../packages/core/src/session.ts";
-import type { SessionHandler } from "../packages/core/src/session.ts";
-import { Log } from "../packages/core/src/logger.ts";
+import net from "node:net";
+import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { chmodSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// The real logger must be configured BEFORE it is imported anywhere, because
+// every Log call re-reads the environment (logger.ts readEnv) -- but the file
+// path is resolved per call, so setting it here is enough and is honest about
+// what production does.
+const LOG_DIR = mkdtempSync(join(tmpdir(), "tina4-sessfail-log-"));
+process.env.TINA4_LOG_OUTPUT = "file";
+process.env.TINA4_LOG_DIR = LOG_DIR;
+process.env.TINA4_LOG_LEVEL = "DEBUG";
+process.env.TINA4_LOG_FORMAT = "json";
+
+const { Session, RedisSessionHandler, FileSessionHandler } = await import(
+  "../packages/core/src/session.ts"
+);
+const { DatabaseSessionHandler } = await import(
+  "../packages/core/src/sessionHandlers/databaseHandler.ts"
+);
 
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 
-function assert(label: string, condition: boolean) {
+function assert(label: string, condition: boolean, detail = "") {
   if (condition) {
     passed++;
     console.log(`  \x1b[32mPASS\x1b[0m ${label}`);
   } else {
     failed++;
-    console.log(`  \x1b[31mFAIL\x1b[0m ${label}`);
+    console.log(`  \x1b[31mFAIL\x1b[0m ${label} ${detail}`);
   }
 }
 
-interface SessionData {
-  _created: number;
-  _accessed: number;
-  [key: string]: unknown;
+function skip(label: string, reason: string) {
+  skipped++;
+  console.log(`  \x1b[33mSKIP\x1b[0m ${label}: ${reason}`);
 }
 
-/**
- * A backend that throws on every operation — simulates an unreachable
- * Redis/Valkey/Mongo/DB mid-request.
- */
-class ExplodingHandler implements SessionHandler {
-  read(_id: string): SessionData | null {
-    throw new Error("backend unreachable");
-  }
-  write(_id: string, _data: SessionData, _ttl?: number): void {
-    throw new Error("backend unreachable");
-  }
-  destroy(_id: string): void {
-    throw new Error("backend unreachable");
-  }
-  gc(_maxLifetime?: number): void {
-    throw new Error("backend unreachable");
-  }
-}
+const LOG_FILE = join(LOG_DIR, "tina4.log");
+const REDIS_HOST = process.env.TINA4_SESSION_REDIS_HOST ?? "127.0.0.1";
+const REDIS_PORT = Number(process.env.TINA4_SESSION_REDIS_PORT ?? "6379");
 
 /**
- * A handler that reads cleanly and lets the first write (start()'s fresh-session
- * bootstrap) succeed, then fails on every subsequent write — lets us drive the
- * strict-write path on save() without start()'s bootstrap write throwing first.
- * (Node's start() persists a fresh empty session, unlike Python's read-only
- * start(); this isolates the save() write-failure under strict.)
+ * Read the bytes the REAL logger appended to the REAL log file since `from`.
+ * This is the file an operator tails; nothing in this process stands between
+ * Log.error and the disk.
  */
-class WriteFailsAfterStartHandler implements SessionHandler {
-  public writes = 0;
-  read(_id: string): SessionData | null {
-    return null; // healthy, no session yet
-  }
-  write(_id: string, _data: SessionData, _ttl?: number): void {
-    this.writes++;
-    if (this.writes > 1) throw new Error("backend unreachable");
-  }
-  destroy(_id: string): void {
-    throw new Error("backend unreachable");
-  }
+function logSince(from: number): string {
+  let size = 0;
+  try { size = statSync(LOG_FILE).size; } catch { return ""; }
+  if (size <= from) return "";
+  const buf = readFileSync(LOG_FILE);
+  return buf.subarray(from, size).toString("utf-8");
 }
 
-/**
- * A healthy backend that simply has no data for this session — returns null
- * WITHOUT throwing. This is the normal "no session yet" case and must never be
- * treated as a backend error.
- */
-class EmptyHandler implements SessionHandler {
-  public reads = 0;
-  read(_id: string): SessionData | null {
-    this.reads++;
-    return null;
-  }
-  write(_id: string, _data: SessionData, _ttl?: number): void {
-    /* succeeds, no-op */
-  }
-  destroy(_id: string): void {
-    /* succeeds, no-op */
-  }
+function logSize(): number {
+  try { return statSync(LOG_FILE).size; } catch { return 0; }
 }
 
-/**
- * Capture Log.error calls so we can assert the failure was logged (never
- * silent). Returns a restore() fn and the captured-messages array.
- */
-function captureErrors(): { errors: string[]; restore: () => void } {
-  const errors: string[] = [];
-  const original = Log.error;
-  Log.error = ((message: string, _data?: unknown) => {
-    errors.push(message);
-  }) as typeof Log.error;
-  return { errors, restore: () => { Log.error = original; } };
+/** Every ERROR-level line the real logger wrote since `from`, as objects. */
+function errorLinesSince(from: number): { level: string; message: string }[] {
+  return logSince(from)
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+    .filter((o): o is { level: string; message: string } => o !== null && o.level === "ERROR");
 }
 
-console.log("=== Session Backend-Failure Policy Tests ===\n");
+/** A port nothing is listening on, found by binding then releasing it. */
+function closedPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const addr = probe.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
+function reachable(host: string, port: number, timeoutMs = 1500): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host, port });
+    const timer = setTimeout(() => { sock.destroy(); resolve(false); }, timeoutMs);
+    sock.on("connect", () => { clearTimeout(timer); sock.destroy(); resolve(true); });
+    sock.on("error", () => { clearTimeout(timer); resolve(false); });
+  });
+}
+
+console.log("=== Session backend-failure policy (REAL backends, REAL log file) ===\n");
+
+// A REAL Redis handler pointed at a genuinely dead port. Nothing is listening,
+// so the real transport really cannot connect.
+const DEAD_PORT = await closedPort();
+const deadRedis = () => new RedisSessionHandler({ redisHost: "127.0.0.1", redisPort: DEAD_PORT });
+console.log(`  (unreachable backend = REAL RedisSessionHandler at 127.0.0.1:${DEAD_PORT}, nothing listening)\n`);
+
+// Sanity: the driver really does fail. If this ever passes, every "unreachable"
+// assertion below is vacuous, so it is checked rather than assumed.
+{
+  let threw = false;
+  try { deadRedis().read("probe"); } catch { threw = true; }
+  assert("driver sanity: a real handler at a closed port genuinely throws", threw,
+    "if this passes, the port is not actually closed and the whole file is vacuous");
+}
 
 // ── default policy: log-loud + degrade ───────────────────────────────────────
-
-console.log("-- Default policy: log-loud + degrade --");
+console.log("\n-- Default policy: log-loud + degrade --");
 
 // Invariant 1: unreachable backend on start() does NOT raise; returns an id,
-// empty data, AND logs an error (never silent).
+// empty data, AND logs a real error line to the real log file.
 {
   delete process.env.TINA4_SESSION_STRICT;
-  const cap = captureErrors();
+  const mark = logSize();
   const session = new Session();
-  session.setHandler(new ExplodingHandler());
+  session.setHandler(deadRedis());
   let threw = false;
   let sid = "";
   try {
@@ -136,13 +193,22 @@ console.log("-- Default policy: log-loud + degrade --");
   } catch {
     threw = true;
   }
-  cap.restore();
+  const errs = errorLinesSince(mark);
   assert("start() on unreachable backend does NOT throw", !threw);
   assert("start() still issues a session id", typeof sid === "string" && sid.length > 0);
   assert("start() degrades to empty data (not crashed)", Object.keys(session.all()).length === 0);
   assert(
-    "read failure is LOGGED (never silent)",
-    cap.errors.some((e) => e.includes("read") && e.includes("failed")),
+    "read failure reaches the REAL log file as a real ERROR line",
+    errs.some((e) => e.message.includes("read") && e.message.includes("failed")),
+    `error lines: ${JSON.stringify(errs.map((e) => e.message))}`,
+  );
+  // The message must carry the real cause, not a generic placeholder -- this is
+  // the assertion the fabricated `new Error("backend unreachable")` could never
+  // make, because it never went near a socket.
+  assert(
+    "the logged cause is the REAL driver error (ECONNREFUSED), not a placeholder",
+    errs.some((e) => /ECONNREFUSED|connect|refused/i.test(e.message)),
+    `error lines: ${JSON.stringify(errs.map((e) => e.message))}`,
   );
 }
 
@@ -150,132 +216,273 @@ console.log("-- Default policy: log-loud + degrade --");
 // dirty flag (so a later save retries), logs an error, does not crash.
 {
   delete process.env.TINA4_SESSION_STRICT;
-  const cap = captureErrors();
   const session = new Session();
-  session.setHandler(new ExplodingHandler());
-  session.start("sess-2");          // read failed + logged, degraded to empty
-  const errorsBeforeSet = cap.errors.length;
-  session.set("user_id", 7);         // set() calls save() internally -> write fails
-  const result = session.save();     // explicit re-save -> still false, retried
-  cap.restore();
+  session.setHandler(deadRedis());
+  session.start("sess-2");            // read failed + logged, degraded to empty
+  const mark = logSize();
+  session.set("user_id", 7);          // set() calls save() internally -> write fails
+  const result = session.save();      // explicit re-save -> still false, retried
+  const errs = errorLinesSince(mark);
   assert("save() on unreachable backend returns false", result === false);
   assert(
-    "write failure is LOGGED (never silent)",
-    cap.errors.slice(errorsBeforeSet).some((e) => e.includes("write") && e.includes("failed")),
+    "write failure reaches the REAL log file",
+    errs.some((e) => e.message.includes("write") && e.message.includes("failed")),
+    `error lines: ${JSON.stringify(errs.map((e) => e.message))}`,
   );
-  // dirty retained -> a write was re-attempted on the explicit save() (it logged again)
   assert(
     "dirty flag retained for retry (save re-attempts the write)",
-    cap.errors.filter((e) => e.includes("write") && e.includes("failed")).length >= 2,
+    errs.filter((e) => e.message.includes("write") && e.message.includes("failed")).length >= 2,
+    `write-failure lines: ${errs.filter((e) => e.message.includes("write")).length}`,
   );
 }
 
 // Invariant 3a: destroy() on an unreachable backend logs but never raises.
 {
   delete process.env.TINA4_SESSION_STRICT;
-  const cap = captureErrors();
   const session = new Session();
-  session.setHandler(new ExplodingHandler());
+  session.setHandler(deadRedis());
   session.start("sess-3");
+  const mark = logSize();
   let threw = false;
   try {
     session.destroy();
   } catch {
     threw = true;
   }
-  cap.restore();
+  const errs = errorLinesSince(mark);
   assert("destroy() on unreachable backend does NOT throw", !threw);
   assert(
-    "destroy failure is LOGGED (never silent)",
-    cap.errors.some((e) => e.includes("destroy") && e.includes("failed")),
+    "destroy failure reaches the REAL log file",
+    errs.some((e) => e.message.includes("destroy") && e.message.includes("failed")),
+    `error lines: ${JSON.stringify(errs.map((e) => e.message))}`,
   );
 }
 
-// Invariant 3b: gc() on an unreachable backend logs but never raises.
+// Invariant 3b: a gc() failure logs but never raises.
+//
+// This case had to change backend, and the reason is a FINDING, not a
+// convenience. The old ExplodingHandler defined a gc() that threw, so the
+// assertion passed. NO REAL NODE BACKEND CAN REACH IT:
+//
+//   * RedisSessionHandler / ValkeySessionHandler define no gc() at all (Redis
+//     expires keys natively), and Session.gc() returns early when the handler
+//     has none -- so nothing is attempted and nothing is logged.
+//   * FileSessionHandler.gc() wraps its ENTIRE body in `try { ... } catch {}`
+//     (session.ts:197), so a real failure is swallowed inside the handler and
+//     never propagates to Session.gc()'s logBackendError.
+//   * memcachedHandler.gc() is an empty no-op.
+//
+// So "a gc failure is logged, never silent" was true of the double and of
+// nothing else. The DatabaseSessionHandler is the one real backend whose gc()
+// lets an engine error out, so the invariant is pinned there -- driven by a
+// SECOND, REAL sqlite connection holding a genuine EXCLUSIVE write lock, which
+// is what a contended production database actually does. No doubles.
 {
   delete process.env.TINA4_SESSION_STRICT;
-  const cap = captureErrors();
+  const dbDir = mkdtempSync(join(tmpdir(), "tina4-sessfail-db-"));
+  const handler = new DatabaseSessionHandler({ dbPath: join(dbDir, "sess.db") });
+  handler.write("gc-victim", { _created: 1, _accessed: 1 } as never, 1);
+
+  const rival = new DatabaseSync(join(dbDir, "sess.db"));
+  rival.exec("PRAGMA busy_timeout = 0");
+  rival.exec("BEGIN EXCLUSIVE");
+  rival.exec("INSERT INTO tina4_session (session_id, data, expires_at) VALUES ('rival','{}',1)");
+
   const session = new Session();
-  session.setHandler(new ExplodingHandler());
+  session.setHandler(handler);
+  const mark = logSize();
   let threw = false;
   try {
     session.gc();
   } catch {
     threw = true;
   }
-  cap.restore();
-  assert("gc() on unreachable backend does NOT throw", !threw);
+  const errs = errorLinesSince(mark);
+  assert("gc() on a genuinely locked backend does NOT throw", !threw);
   assert(
-    "gc failure is LOGGED (never silent)",
-    cap.errors.some((e) => e.includes("gc") && e.includes("failed")),
+    "gc failure reaches the REAL log file",
+    errs.some((e) => e.message.includes("gc") && e.message.includes("failed")),
+    `error lines: ${JSON.stringify(errs.map((e) => e.message))}`,
+  );
+  assert(
+    "the logged gc cause is the REAL engine error (database is locked)",
+    errs.some((e) => /locked|SQLITE/i.test(e.message)),
+    `error lines: ${JSON.stringify(errs.map((e) => e.message))}`,
+  );
+
+  rival.exec("ROLLBACK");
+  rival.close();
+
+  // NEGATIVE CONTROL: with the lock released, the same real handler's gc()
+  // succeeds and logs nothing. Without this, "gc logs an error" would pass for
+  // an implementation that logs on every gc.
+  const mark2 = logSize();
+  session.gc();
+  assert(
+    "gc() on an UNCONTENDED real backend logs nothing",
+    errorLinesSince(mark2).length === 0,
+    `error lines: ${JSON.stringify(errorLinesSince(mark2).map((e) => e.message))}`,
   );
 }
 
 // ── Invariant 4: empty-but-healthy backend logs ZERO errors ──────────────────
+//
+// THE positive control, and the one the old EmptyHandler could not perform.
+// A real Redis answering a missing key returns `$-1\r\n`; the regression this
+// guards is the TRANSPORT misreading that null bulk reply as a connection
+// failure. That decision lives in respCommandSync, which only runs against a
+// real server.
+console.log("\n-- Empty-but-healthy REAL backend is NOT a failure --");
 
-console.log("\n-- Empty-but-healthy backend is NOT a failure --");
-
-{
+if (await reachable(REDIS_HOST, REDIS_PORT)) {
   delete process.env.TINA4_SESSION_STRICT;
-  const cap = captureErrors();
-  const handler = new EmptyHandler();
+  const handler = new RedisSessionHandler({ redisHost: REDIS_HOST, redisPort: REDIS_PORT });
+  const neverStored = `notasession-${randomUUID()}`;
+
+  // Directly: a real read of a key the real server does not hold.
+  const mark0 = logSize();
+  let readThrew = false;
+  let direct: unknown = "unset";
+  try { direct = handler.read(neverStored); } catch { readThrew = true; }
+  assert("a real missing key does not throw in the transport", !readThrew);
+  assert("a real missing key reads as null (not an error)", direct === null,
+    `got ${JSON.stringify(direct)}`);
+  assert(
+    "a real missing-key read logs ZERO errors",
+    errorLinesSince(mark0).length === 0,
+    `error lines: ${JSON.stringify(errorLinesSince(mark0).map((e) => e.message))}`,
+  );
+
+  // Through Session.start(), which is how the framework reaches it.
+  const mark1 = logSize();
   const session = new Session();
   session.setHandler(handler);
-  session.start("brand-new");
-  const allEmpty = Object.keys(session.all()).length === 0;
-  cap.restore();
-  assert("empty healthy backend yields empty session", allEmpty);
-  assert("empty healthy backend read was attempted", handler.reads === 1);
+  const sid = session.start(`notasession-${randomUUID()}`);
+  const errs = errorLinesSince(mark1);
+  assert("empty healthy backend yields empty session", Object.keys(session.all()).length === 0);
+  assert("empty healthy backend still issues an id", typeof sid === "string" && sid.length > 0);
   assert(
-    "empty (but successful) read logs ZERO errors",
-    cap.errors.length === 0,
+    "empty (but successful) read logs ZERO errors against a LIVE server",
+    errs.length === 0,
+    `error lines: ${JSON.stringify(errs.map((e) => e.message))}`,
   );
+
+  // NEGATIVE CONTROL for the whole live-Redis block: the same real handler must
+  // still round-trip real data. Without this, a broken handler that returns null
+  // for everything passes every assertion above.
+  const roundTrip = new Session();
+  roundTrip.setHandler(handler);
+  const liveId = roundTrip.start();
+  roundTrip.set("marker", "alive");
+  const saved = roundTrip.save();
+  const reader = new Session();
+  reader.setHandler(handler);
+  reader.start(liveId);
+  assert("live Redis save() succeeds", saved === true);
+  assert("live Redis round-trips real data across two Session instances",
+    reader.get("marker") === "alive", `got ${JSON.stringify(reader.get("marker"))}`);
+  roundTrip.destroy();
+} else {
+  skip("empty-but-healthy REAL backend", `redis not reachable at ${REDIS_HOST}:${REDIS_PORT}`);
 }
 
 // ── Invariant 5: strict mode re-raises ───────────────────────────────────────
-
 console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
 
-// 5a: read failure re-raises under strict.
+// 5a: read failure re-raises under strict -- driven by the real dead port.
 {
   process.env.TINA4_SESSION_STRICT = "true";
-  const cap = captureErrors();
   const session = new Session();          // reads strict flag in ctor
-  session.setHandler(new ExplodingHandler());
+  session.setHandler(deadRedis());
   let threw = false;
   try {
     session.start("sess-strict");
   } catch {
     threw = true;
   }
-  cap.restore();
-  assert("strict mode re-raises a read failure", threw);
+  assert("strict mode re-raises a REAL read failure", threw);
 }
 
-// 5b: write failure re-raises under strict. Use a handler whose first write
-// (start()'s fresh-session bootstrap) succeeds, so the throw isolates to save().
+// 5b: write failure re-raises under strict.
+//
+// The old file used a counting `WriteFailsAfterStartHandler` engineered to
+// throw on write #2 -- it asserted the branch was reachable BY CONSTRUCTION.
+// Here the real FileSessionHandler's first write genuinely succeeds, then the
+// directory is made read-only and the second write takes a real EACCES from the
+// kernel. Same branch, reached by a real outage.
 {
   process.env.TINA4_SESSION_STRICT = "true";
-  const cap = captureErrors();
+  const sessDir = mkdtempSync(join(tmpdir(), "tina4-sessfail-store-"));
+  const handler = new FileSessionHandler(sessDir);
   const session = new Session();
-  session.setHandler(new WriteFailsAfterStartHandler());
-  session.start("sess-strict-w");          // read null + bootstrap write succeed
+  session.setHandler(handler);
+  const sid = session.start();            // real bootstrap write succeeds
+  assert("real file backend accepted the bootstrap write", typeof sid === "string" && sid.length > 0);
+
+  // Make the session's OWN FILE read-only. chmod'ing the directory is not
+  // enough and that is a real POSIX detail, not a nicety: writeFileSync to an
+  // EXISTING path needs write permission on the FILE; directory permission
+  // governs create/unlink/rename. Measured on this host -- dir 0500 alone let
+  // the write through, file 0400 produced a real EACCES.
+  const sessFile = join(sessDir, `${sid}.json`);
+  chmodSync(sessFile, 0o400);
+  let threw = false;
+  let cause = "";
+  try {
+    session.set("k", "v");                // set() -> save() -> real EACCES
+  } catch (err) {
+    threw = true;
+    cause = String((err as Error)?.message ?? err);
+  } finally {
+    chmodSync(sessFile, 0o600);           // restore so the temp dir can be cleaned
+  }
+
+  if (!threw && process.getuid?.() === 0) {
+    // Running as root defeats the permission bit, so the outage never happened.
+    // Say so rather than reporting a pass we did not earn.
+    skip("strict mode re-raises a REAL write failure",
+      "running as uid 0, so chmod 0500 does not block the write; cannot drive a real EACCES here");
+  } else {
+    assert("strict mode re-raises a REAL write failure (EACCES on a read-only dir)", threw,
+      "the chmod 0500 directory did not produce a real write error");
+    assert("the re-raised cause is the REAL errno, not a fabricated message",
+      /EACCES|permission denied/i.test(cause), `cause: ${cause}`);
+  }
+}
+
+// 5c: NEGATIVE CONTROL for strict mode -- a healthy real backend under strict
+// must still work. Without this, "strict re-raises" passes for an
+// implementation that throws unconditionally.
+{
+  process.env.TINA4_SESSION_STRICT = "true";
+  const sessDir = mkdtempSync(join(tmpdir(), "tina4-sessfail-ok-"));
+  const session = new Session();
+  session.setHandler(new FileSessionHandler(sessDir));
   let threw = false;
   try {
-    session.set("k", "v");                 // set() -> save() -> write throws
-  } catch {
+    const sid = session.start();
+    session.set("k", "v");
+    session.save();
+    const reader = new Session();
+    reader.setHandler(new FileSessionHandler(sessDir));
+    reader.start(sid);
+    assert("strict mode: a HEALTHY real backend still round-trips", reader.get("k") === "v",
+      `got ${JSON.stringify(reader.get("k"))}`);
+  } catch (err) {
     threw = true;
+    console.log(`    (unexpected throw: ${String(err)})`);
   }
-  cap.restore();
-  assert("strict mode re-raises a write failure", threw);
+  assert("strict mode does not throw on a healthy real backend", !threw);
 }
 
 delete process.env.TINA4_SESSION_STRICT;
 
 // ── Summary ──────────────────────────────────────────────────────────────────
-
 console.log(`\n${"=".repeat(50)}`);
-console.log(`  Results: \x1b[32m${passed} passed\x1b[0m, \x1b[31m${failed} failed\x1b[0m`);
+console.log(
+  `  Results: \x1b[32m${passed} passed\x1b[0m, \x1b[31m${failed} failed\x1b[0m`
+  + (skipped ? `, \x1b[33m${skipped} skipped\x1b[0m` : "")
+);
 console.log(`${"=".repeat(50)}\n`);
 
 process.exit(failed > 0 ? 1 : 0);
