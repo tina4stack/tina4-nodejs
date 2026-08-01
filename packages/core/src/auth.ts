@@ -168,6 +168,24 @@ const SUPPORTED_ALGORITHMS: readonly string[] = [
  */
 export const JWT_LEEWAY_SECONDS = 60;
 
+/**
+ * Coerce an RFC 7519 NumericDate claim to integer seconds, else `null`.
+ *
+ * RFC 7519 s2 defines `exp`/`nbf`/`iat` as a NumericDate — a JSON numeric
+ * value. A claim that is PRESENT but not a number is malformed, and a malformed
+ * constraint must never read as "no constraint": treating a non-numeric `exp`
+ * as absent turns a broken token into one that never expires.
+ *
+ * `typeof value === "number"` already excludes boolean, string, null, array and
+ * object; the finite check additionally rejects NaN and Infinity, which would
+ * otherwise make every comparison silently false. Truncation is toward the
+ * earlier second, so a fractional expiry can only expire sooner, never later.
+ */
+function numericDate(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.floor(value);
+}
+
 /** The loud, actionable failure for an algorithm we cannot sign — names the supported set. */
 function unsupportedAlgorithmError(algorithm: string): Error {
   return new Error(
@@ -318,21 +336,33 @@ export function validToken(token: string, secret?: string, algorithm?: string): 
 
     const payload = JSON.parse(base64urlDecode(p).toString()) as Record<string, unknown>;
 
-    const now = Date.now() / 1000;
-    if (typeof payload.exp === "number" && now > payload.exp) {
-      return null;
+    // Integer seconds, so all four frameworks compare the SAME number. PHP/Ruby
+    // read an integer clock and Python/Node a float one; with a float clock
+    // `now > exp` and `now >= exp` differ only on an exactly integral instant,
+    // so truncating here is what makes the boundary identical everywhere rather
+    // than merely close.
+    const now = Math.floor(Date.now() / 1000);
+
+    // RFC 7519 s4.1.4: "The processing of the 'exp' claim requires that the
+    // current date/time MUST be before the expiration date/time". now == exp is
+    // therefore ALREADY expired, so the test is >=. A PRESENT but malformed exp
+    // is rejected: the old `typeof payload.exp === "number"` SKIPPED the whole
+    // check for `exp: "abc"` / `exp: null`, so a malformed claim read as a token
+    // that never expires. No exp key at all stays unconstrained (non-breaking).
+    if (Object.hasOwn(payload, "exp")) {
+      const expires = numericDate(payload.exp);
+      if (expires === null || now >= expires) return null;
     }
 
     // "nbf" (not-before): a post-dated token is not valid YET. Was honoured only
     // by Ruby, so Python/PHP/Node accepted tokens their issuer had explicitly
-    // marked as not-yet-usable (nodejs#39 / python#107). A token with no nbf is
-    // unaffected — that is what keeps this non-breaking. A PRESENT but
-    // non-numeric nbf is rejected (Python raises a TypeError there and returns
-    // None; a malformed not-before must never read as "no constraint").
+    // marked as not-yet-usable (nodejs#39 / python#107). Tolerates
+    // JWT_LEEWAY_SECONDS of clock skew, which RFC 7519 s4.1.5 permits. Same
+    // malformed-is-rejected rule as exp, through the same helper so the two
+    // claims can never drift apart.
     if (Object.hasOwn(payload, "nbf")) {
-      const notBefore = payload.nbf;
-      if (typeof notBefore !== "number" || !Number.isFinite(notBefore)) return null;
-      if (now + JWT_LEEWAY_SECONDS < notBefore) return null;
+      const notBefore = numericDate(payload.nbf);
+      if (notBefore === null || now + JWT_LEEWAY_SECONDS < notBefore) return null;
     }
 
     return payload;

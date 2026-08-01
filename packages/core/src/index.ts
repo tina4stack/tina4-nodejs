@@ -49,7 +49,7 @@ export {
   ensureDevSecret,
   Auth,
 } from "./auth.js";
-export { Session, FileSessionHandler, RedisSessionHandler, buildSessionCookie, isSecureScheme, sessionCookieName, VALID_SESSION_BACKENDS, CANONICAL_SESSION_BACKENDS } from "./session.js";
+export { Session, FileSessionHandler, RedisSessionHandler, buildSessionCookie, isSecureScheme, isValidSessionId, sessionCookieName, VALID_SESSION_BACKENDS, CANONICAL_SESSION_BACKENDS } from "./session.js";
 export type { SessionConfig, SessionHandler } from "./session.js";
 export { I18n } from "./i18n.js";
 export { FakeData } from "./fakeData.js";
