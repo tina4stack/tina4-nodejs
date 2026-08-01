@@ -146,17 +146,13 @@ export class SQLiteAdapter implements DatabaseAdapter {
   }
 
   fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): T[] {
-    let effectiveSql = sql;
-    if (limit !== undefined) {
-      // Skip appending LIMIT when the SQL already contains one (dedup)
-      const sqlBeforeComment = sql.toUpperCase().split("--")[0];
-      if (!sqlBeforeComment.includes("LIMIT")) {
-        effectiveSql += ` LIMIT ${limit}`;
-        if (skip !== undefined && skip > 0) {
-          effectiveSql += ` OFFSET ${skip}`;
-        }
-      }
-    }
+    // SQLTranslator.appendLimit owns BOTH halves of this decision: it scrubs
+    // literals and comments before asking "does the caller already have a
+    // LIMIT?", and it appends on a new line so the clause can never land inside
+    // a trailing `--` comment. The old inline version did neither, so
+    // `WHERE label != 'LIMIT'` and a trailing `-- LIMIT 5` each returned the
+    // WHOLE TABLE instead of the 100-row cap.
+    const effectiveSql = SQLTranslator.appendLimit(sql, limit, skip);
     return this.query<T>(effectiveSql, params);
   }
 

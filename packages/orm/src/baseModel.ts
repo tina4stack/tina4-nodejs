@@ -8,7 +8,7 @@ import {
 import { validate as validateFields } from "./validation.js";
 import { QueryBuilder } from "./queryBuilder.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
-import { QueryCache } from "./sqlTranslator.js";
+import { QueryCache, SQLTranslator } from "./sqlTranslator.js";
 import { Log } from "../../core/src/index.js";
 import type { DatabaseAdapter, FieldDefinition, RelationshipDefinition } from "./types.js";
 
@@ -1240,9 +1240,11 @@ export class BaseModel {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const db = ModelClass.getDb();
     // Skip appending when the caller's SQL already carries its own LIMIT --
-    // a second one is a syntax error on every engine.
-    const hasOwnLimit = sql.toUpperCase().split("--")[0].includes("LIMIT");
-    const paged = hasOwnLimit ? sql : `${sql} LIMIT ${limit} OFFSET ${offset}`;
+    // a second one is a syntax error on every engine. SQLTranslator.appendLimit
+    // scrubs literals/comments first (a substring search here used to drop the
+    // row cap on `WHERE label != 'LIMIT'`) and appends on a new line so the
+    // clause is never swallowed by a trailing `--` comment.
+    const paged = SQLTranslator.appendLimit(sql, limit, offset);
     const rows = await adapterQuery(db, paged, params);
     return rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
   }

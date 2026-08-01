@@ -216,31 +216,44 @@ async function run() {
       `(records=${capped.records.length}, table holds ${ROWS}); limit=${capped.limit}`,
   );
 
-  // OPEN DEFECT, measured here and reported rather than asserted.
+  // PROMOTED FROM OBSERVATION TO ASSERTION (fixed).
   //
-  // Clause 3's dedup (packages/orm/src/adapters/sqlite.ts, SQLiteAdapter.fetch)
-  // is a substring search for "LIMIT" in the upper-cased SQL taken up to the
-  // first `--`. Two no-limit fetches therefore return EVERY row, silently
-  // defeating clause 1:
+  // These two ran here as printed observations while the defect was open,
+  // because a permanently-red shared contract file is a file someone disables,
+  // and the buried-PHP-class story is precisely about losing a test. The defect
+  // is fixed, so they are now real gates.
   //
-  //   a) the word LIMIT appearing in a string literal or identifier reads as
-  //      "the caller supplied their own", so nothing is appended;
-  //   b) a trailing `-- comment` is stripped for DETECTION but the clause is
-  //      appended to the ORIGINAL SQL, so ` LIMIT 100` lands INSIDE the comment.
-  //
-  // These are NOT asserted, deliberately: this file is the ported cross-family
-  // contract test and must stay a live gate for the three settled clauses. A
-  // permanently-red file is a file someone disables, and the buried-PHP-class
-  // story is precisely about losing a test. The defect is printed loud here and
-  // reported upward so it gets its own fix plus its own regression test.
-  const litCap = await db.fetch(`SELECT * FROM ${TABLE} WHERE label != 'LIMIT' ORDER BY id`);
-  const cmtCap = await db.fetch(`${SELECT_ALL} -- LIMIT 5`);
-  console.log(
-    `  \x1b[33mOPEN DEFECT\x1b[0m dedup is a naive substring match, so the cap is silently lost:\n` +
-      `    "LIMIT" inside a string literal -> ${litCap.records.length} rows (contract says ${CAP})\n` +
-      `    LIMIT only in a trailing -- comment -> ${cmtCap.records.length} rows (contract says ${CAP});\n` +
-      `    there the appended clause is swallowed by the comment.`,
-  );
+  // The dedup used to be a substring search for "LIMIT" in the upper-cased SQL
+  // taken up to the first `--`, and BOTH halves of it were wrong:
+  //   a) the word LIMIT in a string literal or identifier read as "the caller
+  //      supplied their own", so no cap was appended;
+  //   b) the `--` was stripped for DETECTION only and the clause was appended to
+  //      the ORIGINAL sql, so ` LIMIT 100` landed INSIDE the trailing comment
+  //      and SQLite silently ignored it.
+  // Each returned all 150 rows instead of 100 -- a silently uncapped read of a
+  // whole table, which is the incident the cap exists to prevent.
+  console.log("\n--- cap cannot be defeated by a literal, an identifier or a comment ---");
+
+  assert(`"LIMIT" inside a string literal does not defeat the cap`,
+    (await db.fetch(`SELECT * FROM ${TABLE} WHERE label != 'LIMIT' ORDER BY id`)).records.length === CAP);
+  assert("a trailing -- comment does not swallow the appended clause",
+    (await db.fetch(`${SELECT_ALL} -- LIMIT 5`)).records.length === CAP);
+  assert("a trailing block comment does not defeat the cap",
+    (await db.fetch(`${SELECT_ALL} /* LIMIT 5 */`)).records.length === CAP);
+  assert("a column ALIASED to rate_limit does not defeat the cap",
+    (await db.fetch(`SELECT id, label AS rate_limit FROM ${TABLE} ORDER BY id`)).records.length === CAP);
+
+  // NEGATIVE HALF: the detector must still recognise a REAL trailing LIMIT, or
+  // "fixing" it would just mean always appending -- which is a syntax error on
+  // SQLite and would silently truncate a caller who asked for more.
+  assert("a real trailing LIMIT is still honoured, not doubled",
+    (await db.fetch(`${SELECT_ALL} LIMIT 7`)).records.length === 7);
+  assert("a real trailing LIMIT above the cap is still honoured",
+    (await db.fetch(`${SELECT_ALL} LIMIT 130`)).records.length === 130);
+  assert("a LIMIT that exists ONLY in a subquery still lets the OUTER query cap",
+    (await db.fetch(`SELECT * FROM (SELECT * FROM ${TABLE} LIMIT 120) ORDER BY id`)).records.length === CAP);
+  assert("a trailing semicolon does not produce '; LIMIT 100'",
+    (await db.fetch(`${SELECT_ALL};`)).records.length === CAP);
 
   await closeDatabase();
 }

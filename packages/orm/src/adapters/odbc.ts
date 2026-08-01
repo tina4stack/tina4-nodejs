@@ -11,6 +11,7 @@
 import { ANSI_DIALECT, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { createRequire } from "node:module";
+import { SQLTranslator } from "../sqlTranslator.js";
 
 let odbcModule: any = null;
 
@@ -196,16 +197,10 @@ export class OdbcAdapter implements DatabaseAdapter {
     limit?: number,
     skip?: number,
   ): Promise<T[]> {
-    let effectiveSql = sql;
-    if (limit !== undefined) {
-      const sqlUpper = sql.toUpperCase().split("--")[0];
-      if (!sqlUpper.includes("LIMIT")) {
-        effectiveSql += ` LIMIT ${limit}`;
-        if (skip !== undefined && skip > 0) {
-          effectiveSql += ` OFFSET ${skip}`;
-        }
-      }
-    }
+    // See SQLTranslator.appendLimit: the old inline check was a substring search,
+    // so a LIMIT in a string literal or a trailing comment silently dropped the
+    // row cap and returned every row.
+    const effectiveSql = SQLTranslator.appendLimit(sql, limit, skip);
     return this.queryAsync<T>(effectiveSql, params);
   }
 

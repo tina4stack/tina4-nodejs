@@ -308,6 +308,135 @@ export class SQLTranslator {
     }
     return statements;
   }
+
+  /**
+   * Blank out string literals, quoted identifiers and comments, so a keyword
+   * search sees only real SQL. Blanks are spaces of the SAME LENGTH (newlines
+   * preserved), so offsets and line structure still line up with the original.
+   *
+   * This exists because "does the caller's SQL already have a LIMIT?" used to be
+   * `sql.toUpperCase().split("--")[0].includes("LIMIT")`, and MEASURED on a real
+   * 150-row table with the 100-row cap in force, every one of these returned
+   * ALL 150 ROWS instead of 100:
+   *
+   *     SELECT * FROM t WHERE label != 'LIMIT' ORDER BY id     -- literal
+   *     SELECT * FROM t ORDER BY id -- LIMIT 5                 -- line comment
+   *     SELECT * FROM t ORDER BY id /* LIMIT 5 *\/              -- block comment
+   *
+   * A column named `rate_limit` does it too. That is a silently UNCAPPED read of
+   * a whole table, which is the exact production incident the row cap exists to
+   * prevent, reachable through an ordinary column name.
+   *
+   * @param sql Raw SQL, exactly as the caller wrote it.
+   * @returns The same string with literals and comments replaced by spaces.
+   */
+  static scrubSqlText(sql: string): string {
+    let out = "";
+    let i = 0;
+    const blank = (ch: string): string => (ch === "\n" ? "\n" : " ");
+
+    while (i < sql.length) {
+      const c = sql[i];
+      const next = sql[i + 1];
+
+      // '...' string literal, with '' as the embedded-quote escape
+      if (c === "'" || c === '"') {
+        const quote = c;
+        out += " ";
+        i++;
+        while (i < sql.length) {
+          if (sql[i] === quote) {
+            if (sql[i + 1] === quote) {
+              out += "  ";
+              i += 2;
+              continue;
+            }
+            out += " ";
+            i++;
+            break;
+          }
+          out += blank(sql[i]);
+          i++;
+        }
+        continue;
+      }
+
+      // -- line comment, to end of line
+      if (c === "-" && next === "-") {
+        while (i < sql.length && sql[i] !== "\n") {
+          out += " ";
+          i++;
+        }
+        continue;
+      }
+
+      // /* block comment */
+      if (c === "/" && next === "*") {
+        out += "  ";
+        i += 2;
+        while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) {
+          out += blank(sql[i]);
+          i++;
+        }
+        if (i < sql.length) {
+          out += "  ";
+          i += 2;
+        }
+        continue;
+      }
+
+      out += c;
+      i++;
+    }
+
+    return out;
+  }
+
+  /**
+   * True when the statement ENDS with its own LIMIT clause, so appending another
+   * would be wrong (and on SQLite, a syntax error).
+   *
+   * Anchored to the END on purpose. A bare "contains LIMIT" test also matches a
+   * LIMIT inside a subquery, where the OUTER statement still needs its cap. This
+   * is tina4-php's `SqlNormalizerTrait::hasTrailingLimit` regex, ported verbatim
+   * so all four frameworks answer identically: it accepts a numeric value, `?`,
+   * `$1` and `:name` placeholders, MySQL's `LIMIT a, b`, and a trailing OFFSET.
+   *
+   * @param sql Raw SQL; literals and comments are scrubbed before matching.
+   */
+  static hasTrailingLimit(sql: string): boolean {
+    const val = String.raw`(?:\d+|\?|\$\d+|:\w+)`;
+    const re = new RegExp(
+      String.raw`\bLIMIT\s+${val}(?:\s*,\s*${val})?(?:\s+OFFSET\s+${val})?\s*;?\s*$`,
+      "i",
+    );
+    return re.test(SQLTranslator.scrubSqlText(sql));
+  }
+
+  /**
+   * Append `LIMIT`/`OFFSET` to a statement unless it already carries its own.
+   *
+   * The clause goes on a NEW LINE. Appending it inline is the second half of the
+   * same bug: `SELECT * FROM t -- note` + ` LIMIT 100` puts the clause INSIDE the
+   * trailing comment, where SQLite silently ignores it and the whole table comes
+   * back. A newline cannot be commented out by a `--` that started on the line
+   * above. Trailing semicolons are stripped first for the same reason
+   * (`SELECT * FROM t;` + `LIMIT 100` is a syntax error).
+   *
+   * @param sql    The caller's statement.
+   * @param limit  Row cap to apply; a non-positive value means "no cap".
+   * @param offset Rows to skip; omitted or 0 emits no OFFSET.
+   */
+  static appendLimit(sql: string, limit?: number, offset?: number): string {
+    if (limit === undefined || limit === null || limit <= 0) return sql;
+    if (SQLTranslator.hasTrailingLimit(sql)) return sql;
+
+    const trimmed = sql.replace(/[\s;]+$/, "");
+    const suffix = offset !== undefined && offset > 0
+      ? `LIMIT ${limit} OFFSET ${offset}`
+      : `LIMIT ${limit}`;
+    return `${trimmed}\n${suffix}`;
+  }
 }
 
 // ── Query Cache ──────────────────────────────────────────────
@@ -339,6 +468,7 @@ export class QueryCache {
     // Simple hash via string combination
     return `query:${sql}:${paramStr}`;
   }
+
 
   /**
    * Get a cached value. Returns undefined if expired or missing.
