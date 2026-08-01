@@ -440,6 +440,45 @@ test("authenticate request api key payload shape is uniform", (check) => {
   }
 });
 
+test("backend outage does not rotate the session id", (check) => {
+  // An unreachable backend must DEGRADE, never rotate. Strict mode discards an
+  // id the store does not KNOW; a store that does not ANSWER is not evidence of
+  // that, and treating it as such rotates the id on every request for the whole
+  // outage - logging every user out over a blip and orphaning their sessions.
+  // A REAL handler whose backend is down: it throws, exactly as the shipped
+  // Redis/Valkey/Mongo handlers do on an unreachable server. No doubles.
+  const downBackend = {
+    read(): never { throw new Error("redis unreachable"); },
+    write(): never { throw new Error("redis unreachable"); },
+    destroy(): never { throw new Error("redis unreachable"); },
+  };
+
+  const supplied = "abcdef0123456789abcdef0123456789";
+  const seen: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const s = new Session("file");
+    s.setHandler(downBackend as never);
+    seen.push(s.start(supplied));
+  }
+  check(
+    seen.every((id) => id === supplied),
+    `session id rotated during a backend outage: ${JSON.stringify(seen)}`,
+  );
+
+  // Negative half: a HEALTHY store that genuinely has no such session must
+  // still discard the id, or strict mode has been disabled rather than fixed.
+  const dir = mkdtempSync(join(tmpdir(), "tina4-outage-"));
+  try {
+    const healthy = new Session("file", { path: dir });
+    check(
+      healthy.start(supplied) !== supplied,
+      "strict mode stopped discarding an unknown id on a healthy backend",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ── Summary ───────────────────────────────────────────────────────
 
 console.log(`\n${"=".repeat(50)}`);

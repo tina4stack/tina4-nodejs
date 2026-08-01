@@ -392,6 +392,11 @@ export class Session {
    * frameworks. Strict mode is the escape hatch (same as events/seeding).
    */
   private strict: boolean;
+  /**
+   * True when the LAST backend read RAISED rather than returning a miss.
+   * Lets `start()` tell "no such session" from "the store is unreachable".
+   */
+  private lastReadFailed = false;
 
   constructor(backend?: string, config?: SessionConfig) {
     const backendType = resolveBackend(
@@ -475,11 +480,23 @@ export class Session {
     Log.error(`Session backend ${op} failed (${handlerName}): ${message}`);
   }
 
-  /** Read through the backend; on FAILURE log + degrade to empty (or re-throw under strict). */
+  /**
+   * Read through the backend; on FAILURE log + degrade to empty (or re-throw
+   * under strict).
+   *
+   * Sets {@link lastReadFailed} so `start()` can tell "the store answered, and
+   * has no such session" from "the store did not answer at all". Strict mode
+   * must discard an id only on the first: treating an outage as an unknown id
+   * rotates the session id on EVERY request for the whole outage, logging the
+   * entire userbase out over one Redis blip and orphaning their stored
+   * sessions. The policy is log-loud + degrade, never rotate.
+   */
   private safeRead(sessionId: string): SessionData | null {
+    this.lastReadFailed = false;
     try {
       return this.handler.read(sessionId);
     } catch (err) {
+      this.lastReadFailed = true;
       this.logBackendError("read", err);
       if (this.strict) throw err;
       return null;
@@ -541,6 +558,15 @@ export class Session {
     }
     if (sessionId) {
       const loaded = this.safeRead(sessionId);
+      if (!loaded && this.lastReadFailed) {
+        // The store did not ANSWER. That is not evidence the id is unknown, so
+        // keep it and degrade to an empty session rather than rotating.
+        this.sessionId = sessionId;
+        const now = Math.floor(Date.now() / 1000);
+        this.data = { _created: now, _accessed: now };
+        this.dirty = false;
+        return sessionId;
+      }
       if (loaded) {
         // Check TTL for file backend (Redis handles TTL natively)
         const now = Math.floor(Date.now() / 1000);
