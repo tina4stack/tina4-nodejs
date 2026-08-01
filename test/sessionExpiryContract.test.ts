@@ -31,6 +31,7 @@
  * silently skips its only real verification is not verification.
  */
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { connect } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
@@ -86,6 +87,23 @@ const workDir = mkdtempSync(join(tmpdir(), "tina4-sess-contract-"));
 const storedFiles = (dir: string): string[] =>
   existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")) : [];
 
+/**
+ * On-disk path of a session record, mirroring `FileSessionHandler.filePath()`.
+ *
+ * ADR-0021 made the session id OPAQUE: the file is named for the SHA-256 hex
+ * digest of the id, never the id itself (a `tina4_session=../../OUTSIDE/
+ * appconfig` cookie used to steer the path right out of the session directory).
+ *
+ * These gates seed and inspect records BEHIND the handler, so they have to name
+ * the file the handler will actually open. Seeding `naked.json` for the id
+ * `naked` plants a record no read can ever find, and — worse — globbing the
+ * directory for `naked.json` is VACUOUS: it can never match whether or not the
+ * code works. The assertions therefore follow the derivation instead of pinning
+ * the pre-ADR-0021 raw-id filename.
+ */
+const sessionFile = (dir: string, id: string): string =>
+  join(dir, `${createHash("sha256").update(id).digest("hex")}.json`);
+
 console.log("\n── File backend: an absent or zero stamp means never expires ──\n");
 {
   const dir = join(workDir, "file-absent");
@@ -94,28 +112,28 @@ console.log("\n── File backend: an absent or zero stamp means never expires 
 
   // A record carrying NO expiry stamp at all — exactly what a legacy version,
   // another framework, or a direct write produces.
-  writeFileSync(join(dir, "naked.json"), JSON.stringify({ _data: { seeded: true } }), "utf-8");
+  writeFileSync(sessionFile(dir, "naked"), JSON.stringify({ _data: { seeded: true } }), "utf-8");
   const naked = handler.read("naked");
   assert(
     "session_missing_expiry_stamp_survives_read",
-    JSON.stringify(naked) === JSON.stringify({ seeded: true }) && storedFiles(dir).includes("naked.json"),
+    JSON.stringify(naked) === JSON.stringify({ seeded: true }) && existsSync(sessionFile(dir, "naked")),
     `returned=${JSON.stringify(naked)} files=${storedFiles(dir).join(",")}`,
   );
 
-  writeFileSync(join(dir, "zeroed.json"), JSON.stringify({ _data: { seeded: true }, _expires: 0 }), "utf-8");
+  writeFileSync(sessionFile(dir, "zeroed"), JSON.stringify({ _data: { seeded: true }, _expires: 0 }), "utf-8");
   const zeroed = handler.read("zeroed");
   assert(
     "session_zero_expiry_stamp_survives_read",
-    JSON.stringify(zeroed) === JSON.stringify({ seeded: true }) && storedFiles(dir).includes("zeroed.json"),
+    JSON.stringify(zeroed) === JSON.stringify({ seeded: true }) && existsSync(sessionFile(dir, "zeroed")),
     `returned=${JSON.stringify(zeroed)}`,
   );
 
   // A legacy BARE payload (no envelope at all) must still be readable.
-  writeFileSync(join(dir, "legacy.json"), JSON.stringify({ seeded: true }), "utf-8");
+  writeFileSync(sessionFile(dir, "legacy"), JSON.stringify({ seeded: true }), "utf-8");
   assert(
     "session_legacy_unwrapped_payload_survives_read",
     JSON.stringify(handler.read("legacy")) === JSON.stringify({ seeded: true })
-      && storedFiles(dir).includes("legacy.json"),
+      && existsSync(sessionFile(dir, "legacy")),
   );
 }
 
@@ -127,25 +145,25 @@ console.log("\n── File backend: the NEGATIVE control, genuine expiry still r
 
   // A stamp genuinely in the past.
   writeFileSync(
-    join(dir, "stale.json"),
+    sessionFile(dir, "stale"),
     JSON.stringify({ _data: { seeded: true }, _expires: Math.floor(Date.now() / 1000) - 99999 }),
     "utf-8",
   );
   const stale = handler.read("stale");
   assert(
     "session_past_expiry_stamp_is_reaped",
-    stale === null && !storedFiles(dir).includes("stale.json"),
+    stale === null && !existsSync(sessionFile(dir, "stale")),
     `returned=${JSON.stringify(stale)} files=${storedFiles(dir).join(",")}`,
   );
 
   // Real wall-clock expiry, no clock mocking.
   handler.write("expiring", { seeded: true } as never, 1);
-  const writtenOk = storedFiles(dir).includes("expiring.json");
+  const writtenOk = existsSync(sessionFile(dir, "expiring"));
   sleep(2200);
   const expired = handler.read("expiring");
   assert(
     "session_genuinely_expired_record_is_reaped",
-    writtenOk && expired === null && !storedFiles(dir).includes("expiring.json"),
+    writtenOk && expired === null && !existsSync(sessionFile(dir, "expiring")),
     `written=${writtenOk} returned=${JSON.stringify(expired)}`,
   );
 }
@@ -164,13 +182,13 @@ console.log("\n── File backend: the boundary sweep, every stamp state on one
     ["legacy", { v: 1 }, true],
   ];
   for (const [name, payload] of cases) {
-    writeFileSync(join(dir, `${name}.json`), JSON.stringify(payload), "utf-8");
+    writeFileSync(sessionFile(dir, name), JSON.stringify(payload), "utf-8");
   }
   let sweepOk = true;
   const detail: string[] = [];
   for (const [name, , shouldSurvive] of cases) {
     const returned = handler.read(name);
-    const survived = storedFiles(dir).includes(`${name}.json`);
+    const survived = existsSync(sessionFile(dir, name));
     const returnedPayload = JSON.stringify(returned) === JSON.stringify({ v: 1 });
     if (survived !== shouldSurvive || returnedPayload !== shouldSurvive) sweepOk = false;
     detail.push(`${name}:survived=${survived},payload=${returnedPayload},expected=${shouldSurvive}`);

@@ -64,9 +64,9 @@
  *  wrote. Each scenario reads only the delta appended since it began.
  */
 import net from "node:net";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -126,6 +126,17 @@ function logSince(from: number): string {
 function logSize(): number {
   try { return statSync(LOG_FILE).size; } catch { return 0; }
 }
+
+/**
+ * On-disk path of a session record, mirroring `FileSessionHandler.filePath()`.
+ *
+ * ADR-0021 made the session id OPAQUE: the file is named for the SHA-256 hex
+ * digest of the id, never the id itself. `join(dir, `${sid}.json`)` names a file
+ * that has not existed since that ADR, so the chmod below took an ENOENT and
+ * killed the whole process before it printed a summary line.
+ */
+const sessionFile = (dir: string, id: string): string =>
+  join(dir, `${createHash("sha256").update(id).digest("hex")}.json`);
 
 /** Every ERROR-level line the real logger wrote since `from`, as objects. */
 function errorLinesSince(from: number): { level: string; message: string }[] {
@@ -424,8 +435,15 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
   // EXISTING path needs write permission on the FILE; directory permission
   // governs create/unlink/rename. Measured on this host -- dir 0500 alone let
   // the write through, file 0400 produced a real EACCES.
-  const sessFile = join(sessDir, `${sid}.json`);
-  chmodSync(sessFile, 0o400);
+  const sessFile = sessionFile(sessDir, sid);
+  const fileFound = existsSync(sessFile);
+  // Assert the path BEFORE chmod'ing it. A wrong path used to blow up as an
+  // ENOENT that took the process down mid-file; as an assertion it is a reported
+  // failure, and it doubles as the gate that the record really is stored under
+  // the id's SHA-256 (ADR-0021) rather than the raw id.
+  assert("the bootstrap write landed at the id's SHA-256 path (ADR-0021)", fileFound,
+    `expected ${sessFile}; dir contains ${readdirSync(sessDir).join(",")}`);
+  if (fileFound) chmodSync(sessFile, 0o400);
   let threw = false;
   let cause = "";
   try {
@@ -434,7 +452,7 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
     threw = true;
     cause = String((err as Error)?.message ?? err);
   } finally {
-    chmodSync(sessFile, 0o600);           // restore so the temp dir can be cleaned
+    if (fileFound) chmodSync(sessFile, 0o600);  // restore so the temp dir can be cleaned
   }
 
   if (!threw && process.getuid?.() === 0) {
