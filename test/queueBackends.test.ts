@@ -47,6 +47,9 @@ function reachable(host: string, port: number, timeoutMs = 1500): Promise<boolea
   });
 }
 
+/** Why the last ensureKafkaTopic() call failed. Empty when it succeeded. */
+let lastTopicError = "";
+
 /**
  * Create a Kafka topic via the broker's own admin tool inside the Kafka
  * container. A KRaft broker rejects a produce to a topic with no leader yet, so
@@ -54,6 +57,7 @@ function reachable(host: string, port: number, timeoutMs = 1500): Promise<boolea
  * `kafka-topics.sh --create` the sibling kafkaIntegration test uses.
  */
 function ensureKafkaTopic(container: string, broker: string, topic: string): boolean {
+  lastTopicError = "";
   try {
     execFileSync(
       "docker",
@@ -69,7 +73,22 @@ function ensureKafkaTopic(container: string, broker: string, topic: string): boo
       { stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 }
     );
     return true;
-  } catch {
+  } catch (err) {
+    // A bare `catch { return false }` here threw away the ONE fact that matters
+    // when this branch is taken. The caller then printed a fixed reason --
+    // 'container "X" not reachable' -- which is a GUESS: a missing docker CLI,
+    // an exec timeout, a broker that is up but has no controller yet, and a
+    // genuinely absent container all produced that identical line. Case (14)
+    // below hangs exactly ONE assertion off this call, so when it flips the
+    // suite total drops by one with ZERO failures -- the silent one-test drift
+    // that is invisible in a "0 failed" summary. Carry the real cause so the
+    // next occurrence names itself instead of having to be re-derived.
+    const e = err as NodeJS.ErrnoException & { status?: number; stderr?: Buffer | string; signal?: string };
+    const stderr = e.stderr ? String(e.stderr).trim().split("\n").slice(-2).join(" | ") : "";
+    lastTopicError =
+      e.code === "ENOENT" ? "the `docker` CLI is not on PATH"
+      : e.signal ? `docker exec killed by ${e.signal} (the 30s timeout)`
+      : `docker exec exited ${e.status ?? "?"}${stderr ? `: ${stderr}` : ""}`;
     return false;
   }
 }
@@ -181,7 +200,7 @@ if (!(await reachable(kHost, kPort))) {
 } else {
   const kTopic = "t_qb_" + Math.random().toString(16).slice(2, 12);
   if (!ensureKafkaTopic(kafkaContainer, kafkaBroker, kTopic)) {
-    console.log(`  SKIP: could not create Kafka topic via the broker admin tool (container "${kafkaContainer}" not reachable) — Kafka topic setup not available.`);
+    console.log(`  SKIP: could not create Kafka topic "${kTopic}" via the broker admin tool in container "${kafkaContainer}" (${lastTopicError}) — Kafka topic setup not available. Set TINA4_TEST_KAFKA_CONTAINER to the real container name.`);
   } else {
     const kafka = new KafkaBackend({ brokers: kafkaBroker, groupId: "test_group" });
     try {
@@ -230,7 +249,12 @@ if (!(await reachable(kHost, kPort))) {
           assert("KafkaBackend default connection round-trip ran without throwing", false, String(err));
         }
       } else {
-        console.log(`  SKIP: could not create the default-config Kafka topic via the broker admin tool (container "${kafkaContainer}" not reachable) — Kafka topic setup not available.`);
+        // This branch drops EXACTLY ONE assertion (the round-trip above) and
+        // records no failure, so a run that takes it reads as "0 failed" with a
+        // grand total one lower than the run before it. Name the real cause so
+        // the next one-test drift identifies itself from the log instead of
+        // needing a bisect.
+        console.log(`  SKIP: could not create the default-config Kafka topic "${kDefTopic}" via the broker admin tool in container "${kafkaContainer}" (${lastTopicError}) — Kafka topic setup not available. This drops one assertion from the run total.`);
       }
     } else {
       console.log("  SKIP: Kafka default-broker round-trip — TINA4_TEST_KAFKA_URL points away from the default localhost:9092.");

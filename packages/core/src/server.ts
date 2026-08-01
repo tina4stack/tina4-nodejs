@@ -1846,7 +1846,30 @@ ${reset}
       let aiServer: ReturnType<typeof createServer> | null = null;
       let testPort = port + 1000;
 
-      if (isDebug && !noAiPort) {
+      // A DERIVED port is still a port. `port + 1000` leaves the legal range as
+      // soon as the base port is above 64535, and Node's listen() validates the
+      // number and throws ERR_SOCKET_BAD_PORT SYNCHRONOUSLY — it is not an
+      // "error" event, so the handler below never sees it. Thrown here it
+      // escapes this listen callback ABOVE the resolvePromise() at the end of
+      // it, and in debug mode devAdmin's ErrorTracker has already installed an
+      // uncaughtException handler that only RECORDS the error. Net effect,
+      // measured: the main port stayed bound and served traffic while
+      // `await startServer(...)` never settled — a half-started server that
+      // hangs the caller with nothing printed. `PORT=65000 TINA4_DEBUG=true`
+      // was enough to trigger it; in the test suite an OS-assigned ephemeral
+      // base port (macOS hands out 49152-65535) hit it about one run in
+      // sixteen and the whole file vanished from the counts.
+      const aiPortInRange = testPort <= 65535;
+
+      if (isDebug && !noAiPort && !aiPortInRange) {
+        Log.warning(
+          `Stable AI/test port ${testPort} is out of range (a port must be <= 65535), ` +
+          `so it is disabled for base port ${port}. Use a base port of 64535 or lower, ` +
+          `or set TINA4_NO_AI_PORT=true to silence this.`,
+        );
+      }
+
+      if (isDebug && !noAiPort && aiPortInRange) {
         // Stable AI port (port+1000): tag requests so /__dev_reload + toolbar are suppressed.
         aiServer = createServer(async (req, res) => {
           (req as any)._tina4AiPort = true;
@@ -1874,8 +1897,12 @@ ${reset}
         aiServer.listen(testPort, host);
       }
 
-      // Banner goes to stdout via console.log — NOT through the framework logger
-      const dualPortLines = (isDebug && !noAiPort)
+      // Banner goes to stdout via console.log — NOT through the framework logger.
+      // Only advertise the test port when one was actually attempted: an
+      // out-of-range derived port is not bound, and printing it would send a
+      // developer to a URL that cannot exist (same rule as the swagger/dashboard
+      // lines below).
+      const dualPortLines = (isDebug && !noAiPort && aiPortInRange)
         ? `\n  Test Port: http://localhost:${testPort} (stable — no hot-reload)`
         : "";
 

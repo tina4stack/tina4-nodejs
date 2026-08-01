@@ -61,11 +61,15 @@ function reachable(host: string, port: number, timeoutMs = 1500): Promise<boolea
   });
 }
 
+/** Why the last ensureTopic() call failed. Empty when it succeeded. */
+let lastTopicError = "";
+
 /**
  * Ensure the topic exists by invoking the broker's own kafka-topics.sh inside
  * the Kafka container. Returns true on success (topic created or already there).
  */
 function ensureTopic(container: string, broker: string, topic: string): boolean {
+  lastTopicError = "";
   try {
     execFileSync(
       "docker",
@@ -87,7 +91,17 @@ function ensureTopic(container: string, broker: string, topic: string): boolean 
       { stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 }
     );
     return true;
-  } catch {
+  } catch (err) {
+    // Never guess at the cause in the skip line below. A missing docker CLI, a
+    // dead docker daemon, an exec timeout and a genuinely absent container are
+    // four different operator actions, and the old fixed wording ("container
+    // not reachable") named the one that is usually NOT it.
+    const e = err as NodeJS.ErrnoException & { status?: number; stderr?: Buffer | string; signal?: string };
+    const stderr = e.stderr ? String(e.stderr).trim().split("\n").slice(-2).join(" | ") : "";
+    lastTopicError =
+      e.code === "ENOENT" ? "the `docker` CLI is not on PATH"
+      : e.signal ? `docker exec killed by ${e.signal} (the 30s timeout)`
+      : `docker exec exited ${e.status ?? "?"}${stderr ? `: ${stderr}` : ""}`;
     return false;
   }
 }
@@ -120,7 +134,7 @@ if (!ensureTopic(container, broker, topic)) {
   // round-trip is impossible without first creating the topic. Skip with a
   // service-gate-recognised reason rather than report a false failure.
   console.log(
-    `  SKIP: could not create Kafka topic via the broker admin tool (container "${container}" not reachable) — Kafka topic setup not available.`
+    `  SKIP: could not create Kafka topic "${topic}" via the broker admin tool in container "${container}" (${lastTopicError}) — Kafka topic setup not available. Set TINA4_TEST_KAFKA_CONTAINER to the real container name.`
   );
   summarise();
 }

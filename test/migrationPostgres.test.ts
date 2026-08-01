@@ -104,11 +104,31 @@ const { migrate } = await import("../packages/orm/src/migration.ts");
 // exactly how the wrapper-misdetection bug (PG mis-read as SQLite -> AUTOINCREMENT)
 // shipped. Using initDatabase here is the regression guard.
 const { initDatabase, getAdapter } = await import("../packages/orm/src/database.ts");
-await initDatabase({
-  url: `postgresql://${PG_HOST}:${PG_PORT}/${PG_DB}`,
-  user: PG_USER,
-  password: PG_PASS,
-});
+// A TCP handshake is NOT "the database is usable". The gate above only proves
+// something is listening on the port -- a wrong database name, wrong password,
+// or a server still starting up all get past it and then blow up HERE, at the
+// top level, as an unhandled rejection that kills the process BEFORE it prints
+// a summary line. Measured: with the default 55432 pointing at a server that
+// has no `tina4_node`, this file died with `database "tina4_node" does not
+// exist` and the runner reported "died before reporting -- no summary line",
+// i.e. the whole file contributed zero cases. Name what was actually wanted
+// instead. The wording is deliberate: it carries "postgresql" AND "not
+// available", so test/_serviceGate.ts turns this skip into a HARD FAILURE
+// under TINA4_REQUIRE_SERVICES (CI provisions the database, so a missing one
+// there is a provisioning bug, not a green skip).
+try {
+  await initDatabase({
+    url: `postgresql://${PG_HOST}:${PG_PORT}/${PG_DB}`,
+    user: PG_USER,
+    password: PG_PASS,
+  });
+} catch (err) {
+  skipClean(
+    `PostgreSQL not available at ${PG_HOST}:${PG_PORT}/${PG_DB} as user "${PG_USER}" ` +
+    `— ${(err as Error).message}. Create the database or set TINA4_TEST_PG_HOST / ` +
+    `_PORT / _DB / _USERNAME / _PASSWORD.`,
+  );
+}
 const db: any = getAdapter();
 assert(
   "adapter is the wrapped CachedDatabaseAdapter (real initDatabase path)",
