@@ -95,7 +95,22 @@ async function main() {
   // ── Factory edge cases ──────────────────────────────────────────
   console.log("\n--- Factory edge cases ---");
 
-  assert("unknown backend falls back to memory", (await createBackend({ backend: "bogus" })).name() === "memory");
+  {
+    // An unrecognised TINA4_CACHE_BACKEND throws, naming the valid set. It used
+    // to fall through to memory, so a typo (redsi) produced a running app with
+    // a per-process cache while the operator believed it was Redis. Same
+    // contract the session layer already settled on.
+    let message = "";
+    try {
+      await createBackend({ backend: "redsi" });
+    } catch (e: any) {
+      message = String(e?.message ?? "");
+    }
+    assert("cache_backend_unknown_name_raises",
+      message.includes("redsi") && message.includes("memory, file, redis"), message || "(did not throw)");
+    assert("cache_backend_known_names_do_not_raise",
+      (await createBackend({ backend: "memory" })).name() === "memory");
+  }
 
   {
     // A configured backend whose service is unreachable degrades to the file
