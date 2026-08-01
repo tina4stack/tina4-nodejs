@@ -48,6 +48,7 @@ export {
   authMiddleware,
   refreshToken, authenticateRequest, validateApiKey,
   ensureDevSecret,
+  resolveAlgorithm, algorithmAvailable, availableAlgorithms,
   Auth,
 } from "./auth.js";
 export { Session, FileSessionHandler, RedisSessionHandler, buildSessionCookie, isSecureScheme, isValidSessionId, sessionCookieName, VALID_SESSION_BACKENDS, CANONICAL_SESSION_BACKENDS } from "./session.js";
