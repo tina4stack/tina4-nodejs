@@ -12,10 +12,11 @@ import { initDatabase, closeDatabase } from "../packages/orm/src/index.ts";
 import http from "node:http";
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { freePort } from "./freePort.ts";
 
 const TEST_DIR = "/tmp/tina4-mcp-endpoint-test";
-const PORT = 3401;
-const PORT_DISABLED = 3402;
+const PORT = await freePort();
+const PORT_DISABLED = await freePort();
 let pass = 0;
 let fail = 0;
 

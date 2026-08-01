@@ -17,6 +17,7 @@
 
 import { startServer, defaultRouter, Events, get } from "../packages/core/src/index.ts";
 import { request as httpRequest } from "node:http";
+import { freePort } from "./freePort.ts";
 
 let pass = 0;
 let fail = 0;
@@ -75,7 +76,7 @@ async function run(): Promise<void> {
 
   // Pick a deterministic high port to avoid the "startServer returns
   // configured port not bound port" quirk when port=0.
-  const port = 41147 + Math.floor(Math.random() * 100);
+  const port = await freePort();
   const server = await startServer({ port, host: "127.0.0.1", autoDiscover: false });
 
   try {

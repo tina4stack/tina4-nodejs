@@ -6,9 +6,10 @@ import { startServer } from "../packages/core/src/index.ts";
 import http from "node:http";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { freePort } from "./freePort.ts";
 
 const TEST_DIR = "/tmp/tina4-ratelimit-test";
-const PORT = 3398;
+const PORT = await freePort();
 let pass = 0;
 let fail = 0;
 

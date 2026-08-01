@@ -19,6 +19,7 @@ import http, { IncomingMessage, ServerResponse } from "node:http";
 import { connect } from "node:net";
 import { handle, start, stop, startServer } from "../packages/core/src/server.js";
 import { get, defaultRouter } from "../packages/core/src/router.js";
+import { freePort } from "./freePort.ts";
 
 // ── Real-IO helpers (no mocks) ───────────────────────────────────────────
 
@@ -62,7 +63,7 @@ async function testStartAndStop() {
   // router at boot. The handler's body is what we assert reaches the client.
   get("/__test/start-and-stop", async (_req, res) => { res.send("start-stop-OK"); });
 
-  const port = 17148;
+  const port = await freePort();
   const srv = await start({ port });
   try {
     assert.ok(srv, "start() should return a server handle");
@@ -106,7 +107,7 @@ async function testHandleExists() {
   // response we read back is whatever the matched route handler wrote.
   get("/__test/handle", async (_req, res) => { res.json({ via: "handle", ok: true }); });
 
-  const port = 17149;
+  const port = await freePort();
   const srv = await start({ port });
 
   // A second loopback server that does NOTHING but forward to handle(). This
@@ -119,7 +120,7 @@ async function testHandleExists() {
       }
     });
   });
-  const proxyPort = 17150;
+  const proxyPort = await freePort();
   await new Promise<void>((r) => proxy.listen(proxyPort, "127.0.0.1", r));
 
   try {
@@ -146,7 +147,7 @@ async function testStopWithoutStart() {
   // closes the listener (subsequent connect is REFUSED).
   get("/__test/stop-noop", async (_req, res) => { res.send("noop-then-serve"); });
 
-  const port = 17151;
+  const port = await freePort();
   const srv = await start({ port });
   try {
     assert.strictEqual(srv.port, port, "start() after a bare stop() should bind the requested port");

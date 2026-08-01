@@ -20,9 +20,10 @@ import http from "node:http";
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { freePort } from "./freePort.ts";
 
 const TEST_DIR = "/tmp/tina4-session-secure-test";
-const PORT = 3418;
+const PORT = await freePort();
 let pass = 0;
 let fail = 0;
 

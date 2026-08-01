@@ -23,6 +23,7 @@ import { rmSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import http from "node:http";
+import { freePort } from "./freePort.ts";
 
 let passed = 0;
 let failed = 0;
@@ -36,8 +37,9 @@ function assert(label: string, condition: boolean, detail = ""): void {
   }
 }
 
-// A unique high port per run so parallel/re-runs never collide.
-const PORT = 24000 + Math.floor(Math.random() * 8000);
+// An OS-assigned ephemeral port so parallel/re-runs never collide. A random
+// pick is not a reservation — it can collide with anything, including itself.
+const PORT = await freePort();
 const scaffold = join(tmpdir(), `tina4-devadmin-parity-${Date.now()}-${process.pid}`);
 const originalCwd = process.cwd();
 
