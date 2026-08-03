@@ -44,7 +44,7 @@ export interface MongoConfig {
 }
 
 export interface QueueBackend {
-  push(queue: string, payload: unknown, delay?: number): string;
+  push(queue: string, payload: unknown, delay?: number, priority?: number): string;
   pop(queue: string): QueueJob | null;
   size(queue: string): number;
   clear(queue: string): void;
@@ -399,7 +399,7 @@ export class MongoBackend implements QueueBackend {
     }
   }
 
-  push(queue: string, payload: unknown, delay?: number): string {
+  push(queue: string, payload: unknown, delay?: number, priority?: number): string {
     const id = randomUUID();
     const now = new Date().toISOString();
 
@@ -410,6 +410,11 @@ export class MongoBackend implements QueueBackend {
       createdAt: now,
       attempts: 0,
       delayUntil: delay ? new Date(Date.now() + delay * 1000).toISOString() : null,
+      // The pop sort has always been { priority: -1, createdAt: 1 }, but this
+      // field was never written, so every job scored undefined and the queue
+      // ran pure FIFO. Priority did not even reach here: the backend interface
+      // had no such parameter and Queue.push dropped it for external backends.
+      priority: priority ?? 0,
     };
 
     const result = this.execSync("push", queue, JSON.stringify(job));

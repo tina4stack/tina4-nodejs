@@ -10,6 +10,19 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Fixed (queue priority was ignored on every backend but file)
+
+- `push(..., priority)` is now honoured on the `mongodb` backend: priority is stored
+  top-level and the dequeue sorts highest-first, ties oldest-first — the same policy
+  the file backend already applied. An urgent job queued behind a backlog used to wait
+  for all of it in production while prioritising correctly in development. Here the Mongo pop sort was RIGHT all along (`{ priority: -1, createdAt: 1 }`) but
+  priority never ARRIVED: the `QueueBackend` interface declared
+  `push(queue, payload, delay?)` with no priority parameter, and `Queue.push`
+  passed priority only to `liteBackend`. The sort ordered on a field no document
+  carried.
+- Node already refuses the `rabbitmq` and `kafka` backends outright (ADR-0022), so
+  there is no path on which a priority reaches a broker that cannot honour it.
+
 ### Fixed (a queue delay was silently dropped on every non-file backend)
 
 - `push(..., delay)` is now honoured on the `mongodb` backend. It was silently DROPPED

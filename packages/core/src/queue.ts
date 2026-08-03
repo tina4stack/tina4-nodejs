@@ -103,7 +103,7 @@ export interface ConsumeOptions {
 }
 
 export interface QueueBackendInterface {
-  push(queue: string, payload: unknown, delay?: number): string;
+  push(queue: string, payload: unknown, delay?: number, priority?: number): string;
   pop(queue: string): QueueJob | null;
   size(queue: string): number;
   clear(queue: string): void;
@@ -268,7 +268,10 @@ export class Queue {
    */
   push(payload: unknown, delay?: number, priority: number = 0): string {
     if (this.externalBackend) {
-      return this.externalBackend.push(this.topic, payload, delay);
+      // priority goes to the external backend too. It used to be passed only to
+      // liteBackend, so switching to mongodb silently turned a prioritised
+      // queue into a FIFO one.
+      return this.externalBackend.push(this.topic, payload, delay, priority);
     }
     return this.liteBackend.push(this.topic, payload, delay, priority);
   }

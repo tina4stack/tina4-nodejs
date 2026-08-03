@@ -82,7 +82,7 @@ export function parseAmqpUrl(url: string): RabbitMQConfig {
 }
 
 export interface QueueBackend {
-  push(queue: string, payload: unknown, delay?: number): string;
+  push(queue: string, payload: unknown, delay?: number, priority?: number): string;
   pop(queue: string): QueueJob | null;
   size(queue: string): number;
   clear(queue: string): void;
