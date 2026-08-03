@@ -10,6 +10,18 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Fixed (queue operations acted on the local file store, not the configured backend)
+
+Every operation must act on the CONFIGURED backend. These calls appeared to succeed
+while operating on the wrong data, which is the worst failure class because nothing
+surfaces it. `pop_by_id` was broken in ALL FOUR frameworks.
+
+- `popBatch()` and `popById()` called `this.liteBackend` unconditionally, so they read
+  the LOCAL FILE STORE and never saw a mongodb job. A consumer draining a
+  mongodb-backed queue in batches got nothing, forever, with no error. `popBatch` now
+  loops the atomic `pop()` on an external backend, and `popById` claims the document
+  through a new mongodb operation.
+
 ### Fixed (a queue method could be a fatal error instead of resolving)
 
 Every public `Queue` method must RESOLVE on every backend the framework offers. A

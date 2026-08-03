@@ -292,6 +292,19 @@ export class Queue {
    * Pop up to count jobs at once. Returns a partial batch if fewer available.
    */
   popBatch(count: number): QueueJob[] {
+    // Route to the CONFIGURED backend. This used to read the LOCAL FILE STORE
+    // unconditionally, so a mongodb-backed queue always came back empty.
+    // Repeated pop() is the correct batch on an external backend: each claim is
+    // atomic, and a short batch simply means the queue drained.
+    if (this.externalBackend) {
+      const jobs: QueueJob[] = [];
+      for (let i = 0; i < count; i++) {
+        const job = this.pop();
+        if (!job) break;
+        jobs.push(job);
+      }
+      return jobs;
+    }
     return this.liteBackend.popBatch(this.topic, this, count);
   }
 
@@ -566,6 +579,18 @@ export class Queue {
    * Pop a specific job by ID from this queue's topic.
    */
   popById(id: string): QueueJob | null {
+    // Same defect as popBatch: this read the local file store on every backend.
+    if (this.externalBackend) {
+      const claim = (this.externalBackend as any).popById;
+      if (typeof claim !== "function") {
+        throw new Error(
+          `The ${this.backendName} queue backend cannot perform popById(): it ` +
+          `cannot address a single message by id. Use the file or mongodb backend.`,
+        );
+      }
+      // The backend returns the same shape pop() does, so return it directly.
+      return claim.call(this.externalBackend, this.topic, id) ?? null;
+    }
     return this.liteBackend.popById(this.topic, id);
   }
 

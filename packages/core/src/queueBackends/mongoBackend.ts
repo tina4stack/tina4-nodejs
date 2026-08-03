@@ -269,6 +269,28 @@ export class MongoBackend implements QueueBackend {
               process.stdout.write("__EMPTY__");
             }
           }
+          else if (operation === "popById") {
+            // Claim ONE specific job by id, the same way pop() claims the head.
+            // Queue.popById used to read the LOCAL FILE STORE regardless of the
+            // configured backend, so it never saw a mongodb job at all.
+            const now = new Date().toISOString();
+            const future = new Date(Date.now() + visibilityTimeout * 1000).toISOString();
+            const wanted = JSON.parse(data);
+            const result = await col.findOneAndUpdate(
+              { queue: queueName, status: "pending", id: wanted.id },
+              { $set: { status: "reserved", reservedAt: now, availableAt: future } },
+              { returnDocument: "before" },
+            );
+            const doc = result && result.value ? result.value : (result && result._id ? { ...result } : null);
+            if (doc) {
+              doc.topic = queueName;
+              delete doc._id;
+              delete doc.queue;
+              process.stdout.write(JSON.stringify(doc));
+            } else {
+              process.stdout.write("__EMPTY__");
+            }
+          }
           else if (operation === "size") {
             const count = await col.countDocuments({
               queue: queueName,
@@ -396,6 +418,16 @@ export class MongoBackend implements QueueBackend {
       return result;
     } catch {
       return "";
+    }
+  }
+
+  popById(queue: string, id: string): QueueJob | null {
+    const out = this.execSync("popById", queue, JSON.stringify({ id }));
+    if (!out || out === "__EMPTY__") return null;
+    try {
+      return JSON.parse(out) as QueueJob;
+    } catch {
+      return null;
     }
   }
 
