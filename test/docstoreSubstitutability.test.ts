@@ -250,6 +250,71 @@ async function run() {
       afterClose < before, `before=${before} after=${afterClose}`);
   }
 
+  // ── ADR-0025 clause 4 / query-semantics-match-on-both-providers (ASSERTED) ─
+  //
+  // MEASURED 2026-08-03 against a real MongoDB: EIGHT array-query behaviours
+  // diverged IDENTICALLY in all four frameworks - the signature of a contract
+  // nobody had written down. Three were FALSE POSITIVES, where the fallback
+  // returned a document Mongo excludes: {nums: {$gt: 9}} matched [1,2,3],
+  // because json_extract of an array returns its JSON TEXT and SQLite sorts any
+  // text above any number.
+  //
+  // MongoDB's rule is one sentence: a condition on an array-valued field matches
+  // when ANY ELEMENT matches it (or the whole array equals the operand), and a
+  // negation matches when NO element does.
+  //
+  // What is asserted is not "the fallback returns N" - it is that BOTH PROVIDERS
+  // RETURN THE SAME THING. That is ADR-0024 stated directly.
+  console.log("\n--- array queries match identically on both providers ---");
+  if (!hasMongo) {
+    console.log(`  \x1b[33mSKIP\x1b[0m no reachable MongoDB`);
+  } else {
+    const ARRAY_DOC = { name: "w", tags: ["x", "y"], nums: [1, 2, 3], empty: [], scalar: "x", obj: { city: "x" } };
+    const ARRAY_CASES: [string, any][] = [
+      ["equality containment", { tags: "x" }],
+      ["equality no match", { tags: "z" }],
+      ["exact array, right order", { tags: ["x", "y"] }],
+      ["exact array, wrong order", { tags: ["y", "x"] }],
+      ["$in hits one element", { tags: { $in: ["x", "q"] } }],
+      ["$in hits nothing", { tags: { $in: ["q"] } }],
+      ["$nin excludes a present element", { tags: { $nin: ["x"] } }],
+      ["$nin with an absent element", { tags: { $nin: ["q"] } }],
+      ["$ne a present element", { tags: { $ne: "x" } }],
+      ["$ne an absent element", { tags: { $ne: "q" } }],
+      ["numeric containment", { nums: 1 }],
+      ["$gt any element", { nums: { $gt: 2 } }],
+      ["$gt no element", { nums: { $gt: 9 } }],
+      ["$lt any element", { nums: { $lt: 2 } }],
+      ["$exists on an array", { tags: { $exists: true } }],
+      ["empty array exact", { empty: [] }],
+      ["$regex on an array element", { tags: { $regex: "^x$" } }],
+      ["scalar still works", { scalar: "x" }],
+      ["object field is not matched by its value", { obj: "x" }],
+      ["object field matches the whole object", { obj: { city: "x" } }],
+    ];
+
+    const results: Record<string, Record<string, number>> = {};
+    for (const [provider, uri] of [["fallback", null], ["mongo", MONGO_URI]] as const) {
+      const { collection } = await collectionFor(uri);
+      await collection.deleteMany({});
+      await collection.insertOne({ ...ARRAY_DOC });
+      const row: Record<string, number> = {};
+      for (const [name, q] of ARRAY_CASES) row[name] = (await collection.find(q).toArray()).length;
+      results[provider] = row;
+      await collection.deleteMany({});
+    }
+
+    const mismatched: Record<string, [number, number]> = {};
+    for (const [name] of ARRAY_CASES) {
+      if (results.fallback[name] !== results.mongo[name]) {
+        mismatched[name] = [results.fallback[name], results.mongo[name]];
+      }
+    }
+    assert("array queries match identically on both providers",
+      Object.keys(mismatched).length === 0,
+      `diverging (fallback, mongo): ${JSON.stringify(mismatched)}`);
+  }
+
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
   console.log(`${"=".repeat(60)}\n`);

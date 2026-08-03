@@ -205,6 +205,57 @@ function extract(field: string): string {
   return `json_extract(doc, '${jsonPath(field)}')`;
 }
 
+/** A rowset over the field: one row per element of an array, one for a scalar. */
+function jsonEach(field: string): string {
+  return `json_each(doc, '${jsonPath(field)}')`;
+}
+
+/**
+ * True when the field is an ARRAY and any element satisfies `condition`.
+ *
+ * MongoDB's rule for an array-valued field is that a condition matches when ANY
+ * ELEMENT matches it. json_each yields one row per element, so EXISTS is the
+ * direct translation.
+ *
+ * The `= 'array'` guard is load-bearing: json_each over an OBJECT iterates its
+ * VALUES, and Mongo never matches an object field against one of its values -
+ * {obj: "x"} must NOT match {obj: {city: "x"}}.
+ */
+function anyElement(field: string, condition: string): string {
+  return `(${typeOf(field)} = 'array' AND EXISTS (SELECT 1 FROM ${jsonEach(field)} WHERE ${condition}))`;
+}
+
+/** Compile `field == operand` under Mongo's array rule. */
+function equality(field: string, operand: unknown): CompiledFilter {
+  const ex = extract(field);
+  if (operand === null || operand === undefined) return { where: `${ex} IS NULL`, params: [] };
+  // An array or plain object operand compares against the WHOLE value, never
+  // element-wise: {tags: ["x","y"]} is exact-array equality.
+  const composite =
+    Array.isArray(operand) ||
+    (typeof operand === "object" && !(operand instanceof ObjectId) && !(operand instanceof Date));
+  if (composite) return { where: `${ex} = ?`, params: [bind(operand)] };
+  return {
+    where: `(${ex} = ? OR ${anyElement(field, "value = ?")})`,
+    params: [bind(operand), bind(operand)],
+  };
+}
+
+/**
+ * Compile `field OP operand` under Mongo's array rule.
+ *
+ * The `<> 'array'` guard on the scalar branch removes a measured FALSE POSITIVE:
+ * json_extract of an array returns its JSON TEXT, and SQLite sorts any text above
+ * any number, so {nums: {$gt: 9}} matched [1,2,3].
+ */
+function compare(field: string, sqlOp: string, operand: unknown): CompiledFilter {
+  const ex = extract(field);
+  return {
+    where: `((${typeOf(field)} <> 'array' AND ${ex} ${sqlOp} ?) OR ${anyElement(field, `value ${sqlOp} ?`)})`,
+    params: [bind(operand), bind(operand)],
+  };
+}
+
 function typeOf(field: string): string {
   return `json_type(doc, '${jsonPath(field)}')`;
 }
@@ -265,11 +316,12 @@ export function compileFilter(query?: Record<string, unknown> | null): CompiledF
         clauses.push(compiled.where);
         params.push(...compiled.params);
       }
-    } else if (value === null) {
-      clauses.push(`${extract(key)} IS NULL`);
     } else {
-      clauses.push(`${extract(key)} = ?`);
-      params.push(bind(value));
+      // equality - the same helper $eq uses, so the array rule applies whether
+      // the filter reads {tags: "x"} or {tags: {$eq: "x"}}
+      const compiled = equality(key, value);
+      clauses.push(compiled.where);
+      params.push(...compiled.params);
     }
   }
 
@@ -279,27 +331,37 @@ export function compileFilter(query?: Record<string, unknown> | null): CompiledF
 function compileOp(field: string, op: string, operand: unknown): CompiledFilter {
   const ex = extract(field);
   if (op in COMPARATORS) {
-    return { where: `${ex} ${COMPARATORS[op]} ?`, params: [bind(operand)] };
+    return compare(field, COMPARATORS[op], operand);
   }
   if (op === "$eq") {
-    if (operand === null) return { where: `${ex} IS NULL`, params: [] };
-    return { where: `${ex} = ?`, params: [bind(operand)] };
+    return equality(field, operand);
   }
   if (op === "$ne") {
     if (operand === null) return { where: `${ex} IS NOT NULL`, params: [] };
-    return { where: `(${ex} <> ? OR ${ex} IS NULL)`, params: [bind(operand)] };
+    const eq = equality(field, operand);
+    // A MISSING field satisfies $ne in Mongo, and SQL's NOT(NULL) is NULL rather
+    // than true - so the IS NULL arm is required, not decoration.
+    return { where: `(NOT (${eq.where}) OR ${ex} IS NULL)`, params: eq.params };
   }
   if (op === "$in") {
     const items = Array.isArray(operand) ? operand : [];
     if (items.length === 0) return { where: "0", params: [] };
     const placeholders = items.map(() => "?").join(",");
-    return { where: `${ex} IN (${placeholders})`, params: items.map(bind) };
+    const bound = items.map(bind);
+    return {
+      where: `(${ex} IN (${placeholders}) OR ${anyElement(field, `value IN (${placeholders})`)})`,
+      params: [...bound, ...bound],
+    };
   }
   if (op === "$nin") {
     const items = Array.isArray(operand) ? operand : [];
     if (items.length === 0) return { where: "1", params: [] };
     const placeholders = items.map(() => "?").join(",");
-    return { where: `(${ex} NOT IN (${placeholders}) OR ${ex} IS NULL)`, params: items.map(bind) };
+    const bound = items.map(bind);
+    return {
+      where: `(NOT (${ex} IN (${placeholders}) OR ${anyElement(field, `value IN (${placeholders})`)}) OR ${ex} IS NULL)`,
+      params: [...bound, ...bound],
+    };
   }
   if (op === "$exists") {
     // json_type is NULL when the path is absent; present-but-null still has a type.
@@ -310,7 +372,10 @@ function compileOp(field: string, op: string, operand: unknown): CompiledFilter 
     if (operand !== null && typeof operand === "object") {
       pattern = (operand as Record<string, unknown>).$regex ?? "";
     }
-    return { where: `${ex} REGEXP ?`, params: [String(pattern)] };
+    return {
+      where: `((${typeOf(field)} <> 'array' AND ${ex} REGEXP ?) OR ${anyElement(field, "value REGEXP ?")})`,
+      params: [String(pattern), String(pattern)],
+    };
   }
   throw new Error(`DocStore: unsupported query operator '${op}'`);
 }

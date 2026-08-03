@@ -120,7 +120,17 @@ async function seeded(): Promise<{ db: SqliteDatabase; orders: SqliteCollection 
   assert("pushdown uses json_extract + IN placeholders",
     where.includes("json_extract(doc") && where.includes("IN (?,?)"),
     `(where=${where})`);
-  assert("pushdown params bound", params.length === 2 && params[0] === 1 && params[1] === 2);
+  // The operands are bound ONCE PER BRANCH - the scalar-field branch and the
+  // array-element branch each carry their own placeholders. This doubled when
+  // Mongo's array rule landed; the intent the test protects is that the filter
+  // is pushed into SQL, never scanned in memory.
+  assert("pushdown params bound", JSON.stringify(params) === JSON.stringify([1, 2, 1, 2]),
+    JSON.stringify(params));
+
+  // The array rule is pushed down too, rather than applied after the fact.
+  const arr = compileFilter({ tags: "x" });
+  assert("pushdown covers array elements", arr.where.includes("json_each(doc"), arr.where);
+  assert("pushdown array params bound", JSON.stringify(arr.params) === JSON.stringify(["x", "x"]));
 }
 
 // ── cursor: sort / limit / skip / projection ────────────────────────────────
