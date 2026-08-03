@@ -202,9 +202,11 @@ export class Queue {
       resolvedConfig = backendOrConfig;
     }
 
-    this.backendName = resolvedConfig.backend
-      ?? process.env.TINA4_QUEUE_BACKEND
-      ?? "file";
+    // Normalised (trimmed + lowercased) so " MongoDB " resolves, matching the
+    // Python master, Ruby and PHP. An unrecognised value THROWS below.
+    this.backendName = String(
+      resolvedConfig.backend ?? process.env.TINA4_QUEUE_BACKEND ?? "file",
+    ).trim().toLowerCase();
     this.basePath = resolvedConfig.path
       ?? process.env.TINA4_QUEUE_PATH
       ?? "data/queue";
@@ -219,6 +221,20 @@ export class Queue {
       throw new Error(unsupportedBrokerMessage(this.backendName));
     } else if (this.backendName === "mongodb" || this.backendName === "mongo") {
       this.externalBackend = new MongoBackend({ visibilityTimeout: this._visibilityTimeout });
+    } else if (!["file", "default", "lite"].includes(this.backendName)) {
+      // An UNRECOGNISED backend name THROWS rather than falling through to the
+      // local file store.
+      //
+      // MEASURED 2026-08-03: a typo in TINA4_QUEUE_BACKEND produced a running
+      // app writing every job to local disk while the operator believed they
+      // were in MongoDB - jobs nothing consumes, on a container filesystem that
+      // vanishes on the next deploy, with no error at any point. Python and Ruby
+      // already raise here; this is the same rule the session backend adopted
+      // for the same reason.
+      throw new Error(
+        `Unknown queue backend: '${this.backendName}'. ` +
+          `Use 'file', 'rabbitmq', 'kafka', or 'mongodb'.`,
+      );
     }
   }
 
