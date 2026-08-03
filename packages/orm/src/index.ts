@@ -22,7 +22,7 @@ export {
   extractLastInsertId,
 } from "./database.js";
 export type { DatabaseConfig } from "./database.js";
-export { DatabaseUrl } from "./databaseUrl.js";
+export { DatabaseUrl, redactCredentials } from "./databaseUrl.js";
 export type { DatabaseEngine } from "./databaseUrl.js";
 export { discoverModels } from "./model.js";
 export type { DiscoveredModel } from "./model.js";

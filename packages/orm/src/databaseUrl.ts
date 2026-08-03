@@ -11,6 +11,7 @@
  * in every framework. `test/fixtures/database_url_corpus.json` is the answer
  * key, byte-identical in all four.
  */
+import { inspect } from "node:util";
 
 /** The canonical engine names. Aliases resolve to these ONCE, at parse. */
 export type DatabaseEngine =
@@ -72,6 +73,168 @@ function decode(value: string | undefined): string | null {
   return decodeURIComponent(value);
 }
 
+// ── redaction ──────────────────────────────────────────────────────────────
+// ONE primitive, used by every path that can put a connection string in front
+// of a human. Before this, `toSafeString()` had ZERO call sites outside the
+// corpus test - its own docblock called it "the ONLY form allowed in a log
+// line" while the invalid-URL exception interpolated the RAW url and the odbc
+// branch returned the connection string VERBATIM, `PWD=` and all.
+
+/** The single mask. One spelling, so grepping for it finds every redaction. */
+const REDACTED = "***";
+
+/**
+ * Where a keyword VALUE ends in a keyword/value connection string.
+ *
+ * NOT at the first whitespace. tina4-php redacted its connect-failure message
+ * with a `\bpassword=\S` + star pattern, and a password containing a SPACE kept
+ * its TAIL in the logged line. The real terminators are the field separators -
+ * `;` for ODBC/libpq, `&` for a query string - plus the closing brace/quote of
+ * a quoted value, since `PWD={p;w}` and the libpq quoted form both legally
+ * contain a separator.
+ */
+function endOfKeywordValue(text: string, start: number): number {
+  const open = text[start];
+  if (open === "{") {
+    const close = text.indexOf("}", start + 1);
+    return close === -1 ? text.length : close + 1;
+  }
+  if (open === "'" || open === '"') {
+    let i = start + 1;
+    while (i < text.length) {
+      if (text[i] === "\\") { i += 2; continue; }
+      if (text[i] === open) return i + 1;
+      i++;
+    }
+    return text.length;
+  }
+  let i = start;
+  while (i < text.length && text[i] !== ";" && text[i] !== "&") i++;
+  return i;
+}
+
+/** `PWD=`/`password=`/`passwd=` in an ODBC DSN, a libpq DSN or a query string. */
+const SECRET_KEYWORD_PATTERN = /(^|[;&?\s])(pwd|password|passwd)(\s*=\s*)/gi;
+
+function redactKeywordValues(text: string): string {
+  const pattern = new RegExp(SECRET_KEYWORD_PATTERN.source, SECRET_KEYWORD_PATTERN.flags);
+  let out = "";
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    const valueStart = match.index + match[0].length;
+    out += text.slice(cursor, valueStart) + REDACTED;
+    cursor = endOfKeywordValue(text, valueStart);
+    pattern.lastIndex = cursor;
+  }
+  return out + text.slice(cursor);
+}
+
+/**
+ * The authority of `scheme://user:pass@host:port/path`, or null when the string
+ * has no `://` at all. Everything the other helpers need is derived from here,
+ * so "where does userinfo end" is decided in exactly one place.
+ */
+function authorityOf(raw: string): string | null {
+  const separator = raw.indexOf("://");
+  if (separator === -1) return null;
+  const rest = raw.slice(separator + 3);
+  const end = rest.search(/[/?#]/);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+/**
+ * The raw, still-encoded userinfo, or null when the URL carries none.
+ *
+ * Read off the RAW string on purpose: `new URL()` normalises
+ * `postgres://user:@host/db` and `postgres://user@host/db` to the identical
+ * href, so the URL object cannot tell an explicitly-blank password from an
+ * absent one (measured on Node 24.9.0 - both report `.password === ""`).
+ */
+function rawUserinfo(raw: string): string | null {
+  const authority = authorityOf(raw);
+  if (authority === null) return null;
+  const at = authority.lastIndexOf("@");
+  return at === -1 ? null : authority.slice(0, at);
+}
+
+function redactUserinfoPassword(raw: string): string {
+  const authority = authorityOf(raw);
+  if (authority === null) return raw;
+  const at = authority.lastIndexOf("@");
+  if (at === -1) return raw;
+  const colon = authority.slice(0, at).indexOf(":");
+  if (colon === -1) return raw; // a username with no password
+  const authorityStart = raw.indexOf("://") + 3;
+  return (
+    raw.slice(0, authorityStart + colon + 1) + REDACTED + raw.slice(authorityStart + at)
+  );
+}
+
+/**
+ * Remove every credential from an arbitrary connection string.
+ *
+ * THE single redaction primitive. It works on a RAW string - valid or
+ * malformed, a URL or an ODBC DSN - so the error paths can use it too, and it
+ * is what `toSafeString()` calls for the odbc form rather than hand-rolling a
+ * second, weaker rule.
+ *
+ * It cannot be complete on a string with no recognisable credential structure
+ * (`notaurl-with-hunter2` has nothing to key off), which is exactly why the
+ * invalid-URL error reports the scheme and host instead of any form of the
+ * input. Redaction is for strings we can parse enough to redact.
+ */
+export function redactCredentials(raw: string): string {
+  if (typeof raw !== "string" || raw === "") return raw;
+  return redactKeywordValues(redactUserinfoPassword(raw));
+}
+
+/** `postgres` from `postgres://…`, or null when the string names no scheme. */
+function schemeOf(raw: string): string | null {
+  const match = raw.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+  return match ? match[1].toLowerCase() : null;
+}
+
+/**
+ * The `host:port` slice of the authority, or null.
+ *
+ * Credential-free BY CONSTRUCTION: it is the part AFTER the last `@`, and
+ * userinfo - the only place a password may appear in a URL - is entirely
+ * before it. That is what makes it safe to name in an error message.
+ */
+function hostPortOf(raw: string): string | null {
+  const authority = authorityOf(raw);
+  if (authority === null) return null;
+  const at = authority.lastIndexOf("@");
+  const hostPort = at === -1 ? authority : authority.slice(at + 1);
+  return hostPort === "" ? null : hostPort;
+}
+
+/**
+ * The failure a malformed `TINA4_DATABASE_URL` raises.
+ *
+ * The message NEVER carries the URL. The old one interpolated it, so a typo in
+ * the port wrote the password into the boot log, the crash report, the error
+ * overlay and the CI log - measured: `TINA4_DATABASE_URL` of
+ * `postgres://user:SuperSecret123@host:notaport/db` produced
+ * `DatabaseUrl: invalid URL format 'postgres://user:SuperSecret123@host:notaport/db'`.
+ *
+ * It stays diagnosable: the scheme (or engine) and the host:port are both in
+ * the message, along with the shape that was expected. A redaction that leaves
+ * nothing to debug with is its own kind of bug.
+ */
+function invalidUrlError(raw: string, engine?: DatabaseEngine): Error {
+  const named = engine ?? schemeOf(raw);
+  const subject = named ? `invalid ${named} URL` : "invalid URL (no scheme found)";
+  const hostPort = hostPortOf(raw);
+  const at = hostPort === null ? "" : ` at '${hostPort}'`;
+  return new Error(
+    `DatabaseUrl: ${subject}${at} - expected ` +
+      "scheme://[user[:password]@]host[:port]/database. " +
+      "The URL itself is not shown because it may contain a password."
+  );
+}
+
 export class DatabaseUrl {
   readonly engine: DatabaseEngine;
   /** Null for sqlite and odbc - a file or a DSN string has no host. */
@@ -107,7 +270,14 @@ export class DatabaseUrl {
     );
   }
 
-  /** Connection target for the adapter. sqlite and odbc are the whole value. */
+  /**
+   * Connection target for the adapter. sqlite and odbc are the whole value.
+   *
+   * NOT SAFE TO LOG. For every network engine this is credential-free
+   * (host:port/database), which makes it look loggable - but the odbc branch
+   * returns the connection string VERBATIM, `PWD=` included, because that is
+   * what the driver has to receive. Log `toSafeString()`; never this.
+   */
   dsn(): string {
     if (this.engine === "sqlite") return this.database;
     if (this.engine === "odbc") return this.connectionString ?? "";
@@ -127,7 +297,12 @@ export class DatabaseUrl {
    */
   toSafeString(): string {
     if (this.engine === "sqlite") return `sqlite:///${this.database}`;
-    if (this.engine === "odbc") return `odbc:///${this.connectionString ?? ""}`;
+    // The odbc branch used to return the connection string VERBATIM - `PWD=`
+    // and all - so the ONE method whose job is redaction handed back the
+    // password in full. The negative test "to_safe_string_never_contains_the_
+    // password" passed in all four frameworks the whole time, because the
+    // shared corpus had no odbc row: a green guard protecting nothing.
+    if (this.engine === "odbc") return `odbc:///${redactCredentials(this.connectionString ?? "")}`;
 
     let out = `${this.engine}://`;
     if (this.username !== null) {
@@ -139,6 +314,45 @@ export class DatabaseUrl {
     if (this.port !== null) out += `:${this.port}`;
     if (this.database !== "") out += `/${this.database}`;
     return out;
+  }
+
+  /**
+   * What `JSON.stringify(url)` emits.
+   *
+   * Without it, stringifying the value - directly, or as one field of a config
+   * object being logged - emitted `"password":"<the real password>"`, measured
+   * on this class. Python guards the same exposure with `__repr__` and Ruby
+   * with `#inspect`; JSON is the shape Node actually serialises into a log
+   * line, so it needs the guard too.
+   *
+   * Structure is preserved so the dump is still worth having: only the secret
+   * is masked. `null` stays `null` - an ABSENT password and a masked one are
+   * different facts, and flattening them would hide exactly the confusion C7
+   * is about.
+   */
+  toJSON(): Record<string, unknown> {
+    return {
+      engine: this.engine,
+      host: this.host,
+      port: this.port,
+      database: this.database,
+      username: this.username,
+      password: this.password === null ? null : REDACTED,
+      connectionString:
+        this.connectionString === null ? null : redactCredentials(this.connectionString),
+    };
+  }
+
+  /**
+   * What `console.log(url)` / `util.inspect(url)` print.
+   *
+   * Node's equivalent of Python's `__repr__` and Ruby's `#inspect`, and the
+   * same rendering they produce - `DatabaseUrl('postgres://user:***@h:5432/db')`
+   * (tina4-python/tina4_python/database/database_url.py:153). Without it,
+   * `console.log(url)` printed the default field dump, password included.
+   */
+  [inspect.custom](): string {
+    return `DatabaseUrl('${this.toSafeString()}')`;
   }
 
   // ── parsing ────────────────────────────────────────────────
@@ -200,7 +414,7 @@ export class DatabaseUrl {
    */
   private static parseRegexForm(url: string, engine: DatabaseEngine, pattern: RegExp): ParsedParts {
     const m = url.match(pattern);
-    if (!m) throw new Error(`DatabaseUrl: invalid ${engine} URL '${url}'`);
+    if (!m) throw invalidUrlError(url, engine);
     return {
       engine,
       username: decode(m[1]),
@@ -217,7 +431,7 @@ export class DatabaseUrl {
     try {
       parsed = new URL(url);
     } catch {
-      throw new Error(`DatabaseUrl: invalid URL format '${url}'`);
+      throw invalidUrlError(url);
     }
     const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
     const engine = ENGINE_ALIASES[scheme];
@@ -227,12 +441,21 @@ export class DatabaseUrl {
       );
     }
     const database = stripOneSlash(parsed.pathname);
+    // A password that was WRITTEN but left blank (`postgres://user:@host/db`)
+    // is an explicitly-empty password, NOT an absent one, so the
+    // TINA4_DATABASE_PASSWORD fallback in the constructor must not fire for it.
+    // `decode()` collapsed both to null and the fallback DID fire, so the same
+    // .env authenticated with two different passwords depending on which
+    // framework read it. The URL object cannot tell the two apart (it
+    // normalises both to `.password === ""`), so the RAW userinfo decides.
+    const userinfo = rawUserinfo(url);
+    const passwordWasWritten = userinfo !== null && userinfo.includes(":");
     return {
       engine,
       host: parsed.hostname || undefined,
       port: parsed.port ? parseInt(parsed.port, 10) : undefined,
       username: decode(parsed.username),
-      password: decode(parsed.password),
+      password: passwordWasWritten ? decodeURIComponent(parsed.password) : null,
       database: engine === "mongodb" ? database || "tina4" : database,
     };
   }

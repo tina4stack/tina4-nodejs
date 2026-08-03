@@ -16,7 +16,16 @@
     "",
     "'safe' is toSafeString(): the input URL with the password replaced by ***.",
     "It round-trips, which is what makes it safe to put in a log line - the only",
-    "form of a connection URL allowed in a log or an error message."
+    "form of a connection URL allowed in a log or an error message.",
+    "",
+    "'secret' is an OPTIONAL field naming a credential that lives somewhere other",
+    "than the userinfo (today: an ODBC connection string's PWD=). The no-leak",
+    "assertion uses `secret ?? password`, because a case whose parsed `password`",
+    "is null still has a password that must not survive into 'safe'.",
+    "",
+    "A case whose password is the EMPTY STRING is skipped by the no-leak check:",
+    "every string contains the empty string, so asserting otherwise is vacuously",
+    "false. An empty password is not a secret - it is an explicitly-blank one."
   ],
   "default_ports": {
     "postgres": 5432,
@@ -256,6 +265,31 @@
       "username": "readonly",
       "password": null,
       "safe": "postgres://readonly@localhost:5432/db"
+    },
+    {
+      "name": "an_empty_password_in_the_url_is_explicitly_empty_not_absent",
+      "_why": "C7, settled 2026-08-02. `postgres://user:@host/db` parsed to None in Python and Node but '' in PHP and Ruby, and the separate-credential fallback is gated on 'is absent' - so the SAME .env authenticated with two different passwords depending on which framework read it. A password that was WRITTEN and left blank is an explicitly-empty password, so TINA4_DATABASE_PASSWORD must NOT fill it in. Distinguishing it needs the RAW userinfo: every URL parser normalises `user:@h` and `user@h` to the same thing.",
+      "url": "postgres://user:@localhost:5432/db",
+      "engine": "postgres",
+      "host": "localhost",
+      "port": 5432,
+      "database": "db",
+      "username": "user",
+      "password": "",
+      "safe": "postgres://user:***@localhost:5432/db"
+    },
+    {
+      "name": "odbc_connection_string_password_is_redacted_in_the_safe_form",
+      "_why": "C5, settled 2026-08-02. to_safe_string() returned the ODBC connection string VERBATIM, PWD= and all, in python/ruby/node. The negative test 'to_safe_string_never_contains_the_password' existed and PASSED in all four the whole time - because this corpus had no odbc row. Same trap as the dotenv corpus: the guard is green and protects nothing. The sentinel contains a SPACE on purpose: a redaction that stops at the first whitespace (the tina4-php C4 bug shape) yields 'PWD=*** word', which the exact 'safe' comparison rejects. Note the no-leak substring check alone would NOT catch that - the head is gone, so the full secret is absent - which is why the exact-match assertion is the one carrying this row.",
+      "url": "odbc:///DRIVER={PostgreSQL};SERVER=localhost;DATABASE=tina4;UID=tina4;PWD=s3ntinel-Pa55 word",
+      "engine": "odbc",
+      "host": null,
+      "port": null,
+      "database": "",
+      "username": null,
+      "password": null,
+      "secret": "s3ntinel-Pa55 word",
+      "safe": "odbc:///DRIVER={PostgreSQL};SERVER=localhost;DATABASE=tina4;UID=tina4;PWD=***"
     }
   ],
   "errors": [

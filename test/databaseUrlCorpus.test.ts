@@ -59,8 +59,16 @@ console.log("\n--- toSafeString round-trips without the password ---");
 for (const c of corpus.cases) {
   const safe = new DatabaseUrl(c.url).toSafeString();
   assert(`safe: ${c.name}`, safe === c.safe, `got ${safe} want ${c.safe}`);
-  if (c.password !== null) {
-    assert(`no leak: ${c.name}`, !safe.includes(c.password), `LEAKED into ${safe}`);
+  // UPDATED 2026-08-02 (C5/C7). Was `if (c.password !== null)` reading only
+  // `c.password`, which let TWO cases through:
+  //   - odbc, whose password lives in the connection string, not the userinfo,
+  //     so `c.password` is null and the check never ran - which is why the
+  //     verbatim `PWD=` leak passed this suite for its whole life;
+  //   - an explicitly-EMPTY password, where `safe.includes("")` is vacuously
+  //     true and the assertion would fail on a correct implementation.
+  const secret: string | null = c.secret ?? c.password;
+  if (secret) {
+    assert(`no leak: ${c.name}`, !safe.includes(secret), `LEAKED into ${safe}`);
   }
 }
 
