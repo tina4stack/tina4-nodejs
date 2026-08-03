@@ -270,6 +270,87 @@ if (!liveUrl) {
   }
 }
 
+
+
+// ---------------------------------------------------------------------------
+// DISPLAY REDACTS, FIDELITY DOES NOT - and nothing may persist the object.
+//
+// MEASURED 2026-08-03 with two sentinels (one containing a SPACE, one a quote,
+// a double quote, a backslash and a percent): JSON.stringify, util.inspect,
+// String(url), toSafeString, the exception message, the exception STACK and
+// util.inspect(exception) are ALL clean. structuredClone still carries the
+// password, and that is deliberate - its contract is a faithful structural
+// copy, and a masked clone would produce an object whose password is the
+// literal "***", which is a worse bug than the disclosure.
+//
+// tina4-php reaches the identical boundary with serialize()/var_export(),
+// tina4-python with pickle, tina4-ruby with Marshal. All four agree, so this is
+// PARITY rather than a divergence.
+//
+// The rule is only safe while nothing PERSISTS one of these objects - a
+// DatabaseUrl structured-cloned onto a worker thread, into a cache or into a
+// queue payload carries a cleartext credential across that boundary. This guard
+// is what keeps it true, ported from tina4-php so the PROTECTION exists in
+// every framework, not just the behaviour.
+// ---------------------------------------------------------------------------
+console.log("\n--- the fidelity boundary is enforced ---");
+
+{
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+
+  // Persistence calls that would carry the secret out of the process...
+  const PERSIST = /\b(structuredClone|postMessage|MessageChannel|v8\.serialize)\s*\(/;
+  // ...applied to something that looks like a connection URL.
+  const URLISH = /\b(dbUrl|databaseUrl|connUrl|dsn|connectionString)\b/i;
+
+  const walk = (dir: string): string[] => {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir)) {
+      if (entry === "node_modules" || entry === "dist") continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) out.push(...walk(full));
+      else if (full.endsWith(".ts")) out.push(full);
+    }
+    return out;
+  };
+
+  const offenders: string[] = [];
+  for (const file of walk("packages")) {
+    const src = readFileSync(file, "utf-8");
+    src.split("\n").forEach((line, i) => {
+      if (PERSIST.test(line) && URLISH.test(line)) offenders.push(`${file}:${i + 1}  ${line.trim()}`);
+    });
+  }
+
+  assert(
+    "no framework code structured-clones a DatabaseUrl",
+    offenders.length === 0,
+    offenders.join(" | "),
+  );
+
+  // NEGATIVE half - proves the scanner has teeth. A regex that silently stopped
+  // matching would leave the check above green and guarding nothing; the PHP
+  // ClassCollection guard passed VACUOUSLY this week for exactly that reason.
+  const offending = "  const copy = structuredClone(dbUrl);";
+  const innocent = "  const copy = JSON.stringify(dbUrl.toSafeString());";
+  const matches = (l: string) => PERSIST.test(l) && URLISH.test(l);
+  assert("the scanner flags structuredClone(dbUrl)", matches(offending));
+  assert("the scanner ignores a redacted render", !matches(innocent));
+
+  // The PREMISE the guard rests on, measured rather than assumed. If a future
+  // change made structuredClone redact, this fails and the guard becomes
+  // unnecessary - better to be told than to keep enforcing a dead rule.
+  const secret = "s3ntinel-Pa55 word";
+  const probe = new DatabaseUrl(`postgres://user:${encodeURIComponent(secret)}@h:5432/db`);
+  let cloneCarries = false;
+  try { cloneCarries = JSON.stringify(structuredClone(probe)).includes("s3nt"); } catch { cloneCarries = false; }
+  assert("structuredClone really does still carry the password", cloneCarries);
+  for (const rendered of [JSON.stringify(probe), String(probe), probe.toSafeString()]) {
+    assert(`display stays clean: ${rendered.slice(0, 28)}`, !rendered.includes("s3nt"));
+  }
+}
+
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
 console.log(`${"=".repeat(50)}\n`);

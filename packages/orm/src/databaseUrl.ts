@@ -235,6 +235,18 @@ function invalidUrlError(raw: string, engine?: DatabaseEngine): Error {
   );
 }
 
+/**
+ * DISPLAY REDACTS, FIDELITY DOES NOT. JSON.stringify, util.inspect, String() and
+ * toSafeString() replace the password with the redaction marker, so a log line, a
+ * stack or a status payload is safe. structuredClone deliberately does not: its
+ * contract is a faithful structural copy, and a masked clone would produce an
+ * object whose password is the literal "***".
+ *
+ * The consequence: DO NOT PERSIST THIS OBJECT. A DatabaseUrl structured-cloned
+ * onto a worker thread, into a cache or into a queue payload carries a cleartext
+ * credential across that boundary. Use toSafeString() instead.
+ * test/databaseUrlRedaction.test.ts fails the build if framework code ever does.
+ */
 export class DatabaseUrl {
   readonly engine: DatabaseEngine;
   /** Null for sqlite and odbc - a file or a DSN string has no host. */
