@@ -817,12 +817,61 @@ export async function getCollection(name: string): Promise<SqliteCollection | un
   if (isServerless()) {
     return getDb().getCollection(name);
   }
-  const { MongoClient } = await import("mongodb");
-  const uri = mongoUri();
   const dbName = process.env.TINA4_MONGO_DB || process.env.TINA4_SESSION_MONGO_DB || "tina4";
-  const client = new MongoClient(uri);
-  await client.connect();
-  return client.db(dbName).collection(name);
+  const { db } = await mongoConnection(mongoUri(), dbName);
+  return db.collection(name);
+}
+
+/** One connected client per (uri, database), keyed so a reconfigure gets its own. */
+const mongoClients = new Map<string, Promise<{ client: any; db: any }>>();
+
+/**
+ * Return the shared client for this (uri, database), connecting once.
+ *
+ * MEASURED 2026-08-03 against a real MongoDB: getCollection() used to construct
+ * a `new MongoClient` on EVERY call and never close it, so 20 calls left 40
+ * server connections open and the count grew without bound. It was invisible in
+ * development because the SQLite fallback has no connections at all - a resource
+ * leak that only exists AFTER the swap to the real provider.
+ *
+ * The map holds the in-flight PROMISE rather than the resolved client. Caching
+ * the resolved value would leave a check-then-act window in which two
+ * concurrent callers both miss the cache and both build a client - which is the
+ * same leak, just rarer and harder to see. A failed connect is evicted so a
+ * transient outage cannot poison the entry for the life of the process.
+ */
+function mongoConnection(uri: string, dbName: string): Promise<{ client: any; db: any }> {
+  const key = `${uri} ${dbName}`;
+  let pending = mongoClients.get(key);
+  if (!pending) {
+    pending = (async () => {
+      const { MongoClient } = await import("mongodb");
+      const client = new MongoClient(uri);
+      await client.connect();
+      return { client, db: client.db(dbName) };
+    })();
+    mongoClients.set(key, pending);
+    pending.catch(() => mongoClients.delete(key));
+  }
+  return pending;
+}
+
+/**
+ * Close every DocStore connection: the SQLite store and all Mongo clients.
+ *
+ * A pooled client keeps the event loop alive, so a script or test that touches
+ * the real provider needs a way to let the process end on its own.
+ */
+export async function closeDocStore(): Promise<void> {
+  const pending = [...mongoClients.values()];
+  mongoClients.clear();
+  await Promise.allSettled(
+    pending.map(async (p) => {
+      const { client } = await p;
+      await client.close();
+    }),
+  );
+  resetDefaultStore();
 }
 
 /** Drop the cached default SQLite store (test helper). */

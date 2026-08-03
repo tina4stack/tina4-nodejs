@@ -186,6 +186,70 @@ async function run() {
     await collection.deleteMany({});
   }
 
+  // ── ADR-0025 / client-lifecycle-is-bounded (ASSERTED) ─────────────────────
+  //
+  // docstore_contract.json :: client-lifecycle-is-bounded
+  //
+  // MEASURED 2026-08-03 against a real MongoDB: getCollection() built a NEW
+  // MongoClient on every call and never closed it. 20 calls left 40 server
+  // connections open, growing linearly and without bound. Invisible in
+  // development, because the SQLite fallback opens no connections at all - the
+  // leak existed ONLY after the swap to the real provider.
+  //
+  // The test that matters is the SHAPE of the growth, not its size. A pool
+  // legitimately opens several connections to serve concurrent work and then
+  // PLATEAUS; a leak keeps climbing. So this drives three identical rounds plus
+  // a long sequential run and asserts the last round adds nothing.
+  console.log("\n--- repeated get collection does not grow connections ---");
+  if (!hasMongo) {
+    console.log(`  \x1b[33mSKIP\x1b[0m no reachable MongoDB`);
+  } else {
+    for (const k of ["TINA4_MONGO_URI", "TINA4_SESSION_MONGO_URI", "TINA4_SESSION_MONGO_URL"]) delete process.env[k];
+    process.env.TINA4_MONGO_URI = MONGO_URI;
+    process.env.TINA4_DOC_STORE_PATH = join(mkdtempSync(join(tmpdir(), "ds")), "ds.db");
+    // ONE module instance on purpose: collectionFor() re-imports per call, which
+    // would hand every call a fresh client cache and hide exactly what is measured.
+    const mod = await import(ORM + "?t=" + Math.random());
+    const { MongoClient } = await import("mongodb");
+    const serverConnections = async (): Promise<number> => {
+      const probe = new MongoClient(MONGO_URI);
+      await probe.connect();
+      const status: any = await probe.db("admin").command({ serverStatus: 1 });
+      await probe.close();
+      return status.connections.current;
+    };
+
+    const rounds: number[] = [];
+    for (let round = 0; round < 3; round++) {
+      for (let i = 0; i < 20; i++) {
+        const c = await mod.getCollection("lifecycle_probe");
+        await c.countDocuments({});
+      }
+      rounds.push(await serverConnections());
+    }
+    const settled = rounds[rounds.length - 1];
+    for (let i = 0; i < 100; i++) {
+      const c = await mod.getCollection("lifecycle_probe");
+      await c.countDocuments({});
+    }
+    const afterHundred = await serverConnections();
+
+    // POSITIVE: 100 further calls on a settled pool must add nothing. Under the
+    // old one-client-per-call code this was +200.
+    assert("repeated get collection does not grow connections",
+      afterHundred <= settled, `settled=${settled} after 100 more=${afterHundred}`);
+    // And the growth must have flattened rather than tracked the call count.
+    assert("connection growth plateaus instead of tracking calls",
+      rounds[2] - rounds[1] <= 2 && rounds[2] < 60, JSON.stringify(rounds));
+
+    const before = await serverConnections();
+    await mod.closeDocStore();
+    await new Promise((r) => setTimeout(r, 1000));
+    const afterClose = await serverConnections();
+    assert("close doc store releases the connections",
+      afterClose < before, `before=${before} after=${afterClose}`);
+  }
+
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
   console.log(`${"=".repeat(60)}\n`);

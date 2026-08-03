@@ -65,7 +65,7 @@ export type { SeedSummary, SeedOptions } from "./seeder.js";
 // DocStore — pymongo-style document store with a zero-config SQLite (JSON1) fallback
 export {
   ObjectId, InvalidId, SqliteDatabase, SqliteCollection, Cursor,
-  getCollection, isServerless, resetDefaultStore,
+  getCollection, isServerless, resetDefaultStore, closeDocStore,
   encodeValue, decodeValue, compileFilter,
 } from "./docstore.js";
 export type {
