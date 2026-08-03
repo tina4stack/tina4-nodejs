@@ -482,53 +482,91 @@ export interface DeleteResult {
   deletedCount: number;
 }
 
+/**
+ * Decode a stored JSON document (rehydrating ObjectId/Date), with an optional
+ * projection. Module-level because it is a PURE function of its inputs - it was
+ * a public `load` method on the collection only so the Cursor could reach it,
+ * which ADR-0025 corollary 1 forbids.
+ */
+function loadDoc(docText: string, projection?: Record<string, unknown> | null): Record<string, unknown> {
+  const doc = decodeValue(JSON.parse(docText)) as Record<string, unknown>;
+  return projection ? project(doc, projection) : doc;
+}
+
+/** Encode a document for storage. Pure, for the same reason as loadDoc. */
+function dumpDoc(document: Record<string, unknown>): string {
+  return JSON.stringify(encodeValue(document));
+}
+
 // ── Cursor ───────────────────────────────────────────────────────────────────
 
 /** Lazy result cursor. Builds and runs SQL only when materialised (toArray). */
 export class Cursor {
-  private _sort: [string, number][] = [];
-  private _limit: number | null = null;
-  private _skip = 0;
+  #sort: [string, number][] = [];
+  #limit: number | null = null;
+  #skip = 0;
 
+  readonly #conn: DatabaseSync;
+  readonly #quoted: string;
+  readonly #where: string;
+  readonly #params: unknown[];
+  readonly #projection?: Record<string, unknown> | null;
+
+  /**
+   * The cursor receives WHAT IT NEEDS, not the collection it came from.
+   *
+   * It used to hold the collection and reach back for `connection`, `quoted` and
+   * `load` - which is the only reason those three were public. ADR-0025
+   * corollary 1: anything the fallback needs internally is private, and a real
+   * FindCursor exposes none of them. Handing over the two values and calling the
+   * module-level loader removes the back-reference AND the public surface.
+   */
   constructor(
-    private readonly collection: SqliteCollection,
-    private readonly where: string,
-    private readonly params: unknown[],
-    private readonly projection?: Record<string, unknown> | null,
-  ) {}
+    conn: DatabaseSync,
+    quoted: string,
+    where: string,
+    params: unknown[],
+    projection?: Record<string, unknown> | null,
+  ) {
+    this.#conn = conn;
+    this.#quoted = quoted;
+    this.#where = where;
+    this.#params = params;
+    this.#projection = projection;
+  }
 
   sort(keyOrList: string | [string, number][], direction = 1): this {
     if (typeof keyOrList === "string") {
-      this._sort.push([keyOrList, direction]);
+      this.#sort.push([keyOrList, direction]);
     } else {
-      for (const [k, d] of keyOrList) this._sort.push([k, d]);
+      for (const [k, d] of keyOrList) this.#sort.push([k, d]);
     }
     return this;
   }
 
   limit(n: number): this {
-    this._limit = Math.trunc(n);
+    this.#limit = Math.trunc(n);
     return this;
   }
 
   skip(n: number): this {
-    this._skip = Math.trunc(n);
+    this.#skip = Math.trunc(n);
     return this;
   }
 
-  private buildSql(): string {
-    let sql = `SELECT doc FROM ${this.collection.quoted} WHERE ${this.where}`;
-    if (this._sort.length) {
-      const order = this._sort
+  #buildSql(): string {
+    let sql = `SELECT doc FROM ${this.#quoted} WHERE ${this.#where}`;
+    if (this.#sort.length) {
+      const order = this.#sort
         .map(([k, d]) => `${extract(k)} ${d < 0 ? "DESC" : "ASC"}`)
         .join(", ");
       sql += ` ORDER BY ${order}`;
     }
-    if (this._limit !== null) {
-      sql += ` LIMIT ${Math.trunc(this._limit)}`;
-      if (this._skip) sql += ` OFFSET ${Math.trunc(this._skip)}`;
-    } else if (this._skip) {
-      sql += ` LIMIT -1 OFFSET ${Math.trunc(this._skip)}`;
+    if (this.#limit !== null) {
+      sql += ` LIMIT ${Math.trunc(this.#limit)}`;
+      if (this.#skip) sql += ` OFFSET ${Math.trunc(this.#skip)}`;
+    } else if (this.#skip) {
+      sql += ` LIMIT -1 OFFSET ${Math.trunc(this.#skip)}`;
     }
     return sql;
   }
@@ -542,10 +580,10 @@ export class Cursor {
    * provider is the defect this fixes.
    */
   async toArray(): Promise<Record<string, unknown>[]> {
-    const rows = this.collection.connection
-      .prepare(this.buildSql())
-      .all(...(this.params as never[])) as { doc: string }[];
-    return rows.map((r) => this.collection.load(r.doc, this.projection));
+    const rows = this.#conn
+      .prepare(this.#buildSql())
+      .all(...(this.#params as never[])) as { doc: string }[];
+    return rows.map((r) => loadDoc(r.doc, this.#projection));
   }
 
   /**
@@ -568,49 +606,40 @@ export class Cursor {
 
 /** A SQLite-backed collection exposing the everyday MongoDB driver API. */
 export class SqliteCollection {
-  readonly quoted: string;
+  readonly #quoted: string;
+  readonly #conn: DatabaseSync;
+  readonly #name: string;
 
-  constructor(
-    readonly connection: DatabaseSync,
-    private readonly name: string,
-  ) {
+  constructor(conn: DatabaseSync, name: string) {
+    this.#conn = conn;
+    this.#name = name;
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
       throw new Error(`DocStore: invalid collection name '${name}'`);
     }
-    this.quoted = `"${name}"`;
-    this.connection.exec(
-      `CREATE TABLE IF NOT EXISTS ${this.quoted} (_id TEXT PRIMARY KEY, doc TEXT NOT NULL)`,
+    this.#quoted = `"${name}"`;
+    this.#conn.exec(
+      `CREATE TABLE IF NOT EXISTS ${this.#quoted} (_id TEXT PRIMARY KEY, doc TEXT NOT NULL)`,
     );
-  }
-
-  private dump(document: Record<string, unknown>): string {
-    return JSON.stringify(encodeValue(document));
-  }
-
-  /** Decode a stored JSON document (rehydrating ObjectId/Date), with optional projection. */
-  load(docText: string, projection?: Record<string, unknown> | null): Record<string, unknown> {
-    const doc = decodeValue(JSON.parse(docText)) as Record<string, unknown>;
-    return projection ? project(doc, projection) : doc;
   }
 
   // -- writes --
   async insertOne(document: Record<string, unknown>): Promise<InsertOneResult> {
     const doc = { ...document };
     if (!("_id" in doc)) doc._id = new ObjectId();
-    this.connection
-      .prepare(`INSERT INTO ${this.quoted} (_id, doc) VALUES (?, ?)`)
-      .run(idKey(doc._id), this.dump(doc));
+    this.#conn
+      .prepare(`INSERT INTO ${this.#quoted} (_id, doc) VALUES (?, ?)`)
+      .run(idKey(doc._id), dumpDoc(doc));
     return { acknowledged: true, insertedId: doc._id };
   }
 
   async insertMany(documents: Record<string, unknown>[]): Promise<InsertManyResult> {
     const ids: unknown[] = [];
-    const stmt = this.connection.prepare(`INSERT INTO ${this.quoted} (_id, doc) VALUES (?, ?)`);
+    const stmt = this.#conn.prepare(`INSERT INTO ${this.#quoted} (_id, doc) VALUES (?, ?)`);
     for (const document of documents) {
       const doc = { ...document };
       if (!("_id" in doc)) doc._id = new ObjectId();
       ids.push(doc._id);
-      stmt.run(idKey(doc._id), this.dump(doc));
+      stmt.run(idKey(doc._id), dumpDoc(doc));
     }
     return { acknowledged: true, insertedIds: ids };
   }
@@ -618,7 +647,7 @@ export class SqliteCollection {
   // -- reads --
   find(filter?: Record<string, unknown> | null, projection?: Record<string, unknown> | null): Cursor {
     const { where, params } = compileFilter(filter ?? {});
-    return new Cursor(this, where, params, projection);
+    return new Cursor(this.#conn, this.#quoted, where, params, projection);
   }
 
   async findOne(
@@ -631,15 +660,15 @@ export class SqliteCollection {
 
   async countDocuments(filter?: Record<string, unknown> | null): Promise<number> {
     const { where, params } = compileFilter(filter ?? {});
-    const row = this.connection
-      .prepare(`SELECT count(*) AS c FROM ${this.quoted} WHERE ${where}`)
+    const row = this.#conn
+      .prepare(`SELECT count(*) AS c FROM ${this.#quoted} WHERE ${where}`)
       .get(...(params as never[])) as { c: number | bigint };
     return Number(row.c);
   }
 
   async estimatedDocumentCount(): Promise<number> {
-    const row = this.connection
-      .prepare(`SELECT count(*) AS c FROM ${this.quoted}`)
+    const row = this.#conn
+      .prepare(`SELECT count(*) AS c FROM ${this.#quoted}`)
       .get() as { c: number | bigint };
     return Number(row.c);
   }
@@ -654,28 +683,28 @@ export class SqliteCollection {
   }
 
   // -- updates (filter pushed to SQL; mutation applied per matched doc) --
-  private matchingRows(filter?: Record<string, unknown> | null): { _id: string; doc: string }[] {
+  #matchingRows(filter?: Record<string, unknown> | null): { _id: string; doc: string }[] {
     const { where, params } = compileFilter(filter ?? {});
-    return this.connection
-      .prepare(`SELECT _id, doc FROM ${this.quoted} WHERE ${where}`)
+    return this.#conn
+      .prepare(`SELECT _id, doc FROM ${this.#quoted} WHERE ${where}`)
       .all(...(params as never[])) as { _id: string; doc: string }[];
   }
 
-  private firstMatch(filter?: Record<string, unknown> | null): { _id: string; doc: string } | null {
+  #firstMatch(filter?: Record<string, unknown> | null): { _id: string; doc: string } | null {
     const { where, params } = compileFilter(filter ?? {});
-    const row = this.connection
-      .prepare(`SELECT _id, doc FROM ${this.quoted} WHERE ${where} LIMIT 1`)
+    const row = this.#conn
+      .prepare(`SELECT _id, doc FROM ${this.#quoted} WHERE ${where} LIMIT 1`)
       .get(...(params as never[])) as { _id: string; doc: string } | undefined;
     return row ?? null;
   }
 
-  private writeBack(oldId: string, newDoc: Record<string, unknown>): void {
-    this.connection
-      .prepare(`UPDATE ${this.quoted} SET _id = ?, doc = ? WHERE _id = ?`)
-      .run(idKey(newDoc._id), this.dump(newDoc), oldId);
+  #writeBack(oldId: string, newDoc: Record<string, unknown>): void {
+    this.#conn
+      .prepare(`UPDATE ${this.#quoted} SET _id = ?, doc = ? WHERE _id = ?`)
+      .run(idKey(newDoc._id), dumpDoc(newDoc), oldId);
   }
 
-  private async doUpsert(filter: Record<string, unknown> | null | undefined, update: Record<string, unknown>): Promise<UpdateResult> {
+  async #doUpsert(filter: Record<string, unknown> | null | undefined, update: Record<string, unknown>): Promise<UpdateResult> {
     // Seed a document from the filter's equality terms, then apply the update.
     const seed: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(filter ?? {})) {
@@ -694,14 +723,14 @@ export class SqliteCollection {
     update: Record<string, unknown>,
     options?: { upsert?: boolean },
   ): Promise<UpdateResult> {
-    const row = this.firstMatch(filter);
+    const row = this.#firstMatch(filter);
     if (!row) {
-      if (options?.upsert) return this.doUpsert(filter, update);
+      if (options?.upsert) return this.#doUpsert(filter, update);
       return { acknowledged: true, matchedCount: 0, modifiedCount: 0, upsertedId: null };
     }
     const doc = decodeValue(JSON.parse(row.doc)) as Record<string, unknown>;
     const newDoc = applyUpdate(doc, update);
-    this.writeBack(row._id, newDoc);
+    this.#writeBack(row._id, newDoc);
     return { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedId: null };
   }
 
@@ -710,15 +739,15 @@ export class SqliteCollection {
     update: Record<string, unknown>,
     options?: { upsert?: boolean },
   ): Promise<UpdateResult> {
-    const rows = this.matchingRows(filter);
-    if (rows.length === 0 && options?.upsert) return this.doUpsert(filter, update);
+    const rows = this.#matchingRows(filter);
+    if (rows.length === 0 && options?.upsert) return this.#doUpsert(filter, update);
     let matched = 0;
     let modified = 0;
     for (const row of rows) {
       matched += 1;
       const doc = decodeValue(JSON.parse(row.doc)) as Record<string, unknown>;
       const newDoc = applyUpdate(doc, update);
-      this.writeBack(row._id, newDoc);
+      this.#writeBack(row._id, newDoc);
       modified += 1;
     }
     return { acknowledged: true, matchedCount: matched, modifiedCount: modified, upsertedId: null };
@@ -729,7 +758,7 @@ export class SqliteCollection {
     replacement: Record<string, unknown>,
     options?: { upsert?: boolean },
   ): Promise<UpdateResult> {
-    const row = this.firstMatch(filter);
+    const row = this.#firstMatch(filter);
     if (!row) {
       if (options?.upsert) {
         const doc = { ...replacement };
@@ -744,28 +773,28 @@ export class SqliteCollection {
       const existing = decodeValue(JSON.parse(row.doc)) as Record<string, unknown>;
       doc._id = existing._id;
     }
-    this.writeBack(row._id, doc);
+    this.#writeBack(row._id, doc);
     return { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedId: null };
   }
 
   // -- deletes --
   async deleteOne(filter?: Record<string, unknown> | null): Promise<DeleteResult> {
-    const row = this.firstMatch(filter);
+    const row = this.#firstMatch(filter);
     if (!row) return { acknowledged: true, deletedCount: 0 };
-    this.connection.prepare(`DELETE FROM ${this.quoted} WHERE _id = ?`).run(row._id);
+    this.#conn.prepare(`DELETE FROM ${this.#quoted} WHERE _id = ?`).run(row._id);
     return { acknowledged: true, deletedCount: 1 };
   }
 
   async deleteMany(filter?: Record<string, unknown> | null): Promise<DeleteResult> {
     const { where, params } = compileFilter(filter ?? {});
-    const result = this.connection
-      .prepare(`DELETE FROM ${this.quoted} WHERE ${where}`)
+    const result = this.#conn
+      .prepare(`DELETE FROM ${this.#quoted} WHERE ${where}`)
       .run(...(params as never[]));
     return { acknowledged: true, deletedCount: Number(result.changes) };
   }
 
   async drop(): Promise<void> {
-    this.connection.exec(`DROP TABLE IF EXISTS ${this.quoted}`);
+    this.#conn.exec(`DROP TABLE IF EXISTS ${this.#quoted}`);
   }
 }
 
