@@ -10,6 +10,18 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Fixed (a queue method could be a fatal error instead of resolving)
+
+Every public `Queue` method must RESOLVE on every backend the framework offers. A
+method that does not exist cannot even reach a refusal, so the upgrade path is
+severed rather than degraded.
+
+- No code change was needed. Node's rabbitmq/kafka throw-at-construction was listed
+  in the contract fixture as a violation of this rule; it is not. ADR-0022 decision 8
+  chose it deliberately over documenting an at-most-once data-loss footgun. The
+  FIXTURE was corrected, and a regression test now pins that those backends refuse
+  BY NAME rather than half-working.
+
 ### Fixed (queue priority was ignored on every backend but file)
 
 - `push(..., priority)` is now honoured on the `mongodb` backend: priority is stored
