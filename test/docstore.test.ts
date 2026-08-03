@@ -59,32 +59,32 @@ console.log("\n--- ObjectId ---");
 console.log("\n--- insert + find ---");
 {
   const { db, orders } = freshOrders();
-  const res = orders.insertOne({ customer_id: 1, total: 9.99 });
+  const res = await orders.insertOne({ customer_id: 1, total: 9.99 });
   assert("insertOne returns ObjectId", res.insertedId instanceof ObjectId);
-  const got = orders.findOne({ _id: res.insertedId });
+  const got = await orders.findOne({ _id: res.insertedId });
   assert("inserted doc readable", got!.customer_id === 1 && got!.total === 9.99);
   assert("_id rehydrated to ObjectId", (got!._id as ObjectId).equals(res.insertedId as ObjectId));
   db.close();
 }
 {
   const { db, orders } = freshOrders();
-  const ids = orders.insertMany(Array.from({ length: 5 }, (_, i) => ({ n: i }))).insertedIds;
+  const ids = (await orders.insertMany(Array.from({ length: 5 }, (_, i) => ({ n: i })))).insertedIds;
   assert("insertMany returns 5 ids", ids.length === 5);
-  assert("count after insertMany is 5", orders.countDocuments({}) === 5);
+  assert("count after insertMany is 5", await orders.countDocuments({}) === 5);
   db.close();
 }
 {
   const { db, orders } = freshOrders();
-  orders.insertOne({ _id: "ORD-1", x: 1 });
-  assert("custom _id preserved", orders.findOne({ _id: "ORD-1" })!.x === 1);
+  await orders.insertOne({ _id: "ORD-1", x: 1 });
+  assert("custom _id preserved", (await orders.findOne({ _id: "ORD-1" }))!.x === 1);
   db.close();
 }
 
 // ── filter operators (pushed to SQL via json_extract) ───────────────────────
 console.log("\n--- filter operators ---");
-function seeded(): { db: SqliteDatabase; orders: SqliteCollection } {
+async function seeded(): Promise<{ db: SqliteDatabase; orders: SqliteCollection }> {
   const { db, orders } = freshOrders();
-  orders.insertMany([
+  await orders.insertMany([
     { customer_id: 1, status: "new", total: 10, tags: ["a"] },
     { customer_id: 2, status: "shipped", total: 50 },
     { customer_id: 3, status: "shipped", total: 99, vip: true },
@@ -92,23 +92,23 @@ function seeded(): { db: SqliteDatabase; orders: SqliteCollection } {
   return { db, orders };
 }
 {
-  const { db, orders } = seeded();
-  assert("equality", orders.countDocuments({ status: "shipped" }) === 2);
+  const { db, orders } = await seeded();
+  assert("equality", await orders.countDocuments({ status: "shipped" }) === 2);
 
-  const inGot = orders.find({ customer_id: { $in: [1, 3] } }).toArray();
+  const inGot = await orders.find({ customer_id: { $in: [1, 3] } }).toArray();
   assert("$in", new Set(inGot.map((d) => d.customer_id)).size === 2 &&
     inGot.every((d) => [1, 3].includes(d.customer_id as number)));
 
-  assert("$gt", orders.countDocuments({ total: { $gt: 10 } }) === 2);
-  assert("$gte+$lt", orders.countDocuments({ total: { $gte: 10, $lt: 99 } }) === 2);
-  assert("$lte", orders.countDocuments({ total: { $lte: 10 } }) === 1);
-  assert("$ne", orders.countDocuments({ status: { $ne: "shipped" } }) === 1);
-  assert("$exists true", orders.countDocuments({ vip: { $exists: true } }) === 1);
-  assert("$exists false", orders.countDocuments({ vip: { $exists: false } }) === 2);
-  assert("$nin", orders.countDocuments({ customer_id: { $nin: [1, 2] } }) === 1);
-  assert("$regex", orders.countDocuments({ status: { $regex: "^ship" } }) === 2);
+  assert("$gt", await orders.countDocuments({ total: { $gt: 10 } }) === 2);
+  assert("$gte+$lt", await orders.countDocuments({ total: { $gte: 10, $lt: 99 } }) === 2);
+  assert("$lte", await orders.countDocuments({ total: { $lte: 10 } }) === 1);
+  assert("$ne", await orders.countDocuments({ status: { $ne: "shipped" } }) === 1);
+  assert("$exists true", await orders.countDocuments({ vip: { $exists: true } }) === 1);
+  assert("$exists false", await orders.countDocuments({ vip: { $exists: false } }) === 2);
+  assert("$nin", await orders.countDocuments({ customer_id: { $nin: [1, 2] } }) === 1);
+  assert("$regex", await orders.countDocuments({ status: { $regex: "^ship" } }) === 2);
 
-  const orGot = orders.find({ $or: [{ customer_id: 1 }, { total: { $gt: 90 } }] }).toArray();
+  const orGot = await orders.find({ $or: [{ customer_id: 1 }, { total: { $gt: 90 } }] }).toArray();
   assert("$or", new Set(orGot.map((d) => d.customer_id)).size === 2 &&
     orGot.every((d) => [1, 3].includes(d.customer_id as number)));
 
@@ -125,24 +125,24 @@ function seeded(): { db: SqliteDatabase; orders: SqliteCollection } {
 
 // ── cursor: sort / limit / skip / projection ────────────────────────────────
 console.log("\n--- cursor ---");
-function tenDocs(): { db: SqliteDatabase; orders: SqliteCollection } {
+async function tenDocs(): Promise<{ db: SqliteDatabase; orders: SqliteCollection }> {
   const { db, orders } = freshOrders();
-  orders.insertMany(Array.from({ length: 10 }, (_, i) => ({ n: i, grp: "g" })));
+  await orders.insertMany(Array.from({ length: 10 }, (_, i) => ({ n: i, grp: "g" })));
   return { db, orders };
 }
 {
-  const { db, orders } = tenDocs();
-  const desc = orders.find({ grp: "g" }).sort("n", -1).toArray();
+  const { db, orders } = await tenDocs();
+  const desc = await orders.find({ grp: "g" }).sort("n", -1).toArray();
   assert("sort desc", JSON.stringify(desc.map((d) => d.n)) ===
     JSON.stringify(Array.from({ length: 10 }, (_, i) => 9 - i)));
 
-  const sl = orders.find({ grp: "g" }).sort("n", 1).skip(2).limit(3).toArray();
+  const sl = await orders.find({ grp: "g" }).sort("n", 1).skip(2).limit(3).toArray();
   assert("limit+skip", JSON.stringify(sl.map((d) => d.n)) === JSON.stringify([2, 3, 4]));
 
-  const inc = orders.findOne({ n: 5 }, { n: 1, _id: 0 });
+  const inc = await orders.findOne({ n: 5 }, { n: 1, _id: 0 });
   assert("projection include", JSON.stringify(inc) === JSON.stringify({ n: 5 }));
 
-  const exc = orders.findOne({ n: 5 }, { grp: 0 });
+  const exc = await orders.findOne({ n: 5 }, { grp: 0 });
   assert("projection exclude", !("grp" in exc!) && exc!.n === 5 && "_id" in exc!);
 
   db.close();
@@ -153,15 +153,15 @@ console.log("\n--- Date round-trip + sort ---");
 {
   const { db, orders } = freshOrders();
   const base = new Date("2024-01-01T00:00:00Z");
-  orders.insertMany([
+  await orders.insertMany([
     { k: "b", created_at: new Date("2024-03-01T00:00:00Z") },
     { k: "a", created_at: new Date("2024-01-01T00:00:00Z") },
     { k: "c", created_at: new Date("2024-06-01T00:00:00Z") },
   ]);
-  const got = orders.find({}).sort("created_at", -1).toArray();
+  const got = await orders.find({}).sort("created_at", -1).toArray();
   assert("date sort desc", JSON.stringify(got.map((d) => d.k)) === JSON.stringify(["c", "b", "a"]));
   assert("date rehydrated to Date", got[0].created_at instanceof Date);
-  assert("date range query ($gte base)", orders.countDocuments({ created_at: { $gte: base } }) === 3);
+  assert("date range query ($gte base)", await orders.countDocuments({ created_at: { $gte: base } }) === 3);
   db.close();
 }
 
@@ -170,10 +170,10 @@ console.log("\n--- ObjectId field round-trip ---");
 {
   const { db, orders } = freshOrders();
   const ref = new ObjectId();
-  orders.insertOne({ ref });
-  const got = orders.findOne({});
+  await orders.insertOne({ ref });
+  const got = await orders.findOne({});
   assert("ObjectId field rehydrated", got!.ref instanceof ObjectId && (got!.ref as ObjectId).equals(ref));
-  assert("ObjectId field queryable by value", orders.countDocuments({ ref }) === 1);
+  assert("ObjectId field queryable by value", await orders.countDocuments({ ref }) === 1);
   db.close();
 }
 
@@ -181,42 +181,42 @@ console.log("\n--- ObjectId field round-trip ---");
 console.log("\n--- updates ---");
 {
   const { db, orders } = freshOrders();
-  const oid = orders.insertOne({ status: "new", count: 1, tmp: "x" }).insertedId;
-  orders.updateOne({ _id: oid }, { $set: { status: "shipped" } });
-  orders.updateOne({ _id: oid }, { $inc: { count: 5 } });
-  orders.updateOne({ _id: oid }, { $unset: { tmp: "" } });
-  const d = orders.findOne({ _id: oid })!;
+  const oid = (await orders.insertOne({ status: "new", count: 1, tmp: "x" })).insertedId;
+  await orders.updateOne({ _id: oid }, { $set: { status: "shipped" } });
+  await orders.updateOne({ _id: oid }, { $inc: { count: 5 } });
+  await orders.updateOne({ _id: oid }, { $unset: { tmp: "" } });
+  const d = await orders.findOne({ _id: oid })!;
   assert("$set/$inc/$unset", d.status === "shipped" && d.count === 6 && !("tmp" in d));
   db.close();
 }
 {
   const { db, orders } = freshOrders();
-  orders.insertMany([{ s: "a" }, { s: "a" }, { s: "b" }]);
-  const res = orders.updateMany({ s: "a" }, { $set: { s: "z" } });
+  await orders.insertMany([{ s: "a" }, { s: "a" }, { s: "b" }]);
+  const res = await orders.updateMany({ s: "a" }, { $set: { s: "z" } });
   assert("updateMany counts", res.matchedCount === 2 && res.modifiedCount === 2);
-  assert("updateMany applied", orders.countDocuments({ s: "z" }) === 2);
+  assert("updateMany applied", await orders.countDocuments({ s: "z" }) === 2);
   db.close();
 }
 {
   const { db, orders } = freshOrders();
-  const oid = orders.insertOne({ a: 1 }).insertedId;
-  orders.replaceOne({ _id: oid }, { b: 2 });
-  const d = orders.findOne({ _id: oid })!;
+  const oid = (await orders.insertOne({ a: 1 })).insertedId;
+  await orders.replaceOne({ _id: oid }, { b: 2 });
+  const d = await orders.findOne({ _id: oid })!;
   assert("replaceOne keeps _id, drops old fields", d.b === 2 && !("a" in d) && (d._id as ObjectId).equals(oid as ObjectId));
   db.close();
 }
 {
   const { db, orders } = freshOrders();
-  const res = orders.updateOne({ sku: "X1" }, { $set: { qty: 3 } }, { upsert: true });
+  const res = await orders.updateOne({ sku: "X1" }, { $set: { qty: 3 } }, { upsert: true });
   assert("upsert returns upsertedId", res.upsertedId !== null);
-  assert("upsert created doc", orders.findOne({ sku: "X1" })!.qty === 3);
+  assert("upsert created doc", (await orders.findOne({ sku: "X1" }))!.qty === 3);
   db.close();
 }
 {
   const { db, orders } = freshOrders();
-  const oid = orders.insertOne({ a: { b: 1 } }).insertedId;
-  orders.updateOne({ _id: oid }, { $set: { "a.c": 2 } });
-  const d = orders.findOne({ _id: oid })!;
+  const oid = (await orders.insertOne({ a: { b: 1 } })).insertedId;
+  await orders.updateOne({ _id: oid }, { $set: { "a.c": 2 } });
+  const d = await orders.findOne({ _id: oid })!;
   assert("nested $set", JSON.stringify(d.a) === JSON.stringify({ b: 1, c: 2 }));
   db.close();
 }
@@ -225,17 +225,17 @@ console.log("\n--- updates ---");
 console.log("\n--- deletes + nested filter ---");
 {
   const { db, orders } = freshOrders();
-  orders.insertMany([{ s: "a" }, { s: "a" }, { s: "b" }]);
-  assert("deleteOne count 1", orders.deleteOne({ s: "a" }).deletedCount === 1);
-  assert("deleteMany count 1", orders.deleteMany({ s: "a" }).deletedCount === 1);
-  assert("count after deletes", orders.countDocuments({}) === 1);
+  await orders.insertMany([{ s: "a" }, { s: "a" }, { s: "b" }]);
+  assert("deleteOne count 1", (await orders.deleteOne({ s: "a" })).deletedCount === 1);
+  assert("deleteMany count 1", (await orders.deleteMany({ s: "a" })).deletedCount === 1);
+  assert("count after deletes", await orders.countDocuments({}) === 1);
   db.close();
 }
 {
   const { db, orders } = freshOrders();
-  orders.insertOne({ addr: { city: "Cape Town" } });
-  orders.insertOne({ addr: { city: "Joburg" } });
-  assert("nested dotted filter", orders.countDocuments({ "addr.city": "Cape Town" }) === 1);
+  await orders.insertOne({ addr: { city: "Cape Town" } });
+  await orders.insertOne({ addr: { city: "Joburg" } });
+  assert("nested dotted filter", await orders.countDocuments({ "addr.city": "Cape Town" }) === 1);
   db.close();
 }
 
@@ -243,8 +243,8 @@ console.log("\n--- deletes + nested filter ---");
 console.log("\n--- database collection access ---");
 {
   const db = new SqliteDatabase(":memory:");
-  db.getCollection("a").insertOne({ x: 1 });
-  assert("getCollection count", db.getCollection("a").countDocuments({}) === 1);
+  await db.getCollection("a").insertOne({ x: 1 });
+  assert("getCollection count", await db.getCollection("a").countDocuments({}) === 1);
   assert("listCollectionNames includes 'a'", db.listCollectionNames().includes("a"));
   db.close();
 }
@@ -262,11 +262,11 @@ console.log("\n--- serverless selection ---");
   const prevPath = process.env.TINA4_DOC_STORE_PATH;
   process.env.TINA4_DOC_STORE_PATH = join(tmp, "ds.db");
   resetDefaultStore();
-  const col = getCollection("widgets");
+  const col = await getCollection("widgets");
   assert("getCollection returns SqliteCollection when serverless", col instanceof SqliteCollection);
   if (col instanceof SqliteCollection) {
-    col.insertOne({ name: "bolt" });
-    assert("serverless collection persists + reads", col.findOne({ name: "bolt" })!.name === "bolt");
+    await col.insertOne({ name: "bolt" });
+    assert("serverless collection persists + reads", (await col.findOne({ name: "bolt" }))!.name === "bolt");
   }
   resetDefaultStore();
 

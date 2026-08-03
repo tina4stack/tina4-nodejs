@@ -6,7 +6,7 @@
  *
  *     import { getCollection, ObjectId } from "@tina4/orm";
  *
- *     const orders = getCollection("orders");          // SqliteCollection when no Mongo configured
+ *     const orders = await getCollection("orders");    // SqliteCollection when no Mongo configured
  *     const { insertedId } = await orders.insertOne({ customer_id: 1, total: 9.99 });
  *     for (const o of await orders.find({ customer_id: { $in: [1, 2] } }).sort("created_at", -1).limit(10).toArray()) {
  *       // ...
@@ -468,22 +468,34 @@ export class Cursor {
     return sql;
   }
 
-  /** Materialise the cursor into an array of decoded documents. */
-  toArray(): Record<string, unknown>[] {
+  /**
+   * Materialise the cursor into an array of decoded documents.
+   *
+   * ASYNC because the driver's FindCursor.toArray() is async (ADR-0025 clause
+   * 3). The work underneath is synchronous - node:sqlite has no async API - but
+   * the SHAPE is what a call site sees, and a shape that changes with the
+   * provider is the defect this fixes.
+   */
+  async toArray(): Promise<Record<string, unknown>[]> {
     const rows = this.collection.connection
       .prepare(this.buildSql())
       .all(...(this.params as never[])) as { doc: string }[];
     return rows.map((r) => this.collection.load(r.doc, this.projection));
   }
 
-  /** Alias for toArray() (pymongo's to_list / driver's toArray). */
-  toList(length?: number): Record<string, unknown>[] {
-    const out = this.toArray();
-    return length === undefined ? out : out.slice(0, length);
-  }
-
-  [Symbol.iterator](): Iterator<Record<string, unknown>> {
-    return this.toArray()[Symbol.iterator]();
+  /**
+   * Async iteration, matching the driver.
+   *
+   * NOTE: there is deliberately no [Symbol.iterator] here. A real FindCursor
+   * has ONLY Symbol.asyncIterator, so `for (const doc of cursor)` is a
+   * fallback-only spelling - it works locally and throws "is not iterable" the
+   * moment TINA4_MONGO_URI is set. Use `for await (const doc of cursor)`.
+   *
+   * toList() is gone for the same reason: the driver's FindCursor has no such
+   * method.
+   */
+  async *[Symbol.asyncIterator](): AsyncIterator<Record<string, unknown>> {
+    for (const doc of await this.toArray()) yield doc;
   }
 }
 
@@ -517,7 +529,7 @@ export class SqliteCollection {
   }
 
   // -- writes --
-  insertOne(document: Record<string, unknown>): InsertOneResult {
+  async insertOne(document: Record<string, unknown>): Promise<InsertOneResult> {
     const doc = { ...document };
     if (!("_id" in doc)) doc._id = new ObjectId();
     this.connection
@@ -526,7 +538,7 @@ export class SqliteCollection {
     return { acknowledged: true, insertedId: doc._id };
   }
 
-  insertMany(documents: Record<string, unknown>[]): InsertManyResult {
+  async insertMany(documents: Record<string, unknown>[]): Promise<InsertManyResult> {
     const ids: unknown[] = [];
     const stmt = this.connection.prepare(`INSERT INTO ${this.quoted} (_id, doc) VALUES (?, ?)`);
     for (const document of documents) {
@@ -544,15 +556,15 @@ export class SqliteCollection {
     return new Cursor(this, where, params, projection);
   }
 
-  findOne(
+  async findOne(
     filter?: Record<string, unknown> | null,
     projection?: Record<string, unknown> | null,
-  ): Record<string, unknown> | null {
-    const results = this.find(filter, projection).limit(1).toArray();
+  ): Promise<Record<string, unknown> | null> {
+    const results = await this.find(filter, projection).limit(1).toArray();
     return results.length ? results[0] : null;
   }
 
-  countDocuments(filter?: Record<string, unknown> | null): number {
+  async countDocuments(filter?: Record<string, unknown> | null): Promise<number> {
     const { where, params } = compileFilter(filter ?? {});
     const row = this.connection
       .prepare(`SELECT count(*) AS c FROM ${this.quoted} WHERE ${where}`)
@@ -560,16 +572,16 @@ export class SqliteCollection {
     return Number(row.c);
   }
 
-  estimatedDocumentCount(): number {
+  async estimatedDocumentCount(): Promise<number> {
     const row = this.connection
       .prepare(`SELECT count(*) AS c FROM ${this.quoted}`)
       .get() as { c: number | bigint };
     return Number(row.c);
   }
 
-  distinct(key: string, filter?: Record<string, unknown> | null): unknown[] {
+  async distinct(key: string, filter?: Record<string, unknown> | null): Promise<unknown[]> {
     const seen: unknown[] = [];
-    for (const doc of this.find(filter).toArray()) {
+    for (const doc of await this.find(filter).toArray()) {
       const v = doc[key];
       if (!seen.some((s) => valuesEqual(s, v))) seen.push(v);
     }
@@ -598,7 +610,7 @@ export class SqliteCollection {
       .run(idKey(newDoc._id), this.dump(newDoc), oldId);
   }
 
-  private doUpsert(filter: Record<string, unknown> | null | undefined, update: Record<string, unknown>): UpdateResult {
+  private async doUpsert(filter: Record<string, unknown> | null | undefined, update: Record<string, unknown>): Promise<UpdateResult> {
     // Seed a document from the filter's equality terms, then apply the update.
     const seed: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(filter ?? {})) {
@@ -608,15 +620,15 @@ export class SqliteCollection {
     }
     const doc = applyUpdate(seed, update);
     if (!("_id" in doc)) doc._id = new ObjectId();
-    this.insertOne(doc);
+    await this.insertOne(doc);
     return { acknowledged: true, matchedCount: 0, modifiedCount: 0, upsertedId: doc._id };
   }
 
-  updateOne(
+  async updateOne(
     filter: Record<string, unknown> | null | undefined,
     update: Record<string, unknown>,
     options?: { upsert?: boolean },
-  ): UpdateResult {
+  ): Promise<UpdateResult> {
     const row = this.firstMatch(filter);
     if (!row) {
       if (options?.upsert) return this.doUpsert(filter, update);
@@ -628,11 +640,11 @@ export class SqliteCollection {
     return { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedId: null };
   }
 
-  updateMany(
+  async updateMany(
     filter: Record<string, unknown> | null | undefined,
     update: Record<string, unknown>,
     options?: { upsert?: boolean },
-  ): UpdateResult {
+  ): Promise<UpdateResult> {
     const rows = this.matchingRows(filter);
     if (rows.length === 0 && options?.upsert) return this.doUpsert(filter, update);
     let matched = 0;
@@ -647,17 +659,17 @@ export class SqliteCollection {
     return { acknowledged: true, matchedCount: matched, modifiedCount: modified, upsertedId: null };
   }
 
-  replaceOne(
+  async replaceOne(
     filter: Record<string, unknown> | null | undefined,
     replacement: Record<string, unknown>,
     options?: { upsert?: boolean },
-  ): UpdateResult {
+  ): Promise<UpdateResult> {
     const row = this.firstMatch(filter);
     if (!row) {
       if (options?.upsert) {
         const doc = { ...replacement };
         if (!("_id" in doc)) doc._id = new ObjectId();
-        this.insertOne(doc);
+        await this.insertOne(doc);
         return { acknowledged: true, matchedCount: 0, modifiedCount: 0, upsertedId: doc._id };
       }
       return { acknowledged: true, matchedCount: 0, modifiedCount: 0, upsertedId: null };
@@ -672,14 +684,14 @@ export class SqliteCollection {
   }
 
   // -- deletes --
-  deleteOne(filter?: Record<string, unknown> | null): DeleteResult {
+  async deleteOne(filter?: Record<string, unknown> | null): Promise<DeleteResult> {
     const row = this.firstMatch(filter);
     if (!row) return { acknowledged: true, deletedCount: 0 };
     this.connection.prepare(`DELETE FROM ${this.quoted} WHERE _id = ?`).run(row._id);
     return { acknowledged: true, deletedCount: 1 };
   }
 
-  deleteMany(filter?: Record<string, unknown> | null): DeleteResult {
+  async deleteMany(filter?: Record<string, unknown> | null): Promise<DeleteResult> {
     const { where, params } = compileFilter(filter ?? {});
     const result = this.connection
       .prepare(`DELETE FROM ${this.quoted} WHERE ${where}`)
@@ -687,7 +699,7 @@ export class SqliteCollection {
     return { acknowledged: true, deletedCount: Number(result.changes) };
   }
 
-  drop(): void {
+  async drop(): Promise<void> {
     this.connection.exec(`DROP TABLE IF EXISTS ${this.quoted}`);
   }
 }
@@ -792,22 +804,25 @@ function getDb(): SqliteDatabase {
  * `mongodb` driver is installed); otherwise a `SqliteCollection` backed by the
  * local SQLite file. Same call sites either way - only the backend differs.
  *
- * The real-Mongo path is async (the driver connects lazily), so this returns a
- * Promise when Mongo is configured. In serverless mode it returns a
- * SqliteCollection synchronously (the common local-dev case).
+ * ALWAYS async, on BOTH providers (ADR-0025 clause 3).
+ *
+ * It used to return a SqliteCollection SYNCHRONOUSLY in serverless mode and a
+ * Promise on the real-Mongo path. That made identical source change TYPE when
+ * TINA4_MONGO_URI was set, and a Promise is always truthy - so un-awaited code
+ * read a real document locally and a thenable in production, and `if (doc)`
+ * succeeded for a document that did not exist. The driver cannot become sync,
+ * so the fallback becomes async.
  */
-export function getCollection(name: string): SqliteCollection | Promise<unknown> {
+export async function getCollection(name: string): Promise<SqliteCollection | unknown> {
   if (isServerless()) {
     return getDb().getCollection(name);
   }
-  return (async () => {
-    const { MongoClient } = await import("mongodb");
-    const uri = mongoUri();
-    const dbName = process.env.TINA4_MONGO_DB || process.env.TINA4_SESSION_MONGO_DB || "tina4";
-    const client = new MongoClient(uri);
-    await client.connect();
-    return client.db(dbName).collection(name);
-  })();
+  const { MongoClient } = await import("mongodb");
+  const uri = mongoUri();
+  const dbName = process.env.TINA4_MONGO_DB || process.env.TINA4_SESSION_MONGO_DB || "tina4";
+  const client = new MongoClient(uri);
+  await client.connect();
+  return client.db(dbName).collection(name);
 }
 
 /** Drop the cached default SQLite store (test helper). */

@@ -250,20 +250,23 @@ db.cacheStats(): { enabled, size, ttl }   // synchronous
 
 ### DocStore — pymongo-style document store (zero-config SQLite fallback)
 
-`getCollection(name)` (from `@tina4/orm`) returns a Mongo-style collection. When a Mongo URI is configured it is a real Mongo collection (resolved lazily, returns a Promise); otherwise it is a `SqliteCollection` backed by a local SQLite file (`node:sqlite`, JSON1) and is synchronous. The call sites are identical either way — only the backend differs — so you develop against a zero-dependency local store and switch to MongoDB in production by setting one env var. Because `node:sqlite` is synchronous, `getCollection` is sync in the serverless path and returns a Promise only on the real-Mongo path.
+`getCollection(name)` (from `@tina4/orm`) returns a Mongo-style collection. When a Mongo URI is configured it is a real Mongo collection; otherwise it is a `SqliteCollection` backed by a local SQLite file (`node:sqlite`, JSON1). The call sites are identical either way — only the backend differs — so you develop against a zero-dependency local store and switch to MongoDB in production by setting one env var.
+
+**The API is ASYNC on both providers (ADR-0025).** `getCollection` and every collection method return a Promise; `find()` is sync and returns a cursor whose `toArray()` is async, exactly matching the MongoDB driver. `node:sqlite` is synchronous underneath, but the SHAPE never changes with the provider — before 3.13.95 the fallback was fully sync, so identical source changed TYPE when `TINA4_MONGO_URI` was set, and because a Promise is always truthy, `if (doc)` succeeded for a document that did not exist.
 
 ```typescript
 import { getCollection, isServerless, ObjectId } from "@tina4/orm";
 
-const orders = getCollection("orders") as any; // SqliteCollection in serverless mode
-const res = orders.insertOne({ customer_id: 1, total: 9.99, status: "new" });
-orders.findOne({ _id: res.insertedId });
-orders.updateOne({ _id: res.insertedId }, { $set: { status: "shipped" } });
-for (const doc of orders.find({ total: { $gt: 5 } }).sort("total", -1).limit(10)) {
+const orders = (await getCollection("orders")) as any;
+const res = await orders.insertOne({ customer_id: 1, total: 9.99, status: "new" });
+await orders.findOne({ _id: res.insertedId });
+await orders.updateOne({ _id: res.insertedId }, { $set: { status: "shipped" } });
+// for await — a real FindCursor has Symbol.asyncIterator only, never Symbol.iterator
+for await (const doc of orders.find({ total: { $gt: 5 } }).sort("total", -1).limit(10)) {
   // ...
 }
-orders.countDocuments({ status: "shipped" });
-isServerless();   // true when running on the SQLite fallback
+await orders.countDocuments({ status: "shipped" });
+isServerless();   // true when running on the SQLite fallback (sync — reads config only)
 ```
 
 Filter operators: equality, `$in`, `$nin`, `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$exists`, `$regex`, implicit AND, `$or`, `$and`, and dotted nested keys (`addr.city`). Updates: `$set`, `$unset`, `$inc`, replace, upsert. Cursors: `sort`, `limit`, `skip`, projection. Values round-trip (Date to/from ISO-8601, `ObjectId` to/from 24-hex) and stay queryable via `json_extract`. Non-goals: aggregation pipelines, `$elemMatch`, geo queries.

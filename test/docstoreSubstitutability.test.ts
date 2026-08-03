@@ -18,23 +18,35 @@
  *   Every shared case runs TWICE - once on the SQLite fallback, once on a REAL
  *   MongoDB. A divergence between the two IS the bug.
  *
- * NODE'S OWN DEFECT SHAPES THIS FILE
- *   MEASURED 2026-08-03: getCollection() and insertOne() return a VALUE on the
- *   fallback and a PROMISE on the real driver. Identical source therefore
- *   changes TYPE when the env var changes, and a Promise is always truthy - so
- *   `if (doc)` succeeds for a document that does not exist. Every call below is
- *   funnelled through settle() so the harness can run against both shapes and
- *   REPORT the divergence rather than being defeated by it.
+ * NODE'S OWN DEFECT, NOW CLOSED (ADR-0025 clause 3)
+ *   MEASURED 2026-08-03: getCollection() and insertOne() returned a VALUE on
+ *   the fallback and a PROMISE on the real driver. Identical source therefore
+ *   changed TYPE when the env var changed, and a Promise is always truthy - so
+ *   `if (doc)` succeeded for a document that did not exist.
+ *
+ *   This file used to funnel every call through a settle() helper that accepted
+ *   either shape, so the harness could REPORT the divergence rather than be
+ *   defeated by it. The fallback is now async on both providers, so settle() is
+ *   gone and plain `await` works everywhere - which is the whole point.
  *
  * NO MOCKS. A real SQLite file and a real MongoDB over a real socket. Skips
  * loudly when no Mongo is reachable.
  */
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MONGO_URI = process.env.TINA4_TEST_MONGO_URI ?? "mongodb://192.168.88.99:27017";
-const ORM = "/Users/andrevanzuydam/IdeaProjects/tina4-nodejs/packages/orm/src/index.ts";
+
+// Resolved from THIS file, never hardcoded. An absolute developer-machine path
+// here passed locally and died with ERR_MODULE_NOT_FOUND on every other host -
+// measured on the lab box, where it was the suite's only failing file. Each
+// provider needs a fresh module instance, so the import is cache-busted, which
+// means a real URL rather than a bare path.
+const ORM = pathToFileURL(
+  join(dirname(fileURLToPath(import.meta.url)), "..", "packages", "orm", "src", "index.ts"),
+).href;
 
 let pass = 0;
 let fail = 0;
@@ -46,11 +58,6 @@ function assert(name: string, condition: boolean, detail = "") {
     fail++;
     console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
   }
-}
-
-/** Accept a value OR a promise - the divergence this file exists to measure. */
-async function settle<T>(v: T | Promise<T>): Promise<T> {
-  return v && typeof (v as any).then === "function" ? await (v as Promise<T>) : (v as T);
 }
 
 /** A real connect, not a port probe: a port that merely accepts is not a usable Mongo. */
@@ -74,7 +81,7 @@ async function collectionFor(uri: string | null): Promise<any> {
   process.env.TINA4_DOC_STORE_PATH = join(mkdtempSync(join(tmpdir(), "ds")), "ds.db");
   const mod = await import(ORM + "?t=" + Math.random());
   const name = "ds_contract_" + Math.random().toString(16).slice(2, 10);
-  return { mod, collection: await settle(mod.getCollection(name)) };
+  return { mod, collection: await mod.getCollection(name) };
 }
 
 async function run() {
@@ -90,11 +97,11 @@ async function run() {
     assert("a configured URI does not return the SQLite fallback",
       collection?.constructor?.name !== "SqliteCollection", collection?.constructor?.name);
     // POSITIVE: it really round-trips through the server.
-    await settle(collection.insertOne({ proof: "real-mongo" }));
-    const found = await settle(collection.findOne({ proof: "real-mongo" }));
+    await collection.insertOne({ proof: "real-mongo" });
+    const found = await collection.findOne({ proof: "real-mongo" });
     assert("a real mongo collection round-trips a document", found?.proof === "real-mongo");
     assert("isServerless() agrees a URI means not-serverless", mod.isServerless() === false);
-    await settle(collection.deleteMany({}));
+    await collection.deleteMany({});
   }
 
   // ── the shared round trip, on BOTH providers ──────────────────────────────
@@ -106,66 +113,78 @@ async function run() {
     }
     const { collection } = await collectionFor(uri);
 
-    await settle(collection.insertOne({ name: "alpha", n: 5 }));
-    const found = await settle(collection.findOne({ name: "alpha" }));
+    await collection.insertOne({ name: "alpha", n: 5 });
+    const found = await collection.findOne({ name: "alpha" });
     assert(`${label}: insert then findOne returns what was stored`, found?.n === 5, JSON.stringify(found));
 
-    await settle(collection.insertOne({ name: "beta", status: "new" }));
-    await settle(collection.updateOne({ name: "beta" }, { $set: { status: "shipped" } }));
-    const updated = await settle(collection.findOne({ name: "beta" }));
+    await collection.insertOne({ name: "beta", status: "new" });
+    await collection.updateOne({ name: "beta" }, { $set: { status: "shipped" } });
+    const updated = await collection.findOne({ name: "beta" });
     assert(`${label}: an update is visible to the next read`, updated?.status === "shipped");
 
-    for (let i = 0; i < 3; i++) await settle(collection.insertOne({ batch: "c", i }));
-    const counted = await settle(collection.countDocuments({ batch: "c" }));
+    for (let i = 0; i < 3; i++) await collection.insertOne({ batch: "c", i });
+    const counted = await collection.countDocuments({ batch: "c" });
     assert(`${label}: countDocuments agrees with what was inserted`, counted === 3, String(counted));
 
-    for (const n of [1, 5, 9]) await settle(collection.insertOne({ grp: "d", n }));
-    const cursor = collection.find({ grp: "d", n: { $gt: 4 } });
-    const rows = cursor?.toArray ? await cursor.toArray() : [...(await settle(cursor) as any)];
+    for (const n of [1, 5, 9]) await collection.insertOne({ grp: "d", n });
+    const rows = await collection.find({ grp: "d", n: { $gt: 4 } }).toArray();
     assert(`${label}: $gt filters identically`, rows.length === 2, String(rows.length));
 
-    await settle(collection.deleteMany({}));
+    await collection.deleteMany({});
   }
 
-  // ── OPEN DEFECTS: measured, reported, deliberately not asserted ────────────
+  // ── ADR-0025 clause 3: the sync/async shape (ASSERTED) ────────────────────
   //
   // docstore_contract.json :: the-sync-async-shape-does-not-change-with-the-provider
   //
-  // MEASURED 2026-08-03. This is Node's own defect and the nastiest of the four
-  // frameworks', because it changes the TYPE rather than the value:
+  // MEASURED 2026-08-03 as Node's own defect, and the nastiest of the four
+  // frameworks', because it changed the TYPE rather than the value:
   //
   //     getCollection()  fallback: a value   mongo: a PROMISE
   //     insertOne()      fallback: a value   mongo: a PROMISE
   //
-  // Un-awaited code gets a real document locally and a Promise in production,
-  // and a Promise is ALWAYS TRUTHY - so `if (doc)` succeeds for a document that
-  // does not exist. Reported rather than asserted because the fix is a breaking
-  // API decision (make the fallback async, or the driver path sync), not a
-  // quiet edit.
-  console.log("\n--- open defect: the sync/async shape changes with the provider ---");
-  const shapes: Record<string, unknown> = {};
+  // Un-awaited code got a real document locally and a Promise in production,
+  // and a Promise is ALWAYS TRUTHY - so `if (doc)` succeeded for a document
+  // that did not exist. ADR-0025 clause 3: the driver cannot become sync, so
+  // the fallback becomes async. Now a gate rather than a printed observation.
+  console.log("\n--- the sync/async shape does not change with the provider ---");
   for (const [label, uri] of [["fallback", null], ["mongo", MONGO_URI]] as const) {
-    if (label === "mongo" && !hasMongo) { shapes[label] = "skipped (no mongo)"; continue; }
+    if (label === "mongo" && !hasMongo) {
+      console.log(`  \x1b[33mSKIP\x1b[0m no reachable MongoDB`);
+      continue;
+    }
     for (const k of ["TINA4_MONGO_URI", "TINA4_SESSION_MONGO_URI", "TINA4_SESSION_MONGO_URL"]) delete process.env[k];
     if (uri) process.env.TINA4_MONGO_URI = uri;
     process.env.TINA4_DOC_STORE_PATH = join(mkdtempSync(join(tmpdir(), "ds")), "ds.db");
     const mod = await import(ORM + "?t=" + Math.random());
-    const raw = mod.getCollection("shape_" + Math.random().toString(16).slice(2, 8));
-    const isPromise = raw && typeof (raw as any).then === "function";
-    const collection = await settle(raw);
-    const rawInsert = collection.insertOne({ probe: "shape" });
-    shapes[label] = {
-      getCollection: isPromise ? "PROMISE" : "value",
-      insertOne: rawInsert && typeof rawInsert.then === "function" ? "PROMISE" : "value",
-    };
-    await settle(rawInsert);
-    await settle(collection.deleteMany({}));
-  }
-  console.log("    " + JSON.stringify(shapes));
 
-  // The one thing asserted: settle() makes BOTH shapes usable, so the harness
-  // itself is provider-agnostic even while the framework is not.
-  assert("the harness survives both shapes via settle()", Object.keys(shapes).length === 2);
+    // POSITIVE: both entry points are thenable on BOTH providers, so identical
+    // source keeps its type when the env var changes.
+    const raw = mod.getCollection("shape_" + Math.random().toString(16).slice(2, 8));
+    assert(`${label}: getCollection returns a promise`,
+      typeof raw?.then === "function", typeof raw);
+    const collection = await raw;
+    const rawInsert = collection.insertOne({ probe: "shape" });
+    assert(`${label}: insertOne returns a promise`,
+      typeof rawInsert?.then === "function", typeof rawInsert);
+    await rawInsert;
+
+    // NEGATIVE: a real FindCursor has ONLY Symbol.asyncIterator. A sync-iterable
+    // cursor is a fallback-only spelling - `for (const d of cursor)` would work
+    // locally and throw "is not iterable" in production, which is exactly the
+    // class of defect this ADR closes.
+    const cursor = collection.find({ probe: "shape" });
+    assert(`${label}: the cursor is async-iterable`,
+      typeof cursor?.[Symbol.asyncIterator] === "function");
+    assert(`${label}: the cursor is NOT sync-iterable`,
+      typeof cursor?.[Symbol.iterator] !== "function");
+
+    let seen = 0;
+    for await (const _doc of collection.find({ probe: "shape" })) seen++;
+    assert(`${label}: for-await over a cursor yields the documents`, seen === 1, String(seen));
+
+    await collection.deleteMany({});
+  }
 
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

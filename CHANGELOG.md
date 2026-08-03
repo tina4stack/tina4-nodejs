@@ -10,6 +10,46 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Breaking (DocStore is async on both providers, ADR-0025 clause 3)
+
+- The DocStore fallback is now ASYNC, matching the MongoDB driver. `getCollection`
+  and every collection method return a Promise; `find()` stays synchronous and
+  returns a cursor whose `toArray()` is async - exactly the driver's shape.
+
+      const orders = await getCollection("orders");
+      const res    = await orders.insertOne({ total: 9.99 });
+      const doc    = await orders.findOne({ _id: res.insertedId });
+      for await (const d of orders.find({ total: { $gt: 5 } })) { /* ... */ }
+
+  Also removed, because a real `FindCursor` does not have them:
+    - `Cursor[Symbol.iterator]` - use `for await`, not `for ... of`
+    - `Cursor.toList()`         - use `toArray()`
+
+  WHY: this was the worst of the four frameworks' DocStore defects, because it
+  changed the TYPE rather than the value. `getCollection()` and `insertOne()`
+  returned a VALUE on the SQLite fallback and a PROMISE on the real driver, so
+  identical source changed shape the moment `TINA4_MONGO_URI` was set - and a
+  Promise is ALWAYS TRUTHY, so `if (doc)` succeeded for a document that did not
+  exist. A developer got a real document locally and a thenable in production,
+  with no error at any point. Measured 2026-08-03 against a real MongoDB.
+
+  ADR-0025: the fallback imitates the driver. A driver cannot become sync, so
+  the fallback becomes async. `node:sqlite` is still synchronous underneath -
+  the work did not change, only the shape a call site sees, which is the half
+  that was broken.
+
+  Pinned by `test/docstoreSubstitutability.test.ts`, which asserts on BOTH
+  providers that the entry points are thenable, that the cursor is
+  async-iterable, and - the negative case - that it is NOT sync-iterable.
+
+### Fixed (the substitutability harness only ran on one machine)
+
+- `test/docstoreSubstitutability.test.ts` imported the ORM through a hardcoded
+  absolute developer path, so it passed locally and died with
+  `ERR_MODULE_NOT_FOUND` everywhere else. It was the ONLY failing file in the
+  lab suite and had been failing since the harness landed. The path is now
+  resolved from `import.meta.url`.
+
 ## Unreleased
 
 ### Breaking: the rate limiter keys on the socket peer, not X-Forwarded-For
