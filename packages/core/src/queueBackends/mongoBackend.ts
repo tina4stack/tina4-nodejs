@@ -214,12 +214,31 @@ export class MongoBackend implements QueueBackend {
               {
                 queue: queueName,
                 status: "pending",
-                $or: [
-                  { availableAt: null },
-                  { availableAt: { $exists: false } },
-                  { availableAt: { $lte: now } },
-                  { delayUntil: null },
-                  { delayUntil: { $lte: now } },
+                // TWO INDEPENDENT GATES, both of which must pass: the
+                // reservation gate (availableAt) and the delay gate
+                // (delayUntil). These used to share ONE $or, which made them
+                // alternatives rather than requirements — a freshly pushed
+                // delayed job has no availableAt, matched
+                // { availableAt: { $exists: false } }, and was handed straight
+                // to a consumer. That is why push(payload, delay) fired
+                // immediately on Mongo and on time on the file backend.
+                // The $exists arms keep documents written before either field
+                // existed claimable, instead of stranding them forever.
+                $and: [
+                  {
+                    $or: [
+                      { availableAt: null },
+                      { availableAt: { $exists: false } },
+                      { availableAt: { $lte: now } },
+                    ],
+                  },
+                  {
+                    $or: [
+                      { delayUntil: null },
+                      { delayUntil: { $exists: false } },
+                      { delayUntil: { $lte: now } },
+                    ],
+                  },
                 ],
               },
               { $set: { status: "reserved", reservedAt: now, availableAt: future } },

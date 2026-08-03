@@ -10,6 +10,18 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Fixed (a queue delay was silently dropped on every non-file backend)
+
+- `push(..., delay)` is now honoured on the `mongodb` backend. It was silently DROPPED
+  on every non-file backend in ALL FOUR frameworks, so a scheduled job fired immediately
+  in production and on time in development. Here the Mongo backend DID write `delayUntil`, but the pop filter put five conditions
+  in ONE `$or`, making the reservation gate and the delay gate alternatives rather
+  than requirements. A fresh delayed job has no `availableAt`, matched
+  `{ $exists: false }`, and was handed straight to a consumer. The two gates are
+  now `$and`-ed.
+- Node already refuses the `rabbitmq` and `kafka` backends outright (ADR-0022), so
+  there is no path on which a delay reaches a broker that cannot honour it.
+
 ### Fixed (an unknown queue backend name silently used the file store)
 
 - An unrecognised `TINA4_QUEUE_BACKEND` now RAISES, naming the bad value and the
