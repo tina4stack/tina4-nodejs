@@ -248,14 +248,20 @@ async function cacheClearWithoutAPersistentBackendIsSafe(): Promise<void> {
     } catch (err) {
       threw = (err as Error).message;
     }
-    const stats = db.cacheStats();
+
+    // The re-read must be a MISS. Reading cacheStats() BEFORE re-reading is the
+    // trap: cacheClear() resets the counters either way, so a stats check on its
+    // own passes even when the in-process cache was never emptied. Only the
+    // read AFTER the clear can tell those apart - it is a hit if the entry
+    // survived, a miss if the clear was real.
     const rows: any = await db.fetch("SELECT n FROM t ORDER BY id");
+    const stats = db.cacheStats();
     const value = (rows?.records ?? rows ?? [])[0]?.n;
 
     assert(
       "cache clear without a persistent backend is safe",
-      threw === "" && stats.hits === 0 && value === "one",
-      `threw="${threw}", stats=${JSON.stringify(stats)}, read back '${value}' (expected 'one')`,
+      threw === "" && stats.hits === 0 && stats.misses >= 1 && value === "one",
+      `threw="${threw}", stats=${JSON.stringify(stats)} (expected hits 0 and misses >= 1 - a hit means the in-process cache was not cleared), read back '${value}' (expected 'one')`,
     );
     closeDatabase();
   });
