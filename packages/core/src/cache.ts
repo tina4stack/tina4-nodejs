@@ -415,7 +415,7 @@ class RespClient {
  * cache op is one async round-trip. AUTH + SELECT db run once on connect so a
  * dead port OR wrong credentials fail the availability probe and fall back to
  * file. Mirrors the Python master's _RedisBackend semantics (prefix, SETEX,
- * scoped KEYS+DEL clear, DBSIZE stats).
+ * scoped SCAN+DEL clear, DBSIZE stats).
  */
 class RedisBackend implements CacheBackend {
   protected host: string;
@@ -512,17 +512,38 @@ class RedisBackend implements CacheBackend {
     return result === "1";
   }
 
+  /**
+   * Remove EVERY entry this cache can serve, and nothing else.
+   *
+   * SCAN, not KEYS: clear() runs on EVERY WRITE in persistent DB-cache mode,
+   * and KEYS is O(N) over the whole keyspace and blocks the entire server for
+   * its duration. Redis's own documentation says to prefer SCAN in production.
+   * The cursor loop is scoped to our prefix, so another application sharing the
+   * server is untouched - FLUSHALL/FLUSHDB would take their data with it and is
+   * never used here.
+   *
+   * The scan runs to cursor 0, so a keyspace larger than one page is fully
+   * cleared; stopping at the first page would leave later entries readable and
+   * still look green on a small test.
+   */
   async clear(): Promise<void> {
     this.hits = 0;
     this.misses = 0;
-    // Scoped KEYS + DEL of our namespace only (never FLUSHALL — the harness is
-    // shared with other agents, and so are real deployments).
     try {
-      const keys = await this.client.command("KEYS", this.prefix + "*");
-      if (Array.isArray(keys) && keys.length > 0) {
-        const flat = keys.filter((k): k is string => typeof k === "string");
-        if (flat.length > 0) await this.client.command("DEL", ...flat);
-      }
+      let cursor = "0";
+      do {
+        const reply = await this.client.command(
+          "SCAN", cursor, "MATCH", this.prefix + "*", "COUNT", "500",
+        );
+        // A SCAN reply is a 2-element multi-bulk: [next cursor, [key, ...]].
+        if (!Array.isArray(reply) || reply.length !== 2) break;
+        cursor = typeof reply[0] === "string" ? reply[0] : "0";
+        const page = reply[1];
+        if (Array.isArray(page) && page.length > 0) {
+          const keys = page.filter((k): k is string => typeof k === "string");
+          if (keys.length > 0) await this.client.command("DEL", ...keys);
+        }
+      } while (cursor !== "0");
     } catch {
       /* best effort */
     }
@@ -709,8 +730,25 @@ class MemcachedClient {
     }
   }
 
-  /** Send one command, resolve with the reply read until `terminator`. */
-  async command(payload: string, terminator: string): Promise<string> {
+  /**
+   * Send one command, resolve with the reply read until `terminator`.
+   *
+   * Commands are SERIALISED: the socket carries one reply stream with no
+   * request ids, so two commands in flight resolve each other's replies. That
+   * matters more than it looks - every key now carries a generation READ FROM
+   * THE SERVER, so a crossed reply computes the WRONG key and silently reads or
+   * overwrites the wrong entry. One command at a time on one socket.
+   */
+  command(payload: string, terminator: string): Promise<string> {
+    const next = this.chain.then(() => this.send(payload, terminator));
+    // The chain must never reject, or every later command inherits the failure.
+    this.chain = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  private chain: Promise<unknown> = Promise.resolve();
+
+  private async send(payload: string, terminator: string): Promise<string> {
     await this.connect();
     if (!this.sock || this.sock.destroyed) return "";
     return new Promise<string>((resolve) => {
@@ -783,12 +821,49 @@ class MemcachedBackend implements CacheBackend {
     return this.available;
   }
 
-  private mcKey(key: string): string {
-    return this.prefix + crypto.createHash("sha256").update(key).digest("hex");
+  /**
+   * The SHARED namespace generation counter. clear() bumps it and every real
+   * key carries it, so one bump orphans every entry for every instance at once.
+   */
+  private genKey = this.prefix + "generation";
+
+  /**
+   * Read the SHARED namespace generation from the SERVER.
+   *
+   * memcached has no KEYS scan and no prefix delete, so the only way to
+   * invalidate globally without destroying other tenants is the documented
+   * namespace idiom: every real key carries a generation, and clear() bumps it.
+   * Every instance then computes a different key, and the old entries become
+   * unreachable at once, expiring under the server's own TTL/LRU.
+   *
+   * The generation is read from the server on EVERY key computation,
+   * deliberately. Caching it in-process would reintroduce exactly the bug this
+   * fixes: an instance holding a stale generation keeps computing the OLD key,
+   * the old key still holds the old value, so it serves a stale hit after
+   * another instance cleared. One extra round trip on a sub-millisecond local
+   * service is the price of cross-instance invalidation.
+   */
+  private async generation(): Promise<string> {
+    const resp = await this.client.command(`get ${this.genKey}\r\n`, "END\r\n");
+    if (resp.startsWith("VALUE")) {
+      const idx = resp.indexOf("\r\n");
+      const nbytes = parseInt(resp.slice(0, idx).split(/\s+/)[3], 10);
+      if (idx !== -1 && Number.isFinite(nbytes)) return resp.slice(idx + 2, idx + 2 + nbytes);
+    }
+    return "0";
+  }
+
+  /**
+   * Hash to a safe, bounded key (memcached keys: no spaces/control bytes, <=250
+   * chars). The generation sits IN the key, so a clear() on ANY instance orphans
+   * it for every instance at once.
+   */
+  private async mcKey(key: string): Promise<string> {
+    return `${this.prefix}${await this.generation()}:${crypto.createHash("sha256").update(key).digest("hex")}`;
   }
 
   async get(key: string): Promise<unknown | undefined> {
-    const resp = await this.client.command(`get ${this.mcKey(key)}\r\n`, "END\r\n");
+    const resp = await this.client.command(`get ${await this.mcKey(key)}\r\n`, "END\r\n");
     if (resp.startsWith("VALUE")) {
       try {
         const idx = resp.indexOf("\r\n");
@@ -815,31 +890,37 @@ class MemcachedBackend implements CacheBackend {
   async set(key: string, value: unknown, ttl: number): Promise<void> {
     const data = JSON.stringify(value);
     const exptime = ttl > 0 ? ttl : 0;
-    const mcKey = this.mcKey(key);
+    const mcKey = await this.mcKey(key);
     const payload = `set ${mcKey} 0 ${exptime} ${Buffer.byteLength(data)}\r\n${data}\r\n`;
     await this.client.command(payload, "\r\n");
     this.own.set(mcKey, exptime > 0 ? Date.now() + exptime * 1000 : 0);
   }
 
   async delete(key: string): Promise<boolean> {
-    const mcKey = this.mcKey(key);
+    const mcKey = await this.mcKey(key);
     const resp = await this.client.command(`delete ${mcKey}\r\n`, "\r\n");
     this.own.delete(mcKey);
     return resp.startsWith("DELETED");
   }
 
   /**
-   * Remove OUR entries, not the whole server's — and actually remove them.
+   * Invalidate EVERY entry this cache can serve, on EVERY instance.
    *
-   * This was a no-op: it reset the counters and deleted nothing, so a cleared
-   * cache still served every key it had written. The comment claimed parity
-   * with the Python master "which also avoids destructive flushes"; Python was
-   * in fact sending flush_all, so the two had silently diverged AND both were
-   * wrong in opposite directions - Node cleared nothing, Python wiped the whole
-   * shared server including other tenants' keys.
+   * Two wrong answers were shipped before this one. `flush_all` wipes EVERY key
+   * on the instance including every other application's - cacheClear() is
+   * public API, so calling it destroyed other tenants' data. Deleting only the
+   * keys THIS process wrote fixed that but broke the contract the other way: a
+   * second instance kept serving rows the first had just invalidated, because
+   * it had never seen those keys.
    *
-   * Tracking our own keys fixes both: delete exactly what we wrote. A key this
-   * backend never wrote is not its to remove.
+   * The namespace generation does both. Bumping the shared counter orphans
+   * every previously-written entry for every instance at once, and touches
+   * nothing outside our own prefix. The orphans are reclaimed by memcached's
+   * own TTL and LRU - unreachable is what "removed" means for a cache.
+   *
+   * The local write log is still cleared so stats() reports honestly, and its
+   * keys are deleted eagerly so the space comes back immediately rather than
+   * waiting for eviction.
    */
   async clear(): Promise<void> {
     this.hits = 0;
@@ -848,6 +929,14 @@ class MemcachedBackend implements CacheBackend {
       await this.client.command(`delete ${mcKey}\r\n`, "\r\n");
     }
     this.own.clear();
+    // incr is atomic, so two instances clearing at once still both advance.
+    const bumped = await this.client.command(`incr ${this.genKey} 1\r\n`, "\r\n");
+    if (!/^\d+/.test(bumped.trim())) {
+      // No counter yet: create it. `add` fails harmlessly if another instance
+      // created it in the gap, and the incr then applies on top of theirs.
+      await this.client.command(`add ${this.genKey} 0 0 1\r\n1\r\n`, "\r\n");
+      await this.client.command(`incr ${this.genKey} 1\r\n`, "\r\n");
+    }
   }
 
   /**
