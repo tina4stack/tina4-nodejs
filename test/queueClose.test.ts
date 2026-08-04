@@ -140,6 +140,7 @@ async function run() {
   {
     let reached = 0;
     let intact = 0;
+    const raised: string[] = [];
     for (const backend of ["file", "mongodb"]) {
       const queue = makeQueue(backend);
       queue.push({ m: "connect" });
@@ -147,7 +148,15 @@ async function run() {
       const resolved = resolvedBackend(queue);
       if (typeof resolved?.close === "function") reached++;
 
-      queue.close();
+      // Caught, not left to escape: a missing close() must be reported as THIS
+      // case failing, not as an unhandled error that aborts the file before the
+      // other two cases ever run.
+      try {
+        queue.close();
+      } catch (e: any) {
+        raised.push(`${backend}: ${e?.message ?? e}`);
+        continue;
+      }
 
       // The job is still in the REAL store the queue was configured to use.
       // A close() that tore down the topic, or that was wired to the local file
@@ -156,8 +165,9 @@ async function run() {
     }
     assert(
       "closing a queue releases the backend connection",
-      reached === 2 && intact === 2,
-      `backends exposing close(): ${reached}/2, topics intact after close: ${intact}/2`,
+      reached === 2 && intact === 2 && raised.length === 0,
+      `backends exposing close(): ${reached}/2, topics intact after close: ${intact}/2, `
+        + `close() threw: ${JSON.stringify(raised)}`,
     );
   }
 
