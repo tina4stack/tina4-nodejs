@@ -742,7 +742,37 @@ export class Database {
 
     if (filterIsEmpty) {
       const pkColumns = await this.primaryKey(table);
-      const missing = pkColumns.filter((c) => !(c in data));
+      // Resolve each key column to the caller's OWN key for it, matched
+      // case-insensitively.
+      //
+      // The engines disagree about identifier case BY DESIGN and always will:
+      // Firebird folds an unquoted identifier to UPPER, PostgreSQL folds it to
+      // LOWER, MySQL and SQLite preserve what was typed. Introspection returns
+      // the ENGINE's spelling while `data` carries the caller's, so `c in data`
+      // failed on whichever engine folds the other way. A case-sensitivity bug,
+      // not a Firebird quirk - Firebird just made it visible first.
+      //
+      // Deliberately does NOT lower-case introspection output: that would
+      // special-case one engine and break a genuinely quoted mixed-case table.
+      // The WHERE is built from the ENGINE's column name and the CALLER's value.
+      const resolved: Record<string, string> = {};
+      const missing: string[] = [];
+      for (const col of pkColumns) {
+        const folded = String(col).toLowerCase();
+        const matches = Object.keys(data).filter((k) => k.toLowerCase() === folded);
+        if (matches.length > 1) {
+          // Ambiguity is refused, never guessed - choosing wrong here writes the
+          // WHERE clause of an UPDATE.
+          throw new Error(
+            `update was given more than one key for the primary-key column ${col}: ` +
+              `[${matches.slice().sort().join(", ")}] (table=${table}). These differ ` +
+              `only by case, so which one identifies the row is ambiguous - pass ` +
+              `exactly one, or pass an explicit filter.`,
+          );
+        }
+        if (matches.length === 1) resolved[col] = matches[0];
+        else missing.push(col);
+      }
       if (pkColumns.length === 0 || missing.length > 0) {
         throw new Error(
           `update requires a filter or the complete primary key in the data; pass ` +
@@ -757,8 +787,9 @@ export class Database {
       effectiveData = { ...data };
       const keyed: Record<string, unknown> = {};
       for (const col of pkColumns) {
-        keyed[col] = effectiveData[col];
-        delete effectiveData[col];
+        const callerKey = resolved[col];
+        keyed[col] = effectiveData[callerKey];
+        delete effectiveData[callerKey];
       }
       if (Object.keys(effectiveData).length === 0) {
         throw new Error(

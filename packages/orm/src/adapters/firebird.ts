@@ -596,10 +596,28 @@ export class FirebirdAdapter implements DatabaseAdapter {
     throw new Error("Use tableExistsAsync() for Firebird.");
   }
 
+  /**
+   * Is this table present, under either spelling Firebird could have stored?
+   *
+   * Firebird's folding rule is ASYMMETRIC:
+   *     CREATE TABLE foo     -> stored as FOO   (unquoted folds to UPPER)
+   *     CREATE TABLE "Foo"   -> stored as Foo   (quoted keeps its case)
+   *
+   * So upper-casing is CORRECT for the unquoted case - the common one - and
+   * WRONG for a quoted mixed-case table, which is a real thing on Firebird.
+   * Dropping the upper-case would not fix that, it would invert which half is
+   * broken.
+   *
+   * tableExistsAsync("Foo") is genuinely AMBIGUOUS: the caller could mean the
+   * quoted `Foo` or the unquoted `FOO`. Match EITHER. Do not "simplify" this
+   * back to one comparison - that is the bug it replaces, where a quoted
+   * mixed-case table read as absent and createTableAsync's idempotency guard
+   * (below) never fired.
+   */
   async tableExistsAsync(name: string): Promise<boolean> {
     const rows = await this.queryAsync<Record<string, unknown>>(
-      "SELECT RDB$RELATION_NAME FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = ?",
-      [name.toUpperCase()],
+      "SELECT RDB$RELATION_NAME FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = ? OR RDB$RELATION_NAME = ?",
+      [name, name.toUpperCase()],
     );
     return rows.length > 0;
   }
