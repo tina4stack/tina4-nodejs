@@ -175,7 +175,7 @@ async function run() {
 
     assert("a configured URI still means not-serverless with no driver",
       report.isServerless === false, String(report.isServerless));
-    assert("a missing driver throws instead of using the local file",
+    assert("a missing driver raises instead of using the local file",
       report.outcome === "threw", `got ${report.returnedType}`);
     assert("the throw is the documented DocStoreDriverMissing",
       report.errorName === "DocStoreDriverMissing", String(report.errorName));
@@ -188,7 +188,7 @@ async function run() {
     // NEGATIVE: naming the variable must not mean printing its value. A Mongo
     // URI routinely carries credentials and an error string is the most-logged
     // text a framework emits.
-    assert("the message does NOT leak the URI credentials",
+    assert("the message does not leak the uri credentials",
       !String(report.message).includes("s3cr3t-p4ssw0rd"), report.message);
     // NEGATIVE, and the one that matters most: nothing was written locally.
     assert("no local SQLite store was created",
