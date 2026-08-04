@@ -283,7 +283,15 @@ export class Queue {
     const q = this.topic;
 
     if (this.externalBackend) {
-      return this.externalBackend.pop(q);
+      const raw = this.externalBackend.pop(q);
+      // Wrap it. An external backend returns PLAIN DATA with no lifecycle
+      // methods, so `queue.pop().fail("boom")` threw
+      // "TypeError: j.fail is not a function" on mongodb/rabbitmq/kafka while
+      // working on file — identical application code, different outcome, which
+      // is exactly what ADR-0024 forbids. createJob attaches
+      // complete()/fail()/reject()/retry(), and they route back through
+      // _completeJob/_failJob, which already dispatch to the external backend.
+      return raw ? createJob(raw as any, this) : null;
     }
     return this.liteBackend.pop(q, this);
   }
@@ -588,8 +596,11 @@ export class Queue {
           `cannot address a single message by id. Use the file or mongodb backend.`,
         );
       }
-      // The backend returns the same shape pop() does, so return it directly.
-      return claim.call(this.externalBackend, this.topic, id) ?? null;
+      // Same shape as pop() — and, like pop(), PLAIN DATA with no lifecycle
+      // methods, so it must be wrapped or job.complete()/job.fail() is a
+      // TypeError on every external backend.
+      const raw = claim.call(this.externalBackend, this.topic, id);
+      return raw ? createJob(raw as any, this) : null;
     }
     return this.liteBackend.popById(this.topic, id);
   }

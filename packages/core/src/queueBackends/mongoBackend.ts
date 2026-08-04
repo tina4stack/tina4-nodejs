@@ -359,8 +359,20 @@ export class MongoBackend implements QueueBackend {
             process.stdout.write(JSON.stringify(out));
           }
           else if (operation === "failed") {
+            // Found by the ATTEMPTS COUNTER, not by a "failed" status. The
+            // fail() branch above re-queues a still-retryable job as "pending"
+            // (that is what makes the next pop redeliver it) and dead-letters
+            // an exhausted one as "dead" - nothing ever writes "failed", so
+            // this query matched nothing and returned [] forever. An empty
+            // list is indistinguishable from "nothing has failed"
+            // (ADR-0022 decision 7). attempts > 0 is the real marker of a job
+            // that has already died at least once.
             const docs = await col
-              .find({ queue: queueName, status: "failed", attempts: { $lt: maxRetries } })
+              .find({
+                queue: queueName,
+                status: "pending",
+                attempts: { $gt: 0, $lt: maxRetries },
+              })
               .toArray();
             const out = docs.map((d) => { delete d._id; delete d.queue; return d; });
             process.stdout.write(JSON.stringify(out));
