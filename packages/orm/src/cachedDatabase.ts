@@ -98,12 +98,19 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
    * WHICH DATABASE this wrapper caches for, folded into every cache key.
    * Empty only for an adapter built outside the URL/config funnels, which then
    * behaves exactly as before rather than colliding with a tagged one.
+   *
+   * Optional-chained on the ADAPTER, not just the property. `setAdapter(null)`
+   * is the documented reset idiom (migrateCli.test.ts uses it to clear ORM
+   * state between cases) and it reaches here through wrapWithCache. Before the
+   * identity field existed the constructor only STORED the adapter, so a null
+   * passed through harmlessly; reading `adapter.cacheIdentity` turned that
+   * reset into "Cannot read properties of null".
    */
   private readonly identity: string;
 
   constructor(adapter: DatabaseAdapter, options: CachedAdapterOptions = {}) {
     this.adapter = adapter;
-    this.identity = adapter.cacheIdentity ?? "";
+    this.identity = adapter?.cacheIdentity ?? "";
     this.cachePersistent = options.persistent ?? isTruthy(process.env.TINA4_DB_CACHE);
     // Request-scoped cache defaults to OFF (opt-in). A request-scoped cache
     // defaulting ON is a footgun: a `SELECT MAX(id)` (or generator read) right
