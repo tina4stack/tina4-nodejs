@@ -21,6 +21,11 @@
  * production runs serverless in local dev with no code change - only the backend
  * differs.
  *
+ * A configured URI with NO driver installed throws `DocStoreDriverMissing`
+ * (ADR-0033). It does NOT quietly use the local SQLite store, and it no longer
+ * surfaces a bare ERR_MODULE_NOT_FOUND that names an npm package rather than
+ * the framework decision that led there.
+ *
  * Design (the SQLite backend):
  *   - Each collection is a table `(_id TEXT PRIMARY KEY, doc TEXT)`; `doc` is JSON.
  *   - Query filters are pushed down to SQL over `json_extract(doc, '$.field')`
@@ -864,16 +869,41 @@ export class SqliteDatabase {
 }
 
 /**
- * The configured Mongo URI, reusing the app-wide queue/session env vars.
- * Canonical TINA4_SESSION_MONGO_URI; TINA4_SESSION_MONGO_URL is a legacy alias.
+ * A Mongo URI is configured but the MongoDB driver is not installed.
+ *
+ * ADR-0024 rule 3, settled for DocStore by ADR-0033: a provider that cannot
+ * honour an operation must RAISE, naming the provider and what is missing.
+ * Node already threw here, but with a bare ERR_MODULE_NOT_FOUND that named an
+ * npm package and not the framework decision that led there - so the outcome
+ * was loud but undocumented, and different from the other three frameworks.
  */
+export class DocStoreDriverMissing extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DocStoreDriverMissing";
+  }
+}
+
+/**
+ * The env var that supplied the URI, or "" when none did.
+ *
+ * Named separately so an error can tell the operator WHICH variable to unset
+ * without ever printing its value - a Mongo URI routinely carries
+ * `user:password@`.
+ *
+ * Canonical TINA4_MONGO_URI, then the session-layer TINA4_SESSION_MONGO_URI;
+ * TINA4_SESSION_MONGO_URL is a legacy alias.
+ */
+const MONGO_URI_VARS = ["TINA4_MONGO_URI", "TINA4_SESSION_MONGO_URI", "TINA4_SESSION_MONGO_URL"] as const;
+
+function mongoUriSource(): string {
+  return MONGO_URI_VARS.find((name) => (process.env[name] ?? "").trim() !== "") ?? "";
+}
+
+/** The configured Mongo URI, reusing the app-wide queue/session env vars. */
 function mongoUri(): string {
-  return (
-    process.env.TINA4_MONGO_URI ||
-    process.env.TINA4_SESSION_MONGO_URI ||
-    process.env.TINA4_SESSION_MONGO_URL ||
-    ""
-  ).trim();
+  const source = mongoUriSource();
+  return source ? (process.env[source] ?? "").trim() : "";
 }
 
 /** True when no Mongo is configured, so the SQLite fallback is in effect. */
@@ -933,13 +963,38 @@ const mongoClients = new Map<string, Promise<{ client: any; db: any }>>();
  * concurrent callers both miss the cache and both build a client - which is the
  * same leak, just rarer and harder to see. A failed connect is evicted so a
  * transient outage cannot poison the entry for the life of the process.
+ *
+ * A missing driver is reported at provider RESOLUTION - the import, before the
+ * connect - so no network I/O is needed to establish it.
  */
+async function importMongoDriver(): Promise<any> {
+  try {
+    return await import("mongodb");
+  } catch (error: any) {
+    // Only a genuinely UNRESOLVABLE `mongodb` becomes the documented error.
+    // Anything else - the driver present but one of ITS imports failing, a
+    // syntax error, a native binding problem - is re-thrown untouched, because
+    // relabelling it would send the operator to install a package they already
+    // have.
+    const unresolvable =
+      error?.code === "ERR_MODULE_NOT_FOUND" && String(error?.message ?? "").includes("'mongodb'");
+    if (!unresolvable) throw error;
+
+    const source = mongoUriSource() || "TINA4_MONGO_URI";
+    throw new DocStoreDriverMissing(
+      `Tina4 DocStore: ${source} is set, so the MongoDB provider is selected, but its ` +
+        `driver is not installed (npm package 'mongodb'). Install it with ` +
+        `\`npm install mongodb\`, or unset ${source} to use the local SQLite store.`,
+    );
+  }
+}
+
 function mongoConnection(uri: string, dbName: string): Promise<{ client: any; db: any }> {
   const key = `${uri} ${dbName}`;
   let pending = mongoClients.get(key);
   if (!pending) {
     pending = (async () => {
-      const { MongoClient } = await import("mongodb");
+      const { MongoClient } = await importMongoDriver();
       const client = new MongoClient(uri);
       await client.connect();
       return { client, db: client.db(dbName) };
