@@ -56,6 +56,13 @@ export interface MemcachedSessionConfig {
  */
 const MAX_KEY_BYTES = 250;
 
+/**
+ * memcached's exptime field changes meaning at 30 days: at or below this it is
+ * RELATIVE seconds, above it the server reads an ABSOLUTE UNIX TIMESTAMP.
+ * See MemcachedSessionHandler.expTime for why we convert instead of clamping.
+ */
+const MAX_RELATIVE_EXPTIME = 2592000;
+
 export class MemcachedSessionHandler implements SessionHandler {
   private host: string;
   private port: number;
@@ -123,8 +130,29 @@ export class MemcachedSessionHandler implements SessionHandler {
     }
   }
 
+  /**
+   * Convert a ttl in SECONDS to memcached's dual-meaning exptime field.
+   *
+   * memcached documents exptime as RELATIVE seconds up to 2592000 (30 days),
+   * and as an ABSOLUTE UNIX TIMESTAMP for anything larger. Sending a raw ttl of
+   * 2592001 therefore does not mean "30 days and one second" - it means
+   * 1970-01-31, which is already past, so the item expires the instant it is
+   * stored. memcached still replies STORED, so the write looks successful and
+   * the very next read is a miss: a silent logout on every request.
+   *
+   * Measured against real memcached 1.6.45: ttl=2592000 survives, ttl=2592001
+   * vanishes instantly.
+   *
+   * We CONVERT rather than CLAMP. Clamping a 60-day session down to 30 days
+   * would silently shorten a lifetime the operator explicitly asked to be
+   * longer, which is the same class of lie in the other direction.
+   */
+  private expTime(ttl: number): number {
+    return ttl > MAX_RELATIVE_EXPTIME ? Math.floor(Date.now() / 1000) + ttl : ttl;
+  }
+
   write(sessionId: string, data: SessionData, ttl: number): void {
-    const effectiveTtl = ttl > 0 ? ttl : this.ttl;
+    const effectiveTtl = this.expTime(ttl > 0 ? ttl : this.ttl);
     const json = JSON.stringify(data);
     const bytes = Buffer.byteLength(json);
     const cmd = `set ${this.key(sessionId)} 0 ${effectiveTtl} ${bytes}\r\n`;
