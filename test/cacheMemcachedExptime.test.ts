@@ -44,7 +44,7 @@ import * as crypto from "node:crypto";
 import { createBackend } from "../packages/core/src/index.ts";
 import { requireServices } from "./_serviceGate.ts";
 
-const MEMCACHED_URL = process.env.TINA4_TEST_CACHE_MEMCACHED_URL ?? "memcached://127.0.0.1:11211";
+const MEMCACHED_URL = process.env.TINA4_TEST_MEMCACHED_URL ?? "memcached://127.0.0.1:11211";
 /** memcached's own cliff: at or below this, exptime is relative seconds. */
 const MAX_RELATIVE_EXPTIME = 2592000;
 /** 60 days - comfortably past the cliff, and NOT within tolerance of it. */

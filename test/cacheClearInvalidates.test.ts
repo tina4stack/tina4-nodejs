@@ -28,9 +28,9 @@
  * namespace survives a clear() - they stand in for nothing.
  *
  * SERVICE ADDRESSES (override per service to point at your own containers):
- *     TINA4_TEST_CACHE_REDIS_URL      (default redis://127.0.0.1:6379)
- *     TINA4_TEST_CACHE_VALKEY_URL     (default valkey://127.0.0.1:6380)
- *     TINA4_TEST_CACHE_MEMCACHED_URL  (default memcached://127.0.0.1:11211)
+ *     TINA4_TEST_REDIS_URL      (default redis://127.0.0.1:6379)
+ *     TINA4_TEST_VALKEY_URL     (default valkey://127.0.0.1:6380)
+ *     TINA4_TEST_MEMCACHED_URL  (default memcached://127.0.0.1:11211)
  *
  * Run with: npx tsx test/cacheClearInvalidates.test.ts
  */
@@ -39,9 +39,9 @@ import * as crypto from "node:crypto";
 import { createBackend } from "../packages/core/src/index.ts";
 import { requireServices } from "./_serviceGate.ts";
 
-const REDIS_URL = process.env.TINA4_TEST_CACHE_REDIS_URL ?? "redis://127.0.0.1:6379";
-const VALKEY_URL = process.env.TINA4_TEST_CACHE_VALKEY_URL ?? "valkey://127.0.0.1:6380";
-const MEMCACHED_URL = process.env.TINA4_TEST_CACHE_MEMCACHED_URL ?? "memcached://127.0.0.1:11211";
+const REDIS_URL = process.env.TINA4_TEST_REDIS_URL ?? "redis://127.0.0.1:6379";
+const VALKEY_URL = process.env.TINA4_TEST_VALKEY_URL ?? "valkey://127.0.0.1:6380";
+const MEMCACHED_URL = process.env.TINA4_TEST_MEMCACHED_URL ?? "memcached://127.0.0.1:11211";
 
 let pass = 0;
 let fail = 0;

@@ -16,6 +16,8 @@ jobs:
     # health-checked, so the job fails if one never comes up. Ports mirror the
     # local docker harness (/tmp/tina4_infra_up.sh) so the same TINA4_TEST_*
     # values work locally and here. redis-auth uses requirepass s3cret.
+    # The names below are the canonical set in test/fixtures/test_env_contract.json,
+    # enforced by test/testEnvContract.test.ts.
     services:
       # GreenMail: real SMTP 3025 + IMAP 3143 for the Messenger round-trip
       # tests. auth.disabled is REQUIRED, not laziness: every suite uses a unique
@@ -120,7 +122,7 @@ jobs:
       TINA4_TEST_PG_PASSWORD: tina4
       TINA4_TEST_PG_DB: tina4_node
       TINA4_TEST_PG_DB_2: tina4_py
-      TINA4_TEST_POSTGRES_URL: postgres://tina4:tina4@localhost:55432/tina4_node
+      TINA4_TEST_PG_URL: postgres://tina4:tina4@localhost:55432/tina4_node
       # MySQL 8 + MSSQL 2022 (#262) — mirror the service containers above and the
       # local docker harness. The MySQL+MSSQL boolean round-trip test reads these.
       TINA4_TEST_MYSQL_HOST: localhost
@@ -133,7 +135,7 @@ jobs:
       TINA4_TEST_MSSQL_USERNAME: sa
       TINA4_TEST_MSSQL_PASSWORD: 'TinaSQL123!Secure'
       TINA4_TEST_MSSQL_DB: tina4_test
-      TINA4_TEST_MONGO_URL: mongodb://localhost:27017
+      TINA4_TEST_MONGO_URI: mongodb://localhost:27017
       TINA4_MONGO_URI: mongodb://localhost:27017
       TINA4_TEST_REDIS_URL: redis://localhost:6379
       TINA4_TEST_VALKEY_URL: redis://localhost:6380
