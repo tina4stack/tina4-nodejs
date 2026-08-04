@@ -28,7 +28,13 @@ export const MONGO_URL = process.env.TINA4_TEST_CACHE_MONGO_URL ?? "mongodb://12
 /** A unique-per-process scratch area so two suites never share local state. */
 const RUN_ID = `${process.pid}_${Date.now()}`;
 export const FILE_CACHE_DIR = path.join(os.tmpdir(), `tina4_cache_inv_${RUN_ID}`);
-export const SQLITE_CACHE_URL = `sqlite://${path.join(os.tmpdir(), `tina4_cache_inv_${RUN_ID}.db`)}`;
+/**
+ * FOUR slashes, deliberately. `sqlite://` + an absolute path yields THREE,
+ * which is the RELATIVE form (the SQLAlchemy convention Tina4 follows), so the
+ * file lands under the working directory and a stray ./var/folders/... tree
+ * appears in the repo. `sqlite:///` + an absolute path is the absolute form.
+ */
+export const SQLITE_CACHE_URL = `sqlite:///${path.join(os.tmpdir(), `tina4_cache_inv_${RUN_ID}.db`)}`;
 /** Isolated mongo database so a run cannot clobber another agent's collection. */
 export const MONGO_CACHE_URL = `${MONGO_URL.replace(/\/+$/, "")}/tina4_cache_inv_${RUN_ID}/cache`;
 
