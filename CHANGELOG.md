@@ -397,7 +397,7 @@ register it globally with `MiddlewareRunner.use()` instead - and add
 `static preMatch = true` if it must also run when no route matched.
 
 
-### Breaking: a middleware CLASS attached per-route now RUNS
+### Fixed: a middleware CLASS attached per-route now RUNS
 
 `.middleware(SomeMiddlewareClass)` was inert in Node. `runRouteMiddlewares`
 invoked every spec as `mw(req, res, next)`, which for a class throws
