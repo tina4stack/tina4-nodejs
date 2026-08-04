@@ -1490,16 +1490,51 @@ export async function createBackend(config?: {
  */
 let _responseBackend: CacheBackend | null = null;
 let _responseBackendPromise: Promise<CacheBackend> | null = null;
+/**
+ * Backends built for an EXPLICITLY configured responseCache, keyed by the
+ * provider-affecting part of its config. Kept apart from the shared
+ * module-level backend so a named provider is never overridden by ambient state.
+ */
+const _explicitResponseBackends = new Map<string, Promise<CacheBackend>>();
 
-function _getResponseBackend(config?: ResponseCacheConfig): Promise<CacheBackend> {
+export function _getResponseBackend(config?: ResponseCacheConfig): Promise<CacheBackend> {
+  // An EXPLICITLY requested provider gets its OWN backend; only the
+  // no-argument case shares the module-level one (mirrors the Python master).
+  //
+  // This function used to open with `if (_responseBackend) return ...`, so the
+  // memoised backend was handed back BEFORE config was ever read. Once any
+  // responseCache middleware existed, every later explicitly-named provider was
+  // silently ignored: the developer names a backend, the framework quietly uses
+  // a different one, and the only symptom is cache behaviour that does not
+  // match the configuration.
+  const wantsItsOwn = config?.backend !== undefined
+    || config?.cacheUrl !== undefined
+    || config?.cacheDir !== undefined
+    || config?.maxEntries !== undefined;
+
+  if (wantsItsOwn) {
+    // Memoised per DISTINCT config, not per call: the middleware resolves its
+    // backend on every request, so building a fresh one each time would open a
+    // new connection per request. Two different configs stay two different
+    // stores, which is the half that actually matters - honouring the NAME
+    // while still returning the shared object would change nothing observable.
+    const key = JSON.stringify([config?.backend, config?.cacheUrl, config?.cacheDir, config?.maxEntries]);
+    let built = _explicitResponseBackends.get(key);
+    if (!built) {
+      built = createBackend({
+        backend: config?.backend,
+        cacheUrl: config?.cacheUrl,
+        cacheDir: config?.cacheDir,
+        maxEntries: config?.maxEntries,
+      });
+      _explicitResponseBackends.set(key, built);
+    }
+    return built;
+  }
+
   if (_responseBackend) return Promise.resolve(_responseBackend);
   if (!_responseBackendPromise) {
-    _responseBackendPromise = createBackend({
-      backend: config?.backend,
-      cacheUrl: config?.cacheUrl,
-      cacheDir: config?.cacheDir,
-      maxEntries: config?.maxEntries,
-    }).then((b) => {
+    _responseBackendPromise = createBackend().then((b) => {
       _responseBackend = b;
       return b;
     });
@@ -1745,5 +1780,8 @@ export function _resetBackend(): void {
   _defaultBackendPromise = null;
   _responseBackend = null;
   _responseBackendPromise = null;
+  // Explicitly-configured backends are memoised too, so a reset that left them
+  // behind would leak one test's provider into the next.
+  _explicitResponseBackends.clear();
   _defaultTtl = null;
 }
