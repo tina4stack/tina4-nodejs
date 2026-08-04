@@ -228,6 +228,44 @@ async function clearRemovesManyEntriesNotJustTheFirstPage(): Promise<void> {
   }
 }
 
+async function statsReportsARealSizeOnBothTransports(): Promise<void> {
+  cases++;
+  // PARITY REGRESSION TEST, not one of the declared contract invariants.
+  // stats().size used to come from DBSIZE, which counts the WHOLE database
+  // index - so on a shared Redis it reported every other tenant's keys too.
+  // Ruby and Python had the same rule broken the other way round (a constant
+  // 0). The number must describe THIS cache.
+  const { host, port } = hostPort(REDIS_URL, 6379);
+  const backend = await realBackend("redis", REDIS_URL);
+
+  await backend.clear();
+  const emptySize = (await backend.stats()).size;
+
+  const marker = uniqueId();
+  for (let index = 0; index < 3; index++) {
+    await backend.set(`contract-${marker}-${index}`, { i: index }, 300);
+  }
+  const populatedSize = (await backend.stats()).size;
+
+  // NEGATIVE: a key OUTSIDE our prefix must not be counted. This is the exact
+  // failure DBSIZE produced.
+  const outsiderKey = `someone-elses-app:${uniqueId()}`;
+  await socketRoundTrip(host, port, respEncode("SET", outsiderKey, "not-ours"));
+  const sizeWithOutsider = (await backend.stats()).size;
+  await socketRoundTrip(host, port, respEncode("DEL", outsiderKey));
+
+  await backend.clear();
+  const clearedSize = (await backend.stats()).size;
+
+  assert(
+    "stats reports a real size on both transports",
+    emptySize === 0 && populatedSize === 3 && sizeWithOutsider === 3 && clearedSize === 0,
+    `size was ${emptySize} when empty (expected 0), ${populatedSize} after 3 writes (expected 3), ` +
+    `${sizeWithOutsider} with another tenant's key present (expected 3 - it is counting keys outside our prefix), ` +
+    `${clearedSize} after clear() (expected 0)`,
+  );
+}
+
 async function clearInvalidatesOnValkeyToo(): Promise<void> {
   cases++;
   const backend = await realBackend("valkey", VALKEY_URL);
@@ -366,6 +404,7 @@ async function main(): Promise<void> {
     ["clear removes entries written by another instance", clearRemovesEntriesWrittenByAnotherInstance],
     ["clear leaves another tenants keys untouched", clearLeavesAnotherTenantsKeysUntouched],
     ["clear removes many entries not just the first page", clearRemovesManyEntriesNotJustTheFirstPage],
+    ["stats reports a real size on both transports", statsReportsARealSizeOnBothTransports],
   ];
   const valkeyCases: Array<[string, () => Promise<void>]> = [
     ["clear invalidates on valkey too", clearInvalidatesOnValkeyToo],

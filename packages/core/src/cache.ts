@@ -557,24 +557,44 @@ class RedisBackend implements CacheBackend {
    * cleared; stopping at the first page would leave later entries readable and
    * still look green on a small test.
    */
+  /**
+   * Walk every key under OUR prefix, handing each page to `onPage`.
+   *
+   * ONE walk drives both clear() and stats(), so the two can never disagree
+   * about what this cache holds - which is exactly how stats() came to report a
+   * different keyspace from the one clear() empties.
+   *
+   * SCAN, not KEYS: clear() runs on EVERY WRITE in persistent DB-cache mode,
+   * and KEYS is O(N) over the whole keyspace and blocks the entire server for
+   * its duration. Redis's own documentation says to prefer SCAN. The walk is
+   * scoped to our prefix, so another application sharing the server is
+   * untouched, and it runs to cursor 0 so a keyspace larger than one page is
+   * fully covered.
+   */
+  private async walkPrefixedKeys(onPage: (keys: string[]) => Promise<void>): Promise<void> {
+    let cursor = "0";
+    do {
+      const reply = await this.client.command(
+        "SCAN", cursor, "MATCH", this.prefix + "*", "COUNT", "500",
+      );
+      // A SCAN reply is a 2-element multi-bulk: [next cursor, [key, ...]].
+      if (!Array.isArray(reply) || reply.length !== 2) break;
+      cursor = typeof reply[0] === "string" ? reply[0] : "0";
+      const page = reply[1];
+      if (Array.isArray(page) && page.length > 0) {
+        const keys = page.filter((k): k is string => typeof k === "string");
+        if (keys.length > 0) await onPage(keys);
+      }
+    } while (cursor !== "0");
+  }
+
   async clear(): Promise<void> {
     this.hits = 0;
     this.misses = 0;
     try {
-      let cursor = "0";
-      do {
-        const reply = await this.client.command(
-          "SCAN", cursor, "MATCH", this.prefix + "*", "COUNT", "500",
-        );
-        // A SCAN reply is a 2-element multi-bulk: [next cursor, [key, ...]].
-        if (!Array.isArray(reply) || reply.length !== 2) break;
-        cursor = typeof reply[0] === "string" ? reply[0] : "0";
-        const page = reply[1];
-        if (Array.isArray(page) && page.length > 0) {
-          const keys = page.filter((k): k is string => typeof k === "string");
-          if (keys.length > 0) await this.client.command("DEL", ...keys);
-        }
-      } while (cursor !== "0");
+      await this.walkPrefixedKeys(async (keys) => {
+        await this.client.command("DEL", ...keys);
+      });
     } catch {
       /* best effort */
     }
@@ -590,13 +610,32 @@ class RedisBackend implements CacheBackend {
     return 0;
   }
 
+  /**
+   * Report OUR entries, not the whole server's.
+   *
+   * This used to read DBSIZE, which counts the WHOLE database index - so on a
+   * shared Redis it included every key any other tenant had written. MEASURED
+   * before the fix: three of our writes plus two foreign keys reported size 5.
+   * Every other backend here is scoped (memory counts its own map, file its own
+   * directory, mongo its own collection, database its own table, memcached its
+   * own write log), and Ruby/Python had the same rule broken the other way
+   * round, returning a constant 0. Both fail the same rule: the number must
+   * describe THIS cache.
+   *
+   * The count comes from the same scoped walk clear() uses. Keys are deduped
+   * through a Set because SCAN may return a given key more than once across
+   * iterations (Redis guarantees at-least-once, not exactly-once).
+   */
   async stats() {
-    let size = 0;
-    const keys = await this.respCommand("DBSIZE");
-    // DBSIZE counts the whole DB index; with our isolated index that's accurate
-    // enough for the size figure. Fall back to 0 on error.
-    if (keys !== null && /^\d+$/.test(keys)) size = parseInt(keys, 10);
-    return { hits: this.hits, misses: this.misses, size, backend: this._name };
+    const seen = new Set<string>();
+    try {
+      await this.walkPrefixedKeys(async (keys) => {
+        for (const key of keys) seen.add(key);
+      });
+    } catch {
+      /* a failed walk reports 0 rather than a number from somewhere else */
+    }
+    return { hits: this.hits, misses: this.misses, size: seen.size, backend: this._name };
   }
 
   name() { return this._name; }
