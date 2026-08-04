@@ -10,7 +10,11 @@ import { execSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { requireServices, findProvisionedServiceSkips } from "./_serviceGate.ts";
+import {
+  requireServices,
+  findProvisionedServiceSkips,
+  findSkipLines,
+} from "./_serviceGate.ts";
 import { summarizeTestOutput } from "./_testSummary.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -73,8 +77,21 @@ const failures: string[] = [];
 const gateOn = requireServices();
 const serviceSkips: { file: string; reason: string }[] = [];
 
+// EVERY skip, not just the gate-matching ones. The runner throws away a passing
+// file's stdout, so a skip inside a green file used to leave no trace anywhere:
+// the grand total counted passed and failed only, and grepping a run log for
+// SKIP found nothing. That made Node the one framework whose skip count could
+// not be measured — Python prints "N skipped", PHPUnit "Skipped: N", RSpec
+// "N pending". Collected unconditionally (the gate flag only decides whether
+// skips FAIL the run, never whether they are COUNTED).
+const allSkips: { file: string; reason: string }[] = [];
+
 function collectServiceSkips(label: string, output: string): void {
-  if (!gateOn || !output) return;
+  if (!output) return;
+  for (const reason of findSkipLines(output)) {
+    allSkips.push({ file: label, reason });
+  }
+  if (!gateOn) return;
   for (const reason of findProvisionedServiceSkips(output)) {
     serviceSkips.push({ file: label, reason });
   }
@@ -170,12 +187,24 @@ console.log(`\n${"=".repeat(60)}`);
 // contributes no cases and would otherwise vanish from the number a human reads.
 console.log(
   `  Grand Total: \x1b[32m${totalPass} passed\x1b[0m, \x1b[31m${totalFail} failed\x1b[0m` +
+    `, \x1b[33m${allSkips.length} skipped\x1b[0m` +
     ` across ${filesRun} files (\x1b[31m${filesFailed} files failed\x1b[0m)`
 );
 if (failures.length > 0) {
   console.log(`  Failed files: ${failures.join(", ")}`);
 }
 console.log(`${"=".repeat(60)}\n`);
+
+// The skip roster. A count alone cannot be acted on — driving skips to zero
+// needs the REASON for each one, which is exactly what the discarded per-file
+// output used to hide.
+if (allSkips.length > 0) {
+  console.log(`  \x1b[33mSkipped (${allSkips.length}):\x1b[0m`);
+  for (const { file, reason } of allSkips) {
+    console.log(`    - [${file}] ${reason}`);
+  }
+  console.log("");
+}
 
 // Real-service gate verdict. With TINA4_REQUIRE_SERVICES set, a skip caused by
 // a PROVISIONED service being unavailable fails the whole run — a green skip of

@@ -88,16 +88,33 @@ export function isProvisionedServiceSkip(reason: string): boolean {
 }
 
 /**
+ * Every SKIP line in a test file's stdout, ANSI-stripped and trimmed.
+ *
+ * The runner discards a passing file's captured stdout, so before this existed
+ * a skip inside a green file was invisible: `Grand Total` reported passed and
+ * failed only, and grepping a run log for SKIP returned NOTHING even when tests
+ * had skipped. Python prints "N skipped", PHPUnit "Skipped: N" and RSpec
+ * "N pending" — Node reported no skip number at all, so its skip count could
+ * not be measured, let alone driven to zero.
+ *
+ * A skip line in any of the test files contains the bare token "SKIP"; the
+ * files use several shapes around it (em dash, hyphen, parenthesised, bare),
+ * so the token is the only reliable invariant.
+ */
+export function findSkipLines(output: string): string[] {
+  const hits: string[] = [];
+  for (const rawLine of (output || "").split("\n")) {
+    const line = rawLine.replace(ANSI_RE, "");
+    if (!/\bSKIP\b/.test(line)) continue;
+    hits.push(line.trim());
+  }
+  return hits;
+}
+
+/**
  * Scan a test file's full stdout for SKIP lines that name an unavailable
  * provisioned service. Returns the offending reason strings (ANSI-stripped).
  */
 export function findProvisionedServiceSkips(output: string): string[] {
-  const hits: string[] = [];
-  for (const rawLine of output.split("\n")) {
-    const line = rawLine.replace(ANSI_RE, "");
-    // A skip line in any of the test files contains the token "SKIP".
-    if (!/\bSKIP\b/.test(line)) continue;
-    if (isProvisionedServiceSkip(line)) hits.push(line.trim());
-  }
-  return hits;
+  return findSkipLines(output).filter(isProvisionedServiceSkip);
 }
