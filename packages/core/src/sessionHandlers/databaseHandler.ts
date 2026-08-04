@@ -113,13 +113,35 @@ const CREATE_TABLE: Record<string, string> = {
   // Firebird has neither IF NOT EXISTS nor a TEXT type, so the catalog check
   // goes in an EXECUTE BLOCK and the payload is a VARCHAR.
   //
-  // UNVERIFIED. Firebird is excluded from the session gate by design (no server
-  // and no node-firebird driver on the lab), so this branch is written to the
-  // documented Firebird rules but has NOT been run against a live server. A
-  // VARCHAR rather than BLOB SUB_TYPE TEXT on purpose: node-firebird hands a
+  // VERIFIED 2026-08-04 against a live Firebird 5.0.4 (the lab's
+  // tina4-lab-firebird container). This comment previously said UNVERIFIED and
+  // claimed there was no server on the lab; there is, and this SQL was run on
+  // it. What was measured, at the isql prompt:
+  //
+  //   CREATE TABLE IF NOT EXISTS ...  -> SQLSTATE 42000, -104,
+  //                                      "Token unknown - line 1, column 17 -NOT"
+  //   a column typed TEXT             -> -607, "Specified domain or source
+  //                                      column TEXT does not exist"
+  //   DOUBLE PRECISION                -> accepted
+  //   this EXECUTE BLOCK              -> created the table; confirmed out of band
+  //                                      in RDB$RELATIONS
+  //   this EXECUTE BLOCK, run AGAIN
+  //   with the table present          -> clean, no error: it is IDEMPOTENT
+  //
+  // So both halves of the first line above are now measurement rather than
+  // inference: Firebird really has neither IF NOT EXISTS nor a TEXT type.
+  //
+  // The idempotence is NOT a race guard. It is check-then-act inside one block,
+  // so two connections can still both find the table absent and both create it -
+  // measured directly: a bare CREATE TABLE with the table present gives
+  // SQLSTATE 42S01 "Table TINA4_SESSION already exists". The caller's
+  // create-then-recheck rescue is what closes that window, on every engine.
+  //
+  // A VARCHAR rather than BLOB SUB_TYPE TEXT on purpose: node-firebird hands a
   // blob back as a reader function rather than a string, which the read path
   // here would not understand. The cost is a session payload ceiling of 8191
-  // characters on this engine alone.
+  // characters on this engine alone. Still unverified: the node-firebird DRIVER
+  // path end to end - this measurement was taken at the SQL level via isql.
   firebird: `
       EXECUTE BLOCK AS BEGIN
         IF (NOT EXISTS(SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'TINA4_SESSION')) THEN
