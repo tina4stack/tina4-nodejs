@@ -601,6 +601,14 @@ export class Cursor {
    *
    * toList() is gone for the same reason: the driver's FindCursor has no such
    * method.
+   *
+   * ADR-0035 restored the uniform spellings in ruby and php through a
+   * delegator, and deliberately did NOT do so here. A delegator can only supply
+   * a method that is POSSIBLE on the real provider, and a synchronous iterator
+   * is not: a FindCursor is async-only. Adding one back on the fallback alone
+   * would recreate ADR-0025's worst measured defect - identical source changing
+   * TYPE, with a truthy Promise passing `if (doc)` for a document that does not
+   * exist. That is ADR-0025 corollary 3, which ADR-0035 keeps.
    */
   async *[Symbol.asyncIterator](): AsyncIterator<Record<string, unknown>> {
     for (const doc of await this.toArray()) yield doc;
