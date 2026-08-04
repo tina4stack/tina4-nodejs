@@ -1005,13 +1005,43 @@ class MemcachedBackend implements CacheBackend {
    */
   private own = new Map<string, number>();
 
+  /**
+   * memcached's 30-day cliff: an exptime AT OR BELOW 2592000 is RELATIVE
+   * seconds, anything ABOVE it is an ABSOLUTE UNIX TIMESTAMP.
+   *
+   * The ttl used to be interpolated raw, so any TINA4_CACHE_TTL over 30 days
+   * made every write vanish the instant it landed - the caller wrote a number
+   * of seconds and the server read a date in 1970. memcached still answers
+   * STORED, so it presented as a 100% miss rate with nothing logged: a cache
+   * that looks like it is working and never returns a hit.
+   *
+   * CONVERT, never CLAMP. Clamping to 2592000 also makes the entry survive and
+   * is also wrong - it silently discards more than half the lifetime the
+   * operator explicitly configured, which is the same class of silent-wrong-
+   * answer as the bug it would be replacing.
+   */
+  private static readonly MAX_RELATIVE_EXPTIME = 2592000;
+
+  private exptimeFor(ttl: number): number {
+    if (ttl <= 0) return 0;
+    if (ttl > MemcachedBackend.MAX_RELATIVE_EXPTIME) {
+      return Math.floor(Date.now() / 1000) + ttl;
+    }
+    return ttl;
+  }
+
   async set(key: string, value: unknown, ttl: number): Promise<void> {
     const data = JSON.stringify(value);
-    const exptime = ttl > 0 ? ttl : 0;
+    const exptime = this.exptimeFor(ttl);
     const mcKey = await this.mcKey(key);
     const payload = `set ${mcKey} 0 ${exptime} ${Buffer.byteLength(data)}\r\n${data}\r\n`;
     await this.client.command(payload, "\r\n");
-    this.own.set(mcKey, exptime > 0 ? Date.now() + exptime * 1000 : 0);
+    // THE WRITE LOG KEEPS THE RAW ttl, never the converted exptime. This line
+    // turns its number into a wall-clock deadline, so feeding it a converted
+    // absolute timestamp would compute Date.now() + <unix timestamp> * 1000 -
+    // about 166 years out - and the log would then never expire anything, so
+    // stats() would report expired entries as live forever.
+    this.own.set(mcKey, ttl > 0 ? Date.now() + ttl * 1000 : 0);
   }
 
   async delete(key: string): Promise<boolean> {
