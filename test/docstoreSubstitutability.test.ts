@@ -312,7 +312,10 @@ async function run() {
       continue;
     }
     const { collection } = await collectionFor(uri);
-    for (const total of [9, 7, 3]) await collection.insertOne({ total, grp: "chain" });
+    // Inserted OUT of the expected order on purpose: with [9, 7, 3] a sort that
+    // silently did NOTHING still returned [9, 7], so the assertion passed on a
+    // broken sort.
+    for (const total of [3, 9, 7]) await collection.insertOne({ total, grp: "chain" });
 
     const spellings: [string, () => any][] = [
       ["sort(field, direction)", () => collection.find({ grp: "chain" }).sort("total", -1).limit(2)],
