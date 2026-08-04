@@ -990,7 +990,7 @@ async function importMongoDriver(): Promise<any> {
 }
 
 function mongoConnection(uri: string, dbName: string): Promise<{ client: any; db: any }> {
-  const key = `${uri} ${dbName}`;
+  const key = `${uri}\u0000${dbName}`;
   let pending = mongoClients.get(key);
   if (!pending) {
     pending = (async () => {
