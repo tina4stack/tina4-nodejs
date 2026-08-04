@@ -208,25 +208,49 @@ console.log("\n── The database backend never silently demotes to a local SQL
   process.chdir(cwd);
   mkdirSync(join(cwd, "data"), { recursive: true }); // Tina4 auto-creates data/ on startup
 
-  let threw = false;
+  // UPDATED 2026-08-04. These two assertions used to pin a THROW on any
+  // non-sqlite URL. That throw was a LIMITATION, not the contract: the backend
+  // is now multi-engine (ADR-0028), so postgres is HONOURED rather than
+  // refused. The defect they were really protecting against - a silent demotion
+  // to a local SQLite file in the process cwd - is unchanged and is still
+  // asserted here, because that is the failure that looks exactly like success.
+  // `message` is still read by the sqlite/default assertions further down; the
+  // rewrite above replaced the declaration those were relying on.
   let message = "";
-  process.env.TINA4_DATABASE_URL = "postgres://tina4:tina4@127.0.0.1:55432/postgres";
+  let postgresWorked = false;
+  let postgresError = "";
+  process.env.TINA4_DATABASE_URL = "postgres://tina4:tina4@127.0.0.1:55432/tina4_node";
   try {
-    new DatabaseSessionHandler();
+    const pgHandler = new DatabaseSessionHandler();
+    pgHandler.write("demote-probe", { seeded: true }, 60);
+    postgresWorked = JSON.stringify(pgHandler.read("demote-probe")) === JSON.stringify({ seeded: true });
+    pgHandler.destroy("demote-probe");
   } catch (err) {
-    threw = true;
-    message = (err as Error).message;
+    postgresError = (err as Error).message;
   }
   const leaked = existsSync(join(cwd, "data", "tina4_sessions.db"));
   assert(
     "session_backend_never_silently_demotes_to_sqlite",
-    threw && !leaked,
-    `threw=${threw} leakedSqliteFile=${leaked} message=${message}`,
+    postgresWorked && !leaked,
+    `postgresWorked=${postgresWorked} leakedSqliteFile=${leaked} error=${postgresError}`,
   );
+
+  // The loud-refusal half survives, aimed at what is genuinely unsupported
+  // rather than at postgres. An unknown scheme must still name itself and the
+  // supported set instead of quietly writing to disk.
+  let unknownThrew = false;
+  let unknownMessage = "";
+  process.env.TINA4_DATABASE_URL = "notareal://user:pass@127.0.0.1:1234/db";
+  try {
+    new DatabaseSessionHandler();
+  } catch (err) {
+    unknownThrew = true;
+    unknownMessage = (err as Error).message;
+  }
   assert(
     "session_demotion_error_names_the_offending_scheme",
-    threw && message.includes("postgres") && message.includes("SQLite-only"),
-    `message=${message}`,
+    unknownThrew && unknownMessage.includes("notareal") && !existsSync(join(cwd, "data", "tina4_sessions.db")),
+    `threw=${unknownThrew} message=${unknownMessage}`,
   );
 
   // A genuine sqlite:// URL still works — the guard must not break the supported case.

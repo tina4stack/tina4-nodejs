@@ -1686,11 +1686,19 @@ ${reset}
     // first: no context object is needed for them at all.
     await resetRequestCaches();
     headStripIntercept(rawReq, rawRes);
-    await sessionAutoStart(rawReq, rawRes, req);
 
     // res.render() is handled natively by response.ts via Frond
 
     try {
+      // sessionAutoStart is the one prologue stage INSIDE the try. It degrades
+      // on its own (ADR-0021), so the only thing that escapes it is a
+      // TINA4_SESSION_STRICT refusal - and that must become a 500 through the
+      // normal error renderer, like Python's raise becomes a 500 in the ASGI
+      // server. Outside the try it rejected `dispatch`, and nothing awaits the
+      // listener http.createServer() calls: an unhandled rejection that takes
+      // the whole worker down is not "refuse this request".
+      await sessionAutoStart(rawReq, rawRes, req);
+
       // Run middleware chain
       await middleware.run(req, res);
       if (res.raw.writableEnded) return;

@@ -35,6 +35,40 @@ work here too, via the exported `sortSpec()` helper.
   descending-only test), and that the chain is LAZY - a document inserted after
   the chain is built but before it is iterated must appear.
 
+### Breaking (`Tina4Request.session` is now `Tina4Session | null`)
+
+**What changed.** `req.session` is typed `Tina4Session | null`. TypeScript will now flag
+`req.session.get(...)`, `req.session.set(...)` and every other direct member access.
+
+**Why.** The old type was simply false. The session backend can be unreachable, and the
+contract in that case (ADR-0021) is to log the failure and DEGRADE - serve the request
+without a session rather than return a 500. Until now the request path did not implement
+that at all: `new Session()` and `sess.start()` were unguarded in the dispatch pipeline,
+and `sessionAutoStart` sat outside the dispatch try, so an unusable
+`TINA4_SESSION_BACKEND` did not degrade, did not 500, it KILLED THE WORKER PROCESS. With
+the degrade implemented, `req.session` is genuinely null on that path.
+
+So the compiler is not flagging new failures. It is flagging call sites that were ALWAYS
+capable of failing at runtime and had no type-level warning that they were.
+
+**Migration.** Use optional chaining, and decide what your route does without a session:
+
+```ts
+// before
+const userId = req.session.get("user_id");
+
+// after - read
+const userId = req.session?.get("user_id");
+
+// after - when the route genuinely cannot proceed without one
+if (!req.session) return res.json({ error: "Session unavailable" }, 503);
+req.session.set("user_id", user.id);
+```
+
+`TINA4_SESSION_STRICT=true` keeps the old "never serve without a session" behaviour: the
+request path re-raises instead of degrading, so a route that reaches your handler always
+has one. No framework code dereferences `req.session` (0 call sites), so nothing internal
+changed.
 ### Breaking (DocStore: a missing MongoDB driver now raises)
 
 `TINA4_MONGO_URI` set with the `mongodb` package NOT installed used to throw a bare `ERR_MODULE_NOT_FOUND` naming an npm package rather than the framework decision that led there. It now
