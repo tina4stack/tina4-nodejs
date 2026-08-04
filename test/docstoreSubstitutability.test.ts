@@ -292,6 +292,65 @@ async function run() {
     await collection.deleteMany({});
   }
 
+  // -- ADR-0036 / the-call-site-surface-is-identical (ASSERTED) ---------------
+  //
+  // docstore_contract.json :: the-call-site-surface-is-identical
+  //
+  // ADR-0036. The chain the framework DOCUMENTS must run on both providers.
+  //
+  // Node's chain already worked - a real FindCursor is lazy and chainable, and
+  // so is the fallback Cursor. What did NOT work, measured 2026-08-04 against a
+  // real MongoDB, was the OBJECT sort spelling: `sort({ total: -1 })` threw
+  // `TypeError: keyOrList is not iterable` on the fallback while working on the
+  // driver. Same defect class, one layer down, and present in three of the four
+  // frameworks - so all three spellings are asserted rather than only the
+  // documented one.
+  console.log("\n--- the cursor chain works on both providers ---");
+  for (const [label, uri] of [["fallback", null], ["mongo", MONGO_URI]] as [string, string | null][]) {
+    if (uri && !hasMongo) {
+      console.log(`  \x1b[33mSKIP\x1b[0m no reachable MongoDB`);
+      continue;
+    }
+    const { collection } = await collectionFor(uri);
+    for (const total of [9, 7, 3]) await collection.insertOne({ total, grp: "chain" });
+
+    const spellings: [string, () => any][] = [
+      ["sort(field, direction)", () => collection.find({ grp: "chain" }).sort("total", -1).limit(2)],
+      ["sort(object)", () => collection.find({ grp: "chain" }).sort({ total: -1 }).limit(2)],
+      ["sort(pairs)", () => collection.find({ grp: "chain" }).sort([["total", -1]]).limit(2)],
+    ];
+    for (const [spelling, chain] of spellings) {
+      const viaToArray = (await chain().toArray()).map((d: any) => d.total);
+      assert(`${label} ${spelling}: toArray over the chain orders and caps`,
+        JSON.stringify(viaToArray) === "[9,7]", JSON.stringify(viaToArray));
+
+      const viaForAwait: number[] = [];
+      for await (const doc of chain()) viaForAwait.push((doc as any).total);
+      assert(`${label} ${spelling}: for-await over the chain orders and caps`,
+        JSON.stringify(viaForAwait) === "[9,7]", JSON.stringify(viaForAwait));
+    }
+
+    // skip composes, and ascending is not merely the absence of descending - a
+    // direction that is ignored would pass a descending-only test.
+    const skipped = (await collection.find({ grp: "chain" }).sort("total", -1).skip(1).limit(1).toArray())
+      .map((d: any) => d.total);
+    assert(`${label}: skip composes with sort and limit`,
+      JSON.stringify(skipped) === "[7]", JSON.stringify(skipped));
+    const ascending = (await collection.find({ grp: "chain" }).sort("total", 1).limit(2).toArray())
+      .map((d: any) => d.total);
+    assert(`${label}: an ascending sort actually ascends`,
+      JSON.stringify(ascending) === "[3,7]", JSON.stringify(ascending));
+
+    // LAZY: building the chain must not execute it.
+    const pending = collection.find({ grp: "chain" }).sort("total", -1);
+    await collection.insertOne({ total: 99, grp: "chain" });
+    const afterInsert = (await pending.toArray()).map((d: any) => d.total);
+    assert(`${label}: the chain runs at materialisation, not at find()`,
+      afterInsert[0] === 99, JSON.stringify(afterInsert));
+
+    await collection.deleteMany({});
+  }
+
   // ── ADR-0025 / client-lifecycle-is-bounded (ASSERTED) ─────────────────────
   //
   // docstore_contract.json :: client-lifecycle-is-bounded
