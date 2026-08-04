@@ -604,7 +604,23 @@ class FileBackend implements CacheBackend {
         return undefined;
       }
       this.hits++;
-      return data.value ?? data;
+      // A cached null must come back as NULL, not as the storage envelope.
+      //
+      // This was `data.value ?? data`. `data` is the envelope
+      // {key, value, expiresAt}, so whenever the stored value was null the
+      // `??` fell through and handed the caller that OBJECT - which is truthy -
+      // where the caller had stored nothing. Every `if (cached)` then took the
+      // hit branch with a meaningless object, so the cache turned "this lookup
+      // found nothing" into "this lookup found something". Caching a negative
+      // lookup is the most common reason to cache a null at all, so it was
+      // wrong exactly where the feature gets used.
+      //
+      // The test is the ENVELOPE SHAPE, never the value's truthiness: false, 0,
+      // "" and [] are values, and a truthiness check would break all of them.
+      // The non-envelope fallback stays for a file this backend did not write.
+      const isEnvelope = data !== null && typeof data === "object"
+        && "value" in data && "expiresAt" in data;
+      return isEnvelope ? data.value : data;
     } catch {
       this.misses++;
       return undefined;
