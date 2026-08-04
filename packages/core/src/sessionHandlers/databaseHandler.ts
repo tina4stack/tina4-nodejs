@@ -40,14 +40,37 @@ export interface DatabaseSessionConfig {
  * Expiry is checked on read; expired rows are cleaned up lazily.
  */
 export class DatabaseSessionHandler implements SessionHandler {
-  private db: any;
+  private dbHandle: any = null;
+  private dbPath: string;
   private initialized = false;
 
+  /**
+   * NO I/O IN A CONSTRUCTOR (ADR-0021).
+   *
+   * This used to run `new DatabaseSync(dbPath)` and a `PRAGMA journal_mode = WAL`
+   * right here. Both are real work against real storage: opening the database
+   * CREATES the file, and switching to WAL creates its `-wal` and `-shm`
+   * siblings. Measured from a clean temp cwd, merely constructing this handler
+   * left three files on disk before a single session was ever read or written.
+   *
+   * A constructor sits OUTSIDE the log-loud-and-degrade policy, so nothing it
+   * does can be logged, degraded, or re-raised by TINA4_SESSION_STRICT - the one
+   * place the policy cannot protect is the first thing that runs. The path is
+   * resolved here (pure string work, and resolveDbPath's refusal of a non-sqlite
+   * URL is a CONFIGURATION error that must still be loud at construction), and
+   * the database itself is opened on first use.
+   */
   constructor(config?: DatabaseSessionConfig) {
-    const dbPath = config?.dbPath ?? this.resolveDbPath();
+    this.dbPath = config?.dbPath ?? this.resolveDbPath();
+  }
 
-    this.db = new DatabaseSync(dbPath);
-    this.db.exec("PRAGMA journal_mode = WAL");
+  /** Open the database on FIRST USE, not at construction. */
+  private get db(): any {
+    if (this.dbHandle === null) {
+      this.dbHandle = new DatabaseSync(this.dbPath);
+      this.dbHandle.exec("PRAGMA journal_mode = WAL");
+    }
+    return this.dbHandle;
   }
 
   /**
