@@ -10,6 +10,31 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Fixed (the object sort spelling threw on the fallback, ADR-0036)
+
+`collection.find({}).sort({ total: -1 })` worked on a real MongoDB and threw
+
+```
+TypeError: keyOrList is not iterable
+```
+
+on the SQLite fallback. A real `FindCursor.sort()` accepts a field plus a
+direction, a list of `[field, direction]` pairs, an object, OR a `Map`, and
+ADR-0025 makes the driver the shape this fallback imitates - so all of those now
+work here too, via the exported `sortSpec()` helper.
+
+  NOT affected: Node's chain was already lazy and chainable on both providers,
+  because a real `FindCursor` is lazy and so is the fallback `Cursor`. That is
+  the shape PHP and Ruby were brought to by ADR-0036.
+
+  MEASURED 2026-08-04 against a real MongoDB 7.0.39: 4 chain cases x 2 providers
+  x 4 frameworks = 32 combinations, of which **10 failed** before this change and
+  0 fail after. Pinned by the substitutability suite in all four frameworks,
+  which asserts every spelling on BOTH providers, that `skip` composes, that an
+  ASCENDING sort actually ascends (a direction ignored outright would pass a
+  descending-only test), and that the chain is LAZY - a document inserted after
+  the chain is built but before it is iterated must appear.
+
 ### Breaking (`Tina4Request.session` is now `Tina4Session | null`)
 
 **What changed.** `req.session` is typed `Tina4Session | null`. TypeScript will now flag

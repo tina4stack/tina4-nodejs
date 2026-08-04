@@ -506,6 +506,30 @@ function dumpDoc(document: Record<string, unknown>): string {
 // ── Cursor ───────────────────────────────────────────────────────────────────
 
 /** Lazy result cursor. Builds and runs SQL only when materialised (toArray). */
+/** The three sort spellings a real FindCursor accepts. */
+export type SortSpec =
+  | string
+  | [string, number][]
+  | Record<string, number>
+  | Map<string, number>;
+
+/**
+ * Normalise the driver's three sort spellings to a list of [key, direction].
+ *
+ * ADR-0036. A real `FindCursor.sort()` accepts a key plus a direction, a list
+ * of `[key, direction]` pairs, OR an object/Map - and the driver is the shape
+ * this fallback imitates (ADR-0025). The object form used to throw
+ * `TypeError: keyOrList is not iterable` here. Measured 2026-08-04 against a
+ * real MongoDB: the object spelling worked on the driver and threw on the
+ * fallback, in three of the four frameworks.
+ */
+export function sortSpec(keyOrList: SortSpec, direction = 1): [string, number][] {
+  if (typeof keyOrList === "string") return [[keyOrList, direction]];
+  if (keyOrList instanceof Map) return [...keyOrList.entries()];
+  if (Array.isArray(keyOrList)) return keyOrList.map(([k, d]) => [k, d]);
+  return Object.entries(keyOrList).map(([k, d]) => [k, d]);
+}
+
 export class Cursor {
   #sort: [string, number][] = [];
   #limit: number | null = null;
@@ -540,12 +564,8 @@ export class Cursor {
     this.#projection = projection;
   }
 
-  sort(keyOrList: string | [string, number][], direction = 1): this {
-    if (typeof keyOrList === "string") {
-      this.#sort.push([keyOrList, direction]);
-    } else {
-      for (const [k, d] of keyOrList) this.#sort.push([k, d]);
-    }
+  sort(keyOrList: SortSpec, direction = 1): this {
+    for (const pair of sortSpec(keyOrList, direction)) this.#sort.push(pair);
     return this;
   }
 
@@ -601,6 +621,14 @@ export class Cursor {
    *
    * toList() is gone for the same reason: the driver's FindCursor has no such
    * method.
+   *
+   * ADR-0035 restored the uniform spellings in ruby and php through a
+   * delegator, and deliberately did NOT do so here. A delegator can only supply
+   * a method that is POSSIBLE on the real provider, and a synchronous iterator
+   * is not: a FindCursor is async-only. Adding one back on the fallback alone
+   * would recreate ADR-0025's worst measured defect - identical source changing
+   * TYPE, with a truthy Promise passing `if (doc)` for a document that does not
+   * exist. That is ADR-0025 corollary 3, which ADR-0035 keeps.
    */
   async *[Symbol.asyncIterator](): AsyncIterator<Record<string, unknown>> {
     for (const doc of await this.toArray()) yield doc;
