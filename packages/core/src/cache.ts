@@ -154,6 +154,20 @@ interface CacheBackend {
   set(key: string, value: unknown, ttl: number): Promise<void>;
   delete(key: string): Promise<boolean>;
   clear(): Promise<void>;
+  /**
+   * Evict expired entries and return HOW MANY were actually evicted.
+   *
+   * REQUIRED, not optional. It used to be neither declared nor implemented, so
+   * the module-level sweep() found no backend method and returned a permanent
+   * 0: the one API whose job is reclaiming expired space did nothing and
+   * reported success. Declaring it here makes "every provider can sweep" a
+   * compile-time fact instead of a runtime hope.
+   *
+   * 0 is the HONEST answer on redis/valkey/memcached/mongodb - they expire
+   * entries server-side, so there is nothing left for us to evict. It is the
+   * WRONG answer for memory, file and database, which own their own expiry.
+   */
+  sweep(): Promise<number>;
   stats(): Promise<{ hits: number; misses: number; size: number; backend: string }>;
   name(): string;
   /**
@@ -218,6 +232,23 @@ class MemoryBackend implements CacheBackend {
     this.store.clear();
     this.hits = 0;
     this.misses = 0;
+  }
+
+  /**
+   * Drop expired entries and count them. `expiresAt > 0` is load-bearing: an
+   * entry stored with ttl <= 0 is permanent and carries 0, so a bare
+   * `now > expiresAt` would evict every permanent entry on the first sweep.
+   */
+  async sweep(): Promise<number> {
+    const now = Date.now();
+    let evicted = 0;
+    for (const [key, entry] of this.store) {
+      if (entry.expiresAt > 0 && now > entry.expiresAt) {
+        this.store.delete(key);
+        evicted++;
+      }
+    }
+    return evicted;
   }
 
   async stats() {
@@ -549,6 +580,16 @@ class RedisBackend implements CacheBackend {
     }
   }
 
+  /**
+   * Nothing to do: redis/valkey expires entries SERVER-SIDE (the TTL set by SETEX), so by the
+   * time a sweep runs there is nothing left for us to evict. 0 is the honest
+   * count, not a stub - inventing a number here would be a lie, and scanning
+   * the keyspace to "prove" it would cost a full scan to always return 0.
+   */
+  async sweep(): Promise<number> {
+    return 0;
+  }
+
   async stats() {
     let size = 0;
     const keys = await this.respCommand("DBSIZE");
@@ -687,6 +728,28 @@ class FileBackend implements CacheBackend {
       }
     } catch {}
     return { hits: this.hits, misses: this.misses, size: count, backend: "file" };
+  }
+
+  /**
+   * Delete expired cache files and count them. `expiresAt > 0` is load-bearing:
+   * a no-TTL entry is stored with 0 and must survive every sweep.
+   */
+  async sweep(): Promise<number> {
+    const now = Date.now() / 1000;
+    let evicted = 0;
+    try {
+      for (const f of fs.readdirSync(this.dir).filter((n) => n.endsWith(".json"))) {
+        const p = path.join(this.dir, f);
+        try {
+          const data = JSON.parse(fs.readFileSync(p, "utf-8"));
+          if (data.expiresAt > 0 && now > data.expiresAt) {
+            fs.unlinkSync(p);
+            evicted++;
+          }
+        } catch { /* an unreadable file is not ours to count */ }
+      }
+    } catch { /* no cache directory yet */ }
+    return evicted;
   }
 
   name() { return "file"; }
@@ -978,6 +1041,16 @@ class MemcachedBackend implements CacheBackend {
     return { hits: this.hits, misses: this.misses, size: this.own.size, backend: "memcached" };
   }
 
+  /**
+   * Nothing to do: memcached expires entries SERVER-SIDE (the exptime set on each key), so by the
+   * time a sweep runs there is nothing left for us to evict. 0 is the honest
+   * count, not a stub - inventing a number here would be a lie, and scanning
+   * the keyspace to "prove" it would cost a full scan to always return 0.
+   */
+  async sweep(): Promise<number> {
+    return 0;
+  }
+
   name() { return "memcached"; }
 }
 
@@ -1114,6 +1187,16 @@ class MongoBackend implements CacheBackend {
       try { size = await this.coll.countDocuments({}); } catch { /* keep 0 */ }
     }
     return { hits: this.hits, misses: this.misses, size, backend: "mongodb" };
+  }
+
+  /**
+   * Nothing to do: mongodb expires entries SERVER-SIDE (the TTL index on expiresAt), so by the
+   * time a sweep runs there is nothing left for us to evict. 0 is the honest
+   * count, not a stub - inventing a number here would be a lie, and scanning
+   * the keyspace to "prove" it would cost a full scan to always return 0.
+   */
+  async sweep(): Promise<number> {
+    return 0;
   }
 
   name() { return "mongodb"; }
@@ -1257,6 +1340,42 @@ class DatabaseBackend implements CacheBackend {
       } catch { /* keep 0 */ }
     }
     return { hits: this.hits, misses: this.misses, size, backend: "database" };
+  }
+
+  /**
+   * Delete expired rows and return how many went.
+   *
+   * The network providers return 0 because they expire entries SERVER-SIDE -
+   * nothing was evicted because there was nothing left to evict, and 0 is the
+   * honest answer there. A SQL TABLE EXPIRES NOTHING BY ITSELF. Before this
+   * override the database backend had no sweep at all, so expired rows were
+   * removed only when someone happened to read that exact key again: the table
+   * grew without bound while the one API whose job is reclaiming that space
+   * reported success having done nothing.
+   *
+   * `expires_at > 0` is load-bearing: an entry stored with ttl <= 0 is
+   * permanent and carries 0, so a bare `now > expires_at` would evict every
+   * permanent entry on the first sweep.
+   */
+  async sweep(): Promise<number> {
+    if (!this.db) return 0;
+    const now = Date.now() / 1000;
+    try {
+      const row = await this.db.fetchOne(
+        "SELECT COUNT(*) AS c FROM tina4_cache WHERE expires_at > 0 AND expires_at < ?",
+        [now],
+      );
+      const expired = row && row.c != null ? Number(row.c) : 0;
+      if (expired > 0) {
+        await this.db.execute(
+          "DELETE FROM tina4_cache WHERE expires_at > 0 AND expires_at < ?", [now],
+        );
+        try { this.db.commit(); } catch { /* sqlite autocommits */ }
+      }
+      return expired;
+    } catch {
+      return 0;
+    }
   }
 
   name() { return "database"; }
@@ -1608,11 +1727,7 @@ export async function cacheClear(): Promise<void> {
 
 /** Remove expired entries from the cache. Returns count removed. */
 export async function sweep(): Promise<number> {
-  const backend = await _getBackend();
-  if (typeof (backend as any).sweep === "function") {
-    return (backend as any).sweep();
-  }
-  return 0;
+  return (await _getBackend()).sweep();
 }
 
 /** Return cache statistics from the active backend. */

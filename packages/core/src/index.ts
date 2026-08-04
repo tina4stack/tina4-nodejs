@@ -78,7 +78,7 @@ export {
 export type { WebSocketClient } from "./websocket.js";
 export { ServiceRunner, Tina4Service, matchCronField, matchesCron } from "./service.js";
 export type { ServiceOptions, ServiceContext, ServiceHandler, ServiceInfo } from "./service.js";
-export { responseCache, clearCache, cacheStats, cacheGet, cacheSet, cacheDelete, cacheClear, cacheBackendStats, createBackend, _resetBackend } from "./cache.js";
+export { responseCache, clearCache, cacheStats, cacheGet, cacheSet, cacheDelete, cacheClear, cacheBackendStats, sweep, createBackend, _resetBackend } from "./cache.js";
 export type { ResponseCacheConfig, CacheBackend } from "./cache.js";
 export { Api } from "./api.js";
 export type { ApiResult, ApiOptions, ApiTransport, DownloadResult, UploadOptions } from "./api.js";
