@@ -107,6 +107,17 @@ export interface QueueBackendInterface {
   pop(queue: string): QueueJob | null;
   size(queue: string): number;
   clear(queue: string): void;
+  /**
+   * Release whatever connection the backend holds, and be safe to call twice.
+   *
+   * REQUIRED, not optional, and deliberately so: it mirrors PHP's
+   * Tina4\Queue\QueueBackend, where close() has always been part of the
+   * interface. Optional would reintroduce exactly the bug this closes — a
+   * caller feature-detecting `backend.close?.()` silently skips the backend
+   * that forgot to implement it, which is how tina4-ruby's lite backend went
+   * un-closed by every `respond_to?(:close)` guard in its tree.
+   */
+  close(): void;
   // Optional full lifecycle. Reservation-based backends (MongoDB) implement
   // these so complete()/fail() ack the ACTIVE store — without complete(), a
   // reserved Mongo job is re-delivered after the visibility window.
@@ -399,6 +410,34 @@ export class Queue {
       return 0;
     }
     return this.liteBackend.clear(q);
+  }
+
+  /**
+   * Release the backend's connection and free its resources.
+   *
+   * MEASURED 2026-08-04: close() was absent on the top-level Queue in ALL FOUR
+   * frameworks, and in Node it was absent on every backend class too — so an
+   * application had no way at all to hand a queue's client back. Same class of
+   * leak as ADR-0025 corollary 4 (client-lifecycle-is-bounded).
+   *
+   * Safe on EVERY backend: the file backend holds no connection and closes as a
+   * documented no-op, so a TINA4_QUEUE_BACKEND change never turns a working
+   * shutdown path into an error. Idempotent — each backend drops its handles on
+   * the first call, so a second call finds nothing to close and returns.
+   *
+   * HONEST CAVEAT specific to Node: neither backend it can reach holds a
+   * connection between calls today. The Mongo backend runs each operation in
+   * its own child process (ADR-0022), which closes its own client before it
+   * exits, and rabbitmq/kafka are refused outright at construction. So this
+   * releases nothing YET — it is here for the contract, and because the day the
+   * persistent-connection rewrite lands the client is released here with no
+   * change at any call site. Python, PHP and Ruby release a REAL client through
+   * the identically-named method.
+   *
+   * Treat the queue as spent afterwards and build a new one to keep working.
+   */
+  close(): void {
+    (this.externalBackend ?? this.liteBackend).close();
   }
 
   /**
