@@ -10,20 +10,20 @@
  * mongodb are real services over real sockets.
  *
  * Service addresses (override to point at your own containers):
- *   TINA4_TEST_CACHE_REDIS_URL      (default redis://127.0.0.1:6379)
- *   TINA4_TEST_CACHE_VALKEY_URL     (default valkey://127.0.0.1:6380)
- *   TINA4_TEST_CACHE_MEMCACHED_URL  (default memcached://127.0.0.1:11211)
- *   TINA4_TEST_CACHE_MONGO_URL      (default mongodb://127.0.0.1:27017)
+ *   TINA4_TEST_REDIS_URL      (default redis://127.0.0.1:6379)
+ *   TINA4_TEST_VALKEY_URL     (default valkey://127.0.0.1:6380)
+ *   TINA4_TEST_MEMCACHED_URL  (default memcached://127.0.0.1:11211)
+ *   TINA4_TEST_MONGO_URI      (default mongodb://127.0.0.1:27017)
  */
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createBackend } from "../packages/core/src/index.ts";
 
-export const REDIS_URL = process.env.TINA4_TEST_CACHE_REDIS_URL ?? "redis://127.0.0.1:6379";
-export const VALKEY_URL = process.env.TINA4_TEST_CACHE_VALKEY_URL ?? "valkey://127.0.0.1:6380";
-export const MEMCACHED_URL = process.env.TINA4_TEST_CACHE_MEMCACHED_URL ?? "memcached://127.0.0.1:11211";
-export const MONGO_URL = process.env.TINA4_TEST_CACHE_MONGO_URL ?? "mongodb://127.0.0.1:27017";
+export const REDIS_URL = process.env.TINA4_TEST_REDIS_URL ?? "redis://127.0.0.1:6379";
+export const VALKEY_URL = process.env.TINA4_TEST_VALKEY_URL ?? "valkey://127.0.0.1:6380";
+export const MEMCACHED_URL = process.env.TINA4_TEST_MEMCACHED_URL ?? "memcached://127.0.0.1:11211";
+export const MONGO_URL = process.env.TINA4_TEST_MONGO_URI ?? "mongodb://127.0.0.1:27017";
 
 /** A unique-per-process scratch area so two suites never share local state. */
 const RUN_ID = `${process.pid}_${Date.now()}`;
