@@ -94,8 +94,16 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   private backendPromise: Promise<CacheBackend | null> | null = null;
   private backendName: string;
 
+  /**
+   * WHICH DATABASE this wrapper caches for, folded into every cache key.
+   * Empty only for an adapter built outside the URL/config funnels, which then
+   * behaves exactly as before rather than colliding with a tagged one.
+   */
+  private readonly identity: string;
+
   constructor(adapter: DatabaseAdapter, options: CachedAdapterOptions = {}) {
     this.adapter = adapter;
+    this.identity = adapter.cacheIdentity ?? "";
     this.cachePersistent = options.persistent ?? isTruthy(process.env.TINA4_DB_CACHE);
     // Request-scoped cache defaults to OFF (opt-in). A request-scoped cache
     // defaulting ON is a footgun: a `SELECT MAX(id)` (or generator read) right
@@ -312,7 +320,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     // where every ORM read flows through the cached db.fetch(). Same store, same
     // counters, flushed on writes.
     if (this.enabled) {
-      const key = QueryCache.queryKey(sql + ":Q", params as unknown[] | undefined);
+      const key = QueryCache.queryKey(sql + ":Q", params as unknown[] | undefined, this.identity);
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -332,7 +340,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     // master's `no_cache`). Counters are left untouched so a bypass read isn't
     // misreported as a hit or a miss.
     if (this.enabled && !noCache) {
-      const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined);
+      const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined, this.identity);
       const cached = this.cache.get<T[]>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -348,7 +356,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
 
   fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[], noCache?: boolean): T | null {
     if (this.enabled && !noCache) {
-      const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined);
+      const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined, this.identity);
       const cached = this.cache.get<T | null>(key);
       if (cached !== undefined) {
         this.hits++;
@@ -443,7 +451,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     // `noCache` bypasses both cache layers for this one call — no lookup, no
     // store, run directly (mirrors the Python master's `no_cache`).
     if (this.enabled && !noCache) {
-      const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined);
+      const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined, this.identity);
       // Persistent distributed backend is AUTHORITATIVE (mirrors Python, where a
       // configured _cache_backend bypasses the in-process dict). This keeps
       // cross-instance write-invalidation deterministic: a write clears the
@@ -475,7 +483,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       : this.adapter.fetchOne<T>(sql, params);
     // `noCache` bypasses both cache layers for this one call (see fetchAsync).
     if (this.enabled && !noCache) {
-      const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined);
+      const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined, this.identity);
       if (this.usesPersistentBackend()) {
         const shared = await this.backendGetOne<T>(key);
         if (shared !== undefined) { this.hits++; return shared.row; }
@@ -502,7 +510,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       ? await (this.adapter as any).queryAsync(sql, params)
       : this.adapter.query<T>(sql, params);
     if (this.enabled) {
-      const key = QueryCache.queryKey(sql + ":Q", params as unknown[] | undefined);
+      const key = QueryCache.queryKey(sql + ":Q", params as unknown[] | undefined, this.identity);
       if (this.usesPersistentBackend()) {
         const shared = await this.backendGetRows<T>(key);
         if (shared !== undefined) { this.hits++; return shared; }

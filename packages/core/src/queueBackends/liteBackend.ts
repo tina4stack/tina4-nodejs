@@ -74,6 +74,19 @@ export class LiteBackend {
     return `${Date.now()}-${String(this.seq).padStart(6, "0")}`;
   }
 
+  /**
+   * No-op: the file backend holds no connection to release.
+   *
+   * It exists so `Queue.close()` can call ONE method on every backend instead
+   * of testing for it, and so switching TINA4_QUEUE_BACKEND to "file" never
+   * turns a working close() into "backend.close is not a function". Idempotent
+   * by construction — there is nothing to drop.
+   */
+  close(): void {
+    // Nothing held: every operation opens, reads/writes and closes its own file
+    // descriptor synchronously, so no handle survives a call.
+  }
+
   push(queue: string, payload: unknown, delay?: number, priority?: number): string {
     const dir = this.ensureDir(queue);
     const id = randomUUID();

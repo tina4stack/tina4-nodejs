@@ -1352,6 +1352,16 @@ export class Database {
  * connected; SQLite connects lazily.
  */
 export async function createAdapterFromUrl(url: string, username?: string, password?: string): Promise<DatabaseAdapter> {
+  const adapter = await buildAdapterFromUrl(url, username, password);
+  // Tag the adapter with WHICH DATABASE it is connected to. The query cache
+  // folds this into every key, so two databases sharing one cache backend
+  // cannot serve each other's rows. Set here because this is the single funnel
+  // where a URL becomes an adapter.
+  adapter.cacheIdentity = QueryCache.cacheIdentity(url);
+  return adapter;
+}
+
+async function buildAdapterFromUrl(url: string, username?: string, password?: string): Promise<DatabaseAdapter> {
   const parsed = parseDatabaseUrl(url, username, password);
 
   switch (parsed.engine) {
@@ -1540,6 +1550,11 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
   // default and a `{ type: "postgres" }` connection takes the SQLite getNextId
   // branch and crashes on the missing tina4_sequences table (#255).
   const finished = (adapter: DatabaseAdapter): Database => {
+    // Same identity tag as the URL path above - a config-object connection is
+    // just as capable of sharing a cache backend with another database.
+    adapter.cacheIdentity = QueryCache.cacheIdentity(
+      `${type}://${config?.host ?? ""}:${config?.port ?? ""}/${config?.database ?? config?.path ?? ""}`,
+    );
     const db = new Database(setAdapter(adapter));
     db.setDbType(type);
     return exposeDb(db);

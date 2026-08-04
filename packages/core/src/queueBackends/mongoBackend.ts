@@ -48,6 +48,8 @@ export interface QueueBackend {
   pop(queue: string): QueueJob | null;
   size(queue: string): number;
   clear(queue: string): void;
+  /** Release whatever connection the backend holds. Must be idempotent. */
+  close(): void;
 }
 
 // ── MongoDB Backend ──────────────────────────────────────────
@@ -359,8 +361,20 @@ export class MongoBackend implements QueueBackend {
             process.stdout.write(JSON.stringify(out));
           }
           else if (operation === "failed") {
+            // Found by the ATTEMPTS COUNTER, not by a "failed" status. The
+            // fail() branch above re-queues a still-retryable job as "pending"
+            // (that is what makes the next pop redeliver it) and dead-letters
+            // an exhausted one as "dead" - nothing ever writes "failed", so
+            // this query matched nothing and returned [] forever. An empty
+            // list is indistinguishable from "nothing has failed"
+            // (ADR-0022 decision 7). attempts > 0 is the real marker of a job
+            // that has already died at least once.
             const docs = await col
-              .find({ queue: queueName, status: "failed", attempts: { $lt: maxRetries } })
+              .find({
+                queue: queueName,
+                status: "pending",
+                attempts: { $gt: 0, $lt: maxRetries },
+              })
               .toArray();
             const out = docs.map((d) => { delete d._id; delete d.queue; return d; });
             process.stdout.write(JSON.stringify(out));
@@ -526,5 +540,27 @@ export class MongoBackend implements QueueBackend {
   purge(queue: string, status?: string): number {
     const out = this.execSync("purge", queue, JSON.stringify({ status: status ?? "" }));
     return parseInt(out, 10) || 0;
+  }
+
+  /**
+   * Release the MongoDB connection. Idempotent — a second call is a no-op.
+   *
+   * HONEST CAVEAT, and it is the whole reason ADR-0022 exists: THIS backend
+   * holds no connection between calls to release. Every operation runs in its
+   * own child process (see execSync/buildScript), and that child's `finally`
+   * already does `await client.close()` before it exits — so the pool it opened
+   * is gone by the time the method returns. Unlike tina4-python, tina4-php and
+   * tina4-ruby, whose Mongo/broker backends hold a long-lived client that this
+   * method genuinely hands back, Node has nothing to give back.
+   *
+   * It is implemented anyway, and required by the QueueBackend interface,
+   * because the CONTRACT is what matters: `Queue.close()` must be callable on
+   * every backend in every framework, and the day the persistent-connection
+   * rewrite lands (ADR-0022's tracked fix) the client goes here with no change
+   * at any call site. A method that is a no-op today and correct forever beats
+   * a missing method the caller has to feature-detect.
+   */
+  close(): void {
+    // Nothing held: the per-operation child process owns and closes its client.
   }
 }

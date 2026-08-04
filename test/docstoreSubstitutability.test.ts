@@ -32,7 +32,9 @@
  * NO MOCKS. A real SQLite file and a real MongoDB over a real socket. Skips
  * loudly when no Mongo is reachable.
  */
-import { mkdtempSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -44,8 +46,9 @@ const MONGO_URI = process.env.TINA4_TEST_MONGO_URI ?? "mongodb://192.168.88.99:2
 // measured on the lab box, where it was the suite's only failing file. Each
 // provider needs a fresh module instance, so the import is cache-busted, which
 // means a real URL rather than a bare path.
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ORM = pathToFileURL(
-  join(dirname(fileURLToPath(import.meta.url)), "..", "packages", "orm", "src", "index.ts"),
+  join(REPO_ROOT, "packages", "orm", "src", "index.ts"),
 ).href;
 
 let pass = 0;
@@ -101,6 +104,109 @@ async function run() {
     const found = await collection.findOne({ proof: "real-mongo" });
     assert("a real mongo collection round-trips a document", found?.proof === "real-mongo");
     assert("isServerless() agrees a URI means not-serverless", mod.isServerless() === false);
+    await collection.deleteMany({});
+  }
+
+  // ── the driverless environment (ADR-0033) ─────────────────────────────────
+  //
+  // NO MOCKS, and this is the case where that rule bites hardest: stubbing the
+  // module loader is exactly the forbidden thing, because the bug being pinned
+  // IS how the resolution failure is handled. A stub would test the stub.
+  //
+  // So `mongodb` is made GENUINELY unresolvable. docstore.ts imports only
+  // node: builtins, so esbuild can emit it into a directory OUTSIDE the repo,
+  // where Node's resolution walks up through /tmp and never reaches the repo's
+  // node_modules. `import("mongodb")` really fails there with a real
+  // ERR_MODULE_NOT_FOUND. That is precisely what a consumer gets from
+  // `npm install --omit=optional`, since mongodb is an optionalDependency.
+  //
+  // The child reports whether it really was driverless, so a leaky environment
+  // FAILS instead of quietly proving nothing.
+  console.log("\n--- a missing driver has one outcome in all four ---");
+  {
+    const scratch = mkdtempSync(join(tmpdir(), "tina4-driverless-"));
+    const bundled = join(scratch, "docstore.mjs");
+    const storePath = join(scratch, "must_not_be_created.db");
+    // A password in the URI, so the credential-leak assertion has something
+    // real to catch.
+    const uriWithCredentials = "mongodb://docstore_user:s3cr3t-p4ssw0rd@192.0.2.1:27017";
+
+    const esbuild = join(REPO_ROOT, "node_modules", ".bin", "esbuild");
+    execFileSync(esbuild, [
+      join(REPO_ROOT, "packages", "orm", "src", "docstore.ts"),
+      "--format=esm", "--platform=node", "--target=node20", `--outfile=${bundled}`,
+    ], { stdio: "pipe" });
+
+    const probe = join(scratch, "probe.mjs");
+    writeFileSync(probe, `
+      import { existsSync } from "node:fs";
+      const report = {};
+      try { await import("mongodb"); report.driverless = false; }
+      catch (e) { report.driverless = e?.code === "ERR_MODULE_NOT_FOUND"; }
+      const ds = await import("./docstore.mjs");
+      report.isServerless = ds.isServerless();
+      try {
+        const collection = await ds.getCollection("driver_absence_probe");
+        report.outcome = "returned";
+        report.returnedType = collection?.constructor?.name;
+      } catch (e) {
+        report.outcome = "threw";
+        report.errorName = e?.name;
+        report.message = String(e?.message ?? "");
+      }
+      report.storeFileExists = existsSync(process.env.TINA4_DOC_STORE_PATH);
+      process.stdout.write("__PROBE__" + JSON.stringify(report));
+    `);
+
+    const raw = execFileSync(process.execPath, [probe], {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        TINA4_MONGO_URI: uriWithCredentials,
+        TINA4_DOC_STORE_PATH: storePath,
+      },
+    });
+    const report = JSON.parse(raw.split("__PROBE__")[1]);
+
+    // The environment must really be driverless, or nothing below means
+    // anything. This FAILS rather than skipping, on purpose.
+    assert("the probe environment really has no mongodb driver",
+      report.driverless === true, "the driver resolved, so this would have proved nothing");
+
+    assert("a configured URI still means not-serverless with no driver",
+      report.isServerless === false, String(report.isServerless));
+    assert("a missing driver raises instead of using the local file",
+      report.outcome === "threw", `got ${report.returnedType}`);
+    assert("the throw is the documented DocStoreDriverMissing",
+      report.errorName === "DocStoreDriverMissing", String(report.errorName));
+    assert("the message names the missing package",
+      String(report.message).includes("mongodb"), report.message);
+    assert("the message names how to install it",
+      String(report.message).includes("npm install mongodb"), report.message);
+    assert("the message names the env var to unset",
+      String(report.message).includes("TINA4_MONGO_URI"), report.message);
+    // NEGATIVE: naming the variable must not mean printing its value. A Mongo
+    // URI routinely carries credentials and an error string is the most-logged
+    // text a framework emits.
+    assert("the message does not leak the uri credentials",
+      !String(report.message).includes("s3cr3t-p4ssw0rd"), report.message);
+    // NEGATIVE, and the one that matters most: nothing was written locally.
+    assert("no local SQLite store was created",
+      report.storeFileExists === false, "the fallback was reached anyway");
+
+    rmSync(scratch, { recursive: true, force: true });
+  }
+
+  // POSITIVE half: the throw must be about the DRIVER, not the URI. Without
+  // this, deleting the whole real-Mongo path would satisfy the case above.
+  if (!hasMongo) {
+    console.log(`  \x1b[33mSKIP\x1b[0m no reachable MongoDB at ${MONGO_URI}`);
+  } else {
+    const { mod, collection } = await collectionFor(MONGO_URI);
+    assert("the same uri with the driver present still selects mongo",
+      mod.isServerless() === false && collection?.constructor?.name !== "SqliteCollection",
+      collection?.constructor?.name);
+    await collection.insertOne({ proof: "driver-present" });
     await collection.deleteMany({});
   }
 
@@ -204,20 +310,47 @@ async function run() {
   if (!hasMongo) {
     console.log(`  \x1b[33mSKIP\x1b[0m no reachable MongoDB`);
   } else {
+    // EVERY COUNT HERE IS SCOPED TO THE CONNECTIONS THIS TEST OWNS.
+    // serverStatus.connections.current, which this test used to read, is a
+    // SERVER-GLOBAL counter across every client on that mongod, so any other
+    // process moves it and the assertion becomes a coin flip rather than a
+    // gate. Measured 2026-08-04 against the shared lab MongoDB 7.0.39 with the
+    // docstore code UNCHANGED and correct, the global count read [88, 89, 90]
+    // with one other agent connected and [193, 194, 195] with 45 further real
+    // clients held open, against an idle baseline near 6.
+    //
+    // $currentOp with idleConnections is the per-client view: an appName in the
+    // connection string tags every socket this test's client opens, and nobody
+    // else's carry it. That also lets closeDocStore be asserted at its real
+    // strength - OUR connections must reach exactly ZERO, not merely "fewer
+    // than before", which another tenant disconnecting could satisfy alone.
+    const appName = "tina4_docstore_lifecycle_" + randomBytes(5).toString("hex");
+    const taggedUri = MONGO_URI + (MONGO_URI.includes("?") ? "&" : "/?") + "appName=" + appName;
     for (const k of ["TINA4_MONGO_URI", "TINA4_SESSION_MONGO_URI", "TINA4_SESSION_MONGO_URL"]) delete process.env[k];
-    process.env.TINA4_MONGO_URI = MONGO_URI;
+    process.env.TINA4_MONGO_URI = taggedUri;
     process.env.TINA4_DOC_STORE_PATH = join(mkdtempSync(join(tmpdir(), "ds")), "ds.db");
     // ONE module instance on purpose: collectionFor() re-imports per call, which
     // would hand every call a fresh client cache and hide exactly what is measured.
     const mod = await import(ORM + "?t=" + Math.random());
     const { MongoClient } = await import("mongodb");
-    const serverConnections = async (): Promise<number> => {
+    const ownConnections = async (): Promise<number> => {
       const probe = new MongoClient(MONGO_URI);
       await probe.connect();
-      const status: any = await probe.db("admin").command({ serverStatus: 1 });
+      const rows = await probe.db("admin").aggregate([
+        { $currentOp: { allUsers: true, idleConnections: true, localOps: true } },
+        { $match: { appName } },
+        { $count: "n" },
+      ]).toArray();
       await probe.close();
-      return status.connections.current;
+      // $count emits NO document when nothing matched, which is 0.
+      return rows.length === 0 ? 0 : (rows[0] as any).n;
     };
+
+    // The measurement must be able to SEE this client, or every assertion
+    // below is vacuously true and proves nothing.
+    await (await mod.getCollection("lifecycle_probe")).countDocuments({});
+    assert("appName scoping can see this test's own connections",
+      (await ownConnections()) > 0, "the probe is blind, so nothing below would prove anything");
 
     const rounds: number[] = [];
     for (let round = 0; round < 3; round++) {
@@ -225,29 +358,30 @@ async function run() {
         const c = await mod.getCollection("lifecycle_probe");
         await c.countDocuments({});
       }
-      rounds.push(await serverConnections());
+      rounds.push(await ownConnections());
     }
     const settled = rounds[rounds.length - 1];
     for (let i = 0; i < 100; i++) {
       const c = await mod.getCollection("lifecycle_probe");
       await c.countDocuments({});
     }
-    const afterHundred = await serverConnections();
+    const afterHundred = await ownConnections();
 
     // POSITIVE: 100 further calls on a settled pool must add nothing. Under the
     // old one-client-per-call code this was +200.
     assert("repeated get collection does not grow connections",
       afterHundred <= settled, `settled=${settled} after 100 more=${afterHundred}`);
     // And the growth must have flattened rather than tracked the call count.
+    // Both halves are scoped, so the ceiling measures OUR pool.
     assert("connection growth plateaus instead of tracking calls",
-      rounds[2] - rounds[1] <= 2 && rounds[2] < 60, JSON.stringify(rounds));
+      rounds[2] - rounds[1] <= 2 && rounds[2] <= 10, JSON.stringify(rounds));
 
-    const before = await serverConnections();
+    // NEGATIVE: after close there must be NONE of ours left, not merely fewer.
     await mod.closeDocStore();
     await new Promise((r) => setTimeout(r, 1000));
-    const afterClose = await serverConnections();
+    const afterClose = await ownConnections();
     assert("close doc store releases the connections",
-      afterClose < before, `before=${before} after=${afterClose}`);
+      afterClose === 0, `ours still open after close: ${afterClose}`);
   }
 
   // ── ADR-0025 clause 4 / query-semantics-match-on-both-providers (ASSERTED) ─

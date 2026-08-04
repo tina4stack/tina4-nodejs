@@ -115,6 +115,17 @@ export interface DatabaseAdapter {
 
   /** Add a column to an existing table (legacy, used by migration). */
   addColumn?(table: string, colName: string, def: FieldDefinition): void;
+
+  /**
+   * Stable identity of the DATABASE this adapter is connected to, as
+   * `engine://host:port/database` with NO credentials - set by whoever built
+   * the adapter from a URL or config.
+   *
+   * The query cache folds this into every key. Without it two databases sharing
+   * one cache backend cross-serve each other's rows, because identical SQL text
+   * across tenants is the common case.
+   */
+  cacheIdentity?: string;
 }
 
 export interface PaginatedResult<T = Record<string, unknown>> {

@@ -983,6 +983,10 @@ queue.purge("completed");
 queue.retryFailed();
 queue.deadLetters();
 queue.produce("notifications", payload, 0, 0);
+// Release the backend connection. Idempotent; discard the queue afterwards.
+// Node caveat: neither reachable backend holds a connection between calls today
+// (ADR-0022 child-process design), so this releases nothing YET - it is the contract.
+queue.close();
 
 // Job methods
 job?.complete();

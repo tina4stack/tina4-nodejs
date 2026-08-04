@@ -44,6 +44,61 @@ req.session.set("user_id", user.id);
 request path re-raises instead of degrading, so a route that reaches your handler always
 has one. No framework code dereferences `req.session` (0 call sites), so nothing internal
 changed.
+### Breaking (DocStore: a missing MongoDB driver now raises)
+
+`TINA4_MONGO_URI` set with the `mongodb` package NOT installed used to throw a bare `ERR_MODULE_NOT_FOUND` naming an npm package rather than the framework decision that led there. It now
+raises `DocStoreDriverMissing`, naming the provider and what is missing (ADR-0033,
+applying ADR-0024 rule 3).
+
+Re-measured 2026-08-04 at `v3` HEAD in a REAL driverless environment - no mock, no
+faked import - one env produced two shapes and four messages across the family:
+Python, PHP and Ruby silently returned the local SQLite store, Node threw a bare
+`ERR_MODULE_NOT_FOUND`. Silent degradation here means production writes landing in a
+container-local file nobody reads, which vanishes on the next deploy, with no error at
+any point.
+
+**Migration - one of two lines:**
+
+```
+npm install mongodb          # use the real provider
+unset TINA4_MONGO_URI        # or use the local SQLite store, explicitly
+```
+
+Also changed: `isServerless()` is now CONFIGURATION ONLY. It used to already reflect configuration only - Node was right here, and the other three moved to match it, which is
+what routed the call into the local branch; without this an app branching on it would
+take the local path and never reach the raise. The error message names the env var that
+supplied the URI and never its VALUE, because a Mongo URI routinely carries
+`user:password@` and an error string is the most-logged text a framework emits.
+
+### Breaking: the DB query-cache key now carries database identity
+
+CACHE CONTRACT invariant `the-cache-key-carries-database-identity` (ADR-0024).
+
+`QueryCache.queryKey()` returned `query:<sql>:<params>` with nothing naming the
+connection, so on ANY shared backend (redis / valkey / memcached / mongodb /
+database) two databases cross-served each other's rows. Two apps pointed at one
+Redis, or one app with a primary and an analytics connection, silently read each
+other's data. Identical SQL text across tenants is the COMMON case, not an edge
+case, so the collision was the normal outcome - a data-isolation failure wearing
+a caching costume.
+
+The key is now `query:<engine://host:port/database>\0<sql>\0<params>`.
+Credentials are excluded on purpose: a password in the key means every rotation
+cold-starts the cache, and a shared backend's key namespace is visible to every
+tenant of it. Nothing per-process is included either - a pid or a salt would
+isolate the databases by accident and destroy the point of a shared cache,
+because no instance would ever hit another's entry.
+
+`DatabaseAdapter` gains an optional `cacheIdentity` field, set by
+`createAdapterFromUrl()` and the `initDatabase()` config path.
+`QueryCache.queryKey(sql, params)` gains an optional third argument; existing
+two-argument calls still compile and behave as before (empty identity).
+
+**Migration:** every entry already in a persistent DB query cache
+(`TINA4_DB_CACHE=true`) becomes a MISS on upgrade. The cache refills from the
+database on first read; expect one cold-cache period per deploy, sized by
+`TINA4_DB_CACHE_TTL`. A cold cache is safe, cross-served rows are not. Apps not
+running `TINA4_DB_CACHE=true` are unaffected. No action is required.
 
 ### Fixed (queue operations acted on the local file store, not the configured backend)
 

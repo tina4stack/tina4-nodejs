@@ -321,7 +321,9 @@ export class BaseModel {
         if (parsed.engine === "sqlite") {
           // SQLite adapter is synchronous — create it inline and register as default
           const dbPath = parsed.database || "./data/tina4.db";
-          const adapter = new SQLiteAdapter(dbPath);
+          // Typed as the INTERFACE so the optional identity tag is assignable.
+          const adapter: DatabaseAdapter = new SQLiteAdapter(dbPath);
+          adapter.cacheIdentity = QueryCache.cacheIdentity(url);
           setAdapter(adapter);
           return adapter;
         }
@@ -1202,7 +1204,7 @@ export class BaseModel {
       ModelClass._queryCache = new QueryCache({ defaultTtl: ttl, maxSize: 500 });
     }
     const cacheKey = `${ModelClass.tableName}:${sql}:${limit}:${offset}`;
-    const key = QueryCache.queryKey(cacheKey, params ?? []);
+    const key = QueryCache.queryKey(cacheKey, params ?? [], ModelClass.getDb().cacheIdentity ?? "");
     const hit = ModelClass._queryCache.get(key) as T[] | undefined;
     if (hit !== undefined) return hit;
 
