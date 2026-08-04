@@ -837,6 +837,21 @@ export function sessionCookieName(): string {
 }
 
 /**
+ * Is TINA4_SESSION_STRICT on? The single source of truth for the flag.
+ *
+ * Module level, not a Session field, because the REQUEST PATH has to be able to
+ * consult it when a Session could not be constructed at all - a handler whose
+ * constructor raises, or a refused TINA4_SESSION_BACKEND, both fail BEFORE
+ * there is an object to ask. That gap is why strict mode used to be inert on
+ * the request path. Parity with Python `session.session_strict_mode()`.
+ *
+ *   TINA4_SESSION_STRICT   re-throw instead of degrading (default: false)
+ */
+export function sessionStrictMode(): boolean {
+  return isTruthy(process.env.TINA4_SESSION_STRICT);
+}
+
+/**
  * Build the `Set-Cookie` header value for a Tina4 session. Centralised so
  * the auto-cookie path in server.ts and `Session.cookieHeader()` agree on
  * which env vars are honoured and what the defaults are.

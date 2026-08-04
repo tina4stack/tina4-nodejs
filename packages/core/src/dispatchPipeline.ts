@@ -7,10 +7,15 @@
  * standalone functions, so each can be read and tested without standing up a
  * server.
  *
- * PROLOGUE_STAGES run before the dispatch try-block, in order. They are
- * extracted FIRST because they close over nothing from `startServer` - only the
- * raw request/response - so no context object is needed for them at all. The
- * later stages need `router`, `staticDir`, `port` and `middleware`, and follow.
+ * PROLOGUE_STAGES run before anything else, in order. They are extracted FIRST
+ * because they close over nothing from `startServer` - only the raw
+ * request/response - so no context object is needed for them at all. The later
+ * stages need `router`, `staticDir`, `port` and `middleware`, and follow.
+ * `sessionAutoStart` is the one prologue stage that runs INSIDE the dispatch
+ * try-block, so a TINA4_SESSION_STRICT refusal renders a 500 like every other
+ * request error instead of rejecting `dispatch` into an unhandled rejection
+ * that takes the worker down (ADR-0021; parity with Python, where the raise
+ * leaves the request path and the ASGI server turns it into a 500).
  *
  * Ordering here is BEHAVIOUR, not taste:
  *   * `headStripIntercept` MUST run before anything can write. Node streams its
@@ -25,6 +30,8 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Tina4Request } from "./types.js";
+import type { Session as SessionInstance } from "./session.js";
+import { Log } from "./logger.js";
 
 /**
  * The prologue, in order. Exported as DATA so the pipeline can be asserted and
@@ -166,6 +173,15 @@ export function headStripIntercept(rawReq: IncomingMessage, rawRes: ServerRespon
 }
 
 /**
+ * `Type: message` for a caught value, so an operator reading the log sees the
+ * REAL driver failure rather than an opaque wrapper. Mirrors the Python fix's
+ * `f"({type(e).__name__}): {e}"`.
+ */
+function errorLabel(err: unknown): string {
+  return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+
+/**
  * Auto-start the session: read the cookie, create the session, then save it and
  * set the cookie when the response ends.
  *
@@ -186,7 +202,8 @@ export async function sessionAutoStart(
   rawRes: ServerResponse,
   req: Tina4Request,
 ): Promise<void> {
-  const { Session, buildSessionCookie, sessionCookieName } = await import("./session.js");
+  const { Session, buildSessionCookie, sessionCookieName, sessionStrictMode } =
+    await import("./session.js");
   const cookieHeader = rawReq.headers.cookie ?? "";
 
   const cookiePrefix = sessionCookieName() + "=";
@@ -199,13 +216,52 @@ export async function sessionAutoStart(
     }
   }
 
-  const sess = new Session();
-  sess.start(existingSid);
+  // LOG LOUD, THEN DEGRADE (ADR-0021). Construction and start() sat outside
+  // every guard, so a backend that cannot be reached 500'd EVERY request
+  // instead of degrading: the database handler opens its connection and runs a
+  // PRAGMA in its constructor, and an unknown TINA4_SESSION_BACKEND throws by
+  // design. Session's own safeRead/safeWrite policy cannot cover either - both
+  // fail BEFORE there is an object to ask, which is also why strict mode has to
+  // be read from the module-level `sessionStrictMode()` here.
+  //
+  // An EMPTY session never reaches this catch. `start()` returns a fresh empty
+  // session for a first-time visitor and for a well-formed id the store has
+  // never heard of; both are ORDINARY, and logging them would fill the log with
+  // noise on every new visitor and bury the real outage - the same blindness
+  // this fix exists to cure.
+  let sess: SessionInstance;
+  try {
+    sess = new Session();
+    sess.start(existingSid);
+  } catch (err) {
+    Log.error(`Session unavailable for this request (${errorLabel(err)})`);
+    if (sessionStrictMode()) throw err;
+    (req as any).session = null;
+    return;
+  }
   (req as any).session = sess;
 
   const origEnd = rawRes.end.bind(rawRes);
+  // Finalise EXACTLY once. Under strict mode the save below re-throws, and the
+  // dispatch catch renders its 500 by calling end() again - without this the
+  // retry hits the still-dirty save, throws a second time out of the error
+  // renderer, and the worker dies on the way to reporting the failure.
+  let finalised = false;
   rawRes.end = function (...args: any[]) {
-    sess.save();
+    if (finalised) return origEnd(...args);
+    finalised = true;
+
+    // Same policy as the start side above: loud, then degrade. Session.save()
+    // already logs a backend write failure and returns false without throwing,
+    // so anything arriving here is a failure OUTSIDE that policy (a strict-mode
+    // re-throw, or the cookie/gc work below) and was previously unguarded - in
+    // res.end, where an uncaught throw is especially bad.
+    try {
+      sess.save();
+    } catch (err) {
+      Log.error(`Session could not be finalised for this response (${errorLabel(err)})`);
+      if (sessionStrictMode()) throw err;
+    }
 
     // Probabilistic garbage collection (~1% of requests)
     if (Math.floor(Math.random() * 100) === 0) {

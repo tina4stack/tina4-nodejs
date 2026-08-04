@@ -55,7 +55,14 @@ export interface Tina4Request extends IncomingMessage {
   files: Record<string, UploadedFile | UploadedFile[]>;
   cookies: Record<string, string>;
   contentType: string;
-  session: Tina4Session;
+  /**
+   * NULL when the session backend was unusable for this request (ADR-0021).
+   * The request path logs the failure and degrades rather than 500-ing, so a
+   * request really can arrive without a session and the type has to say so -
+   * `req.session?.get(...)`. Parity with Python, where `request.session` is
+   * `None` on the same path.
+   */
+  session: Tina4Session | null;
   user?: Record<string, unknown>;
   /** Get a specific header value by name (case-insensitive). */
   header(name: string): string | undefined;
