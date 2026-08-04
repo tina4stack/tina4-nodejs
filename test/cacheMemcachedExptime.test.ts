@@ -25,6 +25,15 @@
  *     |2592000 - 2592001| = 1, inside any sane tolerance, so a just-past-the-
  *     cliff value passes a clamp check.
  *
+ * WHAT A ROUND TRIP CANNOT TELL YOU
+ *     A relative 2592000 and an absolute now+2592000 describe the SAME INSTANT.
+ *     memcached reports an identical remaining lifetime for both, so no
+ *     round-trip assertion can distinguish `ttl > MAX` from `ttl >= MAX` - it
+ *     is blind to that off-by-one by construction. Measured, not theorised:
+ *     the boundary case was first written that way and the `>=` mutation left
+ *     the whole file green. The boundary case therefore also asserts on the
+ *     COMPUTED exptime, which is a pure function of its inputs.
+ *
  * NOTHING HERE IS MOCKED. Every assertion is answered by a real memcached over
  * a real socket, and the expiry control sleeps for real wall-clock time.
  *
@@ -170,17 +179,41 @@ async function aTtlBeyondTheCliffKeepsItsFullLifetime(backend: any): Promise<voi
 async function theThirtyDayBoundaryItselfStaysRelative(backend: any): Promise<void> {
   cases++;
   // Exactly at the cliff: memcached still reads this as relative seconds, so it
-  // must NOT be converted. Catches an off-by-one in the comparison.
+  // must NOT be converted.
+  //
+  // WHY THIS CASE ASSERTS ON THE COMPUTED EXPTIME AND NOT JUST THE ROUND TRIP.
+  // A relative 2592000 and an absolute now+2592000 describe the SAME INSTANT,
+  // so memcached reports an identical t2592000 for both and the entry survives
+  // either way. A boundary assertion built only on the server's reported
+  // lifetime is therefore blind to the off-by-one BY CONSTRUCTION - measured,
+  // not theorised: this case was originally written that way, and mutating
+  // `ttl > MAX` to `ttl >= MAX` left the whole file GREEN. The earlier comment
+  // claiming it caught that off-by-one was simply false.
+  //
+  // The exptime computation is a pure function of its inputs, so it can be
+  // asserted directly - no service, no double, nothing simulated.
+  const boundary = backend.exptimeFor(MAX_RELATIVE_EXPTIME);
+  const justPast = backend.exptimeFor(MAX_RELATIVE_EXPTIME + 1);
+  const justUnder = backend.exptimeFor(MAX_RELATIVE_EXPTIME - 1);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
   const key = uniqueKey("boundary");
   await backend.set(key, { v: "boundary" }, MAX_RELATIVE_EXPTIME);
   const mcKey = lastWrittenKey(backend);
   const readBack = await backend.get(key);
   const remaining = mcKey ? await serverRemainingTtl(mcKey) : null;
+
   assert(
     "the thirty day boundary itself stays relative",
-    JSON.stringify(readBack) === JSON.stringify({ v: "boundary" })
+    boundary === MAX_RELATIVE_EXPTIME
+      && justUnder === MAX_RELATIVE_EXPTIME - 1
+      && justPast > nowSeconds
+      && JSON.stringify(readBack) === JSON.stringify({ v: "boundary" })
       && remaining !== null && Math.abs(remaining - MAX_RELATIVE_EXPTIME) <= 60,
-    `read back ${JSON.stringify(readBack)} and the server reports ${remaining}s remaining, expected about ${MAX_RELATIVE_EXPTIME}s`,
+    `exptimeFor(${MAX_RELATIVE_EXPTIME})=${boundary} (must be exactly ${MAX_RELATIVE_EXPTIME}, i.e. still RELATIVE), ` +
+    `exptimeFor(${MAX_RELATIVE_EXPTIME - 1})=${justUnder} (must be exactly ${MAX_RELATIVE_EXPTIME - 1}), ` +
+    `exptimeFor(${MAX_RELATIVE_EXPTIME + 1})=${justPast} (must be an ABSOLUTE stamp, i.e. > ${nowSeconds}); ` +
+    `round trip read back ${JSON.stringify(readBack)} with ${remaining}s reported remaining`,
   );
 }
 
