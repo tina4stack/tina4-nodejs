@@ -32,6 +32,7 @@
  * NO MOCKS. A real SQLite file and a real MongoDB over a real socket. Skips
  * loudly when no Mongo is reachable.
  */
+import { randomBytes } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -204,20 +205,47 @@ async function run() {
   if (!hasMongo) {
     console.log(`  \x1b[33mSKIP\x1b[0m no reachable MongoDB`);
   } else {
+    // EVERY COUNT HERE IS SCOPED TO THE CONNECTIONS THIS TEST OWNS.
+    // serverStatus.connections.current, which this test used to read, is a
+    // SERVER-GLOBAL counter across every client on that mongod, so any other
+    // process moves it and the assertion becomes a coin flip rather than a
+    // gate. Measured 2026-08-04 against the shared lab MongoDB 7.0.39 with the
+    // docstore code UNCHANGED and correct, the global count read [88, 89, 90]
+    // with one other agent connected and [193, 194, 195] with 45 further real
+    // clients held open, against an idle baseline near 6.
+    //
+    // $currentOp with idleConnections is the per-client view: an appName in the
+    // connection string tags every socket this test's client opens, and nobody
+    // else's carry it. That also lets closeDocStore be asserted at its real
+    // strength - OUR connections must reach exactly ZERO, not merely "fewer
+    // than before", which another tenant disconnecting could satisfy alone.
+    const appName = "tina4_docstore_lifecycle_" + randomBytes(5).toString("hex");
+    const taggedUri = MONGO_URI + (MONGO_URI.includes("?") ? "&" : "/?") + "appName=" + appName;
     for (const k of ["TINA4_MONGO_URI", "TINA4_SESSION_MONGO_URI", "TINA4_SESSION_MONGO_URL"]) delete process.env[k];
-    process.env.TINA4_MONGO_URI = MONGO_URI;
+    process.env.TINA4_MONGO_URI = taggedUri;
     process.env.TINA4_DOC_STORE_PATH = join(mkdtempSync(join(tmpdir(), "ds")), "ds.db");
     // ONE module instance on purpose: collectionFor() re-imports per call, which
     // would hand every call a fresh client cache and hide exactly what is measured.
     const mod = await import(ORM + "?t=" + Math.random());
     const { MongoClient } = await import("mongodb");
-    const serverConnections = async (): Promise<number> => {
+    const ownConnections = async (): Promise<number> => {
       const probe = new MongoClient(MONGO_URI);
       await probe.connect();
-      const status: any = await probe.db("admin").command({ serverStatus: 1 });
+      const rows = await probe.db("admin").aggregate([
+        { $currentOp: { allUsers: true, idleConnections: true, localOps: true } },
+        { $match: { appName } },
+        { $count: "n" },
+      ]).toArray();
       await probe.close();
-      return status.connections.current;
+      // $count emits NO document when nothing matched, which is 0.
+      return rows.length === 0 ? 0 : (rows[0] as any).n;
     };
+
+    // The measurement must be able to SEE this client, or every assertion
+    // below is vacuously true and proves nothing.
+    await (await mod.getCollection("lifecycle_probe")).countDocuments({});
+    assert("appName scoping can see this test's own connections",
+      (await ownConnections()) > 0, "the probe is blind, so nothing below would prove anything");
 
     const rounds: number[] = [];
     for (let round = 0; round < 3; round++) {
@@ -225,29 +253,30 @@ async function run() {
         const c = await mod.getCollection("lifecycle_probe");
         await c.countDocuments({});
       }
-      rounds.push(await serverConnections());
+      rounds.push(await ownConnections());
     }
     const settled = rounds[rounds.length - 1];
     for (let i = 0; i < 100; i++) {
       const c = await mod.getCollection("lifecycle_probe");
       await c.countDocuments({});
     }
-    const afterHundred = await serverConnections();
+    const afterHundred = await ownConnections();
 
     // POSITIVE: 100 further calls on a settled pool must add nothing. Under the
     // old one-client-per-call code this was +200.
     assert("repeated get collection does not grow connections",
       afterHundred <= settled, `settled=${settled} after 100 more=${afterHundred}`);
     // And the growth must have flattened rather than tracked the call count.
+    // Both halves are scoped, so the ceiling measures OUR pool.
     assert("connection growth plateaus instead of tracking calls",
-      rounds[2] - rounds[1] <= 2 && rounds[2] < 60, JSON.stringify(rounds));
+      rounds[2] - rounds[1] <= 2 && rounds[2] <= 10, JSON.stringify(rounds));
 
-    const before = await serverConnections();
+    // NEGATIVE: after close there must be NONE of ours left, not merely fewer.
     await mod.closeDocStore();
     await new Promise((r) => setTimeout(r, 1000));
-    const afterClose = await serverConnections();
+    const afterClose = await ownConnections();
     assert("close doc store releases the connections",
-      afterClose < before, `before=${before} after=${afterClose}`);
+      afterClose === 0, `ours still open after close: ${afterClose}`);
   }
 
   // ── ADR-0025 clause 4 / query-semantics-match-on-both-providers (ASSERTED) ─
