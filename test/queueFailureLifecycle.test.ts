@@ -147,6 +147,49 @@ async function run() {
       );
     }
 
+    // ── a popped job carries its own lifecycle methods ─────────────────────
+    //
+    // SHARED PARITY CASE - this name exists VERBATIM in the Python, PHP and
+    // Ruby suites, so one fixture case resolves against all four files.
+    //
+    // A job you popped must carry its own lifecycle. PHP was the last framework
+    // where it did not: Queue::pop() returned the backend's raw array, so
+    // `$queue->pop()->fail("boom")` was a fatal there while the identical line
+    // worked here, in Python and in Ruby. Node had the same defect once (pop()
+    // returned the external backend's job UNWRAPPED) and it is pinned here so
+    // it cannot come back.
+    //
+    // The assertions are on the QUEUE's state after each call, never on the
+    // job's own fields: a fail() that only set an in-memory status would satisfy
+    // an object-level check while the backend never heard about it.
+    {
+      const queue = makeQueue(backend);
+      queue.push({ m: "lifecycle" });
+      await sleep(0.4);
+
+      const job = queue.pop();
+      const hasLifecycle = job != null
+        && typeof job.fail === "function"
+        && typeof job.complete === "function";
+
+      // Called DIRECTLY on what pop() returned - no re-wrap, no queue-level call.
+      job?.fail("boom-1");
+      await sleep(0.4);
+      const reportedFailed = queue.failed().length;
+
+      const again = queue.pop();
+      again?.complete();
+      await sleep(0.4);
+      const clearedAfterComplete = queue.failed().length === 0;
+
+      assert(
+        `a popped job carries its own lifecycle methods [${backend}]`,
+        hasLifecycle && reportedFailed === 1 && again != null && clearedAfterComplete,
+        `lifecycle=${hasLifecycle} failedAfterFail=${reportedFailed} `
+          + `cameBack=${again != null} clearedAfterComplete=${clearedAfterComplete}`,
+      );
+    }
+
     // ── a job past max retries becomes a dead letter ────────────────────────
     {
       const queue = makeQueue(backend);
