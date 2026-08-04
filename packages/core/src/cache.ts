@@ -154,6 +154,20 @@ interface CacheBackend {
   set(key: string, value: unknown, ttl: number): Promise<void>;
   delete(key: string): Promise<boolean>;
   clear(): Promise<void>;
+  /**
+   * Evict expired entries and return HOW MANY were actually evicted.
+   *
+   * REQUIRED, not optional. It used to be neither declared nor implemented, so
+   * the module-level sweep() found no backend method and returned a permanent
+   * 0: the one API whose job is reclaiming expired space did nothing and
+   * reported success. Declaring it here makes "every provider can sweep" a
+   * compile-time fact instead of a runtime hope.
+   *
+   * 0 is the HONEST answer on redis/valkey/memcached/mongodb - they expire
+   * entries server-side, so there is nothing left for us to evict. It is the
+   * WRONG answer for memory, file and database, which own their own expiry.
+   */
+  sweep(): Promise<number>;
   stats(): Promise<{ hits: number; misses: number; size: number; backend: string }>;
   name(): string;
   /**
@@ -218,6 +232,23 @@ class MemoryBackend implements CacheBackend {
     this.store.clear();
     this.hits = 0;
     this.misses = 0;
+  }
+
+  /**
+   * Drop expired entries and count them. `expiresAt > 0` is load-bearing: an
+   * entry stored with ttl <= 0 is permanent and carries 0, so a bare
+   * `now > expiresAt` would evict every permanent entry on the first sweep.
+   */
+  async sweep(): Promise<number> {
+    const now = Date.now();
+    let evicted = 0;
+    for (const [key, entry] of this.store) {
+      if (entry.expiresAt > 0 && now > entry.expiresAt) {
+        this.store.delete(key);
+        evicted++;
+      }
+    }
+    return evicted;
   }
 
   async stats() {
@@ -415,7 +446,7 @@ class RespClient {
  * cache op is one async round-trip. AUTH + SELECT db run once on connect so a
  * dead port OR wrong credentials fail the availability probe and fall back to
  * file. Mirrors the Python master's _RedisBackend semantics (prefix, SETEX,
- * scoped KEYS+DEL clear, DBSIZE stats).
+ * scoped SCAN+DEL clear, DBSIZE stats).
  */
 class RedisBackend implements CacheBackend {
   protected host: string;
@@ -512,29 +543,99 @@ class RedisBackend implements CacheBackend {
     return result === "1";
   }
 
+  /**
+   * Remove EVERY entry this cache can serve, and nothing else.
+   *
+   * SCAN, not KEYS: clear() runs on EVERY WRITE in persistent DB-cache mode,
+   * and KEYS is O(N) over the whole keyspace and blocks the entire server for
+   * its duration. Redis's own documentation says to prefer SCAN in production.
+   * The cursor loop is scoped to our prefix, so another application sharing the
+   * server is untouched - FLUSHALL/FLUSHDB would take their data with it and is
+   * never used here.
+   *
+   * The scan runs to cursor 0, so a keyspace larger than one page is fully
+   * cleared; stopping at the first page would leave later entries readable and
+   * still look green on a small test.
+   */
+  /**
+   * Walk every key under OUR prefix, handing each page to `onPage`.
+   *
+   * ONE walk drives both clear() and stats(), so the two can never disagree
+   * about what this cache holds - which is exactly how stats() came to report a
+   * different keyspace from the one clear() empties.
+   *
+   * SCAN, not KEYS: clear() runs on EVERY WRITE in persistent DB-cache mode,
+   * and KEYS is O(N) over the whole keyspace and blocks the entire server for
+   * its duration. Redis's own documentation says to prefer SCAN. The walk is
+   * scoped to our prefix, so another application sharing the server is
+   * untouched, and it runs to cursor 0 so a keyspace larger than one page is
+   * fully covered.
+   */
+  private async walkPrefixedKeys(onPage: (keys: string[]) => Promise<void>): Promise<void> {
+    let cursor = "0";
+    do {
+      const reply = await this.client.command(
+        "SCAN", cursor, "MATCH", this.prefix + "*", "COUNT", "500",
+      );
+      // A SCAN reply is a 2-element multi-bulk: [next cursor, [key, ...]].
+      if (!Array.isArray(reply) || reply.length !== 2) break;
+      cursor = typeof reply[0] === "string" ? reply[0] : "0";
+      const page = reply[1];
+      if (Array.isArray(page) && page.length > 0) {
+        const keys = page.filter((k): k is string => typeof k === "string");
+        if (keys.length > 0) await onPage(keys);
+      }
+    } while (cursor !== "0");
+  }
+
   async clear(): Promise<void> {
     this.hits = 0;
     this.misses = 0;
-    // Scoped KEYS + DEL of our namespace only (never FLUSHALL — the harness is
-    // shared with other agents, and so are real deployments).
     try {
-      const keys = await this.client.command("KEYS", this.prefix + "*");
-      if (Array.isArray(keys) && keys.length > 0) {
-        const flat = keys.filter((k): k is string => typeof k === "string");
-        if (flat.length > 0) await this.client.command("DEL", ...flat);
-      }
+      await this.walkPrefixedKeys(async (keys) => {
+        await this.client.command("DEL", ...keys);
+      });
     } catch {
       /* best effort */
     }
   }
 
+  /**
+   * Nothing to do: redis/valkey expires entries SERVER-SIDE (the TTL set by SETEX), so by the
+   * time a sweep runs there is nothing left for us to evict. 0 is the honest
+   * count, not a stub - inventing a number here would be a lie, and scanning
+   * the keyspace to "prove" it would cost a full scan to always return 0.
+   */
+  async sweep(): Promise<number> {
+    return 0;
+  }
+
+  /**
+   * Report OUR entries, not the whole server's.
+   *
+   * This used to read DBSIZE, which counts the WHOLE database index - so on a
+   * shared Redis it included every key any other tenant had written. MEASURED
+   * before the fix: three of our writes plus two foreign keys reported size 5.
+   * Every other backend here is scoped (memory counts its own map, file its own
+   * directory, mongo its own collection, database its own table, memcached its
+   * own write log), and Ruby/Python had the same rule broken the other way
+   * round, returning a constant 0. Both fail the same rule: the number must
+   * describe THIS cache.
+   *
+   * The count comes from the same scoped walk clear() uses. Keys are deduped
+   * through a Set because SCAN may return a given key more than once across
+   * iterations (Redis guarantees at-least-once, not exactly-once).
+   */
   async stats() {
-    let size = 0;
-    const keys = await this.respCommand("DBSIZE");
-    // DBSIZE counts the whole DB index; with our isolated index that's accurate
-    // enough for the size figure. Fall back to 0 on error.
-    if (keys !== null && /^\d+$/.test(keys)) size = parseInt(keys, 10);
-    return { hits: this.hits, misses: this.misses, size, backend: this._name };
+    const seen = new Set<string>();
+    try {
+      await this.walkPrefixedKeys(async (keys) => {
+        for (const key of keys) seen.add(key);
+      });
+    } catch {
+      /* a failed walk reports 0 rather than a number from somewhere else */
+    }
+    return { hits: this.hits, misses: this.misses, size: seen.size, backend: this._name };
   }
 
   name() { return this._name; }
@@ -583,7 +684,23 @@ class FileBackend implements CacheBackend {
         return undefined;
       }
       this.hits++;
-      return data.value ?? data;
+      // A cached null must come back as NULL, not as the storage envelope.
+      //
+      // This was `data.value ?? data`. `data` is the envelope
+      // {key, value, expiresAt}, so whenever the stored value was null the
+      // `??` fell through and handed the caller that OBJECT - which is truthy -
+      // where the caller had stored nothing. Every `if (cached)` then took the
+      // hit branch with a meaningless object, so the cache turned "this lookup
+      // found nothing" into "this lookup found something". Caching a negative
+      // lookup is the most common reason to cache a null at all, so it was
+      // wrong exactly where the feature gets used.
+      //
+      // The test is the ENVELOPE SHAPE, never the value's truthiness: false, 0,
+      // "" and [] are values, and a truthiness check would break all of them.
+      // The non-envelope fallback stays for a file this backend did not write.
+      const isEnvelope = data !== null && typeof data === "object"
+        && "value" in data && "expiresAt" in data;
+      return isEnvelope ? data.value : data;
     } catch {
       this.misses++;
       return undefined;
@@ -652,6 +769,28 @@ class FileBackend implements CacheBackend {
     return { hits: this.hits, misses: this.misses, size: count, backend: "file" };
   }
 
+  /**
+   * Delete expired cache files and count them. `expiresAt > 0` is load-bearing:
+   * a no-TTL entry is stored with 0 and must survive every sweep.
+   */
+  async sweep(): Promise<number> {
+    const now = Date.now() / 1000;
+    let evicted = 0;
+    try {
+      for (const f of fs.readdirSync(this.dir).filter((n) => n.endsWith(".json"))) {
+        const p = path.join(this.dir, f);
+        try {
+          const data = JSON.parse(fs.readFileSync(p, "utf-8"));
+          if (data.expiresAt > 0 && now > data.expiresAt) {
+            fs.unlinkSync(p);
+            evicted++;
+          }
+        } catch { /* an unreadable file is not ours to count */ }
+      }
+    } catch { /* no cache directory yet */ }
+    return evicted;
+  }
+
   name() { return "file"; }
 }
 
@@ -709,8 +848,25 @@ class MemcachedClient {
     }
   }
 
-  /** Send one command, resolve with the reply read until `terminator`. */
-  async command(payload: string, terminator: string): Promise<string> {
+  /**
+   * Send one command, resolve with the reply read until `terminator`.
+   *
+   * Commands are SERIALISED: the socket carries one reply stream with no
+   * request ids, so two commands in flight resolve each other's replies. That
+   * matters more than it looks - every key now carries a generation READ FROM
+   * THE SERVER, so a crossed reply computes the WRONG key and silently reads or
+   * overwrites the wrong entry. One command at a time on one socket.
+   */
+  command(payload: string, terminator: string): Promise<string> {
+    const next = this.chain.then(() => this.send(payload, terminator));
+    // The chain must never reject, or every later command inherits the failure.
+    this.chain = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  private chain: Promise<unknown> = Promise.resolve();
+
+  private async send(payload: string, terminator: string): Promise<string> {
     await this.connect();
     if (!this.sock || this.sock.destroyed) return "";
     return new Promise<string>((resolve) => {
@@ -783,12 +939,49 @@ class MemcachedBackend implements CacheBackend {
     return this.available;
   }
 
-  private mcKey(key: string): string {
-    return this.prefix + crypto.createHash("sha256").update(key).digest("hex");
+  /**
+   * The SHARED namespace generation counter. clear() bumps it and every real
+   * key carries it, so one bump orphans every entry for every instance at once.
+   */
+  private genKey = this.prefix + "generation";
+
+  /**
+   * Read the SHARED namespace generation from the SERVER.
+   *
+   * memcached has no KEYS scan and no prefix delete, so the only way to
+   * invalidate globally without destroying other tenants is the documented
+   * namespace idiom: every real key carries a generation, and clear() bumps it.
+   * Every instance then computes a different key, and the old entries become
+   * unreachable at once, expiring under the server's own TTL/LRU.
+   *
+   * The generation is read from the server on EVERY key computation,
+   * deliberately. Caching it in-process would reintroduce exactly the bug this
+   * fixes: an instance holding a stale generation keeps computing the OLD key,
+   * the old key still holds the old value, so it serves a stale hit after
+   * another instance cleared. One extra round trip on a sub-millisecond local
+   * service is the price of cross-instance invalidation.
+   */
+  private async generation(): Promise<string> {
+    const resp = await this.client.command(`get ${this.genKey}\r\n`, "END\r\n");
+    if (resp.startsWith("VALUE")) {
+      const idx = resp.indexOf("\r\n");
+      const nbytes = parseInt(resp.slice(0, idx).split(/\s+/)[3], 10);
+      if (idx !== -1 && Number.isFinite(nbytes)) return resp.slice(idx + 2, idx + 2 + nbytes);
+    }
+    return "0";
+  }
+
+  /**
+   * Hash to a safe, bounded key (memcached keys: no spaces/control bytes, <=250
+   * chars). The generation sits IN the key, so a clear() on ANY instance orphans
+   * it for every instance at once.
+   */
+  private async mcKey(key: string): Promise<string> {
+    return `${this.prefix}${await this.generation()}:${crypto.createHash("sha256").update(key).digest("hex")}`;
   }
 
   async get(key: string): Promise<unknown | undefined> {
-    const resp = await this.client.command(`get ${this.mcKey(key)}\r\n`, "END\r\n");
+    const resp = await this.client.command(`get ${await this.mcKey(key)}\r\n`, "END\r\n");
     if (resp.startsWith("VALUE")) {
       try {
         const idx = resp.indexOf("\r\n");
@@ -812,34 +1005,70 @@ class MemcachedBackend implements CacheBackend {
    */
   private own = new Map<string, number>();
 
+  /**
+   * memcached's 30-day cliff: an exptime AT OR BELOW 2592000 is RELATIVE
+   * seconds, anything ABOVE it is an ABSOLUTE UNIX TIMESTAMP.
+   *
+   * The ttl used to be interpolated raw, so any TINA4_CACHE_TTL over 30 days
+   * made every write vanish the instant it landed - the caller wrote a number
+   * of seconds and the server read a date in 1970. memcached still answers
+   * STORED, so it presented as a 100% miss rate with nothing logged: a cache
+   * that looks like it is working and never returns a hit.
+   *
+   * CONVERT, never CLAMP. Clamping to 2592000 also makes the entry survive and
+   * is also wrong - it silently discards more than half the lifetime the
+   * operator explicitly configured, which is the same class of silent-wrong-
+   * answer as the bug it would be replacing.
+   */
+  private static readonly MAX_RELATIVE_EXPTIME = 2592000;
+
+  private exptimeFor(ttl: number): number {
+    if (ttl <= 0) return 0;
+    if (ttl > MemcachedBackend.MAX_RELATIVE_EXPTIME) {
+      return Math.floor(Date.now() / 1000) + ttl;
+    }
+    return ttl;
+  }
+
   async set(key: string, value: unknown, ttl: number): Promise<void> {
     const data = JSON.stringify(value);
-    const exptime = ttl > 0 ? ttl : 0;
-    const mcKey = this.mcKey(key);
+    const exptime = this.exptimeFor(ttl);
+    const mcKey = await this.mcKey(key);
     const payload = `set ${mcKey} 0 ${exptime} ${Buffer.byteLength(data)}\r\n${data}\r\n`;
     await this.client.command(payload, "\r\n");
-    this.own.set(mcKey, exptime > 0 ? Date.now() + exptime * 1000 : 0);
+    // THE WRITE LOG KEEPS THE RAW ttl, never the converted exptime. This line
+    // turns its number into a wall-clock deadline, so feeding it a converted
+    // absolute timestamp would compute Date.now() + <unix timestamp> * 1000 -
+    // about 166 years out - and the log would then never expire anything, so
+    // stats() would report expired entries as live forever.
+    this.own.set(mcKey, ttl > 0 ? Date.now() + ttl * 1000 : 0);
   }
 
   async delete(key: string): Promise<boolean> {
-    const mcKey = this.mcKey(key);
+    const mcKey = await this.mcKey(key);
     const resp = await this.client.command(`delete ${mcKey}\r\n`, "\r\n");
     this.own.delete(mcKey);
     return resp.startsWith("DELETED");
   }
 
   /**
-   * Remove OUR entries, not the whole server's — and actually remove them.
+   * Invalidate EVERY entry this cache can serve, on EVERY instance.
    *
-   * This was a no-op: it reset the counters and deleted nothing, so a cleared
-   * cache still served every key it had written. The comment claimed parity
-   * with the Python master "which also avoids destructive flushes"; Python was
-   * in fact sending flush_all, so the two had silently diverged AND both were
-   * wrong in opposite directions - Node cleared nothing, Python wiped the whole
-   * shared server including other tenants' keys.
+   * Two wrong answers were shipped before this one. `flush_all` wipes EVERY key
+   * on the instance including every other application's - cacheClear() is
+   * public API, so calling it destroyed other tenants' data. Deleting only the
+   * keys THIS process wrote fixed that but broke the contract the other way: a
+   * second instance kept serving rows the first had just invalidated, because
+   * it had never seen those keys.
    *
-   * Tracking our own keys fixes both: delete exactly what we wrote. A key this
-   * backend never wrote is not its to remove.
+   * The namespace generation does both. Bumping the shared counter orphans
+   * every previously-written entry for every instance at once, and touches
+   * nothing outside our own prefix. The orphans are reclaimed by memcached's
+   * own TTL and LRU - unreachable is what "removed" means for a cache.
+   *
+   * The local write log is still cleared so stats() reports honestly, and its
+   * keys are deleted eagerly so the space comes back immediately rather than
+   * waiting for eviction.
    */
   async clear(): Promise<void> {
     this.hits = 0;
@@ -848,6 +1077,14 @@ class MemcachedBackend implements CacheBackend {
       await this.client.command(`delete ${mcKey}\r\n`, "\r\n");
     }
     this.own.clear();
+    // incr is atomic, so two instances clearing at once still both advance.
+    const bumped = await this.client.command(`incr ${this.genKey} 1\r\n`, "\r\n");
+    if (!/^\d+/.test(bumped.trim())) {
+      // No counter yet: create it. `add` fails harmlessly if another instance
+      // created it in the gap, and the incr then applies on top of theirs.
+      await this.client.command(`add ${this.genKey} 0 0 1\r\n1\r\n`, "\r\n");
+      await this.client.command(`incr ${this.genKey} 1\r\n`, "\r\n");
+    }
   }
 
   /**
@@ -871,6 +1108,16 @@ class MemcachedBackend implements CacheBackend {
       if (expires !== 0 && expires <= now) this.own.delete(k);
     }
     return { hits: this.hits, misses: this.misses, size: this.own.size, backend: "memcached" };
+  }
+
+  /**
+   * Nothing to do: memcached expires entries SERVER-SIDE (the exptime set on each key), so by the
+   * time a sweep runs there is nothing left for us to evict. 0 is the honest
+   * count, not a stub - inventing a number here would be a lie, and scanning
+   * the keyspace to "prove" it would cost a full scan to always return 0.
+   */
+  async sweep(): Promise<number> {
+    return 0;
   }
 
   name() { return "memcached"; }
@@ -1009,6 +1256,16 @@ class MongoBackend implements CacheBackend {
       try { size = await this.coll.countDocuments({}); } catch { /* keep 0 */ }
     }
     return { hits: this.hits, misses: this.misses, size, backend: "mongodb" };
+  }
+
+  /**
+   * Nothing to do: mongodb expires entries SERVER-SIDE (the TTL index on expiresAt), so by the
+   * time a sweep runs there is nothing left for us to evict. 0 is the honest
+   * count, not a stub - inventing a number here would be a lie, and scanning
+   * the keyspace to "prove" it would cost a full scan to always return 0.
+   */
+  async sweep(): Promise<number> {
+    return 0;
   }
 
   name() { return "mongodb"; }
@@ -1154,6 +1411,42 @@ class DatabaseBackend implements CacheBackend {
     return { hits: this.hits, misses: this.misses, size, backend: "database" };
   }
 
+  /**
+   * Delete expired rows and return how many went.
+   *
+   * The network providers return 0 because they expire entries SERVER-SIDE -
+   * nothing was evicted because there was nothing left to evict, and 0 is the
+   * honest answer there. A SQL TABLE EXPIRES NOTHING BY ITSELF. Before this
+   * override the database backend had no sweep at all, so expired rows were
+   * removed only when someone happened to read that exact key again: the table
+   * grew without bound while the one API whose job is reclaiming that space
+   * reported success having done nothing.
+   *
+   * `expires_at > 0` is load-bearing: an entry stored with ttl <= 0 is
+   * permanent and carries 0, so a bare `now > expires_at` would evict every
+   * permanent entry on the first sweep.
+   */
+  async sweep(): Promise<number> {
+    if (!this.db) return 0;
+    const now = Date.now() / 1000;
+    try {
+      const row = await this.db.fetchOne(
+        "SELECT COUNT(*) AS c FROM tina4_cache WHERE expires_at > 0 AND expires_at < ?",
+        [now],
+      );
+      const expired = row && row.c != null ? Number(row.c) : 0;
+      if (expired > 0) {
+        await this.db.execute(
+          "DELETE FROM tina4_cache WHERE expires_at > 0 AND expires_at < ?", [now],
+        );
+        try { this.db.commit(); } catch { /* sqlite autocommits */ }
+      }
+      return expired;
+    } catch {
+      return 0;
+    }
+  }
+
   name() { return "database"; }
 }
 
@@ -1266,16 +1559,51 @@ export async function createBackend(config?: {
  */
 let _responseBackend: CacheBackend | null = null;
 let _responseBackendPromise: Promise<CacheBackend> | null = null;
+/**
+ * Backends built for an EXPLICITLY configured responseCache, keyed by the
+ * provider-affecting part of its config. Kept apart from the shared
+ * module-level backend so a named provider is never overridden by ambient state.
+ */
+const _explicitResponseBackends = new Map<string, Promise<CacheBackend>>();
 
-function _getResponseBackend(config?: ResponseCacheConfig): Promise<CacheBackend> {
+export function _getResponseBackend(config?: ResponseCacheConfig): Promise<CacheBackend> {
+  // An EXPLICITLY requested provider gets its OWN backend; only the
+  // no-argument case shares the module-level one (mirrors the Python master).
+  //
+  // This function used to open with `if (_responseBackend) return ...`, so the
+  // memoised backend was handed back BEFORE config was ever read. Once any
+  // responseCache middleware existed, every later explicitly-named provider was
+  // silently ignored: the developer names a backend, the framework quietly uses
+  // a different one, and the only symptom is cache behaviour that does not
+  // match the configuration.
+  const wantsItsOwn = config?.backend !== undefined
+    || config?.cacheUrl !== undefined
+    || config?.cacheDir !== undefined
+    || config?.maxEntries !== undefined;
+
+  if (wantsItsOwn) {
+    // Memoised per DISTINCT config, not per call: the middleware resolves its
+    // backend on every request, so building a fresh one each time would open a
+    // new connection per request. Two different configs stay two different
+    // stores, which is the half that actually matters - honouring the NAME
+    // while still returning the shared object would change nothing observable.
+    const key = JSON.stringify([config?.backend, config?.cacheUrl, config?.cacheDir, config?.maxEntries]);
+    let built = _explicitResponseBackends.get(key);
+    if (!built) {
+      built = createBackend({
+        backend: config?.backend,
+        cacheUrl: config?.cacheUrl,
+        cacheDir: config?.cacheDir,
+        maxEntries: config?.maxEntries,
+      });
+      _explicitResponseBackends.set(key, built);
+    }
+    return built;
+  }
+
   if (_responseBackend) return Promise.resolve(_responseBackend);
   if (!_responseBackendPromise) {
-    _responseBackendPromise = createBackend({
-      backend: config?.backend,
-      cacheUrl: config?.cacheUrl,
-      cacheDir: config?.cacheDir,
-      maxEntries: config?.maxEntries,
-    }).then((b) => {
+    _responseBackendPromise = createBackend().then((b) => {
       _responseBackend = b;
       return b;
     });
@@ -1503,11 +1831,7 @@ export async function cacheClear(): Promise<void> {
 
 /** Remove expired entries from the cache. Returns count removed. */
 export async function sweep(): Promise<number> {
-  const backend = await _getBackend();
-  if (typeof (backend as any).sweep === "function") {
-    return (backend as any).sweep();
-  }
-  return 0;
+  return (await _getBackend()).sweep();
 }
 
 /** Return cache statistics from the active backend. */
@@ -1525,5 +1849,8 @@ export function _resetBackend(): void {
   _defaultBackendPromise = null;
   _responseBackend = null;
   _responseBackendPromise = null;
+  // Explicitly-configured backends are memoised too, so a reset that left them
+  // behind would leak one test's provider into the next.
+  _explicitResponseBackends.clear();
   _defaultTtl = null;
 }

@@ -19,6 +19,7 @@
 
 // ── SQL Translator ───────────────────────────────────────────
 
+import { DatabaseUrl } from "./databaseUrl.js";
 export class SQLTranslator {
   /**
    * Convert LIMIT/OFFSET to Firebird ROWS...TO syntax.
@@ -461,12 +462,51 @@ export class QueryCache {
   }
 
   /**
-   * Generate a cache key from a SQL query and params.
+   * Stable identity of the DATABASE a cache entry came from.
+   *
+   * `engine://host:port/database` - and deliberately NOTHING else.
+   *
+   * WHY IT EXISTS: the key used to be `query:${sql}:${params}` with nothing
+   * naming the connection, so on any SHARED backend two databases cross-served
+   * each other's rows. Two apps pointed at one Redis, or one app with a primary
+   * and an analytics connection, silently read each other's data. Identical SQL
+   * text across tenants is the COMMON case, not an edge case, so the collision
+   * was the normal outcome.
+   *
+   * WHY NO CREDENTIALS: a password in the key means every rotation silently
+   * cold-starts the cache, and a shared backend's key namespace is visible to
+   * every tenant of that backend - a secret must never be folded into it. The
+   * username is out for the same reason plus a second: two connections
+   * differing only by role read the SAME rows and should share the entry.
+   *
+   * WHY NOTHING PER-PROCESS: no pid, no object id, no salt. Those would isolate
+   * the databases by ACCIDENT and destroy the point of a shared cache, because
+   * no instance would ever hit another instance's entry.
    */
-  static queryKey(sql: string, params?: unknown[]): string {
+  static cacheIdentity(url: string): string {
+    try {
+      const parsed = new DatabaseUrl(url);
+      return `${parsed.engine}://${parsed.host ?? ""}:${parsed.port ?? ""}/${parsed.database}`;
+    } catch {
+      // An unparseable URL still needs a STABLE identity, and falling back to a
+      // constant would silently restore the cross-serving bug. The raw URL is
+      // stable and distinct; it is only reached for a URL the connection layer
+      // is about to reject anyway.
+      return url;
+    }
+  }
+
+  /**
+   * Generate a cache key from DATABASE IDENTITY + SQL + params.
+   *
+   * The NUL separators keep the three parts from running together, so a table
+   * named after the tail of a database name cannot forge another database's
+   * key. The key is not hashed here: the only backend with a key-length limit
+   * is memcached, and its backend already SHA-256-hashes whatever it is given.
+   */
+  static queryKey(sql: string, params?: unknown[], identity = ""): string {
     const paramStr = params ? JSON.stringify(params) : "";
-    // Simple hash via string combination
-    return `query:${sql}:${paramStr}`;
+    return `query:${identity}\u0000${sql}\u0000${paramStr}`;
   }
 
 
