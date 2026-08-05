@@ -48,10 +48,20 @@ export interface ProviderSpec {
   port?: number;
 }
 
-function hostPort(url: string, defaultPort: number): { host: string; port: number } {
-  const cleaned = url.replace(/^[a-z+]+:\/\//, "").split("/")[0];
-  const bits = cleaned.split(":");
-  return { host: bits[0] || "127.0.0.1", port: bits[1] ? parseInt(bits[1], 10) || defaultPort : defaultPort };
+function hostPort(url: string, defaultPort: number): { host: string; port: number; db: number } {
+  // The DATABASE NUMBER is part of a redis URL ("redis://host:6379/4") and was
+  // being dropped by .split("/")[0]. The framework then wrote into DB 4 while
+  // this test counted keys on DB 0 -- a fresh connection's default -- and read
+  // zero every time. Any deployment that configures a DB other than 0 had a
+  // cache test silently checking the wrong database.
+  const stripped = url.replace(/^[a-z+]+:\/\//, "");
+  const [hostpart, dbpart] = [stripped.split("/")[0], stripped.split("/")[1]];
+  const bits = hostpart.split(":");
+  return {
+    host: bits[0] || "127.0.0.1",
+    port: bits[1] ? parseInt(bits[1], 10) || defaultPort : defaultPort,
+    db: dbpart ? parseInt(dbpart, 10) || 0 : 0,
+  };
 }
 
 /** Every provider the cache ships, in a stable order. */

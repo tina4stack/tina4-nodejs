@@ -67,9 +67,20 @@ function sqliteUrl(label: string): string {
   return `sqlite:///${file}`;
 }
 
-function hostPort(url: string, defaultPort: number): { host: string; port: number } {
-  const bits = url.replace(/^[a-z+]+:\/\//, "").split("/")[0].split(":");
-  return { host: bits[0] || "127.0.0.1", port: bits[1] ? parseInt(bits[1], 10) || defaultPort : defaultPort };
+function hostPort(url: string, defaultPort: number): { host: string; port: number; db: number } {
+  // The DATABASE NUMBER is part of a redis URL ("redis://host:6379/4") and was
+  // being dropped by .split("/")[0]. The framework then wrote into DB 4 while
+  // this test counted keys on DB 0 -- a fresh connection's default -- and read
+  // zero every time. Any deployment that configures a DB other than 0 had a
+  // cache test silently checking the wrong database.
+  const stripped = url.replace(/^[a-z+]+:\/\//, "");
+  const [hostpart, dbpart] = [stripped.split("/")[0], stripped.split("/")[1]];
+  const bits = hostpart.split(":");
+  return {
+    host: bits[0] || "127.0.0.1",
+    port: bits[1] ? parseInt(bits[1], 10) || defaultPort : defaultPort,
+    db: dbpart ? parseInt(dbpart, 10) || 0 : 0,
+  };
 }
 
 const REDIS = hostPort(REDIS_URL, 6379);
@@ -91,11 +102,20 @@ function reachable(host: string, port: number): Promise<boolean> {
  */
 function countCacheKeys(): Promise<number> {
   return new Promise((resolve) => {
-    const payload = "*2\r\n$4\r\nKEYS\r\n$13\r\ntina4:cache:*\r\n";
+    // SELECT the same database the framework was pointed at. A fresh redis
+    // connection lands on DB 0, so without this the count is taken from a
+    // database nothing was ever written to.
+    const dbStr = String(REDIS.db);
+    const select = REDIS.db > 0
+      ? `*2\r\n$6\r\nSELECT\r\n$${dbStr.length}\r\n${dbStr}\r\n`
+      : "";
+    const payload = select + "*2\r\n$4\r\nKEYS\r\n$13\r\ntina4:cache:*\r\n";
     let out = "";
     const sock = net.createConnection({ host: REDIS.host, port: REDIS.port }, () => sock.write(payload));
     sock.on("data", (chunk) => {
       out += chunk.toString("utf-8");
+      // Drop SELECT's "+OK" reply so the array parse below sees the KEYS reply.
+      if (select && out.startsWith("+OK\r\n")) out = out.slice(5);
       const head = out.split("\r\n")[0];
       if (!head.startsWith("*")) return;
       const declared = parseInt(head.slice(1), 10);
