@@ -328,7 +328,9 @@ const LIVE: Array<{
   probe: string;
   expect: number;
 }> = [
-  { label: "PostgreSQL", env: ["TINA4_TEST_PG_URL", "TINA4_TEST_POSTGRES_URL"],
+  // TINA4_TEST_PG_URL only -- TINA4_TEST_POSTGRES_URL is its deprecated alias
+  // and testEnvContract rejects it, which is exactly what that gate is for.
+  { label: "PostgreSQL", env: ["TINA4_TEST_PG_URL"],
     make: (u) => new PostgresAdapter(u), probe: "SELECT 1 AS n", expect: 1 },
   { label: "MySQL", env: ["TINA4_TEST_MYSQL_URL"],
     make: (u) => new MysqlAdapter(u), probe: "SELECT 1 AS n", expect: 1 },

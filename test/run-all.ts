@@ -204,7 +204,11 @@ if (VITEST_FILES.size > 0) {
   const vout = (vit.stdout ?? "") + (vit.stderr ?? "");
   console.log(vout.trim());
   // "Tests  44 passed (44)" is vitest's own tally; trust it over re-counting.
-  const m = vout.match(/Tests\s+(?:(\d+)\s+failed[^\n]*?)?(\d+)\s+passed/);
+  // Strip ANSI first: vitest colourises its summary, so /Tests\s+(\d+)\s+passed/
+  // never matched the real bytes and every green run was scored as a failure --
+  // 44 passing tests reported as "vitest run failed (exit 0)".
+  const plain = vout.replace(/\x1b\[[0-9;]*m/g, "");
+  const m = plain.match(/Tests\s+(?:(\d+)\s+failed[^\n]*?)?(\d+)\s+passed/);
   const vFail = m?.[1] ? Number(m[1]) : 0;
   const vPass = m?.[2] ? Number(m[2]) : 0;
   if (vit.status !== 0 || vPass === 0) {
