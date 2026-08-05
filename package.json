@@ -98,7 +98,7 @@
     "@types/pg": "^8.20.0",
     "esbuild": "^0.24.0",
     "mongodb": "^6.0.0",
-    "node-firebird": "^1.1.9",
+    "node-firebird": "^2.14.3",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.9"
