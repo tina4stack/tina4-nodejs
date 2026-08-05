@@ -60,12 +60,19 @@ function httpGetJson(path: string): Promise<{ status: number; json: any }> {
 }
 
 async function main(): Promise<void> {
+  // The queue store this app is configured to use. Pinned explicitly: the
+  // endpoint lists the topics of the REAL store (TINA4_QUEUE_PATH, else
+  // data/queue), so a run on a host that exports TINA4_QUEUE_PATH must still
+  // be looking at the directories this test created.
+  const queueStore = join(scaffold, "queue-store");
+  process.env.TINA4_QUEUE_PATH = queueStore;
+
   // Real on-disk file-queue topics. The endpoint reads these directory names,
   // so they are the discriminator: pre-fix it could never see them.
-  mkdirSync(join(scaffold, "data", "queue", "invoices"), { recursive: true });
-  mkdirSync(join(scaffold, "data", "queue", "emails"), { recursive: true });
+  mkdirSync(join(queueStore, "invoices"), { recursive: true });
+  mkdirSync(join(queueStore, "emails"), { recursive: true });
   // A plain file (not a directory) must be filtered out by the isDirectory() check.
-  mkdirSync(join(scaffold, "data", "queue", "shipping"), { recursive: true });
+  mkdirSync(join(queueStore, "shipping"), { recursive: true });
   process.chdir(scaffold);
 
   process.env.TINA4_DEBUG = "true";

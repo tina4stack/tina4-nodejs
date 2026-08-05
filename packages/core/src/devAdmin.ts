@@ -966,12 +966,31 @@ function mapQueueJob(job: any, topic: string, status: string) {
   };
 }
 
+/**
+ * Read every `*.queue-data` record in one queue directory, oldest name first.
+ * Corrupt files are skipped, exactly as LiteBackend.size() skips them, so the
+ * list and the count always see the same set.
+ */
+function readQueueDir(dir: string, topic: string, status: string) {
+  if (!existsSync(dir)) return [];
+  const jobs: Array<ReturnType<typeof mapQueueJob>> = [];
+  for (const filename of readdirSync(dir).sort()) {
+    if (!filename.endsWith(".queue-data")) continue; // skips failed/ + reserved/ subdirs
+    try {
+      jobs.push(mapQueueJob(JSON.parse(readFileSync(join(dir, filename), "utf-8")), topic, status));
+    } catch {
+      // skip corrupt files
+    }
+  }
+  return jobs;
+}
+
 const handleQueue: RouteHandler = async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const topic = url.searchParams.get("topic") ?? "default";
   const statusFilter = url.searchParams.get("status") ?? "";
   try {
-    const { Queue } = await import("./queue.js");
+    const { Queue, queueBasePath } = await import("./queue.js");
     const queue = new Queue({ topic });
 
     const stats = {
@@ -981,31 +1000,35 @@ const handleQueue: RouteHandler = async (req, res) => {
       reserved: queue.size("reserved"),
     };
 
-    // Jobs by status — parity with Python's _api_queue: list PENDING by reading
-    // the on-disk queue files directly (data/queue/<topic>/*.queue-data), then
-    // fold in the file-backed failed() + deadLetters() jobs. This is why real
-    // persisted jobs now show even though DevQueue (in-memory) is empty.
+    // The job list and the stats above MUST describe the same set of jobs.
+    // Two defects broke that (both measured 2026-08-05, see the regression test
+    // test/devAdminQueuePath.test.ts):
+    //
+    //  1. The directory. This scanned a hardcoded cwd/data/queue/<topic> while
+    //     Queue.size() reads queueBasePath() — so with TINA4_QUEUE_PATH set the
+    //     panel listed one directory and counted another (measured: 100 stale
+    //     jobs listed, 12 real jobs counted).
+    //  2. The set. Reserved jobs were counted by stats.reserved but never
+    //     listed, and a failed-but-retryable job — which lives in the PENDING
+    //     directory with status "pending" — was listed twice: once by the
+    //     directory scan and again by queue.failed(), which re-reads the same
+    //     files. Each job now appears exactly once, in the bucket its own stat
+    //     counts it in: pending -> the queue dir, reserved -> reserved/,
+    //     failed/dead -> failed/ (the directory size("failed") counts, read the
+    //     same way — queue.deadLetters() applies THIS queue's maxRetries, which
+    //     the dev admin cannot know, so it can return fewer jobs than the panel
+    //     is showing a count for).
+    const topicDir = join(queueBasePath(), topic);
     const jobs: Array<ReturnType<typeof mapQueueJob>> = [];
 
     if (!statusFilter || statusFilter === "pending") {
-      const queueDir = join(process.cwd(), "data", "queue", topic);
-      if (existsSync(queueDir)) {
-        for (const filename of readdirSync(queueDir).sort()) {
-          if (!filename.endsWith(".queue-data")) continue; // skips failed/ + reserved/ subdirs
-          try {
-            const job = JSON.parse(readFileSync(join(queueDir, filename), "utf-8"));
-            jobs.push(mapQueueJob(job, topic, "pending"));
-          } catch {
-            // skip corrupt files
-          }
-        }
-      }
+      jobs.push(...readQueueDir(topicDir, topic, "pending"));
     }
-    if (!statusFilter || statusFilter === "failed") {
-      for (const j of queue.failed()) jobs.push(mapQueueJob(j, topic, "failed"));
+    if (!statusFilter || statusFilter === "reserved") {
+      jobs.push(...readQueueDir(join(topicDir, "reserved"), topic, "reserved"));
     }
-    if (!statusFilter || statusFilter === "dead") {
-      for (const j of queue.deadLetters()) jobs.push(mapQueueJob(j, topic, "dead_letter"));
+    if (!statusFilter || statusFilter === "failed" || statusFilter === "dead") {
+      jobs.push(...readQueueDir(join(topicDir, "failed"), topic, "dead_letter"));
     }
 
     res.json({ stats, jobs });
@@ -1018,14 +1041,16 @@ const handleQueue: RouteHandler = async (req, res) => {
   }
 };
 
-const handleQueueTopics: RouteHandler = (_req, res) => {
+const handleQueueTopics: RouteHandler = async (_req, res) => {
   try {
-    // Prefer on-disk file-queue topics under ./data/queue; fall back to "default".
+    // On-disk file-queue topics under the REAL store (TINA4_QUEUE_PATH, else
+    // data/queue); fall back to "default".
     // This module is ESM ("type": "module"), so a bare require() is a ReferenceError
     // that the catch below swallowed - the endpoint always returned ["default"] and
     // never listed a real topic. node:fs/node:path are already imported at the top of
     // this file, so the "avoids a hard dep" rationale for the require() never held.
-    const queueDir = join(process.cwd(), "data", "queue");
+    const { queueBasePath } = await import("./queue.js");
+    const queueDir = queueBasePath();
     let topics: string[] = [];
     if (existsSync(queueDir)) {
       topics = readdirSync(queueDir)

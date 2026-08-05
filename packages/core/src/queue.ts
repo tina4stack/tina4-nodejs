@@ -70,6 +70,20 @@ export interface QueueConfig {
 }
 
 /**
+ * Where the file-backed queue stores its jobs — `TINA4_QUEUE_PATH`, else
+ * `data/queue` (relative to the working directory).
+ *
+ * Exported because it is the ONE answer to "where do the queue files live",
+ * and anything that reads the store directly (the dev-admin queue panel) must
+ * ask here rather than re-deriving it. The dev admin hardcoded
+ * `cwd/data/queue/<topic>` and so listed a DIFFERENT directory from the one
+ * `Queue.size()` counted the moment `TINA4_QUEUE_PATH` was set.
+ */
+export function queueBasePath(): string {
+  return process.env.TINA4_QUEUE_PATH ?? "data/queue";
+}
+
+/**
  * Reservation/visibility timeout in seconds, from env (default 300 = 5 min).
  * Mirrors Python's _default_visibility_timeout().
  */
@@ -218,9 +232,7 @@ export class Queue {
     this.backendName = String(
       resolvedConfig.backend ?? process.env.TINA4_QUEUE_BACKEND ?? "file",
     ).trim().toLowerCase();
-    this.basePath = resolvedConfig.path
-      ?? process.env.TINA4_QUEUE_PATH
-      ?? "data/queue";
+    this.basePath = resolvedConfig.path ?? queueBasePath();
     this.topic = resolvedConfig.topic ?? "default";
     this._maxRetries = resolvedConfig.maxRetries ?? 3;
     this._retryBackoff = resolvedConfig.retryBackoff ?? 0;

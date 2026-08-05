@@ -527,6 +527,18 @@ if (queueHandler) {
   // its comment "this is why real persisted jobs now show even though DevQueue
   // is empty"). The test still seeded DevQueue, so the handler correctly
   // reported zero jobs and these assertions had been failing unseen.
+  //
+  // The store is pinned to a fresh temp directory: this file runs at the repo
+  // cwd, whose data/queue/default accumulates jobs from every other run (100 of
+  // them on the lab, measured 2026-08-05), and the stats-vs-list assertions
+  // below are only meaningful against a directory whose contents are known.
+  // It stays a discriminator for the path defect precisely BECAUSE it is not
+  // <cwd>/data/queue — the location the endpoint used to hardcode.
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath } = await import("node:path");
+  process.env.TINA4_QUEUE_PATH = mkdtempSync(joinPath(tmpdir(), "tina4-devadmin-queue-"));
+  process.env.TINA4_QUEUE_BACKEND = "file";
   const { Queue } = await import("../packages/core/src/queue.ts");
   const devQueue = new Queue({ topic: "default" });
   devQueue.push({ job: "send-email", to: "test@example.com" });

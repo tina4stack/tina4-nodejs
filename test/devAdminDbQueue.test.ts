@@ -98,6 +98,17 @@ async function main(): Promise<void> {
   process.env.TINA4_SUPPRESS = "true"; // quiet the ASCII banner
   process.env.TINA4_DATABASE_URL = `sqlite:///${join(scaffold, "data", "app.db")}`;
   process.env.TINA4_HOST_NAME = `localhost:${PORT}`;
+  // Pin the queue store INSIDE the scaffold and deliberately NOT at
+  // <cwd>/data/queue. Two reasons, both measured on the lab 2026-08-05:
+  //   - hermetic: the lab exports TINA4_QUEUE_PATH=/tmp/tina4-queue-<fw>, so
+  //     without this the "empty topic" assertions read a shared directory that
+  //     other runs have written to.
+  //   - discriminating: the dev-admin job list used to scan a hardcoded
+  //     cwd/data/queue/<topic>, so it returned [] for a job the stats could
+  //     see. Pointing the store elsewhere is what makes that visible; equal
+  //     paths would pass with the bug in.
+  process.env.TINA4_QUEUE_PATH = join(scaffold, "queue-store");
+  process.env.TINA4_QUEUE_BACKEND = "file";
   // Clean grounding baseline — ignore any ambient token from the real shell so
   // the self-contained .env round-trip below starts unconfigured.
   delete process.env.TINA4_MCP_TOKEN;
