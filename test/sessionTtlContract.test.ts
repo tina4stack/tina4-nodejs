@@ -324,7 +324,10 @@ console.log("\n-- 3. the stored deadline is now+TINA4_SESSION_TTL (out of band) 
     // Our OWN socket, speaking RESP, asking the server for the key's remaining
     // TTL. Nothing here goes through the handler's transport.
     try {
-      observed[backend] = await respTtl(host, port, `tina4:session:${sessionId}`);
+      const probeDb = Number(
+        process.env[backend === "valkey" ? "TINA4_SESSION_VALKEY_DB" : "TINA4_SESSION_REDIS_DB"] ?? 0,
+      );
+      observed[backend] = await respTtl(host, port, `tina4:session:${sessionId}`, probeDb);
     } catch (err) {
       probeErrors.push(`${backend}: TTL probe failed - ${(err as Error).message}`);
     }
@@ -419,19 +422,37 @@ process.exit(fail > 0 ? 1 : 0);
  *
  * @returns the remaining lifetime in seconds (-1 no expiry set, -2 no such key)
  */
-async function respTtl(host: string, port: number, key: string): Promise<number> {
+async function respTtl(host: string, port: number, key: string, db = 0): Promise<number> {
   return new Promise((resolve, reject) => {
     const socket = connect({ host, port });
     let buffer = "";
     const finish = (action: () => void) => { socket.destroy(); action(); };
     socket.setTimeout(3000);
     socket.once("connect", () => {
+      // SELECT the SAME db the handler wrote to before asking for the TTL. A
+      // fresh connection is always db 0, so probing db 0 while the handler
+      // honoured TINA4_SESSION_REDIS_DB found nothing - redis answers TTL on a
+      // missing key with -2, and the assertion then blamed TINA4_SESSION_TTL.
+      // The comment above this function used to say no SELECT was needed; that
+      // was true only until the suites got their own db numbers.
+      if (db > 0) {
+        const d = String(db);
+        socket.write(`*2\r\n$6\r\nSELECT\r\n$${Buffer.byteLength(d)}\r\n${d}\r\n`);
+      }
       socket.write(`*2\r\n$3\r\nTTL\r\n$${Buffer.byteLength(key)}\r\n${key}\r\n`);
     });
+    // With SELECT pipelined ahead of TTL the server sends TWO replies, and the
+    // TTL is the SECOND. Reading the first line would hand back "+OK" and
+    // reject with "unexpected TTL reply".
+    const wanted = db > 0 ? 2 : 1;
     socket.on("data", (chunk) => {
       buffer += chunk.toString("utf-8");
-      if (!buffer.includes("\r\n")) return;
-      const line = buffer.slice(0, buffer.indexOf("\r\n"));
+      const lines = buffer.split("\r\n").filter((l) => l.length > 0);
+      if (lines.length < wanted) return;
+      if (db > 0 && !lines[0].startsWith("+OK")) {
+        return finish(() => reject(new Error(`SELECT ${db} refused: ${JSON.stringify(lines[0])}`)));
+      }
+      const line = lines[wanted - 1];
       finish(() => {
         if (line.startsWith(":")) resolve(Number(line.slice(1)));
         else reject(new Error(`unexpected TTL reply ${JSON.stringify(line)}`));
