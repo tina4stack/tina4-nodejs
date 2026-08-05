@@ -48,7 +48,12 @@ assert("parseAmqpUrl host", full.host === "rabbit.example.com", JSON.stringify(f
 assert("parseAmqpUrl port", full.port === 5673, JSON.stringify(full));
 assert("parseAmqpUrl username", full.username === "alice", JSON.stringify(full));
 assert("parseAmqpUrl password", full.password === "s3cret", JSON.stringify(full));
-assert("parseAmqpUrl vhost gets leading slash", full.vhost === "/myvhost", JSON.stringify(full));
+// The vhost is the path segment VERBATIM, with no leading slash added:
+// amqp://host/myvhost names the vhost "myvhost", and a broker has no
+// vhost called "/myvhost" (RabbitMQ URI spec). This assertion used to
+// pin the "/" + segment bug, so it agreed with the framework instead of
+// checking it -- see test/amqpUrlVhost.test.ts for the full contract.
+assert("parseAmqpUrl vhost is the path segment", full.vhost === "myvhost", JSON.stringify(full));
 
 const noCreds = parseAmqpUrl("amqp://rabbit.local:5672");
 assert("parseAmqpUrl host-only", noCreds.host === "rabbit.local" && noCreds.port === 5672, JSON.stringify(noCreds));
@@ -67,7 +72,7 @@ assert("RabbitMQ reads host from TINA4_QUEUE_URL", rmqFromUrl.host === "mq.inter
 assert("RabbitMQ reads port from TINA4_QUEUE_URL", rmqFromUrl.port === 5680, JSON.stringify(rmqFromUrl));
 assert("RabbitMQ reads username from TINA4_QUEUE_URL", rmqFromUrl.username === "bob", JSON.stringify(rmqFromUrl));
 assert("RabbitMQ reads password from TINA4_QUEUE_URL", rmqFromUrl.password === "pw", JSON.stringify(rmqFromUrl));
-assert("RabbitMQ reads vhost from TINA4_QUEUE_URL", rmqFromUrl.vhost === "/vh", JSON.stringify(rmqFromUrl));
+assert("RabbitMQ reads vhost from TINA4_QUEUE_URL", rmqFromUrl.vhost === "vh", JSON.stringify(rmqFromUrl));
 
 // Per-backend var overrides the URL-derived field (only host overridden here).
 clearEnv();
