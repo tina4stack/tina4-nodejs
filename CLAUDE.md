@@ -227,6 +227,16 @@ session.gc(): void
 
 Backends: file, redis, valkey, mongodb, database, memcached.
 
+**Breaking (3.13.95): the mongodb backend's default database is now `tina4`.** With
+`TINA4_SESSION_MONGO_DB` unset it was `tina4_sessions` in Node and `tina4` in
+tina4-python, tina4-php and tina4-ruby, so the same `.env` put Node's sessions in a
+different database from the other three — identical configuration, different
+observable outcome. What an operator sees on upgrade: current sessions are not
+found, so users log in once more. Set `TINA4_SESSION_MONGO_DB=tina4_sessions` to
+keep the old database. There is deliberately no fallback read: a session store is
+ephemeral (everything in it carries a TTL, default 3600s), so the impact self-heals
+within one session lifetime and a fallback would double a read path forever.
+
 **`redis-npm` was removed on 2026-07-31.** It was a Node-only backend name that drove
 Redis through the optional `redis` npm package. Python and Ruby also prefer that
 driver when installed, but they choose it inside their single `redis` handler; only

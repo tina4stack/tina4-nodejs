@@ -10,7 +10,7 @@
  *   TINA4_SESSION_MONGO_URI        (overrides host/port if set)
  *   TINA4_SESSION_MONGO_USERNAME   (optional)
  *   TINA4_SESSION_MONGO_PASSWORD   (optional)
- *   TINA4_SESSION_MONGO_DB         (default: "tina4_sessions")
+ *   TINA4_SESSION_MONGO_DB         (default: "tina4")
  *   TINA4_SESSION_MONGO_COLLECTION (default: "sessions")
  */
 import type { SessionHandler } from "../session.js";
@@ -87,9 +87,15 @@ export class MongoSessionHandler implements SessionHandler {
     this.password = config?.password
       ?? process.env.TINA4_SESSION_MONGO_PASSWORD
       ?? "";
+    // "tina4" is the default in tina4-python, tina4-php and tina4-ruby. Node was
+    // the outlier at "tina4_sessions", so the SAME .env put Node's sessions in a
+    // different database from the other three - identical configuration, different
+    // observable outcome (the ADR-0024 failure mode). Breaking on purpose: see the
+    // migration note in the commit. No fallback read is offered; a session store is
+    // ephemeral by definition, so the impact self-heals within one TTL.
     this.database = config?.database
       ?? process.env.TINA4_SESSION_MONGO_DB
-      ?? "tina4_sessions";
+      ?? "tina4";
     this.collection = config?.collection
       ?? process.env.TINA4_SESSION_MONGO_COLLECTION
       ?? "sessions";
