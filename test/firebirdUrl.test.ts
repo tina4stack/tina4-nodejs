@@ -98,9 +98,35 @@ assert(
 
 console.log("\n--- Live Firebird connectivity ---");
 
-const FIREBIRD_HOST = "localhost";
-const FIREBIRD_PORT = 53050;
-const LIVE_DB_PATH = "/firebird/data/tina4.fdb";
+// Where the live Firebird actually is: TINA4_TEST_FIREBIRD_URL when set -- the
+// SAME variable the Python and PHP suites already read, so one export points
+// every framework at the same container.
+//
+// These three were hard-coded to localhost:53050 and /firebird/data/tina4.fdb,
+// one particular container layout. Nothing publishes 53050 on the lab (Firebird
+// is on 3050), so the reachability gate below could NEVER open: the live tests
+// skipped on every machine, which looks exactly like "the environment is not set
+// up" and is how a permanently dead test stays invisible. The literals remain
+// the fallback, so a host that really does publish 53050 with that database path
+// behaves precisely as before.
+function liveFirebirdTarget(): [string, number, string] {
+  const raw = (process.env.TINA4_TEST_FIREBIRD_URL ?? "").trim();
+  if (!raw) return ["localhost", 53050, "/firebird/data/tina4.fdb"];
+
+  const parsed = new URL(raw);
+  let path = parsed.pathname ?? "";
+  // `@host:port//abs/path` is the absolute-path spelling; collapse the doubled
+  // leading slash so this is a plain absolute path again. The tests below re-add
+  // it for the double-slash form and strip it for the single-slash one.
+  if (path.startsWith("//")) path = path.slice(1);
+  return [
+    parsed.hostname || "localhost",
+    parsed.port ? Number(parsed.port) : 3050,
+    path || "/firebird/data/tina4.fdb",
+  ];
+}
+
+const [FIREBIRD_HOST, FIREBIRD_PORT, LIVE_DB_PATH] = liveFirebirdTarget();
 
 async function firebirdReachable(): Promise<boolean> {
   return new Promise((resolve) => {

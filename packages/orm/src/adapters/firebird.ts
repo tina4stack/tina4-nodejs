@@ -163,6 +163,39 @@ export function fbQuote(name: string): string {
  */
 const FB_DIALECT = firebirdDialect(fbQuote);
 
+/**
+ * Firebird's stored column name, folded back only when it was folded.
+ *
+ * Firebird's identifier folding is ASYMMETRIC. An unquoted `AS x` is stored
+ * UPPERCASE, so the driver hands back "X" where every other engine Tina4
+ * supports gives "x" — PostgreSQL folds to lower, and MySQL, SQLite and MSSQL
+ * preserve what you wrote. Portable code reading row.x broke on Firebird alone.
+ *
+ * A QUOTED `AS "MyCol"` is stored exactly as written, and that case is
+ * deliberate — the caller asked for it — so it is left alone. Folding
+ * unconditionally makes a mixed-case key unreachable, the same asymmetric trap
+ * that made tableExists miss quoted tables.
+ *
+ * So: fold back only a name carrying no lowercase letter, the only thing
+ * unquoted folding can produce. A quoted ALL-CAPS name is genuinely
+ * indistinguishable from a folded one and is lowercased too; that ambiguity is
+ * Firebird's, and it is the one spelling this cannot round-trip.
+ */
+export function firebirdColumnName(raw: string): string {
+  const name = raw.trim();
+  return name === name.toUpperCase() ? name.toLowerCase() : name;
+}
+
+/** Apply {@link firebirdColumnName} across one row's keys. */
+function foldColumnNames<T>(row: T): T {
+  if (row === null || typeof row !== "object" || Array.isArray(row)) return row;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(row as Record<string, unknown>)) {
+    out[firebirdColumnName(k)] = v;
+  }
+  return out as T;
+}
+
 export class FirebirdAdapter implements DatabaseAdapter {
   private db: any = null;
   private transaction: any = null;
@@ -340,7 +373,7 @@ export class FirebirdAdapter implements DatabaseAdapter {
   async queryAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
     this.ensureConnected();
     const rows = await this.queryPromise(sql, params);
-    return (rows as T[]).map(row => this.decodeBlobs(row));
+    return (rows as T[]).map(row => this.decodeBlobs(foldColumnNames(row)));
   }
 
   /** Ensure BLOB columns are readable — node-firebird may return callback-based

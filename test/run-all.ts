@@ -6,7 +6,7 @@
  * doesn't kill the runner. Pass/fail counts are parsed from each
  * file's summary line and aggregated into a grand total.
  */
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -178,6 +178,51 @@ for (const file of allFiles) {
       }
     }
   }
+}
+
+// ── The vitest suites, run HERE rather than left to the caller ────────────
+//
+// i18n.test.ts and i18n-leaf-alias.test.ts are vitest suites, which tsx cannot
+// execute, so they are filtered out of the file list above. They used to be the
+// caller's problem -- package.json chains `tsx test/run-all.ts && npm run
+// test:i18n` -- and every lab script invokes THIS FILE DIRECTLY. So 44 tests
+// never ran in a single lab verification, and were not reported as skipped
+// either: filtered out before counting, invisible in a headline that read
+// "253 files, 0 failed".
+//
+// Running them from here means no invoker can miss them. If vitest is somehow
+// unavailable the run FAILS rather than quietly dropping them again -- silently
+// losing coverage is the exact failure this replaces.
+if (VITEST_FILES.size > 0) {
+  const vitestArgs = [...VITEST_FILES].map((f) => `test/${f}`);
+  console.log(`\n${"─".repeat(60)}\n  vitest suites: ${vitestArgs.join(", ")}\n`);
+  const vit = spawnSync("npx", ["vitest", "run", ...vitestArgs], {
+    cwd: join(__dirname, ".."),
+    encoding: "utf8",
+    stdio: "pipe",
+  });
+  const vout = (vit.stdout ?? "") + (vit.stderr ?? "");
+  console.log(vout.trim());
+  // "Tests  44 passed (44)" is vitest's own tally; trust it over re-counting.
+  // Strip ANSI first: vitest colourises its summary, so /Tests\s+(\d+)\s+passed/
+  // never matched the real bytes and every green run was scored as a failure --
+  // 44 passing tests reported as "vitest run failed (exit 0)".
+  const plain = vout.replace(/\x1b\[[0-9;]*m/g, "");
+  const m = plain.match(/Tests\s+(?:(\d+)\s+failed[^\n]*?)?(\d+)\s+passed/);
+  const vFail = m?.[1] ? Number(m[1]) : 0;
+  const vPass = m?.[2] ? Number(m[2]) : 0;
+  if (vit.status !== 0 || vPass === 0) {
+    totalFail += Math.max(vFail, 1);
+    filesFailed += VITEST_FILES.size;
+    failures.push(...vitestArgs);
+    console.log(
+      `  \x1b[31mvitest run failed (exit ${vit.status}) — these suites are NOT optional\x1b[0m`
+    );
+  } else {
+    totalPass += vPass;
+    totalFail += vFail;
+  }
+  filesRun += VITEST_FILES.size;
 }
 
 // Grand summary

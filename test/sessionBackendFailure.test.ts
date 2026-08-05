@@ -66,7 +66,7 @@
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -90,6 +90,33 @@ const { DatabaseSessionHandler } = await import(
 let passed = 0;
 let failed = 0;
 let skipped = 0;
+
+/**
+ * Can a write through a 0400 file actually be refused in this process?
+ *
+ * The guard here used to ask `process.getuid() === 0`, which is a PROXY for the
+ * property the test needs rather than the property itself. Root walks through
+ * the permission bits via CAP_DAC_OVERRIDE, not by being uid 0 — a process can
+ * DROP that capability and stay root (`setpriv --bounding-set=-dac_override`),
+ * and then 0400 denies it like anyone else. The proxy answered "skip" for a
+ * process that could have run the test perfectly well, so on any host whose
+ * suite runs as root — the lab, every time — this never ran at all.
+ *
+ * Ask the kernel instead of inferring from the uid.
+ */
+function permissionBitsAreEnforced(): boolean {
+  const probe = join(mkdtempSync(join(tmpdir(), "tina4-perm-")), "probe");
+  writeFileSync(probe, "x");
+  chmodSync(probe, 0o400);
+  try {
+    appendFileSync(probe, "y");
+    return false;                 // the write was allowed: bits do not bind
+  } catch {
+    return true;
+  } finally {
+    try { chmodSync(probe, 0o600); rmSync(probe, { force: true }); } catch { /* gone */ }
+  }
+}
 
 function assert(label: string, condition: boolean, detail = "") {
   if (condition) {
@@ -455,11 +482,13 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
     if (fileFound) chmodSync(sessFile, 0o600);  // restore so the temp dir can be cleaned
   }
 
-  if (!threw && process.getuid?.() === 0) {
-    // Running as root defeats the permission bit, so the outage never happened.
-    // Say so rather than reporting a pass we did not earn.
+  if (!threw && !permissionBitsAreEnforced()) {
+    // The permission bits genuinely do not bind here, so the outage never
+    // happened. Say so rather than reporting a pass we did not earn.
     skip("strict mode re-raises a REAL write failure",
-      "running as uid 0, so chmod 0500 does not block the write; cannot drive a real EACCES here");
+      "[needs:no-dac-override] this process writes straight through a 0400 file " +
+      "(root holding CAP_DAC_OVERRIDE), so no real denial is reachable here — run under " +
+      "`setpriv --bounding-set=-dac_override,-dac_read_search` to exercise it");
   } else {
     assert("strict mode re-raises a REAL write failure (EACCES on a read-only dir)", threw,
       "the chmod 0500 directory did not produce a real write error");
