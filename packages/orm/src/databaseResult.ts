@@ -106,7 +106,29 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
    *
    * Returns a superset of keys for backwards-compatibility across all clients.
    */
-  toPaginate(page = 1, perPage = 10): {
+  /**
+   * Describe the page this result actually IS. Takes no arguments.
+   *
+   * MEASURED 2026-08-05 on a real 250-row table read with limit=20 offset=40
+   * (page 3 of 13): this reported page 1 of 2 and returned 10 of the 20 rows.
+   * It ignored the query entirely - defaulting page to 1 and perPage to 10 -
+   * then re-sliced the rows it was handed, which were already just that page.
+   * So a caller who paginated correctly at the SQL level had the answer
+   * silently re-paginated underneath them, with a page number that was simply
+   * wrong.
+   *
+   * WITH page/perPage it slices this result in memory, the behaviour GitHub
+   * issue #106 asked for. Valid only when the result holds the WHOLE set:
+   * slicing a result that is already ONE PAGE of a larger query is refused,
+   * because the slice starts at row 0 of what you hold while the rows
+   * themselves start at `offset`.
+   *
+   * KNOWN, still open: `total` is only as honest as `count`, and in Node
+   * `count` is ROWS RETURNED, not the true total for the filter (Python and
+   * PHP populate it from a separate COUNT probe). Until that is fixed in the
+   * adapters, `total` under-reports on any capped read. See feature 18.
+   */
+  toPaginate(page?: number, perPage?: number): {
     records: Record<string, unknown>[];
     data: Record<string, unknown>[];
     count: number;
@@ -121,23 +143,49 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
     has_next: boolean;
     has_prev: boolean;
   } {
-    const totalPages = Math.max(1, Math.ceil(this.count / perPage));
-    const offset = (page - 1) * perPage;
-    const sliced = this.records.slice(offset, offset + perPage);
+    if ((page !== undefined || perPage !== undefined) && this.offset > 0) {
+      throw new TypeError(
+        `toPaginate(page, perPage) slices the rows this result holds, but this ` +
+          `result already starts at offset ${this.offset} - it is one page of a ` +
+          `larger query, so slicing it from row 0 gives a silently wrong answer. ` +
+          `Call toPaginate() with no arguments to describe the page you fetched, ` +
+          `or re-fetch without limit/offset to slice the whole set in memory.`,
+      );
+    }
+
+    let resolvedPerPage: number;
+    let resolvedPage: number;
+    let offset: number;
+    let rows: Record<string, unknown>[];
+
+    if (page === undefined && perPage === undefined) {
+      resolvedPerPage = this.limit > 0 ? this.limit : this.records.length;
+      resolvedPage = resolvedPerPage > 0 ? Math.floor(this.offset / resolvedPerPage) + 1 : 1;
+      offset = this.offset;
+      rows = this.records;
+    } else {
+      resolvedPage = page ?? 1;
+      resolvedPerPage = perPage ?? (this.limit > 0 ? this.limit : 10);
+      offset = (resolvedPage - 1) * resolvedPerPage;
+      rows = this.records.slice(offset, offset + resolvedPerPage);
+    }
+    const totalPages =
+      resolvedPerPage > 0 ? Math.max(1, Math.ceil(this.count / resolvedPerPage)) : 1;
+
     return {
-      records: sliced,
-      data: sliced,
+      records: rows,
+      data: rows,
       count: this.count,
       total: this.count,
-      limit: perPage,
+      limit: resolvedPerPage,
       offset,
-      page,
-      per_page: perPage,
-      perPage,
+      page: resolvedPage,
+      per_page: resolvedPerPage,
+      perPage: resolvedPerPage,
       totalPages,
       total_pages: totalPages,
-      has_next: page < totalPages,
-      has_prev: page > 1,
+      has_next: resolvedPage < totalPages,
+      has_prev: resolvedPage > 1,
     };
   }
 
