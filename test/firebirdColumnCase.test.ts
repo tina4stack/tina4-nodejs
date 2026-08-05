@@ -66,4 +66,7 @@ if (!FIREBIRD_URL) {
 }
 
 console.log(`\n  Results: ${passed} passed, ${failed} failed, ${skipped} skipped\n`);
-if (failed > 0) process.exit(1);
+// Exit explicitly. node-firebird leaves a handle open after close(), so without
+// this the process sits at 100% pass with nothing left to do and is eventually
+// killed by the runner's timeout -- a green that reports as a failure.
+process.exit(failed > 0 ? 1 : 0);
