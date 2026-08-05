@@ -57,8 +57,18 @@ export class MongoSessionHandler implements SessionHandler {
   private password: string;
   private database: string;
   private collection: string;
+  private hostExplicit: boolean;
+  private portExplicit: boolean;
+  private uriExplicit: boolean;
 
   constructor(config?: MongoSessionConfig) {
+    // WHICH VALUES THE CALLER GAVE US EXPLICITLY, recorded because a URI from the
+    // ENVIRONMENT must never override an argument the caller passed by hand. See
+    // target() for the precedence and the defect this fixes.
+    this.hostExplicit = config?.host !== undefined;
+    this.portExplicit = config?.port !== undefined;
+    this.uriExplicit = config?.uri !== undefined;
+
     this.host = config?.host
       ?? process.env.TINA4_SESSION_MONGO_HOST
       ?? "127.0.0.1";
@@ -85,15 +95,53 @@ export class MongoSessionHandler implements SessionHandler {
       ?? "sessions";
   }
 
-  /** Resolve the effective host/port (honours a configured mongodb:// URI). */
+  /**
+   * Resolve the effective host/port (honours a configured mongodb:// URI).
+   *
+   * PRECEDENCE, and it runs the way every other resolver in Tina4 runs -
+   * EXPLICIT CONFIGURATION BEATS THE ENVIRONMENT:
+   *
+   *   1. an explicitly passed `uri`      - the caller named a complete address
+   *   2. an explicitly passed host/port  - per field, and an ENV uri may not touch them
+   *   3. TINA4_SESSION_MONGO_URI / _URL  - the ambient address
+   *   4. TINA4_SESSION_MONGO_HOST/_PORT  - ambient parts
+   *   5. 127.0.0.1:27017
+   *
+   * THE DEFECT THIS FIXES, measured 2026-08-05 on the lab host: the URI won
+   * UNCONDITIONALLY, including over an argument the caller had just passed by
+   * hand. With TINA4_SESSION_MONGO_URI=mongodb://127.0.0.1:27017/tina4_node
+   * exported - an entirely ordinary deployment setting -
+   *
+   *     new MongoSessionHandler({ host: "127.0.0.1", port: 59999 })
+   *
+   * resolved to 127.0.0.1:27017. The handler dialled a DIFFERENT SERVER from the
+   * one it was told to use, said nothing, and a read against it came back null:
+   * indistinguishable from a genuine miss. So an app that points a handler at one
+   * Mongo while the environment names another writes its sessions to the wrong
+   * server, and the backend-failure policy cannot fire because nothing failed.
+   *
+   * It also made two suites report a framework contract as broken - the
+   * unreachable-server-must-throw cases in sessionHandlers and
+   * sessionMongoRawProtocol never reached the dead port at all, so they measured
+   * a live server and got a miss. Those cases were RIGHT; this was the bug they
+   * were catching.
+   *
+   * Same class as the TINA4_QUEUE_URL precedence inversion fixed in PHP's
+   * Queue::resolveMongoConfig earlier the same day: environment quietly beating
+   * an explicit argument.
+   */
   private target(): MongoTarget {
     let host = this.host;
     let port = this.port;
-    if (this.uri) {
+    // An ENV-supplied uri may fill in only what the caller did NOT pin. An
+    // explicitly passed uri is the caller's own choice and still wins outright.
+    const uriMayOverrideHost = this.uriExplicit || !this.hostExplicit;
+    const uriMayOverridePort = this.uriExplicit || !this.portExplicit;
+    if (this.uri && (uriMayOverrideHost || uriMayOverridePort)) {
       const match = this.uri.match(/mongodb:\/\/(?:[^@/]+@)?([^/:]+):?(\d+)?/);
       if (match) {
-        host = match[1];
-        port = match[2] ? parseInt(match[2], 10) : 27017;
+        if (uriMayOverrideHost) host = match[1];
+        if (uriMayOverridePort) port = match[2] ? parseInt(match[2], 10) : 27017;
       }
     }
     return { host, port, database: this.database, collection: this.collection };
