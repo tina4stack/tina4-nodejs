@@ -324,10 +324,26 @@ console.log("\n-- 3. the stored deadline is now+TINA4_SESSION_TTL (out of band) 
     // Our OWN socket, speaking RESP, asking the server for the key's remaining
     // TTL. Nothing here goes through the handler's transport.
     try {
+      const isValkey = backend === "valkey";
       const probeDb = Number(
-        process.env[backend === "valkey" ? "TINA4_SESSION_VALKEY_DB" : "TINA4_SESSION_REDIS_DB"] ?? 0,
+        process.env[isValkey ? "TINA4_SESSION_VALKEY_DB" : "TINA4_SESSION_REDIS_DB"] ?? 0,
       );
-      observed[backend] = await respTtl(host, port, `tina4:session:${sessionId}`, probeDb);
+      // The PREFIX is a coordinate like the host, the port and the db number, and
+      // this probe used to assume the literal "tina4:session:". Both handlers read
+      // a prefix variable - RedisSessionHandler TINA4_SESSION_REDIS_PREFIX,
+      // ValkeyHandler TINA4_SESSION_VALKEY_PREFIX - with that literal only as the
+      // FALLBACK. MEASURED 2026-08-05 under the lab isolation env, which exports
+      // both as tina4_node_: the handler wrote tina4_node_<id>, the probe asked
+      // for tina4:session:<id>, redis answered TTL -2 (no such key) and the case
+      // reported "the stored deadline did not come from TINA4_SESSION_TTL" -
+      // a config mismatch dressed up as a TTL defect, on BOTH backends.
+      //
+      // The chain below is the handler's own, in the same order, so the two
+      // cannot disagree about which key they mean.
+      const prefix =
+        process.env[isValkey ? "TINA4_SESSION_VALKEY_PREFIX" : "TINA4_SESSION_REDIS_PREFIX"]
+        ?? "tina4:session:";
+      observed[backend] = await respTtl(host, port, `${prefix}${sessionId}`, probeDb);
     } catch (err) {
       probeErrors.push(`${backend}: TTL probe failed - ${(err as Error).message}`);
     }
