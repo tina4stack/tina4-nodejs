@@ -56,6 +56,14 @@ export type { ValidationError } from "./validation.js";
 export { BaseModel, snakeToCamel, camelToSnake } from "./baseModel.js";
 export { QueryBuilder } from "./queryBuilder.js";
 export { SQLTranslator, QueryCache } from "./sqlTranslator.js";
+export {
+  DEFAULT_DATABASE_CONNECT_TIMEOUT_SECONDS,
+  DRIVER_KNOB_GRACE_MS,
+  connectTimeoutMillis,
+  driverConnectTimeoutMillis,
+  connectTarget,
+  withConnectTimeout,
+} from "./connectTimeout.js";
 export { CachedDatabaseAdapter } from "./cachedDatabase.js";
 export type { CachedAdapterOptions } from "./cachedDatabase.js";
 export { FakeData } from "./fakeData.js";

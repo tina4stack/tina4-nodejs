@@ -7,6 +7,7 @@
 import { ANSI_DIALECT, MSSQL_DIALECT, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslator.js";
+import { connectTimeoutMillis, driverConnectTimeoutMillis, withConnectTimeout } from "../connectTimeout.js";
 import { createRequire } from "node:module";
 
 let tedious: any = null;
@@ -61,6 +62,14 @@ export class MssqlAdapter implements DatabaseAdapter {
     const tediousModule = requireTedious();
     const Connection = tediousModule.Connection;
 
+    // tedious has its own connectTimeout (15s by default). It is set from the
+    // Tina4 budget so ONE variable governs - otherwise a configured 60s would
+    // still fail at tedious's 15s, with tedious's message, and the variable
+    // would be a lie. Omitted when the bound is disabled, restoring the old 15s.
+    const budgetMs = connectTimeoutMillis();
+    const driverMs = driverConnectTimeoutMillis(budgetMs);
+    const timeoutOption = driverMs === null ? {} : { connectTimeout: driverMs };
+
     let tediousConfig: any;
 
     if (typeof this.config === "string") {
@@ -79,6 +88,7 @@ export class MssqlAdapter implements DatabaseAdapter {
           port: parsed.port ?? 1433,
           trustServerCertificate: true,
           encrypt: false,
+          ...timeoutOption,
         },
       };
     } else {
@@ -96,12 +106,13 @@ export class MssqlAdapter implements DatabaseAdapter {
           port: this.config.port ?? 1433,
           trustServerCertificate: true,
           encrypt: false,
+          ...timeoutOption,
           ...this.config.options,
         },
       };
     }
 
-    await new Promise<void>((resolve, reject) => {
+    const handshake = new Promise<void>((resolve, reject) => {
       this.connection = new Connection(tediousConfig);
       this.connection.on("connect", (err: Error | null) => {
         if (err) reject(err);
@@ -109,6 +120,15 @@ export class MssqlAdapter implements DatabaseAdapter {
       });
       this.connection.connect();
     });
+
+    await withConnectTimeout(
+      handshake,
+      budgetMs,
+      tediousConfig.server ?? "localhost",
+      tediousConfig.options?.port ?? 1433,
+      // Answered after we gave up: close it so the socket does not outlive the boot.
+      () => { try { this.connection?.close?.(); } catch { /* already gone */ } },
+    );
   }
 
   private parseUrl(url: string): { host: string; port?: number; user?: string; password?: string; database?: string } {

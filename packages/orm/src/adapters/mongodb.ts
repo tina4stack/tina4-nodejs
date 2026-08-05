@@ -5,6 +5,7 @@
  * URL format: mongodb://host:port/dbname  or  mongodb+srv://user:pass@host/dbname
  */
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
+import { connectTarget, connectTimeoutMillis, driverConnectTimeoutMillis, withConnectTimeout } from "../connectTimeout.js";
 
 export interface MongoConfig {
   host?: string;
@@ -309,8 +310,26 @@ export class MongodbAdapter implements DatabaseAdapter {
       );
     }
 
-    this.client = new MongoClient(this._connectionString);
-    await this.client.connect();
+    // The driver's own budget is 30s (serverSelectionTimeoutMS and
+    // connectTimeoutMS both). It is set from the Tina4 budget so ONE variable
+    // governs, and omitted when the bound is disabled so the driver keeps its
+    // own 30s exactly as before.
+    const budgetMs = connectTimeoutMillis();
+    const driverMs = driverConnectTimeoutMillis(budgetMs);
+    const timeoutOptions = driverMs === null
+      ? {}
+      : { serverSelectionTimeoutMS: driverMs, connectTimeoutMS: driverMs };
+
+    this.client = new MongoClient(this._connectionString, timeoutOptions);
+    const { host, port } = connectTarget(this._connectionString, 27017);
+    await withConnectTimeout(
+      this.client.connect(),
+      budgetMs,
+      host,
+      port,
+      // Answered after we gave up: close it so the pool does not outlive the boot.
+      () => { void Promise.resolve(this.client?.close()).catch(() => { /* already gone */ }); },
+    );
     this.db = this.client.db(this._dbName);
   }
 

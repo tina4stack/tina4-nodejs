@@ -100,6 +100,18 @@ export class SQLiteAdapter implements DatabaseAdapter {
   private db: DatabaseSync;
   private _lastInsertId: number | bigint | null = null;
 
+  /**
+   * TINA4_DATABASE_CONNECT_TIMEOUT DOES NOT APPLY HERE, deliberately.
+   *
+   * There is no connect() to bound: `node:sqlite` opens the file in this
+   * SYNCHRONOUS constructor, and a synchronous call cannot be interrupted by a
+   * timer on the same thread - the event loop only gets to run the timer after
+   * `new DatabaseSync()` has already returned. There is also no host and no port
+   * to name in a timeout error. The one case that could still block is a local
+   * file on a wedged network mount, which is a kernel-level stall no JS bound
+   * can reach. Stated here so the exclusion reads as a decision rather than an
+   * adapter somebody forgot.
+   */
   constructor(dbPath: string) {
     const resolved = resolveSqlitePath(dbPath);
     this.db = new DatabaseSync(resolved);

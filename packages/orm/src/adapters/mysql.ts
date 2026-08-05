@@ -7,6 +7,7 @@
 import { MYSQL_DIALECT, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslator.js";
+import { connectTarget, connectTimeoutMillis, driverConnectTimeoutMillis, withConnectTimeout } from "../connectTimeout.js";
 import { createRequire } from "node:module";
 
 let mysql2: any = null;
@@ -59,6 +60,13 @@ export class MysqlAdapter implements DatabaseAdapter {
   async connect(): Promise<void> {
     const mod = requireMysql2();
 
+    // mysql2 has its own connectTimeout (10s by default). It is set from the
+    // Tina4 budget so ONE variable governs, and omitted when the bound is
+    // disabled so the driver keeps exactly the behaviour it had before.
+    const budgetMs = connectTimeoutMillis();
+    const driverMs = driverConnectTimeoutMillis(budgetMs);
+    const timeoutOption = driverMs === null ? {} : { connectTimeout: driverMs };
+
     if (typeof this.config === "string") {
       // Parse URL: mysql://user:pass@host:port/database
       const url = new URL(this.config);
@@ -68,6 +76,7 @@ export class MysqlAdapter implements DatabaseAdapter {
         user: decodeURIComponent(url.username),
         password: decodeURIComponent(url.password),
         database: url.pathname.replace(/^\//, ""),
+        ...timeoutOption,
       });
     } else {
       this.connection = mod.createConnection({
@@ -76,16 +85,27 @@ export class MysqlAdapter implements DatabaseAdapter {
         user: this.config.user,
         password: this.config.password,
         database: this.config.database,
+        ...timeoutOption,
       });
     }
 
     // Promisify the connection
-    await new Promise<void>((resolve, reject) => {
+    const handshake = new Promise<void>((resolve, reject) => {
       this.connection.connect((err: Error | null) => {
         if (err) reject(err);
         else resolve();
       });
     });
+
+    const { host, port } = connectTarget(this.config, 3306);
+    await withConnectTimeout(
+      handshake,
+      budgetMs,
+      host,
+      port,
+      // Answered after we gave up: destroy it so the socket does not outlive the boot.
+      () => { try { this.connection?.destroy?.(); } catch { /* already gone */ } },
+    );
   }
 
   private ensureConnected(): void {

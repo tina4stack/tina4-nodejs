@@ -1264,6 +1264,40 @@ TINA4_DATABASE_PASSWORD=mypass
 
 Credential priority: `config.user` > `config.username` > `TINA4_DATABASE_USERNAME` env var.
 
+### Connect timeout
+
+`TINA4_DATABASE_CONNECT_TIMEOUT` bounds every database connect attempt. Same name,
+unit, default and semantics in all four frameworks.
+
+| | |
+|---|---|
+| unit | **seconds** |
+| default | `10` |
+| `<= 0` | disables the bound (unbounded — each driver keeps exactly its old behaviour) |
+| garbage | warns and uses `10` |
+| on expiry | throws, naming the host, the port, the elapsed seconds, and this variable |
+
+Without it a driver that never calls back hangs the app on connect with no log, no
+error and no signal — measured on the Firebird adapter at 16 minutes, 0.0% CPU. It
+is applied in two layers: the driver's own knob where it has one (so one variable
+really governs, rather than tedious's 15s or Mongo's 30s quietly winning), and an
+outer bound around the whole attempt (so it exists at all for `node-firebird`,
+which has no knob, and so a knob that covers only part of the handshake cannot
+leave a gap). The driver knob sits **one second later** than the Tina4 bound so the
+order is deterministic and the error you see is the one that names the host, the
+port and this variable — at exactly equal values the driver won the race and pg
+reported a bare `timeout expired`.
+
+| Adapter | Can connect block? | Bounded now | How |
+|---------|--------------------|-------------|-----|
+| Firebird | yes — **the measured 16-minute hang** | ✅ | outer bound only (`node-firebird` has no timeout option) |
+| PostgreSQL | yes — pg's `connectionTimeoutMillis` defaults to `0`, no timeout | ✅ | `connectionTimeoutMillis` + outer bound |
+| MySQL | bounded at mysql2's own 10s default | ✅ | `connectTimeout` + outer bound |
+| MSSQL | bounded at tedious's own 15s default | ✅ | `connectTimeout` + outer bound |
+| MongoDB | bounded at the driver's own 30s default | ✅ | `serverSelectionTimeoutMS` + `connectTimeoutMS` + outer bound |
+| ODBC | yes — a raw driver string carries no timeout | ⚠️ caller only | outer bound; the blocked native thread cannot be cancelled from JS |
+| SQLite | no network; opens in a **synchronous** constructor | ❌ N/A | a sync call cannot be interrupted by a timer on the same thread, and there is no host/port to name |
+
 ### Programmatic configuration
 ```typescript
 import { initDatabase } from "@tina4/orm";

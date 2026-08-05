@@ -12,6 +12,7 @@ import { ANSI_DIALECT, buildInsert, buildSetClause, buildWhereClause } from "./s
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { createRequire } from "node:module";
 import { SQLTranslator } from "../sqlTranslator.js";
+import { connectTimeoutMillis, withConnectTimeout } from "../connectTimeout.js";
 
 let odbcModule: any = null;
 
@@ -55,6 +56,21 @@ export class OdbcAdapter implements DatabaseAdapter {
     return this.config.connectionString;
   }
 
+  /**
+   * The address for a diagnostic message. ODBC hides it inside an opaque
+   * driver keyword string, so this reads the standard keywords and falls back to
+   * the data-source name - it is never used to connect, only to say which target
+   * hung.
+   */
+  private describeTarget(): { host: string; port: number | string } {
+    const connectionString = this.getConnectionString();
+    const host = /(?:^|;)\s*(?:SERVER|SERVERNAME|HOST)\s*=\s*([^;]+)/i.exec(connectionString)?.[1]?.trim()
+      ?? /(?:^|;)\s*DSN\s*=\s*([^;]+)/i.exec(connectionString)?.[1]?.trim()
+      ?? "the ODBC data source";
+    const port = /(?:^|;)\s*PORT\s*=\s*(\d+)/i.exec(connectionString)?.[1] ?? "unspecified";
+    return { host, port };
+  }
+
   /** Connect to the ODBC data source. Must be called before using the adapter. */
   async connect(): Promise<void> {
     const odbc = requireOdbc();
@@ -64,7 +80,19 @@ export class OdbcAdapter implements DatabaseAdapter {
     if (!connectFn) {
       throw new Error("odbc module does not export a connect() function. Check your odbc package version.");
     }
-    this.connection = await connectFn(connStr);
+    // Outer bound only: the connection string is the driver's, and injecting a
+    // CONNECTIONTIMEOUT keyword into a string the operator wrote would be this
+    // adapter editing configuration it does not own. The bound frees the CALLER;
+    // the native driver thread it is waiting on cannot be cancelled from JS.
+    const { host, port } = this.describeTarget();
+    this.connection = await withConnectTimeout(
+      connectFn(connStr),
+      connectTimeoutMillis(),
+      host,
+      port,
+      // Answered after we gave up: close it so the handle does not outlive the boot.
+      (arrived: any) => { try { void arrived?.close?.(); } catch { /* already gone */ } },
+    );
   }
 
   private ensureConnected(): void {

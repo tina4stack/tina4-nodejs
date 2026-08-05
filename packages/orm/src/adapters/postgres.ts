@@ -7,6 +7,7 @@
 import { ANSI_DIALECT, POSTGRES_DIALECT, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslator.js";
+import { connectTarget, connectTimeoutMillis, driverConnectTimeoutMillis, withConnectTimeout } from "../connectTimeout.js";
 
 import { createRequire } from "node:module";
 
@@ -93,13 +94,29 @@ export class PostgresAdapter implements DatabaseAdapter {
     const pgModule = requirePg();
     const Client = pgModule.Client ?? (pgModule as any).default?.Client;
 
+    // pg's own connectionTimeoutMillis defaults to 0 - no timeout at all - so
+    // without this a server that accepts and never completes the startup
+    // handshake hangs the boot forever. Omitted entirely when the bound is
+    // disabled, which restores exactly the old (unbounded) behaviour.
+    const budgetMs = connectTimeoutMillis();
+    const driverMs = driverConnectTimeoutMillis(budgetMs);
+    const timeoutOption = driverMs === null ? {} : { connectionTimeoutMillis: driverMs };
+
     if (typeof this.config === "string") {
-      this.client = new Client({ connectionString: this.config });
+      this.client = new Client({ connectionString: this.config, ...timeoutOption });
     } else {
-      this.client = new Client(this.config);
+      this.client = new Client({ ...this.config, ...timeoutOption });
     }
 
-    await this.client!.connect();
+    const { host, port } = connectTarget(this.config, 5432);
+    await withConnectTimeout(
+      this.client!.connect(),
+      budgetMs,
+      host,
+      port,
+      // Answered after we gave up: end it so the socket does not outlive the boot.
+      () => { void Promise.resolve(this.client?.end()).catch(() => { /* already gone */ }); },
+    );
   }
 
   // NOTE: a plain runtime guard, not an `asserts this is ...` predicate. A

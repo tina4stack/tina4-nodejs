@@ -7,6 +7,7 @@
 import { firebirdDialect, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslator.js";
+import { connectTimeoutMillis, withConnectTimeout } from "../connectTimeout.js";
 import { createRequire } from "node:module";
 
 let firebird: any = null;
@@ -252,15 +253,21 @@ export class FirebirdAdapter implements DatabaseAdapter {
       fbConfig.database = normalizeFirebirdDbIdentifier(fbConfig.database);
     }
 
-    await new Promise<void>((resolve, reject) => {
-      fb.attach(fbConfig, (err: Error | null, db: any) => {
-        if (err) reject(err);
-        else {
-          this.db = db;
-          resolve();
-        }
-      });
+    // node-firebird has NO connect-timeout option of its own, so the outer bound
+    // is the only thing standing between a silent driver and a permanently hung
+    // boot. This is the adapter the 16-minute probe measured.
+    const attach = new Promise<any>((resolve, reject) => {
+      fb.attach(fbConfig, (err: Error | null, db: any) => (err ? reject(err) : resolve(db)));
     });
+
+    this.db = await withConnectTimeout(
+      attach,
+      connectTimeoutMillis(),
+      fbConfig.host,
+      fbConfig.port,
+      // Answered after we gave up: detach so the socket does not outlive the boot.
+      (db: any) => { try { db?.detach?.(() => {}); } catch { /* already gone */ } },
+    );
   }
 
   private parseUrl(url: string): { host?: string; port?: number; user?: string; password?: string; database?: string } {
