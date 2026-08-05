@@ -11,6 +11,7 @@ import { MysqlAdapter } from "../packages/orm/src/adapters/mysql.ts";
 import { MssqlAdapter } from "../packages/orm/src/adapters/mssql.ts";
 import { FirebirdAdapter } from "../packages/orm/src/adapters/firebird.ts";
 import { mkdirSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 
 let pass = 0;
 let fail = 0;
@@ -323,6 +324,7 @@ console.log("\n--- Live Database Tests ---");
 
 const LIVE: Array<{
   label: string;
+  pkg: string;
   env: string[];
   make: (url: string) => any;
   probe: string;
@@ -330,13 +332,13 @@ const LIVE: Array<{
 }> = [
   // TINA4_TEST_PG_URL only -- TINA4_TEST_POSTGRES_URL is its deprecated alias
   // and testEnvContract rejects it, which is exactly what that gate is for.
-  { label: "PostgreSQL", env: ["TINA4_TEST_PG_URL"],
+  { label: "PostgreSQL", pkg: "pg", env: ["TINA4_TEST_PG_URL"],
     make: (u) => new PostgresAdapter(u), probe: "SELECT 1 AS n", expect: 1 },
-  { label: "MySQL", env: ["TINA4_TEST_MYSQL_URL"],
+  { label: "MySQL", pkg: "mysql2", env: ["TINA4_TEST_MYSQL_URL"],
     make: (u) => new MysqlAdapter(u), probe: "SELECT 1 AS n", expect: 1 },
-  { label: "MSSQL", env: ["TINA4_TEST_MSSQL_URL"],
+  { label: "MSSQL", pkg: "tedious", env: ["TINA4_TEST_MSSQL_URL"],
     make: (u) => new MssqlAdapter(u), probe: "SELECT 1 AS n", expect: 1 },
-  { label: "Firebird", env: ["TINA4_TEST_FIREBIRD_URL"],
+  { label: "Firebird", pkg: "node-firebird", env: ["TINA4_TEST_FIREBIRD_URL"],
     make: (u) => new FirebirdAdapter(u), probe: "SELECT 1 AS n FROM RDB$DATABASE", expect: 1 },
 ];
 
@@ -347,6 +349,17 @@ for (const spec of LIVE) {
     skip(name, `set ${spec.env[0]} to point at a live ${spec.label} (the lab exports it)`);
     continue;
   }
+  // A driver that is DELIBERATELY hidden (pass 2 runs with
+  // TINA4_HIDE_PACKAGES so the "missing package error" tests can execute) means
+  // this test cannot run in THIS pass -- it is not evidence of a broken
+  // adapter. Resolve it the same way the adapter does, so the two agree.
+  try {
+    createRequire(import.meta.url).resolve(spec.pkg);
+  } catch {
+    skip(name, `the ${spec.pkg} package is not resolvable in this pass`);
+    continue;
+  }
+
   const db = spec.make(url);
   try {
     await db.connect();
@@ -354,8 +367,9 @@ for (const spec of LIVE) {
     const value = row ? Number(Object.values(row)[0]) : NaN;
     assert(name, value === spec.expect);
   } catch (err) {
-    // A real failure against a configured server is a FAILURE, never a skip --
-    // skipping here is how a broken adapter would hide behind "no server".
+    // With the driver PRESENT and a server CONFIGURED, a failure is a FAILURE,
+    // never a skip -- skipping here is how a broken adapter hides behind "no
+    // server", which is the exact defect these four replaced.
     assert(`${name} — ${(err as Error).message.split("\n")[0]}`, false);
   } finally {
     try { await db.close?.(); } catch { /* already gone */ }
