@@ -1317,7 +1317,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 ## v3 Features Summary
 
 - **98 built-in features**, zero third-party dependencies
-- **6,230 tests** passing, 0 failed, across 198 files (build + typecheck green) - measured 2026-07-29 on Ubuntu 24.04.4 LTS x86_64, Node 24.18.0, live services, TINA4_REQUIRE_SERVICES=1; Firebird excluded by design
+- **7,497 tests** passing, 0 failed, 6 skipped across 260 files (typecheck exit 0) - measured 2026-08-06 on the lab host (Ubuntu 24.04.4 LTS x86_64, Node v24.18.0) against live services with TINA4_REQUIRE_SERVICES=1. **Firebird is NOT excluded** - the previous line said it was, and that was wrong. `test/firebird*.test.ts` runs against a REAL Firebird 5. The 6 skips are honest and named in their own output: four assert the error you get when a driver is ABSENT and cannot run while the driver is installed, one needs a process without CAP_DAC_OVERRIDE (the suite runs as root), and one needs RabbitMQ on its default host while the isolation env points elsewhere.
 - **Race-safe `getNextId()`** with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
