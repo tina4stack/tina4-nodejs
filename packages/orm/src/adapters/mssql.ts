@@ -39,6 +39,14 @@ export interface MssqlConfig {
 }
 
 export class MssqlAdapter implements DatabaseAdapter {
+  /**
+   * Postgres, MySQL and MSSQL all REQUIRE a name for a derived table, so
+   * the COUNT probe in Database.countProbe wraps as
+   * `FROM (sql) AS _count_query`. SQLite and Firebird leave this unset and
+   * get no alias - Firebird rejects `AS` in that position.
+   */
+  readonly countSubqueryAlias = "_count_query";
+
   private connection: any = null;
   private _lastInsertId: number | bigint | null = null;
   // True between startTransactionAsync() and commit/rollback. executeManyAsync

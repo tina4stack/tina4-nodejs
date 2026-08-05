@@ -68,6 +68,14 @@ export interface PostgresConfig {
 }
 
 export class PostgresAdapter implements DatabaseAdapter {
+  /**
+   * Postgres, MySQL and MSSQL all REQUIRE a name for a derived table, so
+   * the COUNT probe in Database.countProbe wraps as
+   * `FROM (sql) AS _count_query`. SQLite and Firebird leave this unset and
+   * get no alias - Firebird rejects `AS` in that position.
+   */
+  readonly countSubqueryAlias = "_count_query";
+
   private client: InstanceType<typeof import("pg").Client> | null = null;
   // string is included for non-integer primary keys: a UUID PK (the common
   // `id uuid PRIMARY KEY DEFAULT gen_random_uuid()` shape) returns its id as a

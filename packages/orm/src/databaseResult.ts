@@ -118,15 +118,17 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
    * wrong.
    *
    * WITH page/perPage it slices this result in memory, the behaviour GitHub
-   * issue #106 asked for. Valid only when the result holds the WHOLE set:
-   * slicing a result that is already ONE PAGE of a larger query is refused,
-   * because the slice starts at row 0 of what you hold while the rows
-   * themselves start at `offset`.
+   * issue #106 asked for. Valid ONLY when the result holds the WHOLE set
+   * (records.length >= count). A PARTIAL result cannot be sliced by page number
+   * without lying: MEASURED on 100,000 rows read under the default cap of 100,
+   * pages 1-5 of 20 were right and every page from 6 onward came back EMPTY
+   * while totalPages reported 5,000.
    *
-   * KNOWN, still open: `total` is only as honest as `count`, and in Node
-   * `count` is ROWS RETURNED, not the true total for the filter (Python and
-   * PHP populate it from a separate COUNT probe). Until that is fixed in the
-   * adapters, `total` under-reports on any capped read. See feature 18.
+   * `total` is `count`, and `count` is now the TRUE total for the filter in
+   * all four frameworks - Database.fetch runs a COUNT probe whenever it applied
+   * a limit. It used to be ROWS RETURNED here and in Ruby while Python and PHP
+   * probed, so one query answered 20 in two frameworks and 250 in the other
+   * two.
    */
   toPaginate(page?: number, perPage?: number): {
     records: Record<string, unknown>[];
@@ -143,13 +145,15 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
     has_next: boolean;
     has_prev: boolean;
   } {
-    if ((page !== undefined || perPage !== undefined) && this.offset > 0) {
+    if ((page !== undefined || perPage !== undefined) && this.records.length < this.count) {
       throw new TypeError(
         `toPaginate(page, perPage) slices the rows this result holds, but this ` +
-          `result already starts at offset ${this.offset} - it is one page of a ` +
-          `larger query, so slicing it from row 0 gives a silently wrong answer. ` +
-          `Call toPaginate() with no arguments to describe the page you fetched, ` +
-          `or re-fetch without limit/offset to slice the whole set in memory.`,
+          `result holds only ${this.records.length} of ${this.count} rows - it is a ` +
+          `PARTIAL result, so any page past the rows it holds comes back empty while ` +
+          `totalPages claims it exists. MEASURED on 100,000 rows read under the ` +
+          `default cap of 100: pages 1-5 of 20 were right and pages 6 onward returned ` +
+          `NOTHING. Fetch the page you want instead: fetch(sql, params, perPage, ` +
+          `(page - 1) * perPage), then call toPaginate() with no arguments.`,
       );
     }
 
