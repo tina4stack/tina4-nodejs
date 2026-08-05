@@ -41,6 +41,28 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MONGO_URI = process.env.TINA4_TEST_MONGO_URI ?? "mongodb://192.168.88.99:27017";
 
+/**
+ * Append one connection-string option to a MongoDB URI of ANY shape.
+ *
+ * The separator depends on whether the URI already has a PATH, not merely
+ * whether it has a query string. A mongodb URI needs a "/" before its query,
+ * but appending "/?" to a URI that already carries a database produces
+ * ".../tina4_node/?x=1" -- the driver then reads the database name as
+ * "tina4_node/" and rejects the whole string.
+ *
+ * MEASURED: the hand-rolled `includes("?") ? "&" : "/?"` join this replaces
+ * broke 3 of 6 real URI shapes -- host/db, a bare trailing slash, and
+ * mongodb+srv://.../db, the ordinary Atlas connection string. It only ever
+ * looked correct because the test Mongo URI happened to be the bare host:port
+ * form; the moment per-framework test isolation pointed it at a URI carrying a
+ * database, every caller failed at once. Fixed in all four frameworks.
+ */
+function mongoUriWithOption(uri: string, option: string): string {
+  if (uri.includes("?")) return uri + "&" + option;
+  const afterScheme = uri.includes("://") ? uri.split("://")[1]! : uri;
+  return uri + (afterScheme.includes("/") ? "?" : "/?") + option;
+}
+
 // Resolved from THIS file, never hardcoded. An absolute developer-machine path
 // here passed locally and died with ERR_MODULE_NOT_FOUND on every other host -
 // measured on the lab box, where it was the suite's only failing file. Each
@@ -387,7 +409,7 @@ async function run() {
     // strength - OUR connections must reach exactly ZERO, not merely "fewer
     // than before", which another tenant disconnecting could satisfy alone.
     const appName = "tina4_docstore_lifecycle_" + randomBytes(5).toString("hex");
-    const taggedUri = MONGO_URI + (MONGO_URI.includes("?") ? "&" : "/?") + "appName=" + appName;
+    const taggedUri = mongoUriWithOption(MONGO_URI, "appName=" + appName);
     for (const k of ["TINA4_MONGO_URI", "TINA4_SESSION_MONGO_URI", "TINA4_SESSION_MONGO_URL"]) delete process.env[k];
     process.env.TINA4_MONGO_URI = taggedUri;
     process.env.TINA4_DOC_STORE_PATH = join(mkdtempSync(join(tmpdir(), "ds")), "ds.db");
