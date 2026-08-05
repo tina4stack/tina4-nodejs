@@ -154,7 +154,7 @@ if (!(await reachable(rmqHost, rmqPort))) {
   // (7) Default-config backend connects against the default host — a real
   // push+pop round-trip proves the default connection works (not merely that a
   // push method exists). Only meaningful when the default host is the live one.
-  if (rmqHost === "localhost" && rmqPort === 5672 && (rmqCfg.vhost ?? "/") === "/") {
+  if (isLoopback(rmqHost) && rmqPort === 5672 && (rmqCfg.vhost ?? "/") === "/") {
     const rabbitDefaults = new RabbitMQBackend();
     const rmqDefQueue = "tina4_qb_def_" + Math.random().toString(16).slice(2, 12);
     try {
@@ -236,7 +236,7 @@ if (!(await reachable(kHost, kPort))) {
     // (14) Default-config backend produces+consumes against the default broker —
     // a real round-trip proves the default connection works (not merely that a
     // push method exists). Only when the default broker is the live one.
-    if (kafkaBroker === "localhost:9092") {
+    if (isLoopback(kHost) && kPort === 9092) {
       const kafkaDefaults = new KafkaBackend();
       const kDefTopic = "t_qb_def_" + Math.random().toString(16).slice(2, 12);
       if (ensureKafkaTopic(kafkaContainer, kafkaBroker, kDefTopic)) {
@@ -283,6 +283,21 @@ console.log("\n--- File queue via Queue class ---");
 import { Queue } from "../packages/core/src/index.ts";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+
+/**
+ * Is this host the DEFAULT endpoint, whatever spelling it arrived in?
+ *
+ * These two checks compared the configured host to the literal string
+ * "localhost", so the lab's TINA4_TEST_RABBITMQ_URL=amqp://...@127.0.0.1:5672
+ * and TINA4_TEST_KAFKA_URL=127.0.0.1:9092 were judged to "point away from the
+ * default" and both round-trips skipped on every run -- against brokers that
+ * were listening on exactly those ports. 127.0.0.1 IS localhost; the comparison
+ * was of a spelling, not of an endpoint.
+ */
+function isLoopback(host: string): boolean {
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "0.0.0.0";
+}
 
 const TEST_PATH = join("/tmp", "tina4-qb-test-" + Date.now());
 

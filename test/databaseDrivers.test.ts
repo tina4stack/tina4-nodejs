@@ -307,14 +307,58 @@ assert("Firebird auto-increment stripped",
   SQLTranslator.autoIncrementSyntax("id INTEGER AUTOINCREMENT", "firebird") === "id INTEGER",
 );
 
-// ── Tests requiring running databases (skipped) ──────────────
+// ── Live database connections ────────────────────────────────
+//
+// These four were UNCONDITIONAL STUBS -- `skip("PostgreSQL live connection",
+// "Requires running PostgreSQL server")` with no code behind them. The message
+// implied a missing server; in fact no test existed to run, and the lab has had
+// PostgreSQL, MySQL, MSSQL and Firebird up the whole time. Four permanent skips
+// reading as "environment not set up".
+//
+// Each now connects for real and reads a row back, addressed by the canonical
+// TINA4_TEST_<ENGINE>_URL (ADR-0038). Absent that variable they still skip, but
+// the reason names the variable to set rather than blaming the server.
 
 console.log("\n--- Live Database Tests ---");
 
-skip("PostgreSQL live connection", "Requires running PostgreSQL server");
-skip("MySQL live connection", "Requires running MySQL server");
-skip("MSSQL live connection", "Requires running MSSQL server");
-skip("Firebird live connection", "Requires running Firebird server");
+const LIVE: Array<{
+  label: string;
+  env: string[];
+  make: (url: string) => any;
+  probe: string;
+  expect: number;
+}> = [
+  { label: "PostgreSQL", env: ["TINA4_TEST_PG_URL", "TINA4_TEST_POSTGRES_URL"],
+    make: (u) => new PostgresAdapter(u), probe: "SELECT 1 AS n", expect: 1 },
+  { label: "MySQL", env: ["TINA4_TEST_MYSQL_URL"],
+    make: (u) => new MysqlAdapter(u), probe: "SELECT 1 AS n", expect: 1 },
+  { label: "MSSQL", env: ["TINA4_TEST_MSSQL_URL"],
+    make: (u) => new MssqlAdapter(u), probe: "SELECT 1 AS n", expect: 1 },
+  { label: "Firebird", env: ["TINA4_TEST_FIREBIRD_URL"],
+    make: (u) => new FirebirdAdapter(u), probe: "SELECT 1 AS n FROM RDB$DATABASE", expect: 1 },
+];
+
+for (const spec of LIVE) {
+  const name = `${spec.label} live connection`;
+  const url = spec.env.map((e) => process.env[e]).find((v) => v && v.trim() !== "");
+  if (!url) {
+    skip(name, `set ${spec.env[0]} to point at a live ${spec.label} (the lab exports it)`);
+    continue;
+  }
+  const db = spec.make(url);
+  try {
+    await db.connect();
+    const row: any = await db.fetchOneAsync(spec.probe);
+    const value = row ? Number(Object.values(row)[0]) : NaN;
+    assert(name, value === spec.expect);
+  } catch (err) {
+    // A real failure against a configured server is a FAILURE, never a skip --
+    // skipping here is how a broken adapter would hide behind "no server".
+    assert(`${name} — ${(err as Error).message.split("\n")[0]}`, false);
+  } finally {
+    try { await db.close?.(); } catch { /* already gone */ }
+  }
+}
 
 // ── Cleanup ──────────────────────────────────────────────────
 
