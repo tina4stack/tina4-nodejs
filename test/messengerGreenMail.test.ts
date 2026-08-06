@@ -99,6 +99,45 @@ function messengerFor(address: string): Messenger {
  * Delivery is asynchronous from the sender's point of view, so a single
  * immediate read would be a race.
  */
+/**
+ * A minimal real IMAP client for ground truth, independent of the framework.
+ *
+ * It stands in for nothing and simulates nothing - it speaks IMAP to the same
+ * GreenMail the framework is talking to, so it can state what the server
+ * actually holds.
+ */
+async function withRawImap<T>(address: string, fn: (raw: (cmd: string) => Promise<string>) => Promise<T>): Promise<T> {
+  const socket = net.connect({ host: IMAP_HOST, port: IMAP_PORT });
+  await new Promise<void>((res, rej) => {
+    socket.once("connect", () => res());
+    socket.once("error", rej);
+  });
+  let buffer = "";
+  socket.on("data", (d) => { buffer += d.toString("utf8"); });
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  await wait(150);
+
+  let seq = 0;
+  const raw = async (cmd: string): Promise<string> => {
+    const tag = `a${++seq}`;
+    buffer = "";
+    socket.write(`${tag} ${cmd}\r\n`);
+    for (let i = 0; i < 80; i++) {
+      if (new RegExp(`^${tag} (OK|NO|BAD)`, "m").test(buffer)) break;
+      await wait(50);
+    }
+    return buffer;
+  };
+
+  try {
+    await raw(`LOGIN ${address} secret`);
+    await raw("SELECT INBOX");
+    return await fn(raw);
+  } finally {
+    try { socket.destroy(); } catch { /* already gone */ }
+  }
+}
+
 async function deliverAndWait(
   m: Messenger,
   to: string,
@@ -304,6 +343,78 @@ async function main(): Promise<void> {
       restore("TINA4_DEBUG", saved.debug);
       restore("NODE_ENV", saved.nodeEnv);
     }
+  }
+
+  // ── uid is a real IMAP UID, not a sequence number ───────────────────────
+  //
+  // MEASURED 2026-08-06 against live GreenMail, all four frameworks, one
+  // mailbox. Before an expunge the two numberings are IDENTICAL, which is why
+  // this survived every existing contract suite:
+  //
+  //   send P1 P2 P3   by sequence {1:P1,2:P2,3:P3}   by UID {1:P1,2:P2,3:P3}
+  //   expunge P1      by sequence {1:P2,2:P3}        by UID {2:P2,3:P3}
+  //
+  // So P3 is sequence number 2 and UID 3. Node reported "2"; PHP and Ruby
+  // reported 3. Node issued SEARCH/FETCH/STORE - the sequence-number commands -
+  // rather than UID SEARCH/UID FETCH/UID STORE.
+  //
+  // A sequence number renumbers whenever ANY client expunges, so an id stored
+  // today addresses a different message tomorrow. No error, just the wrong
+  // message.
+  {
+    console.log("\n-- uid survives an expunge by another client --");
+    const addr = recipient();
+    const m = messengerFor(addr);
+
+    const subjects = [0, 1, 2].map((i) => `uid${i}-${randomBytes(4).toString("hex")}`);
+    for (const subject of subjects) {
+      await deliverAndWait(m, addr, subject, `body of ${subject}`);
+    }
+
+    // A second, independent IMAP client does the expunge and supplies ground
+    // truth. It speaks the protocol directly - it stands in for nothing.
+    const truth = await withRawImap(addr, async (raw) => {
+      await raw(`STORE 1 +FLAGS (\\Deleted)`);
+      await raw("EXPUNGE");
+      const searchResp = await raw("UID SEARCH ALL");
+      const uids = (searchResp.match(/^\* SEARCH ([\d ]+)/m)?.[1] ?? "").trim().split(/\s+/).filter(Boolean);
+      const bySubject: Record<string, string> = {};
+      for (const u of uids) {
+        const fetched = await raw(`UID FETCH ${u} (BODY.PEEK[HEADER.FIELDS (SUBJECT)])`);
+        const subj = fetched.match(/^Subject:\s*(.+)$/mi)?.[1]?.trim();
+        if (subj) bySubject[subj] = u;
+      }
+      return bySubject;
+    });
+
+    const survivors = subjects.slice(1).filter((s) => s in truth);
+    assert("the expunge fixture built (2 messages survive)", survivors.length === 2,
+      `\n    truth: ${JSON.stringify(truth)}`);
+    // The instrument must be able to fail: if the UIDs still start at 1 the
+    // expunge did not shift them and nothing below discriminates.
+    assert("the expunge shifted the UIDs, so this can discriminate",
+      Math.min(...survivors.map((s) => Number(truth[s]))) === 2,
+      `\n    truth: ${JSON.stringify(truth)}`);
+
+    const reported = new Map((await m.inbox()).map((i) => [i.subject, String(i.uid)]));
+    for (const subject of survivors) {
+      assert(`uid for ${subject} is the real UID, not a sequence number`,
+        reported.get(subject) === truth[subject],
+        `\n    framework reported ${JSON.stringify(reported.get(subject))}, real UID is ${truth[subject]}`);
+    }
+  }
+
+  // The pair: switching to UID commands must not break the ordinary path.
+  {
+    console.log("\n-- a uid still reads the message it names --");
+    const addr = recipient();
+    const m = messengerFor(addr);
+    const subject = `uidread-${randomBytes(4).toString("hex")}`;
+    const hit = await deliverAndWait(m, addr, subject, "read me by uid");
+    const full = await m.read(hit.uid);
+    assert("read(uid) returns the message that uid names",
+      full !== null && full.subject === subject,
+      `\n    read(${JSON.stringify(hit.uid)}) -> ${JSON.stringify(full && full.subject)}`);
   }
 
   console.log(`\n${"=".repeat(52)}`);

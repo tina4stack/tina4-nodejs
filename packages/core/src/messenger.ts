@@ -729,7 +729,7 @@ export class Messenger {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
 
       // Search for all messages
-      const searchResp = await imapCommand(socket, "SEARCH ALL");
+      const searchResp = await imapCommand(socket, "UID SEARCH ALL");
       const uids = parseSearchResponse(searchResp);
       if (uids.length === 0) return [];
 
@@ -740,7 +740,7 @@ export class Messenger {
 
       const messages: ImapMessage[] = [];
       for (const uid of selected) {
-        const fetchResp = await imapCommand(socket, `FETCH ${uid} (FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])`);
+        const fetchResp = await imapCommand(socket, `UID FETCH ${uid} (FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])`);
         messages.push(parseHeaderResponse(uid, fetchResp));
       }
 
@@ -753,7 +753,7 @@ export class Messenger {
   }
 
   /**
-   * Read a single message by sequence number or UID.
+   * Read a single message by its IMAP UID.
    */
   async read(uid: string, folder: string = "INBOX"): Promise<ImapFullMessage | null> {
     let socket: net.Socket | tls.TLSSocket;
@@ -764,7 +764,7 @@ export class Messenger {
     }
     try {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
-      const fetchResp = await imapCommand(socket, `FETCH ${uid} (FLAGS BODY[])`);
+      const fetchResp = await imapCommand(socket, `UID FETCH ${uid} (FLAGS BODY[])`);
 
       // A genuinely missing UID is a tagged OK with no message body literal —
       // that is NOT an error, so it must not throw. It returns null: FALSY, so
@@ -778,7 +778,7 @@ export class Messenger {
       }
 
       // Mark as seen
-      await imapCommand(socket, `STORE ${uid} +FLAGS (\\Seen)`);
+      await imapCommand(socket, `UID STORE ${uid} +FLAGS (\\Seen)`);
 
       return parseFullMessage(uid, fetchResp);
     } catch (err) {
@@ -817,14 +817,14 @@ export class Messenger {
     }
     try {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
-      const searchResp = await imapCommand(socket, `SEARCH ${query}`);
+      const searchResp = await imapCommand(socket, `UID SEARCH ${query}`);
       const uids = parseSearchResponse(searchResp);
       if (uids.length === 0) return [];
 
       uids.reverse();
       const messages: ImapMessage[] = [];
       for (const uid of uids.slice(0, limit)) {
-        const fetchResp = await imapCommand(socket, `FETCH ${uid} (FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])`);
+        const fetchResp = await imapCommand(socket, `UID FETCH ${uid} (FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])`);
         messages.push(parseHeaderResponse(uid, fetchResp));
       }
       return messages;
@@ -842,7 +842,7 @@ export class Messenger {
     const socket = await this.imapConnect();
     try {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
-      await imapCommand(socket, `STORE ${uid} +FLAGS (\\Deleted)`);
+      await imapCommand(socket, `UID STORE ${uid} +FLAGS (\\Deleted)`);
       await imapCommand(socket, "EXPUNGE");
     } finally {
       await this.imapDisconnect(socket);
@@ -856,7 +856,7 @@ export class Messenger {
     const socket = await this.imapConnect();
     try {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
-      await imapCommand(socket, `STORE ${uid} +FLAGS (\\Seen)`);
+      await imapCommand(socket, `UID STORE ${uid} +FLAGS (\\Seen)`);
     } finally {
       await this.imapDisconnect(socket);
     }
@@ -874,7 +874,7 @@ export class Messenger {
     }
     try {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
-      const searchResp = await imapCommand(socket, "SEARCH UNSEEN");
+      const searchResp = await imapCommand(socket, "UID SEARCH UNSEEN");
       return parseSearchResponse(searchResp).length;
     } catch (err) {
       throw imapFail("unread", err);
