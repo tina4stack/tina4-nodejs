@@ -831,6 +831,67 @@ let _serverHandle: { close: () => void; router: Router; port: number } | null = 
  * Start the Tina4 HTTP server.
  * Thin wrapper around startServer() for cross-framework parity with PHP and Ruby.
  */
+/**
+ * Watch for a handler that occupies the event loop, and say so.
+ *
+ * Node runs ONE loop. An `await`ing handler yields it and blocks nobody -
+ * measured, /fast answers in 0.030s while a route awaits a 2s timer. A
+ * CPU-BOUND handler does not yield, and everything else waits: the same /fast
+ * took 1.575s during a 2s busy loop.
+ *
+ * That is inherent to a single-loop runtime, not a bug to engineer away. PHP
+ * fixed its equivalent by forking per request because `sleep()` is the obvious
+ * thing to write there and it blocks; in JavaScript the obvious thing is
+ * `await`, which does not. So the exposure here is narrower - CPU-bound work
+ * and synchronous I/O - and the honest fix is to make it VISIBLE rather than
+ * to move handlers onto threads a closure cannot cross.
+ *
+ * The mechanism is loop lag: a timer set for TICK_MS fires late by however
+ * long the loop was blocked. If that lateness passes the threshold, something
+ * held the loop and the developer wants to know which.
+ *
+ * A 100ms repeating timer is the classic way to pin a process open forever, so
+ * there are two guards against it: close() stops the timer, and the timer is
+ * unref'd. Measured: either one alone is enough, and the signal path exits
+ * regardless of both. They are kept together because they cost nothing and
+ * cover different exits - close() covers the in-process handle, unref() covers
+ * a path that never reaches close() at all.
+ */
+const LOOP_WATCHDOG_TICK_MS = 100;
+
+function startLoopWatchdog(): { stop: () => void } {
+  const raw = (process.env.TINA4_LOOP_LAG_WARN_MS ?? "").trim();
+  // 0 or a negative value disables it; a non-numeric value falls to the
+  // default rather than silently disabling a diagnostic.
+  const threshold = /^\d+$/.test(raw) ? parseInt(raw, 10) : 250;
+  if (threshold <= 0) {
+    return { stop: () => {} };
+  }
+
+  let last = Date.now();
+  let warned = 0;
+  const timer = setInterval(() => {
+    const now = Date.now();
+    const lag = now - last - LOOP_WATCHDOG_TICK_MS;
+    last = now;
+    if (lag < threshold) return;
+
+    // Rate-limited: a handler that blocks on every request would otherwise
+    // produce a wall of identical warnings, which people filter out.
+    warned++;
+    if (warned > 5 && warned % 20 !== 0) return;
+    Log.warning(
+      `Event loop blocked for ${lag}ms. Node serves every request on one loop, ` +
+      `so a handler doing CPU-bound work or synchronous I/O stalls all the ` +
+      `others for that long. Move the work to Tina4's queue, or await it. ` +
+      `Set TINA4_LOOP_LAG_WARN_MS to change the ${threshold}ms threshold, or 0 to silence.`,
+    );
+  }, LOOP_WATCHDOG_TICK_MS);
+  timer.unref();
+
+  return { stop: () => clearInterval(timer) };
+}
+
 export async function start(config?: Tina4Config): Promise<{ close: () => void; router: Router; port: number }> {
   const isManaged = process.argv.includes('--managed');
   if (!isManaged && process.env.TINA4_OVERRIDE_CLIENT !== 'true') {
@@ -1426,8 +1487,18 @@ export async function startServer(config?: Tina4Config): Promise<{
   const host = resolved.host;
   let port = resolved.port;
 
-  // Claim the requested port — kill whatever is on it if needed
-  port = findAvailablePort(port);
+  // Claim the requested port — kill whatever is on it if needed.
+  //
+  // NOT in a cluster worker. A worker does not own the port: the primary binds
+  // it once and hands the handle down through cluster's IPC. A worker running
+  // this finds the port "in use" (the primary is holding it) and KILLS the
+  // process holding it, which is its own parent. Every worker did that, then
+  // died itself with `write EPIPE` from cluster._getServer because the primary
+  // it needed to ask for the socket was gone. Cluster mode never served a
+  // single request.
+  if (!cluster.isWorker) {
+    port = findAvailablePort(port);
+  }
 
   // Cluster mode for production: fork workers based on CPU count
   // Only when --production is explicitly set (via TINA4_PRODUCTION env var)
@@ -2079,8 +2150,11 @@ ${reset}
       process.on("SIGTERM", onSigterm);
       process.on("SIGINT", onSigint);
 
+      const loopWatchdog = startLoopWatchdog();
+
       resolvePromise({
         close: () => {
+          loopWatchdog.stop();
           // An explicit close() is not a signal shutdown: drop the handlers so
           // a test that starts many servers in one process does not pile up
           // listeners (and trip Node's MaxListeners warning).
