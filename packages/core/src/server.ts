@@ -378,14 +378,50 @@ function openBrowser(url: string) {
  * for backwards compatibility.
  */
 export function resolvePortAndHost(config?: { port?: number; host?: string }): { port: number; host: string } {
-  const port = config?.port
-    ?? (process.env.PORT ? parseInt(process.env.PORT, 10) : undefined)
-    ?? 7148;
+  // Port: explicit config > TINA4_PORT > PORT (deprecated) > default.
+  //
+  // This read PORT and nothing else, so TINA4_PORT - the name the CLI
+  // documents and prefers, and the one devAdmin.ts itself reads first - was
+  // IGNORED on the path that binds the socket. Setting it did nothing and said
+  // nothing.
+  //
+  // Bare PORT stays honoured so no deployment breaks, and warns so the
+  // migration happens. Removal is 3.14.
+  const tina4Port = process.env.TINA4_PORT;
+  const legacyPort = process.env.PORT;
+  let port: number;
+  if (config?.port !== undefined) {
+    port = config.port;
+  } else if (tina4Port && /^\d+$/.test(tina4Port)) {
+    port = parseInt(tina4Port, 10);
+  } else if (legacyPort && /^\d+$/.test(legacyPort)) {
+    port = parseInt(legacyPort, 10);
+    warnDeprecatedPort(port);
+  } else {
+    port = 7148;
+  }
+
   const host = config?.host
     ?? process.env.TINA4_HOST
     ?? process.env.HOST
     ?? "0.0.0.0";
   return { port, host };
+}
+
+/**
+ * Warn ONCE that bare PORT was used instead of TINA4_PORT.
+ *
+ * Once, because resolvePortAndHost can be called more than once per process
+ * and a warning repeated on every call is a warning people filter out.
+ */
+let portDeprecationWarned = false;
+function warnDeprecatedPort(port: number): void {
+  if (portDeprecationWarned) return;
+  portDeprecationWarned = true;
+  Log.warning(
+    `PORT is deprecated and will be removed in 3.14 - use TINA4_PORT instead ` +
+    `(binding port ${port} from PORT)`,
+  );
 }
 
 /**
