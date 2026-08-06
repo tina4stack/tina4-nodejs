@@ -105,7 +105,12 @@ let skipped = 0;
  * Ask the kernel instead of inferring from the uid.
  */
 function permissionBitsAreEnforced(): boolean {
-  const probe = join(mkdtempSync(join(tmpdir(), "tina4-perm-")), "probe");
+  // Remove the DIRECTORY, not just the probe file inside it. This is called
+  // three times per run now (before the drop, after it, and by the skip guard);
+  // deleting only the file left an empty mkdtemp directory behind every time,
+  // and the lab had 37 of them accumulated in /tmp.
+  const dir = mkdtempSync(join(tmpdir(), "tina4-perm-"));
+  const probe = join(dir, "probe");
   writeFileSync(probe, "x");
   chmodSync(probe, 0o400);
   try {
@@ -114,7 +119,7 @@ function permissionBitsAreEnforced(): boolean {
   } catch {
     return true;
   } finally {
-    try { chmodSync(probe, 0o600); rmSync(probe, { force: true }); } catch { /* gone */ }
+    try { chmodSync(probe, 0o600); rmSync(dir, { recursive: true, force: true }); } catch { /* gone */ }
   }
 }
 
