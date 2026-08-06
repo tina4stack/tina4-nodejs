@@ -474,6 +474,14 @@ const savedDefaultEnv = {
 };
 
 function resetDefaultOutputEnv(subdir: string): string {
+  // Drop what the configure() calls earlier in this file pinned. Since
+  // ADR-0041 the explicit values live in the Log class rather than in
+  // process.env, so an explicit argument correctly OUTRANKS the environment for
+  // the rest of the process -- which means clearing the env vars below is no
+  // longer enough on its own to reach the env-driven paths these cases exist to
+  // exercise. Deleting an env var cannot undo an explicit configure(); only
+  // this can.
+  Log.reset();
   delete process.env.TINA4_LOG_OUTPUT;
   delete process.env.TINA4_LOG_FILE; // critical: no explicit file → exercise the default
   delete process.env.TINA4_LOG_FORMAT;

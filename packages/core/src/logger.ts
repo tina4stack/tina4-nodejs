@@ -417,6 +417,31 @@ export class Log {
   }
 
   /**
+   * Forget what configure() was told, so resolution falls back to the
+   * environment and then the built-in defaults. Parity with PHP's Log::reset().
+   *
+   * This exists because the explicit values are now HELD here rather than
+   * written back into process.env, and that makes them STICKY for the life of
+   * the process -- which is right for an application (configure() at boot is
+   * the operator's instruction and a later stray env write should not silently
+   * re-point the logs) and wrong for a long-lived test process that wants to
+   * drive the logger purely from the environment afterwards.
+   *
+   * I removed this method once for having no callers. That was correct about
+   * the grep and wrong about the code: the full suite is the caller. Before the
+   * explicit slots existed, configure() ASSIGNED to process.env, so a later
+   * direct assignment simply overwrote it and env-driven cases kept working by
+   * accident. test/logger.test.ts depends on exactly that -- it configures a
+   * file early, then runs the whole default-output block off the environment
+   * (see its own note: "these cases must NOT route through Log.configure").
+   * Three of those cases failed on the lab until this came back.
+   */
+  static reset(): void {
+    Log.explicitLogDir = undefined;
+    Log.explicitLogFile = undefined;
+  }
+
+  /**
    * TINA4_LOG_APPEND — append (default) or overwrite on startup.
    *
    * APPEND IS THE DEFAULT: a log you can lose by restarting the process is not
