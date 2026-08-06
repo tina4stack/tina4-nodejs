@@ -417,17 +417,6 @@ export class Log {
   }
 
   /**
-   * Drop anything configure() was told, so resolution falls back to the
-   * environment and then the defaults. Tests need this because the explicit
-   * values now live in class state rather than process.env, so clearing the
-   * env var alone no longer undoes a configure() from an earlier test.
-   */
-  static resetConfigure(): void {
-    Log.explicitLogDir = undefined;
-    Log.explicitLogFile = undefined;
-  }
-
-  /**
    * TINA4_LOG_APPEND — append (default) or overwrite on startup.
    *
    * APPEND IS THE DEFAULT: a log you can lose by restarting the process is not
