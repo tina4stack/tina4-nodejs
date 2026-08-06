@@ -6,6 +6,55 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+### Breaking: Messenger read/send shapes move to the cross-framework contract (3.13.96)
+
+MEASURED 2026-08-06 across all four frameworks against a live GreenMail. Node was
+the outlier on each of these; every one now matches the Python reference.
+
+- `send()` carries `{ success, message, id }` on BOTH paths. On failure `id` is
+  now present as `null` (it used to be OMITTED), so a caller reading `result.id`
+  gets one shape from the success and failure branches. `SendResult.id` is now
+  `string | null` and required.
+- `inbox()` items are exactly `{ uid, subject, from, to, date, snippet, seen }`,
+  `date` is ISO-8601 (was the raw RFC-2822 header), and `snippet` is now real
+  decoded, tag-stripped body text (it was ALWAYS `""`, a header-only fetch).
+- `read()` returns `date` as ISO-8601 and gains `attachments` (an
+  `ImapAttachment[]` of `{ filename, contentType, size }`, empty when none).
+- `deleteMessage(uid, folder?)` is renamed to `delete(uid, folder?)` (the one
+  cross-framework name). `deleteMessage` stays as a DEPRECATED delegating alias
+  for one release.
+- New: `markUnread(uid, folder?)` and `sendTemplate(to, subject, template, data?)`
+  (renders a Frond template string and sends it as HTML).
+
+**Migration.** A caller that read `result.id` on a failed `send()` must now expect
+`null` rather than `undefined`. Persisted `inbox()`/`read()` items that stored
+`date` as an RFC-2822 string, or relied on `snippet` being empty, should be
+re-read. Replace `messenger.deleteMessage(...)` with `messenger.delete(...)`
+before the alias is removed.
+
+### Changed: Swagger/OpenAPI document moves to the reference shape (3.13.96)
+
+MEASURED across the four frameworks; Node moved to the Python reference.
+
+- `components.schemas` is keyed by the model CLASS name (`Item`), not the
+  tableName (`items`), so a generated client gets `class Item`. The POST/PUT
+  request-body `$ref` resolves to the same class-name schema.
+- `info.version` defaults to `1.0.0` (was `0.0.1`) and `info.description` to `""`
+  (was a canned sentence). `TINA4_SWAGGER_VERSION` / `_DESCRIPTION` still override.
+- A model write documents ONLY `200` with the resource schema. The unconditional
+  `422` and the inferred `201` are dropped (both were fiction on a path-inferred
+  write); `401` is still added when the route is secured. An explicit
+  `meta.responses` is honoured and never clobbered.
+- `operationId` preserves leading underscores, so `/__health` -> `get___health`
+  and `/health` -> `get_health` are distinct instead of colliding to
+  `get_health` + a registration-order-dependent `_2`.
+
+**Migration.** A generated client keyed off the tableName schema name, or reading
+`info.version` as `0.0.1`, or branching on a documented `201`/`422` from a model
+write, must be regenerated against the new document. Runtime behaviour is
+unchanged (the auto-CRUD POST still returns `201`/`422` at runtime; only the
+documented response set changed).
+
 ### Breaking: `uid` from the Messenger IMAP reads is now a real IMAP UID
 
 `inbox()`, `search()` and `unread()` returned an IMAP **sequence number** in the
