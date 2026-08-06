@@ -12,6 +12,12 @@ import { MssqlAdapter } from "../packages/orm/src/adapters/mssql.ts";
 import { FirebirdAdapter } from "../packages/orm/src/adapters/firebird.ts";
 import { mkdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import net from "node:net";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildDriverlessTree, runDriverless, selftestLine, selftestPassed } from "./_driverlessTree.ts";
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 let pass = 0;
 let fail = 0;
@@ -39,6 +45,12 @@ console.log("=== Database Drivers Tests ===\n");
 console.log("--- Adapter Registration ---");
 
 const testDbPath = "/tmp/tina4-driver-test/test.db";
+// Clear it BEFORE the run, not only after. The cleanup at the bottom of this
+// file never executes when the process dies mid-file, and the row-count
+// assertions below (fetch-with-limit, fetch-with-skip) then see the previous
+// run's rows: `SQLite fetch with skip` reads 2 instead of 1 and reports FAIL on
+// a green build. Reproduced by seeding one extra row and re-running.
+rmSync("/tmp/tina4-driver-test", { recursive: true, force: true });
 mkdirSync("/tmp/tina4-driver-test", { recursive: true });
 
 const sqlite = new SQLiteAdapter(testDbPath);
@@ -168,73 +180,179 @@ const fb1abs = parseDatabaseUrl("firebird://SYSDBA:masterkey@localhost:3050//var
 assert("firebird two slashes is absolute", fb1abs.database === "/var/data/test.fdb");
 
 // ── Missing Package Errors ───────────────────────────────────
+//
+// These four assert the error a developer gets when a driver is ABSENT. They
+// used to run in THIS process, where every driver is installed by design, so
+// the condition they test could not exist: all four took the else-branch and
+// printed `SKIP ... package is installed` on every run since they were written.
+// The missing-driver path — the one an app hits on its first deploy without an
+// optional peer dependency — was exercised NOWHERE.
+//
+// A shim was NOT the answer. Patching `Module._resolveFilename` to throw a
+// hand-made MODULE_NOT_FOUND mocks the module resolver, which is the exact
+// collaborator whose real behaviour these tests exist to observe: it would
+// prove the adapter's catch handles the error the TEST fabricated. That is what
+// the deleted test/_hidePackages.mjs did.
+//
+// Instead the source is COPIED OUT of the repository into a temp tree with no
+// node_modules anywhere above it and run with plain
+// `node --experimental-strip-types` (test/_driverlessTree.ts, shared with
+// sessionZeroDependencyFallback.test.ts). All four adapters reach for their
+// driver through `createRequire(import.meta.url)`, which resolves from the
+// ADAPTER's directory, so inside that tree the failure is the real resolver's —
+// nothing is stubbed or intercepted.
+//
+// THE INSTRUMENT IS ASSERTED FIRST. The child counts how many of the four
+// drivers it can still resolve — from packages/orm/src/adapters/postgres.ts,
+// the very file that does the resolving — and that count must be 0. A child
+// that quietly inherited a node_modules would make all four cases pass while
+// proving nothing.
+//
+// And each case has a NEGATIVE CONTROL below it: with the driver PRESENT, the
+// same call must NOT produce the missing-package message. Without that, an
+// adapter that threw "install pg" unconditionally would pass all four.
 
-console.log("\n--- Missing Package Errors ---");
+console.log("\n--- Missing Package Errors (real, unresolvable drivers) ---");
 
-// PostgreSQL
-try {
-  const pg = new PostgresAdapter("postgresql://localhost/test");
-  await pg.connect();
-  skip("PostgreSQL missing package error", "pg package is installed");
-} catch (e) {
-  const msg = (e as Error).message;
-  // If the message references pg + Install/requires we know it's the "missing package"
-  // path we expected. Otherwise pg IS installed and the connect() failed for a
-  // different reason (no server, auth, etc.) — that's a SKIP, not a FAIL.
-  if (msg.includes("pg") && (msg.includes("Install") || msg.includes("requires"))) {
-    assert("PostgreSQL missing package error", true);
-  } else {
-    skip("PostgreSQL missing package error", "pg package is installed");
-  }
+/** The four adapters, their driver package, and a URL that never gets used. */
+const DRIVERS = [
+  { label: "PostgreSQL", pkg: "pg", ctor: "PostgresAdapter", file: "postgres", url: "postgresql://localhost/test" },
+  { label: "MySQL", pkg: "mysql2", ctor: "MysqlAdapter", file: "mysql", url: "mysql://localhost/test" },
+  { label: "MSSQL", pkg: "tedious", ctor: "MssqlAdapter", file: "mssql", url: "mssql://localhost/test" },
+  { label: "Firebird", pkg: "node-firebird", ctor: "FirebirdAdapter", file: "firebird", url: "firebird://localhost/test.fdb" },
+];
+
+/**
+ * Is this the "you need to install the driver" error, for THIS package?
+ *
+ * Deliberately tighter than the old `includes("pg") && includes("requires")`,
+ * which every one of these messages satisfies for every other package too
+ * ("PostgreSQL adapter requires..." contains "requires"), and which an
+ * ECONNREFUSED naming a `pg`-something host could also satisfy. It must name
+ * the package AND carry the remedy.
+ */
+function isMissingPackageError(message: string, pkg: string): boolean {
+  return message.includes(`requires the "${pkg}" package`) && message.includes(`npm install ${pkg}`);
 }
 
-// MySQL
+const driverlessRoot = buildDriverlessTree(REPO);
 try {
-  const my = new MysqlAdapter("mysql://localhost/test");
-  await my.connect();
-  skip("MySQL missing package error", "mysql2 package is installed");
-} catch (e) {
-  const msg = (e as Error).message;
-  // Only the "missing package" message proves the path under test. With mysql2
-  // installed AND a live MySQL reachable (provisioned since #262), connect()
-  // instead throws an auth/connection error — that's a SKIP, not a FAIL (same
-  // shape as the PostgreSQL branch above).
-  if (msg.includes("mysql2") && (msg.includes("Install") || msg.includes("requires"))) {
-    assert("MySQL missing package error", true);
-  } else {
-    skip("MySQL missing package error", "mysql2 package is installed");
+  const imports = DRIVERS
+    .map((d) => `import { ${d.ctor} } from "./packages/orm/src/adapters/${d.file}.ts";`)
+    .join("\n");
+  const cases = DRIVERS
+    .map((d) => `  [${JSON.stringify(d.pkg)}, () => new ${d.ctor}(${JSON.stringify(d.url)})],`)
+    .join("\n");
+
+  // writeSync + an explicit exit, both deliberate. console.log to a PIPE is
+  // asynchronous, so a child that exits immediately after it can lose the very
+  // line the parent parses; and when the instrument is WORKING the drivers are
+  // unresolvable so connect() throws before any socket exists — but when it is
+  // BROKEN the drivers load, real sockets stay open, and a child with no exit
+  // hangs until the timeout instead of failing in a second.
+  let output = "";
+  let childError = "";
+  try {
+    output = runDriverless(driverlessRoot, `
+${imports}
+import { writeSync } from "node:fs";
+
+const cases: Array<[string, () => any]> = [
+${cases}
+];
+
+for (const [pkg, make] of cases) {
+  let outcome = "connect() RESOLVED — no error at all";
+  try {
+    await make().connect();
+  } catch (err) {
+    outcome = String((err as Error)?.message ?? err);
   }
+  writeSync(1, "CASE " + pkg + " " + JSON.stringify(outcome) + "\\n");
+}
+process.exit(0);
+`, {
+      packages: DRIVERS.map((d) => d.pkg),
+      resolveFrom: "packages/orm/src/adapters/postgres.ts",
+    });
+  } catch (err) {
+    // A child that dies is a RED result for all five assertions below, never an
+    // exception that takes the whole file down with a stack trace.
+    const e = err as { stdout?: string; message?: string };
+    output = String(e.stdout ?? "");
+    childError = String(e.message ?? err).split("\n")[0];
+  }
+
+  assert(
+    "the driverless child can resolve NONE of the four drivers (instrument)",
+    childError === "" && selftestPassed(output),
+    `${selftestLine(output)}${childError ? ` / child died: ${childError}` : ""} — the child resolved a `
+    + "driver it was supposed to be denied, so every case below would pass while proving nothing",
+  );
+
+  for (const driver of DRIVERS) {
+    const line = output.split("\n").find((l) => l.startsWith(`CASE ${driver.pkg} `));
+    const message = line ? String(JSON.parse(line.slice(`CASE ${driver.pkg} `.length))) : "";
+    assert(
+      `${driver.label} missing package error`,
+      childError === "" && selftestPassed(output) && isMissingPackageError(message, driver.pkg),
+      `got ${JSON.stringify(message.split("\n")[0] || "(no CASE line)")} — expected the message to name `
+      + `the "${driver.pkg}" package and give "npm install ${driver.pkg}"`,
+    );
+  }
+} finally {
+  rmSync(driverlessRoot, { recursive: true, force: true });
 }
 
-// MSSQL
-try {
-  const ms = new MssqlAdapter("mssql://localhost/test");
-  await ms.connect();
-  skip("MSSQL missing package error", "tedious package is installed");
-} catch (e) {
-  const msg = (e as Error).message;
-  // As above: tedious installed + a live MSSQL reachable (provisioned since
-  // #262) means connect() throws a login error, not the package error — SKIP.
-  if (msg.includes("tedious") && (msg.includes("Install") || msg.includes("requires"))) {
-    assert("MSSQL missing package error", true);
-  } else {
-    skip("MSSQL missing package error", "tedious package is installed");
-  }
+// NEGATIVE CONTROL — the inverse of every case above, in THIS process, where
+// all four drivers ARE installed. Each adapter is pointed at a genuinely closed
+// port (bound then released, so nothing can be listening on it), so connect()
+// fails for a real transport reason. The missing-package message must NOT be
+// that reason. Without this pair, an adapter whose requireX() threw
+// unconditionally — a one-character mistake in the try block — passes all four
+// assertions above.
+console.log("\n--- Missing Package Errors: negative control (drivers installed) ---");
+
+/** A port nothing can be listening on: bind it, read it, release it. */
+function closedLoopbackPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const port = (probe.address() as net.AddressInfo).port;
+      probe.close(() => resolve(port));
+    });
+  });
 }
 
-// Firebird
-try {
-  const fb = new FirebirdAdapter("firebird://localhost/test.fdb");
-  await fb.connect();
-  skip("Firebird missing package error", "node-firebird package is installed");
-} catch (e) {
-  const msg = (e as Error).message;
-  // node-firebird installed but no server reachable → connection error, SKIP.
-  if (msg.includes("node-firebird") && (msg.includes("Install") || msg.includes("requires"))) {
-    assert("Firebird missing package error", true);
-  } else {
-    skip("Firebird missing package error", "node-firebird package is installed");
+{
+  const deadPort = await closedLoopbackPort();
+  // Keep a refused connection from ever waiting on the 10s default bound.
+  const savedTimeout = process.env.TINA4_DATABASE_CONNECT_TIMEOUT;
+  process.env.TINA4_DATABASE_CONNECT_TIMEOUT = "5";
+  const present: Array<{ label: string; pkg: string; make: () => { connect(): Promise<void> } }> = [
+    { label: "PostgreSQL", pkg: "pg", make: () => new PostgresAdapter(`postgresql://u:p@127.0.0.1:${deadPort}/test`) },
+    { label: "MySQL", pkg: "mysql2", make: () => new MysqlAdapter(`mysql://u:p@127.0.0.1:${deadPort}/test`) },
+    { label: "MSSQL", pkg: "tedious", make: () => new MssqlAdapter(`mssql://u:p@127.0.0.1:${deadPort}/test`) },
+    { label: "Firebird", pkg: "node-firebird", make: () => new FirebirdAdapter(`firebird://u:p@127.0.0.1:${deadPort}/test.fdb`) },
+  ];
+  for (const engine of present) {
+    // Resolve it the way the adapter does. If the driver genuinely is not
+    // installed here, the control cannot run and says so rather than passing.
+    let installed = true;
+    try { createRequire(import.meta.url).resolve(engine.pkg); } catch { installed = false; }
+    let message = "connect() resolved";
+    try { await engine.make().connect(); } catch (err) { message = String((err as Error)?.message ?? err); }
+    assert(
+      `${engine.label} does NOT report a missing package when ${engine.pkg} is installed`,
+      installed && !isMissingPackageError(message, engine.pkg),
+      installed
+        ? `got ${JSON.stringify(message.split("\n")[0])} — the adapter blamed a missing driver that is present`
+        : `the ${engine.pkg} package is not resolvable in this process, so the control proves nothing`,
+    );
   }
+  if (savedTimeout === undefined) delete process.env.TINA4_DATABASE_CONNECT_TIMEOUT;
+  else process.env.TINA4_DATABASE_CONNECT_TIMEOUT = savedTimeout;
 }
 
 // ── SQL Translation per Dialect ──────────────────────────────
@@ -349,14 +467,15 @@ for (const spec of LIVE) {
     skip(name, `set ${spec.env[0]} to point at a live ${spec.label} (the lab exports it)`);
     continue;
   }
-  // A driver that is DELIBERATELY hidden (pass 2 runs with
-  // TINA4_HIDE_PACKAGES so the "missing package error" tests can execute) means
-  // this test cannot run in THIS pass -- it is not evidence of a broken
-  // adapter. Resolve it the same way the adapter does, so the two agree.
+  // A driver that is genuinely not installed means this test cannot run here --
+  // it is not evidence of a broken adapter. Resolve it the same way the adapter
+  // does, so the two agree. (The missing-driver cases above no longer need a
+  // second pass with the drivers hidden from this process: they run in a child
+  // that cannot resolve them, so this process always has them.)
   try {
     createRequire(import.meta.url).resolve(spec.pkg);
   } catch {
-    skip(name, `the ${spec.pkg} package is not resolvable in this pass`);
+    skip(name, `the ${spec.pkg} package is not installed`);
     continue;
   }
 

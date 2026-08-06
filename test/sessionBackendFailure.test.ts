@@ -118,6 +118,57 @@ function permissionBitsAreEnforced(): boolean {
   }
 }
 
+/**
+ * Drop the EFFECTIVE uid so the permission bits bind to THIS process.
+ *
+ * `permissionBitsAreEnforced()` above measures the property honestly, but on
+ * every host whose suite runs as root — the lab, every run — it answered false
+ * and the write-failure test skipped. Measuring a condition correctly and then
+ * skipping is still a test nobody has seen pass: the branch it guards (a real
+ * EACCES from the kernel reaching `Session.save()` and being re-raised under
+ * strict mode) had never once executed here.
+ *
+ * Root walks through permission bits via CAP_DAC_OVERRIDE, which is a property
+ * of the EFFECTIVE uid. Dropping it to an unprivileged user makes 0400 deny us
+ * exactly as it denies anyone, and root can take it straight back because the
+ * real and saved uids stay 0. Nothing is faked: the denial is the kernel's.
+ *
+ * Returns true if the euid was actually dropped (so the caller must restore it).
+ */
+const UNPRIVILEGED_UID = 65534;      // "nobody" on Linux
+
+function dropEffectiveUid(): boolean {
+  if (typeof process.seteuid !== "function" || typeof process.geteuid !== "function") return false;
+  if (process.geteuid() !== 0) return false;         // not root: nothing to drop
+  for (const who of ["nobody", UNPRIVILEGED_UID] as const) {
+    try {
+      process.seteuid(who as never);
+      return true;
+    } catch { /* try the next spelling */ }
+  }
+  return false;
+}
+
+function restoreEffectiveUid(): void {
+  try { process.seteuid?.(0); } catch { /* already there */ }
+}
+
+/**
+ * Make the REAL log file writable by an unprivileged euid.
+ *
+ * Without this the euid drop denies the LOGGER too — `Session.safeWrite()` calls
+ * `Log.error()` BEFORE it re-raises, so a PermissionError from the log write
+ * escapes instead of the session error, and the test would assert the wrong
+ * exception. The log path must keep working; only the SESSION FILE is the thing
+ * under denial.
+ */
+function letAnyoneWriteTheLog(): void {
+  chmodSync(LOG_DIR, 0o777);
+  for (const entry of readdirSync(LOG_DIR)) {
+    try { chmodSync(join(LOG_DIR, entry), 0o666); } catch { /* vanished */ }
+  }
+}
+
 function assert(label: string, condition: boolean, detail = "") {
   if (condition) {
     passed++;
@@ -471,6 +522,27 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
   assert("the bootstrap write landed at the id's SHA-256 path (ADR-0021)", fileFound,
     `expected ${sessFile}; dir contains ${readdirSync(sessDir).join(",")}`);
   if (fileFound) chmodSync(sessFile, 0o400);
+
+  // The directory must stay TRAVERSABLE by whoever ends up doing the write.
+  // mkdtemp creates it 0700 owned by root, so after the euid drop below the
+  // EACCES would come from being unable to enter the directory at all — a real
+  // denial, but of the wrong thing, and the test would pass for a reason that
+  // has nothing to do with the session file's own bits. 0755 lets the dropped
+  // uid walk in and read, and still refuses to let it write the 0400 file.
+  chmodSync(sessDir, 0o755);
+
+  // The logger runs INSIDE the failure path (safeWrite logs before it re-raises),
+  // so it must not be denied as collateral.
+  letAnyoneWriteTheLog();
+
+  const bitsBindAlready = permissionBitsAreEnforced();
+  const droppedEuid = bitsBindAlready ? false : dropEffectiveUid();
+  // SELF-VERIFY THE INSTRUMENT, the same discipline as the driverless SELFTEST
+  // line: ask the kernel whether the bits bind NOW, after the drop. A drop that
+  // silently achieved nothing would otherwise read as "the code under test did
+  // not throw" — a failure blamed on the framework instead of the harness.
+  const bitsBindNow = bitsBindAlready || (droppedEuid && permissionBitsAreEnforced());
+
   let threw = false;
   let cause = "";
   try {
@@ -479,19 +551,24 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
     threw = true;
     cause = String((err as Error)?.message ?? err);
   } finally {
+    if (droppedEuid) restoreEffectiveUid();
     if (fileFound) chmodSync(sessFile, 0o600);  // restore so the temp dir can be cleaned
   }
 
-  if (!threw && !permissionBitsAreEnforced()) {
-    // The permission bits genuinely do not bind here, so the outage never
-    // happened. Say so rather than reporting a pass we did not earn.
+  if (!bitsBindNow) {
+    // Genuinely cannot deny a write here, and could not obtain a process that
+    // can. Say so rather than reporting a pass we did not earn.
     skip("strict mode re-raises a REAL write failure",
-      "[needs:no-dac-override] this process writes straight through a 0400 file " +
-      "(root holding CAP_DAC_OVERRIDE), so no real denial is reachable here — run under " +
-      "`setpriv --bounding-set=-dac_override,-dac_read_search` to exercise it");
+      "[needs:no-dac-override] this process writes straight through a 0400 file (root holding " +
+      "CAP_DAC_OVERRIDE) and process.seteuid() could not drop to an unprivileged uid, so no real " +
+      "denial is reachable here — run under `setpriv --bounding-set=-dac_override,-dac_read_search`");
   } else {
-    assert("strict mode re-raises a REAL write failure (EACCES on a read-only dir)", threw,
-      "the chmod 0500 directory did not produce a real write error");
+    assert("the permission bits really bind for this write (instrument)", bitsBindNow,
+      droppedEuid
+        ? "the effective uid was dropped but a 0400 file was still writable"
+        : "this process already honours permission bits");
+    assert("strict mode re-raises a REAL write failure (EACCES on a read-only session file)", threw,
+      `the 0400 session file did not produce a real write error${droppedEuid ? " even with the effective uid dropped" : ""}`);
     assert("the re-raised cause is the REAL errno, not a fabricated message",
       /EACCES|permission denied/i.test(cause), `cause: ${cause}`);
   }

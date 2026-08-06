@@ -37,12 +37,11 @@
  *
  * NO MOCKS. Real Redis, real Valkey, real memcached, real MongoDB, real files.
  */
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
 import net from "node:net";
+import { buildDriverlessTree, runDriverless as runInDriverlessTree, selftestLine, selftestPassed } from "./_driverlessTree.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..");
@@ -80,71 +79,23 @@ function reachable(host: string, port: number): Promise<boolean> {
   });
 }
 
-/** The optional packages the child must NOT be able to resolve. */
-const OPTIONAL_PACKAGES = ["mongodb", "redis", "pg"];
-
 /**
- * Build a temp tree holding a COPY of the session source, outside the repo, so
- * nothing above it contains a node_modules directory.
+ * The optional packages the child must NOT be able to resolve, checked from the
+ * file that actually reaches for them (mongoClient.ts probes `mongodb`), not
+ * from the tree root — resolution walks up from the IMPORTER, so the root sees
+ * a strict subset of the directories the handler consults.
+ *
+ * The mechanism now lives in test/_driverlessTree.ts and is shared with
+ * test/databaseDrivers.test.ts, which needs the identical property for the four
+ * database drivers. One instrument, reviewed once.
  */
-function buildDriverlessTree(): string {
-  const root = mkdtempSync(join(tmpdir(), "tina4-driverless-"));
-  // The WHOLE packages tree: core/src imports siblings such as
-  // ../../orm/src/databaseUrl.js, so copying core alone breaks resolution.
-  cpSync(join(REPO, "packages"), join(root, "packages"), { recursive: true });
-  if (existsSync(join(root, "node_modules"))) {
-    throw new Error("the driverless tree has a node_modules - the instrument is broken");
-  }
+const DRIVERLESS = {
+  packages: ["mongodb", "redis", "pg"],
+  resolveFrom: "packages/core/src/sessionHandlers/mongoClient.ts",
+};
 
-  // The source uses TypeScript's ESM convention of importing a sibling as
-  // "./x.js" even though the file on disk is "x.ts". tsx remaps that; plain
-  // `node --experimental-strip-types` does not, so the COPY gets its RELATIVE
-  // specifiers rewritten to .ts.
-  //
-  // This rewrites module specifiers only, in a throwaway copy - no statement,
-  // branch or value the handlers execute is altered. Bare specifiers are
-  // deliberately left untouched: they are exactly what must still fail to
-  // resolve, and the SELFTEST line asserts that they do.
-  for (const file of readdirSync(join(root, "packages"), { recursive: true, encoding: "utf8" })) {
-    const path = join(root, "packages", String(file));
-    if (!String(file).endsWith(".ts") || !statSync(path).isFile()) continue;
-    const rewritten = readFileSync(path, "utf8").replace(
-      /(from\s+|import\s*\(\s*)(["'])(\.\.?\/[^"']+)\.js\2/g,
-      (_m, lead, quote, spec) => `${lead}${quote}${spec}.ts${quote}`,
-    );
-    writeFileSync(path, rewritten, "utf8");
-  }
-  return root;
-}
-
-/**
- * Run `source` inside the driverless tree with plain `node`, type-stripped.
- * Returns stdout. The child prints a SELFTEST line first; callers assert it.
- */
 function runDriverless(root: string, source: string): string {
-  const script = join(root, `probe-${Math.random().toString(16).slice(2, 10)}.ts`);
-  const preamble = `
-import { createRequire } from "node:module";
-const requireHere = createRequire(import.meta.url);
-const resolvable: string[] = [];
-for (const pkg of ${JSON.stringify(OPTIONAL_PACKAGES)}) {
-  try { requireHere.resolve(pkg); resolvable.push(pkg); } catch { /* genuinely absent */ }
-}
-// The instrument reports itself BEFORE anything is asserted. A child that
-// quietly inherited the repo's node_modules is caught here rather than passing.
-console.log("SELFTEST resolvable=" + resolvable.length + " [" + resolvable.join(",") + "]");
-`;
-  writeFileSync(script, preamble + source, "utf8");
-  return execFileSync(
-    process.execPath,
-    ["--experimental-strip-types", "--no-warnings", script],
-    { cwd: root, encoding: "utf8", timeout: 60000, env: { ...process.env, NODE_PATH: "" } },
-  );
-}
-
-function selftestPassed(output: string): boolean {
-  const line = output.split("\n").find((l) => l.startsWith("SELFTEST "));
-  return line !== undefined && line.includes("resolvable=0");
+  return runInDriverlessTree(root, source, DRIVERLESS);
 }
 
 const MONGO_HOST = process.env.TINA4_SESSION_MONGO_HOST ?? "127.0.0.1";
@@ -158,7 +109,7 @@ async function main(): Promise<void> {
         `mongodb is not reachable at ${MONGO_HOST}:${MONGO_PORT}`);
       return;
     }
-    root = buildDriverlessTree();
+    root = buildDriverlessTree(REPO);
 
     // -- 1. every backend has a zero-dependency transport --------------------
     console.log("\n-- 1. every backend constructs and works with NO package resolvable --\n");
@@ -207,7 +158,7 @@ process.exit(0);
       "every_backend_has_a_zero_dependency_transport",
       selftestPassed(out1) && brokenLine === "" && builtLine.split(",").length === 6,
       !selftestPassed(out1)
-        ? `THE INSTRUMENT FAILED: ${out1.split("\n").find((l) => l.startsWith("SELFTEST"))} - the child could `
+        ? `THE INSTRUMENT FAILED: ${selftestLine(out1)} - the child could `
           + "resolve a package it was supposed to be denied, so this case proves nothing"
         : `backends that could not work without a third-party client: ${brokenLine || "(none, but built=" + builtLine + ")"}`,
     );

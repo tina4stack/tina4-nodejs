@@ -153,21 +153,70 @@ if (!(await reachable(rmqHost, rmqPort))) {
 
   // (7) Default-config backend connects against the default host — a real
   // push+pop round-trip proves the default connection works (not merely that a
-  // push method exists). Only meaningful when the default host is the live one.
-  if (isLoopback(rmqHost) && rmqPort === 5672 && (rmqCfg.vhost ?? "/") === "/") {
-    const rabbitDefaults = new RabbitMQBackend();
-    const rmqDefQueue = "tina4_qb_def_" + Math.random().toString(16).slice(2, 12);
+  // push method exists).
+  //
+  // THIS CASE ASSERTED THE DEFAULT CONFIGURATION AND WAS GATED ON AN OVERRIDE,
+  // which is why it skipped on every lab run. Two separate faults:
+  //
+  //  1. It gated on TINA4_TEST_RABBITMQ_URL. The lab namespaces that per
+  //     framework (lab-env-for.sh: amqp://guest:guest@127.0.0.1:5672/tina4_node)
+  //     so the four suites cannot see each other's queues. A per-framework
+  //     value is by DEFINITION not the default, so the guard could only ever
+  //     take the skip branch — the case was unrunnable in the environment it
+  //     ships in.
+  //  2. It gated on a variable the code under test never reads. `new
+  //     RabbitMQBackend()` resolves its config from TINA4_QUEUE_URL and
+  //     TINA4_RABBITMQ_*, not from TINA4_TEST_*. So even on a machine where the
+  //     guard passed, what ran was whatever those variables happened to say —
+  //     the "default connection" was never necessarily the default.
+  //
+  // Both are fixed by testing the default properly: clear the overrides for the
+  // duration of this ONE case so the backend genuinely falls back to its
+  // built-in defaults, ask it what those are, and probe THAT endpoint. This is
+  // the same save/clear/restore the construction-defaults case below already
+  // uses; it is scoped to this block and every variable is put back.
+  //
+  // Isolation is not weakened. Frameworks are namespaced by VHOST, and the one
+  // thing this case must use is the default vhost "/" — but the queue NAME is
+  // randomised per run, so four suites on "/" simultaneously cannot collide,
+  // and the queue is deleted again in the finally.
+  {
+    const OVERRIDES = ["TINA4_QUEUE_URL", "TINA4_RABBITMQ_HOST", "TINA4_RABBITMQ_PORT", "TINA4_RABBITMQ_USERNAME", "TINA4_RABBITMQ_PASSWORD", "TINA4_RABBITMQ_VHOST"];
+    const snap: Record<string, string | undefined> = {};
+    for (const v of OVERRIDES) { snap[v] = process.env[v]; delete process.env[v]; }
     try {
-      const defId = rabbitDefaults.push(rmqDefQueue, { data: "default-conn" });
-      const defJob = rabbitDefaults.pop(rmqDefQueue);
-      assert("RabbitMQBackend default connection round-trips a payload", typeof defId === "string" && defJob !== null && (defJob.payload as any)?.data === "default-conn", JSON.stringify(defJob));
-    } catch (err) {
-      assert("RabbitMQBackend default connection round-trip ran without throwing", false, String(err));
+      const rabbitDefaults = new RabbitMQBackend();
+      const defaults = rabbitDefaults.getConfig();
+      const defHost = defaults.host ?? "localhost";
+      const defPort = defaults.port ?? 5672;
+      if (!(await reachable(defHost, defPort))) {
+        // Worded so the require-services gate CATCHES it: CI provisions RabbitMQ
+        // on exactly this endpoint, so a skip here is a missing service, not a
+        // configuration choice, and must turn the run red.
+        console.log(`  SKIP: RabbitMQ default-config round-trip — broker not reachable at the DEFAULT ${defHost}:${defPort}.`);
+      } else {
+        const rmqDefQueue = "tina4_qb_def_" + Math.random().toString(16).slice(2, 12);
+        try {
+          // Assert what "default" MEANS before trusting the round-trip: if the
+          // defaults silently changed, a green push/pop here would be against
+          // some other endpoint entirely.
+          assert(
+            "RabbitMQBackend with no config and no env resolves the documented defaults",
+            defHost === "localhost" && defPort === 5672 && defaults.username === "guest" && defaults.vhost === "/",
+            JSON.stringify(defaults),
+          );
+          const defId = rabbitDefaults.push(rmqDefQueue, { data: "default-conn" });
+          const defJob = rabbitDefaults.pop(rmqDefQueue);
+          assert("RabbitMQBackend default connection round-trips a payload", typeof defId === "string" && defJob !== null && (defJob.payload as any)?.data === "default-conn", JSON.stringify(defJob));
+        } catch (err) {
+          assert("RabbitMQBackend default connection round-trip ran without throwing", false, String(err));
+        } finally {
+          try { rabbitDefaults.clear(rmqDefQueue); } catch { /* best-effort cleanup */ }
+        }
+      }
     } finally {
-      try { rabbitDefaults.clear(rmqDefQueue); } catch { /* best-effort cleanup */ }
+      for (const v of OVERRIDES) { if (snap[v] === undefined) delete process.env[v]; else process.env[v] = snap[v]; }
     }
-  } else {
-    console.log("  SKIP: RabbitMQ default-host round-trip — TINA4_TEST_RABBITMQ_URL points away from the default localhost:5672/.");
   }
 }
 

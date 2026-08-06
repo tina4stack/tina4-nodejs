@@ -995,4 +995,10 @@ export function generateContext(toolName: string = "claude-code"): string {
   }
 }
 
-export { AiTool as AiToolType };
+// `export type`, not `export {}`: AiTool is an interface, so a value re-export
+// emits a runtime binding that does not exist. tsc (without isolatedModules)
+// and esbuild both infer the intent and elide it, but any single-file
+// transpiler must be told -- Node's own TypeScript support compiles module by
+// module and threw `SyntaxError: Export 'AiTool' is not defined in module`,
+// which made every module reachable from this barrel unloadable by plain node.
+export type { AiTool as AiToolType };
