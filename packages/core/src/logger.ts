@@ -237,6 +237,22 @@ export class Log {
   private static requestId: string | undefined;
 
   /**
+   * What configure() was explicitly told, held HERE rather than written back
+   * into process.env (ADR-0041).
+   *
+   * configure() used to assign to process.env.TINA4_LOG_DIR / _LOG_FILE. That
+   * reached the right answer -- the argument won -- through a mechanism no
+   * other framework has: it DESTROYED the operator's value for the rest of the
+   * process, and every child process spawned afterwards inherited the
+   * argument instead of what the operator set. Reading configuration must not
+   * write it. Keeping the explicit values in their own slot means resolution
+   * is explicit > env > default with the environment left intact and still
+   * readable.
+   */
+  private static explicitLogDir: string | undefined;
+  private static explicitLogFile: string | undefined;
+
+  /**
    * Re-read all log-related env vars. Called on every log() so tests that
    * mutate process.env between calls see the new values without having to
    * call configure() each time.
@@ -255,8 +271,9 @@ export class Log {
     /** TINA4_LOG_STRICT — a failed log write throws instead of being swallowed. */
     strict: boolean;
   } {
-    const logDir = process.env.TINA4_LOG_DIR ?? DEFAULT_LOG_DIR;
-    const explicitFile = (process.env.TINA4_LOG_FILE ?? "").trim();
+    // explicit argument > environment > default (ADR-0041).
+    const logDir = Log.explicitLogDir ?? process.env.TINA4_LOG_DIR ?? DEFAULT_LOG_DIR;
+    const explicitFile = (Log.explicitLogFile ?? process.env.TINA4_LOG_FILE ?? "").trim();
     const logFile = explicitFile || DEFAULT_LOG_FILE;
 
     const rawSize = process.env.TINA4_LOG_ROTATE_SIZE;
@@ -380,21 +397,48 @@ export class Log {
    * audit, D4). Both forms now work.
    */
   static configure(options?: string | { logDir?: string; logFile?: string }): void {
+    // Record what the caller asked for; never write it back into process.env
+    // (ADR-0041 -- reading configuration must not write it).
     if (typeof options === "string") {
       if (targetIsFile(options)) {
-        process.env.TINA4_LOG_DIR = dirname(options);
-        process.env.TINA4_LOG_FILE = options;
+        Log.explicitLogDir = dirname(options);
+        Log.explicitLogFile = options;
       } else {
-        process.env.TINA4_LOG_DIR = options;
+        Log.explicitLogDir = options;
       }
       Log.applyAppendMode();
       return;
     }
     if (options) {
-      if (options.logDir) process.env.TINA4_LOG_DIR = options.logDir;
-      if (options.logFile) process.env.TINA4_LOG_FILE = options.logFile;
+      if (options.logDir) Log.explicitLogDir = options.logDir;
+      if (options.logFile) Log.explicitLogFile = options.logFile;
     }
     Log.applyAppendMode();
+  }
+
+  /**
+   * Forget what configure() was told, so resolution falls back to the
+   * environment and then the built-in defaults. Parity with PHP's Log::reset().
+   *
+   * This exists because the explicit values are now HELD here rather than
+   * written back into process.env, and that makes them STICKY for the life of
+   * the process -- which is right for an application (configure() at boot is
+   * the operator's instruction and a later stray env write should not silently
+   * re-point the logs) and wrong for a long-lived test process that wants to
+   * drive the logger purely from the environment afterwards.
+   *
+   * I removed this method once for having no callers. That was correct about
+   * the grep and wrong about the code: the full suite is the caller. Before the
+   * explicit slots existed, configure() ASSIGNED to process.env, so a later
+   * direct assignment simply overwrote it and env-driven cases kept working by
+   * accident. test/logger.test.ts depends on exactly that -- it configures a
+   * file early, then runs the whole default-output block off the environment
+   * (see its own note: "these cases must NOT route through Log.configure").
+   * Three of those cases failed on the lab until this came back.
+   */
+  static reset(): void {
+    Log.explicitLogDir = undefined;
+    Log.explicitLogFile = undefined;
   }
 
   /**
