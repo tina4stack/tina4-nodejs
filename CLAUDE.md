@@ -55,9 +55,9 @@ tina4-nodejs/
     swagger/    # OpenAPI spec generator, Swagger UI
     frond/      # Zero-dependency Twig-compatible template engine
   test/
-    run-all.ts       # Test runner — executes all 43 test files
+    run-all.ts       # Test runner — executes every test file (262 in the last lab run)
     integration.ts   # Full integration test
-    *.test.ts        # 42 individual test files covering all subsystems
+    *.test.ts        # 267 individual test files covering all subsystems
   plan/
     FEATURES.md      # Feature tracking and roadmap
 ```
@@ -72,13 +72,13 @@ This is an **npm workspaces monorepo**. All packages are in `packages/*`.
 - **Database:** SQLite via `node:sqlite` (default), with adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird
 - **Templates:** Frond — built-in zero-dependency Twig-compatible engine (`@tina4/frond`)
 - **Dev tooling:** `tsx` for runtime TS execution, `esbuild` for builds
-- **Testing:** 43 test files via `tsx test/run-all.ts`
+- **Testing:** 267 `*.test.ts` files via `tsx test/run-all.ts`
 
 ## Key Commands
 
 ```bash
 npm install          # Install all workspace dependencies
-npm test             # Run all 43 test files via test/run-all.ts
+npm test             # Run every test file via test/run-all.ts
 npm run build        # Build all packages to dist/
 npm run clean        # Remove all dist/ directories
 ```
@@ -1347,9 +1347,10 @@ Run tests with:
 npm test
 ```
 
-This executes `test/run-all.ts` which runs all 43 test files:
+This executes `test/run-all.ts`, which ran **262 files** in the last lab verification:
 - `test/integration.ts` — Full integration test (creates a temp project, starts a real server, runs assertions)
-- `test/*.test.ts` — 42 individual test files covering all subsystems (ORM, routing, middleware, database drivers, sessions, queues, WebSocket, GraphQL, i18n, etc.)
+- `test/*.test.ts` — 267 files on disk covering all subsystems (ORM, routing, middleware, database drivers, sessions, queues, WebSocket, GraphQL, i18n, etc.). 259 are spawned by the runner under `tsx`, plus `integration.ts`; the 2 i18n suites are vitest and the runner drives them itself (so no invoker can miss them); the 6 `metrics*` files need the Rust CLI's native engine and are opted in with `TINA4_SKIP_METRICS=0`.
+- `test/_*.ts` are helpers, not suites, so the runner never collects them: `_serviceGate.ts` (the require-services gate), `_testSummary.ts`, and `_driverlessTree.ts` (builds a tree where a bare specifier genuinely cannot resolve).
 
 **Always run tests after making changes.** All tests must pass.
 
@@ -1385,7 +1386,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 ## v3 Features Summary
 
 - **98 built-in features**, zero third-party dependencies
-- **7,497 tests** passing, 0 failed, 6 skipped across 260 files (typecheck exit 0) - measured 2026-08-06 on the lab host (Ubuntu 24.04.4 LTS x86_64, Node v24.18.0) against live services with TINA4_REQUIRE_SERVICES=1. **Firebird is NOT excluded** - the previous line said it was, and that was wrong. `test/firebird*.test.ts` runs against a REAL Firebird 5. The 6 skips are honest and named in their own output: four assert the error you get when a driver is ABSENT and cannot run while the driver is installed, one needs a process without CAP_DAC_OVERRIDE (the suite runs as root), and one needs RabbitMQ on its default host while the isolation env points elsewhere.
+- **7,537 tests** passing, 0 failed, **0 skipped** across 262 files (typecheck exit 0) - measured 2026-08-06 on the lab host (Ubuntu 24.04.4 LTS x86_64, Node v24.18.0) against live services with TINA4_REQUIRE_SERVICES=1. **Firebird is NOT excluded** - `test/firebird*.test.ts` runs against a REAL Firebird 5. The last six skips are closed, each by giving it the environment its condition needs rather than by relaxing what it asserts: the four missing-driver cases run in a child process that genuinely cannot resolve the driver (the source is copied out of the repo to a tree with no `node_modules` above it and run with plain `node` - `test/_driverlessTree.ts`, no resolver shim); the strict-mode write failure drops the effective uid so a 0400 file really denies root; and the RabbitMQ default-config round-trip clears the per-framework isolation overrides for that one case so "default" means the default. Every one was proven able to FAIL by mutating the code it guards.
 - **Race-safe `getNextId()`** with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
