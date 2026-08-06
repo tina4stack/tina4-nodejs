@@ -48,7 +48,13 @@ function tlsRejectUnauthorized(): boolean {
 export interface SendResult {
   success: boolean;
   message: string;
-  id?: string;
+  /**
+   * The real Message-ID on success, `null` on failure — but ALWAYS present, so a
+   * caller reading `result.id` gets one shape from both branches (G6). It used to
+   * be omitted on the failure path, handing back `undefined` there and a string on
+   * success.
+   */
+  id: string | null;
 }
 
 /**
@@ -116,15 +122,25 @@ export interface ImapMessage {
   seen: boolean;
 }
 
+/** Attachment metadata from a read() message — no content bytes (G5). */
+export interface ImapAttachment {
+  filename: string;
+  contentType: string;
+  size: number;
+}
+
 export interface ImapFullMessage {
   uid: string;
   subject: string;
   from: string;
   to: string;
   cc: string;
+  /** ISO-8601, parsed from the Date header (parity with Python's _iso_date). */
   date: string;
   bodyText: string;
   bodyHtml: string;
+  /** Attachments (metadata only). Empty when the message carries none (G5). */
+  attachments: ImapAttachment[];
   headers: Record<string, string>;
 }
 
@@ -469,11 +485,11 @@ export class Messenger {
     const messageId = `${randomUUID()}@${this.host}`;
 
     if (allRecipients.length === 0) {
-      return { success: false, message: "No recipients specified" };
+      return { success: false, message: "No recipients specified", id: null };
     }
 
     if (!this.fromAddress) {
-      return { success: false, message: "No from address configured" };
+      return { success: false, message: "No from address configured", id: null };
     }
 
     try {
@@ -499,14 +515,14 @@ export class Messenger {
       const greeting = await readResponse(socket);
       if (greeting.code !== 220) {
         socket.destroy();
-        return { success: false, message: `SMTP greeting failed: ${greeting.text}` };
+        return { success: false, message: `SMTP greeting failed: ${greeting.text}`, id: null };
       }
 
       // EHLO
       const ehlo = await sendCommand(socket, `EHLO ${this.host}`);
       if (ehlo.code !== 250) {
         socket.destroy();
-        return { success: false, message: `EHLO failed: ${ehlo.text}` };
+        return { success: false, message: `EHLO failed: ${ehlo.text}`, id: null };
       }
 
       // STARTTLS upgrade (for port 587 or when useTls is true and not already TLS)
@@ -514,7 +530,7 @@ export class Messenger {
         const starttls = await sendCommand(socket, "STARTTLS");
         if (starttls.code !== 220) {
           socket.destroy();
-          return { success: false, message: `STARTTLS failed: ${starttls.text}` };
+          return { success: false, message: `STARTTLS failed: ${starttls.text}`, id: null };
         }
 
         // Upgrade to TLS
@@ -531,7 +547,7 @@ export class Messenger {
         const ehlo2 = await sendCommand(socket, `EHLO ${this.host}`);
         if (ehlo2.code !== 250) {
           socket.destroy();
-          return { success: false, message: `EHLO after STARTTLS failed: ${ehlo2.text}` };
+          return { success: false, message: `EHLO after STARTTLS failed: ${ehlo2.text}`, id: null };
         }
       }
 
@@ -540,19 +556,19 @@ export class Messenger {
         const auth = await sendCommand(socket, "AUTH LOGIN");
         if (auth.code !== 334) {
           socket.destroy();
-          return { success: false, message: `AUTH LOGIN failed: ${auth.text}` };
+          return { success: false, message: `AUTH LOGIN failed: ${auth.text}`, id: null };
         }
 
         const userResp = await sendCommand(socket, Buffer.from(this.username).toString("base64"));
         if (userResp.code !== 334) {
           socket.destroy();
-          return { success: false, message: `AUTH username failed: ${userResp.text}` };
+          return { success: false, message: `AUTH username failed: ${userResp.text}`, id: null };
         }
 
         const passResp = await sendCommand(socket, Buffer.from(this.password).toString("base64"));
         if (passResp.code !== 235) {
           socket.destroy();
-          return { success: false, message: `AUTH password failed: ${passResp.text}` };
+          return { success: false, message: `AUTH password failed: ${passResp.text}`, id: null };
         }
       }
 
@@ -560,7 +576,7 @@ export class Messenger {
       const mailFrom = await sendCommand(socket, `MAIL FROM:<${this.fromAddress}>`);
       if (mailFrom.code !== 250) {
         socket.destroy();
-        return { success: false, message: `MAIL FROM failed: ${mailFrom.text}` };
+        return { success: false, message: `MAIL FROM failed: ${mailFrom.text}`, id: null };
       }
 
       // RCPT TO for all recipients
@@ -568,7 +584,7 @@ export class Messenger {
         const rcpt = await sendCommand(socket, `RCPT TO:<${recipient}>`);
         if (rcpt.code !== 250 && rcpt.code !== 251) {
           socket.destroy();
-          return { success: false, message: `RCPT TO <${recipient}> failed: ${rcpt.text}` };
+          return { success: false, message: `RCPT TO <${recipient}> failed: ${rcpt.text}`, id: null };
         }
       }
 
@@ -576,7 +592,7 @@ export class Messenger {
       const dataCmd = await sendCommand(socket, "DATA");
       if (dataCmd.code !== 354) {
         socket.destroy();
-        return { success: false, message: `DATA failed: ${dataCmd.text}` };
+        return { success: false, message: `DATA failed: ${dataCmd.text}`, id: null };
       }
 
       // Build and send the MIME message
@@ -599,7 +615,7 @@ export class Messenger {
       const endData = await sendCommand(socket, mimeMessage + "\r\n.");
       if (endData.code !== 250) {
         socket.destroy();
-        return { success: false, message: `Message delivery failed: ${endData.text}` };
+        return { success: false, message: `Message delivery failed: ${endData.text}`, id: null };
       }
 
       // QUIT
@@ -609,8 +625,39 @@ export class Messenger {
       return { success: true, message: "Email sent successfully", id: messageId };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      return { success: false, message: `SMTP error: ${errMsg}` };
+      return { success: false, message: `SMTP error: ${errMsg}`, id: null };
     }
+  }
+
+  /**
+   * Render a Frond template STRING and send it as an HTML email (G7, parity with
+   * Python's send_template). Extra send() options (cc, bcc, replyTo, attachments,
+   * headers) pass through. If the Frond package cannot be loaded the raw template
+   * is sent verbatim (matches Python's ImportError fallback) rather than failing.
+   */
+  async sendTemplate(
+    to: string | string[],
+    subject: string,
+    template: string,
+    data: Record<string, unknown> = {},
+    cc?: string | string[],
+    bcc?: string | string[],
+    replyTo?: string,
+    attachments?: string[],
+    headers?: Record<string, string>,
+  ): Promise<SendResult> {
+    let body = template;
+    try {
+      // Same sibling-package specifier server.ts uses for Frond (resolves in dev
+      // under tsx and in the built dist). Core never hard-depends on Frond.
+      const { Frond } = (await import("../../frond/src/engine.js")) as {
+        Frond: new (dir?: string) => { renderString(t: string, d?: Record<string, unknown>): string };
+      };
+      body = new Frond().renderString(template, data);
+    } catch {
+      // Frond unavailable — send the template text as-is (Python parity).
+    }
+    return this.send(to, subject, body, true, undefined, cc, bcc, replyTo, attachments, headers);
   }
 
   /**
@@ -740,8 +787,11 @@ export class Messenger {
 
       const messages: ImapMessage[] = [];
       for (const uid of selected) {
-        const fetchResp = await imapCommand(socket, `UID FETCH ${uid} (FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])`);
-        messages.push(parseHeaderResponse(uid, fetchResp));
+        // Fetch the WHOLE message (PEEK — never mark seen) so the snippet is
+        // built from real, transfer-decoded body text (G3), not the empty string
+        // a header-only fetch could ever produce.
+        const fetchResp = await imapCommand(socket, `UID FETCH ${uid} (FLAGS BODY.PEEK[])`);
+        messages.push(parseSummary(uid, fetchResp));
       }
 
       return messages;
@@ -824,8 +874,8 @@ export class Messenger {
       uids.reverse();
       const messages: ImapMessage[] = [];
       for (const uid of uids.slice(0, limit)) {
-        const fetchResp = await imapCommand(socket, `UID FETCH ${uid} (FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])`);
-        messages.push(parseHeaderResponse(uid, fetchResp));
+        const fetchResp = await imapCommand(socket, `UID FETCH ${uid} (FLAGS BODY.PEEK[])`);
+        messages.push(parseSummary(uid, fetchResp));
       }
       return messages;
     } catch (err) {
@@ -836,9 +886,12 @@ export class Messenger {
   }
 
   /**
-   * Delete a message by UID.
+   * Delete a message by UID (mark \Deleted, then EXPUNGE).
+   *
+   * `delete` is the one cross-framework name (python/php/ruby/node all spell it
+   * `delete`). `deleteMessage` remains as a DEPRECATED alias for one release.
    */
-  async deleteMessage(uid: string, folder: string = "INBOX"): Promise<void> {
+  async delete(uid: string, folder: string = "INBOX"): Promise<void> {
     const socket = await this.imapConnect();
     try {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
@@ -849,14 +902,33 @@ export class Messenger {
     }
   }
 
+  /** @deprecated Use {@link delete} — kept as an alias for one release (G7). */
+  async deleteMessage(uid: string, folder: string = "INBOX"): Promise<void> {
+    return this.delete(uid, folder);
+  }
+
   /**
-   * Mark a message as read.
+   * Mark a message as read (+FLAGS \Seen).
    */
   async markRead(uid: string, folder: string = "INBOX"): Promise<void> {
     const socket = await this.imapConnect();
     try {
       await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
       await imapCommand(socket, `UID STORE ${uid} +FLAGS (\\Seen)`);
+    } finally {
+      await this.imapDisconnect(socket);
+    }
+  }
+
+  /**
+   * Mark a message as unread (-FLAGS \Seen) — the inverse of markRead (G7,
+   * parity with Python's mark_unread).
+   */
+  async markUnread(uid: string, folder: string = "INBOX"): Promise<void> {
+    const socket = await this.imapConnect();
+    try {
+      await imapCommand(socket, `SELECT ${imapQuote(folder)}`);
+      await imapCommand(socket, `UID STORE ${uid} -FLAGS (\\Seen)`);
     } finally {
       await this.imapDisconnect(socket);
     }
@@ -1012,106 +1084,181 @@ function parseSearchResponse(response: string): string[] {
   return match[1].trim().split(/\s+/).filter((s) => /^\d+$/.test(s));
 }
 
-function parseHeaderResponse(uid: string, response: string): ImapMessage {
+/**
+ * The RFC822 message octets from a FETCH response. IMAP frames the body as a
+ * `{N}` literal followed by exactly N octets, so slice N — that cleanly drops the
+ * trailing `)\r\nTAG OK ...` the server appends after the literal (which the old
+ * regex-then-strip path had to chase). For the ASCII bodies these methods see,
+ * octet length equals string length; a response with no literal falls back to
+ * itself.
+ */
+function extractRawMessage(response: string): string {
+  const m = response.match(/\{(\d+)\}\r\n/);
+  if (!m) return response;
+  const start = (m.index ?? 0) + m[0].length;
+  return response.slice(start, start + parseInt(m[1], 10));
+}
+
+/** Parse a header block into a lower-cased map, honouring folded continuations. */
+function parseMimeHeaders(section: string): Record<string, string> {
   const headers: Record<string, string> = {};
-  const headerBlock = response.match(/\r\n([\s\S]*?)\r\n\)/);
-  if (headerBlock) {
-    const lines = headerBlock[1].split(/\r\n/);
-    let currentKey = "";
-    for (const line of lines) {
-      if (/^\s/.test(line) && currentKey) {
-        headers[currentKey] += " " + line.trim();
-      } else {
-        const colonIdx = line.indexOf(":");
-        if (colonIdx > 0) {
-          currentKey = line.substring(0, colonIdx).trim().toLowerCase();
-          headers[currentKey] = line.substring(colonIdx + 1).trim();
-        }
+  let currentKey = "";
+  for (const line of section.split(/\r\n/)) {
+    if (/^\s/.test(line) && currentKey) {
+      headers[currentKey] += " " + line.trim();
+    } else {
+      const idx = line.indexOf(":");
+      if (idx > 0) {
+        currentKey = line.substring(0, idx).trim().toLowerCase();
+        headers[currentKey] = line.substring(idx + 1).trim();
       }
     }
   }
+  return headers;
+}
 
-  const seen = /\\Seen/i.test(response);
+/**
+ * Transfer-decode a part body per its Content-Transfer-Encoding. base64 and
+ * quoted-printable become readable text; 7bit/8bit/binary/absent pass through.
+ * This is what turns the snippet from raw base64 into real words (G3).
+ */
+function decodeTransfer(body: string, encoding: string): string {
+  const enc = encoding.toLowerCase().trim();
+  if (enc === "base64") {
+    try {
+      return Buffer.from(body.replace(/\s+/g, ""), "base64").toString("utf-8");
+    } catch {
+      return body;
+    }
+  }
+  if (enc === "quoted-printable") {
+    return body
+      .replace(/=\r?\n/g, "")                                       // soft line breaks
+      .replace(/=([0-9A-Fa-f]{2})/g, (_m, h) => String.fromCharCode(parseInt(h, 16)));
+  }
+  return body;
+}
 
+/** filename="..." from Content-Disposition, else name="..." from Content-Type. */
+function attachmentFilename(disposition: string, contentType: string): string {
+  const d = disposition.match(/filename="?([^";\r\n]+)"?/i);
+  if (d) return d[1].trim();
+  const c = contentType.match(/name="?([^";\r\n]+)"?/i);
+  if (c) return c[1].trim();
+  return "attachment";
+}
+
+/**
+ * A decoded, tag-stripped, whitespace-collapsed 200-char preview (G3). Prefers
+ * the plain-text body, falls back to the HTML with its tags removed. The inputs
+ * are already transfer-decoded, so this is real readable text — never the raw
+ * base64 a header-only / undecoded fetch used to emit.
+ */
+function makeSnippet(bodyText: string, bodyHtml: string): string {
+  return (bodyText || bodyHtml || "")
+    .replace(/<[^>]+>/g, " ")     // strip HTML tags
+    .replace(/\s+/g, " ")          // collapse whitespace
+    .trim()
+    .slice(0, 200);
+}
+
+/** The Date header as ISO-8601 (G4); the raw string if unparseable, "" if absent. */
+function toIsoDate(raw: string): string {
+  if (!raw) return "";
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? raw : d.toISOString();
+}
+
+interface ParsedMessage {
+  headers: Record<string, string>;
+  bodyText: string;
+  bodyHtml: string;
+  attachments: ImapAttachment[];
+}
+
+/**
+ * Walk a FETCH response into headers + transfer-decoded bodies + attachment
+ * metadata. Shared by parseSummary() (inbox/search) and parseFullMessage()
+ * (read) so the snippet and the read() bodies can never drift.
+ */
+function parseMessage(response: string): ParsedMessage {
+  const raw = extractRawMessage(response);
+  const headerEnd = raw.indexOf("\r\n\r\n");
+  const headerSection = headerEnd >= 0 ? raw.substring(0, headerEnd) : raw;
+  const bodySection = headerEnd >= 0 ? raw.substring(headerEnd + 4) : "";
+  const headers = parseMimeHeaders(headerSection);
+  const contentType = headers["content-type"] ?? "text/plain";
+
+  let bodyText = "";
+  let bodyHtml = "";
+  const attachments: ImapAttachment[] = [];
+
+  if (contentType.includes("multipart")) {
+    const boundaryMatch = contentType.match(/boundary="?([^";\s]+)"?/);
+    if (boundaryMatch) {
+      const boundary = "--" + boundaryMatch[1];
+      for (const part of bodySection.split(boundary)) {
+        const trimmed = part.trim();
+        if (trimmed === "" || trimmed === "--") continue;
+        const pEnd = part.indexOf("\r\n\r\n");
+        if (pEnd < 0) continue;
+        const pHeaders = parseMimeHeaders(part.substring(0, pEnd));
+        const pBody = part.substring(pEnd + 4);
+        const cte = pHeaders["content-transfer-encoding"] ?? "";
+        const pType = pHeaders["content-type"] ?? "text/plain";
+        const disposition = pHeaders["content-disposition"] ?? "";
+        if (/attachment/i.test(disposition)) {
+          const rawBody = pBody.trim();
+          const size = cte.toLowerCase().trim() === "base64"
+            ? Buffer.from(rawBody.replace(/\s+/g, ""), "base64").length
+            : Buffer.byteLength(rawBody, "utf-8");
+          attachments.push({
+            filename: attachmentFilename(disposition, pType),
+            contentType: pType.split(";")[0].trim(),
+            size,
+          });
+        } else if (pType.includes("text/html")) {
+          bodyHtml = decodeTransfer(pBody, cte).trim();
+        } else if (pType.includes("text/plain")) {
+          bodyText = decodeTransfer(pBody, cte).trim();
+        }
+      }
+    }
+  } else if (contentType.includes("text/html")) {
+    bodyHtml = decodeTransfer(bodySection, headers["content-transfer-encoding"] ?? "").trim();
+  } else {
+    bodyText = decodeTransfer(bodySection, headers["content-transfer-encoding"] ?? "").trim();
+  }
+
+  return { headers, bodyText, bodyHtml, attachments };
+}
+
+/** The inbox()/search() listing row: {uid, subject, from, to, date, snippet, seen} (G3/G4). */
+function parseSummary(uid: string, response: string): ImapMessage {
+  const { headers, bodyText, bodyHtml } = parseMessage(response);
   return {
     uid,
     subject: headers["subject"] ?? "",
     from: headers["from"] ?? "",
     to: headers["to"] ?? "",
-    date: headers["date"] ?? "",
-    snippet: "",
-    seen,
+    date: toIsoDate(headers["date"] ?? ""),
+    snippet: makeSnippet(bodyText, bodyHtml),
+    seen: /\\Seen/i.test(response),
   };
 }
 
 function parseFullMessage(uid: string, response: string): ImapFullMessage {
-  // Extract the raw message body from FETCH response
-  const bodyMatch = response.match(/\{(\d+)\}\r\n([\s\S]*)/);
-  const rawMessage = bodyMatch ? bodyMatch[2] : response;
-
-  // Split headers and body
-  const headerEnd = rawMessage.indexOf("\r\n\r\n");
-  const headerSection = headerEnd > 0 ? rawMessage.substring(0, headerEnd) : rawMessage;
-  const bodySection = headerEnd > 0 ? rawMessage.substring(headerEnd + 4) : "";
-
-  // Parse headers
-  const headers: Record<string, string> = {};
-  const headerLines = headerSection.split(/\r\n/);
-  let currentKey = "";
-  for (const line of headerLines) {
-    if (/^\s/.test(line) && currentKey) {
-      headers[currentKey] += " " + line.trim();
-    } else {
-      const colonIdx = line.indexOf(":");
-      if (colonIdx > 0) {
-        currentKey = line.substring(0, colonIdx).trim().toLowerCase();
-        headers[currentKey] = line.substring(colonIdx + 1).trim();
-      }
-    }
-  }
-
-  // Determine content type
-  const contentType = headers["content-type"] ?? "text/plain";
-  let bodyText = "";
-  let bodyHtml = "";
-
-  if (contentType.includes("multipart")) {
-    // Extract boundary
-    const boundaryMatch = contentType.match(/boundary="?([^";\s]+)"?/);
-    if (boundaryMatch) {
-      const boundary = boundaryMatch[1];
-      const parts = bodySection.split("--" + boundary);
-      for (const part of parts) {
-        if (part.trim() === "" || part.trim() === "--") continue;
-        const partHeaderEnd = part.indexOf("\r\n\r\n");
-        const partHeaders = partHeaderEnd > 0 ? part.substring(0, partHeaderEnd).toLowerCase() : "";
-        const partBody = partHeaderEnd > 0 ? part.substring(partHeaderEnd + 4).trim() : "";
-        if (partHeaders.includes("text/html")) {
-          bodyHtml = partBody;
-        } else if (partHeaders.includes("text/plain")) {
-          bodyText = partBody;
-        }
-      }
-    }
-  } else if (contentType.includes("text/html")) {
-    bodyHtml = bodySection;
-  } else {
-    bodyText = bodySection;
-  }
-
-  // Clean up trailing IMAP response data
-  bodyText = bodyText.replace(/\)\r\n[A-Z]\d+ OK.*$/s, "").trim();
-  bodyHtml = bodyHtml.replace(/\)\r\n[A-Z]\d+ OK.*$/s, "").trim();
-
+  const { headers, bodyText, bodyHtml, attachments } = parseMessage(response);
   return {
     uid,
     subject: headers["subject"] ?? "",
     from: headers["from"] ?? "",
     to: headers["to"] ?? "",
     cc: headers["cc"] ?? "",
-    date: headers["date"] ?? "",
+    date: toIsoDate(headers["date"] ?? ""),
     bodyText,
     bodyHtml,
+    attachments,
     headers,
   };
 }

@@ -104,7 +104,7 @@ export { HtmlElement, htmlElement, addHtmlHelpers, Raw, SafeString } from "./htm
 export { renderErrorOverlay, renderProductionError, isDebugMode } from "./errorOverlay.js";
 export { AI_TOOLS, isInstalled, showMenu, installSelected, installAll, generateContext } from "./ai.js";
 export type { AiTool } from "./ai.js";
-export type { ImapMessage, ImapFullMessage } from "./messenger.js";
+export type { ImapMessage, ImapFullMessage, ImapAttachment } from "./messenger.js";
 export { LiteBackend } from "./queueBackends/liteBackend.js";
 export { RabbitMQBackend, parseAmqpUrl } from "./queueBackends/rabbitmqBackend.js";
 export type { RabbitMQConfig } from "./queueBackends/rabbitmqBackend.js";

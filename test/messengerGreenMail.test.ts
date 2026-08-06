@@ -32,6 +32,9 @@
  */
 import net from "node:net";
 import { randomBytes } from "node:crypto";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   Messenger,
   MessengerConnectionError,
@@ -415,6 +418,148 @@ async function main(): Promise<void> {
     assert("read(uid) returns the message that uid names",
       full !== null && full.subject === subject,
       `\n    read(${JSON.stringify(hit.uid)}) -> ${JSON.stringify(full && full.subject)}`);
+  }
+
+  // ── G3: snippet is decoded, tag-stripped plain text (never "" , never base64) ──
+  {
+    console.log("\n-- G3: inbox() snippet is real decoded text --");
+    const to = recipient();
+    const m = messengerFor(to);
+    const subject = `Node Snippet ${randomBytes(4).toString("hex")}`;
+    const marker = `snip-${randomBytes(6).toString("hex")}`;
+    const body = `hello ${marker} this is the readable preview text`;
+
+    const envelope = await deliverAndWait(m, to, subject, body);
+    const listed = (await m.inbox()).find((i) => i.subject === subject)!;
+    assert("snippet is populated, not the empty string it always was",
+      typeof listed.snippet === "string" && listed.snippet.length > 0,
+      `\n    snippet: ${JSON.stringify(listed?.snippet)}`);
+    assert("snippet contains the decoded body text",
+      listed.snippet.includes(marker),
+      `\n    snippet: ${JSON.stringify(listed.snippet)}`);
+
+    // An HTML send: the snippet must be the TAG-STRIPPED text, never raw markup
+    // and never base64 gibberish.
+    const to2 = recipient();
+    const m2 = messengerFor(to2);
+    const subject2 = `Node SnippetHtml ${randomBytes(4).toString("hex")}`;
+    const marker2 = `htmlsnip-${randomBytes(6).toString("hex")}`;
+    await deliverAndWait(m2, to2, subject2, `<div><p>Hi <b>${marker2}</b></p></div>`, true);
+    const listed2 = (await m2.inbox()).find((i) => i.subject === subject2)!;
+    assert("html snippet is decoded and tag-stripped (has the text, no <b>)",
+      listed2.snippet.includes(marker2) && !listed2.snippet.includes("<b>"),
+      `\n    snippet: ${JSON.stringify(listed2.snippet)}`);
+    assert("snippet is truncated to at most 200 chars", listed2.snippet.length <= 200);
+  }
+
+  // ── G4: one inbox() item shape — exactly 7 keys, date is ISO-8601 ──────────────
+  {
+    console.log("\n-- G4: inbox() item shape + ISO-8601 date --");
+    const to = recipient();
+    const m = messengerFor(to);
+    const subject = `Node Shape ${randomBytes(4).toString("hex")}`;
+    await deliverAndWait(m, to, subject, "shape body");
+    const item = (await m.inbox()).find((i) => i.subject === subject)!;
+
+    const keys = Object.keys(item).sort();
+    assert("inbox item has EXACTLY {uid, subject, from, to, date, snippet, seen}",
+      JSON.stringify(keys) === JSON.stringify(["date", "from", "seen", "snippet", "subject", "to", "uid"]),
+      `\n    keys: ${JSON.stringify(keys)}`);
+    assert("uid is a string", typeof item.uid === "string");
+    assert("to is a string (not an array of {name,email})", typeof item.to === "string");
+    assert("seen is a boolean", typeof item.seen === "boolean");
+    // ISO-8601: parses to a finite instant AND matches the ISO shape (not the raw
+    // RFC-2822 "Wed, 06 Aug 2026 22:00:00 GMT" only Python used to normalise).
+    assert("date is ISO-8601",
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(item.date) && Number.isFinite(Date.parse(item.date)),
+      `\n    date: ${JSON.stringify(item.date)}`);
+  }
+
+  // ── G5: read() returns an attachments array; a real attachment is listed ──────
+  {
+    console.log("\n-- G5: read() attachments --");
+    const to = recipient();
+    const m = messengerFor(to);
+
+    // A plain message: attachments is an empty ARRAY (the field must EXIST).
+    const plainSubj = `Node NoAttach ${randomBytes(4).toString("hex")}`;
+    const plain = await deliverAndWait(m, to, plainSubj, "no attachments here");
+    const plainFull = await m.read(plain.uid);
+    assert("read() carries an attachments array (empty when none)",
+      Array.isArray(plainFull!.attachments) && plainFull!.attachments.length === 0,
+      `\n    attachments: ${JSON.stringify(plainFull!.attachments)}`);
+
+    // A message WITH a real file attachment, sent through the real SMTP path.
+    const dir = mkdtempSync(join(tmpdir(), "tina4-attach-"));
+    try {
+      const fileName = `note-${randomBytes(4).toString("hex")}.txt`;
+      const filePath = join(dir, fileName);
+      const fileBody = `attachment payload ${randomBytes(8).toString("hex")}`;
+      writeFileSync(filePath, fileBody, "utf-8");
+
+      const to2 = recipient();
+      const m2 = messengerFor(to2);
+      const subj2 = `Node Attach ${randomBytes(4).toString("hex")}`;
+      const sent: SendResult = await m2.send(
+        to2, subj2, "see attachment", false, undefined, undefined, undefined, undefined, [filePath],
+      );
+      assert("send() with an attachment succeeds", sent.success === true, `\n    ${JSON.stringify(sent)}`);
+
+      let full: Awaited<ReturnType<Messenger["read"]>> = null;
+      for (let i = 0; i < 40; i++) {
+        const hit = (await m2.inbox()).find((x) => x.subject === subj2);
+        if (hit) { full = await m2.read(hit.uid); break; }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      assert("the attachment message arrived", full !== null, "\n    never arrived");
+      assert("read() lists the attachment with its filename",
+        full!.attachments.some((a) => a.filename === fileName),
+        `\n    attachments: ${JSON.stringify(full!.attachments)}`);
+      assert("the listed attachment carries a positive size",
+        full!.attachments.every((a) => typeof a.size === "number" && a.size > 0),
+        `\n    attachments: ${JSON.stringify(full!.attachments)}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // ── G8: TINA4_MAIL_IMAP_USERNAME/_PASSWORD are read and WIN over the SMTP one ──
+  //
+  // Node is the reference for this rule. GreenMail (auth disabled) keys the
+  // mailbox off the LOGIN username, so if IMAP auth used TINA4_MAIL_USERNAME
+  // instead of TINA4_MAIL_IMAP_USERNAME it would read the WRONG (empty) mailbox.
+  {
+    console.log("\n-- G8: IMAP-specific credentials are honoured --");
+    const imapBox = recipient();     // where the message is actually delivered + read
+    const smtpUser = recipient();    // a DIFFERENT account, set as TINA4_MAIL_USERNAME
+    const subject = `Node ImapCreds ${randomBytes(4).toString("hex")}`;
+
+    // Deliver to imapBox using a constructor Messenger (no env involved).
+    await deliverAndWait(messengerFor(imapBox), imapBox, subject, "read via IMAP creds");
+
+    const saved: Record<string, string | undefined> = {};
+    const setEnv = (k: string, v: string) => { saved[k] = process.env[k]; process.env[k] = v; };
+    setEnv("TINA4_MAIL_HOST", SMTP_HOST);
+    setEnv("TINA4_MAIL_PORT", String(SMTP_PORT));
+    setEnv("TINA4_MAIL_ENCRYPTION", "none");
+    setEnv("TINA4_MAIL_IMAP_HOST", IMAP_HOST);
+    setEnv("TINA4_MAIL_IMAP_PORT", String(IMAP_PORT));
+    setEnv("TINA4_MAIL_IMAP_ENCRYPTION", "none");
+    setEnv("TINA4_MAIL_USERNAME", smtpUser);          // the SMTP account
+    setEnv("TINA4_MAIL_PASSWORD", "secret");
+    setEnv("TINA4_MAIL_IMAP_USERNAME", imapBox);      // the IMAP account (must win)
+    setEnv("TINA4_MAIL_IMAP_PASSWORD", "secret");
+    try {
+      const envMessenger = new Messenger();            // pure env-driven
+      const found = (await envMessenger.inbox()).some((i) => i.subject === subject);
+      assert("inbox() authenticates with TINA4_MAIL_IMAP_USERNAME, not TINA4_MAIL_USERNAME",
+        found === true,
+        `\n    read the '${smtpUser}' mailbox instead of '${imapBox}' — IMAP-specific creds were ignored`);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    }
   }
 
   console.log(`\n${"=".repeat(52)}`);
