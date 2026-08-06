@@ -483,12 +483,31 @@ function patternToOpenAPI(pattern: string): string {
   return pattern.replace(/\[\.\.\.(\w+)\]/g, "{$1}").replace(/\[(\w+)\]/g, "{$1}");
 }
 
+/**
+ * The dynamic segment names in a route pattern, in BOTH spellings.
+ *
+ * This matched only `[id]` - the FILE-SYSTEM spelling. Route discovery converts
+ * `[id]` directories to `{id}` URL patterns before a route is ever registered
+ * ("File system uses [id] notation, but URL patterns use {id} to match
+ * Python"), so at runtime this regex ran against `{id}` looking for `[id]` and
+ * returned nothing. Every operation shipped with no `in: path` parameter, which
+ * makes the document invalid OpenAPI - measured against openapi-spec-validator,
+ * and unconditionally, because the framework registers `/__frond/live/{name}`
+ * itself.
+ *
+ * It looked fine for two reasons: the path KEY was built by a different
+ * function that handles both, and swagger.test.ts hand-fed bracket patterns the
+ * framework never produces.
+ *
+ * Both spellings are accepted rather than only the runtime one, because
+ * `generate()` is public and a caller may hand it either.
+ */
 function extractPathParams(pattern: string): string[] {
   const params: string[] = [];
-  const regex = /\[(?:\.\.\.)?(\w+)\]/g;
+  const regex = /\[(?:\.\.\.)?(\w+)\]|\{(?:\.\.\.)?(\w+)\}/g;
   let match;
   while ((match = regex.exec(pattern)) !== null) {
-    params.push(match[1]);
+    params.push(match[1] ?? match[2]);
   }
   return params;
 }
