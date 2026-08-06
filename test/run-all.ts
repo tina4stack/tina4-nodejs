@@ -7,8 +7,9 @@
  * file's summary line and aggregated into a grand total.
  */
 import { execSync, spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { readdirSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   requireServices,
@@ -27,6 +28,38 @@ const rootDir = join(__dirname, "..");
 // closed by the time the tab loaded. Setting it here covers every child: the
 // spawns below inherit this process's env.
 process.env.TINA4_NO_BROWSER = "true";
+
+// ── Temp sandbox ────────────────────────────────────────────────────────────
+//
+// Every temp path this run creates goes into ONE per-run directory, removed
+// wholesale at the end. MEASURED on the lab: a full Node suite added 38 entries
+// to /tmp per run -- tina4_provider_ (10), tina4_cache_inv_ (8), tina4_ident_,
+// tina4_clearpersist_, tina4_cache_node_db_ and a tail of others, from files
+// nobody had touched. Converting call sites does not converge; PHP proved that
+// (17 conversions there still left 45 entries per run).
+//
+// os.tmpdir() reads TMPDIR at CALL TIME, and the spawns below inherit this
+// process's env exactly as TINA4_NO_BROWSER above does, so one assignment here
+// covers every test file and every server they start. The directory must EXIST
+// before it is announced: Node returns TMPDIR verbatim, but a test that writes
+// into a missing directory fails rather than falling back.
+const tmpSandbox = join(tmpdir(), `tina4-node-tests-${process.pid}`);
+mkdirSync(tmpSandbox, { recursive: true });
+process.env.TMPDIR = tmpSandbox;
+
+// Guarded on the OWNING pid. A child that re-imports this module, or any forked
+// helper, must never remove the sandbox its parent and siblings are still
+// using -- that exact mistake broke three PHP tests when 60 pcntl_fork children
+// each ran the parent's shutdown handler.
+const sandboxOwnerPid = process.pid;
+function reapSandbox(): void {
+  if (process.pid !== sandboxOwnerPid) return;
+  try { rmSync(tmpSandbox, { recursive: true, force: true }); } catch { /* never fail a run over cleanup */ }
+}
+// An "exit" handler rather than a call before the single process.exit(): it
+// fires on that exit AND on a crash or an uncaught throw, so a runner that dies
+// early still takes its sandbox with it.
+process.on("exit", reapSandbox);
 
 // Discover all test files.
 // The i18n suites are vitest tests (describe/it/expect) — they are run by the
