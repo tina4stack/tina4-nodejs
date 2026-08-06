@@ -124,6 +124,27 @@ function permissionBitsAreEnforced(): boolean {
 }
 
 /**
+ * Remove a temp directory this file made, the same way permissionBitsAreEnforced
+ * above now does: the DIRECTORY, not just what is inside it.
+ *
+ * Every scenario below mkdtemp'd a store and left it there. MEASURED on the lab
+ * 2026-08-06: 104 `/tmp/tina4-sessfail-*` directories had accumulated, growing
+ * by 4 on every run of this file. A test that reaps nothing is a leak that
+ * nobody sees, because /tmp looks the same as it fills.
+ *
+ * Never throws. Cleanup that can fail the run is worse than the leak: some of
+ * these directories are chmod'd during their scenario, and a removal that
+ * raises would turn a green suite red for a reason that has nothing to do with
+ * the behaviour under test. Callers restore permissions first (see the store
+ * scenario's finally); this is the belt to that braces.
+ */
+function dropTempDir(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch { /* already gone, or held open -- never fail the run over cleanup */ }
+}
+
+/**
  * Drop the EFFECTIVE uid so the permission bits bind to THIS process.
  *
  * `permissionBitsAreEnforced()` above measures the property honestly, but on
@@ -417,6 +438,9 @@ console.log("\n-- Default policy: log-loud + degrade --");
     errorLinesSince(mark2).length === 0,
     `error lines: ${JSON.stringify(errorLinesSince(mark2).map((e) => e.message))}`,
   );
+
+  // `rival` is already closed above, so the sqlite file is no longer held open.
+  dropTempDir(dbDir);
 }
 
 // ── Invariant 4: empty-but-healthy backend logs ZERO errors ──────────────────
@@ -596,6 +620,11 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
     assert("the re-raised cause is the REAL errno, not a fabricated message",
       /EACCES|permission denied/i.test(cause), `cause: ${cause}`);
   }
+
+  // Safe here and only here: the finally above has already restored the
+  // effective uid and chmod'd the session file back to 0600. Removing earlier
+  // would run as the dropped uid against a root-owned directory and fail.
+  dropTempDir(sessDir);
 }
 
 // 5c: NEGATIVE CONTROL for strict mode -- a healthy real backend under strict
@@ -621,6 +650,8 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
     console.log(`    (unexpected throw: ${String(err)})`);
   }
   assert("strict mode does not throw on a healthy real backend", !threw);
+
+  dropTempDir(sessDir);
 }
 
 delete process.env.TINA4_SESSION_STRICT;
@@ -632,5 +663,11 @@ console.log(
   + (skipped ? `, \x1b[33m${skipped} skipped\x1b[0m` : "")
 );
 console.log(`${"=".repeat(50)}\n`);
+
+// LAST, and it has to be last. LOG_DIR is the sink every scenario above asserts
+// against (logSize / errorLinesSince read the file on disk), so it cannot be
+// released until the final assertion has run and the summary is printed.
+// Removing it any earlier deletes the evidence the tests are reading.
+dropTempDir(LOG_DIR);
 
 process.exit(failed > 0 ? 1 : 0);
