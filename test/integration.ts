@@ -211,7 +211,11 @@ assert("Swagger UI HTML present", typeof swaggerUI.raw === "string" && swaggerUI
 const spec = await request("GET", "/swagger/openapi.json");
 assert("GET /swagger/openapi.json returns spec", spec.status === 200);
 assert("Spec has paths", Object.keys(spec.data.paths).length > 0);
-assert("Spec has model schema", spec.data.components?.schemas?.users !== undefined);
+// S2 (3.13.96): components.schemas is keyed by the model CLASS name ("User"),
+// not the tableName ("users"), so a generated client gets `class User`.
+assert("Spec has model schema keyed by class name", spec.data.components?.schemas?.User !== undefined,
+  `schemas keys: ${JSON.stringify(Object.keys(spec.data.components?.schemas ?? {}))}`);
+assert("Spec model schema is NOT keyed by tableName", spec.data.components?.schemas?.users === undefined);
 
 console.log("\n--- Static Files ---");
 
