@@ -542,6 +542,13 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
   // silently achieved nothing would otherwise read as "the code under test did
   // not throw" — a failure blamed on the framework instead of the harness.
   const bitsBindNow = bitsBindAlready || (droppedEuid && permissionBitsAreEnforced());
+  // And verify the denial about to happen is about the FILE. Whoever performs
+  // the write must still be able to enter the directory and see the record: if
+  // the directory itself were unreadable (mkdtemp makes it 0700, and after the
+  // euid drop that is root's 0700, not ours) the EACCES would be a traversal
+  // refusal and this test would pass without the session file's bits ever
+  // mattering. existsSync() here needs both the traverse and the file.
+  const fileStillVisible = existsSync(sessFile);
 
   let threw = false;
   let cause = "";
@@ -567,6 +574,9 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
       droppedEuid
         ? "the effective uid was dropped but a 0400 file was still writable"
         : "this process already honours permission bits");
+    assert("the denial is the session FILE's bits, not the directory's (instrument)", fileStillVisible,
+      `${sessFile} was not visible to the writer — an EACCES here would be a directory-traversal `
+      + "refusal, so the test would pass without the file's own permissions ever being consulted");
     assert("strict mode re-raises a REAL write failure (EACCES on a read-only session file)", threw,
       `the 0400 session file did not produce a real write error${droppedEuid ? " even with the effective uid dropped" : ""}`);
     assert("the re-raised cause is the REAL errno, not a fabricated message",
