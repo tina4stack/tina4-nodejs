@@ -58,7 +58,7 @@ export { QueryBuilder } from "./queryBuilder.js";
 export { SQLTranslator, QueryCache } from "./sqlTranslator.js";
 export {
   DEFAULT_DATABASE_CONNECT_TIMEOUT_SECONDS,
-  DRIVER_KNOB_GRACE_MS,
+  CONNECT_TIMEOUT_TOLERANCE_MS,
   connectTimeoutMillis,
   driverConnectTimeoutMillis,
   connectTarget,

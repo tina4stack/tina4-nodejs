@@ -253,15 +253,14 @@ export class FirebirdAdapter implements DatabaseAdapter {
       fbConfig.database = normalizeFirebirdDbIdentifier(fbConfig.database);
     }
 
-    // node-firebird has NO connect-timeout option of its own, so the outer bound
-    // is the only thing standing between a silent driver and a permanently hung
-    // boot. This is the adapter the 16-minute probe measured.
-    const attach = new Promise<any>((resolve, reject) => {
-      fb.attach(fbConfig, (err: Error | null, db: any) => (err ? reject(err) : resolve(db)));
-    });
-
+    // node-firebird has NO connect-timeout option of its own, so there is no
+    // driver timer to translate and the outer bound is the ONLY thing standing
+    // between a silent driver and a permanently hung boot. This is the adapter
+    // the 16-minute probe measured.
     this.db = await withConnectTimeout(
-      attach,
+      () => new Promise<any>((resolve, reject) => {
+        fb.attach(fbConfig, (err: Error | null, db: any) => (err ? reject(err) : resolve(db)));
+      }),
       connectTimeoutMillis(),
       fbConfig.host,
       fbConfig.port,

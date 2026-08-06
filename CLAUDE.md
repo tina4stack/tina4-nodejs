@@ -1283,10 +1283,34 @@ is applied in two layers: the driver's own knob where it has one (so one variabl
 really governs, rather than tedious's 15s or Mongo's 30s quietly winning), and an
 outer bound around the whole attempt (so it exists at all for `node-firebird`,
 which has no knob, and so a knob that covers only part of the handshake cannot
-leave a gap). The driver knob sits **one second later** than the Tina4 bound so the
-order is deterministic and the error you see is the one that names the host, the
-port and this variable — at exactly equal values the driver won the race and pg
-reported a bare `timeout expired`.
+leave a gap).
+
+**The driver's timer is meant to WIN, and Tina4 translates what it raises.** The
+knob is set to the bound EXACTLY (rounded up to whole milliseconds, floored at 1 —
+three of the four knobs read `0` as *wait forever*), Tina4's own clock starts
+before the driver arms its timer, and a driver failure that took at least that long
+is re-thrown in the framework's words with the driver's error preserved as `cause`:
+
+```
+Database connect to 127.0.0.1:34467 timed out after 2.0s
+(TINA4_DATABASE_CONNECT_TIMEOUT=2 seconds; set it to 0 to wait indefinitely).
+Driver reported: timeout expired
+```
+
+That is real output, captured against a server that accepts and never replies.
+Each driver contributes its own words — pg `timeout expired`, mysql2 `connect
+ETIMEDOUT`, tedious `Failed to connect to 127.0.0.1:34467 in 2000ms`, Mongo
+`Server selection timed out after 2000 ms` — and the last two quote the budget
+they were GIVEN, which is how you can see that `2` means 2000ms and not 3000ms.
+Firebird and ODBC have no knob, so the outer bound fires instead and there is no
+`Driver reported:` clause to add.
+
+`N` means `N`. Whether a failure was the bound expiring is decided by **elapsed
+time**, never by matching the driver's error text — the four clients word it four
+different ways and a marker table would drift and miss. A 50ms tolerance absorbs
+libuv's timer granularity without inflating `N`. The outer bound remains as the
+backstop for the phases a knob does not cover and the adapters that have none;
+being armed after the driver's, it only fires when the driver's did not.
 
 | Adapter | Can connect block? | Bounded now | How |
 |---------|--------------------|-------------|-----|

@@ -30,11 +30,34 @@
  * HANG this file instead of failing it, and a hang is not a test result. The
  * deadline decides only WHO answered first.
  *
+ * THE DRIVER'S TIMER WINS ON PURPOSE, and the adapter TRANSLATES what it raises.
+ * Node shipped the other shape first - the driver's knob set to the bound plus a
+ * 1000ms grace, so an outer timer expired first and Node's own message surfaced.
+ * That inflated the operator's N into N + grace and threw away the driver's own
+ * diagnosis, which is frequently the more specific one. So the knob is now the
+ * bound EXACTLY and cases 2b/2c/2d below pin the consequences: our words, the
+ * driver's error kept as `cause`, and the driver holding N rather than N + 1000.
+ *
  * THE CASES, and why each is load-bearing:
  *   1. a hung server is bounded                 - the defect itself.
  *   2. the error names host, port, elapsed, var  - an operator who cannot see
  *                                                 WHICH server hung is no better
  *                                                 off than with the silent hang.
+ *   2b. every driver-knob adapter says the same  - four drivers, one contract.
+ *   2c. the driver's diagnosis is PRESERVED      - the translator's whole reason
+ *                                                 to exist. Absent, either the
+ *                                                 translation was skipped or the
+ *                                                 outer timer won, and both throw
+ *                                                 the driver's diagnosis away.
+ *   2d. the driver is handed N, not N + a grace  - measured off the driver's OWN
+ *                                                 words, which quote the budget
+ *                                                 they were given.
+ *   2e. a FAST real failure is NOT translated    - the tolerance's negative
+ *                                                 control. Every case above wants
+ *                                                 the translation, so only this
+ *                                                 one can see a tolerance so wide
+ *                                                 that a refused connection
+ *                                                 reports itself as a timeout.
  *   3. a healthy connect still succeeds          - THE NEGATIVE CONTROL, against
  *                                                 a real PostgreSQL and a real
  *                                                 Firebird. A bound that fires
@@ -212,40 +235,68 @@ try {
     `the message must name the host, the port, the elapsed seconds and the variable that tunes it; got: ${message}`,
   );
 
-  // -- 2b. EVERY driver-knob adapter must produce OUR message ---------------
+  // -- 2b/2c/2d. EVERY driver-knob adapter, translated ----------------------
   //
-  // THE BUG THIS CATCHES, found in the mutation pass before release. With the
-  // driver's own knob set to exactly the budget, the DRIVER won the race - its
-  // timer starts inside connect(), a hair before withConnectTimeout arms ours -
-  // and an expiring PostgreSQL connect reported pg's bare `timeout expired`. No
-  // host, no port, no elapsed seconds, no variable: most of the contract gone,
-  // and an operator no better off than before. The knob now carries a grace so
-  // the Tina4 bound always expires first.
+  // The driver's own timer is the one that fires here - its knob is set to the
+  // bound exactly and it is armed before ours - so these four cases only pass if
+  // the TRANSLATOR restated its failure. Disable the translation and all four go
+  // red with the raw driver text, which is precisely what the mutation proves:
+  //
+  //     postgres  "timeout expired"
+  //     mysql     "connect ETIMEDOUT"
+  //     mssql     "Failed to connect to 127.0.0.1:38213 in 2000ms"
+  //     mongodb   "Server selection timed out after 2000 ms"
+  //
+  // None names the variable and three name no host or port, so most of the
+  // contract would be gone and the operator no better off than before.
   //
   // Real adapters, the same real never-replying server, one case each.
-  const knobAdapters: { name: string; connect: () => Promise<unknown> }[] = [
+  const BOUND_SECONDS = 2;
+  const BOUND_MS = BOUND_SECONDS * 1000;
+  // What the retired grace WOULD have handed the driver. Named, because 2d's
+  // whole job is to show this number never reaches a driver again.
+  const RETIRED_GRACE_MS = BOUND_MS + 1000;
+
+  const knobAdapters: {
+    name: string;
+    connect: () => Promise<unknown>;
+    /**
+     * Does this driver quote the budget it was GIVEN in its own error? tedious
+     * and the Mongo driver do, which turns "N means N" into a byte-level fact
+     * read off the driver rather than a timing inference. pg ("timeout expired")
+     * and mysql2 ("connect ETIMEDOUT") say nothing about their budget.
+     */
+    quotesItsBudget: boolean;
+  }[] = [
     {
       name: "postgres",
       connect: () => new PostgresAdapter({ host: "127.0.0.1", port: hung.port, database: "probe" }).connect(),
+      quotesItsBudget: false,
     },
     {
       name: "mysql",
       connect: () => new MysqlAdapter({ host: "127.0.0.1", port: hung.port, database: "probe" }).connect(),
+      quotesItsBudget: false,
     },
     {
       name: "mssql",
       connect: () => new MssqlAdapter({ host: "127.0.0.1", port: hung.port, database: "probe" }).connect(),
+      quotesItsBudget: true,
     },
     {
       name: "mongodb",
       connect: () => new MongodbAdapter(`mongodb://127.0.0.1:${hung.port}/probe`).connect(),
+      quotesItsBudget: true,
     },
   ];
 
+  let slowest = { name: "none", elapsedMs: 0 };
+
   for (const adapter of knobAdapters) {
-    setEnv("TINA4_DATABASE_CONNECT_TIMEOUT", "2");
+    setEnv("TINA4_DATABASE_CONNECT_TIMEOUT", String(BOUND_SECONDS));
     const outcome = await raceAgainstDeadline(adapter.connect(), 15000);
     const text = outcome.error?.message ?? "";
+    if (outcome.elapsedMs > slowest.elapsedMs) slowest = { name: adapter.name, elapsedMs: outcome.elapsedMs };
     assert(
       `database_connect_timeout_${adapter.name}_reports_the_tina4_message_not_the_drivers`,
       outcome.outcome === "rejected"
@@ -253,10 +304,81 @@ try {
         && text.includes(String(hung.port))
         && text.includes("TINA4_DATABASE_CONNECT_TIMEOUT"),
       `the ${adapter.name} adapter ${outcome.outcome} after ${outcome.elapsedMs}ms with: "${text}". `
-      + "The driver's own timeout beat the Tina4 bound, so the operator gets a bare driver message "
+      + "The driver's own timeout was not translated, so the operator gets a bare driver message "
       + "naming no host, no port and no variable",
     );
+
+    // 2c. The driver's diagnosis SURVIVES the translation, in both the places
+    // that carry it: appended to the text (the line that reaches a log) and on
+    // `cause` (matching Python's __cause__ and Ruby's cause chain).
+    const cause = outcome.error?.cause;
+    assert(
+      `database_connect_timeout_${adapter.name}_preserves_the_driver_diagnosis_as_the_cause`,
+      text.includes("Driver reported:") && cause instanceof Error && cause.message.length > 0,
+      `the ${adapter.name} contract error must carry the driver's own words - discarding them was `
+      + `half the reason the grace was wrong. Got cause=${String(cause)} in: "${text}"`,
+    );
+
+    // 2d. N MEANS N. The driver quotes the budget it was handed, so this reads
+    // the configured 2000ms straight out of the driver's mouth and proves the
+    // retired grace's 3000ms is not being passed down any more. A timing
+    // assertion could not show this: under the grace the OUTER timer still fired
+    // at 2s, so the elapsed time looked identical while the driver held 3000ms.
+    if (adapter.quotesItsBudget) {
+      const causeText = cause instanceof Error ? cause.message : "";
+      assert(
+        `database_connect_timeout_${adapter.name}_hands_the_driver_the_configured_bound_not_a_grace`,
+        new RegExp(`\\b${BOUND_MS}\\s*ms\\b`).test(causeText)
+          && !new RegExp(`\\b${RETIRED_GRACE_MS}\\s*ms\\b`).test(causeText),
+        `with TINA4_DATABASE_CONNECT_TIMEOUT=${BOUND_SECONDS} the ${adapter.name} driver must be given `
+        + `${BOUND_MS}ms, not ${RETIRED_GRACE_MS}ms - N must not silently mean N+1. The driver said: `
+        + `"${causeText}"`,
+      );
+    }
   }
+
+  // The bound is a real ceiling in TIME too, not only in the message - one
+  // assertion over the slowest of the four, because the number that matters is
+  // the worst case. A driver knob left at N + a grace with nothing else bounding
+  // it would surface here as a wait past N.
+  assert(
+    "database_connect_timeout_every_driver_knob_adapter_fails_within_the_configured_bound",
+    slowest.elapsedMs < RETIRED_GRACE_MS,
+    `with TINA4_DATABASE_CONNECT_TIMEOUT=${BOUND_SECONDS} every driver-knob connect must fail at about `
+    + `${BOUND_MS}ms and well before ${RETIRED_GRACE_MS}ms; the slowest was ${slowest.name} at `
+    + `${slowest.elapsedMs}ms`,
+  );
+
+  // -- 2e. NEGATIVE CONTROL for the tolerance: a FAST real failure is NOT
+  //        dressed up as a timeout.
+  //
+  // The translator decides "was this our bound?" by elapsed time with a small
+  // clock tolerance. Widen that tolerance carelessly and every connection error
+  // - refused, bad credentials, unknown database - starts reporting itself as a
+  // TINA4_DATABASE_CONNECT_TIMEOUT expiry, which sends an operator hunting a
+  // timeout that never happened. Nothing above can see that: the cases there all
+  // WANT the translation.
+  //
+  // A CLOSED port, deliberately, which is the one thing a hung server cannot
+  // give: ECONNREFUSED in about a millisecond, against a real socket.
+  setEnv("TINA4_DATABASE_CONNECT_TIMEOUT", String(BOUND_SECONDS));
+  const closed = await hungServer();
+  const closedPort = closed.port;
+  closed.close();
+  const refused = await raceAgainstDeadline(
+    new PostgresAdapter({ host: "127.0.0.1", port: closedPort, database: "probe" }).connect(),
+    15000,
+  );
+  const refusedText = refused.error?.message ?? "";
+  assert(
+    "database_connect_timeout_a_fast_real_failure_is_not_translated_into_a_timeout",
+    refused.outcome === "rejected"
+      && refused.elapsedMs < BOUND_MS - 100
+      && !refusedText.includes("TINA4_DATABASE_CONNECT_TIMEOUT")
+      && !refusedText.includes("timed out after"),
+    `a connection REFUSED after ${refused.elapsedMs}ms is a real error, not the bound expiring, and must `
+    + `reach the caller untouched; got (${refused.outcome}): "${refusedText}"`,
+  );
 
   // -- 4. NEGATIVE CONTROL: <= 0 really disables the bound ------------------
   //

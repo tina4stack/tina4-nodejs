@@ -112,17 +112,17 @@ export class MssqlAdapter implements DatabaseAdapter {
       };
     }
 
-    const handshake = new Promise<void>((resolve, reject) => {
-      this.connection = new Connection(tediousConfig);
-      this.connection.on("connect", (err: Error | null) => {
-        if (err) reject(err);
-        else resolve();
-      });
-      this.connection.connect();
-    });
-
+    // Inside the thunk so the Tina4 clock starts before tedious arms its own
+    // connectTimer (connection.js, at the top of its connect flow).
     await withConnectTimeout(
-      handshake,
+      () => new Promise<void>((resolve, reject) => {
+        this.connection = new Connection(tediousConfig);
+        this.connection.on("connect", (err: Error | null) => {
+          if (err) reject(err);
+          else resolve();
+        });
+        this.connection.connect();
+      }),
       budgetMs,
       tediousConfig.server ?? "localhost",
       tediousConfig.options?.port ?? 1433,

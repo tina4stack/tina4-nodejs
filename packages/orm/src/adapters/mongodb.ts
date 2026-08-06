@@ -320,10 +320,12 @@ export class MongodbAdapter implements DatabaseAdapter {
       ? {}
       : { serverSelectionTimeoutMS: driverMs, connectTimeoutMS: driverMs };
 
-    this.client = new MongoClient(this._connectionString, timeoutOptions);
     const { host, port } = connectTarget(this._connectionString, 27017);
     await withConnectTimeout(
-      this.client.connect(),
+      () => {
+        this.client = new MongoClient(this._connectionString, timeoutOptions);
+        return this.client.connect();
+      },
       budgetMs,
       host,
       port,

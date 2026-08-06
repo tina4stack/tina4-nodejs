@@ -86,7 +86,7 @@ export class OdbcAdapter implements DatabaseAdapter {
     // the native driver thread it is waiting on cannot be cancelled from JS.
     const { host, port } = this.describeTarget();
     this.connection = await withConnectTimeout(
-      connectFn(connStr),
+      () => connectFn(connStr),
       connectTimeoutMillis(),
       host,
       port,

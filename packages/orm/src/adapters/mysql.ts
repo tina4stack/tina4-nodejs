@@ -67,39 +67,42 @@ export class MysqlAdapter implements DatabaseAdapter {
     const driverMs = driverConnectTimeoutMillis(budgetMs);
     const timeoutOption = driverMs === null ? {} : { connectTimeout: driverMs };
 
-    if (typeof this.config === "string") {
-      // Parse URL: mysql://user:pass@host:port/database
-      const url = new URL(this.config);
-      this.connection = mod.createConnection({
-        host: url.hostname || "localhost",
-        port: url.port ? parseInt(url.port, 10) : 3306,
-        user: decodeURIComponent(url.username),
-        password: decodeURIComponent(url.password),
-        database: url.pathname.replace(/^\//, ""),
-        ...timeoutOption,
-      });
-    } else {
-      this.connection = mod.createConnection({
-        host: this.config.host ?? "localhost",
-        port: this.config.port ?? 3306,
-        user: this.config.user,
-        password: this.config.password,
-        database: this.config.database,
-        ...timeoutOption,
-      });
-    }
-
-    // Promisify the connection
-    const handshake = new Promise<void>((resolve, reject) => {
-      this.connection.connect((err: Error | null) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-
     const { host, port } = connectTarget(this.config, 3306);
+    // createConnection() IS the arming point - mysql2 starts its connectTimeout
+    // at the END OF ITS CONSTRUCTOR (base/connection.js), not inside connect() -
+    // so it has to sit inside the thunk for the Tina4 clock to start first.
     await withConnectTimeout(
-      handshake,
+      () => {
+        if (typeof this.config === "string") {
+          // Parse URL: mysql://user:pass@host:port/database
+          const url = new URL(this.config);
+          this.connection = mod.createConnection({
+            host: url.hostname || "localhost",
+            port: url.port ? parseInt(url.port, 10) : 3306,
+            user: decodeURIComponent(url.username),
+            password: decodeURIComponent(url.password),
+            database: url.pathname.replace(/^\//, ""),
+            ...timeoutOption,
+          });
+        } else {
+          this.connection = mod.createConnection({
+            host: this.config.host ?? "localhost",
+            port: this.config.port ?? 3306,
+            user: this.config.user,
+            password: this.config.password,
+            database: this.config.database,
+            ...timeoutOption,
+          });
+        }
+
+        // Promisify the connection
+        return new Promise<void>((resolve, reject) => {
+          this.connection.connect((err: Error | null) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+      },
       budgetMs,
       host,
       port,

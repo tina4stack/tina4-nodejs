@@ -102,15 +102,17 @@ export class PostgresAdapter implements DatabaseAdapter {
     const driverMs = driverConnectTimeoutMillis(budgetMs);
     const timeoutOption = driverMs === null ? {} : { connectionTimeoutMillis: driverMs };
 
-    if (typeof this.config === "string") {
-      this.client = new Client({ connectionString: this.config, ...timeoutOption });
-    } else {
-      this.client = new Client({ ...this.config, ...timeoutOption });
-    }
-
     const { host, port } = connectTarget(this.config, 5432);
+    // Everything that touches pg lives inside the thunk so the Tina4 clock
+    // starts before pg arms its own timer (client.js `_connect`, cleared only at
+    // ReadyForQuery - so the knob covers the whole handshake, not just the TCP).
     await withConnectTimeout(
-      this.client!.connect(),
+      () => {
+        this.client = typeof this.config === "string"
+          ? new Client({ connectionString: this.config, ...timeoutOption })
+          : new Client({ ...this.config, ...timeoutOption });
+        return this.client!.connect();
+      },
       budgetMs,
       host,
       port,
