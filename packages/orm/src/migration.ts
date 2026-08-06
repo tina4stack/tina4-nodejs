@@ -1176,9 +1176,24 @@ export async function status(
  */
 export async function createMigration(
   description: string,
-  options?: { migrationsDir?: string; kind?: "sql" | "class" },
+  options?: { migrationsDir?: string; kind?: "sql" | "code" | "class" },
 ): Promise<string | { upPath: string; downPath: string }> {
-  if (options?.kind === "class") {
+  // MEASURED 2026-08-06: the accepted kind differed in every framework -
+  // python "python", php "php", ruby "ruby" OR "python", node "class" - and
+  // NONE validated it, so create_migration(..., kind="python") produced a code
+  // migration in Python and Ruby and a SILENT .sql file in PHP and Node.
+  // "code" is now the canonical spelling in all four; each keeps its own
+  // language name as a legacy alias; anything else raises.
+  const kind = (options?.kind ?? "sql").trim().toLowerCase();
+  if (!["sql", "code", "class"].includes(kind)) {
+    throw new Error(
+      `Unknown migration kind "${kind}". Use "sql" (default) or "code" ` +
+        `(alias: "class"). An unrecognised kind used to produce a .sql file ` +
+        `silently, which is why this now throws.`,
+    );
+  }
+
+  if (kind === "code" || kind === "class") {
     return createClassMigration(description, options);
   }
   const dir = resolve(options?.migrationsDir ?? "migrations");
@@ -1337,15 +1352,18 @@ export class Migration {
    * Scaffold a new migration file.
    *
    * kind="sql"   — creates {timestamp}_{description}.sql + .down.sql (default)
-   * kind="class" — creates {timestamp}_{description}.ts with a TypeScript class template
+   * kind="code"  — creates {timestamp}_{description}.ts with a TypeScript class
+   *                 template. "class" is accepted as a legacy alias.
    *
    * Returns the path to the created up file (or class file).
    */
-  async create(description: string, kind: "sql" | "class" = "sql"): Promise<string | { upPath: string; downPath: string }> {
-    if (kind === "class") {
-      return createClassMigration(description, { migrationsDir: this.dir });
-    }
-    return createMigration(description, { migrationsDir: this.dir });
+  async create(
+    description: string,
+    kind: "sql" | "code" | "class" = "sql",
+  ): Promise<string | { upPath: string; downPath: string }> {
+    // Route through createMigration so the validation lives in ONE place - a
+    // second copy of the accepted set is a second place for it to drift.
+    return createMigration(description, { migrationsDir: this.dir, kind });
   }
 
   /** Return list of completed (applied) migration filenames. */
