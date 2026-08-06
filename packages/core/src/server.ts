@@ -1810,8 +1810,26 @@ ${reset}
       await middleware.run(req, res);
       if (res.raw.writableEnded) return;
 
-      // Parse request body
-      await req.parseBody();
+      // Parse request body.
+      //
+      // A body that breaks a documented limit is the client's error, not the
+      // server's. PayloadTooLargeError already carried `statusCode = 413` and
+      // nothing read it, so an oversized upload answered 500 - which tells the
+      // caller to retry the exact request that will fail again.
+      try {
+        await req.parseBody();
+      } catch (err) {
+        const status = (err as { statusCode?: number })?.statusCode;
+        if (typeof status === "number" && status >= 400 && status < 500) {
+          if (!rawRes.writableEnded) {
+            rawRes.statusCode = status;
+            rawRes.setHeader("content-type", "application/json");
+            rawRes.end(JSON.stringify({ error: (err as Error).message }));
+          }
+          return;
+        }
+        throw err;
+      }
 
       const pathname = req.path;
 

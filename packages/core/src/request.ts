@@ -160,18 +160,39 @@ async function parseBody(req: Tina4Request): Promise<void> {
   const chunks: Buffer[] = [];
 
   await new Promise<void>((resolve, reject) => {
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", resolve);
+    // A RUNNING cap, checked per chunk.
+    //
+    // The content-length check above only sees what the client DECLARES. A
+    // chunked request declares nothing, so declaredLength is 0 and it sails
+    // through. Without this counter the body is buffered in full and only
+    // then measured, which means the limit cannot prevent the thing it exists
+    // to prevent. Measured against a 1MB limit: a 40MB chunked POST with no
+    // content-length was accepted whole and grew the server's RSS by exactly
+    // 40.0MB before it was refused.
+    //
+    // Same defect as PHP's unbounded read buffer, and the same fix: stop at
+    // the limit instead of measuring the damage afterwards.
+    let received = 0;
+    let refused = false;
+    req.on("data", (chunk: Buffer) => {
+      if (refused) return;
+      received += chunk.length;
+      if (received > TINA4_MAX_UPLOAD_SIZE) {
+        refused = true;
+        chunks.length = 0; // drop what we have; the request is dead
+        reject(new PayloadTooLargeError(received, TINA4_MAX_UPLOAD_SIZE));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!refused) resolve();
+    });
     req.on("error", reject);
   });
 
   const raw = Buffer.concat(chunks);
   if (raw.length === 0) return;
-
-  // Check actual body size against upload size limit
-  if (raw.length > TINA4_MAX_UPLOAD_SIZE) {
-    throw new PayloadTooLargeError(raw.length, TINA4_MAX_UPLOAD_SIZE);
-  }
 
   if (contentType.includes("multipart/form-data")) {
     const boundary = extractBoundary(contentType);
