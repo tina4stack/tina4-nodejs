@@ -370,6 +370,87 @@ console.log("\n--- L4: TINA4_LOG_ROTATE_* only — no legacy aliases ---");
 }
 
 // Cleanup
+// ── L5: explicit argument > environment > default (ADR-0041) ────────────────
+//
+// `Log.configure("/srv/app/logs")` is one line that means one thing, and it did
+// three different things across the four frameworks. Node reached the RIGHT
+// answer -- the argument won -- through a mechanism no other framework has:
+// configure() ASSIGNED to process.env.TINA4_LOG_DIR. So the argument won by
+// DESTROYING the operator's value for the rest of the process, and every child
+// process spawned afterwards inherited the argument instead of what the
+// operator set. Reading configuration must not write it.
+//
+// The coordinate under test IS "which value wins", so the child must not ask
+// the logger which directory it chose -- that delegates the asserted property
+// to the code under test. It controls both candidates and reports the
+// FILESYSTEM, plus what process.env still holds afterwards.
+console.log("\n--- L5: explicit argument beats the env, without mutating it (ADR-0041) ---");
+
+const PREC_CHILD = join(TMP, "precedenceChild.ts");
+writeFileSync(
+  PREC_CHILD,
+  [
+    `import { Log } from ${JSON.stringify(LOGGER_MODULE)};`,
+    `import { existsSync } from "node:fs";`,
+    `const envDir = process.env.PROBE_ENV_DIR!;`,
+    `const argDir = process.env.PROBE_ARG_DIR!;`,
+    `if (process.env.PROBE_PASS_ARG === "1") Log.configure(argDir);`,
+    `else Log.configure();`,
+    `Log.info("which directory won?");`,
+    `console.log(JSON.stringify({`,
+    `  inEnvDir: existsSync(envDir + "/tina4.log"),`,
+    `  inArgDir: existsSync(argDir + "/tina4.log"),`,
+    `  envAfter: process.env.TINA4_LOG_DIR ?? null,`,
+    `}));`,
+    "",
+  ].join("\n"),
+  "utf-8",
+);
+
+function runPrecedenceChild(passArg: boolean): { inEnvDir: boolean; inArgDir: boolean; envAfter: string | null } {
+  const dir = mkdtempSync(join(TMP, "prec-"));
+  const envDir = join(dir, "from_env");
+  const argDir = join(dir, "from_argument");
+  mkdirSync(envDir);
+  mkdirSync(argDir);
+  const childEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith("TINA4_LOG_") || k === "TINA4_DEBUG" || k === "TINA4_ENV") continue;
+    if (v !== undefined) childEnv[k] = v;
+  }
+  childEnv.TINA4_LOG_OUTPUT = "file";
+  childEnv.TINA4_LOG_DIR = envDir;
+  childEnv.PROBE_ENV_DIR = envDir;
+  childEnv.PROBE_ARG_DIR = argDir;
+  childEnv.PROBE_PASS_ARG = passArg ? "1" : "0";
+  const out = execFileSync("npx", ["tsx", PREC_CHILD], {
+    cwd: ROOT, encoding: "utf-8", env: childEnv, timeout: 40_000,
+  });
+  const line = out.trim().split("\n").filter((l) => l.trim().startsWith("{")).pop()!;
+  return JSON.parse(line);
+}
+
+const withArg = runPrecedenceChild(true);
+assert(
+  "L5 an explicit configure() directory beats a conflicting TINA4_LOG_DIR",
+  withArg.inArgDir && !withArg.inEnvDir,
+  `inArgDir=${withArg.inArgDir} inEnvDir=${withArg.inEnvDir} — the environment beat the explicit argument`,
+);
+assert(
+  "L5 configure() does NOT overwrite process.env.TINA4_LOG_DIR",
+  withArg.envAfter !== null && withArg.envAfter.endsWith("from_env"),
+  `TINA4_LOG_DIR reads ${JSON.stringify(withArg.envAfter)} after configure() — the operator's value was destroyed, and every child process spawned afterwards inherits the argument instead`,
+);
+
+// NEGATIVE half: without it, an implementation that ignored TINA4_LOG_DIR
+// ENTIRELY would satisfy both assertions above.
+const noArg = runPrecedenceChild(false);
+assert(
+  "L5 NEGATIVE: TINA4_LOG_DIR still applies when configure() is given no argument",
+  noArg.inEnvDir && !noArg.inArgDir,
+  `inEnvDir=${noArg.inEnvDir} inArgDir=${noArg.inArgDir} — TINA4_LOG_DIR was ignored with no explicit argument to outrank it`,
+);
+
 delete process.env.TINA4_LOG_STRICT;
 delete process.env.TINA4_LOG_OUTPUT;
 delete process.env.TINA4_LOG_DIR;
