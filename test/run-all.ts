@@ -7,7 +7,7 @@
  * file's summary line and aggregated into a grand total.
  */
 import { execSync, spawnSync } from "node:child_process";
-import { readdirSync, mkdirSync, rmSync } from "node:fs";
+import { readdirSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -62,11 +62,24 @@ function reapSandbox(): void {
 process.on("exit", reapSandbox);
 
 // Discover all test files.
-// The i18n suites are vitest tests (describe/it/expect) — they are run by the
-// `test:i18n` npm script (`vitest run …`), NOT by this tsx-spawning runner,
-// so skip them here (tsx can't execute a vitest suite — it errors on the
-// `vitest` import). The root `npm test` runs this runner THEN `test:i18n`.
-const VITEST_FILES = new Set(["i18n.test.ts", "i18n-leaf-alias.test.ts"]);
+//
+// Some suites are vitest (describe/it/expect) rather than plain tsx scripts.
+// tsx cannot execute those - it errors on the `vitest` import - so they are
+// collected separately and driven through `vitest run` further down.
+//
+// DETECTED, not listed. This was a hardcoded set of two filenames, and a new
+// vitest suite added to test/ was silently spawned under tsx, died on the
+// import, and reported as "FAIL <file> (died before reporting - no summary
+// line)" - which reads like a broken test rather than a runner that cannot run
+// it. Three new suites hit that on the same day. A file that imports from
+// "vitest" IS a vitest suite; asking the file beats maintaining a list of them.
+const isVitestSuite = (f: string): boolean => {
+  try {
+    return /\bfrom\s+["']vitest["']/.test(readFileSync(join(__dirname, f), "utf8"));
+  } catch {
+    return false;
+  }
+};
 
 // Metrics is measured by the NATIVE engine in the tina4 Rust CLI (ADR-0002) and
 // has no in-framework fallback, so these files need that binary on PATH and
@@ -85,14 +98,15 @@ const METRICS_FILES = new Set([
 ]);
 const skipMetrics = (process.env.TINA4_SKIP_METRICS ?? "1") !== "0";
 
-const testFiles = readdirSync(__dirname)
-  .filter(
-    (f) =>
-      f.endsWith(".test.ts") &&
-      !VITEST_FILES.has(f) &&
-      !(skipMetrics && METRICS_FILES.has(f))
-  )
+const allTestFiles = readdirSync(__dirname)
+  .filter((f) => f.endsWith(".test.ts"))
   .sort();
+
+const VITEST_FILES = new Set(allTestFiles.filter(isVitestSuite));
+
+const testFiles = allTestFiles.filter(
+  (f) => !VITEST_FILES.has(f) && !(skipMetrics && METRICS_FILES.has(f))
+);
 
 // Also include integration.ts
 const allFiles = ["integration.ts", ...testFiles];
