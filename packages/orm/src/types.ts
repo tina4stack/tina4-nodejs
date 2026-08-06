@@ -31,6 +31,13 @@ export interface RelationshipDefinition {
 
 export interface ModelDefinition {
   tableName: string;
+  /**
+   * The model CLASS name (e.g. `Item` for tableName `items`), carried from
+   * `ModelClass.name` at discovery. Swagger keys `components.schemas` by this —
+   * the type name a generated client wants — falling back to a singular
+   * PascalCase derivation of tableName when a raw definition carries none.
+   */
+  className?: string;
   fields: Record<string, FieldDefinition>;
   fieldMapping?: Record<string, string>;
   softDelete?: boolean;

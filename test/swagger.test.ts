@@ -34,6 +34,7 @@ const routes: RouteDefinition[] = [
 const models = [
   {
     tableName: "users",
+    className: "User",
     fields: {
       id: { type: "integer" as const, primaryKey: true, autoIncrement: true },
       name: { type: "string" as const, required: true, minLength: 1, maxLength: 100 },
@@ -98,8 +99,11 @@ assert("meta tags are used", Array.isArray(getProducts?.tags) && (getProducts?.t
 // --- Model schema ---
 console.log("\n--- Model schema ---");
 
-const userSchema = spec.components?.schemas?.users as Record<string, unknown>;
-assert("users schema exists", userSchema !== undefined);
+// S2 (3.13.96): components.schemas is keyed by the model CLASS name ('User'),
+// not the tableName ('users'), so a generated client gets `class User`.
+const userSchema = spec.components?.schemas?.User as Record<string, unknown>;
+assert("User schema exists (keyed by class name, not tableName)", userSchema !== undefined);
+assert("tableName key is NOT used", spec.components?.schemas?.users === undefined);
 assert("schema type is object", userSchema?.type === "object");
 
 const props = userSchema?.properties as Record<string, Record<string, unknown>>;
@@ -152,7 +156,7 @@ const jsonContent = content?.["application/json"] as Record<string, unknown>;
 assert("requestBody has application/json", jsonContent !== undefined);
 
 const schema = jsonContent?.schema as Record<string, unknown>;
-assert("schema references users model", schema?.$ref === "#/components/schemas/users");
+assert("schema references User model by class name", schema?.$ref === "#/components/schemas/User");
 
 // --- Tag inference ---
 console.log("\n--- Tag inference ---");
@@ -201,6 +205,7 @@ console.log("\n--- foreignKey + default (v3.13.40) ---");
 
 const fkModels = [{
   tableName: "posts",
+  className: "Post",
   fields: {
     id: { type: "integer" as const, primaryKey: true, autoIncrement: true },
     author_id: { type: "foreignKey" as const, references: "User" },
@@ -208,7 +213,7 @@ const fkModels = [{
   },
 }];
 const fkSpec = generate([], fkModels);
-const postsProps = (fkSpec.components?.schemas?.posts as Record<string, Record<string, Record<string, unknown>>>)?.properties;
+const postsProps = (fkSpec.components?.schemas?.Post as Record<string, Record<string, Record<string, unknown>>>)?.properties;
 assert("foreignKey field maps to integer", postsProps?.author_id?.type === "integer");
 assert("field default is mapped", postsProps?.status?.default === "draft");
 

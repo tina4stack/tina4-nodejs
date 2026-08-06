@@ -38,6 +38,10 @@ export async function discoverModels(modelsDir: string): Promise<DiscoveredModel
 
       const definition: ModelDefinition = {
         tableName: ModelClass.tableName,
+        // The class name is the type name a generated OpenAPI client wants
+        // (`Item`, not `items`). Carry it so Swagger keys components.schemas by
+        // it. A model exported as `default` keeps its declared class name here.
+        className: typeof ModelClass.name === "string" && ModelClass.name ? ModelClass.name : undefined,
         fields: ModelClass.fields as Record<string, FieldDefinition>,
         fieldMapping: ModelClass.fieldMapping as Record<string, string> | undefined,
         softDelete: ModelClass.softDelete ?? false,

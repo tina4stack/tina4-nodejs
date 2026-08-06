@@ -140,8 +140,12 @@ export function generate(
 ): OpenAPISpec {
   const info: OpenAPISpecInfo = {
     title: process.env.TINA4_SWAGGER_TITLE ?? "Tina4 API",
-    version: process.env.TINA4_SWAGGER_VERSION ?? "0.0.1",
-    description: process.env.TINA4_SWAGGER_DESCRIPTION ?? "Auto-generated API documentation",
+    // The app's version, defaulting to 1.0.0 — NOT the framework's (Node shipped
+    // 0.0.1). description defaults to the empty string, not a canned sentence.
+    // Both are the settled cross-framework defaults (parity with the Python
+    // master); TINA4_SWAGGER_VERSION / _DESCRIPTION still override.
+    version: process.env.TINA4_SWAGGER_VERSION ?? "1.0.0",
+    description: process.env.TINA4_SWAGGER_DESCRIPTION ?? "",
   };
 
   // Optional contact — email, plus name/url (the interface declares them; they
@@ -188,10 +192,15 @@ export function generate(
   // Reusable custom schemas referenced by routes via meta.requestSchema/responseSchemas.
   const refSchemas = new Set<string>();
 
-  // Generate schemas from models
+  // Generate schemas from models, keyed by the model CLASS name ('Item'), which
+  // is the type name a generated client wants — never the tableName ('items').
+  // `tableToSchema` maps a path-inferred tableName back to that schema key so a
+  // POST/PUT request body $ref resolves to the same 'Item' entry.
+  const tableToSchema = new Map<string, string>();
   for (const model of models) {
-    const schema = modelToSchema(model);
-    spec.components!.schemas![model.tableName] = schema;
+    const schemaKey = schemaNameForModel(model);
+    tableToSchema.set(model.tableName, schemaKey);
+    spec.components!.schemas![schemaKey] = modelToSchema(model);
   }
 
   const usedTags: string[] = [];
@@ -263,23 +272,27 @@ export function generate(
       };
     } else if (method === "post" || method === "put") {
       const modelName = inferModelFromPath(route.pattern);
-      if (modelName && models.some((m) => m.tableName === modelName)) {
-        const media: Record<string, unknown> = {
-          schema: { $ref: `#/components/schemas/${modelName}` },
-        };
+      const schemaKey = modelName ? tableToSchema.get(modelName) : undefined;
+      if (schemaKey) {
+        const sref = `#/components/schemas/${schemaKey}`;
+        const media: Record<string, unknown> = { schema: { $ref: sref } };
         if (route.meta?.example !== undefined) media.example = route.meta.example;
         operation.requestBody = {
           required: true,
           content: { "application/json": media },
         };
 
-        // Add response schema
-        operation.responses = {
-          ...(method === "post"
-            ? { "201": { description: "Created", content: { "application/json": { schema: { $ref: `#/components/schemas/${modelName}` } } } } }
-            : { "200": { description: "Updated", content: { "application/json": { schema: { $ref: `#/components/schemas/${modelName}` } } } } }),
-          "422": { description: "Validation failed" },
-        };
+        // Response documents 200 with the resource schema — parity with the
+        // Python master, which emits ONLY 200 for a model write. The old code
+        // stamped an unconditional 422 and a 201 the generator has no way to know
+        // a given route returns; both were fiction on a path-inferred write. A
+        // route that genuinely answers another code declares it via
+        // meta.responses, which is honoured above and never clobbered here.
+        if (route.meta?.responses === undefined) {
+          operation.responses = {
+            "200": { description: "Successful response", content: { "application/json": { schema: { $ref: sref } } } },
+          };
+        }
       } else if (route.meta?.example !== undefined) {
         // Non-model body with an explicit example.
         operation.requestBody = {
@@ -392,6 +405,36 @@ function resolveServers(): { url: string }[] {
   if (urls.length > 0) return urls.map((url) => ({ url }));
   const dev = (process.env.SWAGGER_DEV_URL ?? "").trim();
   return dev.length > 0 ? [{ url: dev }] : [{ url: "/" }];
+}
+
+/**
+ * The `components.schemas` key for a model: its CLASS name when carried from
+ * discovery (`ModelClass.name`, e.g. `Item`), else a singular PascalCase
+ * derivation of the tableName so a raw `{tableName, fields}` still yields a
+ * client-friendly type name ('items' -> 'Item').
+ */
+function schemaNameForModel(model: ModelDefinition): string {
+  const explicit = model.className?.trim();
+  if (explicit) return explicit;
+  return deriveClassName(model.tableName);
+}
+
+/** 'items' -> 'Item', 'blog_posts' -> 'BlogPost', 'categories' -> 'Category'. */
+function deriveClassName(tableName: string): string {
+  return singularize(tableName)
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join("") || tableName;
+}
+
+/** Best-effort English singularisation for the common plural-table convention. */
+function singularize(word: string): string {
+  if (/ies$/i.test(word) && word.length > 3) return word.slice(0, -3) + "y";
+  if (/(ses|xes|zes|ches|shes)$/i.test(word)) return word.slice(0, -2);
+  if (/ss$/i.test(word)) return word;      // "class"/"address" stay as-is
+  if (/s$/i.test(word) && word.length > 1) return word.slice(0, -1);
+  return word;
 }
 
 function modelToSchema(model: ModelDefinition): Record<string, unknown> {
@@ -536,10 +579,29 @@ function inferModelFromPath(pattern: string): string | null {
   return null;
 }
 
+/**
+ * operationId base from method + path, mirroring the Python master's
+ * `_operation_id`: strip leading/trailing slashes, turn internal `/` into `_`,
+ * drop braces, catch-all `...` and a bare splat `*` -> `wildcard`.
+ *
+ * Underscores are deliberately NOT collapsed. Collapsing made `/__health` and
+ * `/health` both reduce to `get_health`, so one got a `_2` suffix and WHICH one
+ * depended on registration order — a generated client's method name flipping
+ * between builds. Preserving them yields `get___health` vs `get_health`, two
+ * distinct ids straight from the two distinct paths.
+ */
+function operationIdBase(method: string, openApiPath: string): string {
+  const clean = openApiPath
+    .replace(/^\/+|\/+$/g, "")   // strip leading/trailing slashes (Python .strip("/"))
+    .replace(/\//g, "_")          // internal slash -> underscore
+    .replace(/\.\.\./g, "")       // catch-all '...' inside braces -> nothing ({...slug} -> slug)
+    .replace(/[{}]/g, "")         // drop braces
+    .replace(/\*/g, "wildcard");  // bare splat -> wildcard
+  return clean ? `${method}_${clean}` : method;
+}
+
 function uniqueOperationId(method: string, openApiPath: string, seen: Set<string>): string {
-  const base = (method + openApiPath.replace(/[/{}]/g, "_"))
-    .replace(/_+/g, "_")
-    .replace(/_$/, "");
+  const base = operationIdBase(method, openApiPath);
   let oid = base;
   let n = 2;
   while (seen.has(oid)) {
