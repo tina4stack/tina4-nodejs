@@ -543,12 +543,21 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
   // not throw" — a failure blamed on the framework instead of the harness.
   const bitsBindNow = bitsBindAlready || (droppedEuid && permissionBitsAreEnforced());
   // And verify the denial about to happen is about the FILE. Whoever performs
-  // the write must still be able to enter the directory and see the record: if
-  // the directory itself were unreadable (mkdtemp makes it 0700, and after the
-  // euid drop that is root's 0700, not ours) the EACCES would be a traversal
-  // refusal and this test would pass without the session file's bits ever
-  // mattering. existsSync() here needs both the traverse and the file.
-  const fileStillVisible = existsSync(sessFile);
+  // the write must still be able to enter the directory and reach the record:
+  // if the directory itself were untraversable (mkdtemp makes it 0700, and
+  // after the euid drop that is root's 0700, not ours) the EACCES would be a
+  // traversal refusal and this test would pass without the session file's own
+  // bits ever being consulted.
+  //
+  // statSync, NOT existsSync. Measured on the lab (Ubuntu 24.04, Node 24.18,
+  // euid dropped to nobody, directory 0700 root-owned): existsSync returned
+  // TRUE on a path whose statSync threw EACCES — it cannot prove absence, so it
+  // answers true when it is merely forbidden to look. As a traversal probe it
+  // is a proxy for the property, not the property, and this instrument passed
+  // under exactly the mutation it exists to catch.
+  const fileStillVisible = (() => {
+    try { statSync(sessFile); return true; } catch { return false; }
+  })();
 
   let threw = false;
   let cause = "";
