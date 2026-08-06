@@ -55,8 +55,6 @@ export { Session, FileSessionHandler, RedisSessionHandler, buildSessionCookie, i
 export type { SessionConfig, SessionHandler } from "./session.js";
 export { I18n } from "./i18n.js";
 export { FakeData } from "./fakeData.js";
-export { ScssCompiler } from "./scss.js";
-export type { ScssConfig } from "./scss.js";
 export { Queue } from "./queue.js";
 export type { QueueConfig, QueueJob, ProcessOptions } from "./queue.js";
 export { createJob } from "./job.js";

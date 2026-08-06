@@ -34,7 +34,6 @@ tina4-nodejs/
         messenger.ts     # Messaging system
         queue.ts         # Queue system
         rateLimiter.ts   # Rate limiting middleware
-        scss.ts          # SCSS compilation
         service.ts       # Service layer helpers
         session.ts       # Session management
         testing.ts       # Inline testing framework (attach tests to functions)
@@ -132,7 +131,7 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `rateLimiter.ts` — Rate limiting middleware
 - `dotenv.ts` — `.env` file loading
 - `health.ts` — Health check endpoint
-- `scss.ts` — SCSS compilation
+- SCSS compilation is owned by the `tina4` Rust CLI (grass), not the framework
 - `messenger.ts` — Messaging system
 - `service.ts` — Service layer helpers
 - `wsdl.ts` — WSDL / SOAP support. **Hardening:** a SOAP message containing a `<!DOCTYPE>` is rejected with a `Client` fault ("DOCTYPE declarations are not allowed in SOAP messages") BEFORE the body is parsed and the operation never runs — SOAP 1.1 forbids DTDs and this closes the XML entity-expansion (billion-laughs) / external-entity (XXE) surface (defence in depth — the hand-rolled parser is already immune). `convertValue` for an `int`/`float`/`integer`/`double`/`number` param throws on a non-numeric value (matching Python's `int()`/`float()` raise) so it becomes a `Server` fault instead of a silent `NaN`. An operation that throws is logged via `Log.error`; the real cause reaches the client **only** under `TINA4_DEBUG` (`isDebugMode()`), else a generic `Internal server error`.
