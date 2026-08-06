@@ -282,31 +282,80 @@ if (!(await reachable(kHost, kPort))) {
       assert("KafkaBackend lifecycle ran without throwing", false, String(err));
     }
 
-    // (14) Default-config backend produces+consumes against the default broker —
+    // (14) Default-config backend produces+consumes against the DEFAULT broker —
     // a real round-trip proves the default connection works (not merely that a
-    // push method exists). Only when the default broker is the live one.
-    if (isLoopback(kHost) && kPort === 9092) {
-      const kafkaDefaults = new KafkaBackend();
-      const kDefTopic = "t_qb_def_" + Math.random().toString(16).slice(2, 12);
-      if (ensureKafkaTopic(kafkaContainer, kafkaBroker, kDefTopic)) {
-        try {
-          const defPayload = { data: "default-conn", nonce: Math.random().toString(16).slice(2) };
-          const defId = kafkaDefaults.push(kDefTopic, defPayload);
-          const defJob = kafkaDefaults.pop(kDefTopic);
-          assert("KafkaBackend default connection round-trips a payload", typeof defId === "string" && defJob !== null && JSON.stringify((defJob as any).payload) === JSON.stringify(defPayload), JSON.stringify(defJob?.payload));
-        } catch (err) {
-          assert("KafkaBackend default connection round-trip ran without throwing", false, String(err));
+    // push method exists).
+    //
+    // THIS CASE HAD THE SAME DEFECT AS THE RABBITMQ ONE ABOVE, and it was left
+    // alone longer because it PASSES — it produced no skip to notice. It gated
+    // on `isLoopback(kHost) && kPort === 9092`, derived from
+    // TINA4_TEST_KAFKA_URL, while `new KafkaBackend()` resolves from
+    // TINA4_KAFKA_BROKERS and TINA4_KAFKA_GROUP_ID. It gated on a variable the
+    // code under test never consults.
+    //
+    // The consequence was not a skip but something worse: the lab exports
+    // TINA4_KAFKA_GROUP_ID=tina4_node_group (lab-env-for.sh), so the backend
+    // this case built was NEVER the default one. It went green while exercising
+    // the lab's namespaced group id, and the documented default
+    // "tina4_consumer_group" was never once connected to. A passing test
+    // proving something other than what it claims is harder to find than a
+    // failing one.
+    //
+    // Fixed the way the RabbitMQ case now is: clear the overrides for the
+    // duration of this ONE case so the backend genuinely falls back to its
+    // built-in defaults, ask getConfig() what those are and ASSERT them, probe
+    // THAT broker, then round-trip. Every variable is restored in the finally.
+    //
+    // Isolation is not weakened: Kafka topic names are already randomised per
+    // run, so four suites against the default broker cannot collide.
+    {
+      const OVERRIDES = ["TINA4_QUEUE_URL", "TINA4_KAFKA_BROKERS", "TINA4_KAFKA_GROUP_ID"];
+      const snap: Record<string, string | undefined> = {};
+      for (const v of OVERRIDES) { snap[v] = process.env[v]; delete process.env[v]; }
+      try {
+        const kafkaDefaults = new KafkaBackend();
+        const defaults = kafkaDefaults.getConfig();
+        const defBroker = defaults.brokers ?? "localhost:9092";
+        const [dHost, dPortStr] = defBroker.split(":");
+        const dPort = parseInt(dPortStr ?? "9092", 10);
+        if (!(await reachable(dHost, dPort))) {
+          // Worded so the require-services gate CATCHES it: CI provisions Kafka
+          // on exactly this endpoint, so a skip here is a missing service, not
+          // a configuration choice, and must turn the run red.
+          console.log(`  SKIP: Kafka default-config round-trip — broker not reachable at the DEFAULT ${defBroker}.`);
+        } else {
+          const kDefTopic = "t_qb_def_" + Math.random().toString(16).slice(2, 12);
+          if (!ensureKafkaTopic(kafkaContainer, defBroker, kDefTopic)) {
+            // This branch drops EXACTLY ONE assertion and records no failure, so
+            // a run that takes it reads as "0 failed" with a grand total one
+            // lower than the run before it. Name the real cause so the next
+            // one-test drift identifies itself from the log instead of needing
+            // a bisect.
+            console.log(`  SKIP: could not create the default-config Kafka topic "${kDefTopic}" via the broker admin tool in container "${kafkaContainer}" (${lastTopicError}) — Kafka topic setup not available. This drops one assertion from the run total.`);
+          } else {
+            try {
+              // Assert what "default" MEANS before trusting the round-trip. This
+              // is the assertion whose absence let the case run for months
+              // against tina4_node_group: if the defaults silently change, a
+              // green push/pop here would be against some other broker or
+              // consumer group entirely.
+              assert(
+                "KafkaBackend with no config and no env resolves the documented defaults",
+                defBroker === "localhost:9092" && defaults.groupId === "tina4_consumer_group",
+                JSON.stringify(defaults),
+              );
+              const defPayload = { data: "default-conn", nonce: Math.random().toString(16).slice(2) };
+              const defId = kafkaDefaults.push(kDefTopic, defPayload);
+              const defJob = kafkaDefaults.pop(kDefTopic);
+              assert("KafkaBackend default connection round-trips a payload", typeof defId === "string" && defJob !== null && JSON.stringify((defJob as any).payload) === JSON.stringify(defPayload), JSON.stringify(defJob?.payload));
+            } catch (err) {
+              assert("KafkaBackend default connection round-trip ran without throwing", false, String(err));
+            }
+          }
         }
-      } else {
-        // This branch drops EXACTLY ONE assertion (the round-trip above) and
-        // records no failure, so a run that takes it reads as "0 failed" with a
-        // grand total one lower than the run before it. Name the real cause so
-        // the next one-test drift identifies itself from the log instead of
-        // needing a bisect.
-        console.log(`  SKIP: could not create the default-config Kafka topic "${kDefTopic}" via the broker admin tool in container "${kafkaContainer}" (${lastTopicError}) — Kafka topic setup not available. This drops one assertion from the run total.`);
+      } finally {
+        for (const v of OVERRIDES) { if (snap[v] === undefined) delete process.env[v]; else process.env[v] = snap[v]; }
       }
-    } else {
-      console.log("  SKIP: Kafka default-broker round-trip — TINA4_TEST_KAFKA_URL points away from the default localhost:9092.");
     }
   }
 }
@@ -332,21 +381,6 @@ console.log("\n--- File queue via Queue class ---");
 import { Queue } from "../packages/core/src/index.ts";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-
-/**
- * Is this host the DEFAULT endpoint, whatever spelling it arrived in?
- *
- * These two checks compared the configured host to the literal string
- * "localhost", so the lab's TINA4_TEST_RABBITMQ_URL=amqp://...@127.0.0.1:5672
- * and TINA4_TEST_KAFKA_URL=127.0.0.1:9092 were judged to "point away from the
- * default" and both round-trips skipped on every run -- against brokers that
- * were listening on exactly those ports. 127.0.0.1 IS localhost; the comparison
- * was of a spelling, not of an endpoint.
- */
-function isLoopback(host: string): boolean {
-  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
-  return h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "0.0.0.0";
-}
 
 const TEST_PATH = join("/tmp", "tina4-qb-test-" + Date.now());
 
