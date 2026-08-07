@@ -122,11 +122,20 @@ export interface ImapMessage {
   seen: boolean;
 }
 
-/** Attachment metadata from a read() message — no content bytes (G5). */
+/**
+ * An attachment from a read() message. `content` is the RAW DECODED BYTES of the
+ * part (transfer-decoded from base64 / quoted-printable), the SAME convention as
+ * req.files[x].content — raw bytes, not base64 — so an attachment is downloadable
+ * as-is; `size` is that decoded byte length. Parity with Python's read()
+ * attachment dict {filename, content_type, size, content}, in Node's idiomatic
+ * camelCase (ADR-0008 / G5). #69 folded the bytes in HERE — there is no separate
+ * carrier (Python retired its attachments_data in 3.13.96).
+ */
 export interface ImapAttachment {
   filename: string;
   contentType: string;
   size: number;
+  content: Buffer;
 }
 
 export interface ImapFullMessage {
@@ -139,7 +148,7 @@ export interface ImapFullMessage {
   date: string;
   bodyText: string;
   bodyHtml: string;
-  /** Attachments (metadata only). Empty when the message carries none (G5). */
+  /** Attachments, each carrying its decoded bytes. Empty when the message has none (G5 / #69). */
   attachments: ImapAttachment[];
   headers: Record<string, string>;
 }
@@ -1139,6 +1148,41 @@ function decodeTransfer(body: string, encoding: string): string {
   return body;
 }
 
+/**
+ * Transfer-decode an attachment part body to its RAW BYTES (#69). base64 and
+ * quoted-printable become the original octets; 7bit/8bit/binary/absent pass
+ * through as their own bytes. This is the byte-level sibling of decodeTransfer()
+ * (which returns text for the message bodies): an attachment must round-trip
+ * byte-for-byte to be downloadable, so it returns a Buffer, never a string.
+ * Mirrors Python's part.get_payload(decode=True).
+ */
+function decodeAttachmentBytes(body: string, encoding: string): Buffer {
+  const enc = encoding.toLowerCase().trim();
+  if (enc === "base64") {
+    // The transport wraps base64 at 76 cols (RFC 2045); strip ALL whitespace so
+    // the wrapped lines rejoin into exactly the original bytes.
+    return Buffer.from(body.replace(/\s+/g, ""), "base64");
+  }
+  // RFC 2046: the CRLF immediately before the boundary delimiter belongs to the
+  // boundary, not the part body — drop exactly that one trailing CRLF.
+  const trimmed = body.replace(/\r\n$/, "");
+  if (enc === "quoted-printable") {
+    const collapsed = trimmed.replace(/=\r?\n/g, "");               // soft line breaks
+    const bytes: number[] = [];
+    for (let i = 0; i < collapsed.length; i++) {
+      const hex = collapsed.substring(i + 1, i + 3);
+      if (collapsed[i] === "=" && /^[0-9A-Fa-f]{2}$/.test(hex)) {
+        bytes.push(parseInt(hex, 16));
+        i += 2;
+      } else {
+        bytes.push(collapsed.charCodeAt(i) & 0xff);
+      }
+    }
+    return Buffer.from(bytes);
+  }
+  return Buffer.from(trimmed, "utf-8");
+}
+
 /** filename="..." from Content-Disposition, else name="..." from Content-Type. */
 function attachmentFilename(disposition: string, contentType: string): string {
   const d = disposition.match(/filename="?([^";\r\n]+)"?/i);
@@ -1208,14 +1252,15 @@ function parseMessage(response: string): ParsedMessage {
         const pType = pHeaders["content-type"] ?? "text/plain";
         const disposition = pHeaders["content-disposition"] ?? "";
         if (/attachment/i.test(disposition)) {
-          const rawBody = pBody.trim();
-          const size = cte.toLowerCase().trim() === "base64"
-            ? Buffer.from(rawBody.replace(/\s+/g, ""), "base64").length
-            : Buffer.byteLength(rawBody, "utf-8");
+          // The RAW DECODED BYTES of the part (#69) — transfer-decoded so the
+          // attachment is downloadable byte-for-byte (same convention as
+          // req.files[x].content); size is that decoded byte length.
+          const content = decodeAttachmentBytes(pBody, cte);
           attachments.push({
             filename: attachmentFilename(disposition, pType),
             contentType: pType.split(";")[0].trim(),
-            size,
+            size: content.length,
+            content,
           });
         } else if (pType.includes("text/html")) {
           bodyHtml = decodeTransfer(pBody, cte).trim();

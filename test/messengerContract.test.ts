@@ -43,7 +43,7 @@
  */
 import net from "node:net";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -561,6 +561,106 @@ async function main(): Promise<void> {
         assert(
           full!.bodyText.includes(marker),
           `bodyText must be the decoded body, got ${JSON.stringify(full!.bodyText)}`,
+        );
+      });
+  }
+
+  // ── #8b msg-read-item-shape / #69: attachments carry the DECODED BYTES ───────
+  // A message WITH a real file attachment, sent over real SMTP and read back over
+  // real IMAP. The framework base64-encodes the part on send; read() must decode
+  // it back to the EXACT original bytes (raw Buffer, not base64) — the same
+  // convention as req.files[x].content — and report size as that decoded byte
+  // length. Random BINARY content is used so a lossy text round-trip cannot pass.
+  {
+    const t =
+      "msg-read-item-shape read-attachments-carry-decoded-bytes: read() attachment has filename/contentType/size AND content = the exact original bytes";
+    if (!greenmailUp) skip(t, gmDown);
+    else
+      await check(t, async () => {
+        const dir = mkdtempSync(join(tmpdir(), "tina4-attach-"));
+        try {
+          const fileName = `payload-${randomBytes(4).toString("hex")}.bin`;
+          const filePath = join(dir, fileName);
+          const originalBytes = randomBytes(2048); // arbitrary BINARY, not text
+          writeFileSync(filePath, originalBytes);
+
+          const addr = recipient();
+          const m = messengerFor(addr);
+          const subject = `attachbytes-${randomBytes(4).toString("hex")}`;
+          // attachments is the 9th positional arg to send().
+          const sent: SendResult = await m.send(
+            addr, subject, "see attachment", false,
+            undefined, undefined, undefined, undefined, [filePath],
+          );
+          assert(sent.success === true, `send with an attachment failed: ${JSON.stringify(sent)}`);
+
+          let full: Awaited<ReturnType<Messenger["read"]>> = null;
+          for (let i = 0; i < 40; i++) {
+            const hit = (await m.inbox()).find((x) => x.subject === subject);
+            if (hit) {
+              full = await m.read(hit.uid);
+              break;
+            }
+            await new Promise((r) => setTimeout(r, 250));
+          }
+          assert(full !== null, "attachment message never arrived / read() returned null");
+
+          const att = full!.attachments.find((a) => a.filename === fileName);
+          assert(
+            att !== undefined,
+            `attachment '${fileName}' not listed: ${JSON.stringify(full!.attachments.map((a) => a.filename))}`,
+          );
+          assert(
+            att!.contentType === "application/octet-stream",
+            `contentType must be application/octet-stream (as sent), got ${JSON.stringify(att!.contentType)}`,
+          );
+          // content is the RAW DECODED BYTES (a Buffer), same convention as req.files[x].content.
+          assert(Buffer.isBuffer(att!.content), `attachment.content must be a Buffer, got ${typeof att!.content}`);
+          assert(
+            Buffer.compare(att!.content, originalBytes) === 0,
+            `attachment.content must equal the original bytes (got ${att!.content.length} bytes vs ${originalBytes.length})`,
+          );
+          // size is the DECODED byte length, never the base64 length.
+          assert(
+            att!.size === originalBytes.length,
+            `size must be the decoded byte length ${originalBytes.length}, got ${att!.size}`,
+          );
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+  }
+
+  // ── #8c msg-read-item-shape: read() carries EXACTLY the 10 canonical keys ─────
+  // Canonical set {uid, subject, from, to, cc, date, bodyText, bodyHtml,
+  // attachments, headers} — no strays (ADR-0042). #8 asserts the set on a plain
+  // message; this pins the COUNT explicitly, so a stray top-level key (e.g. the
+  // decoded bytes leaking out of `attachments`) turns it red.
+  {
+    const t =
+      "msg-read-item-shape read-item-shape-is-exactly-ten-keys: read() has EXACTLY the 10 canonical keys, no strays";
+    if (!greenmailUp) skip(t, gmDown);
+    else
+      await check(t, async () => {
+        const addr = recipient();
+        const m = messengerFor(addr);
+        const subject = `tenkeys-${randomBytes(4).toString("hex")}`;
+        const env = await deliverAndWait(m, addr, subject, "exactly ten canonical keys");
+        const full = await m.read(env.uid);
+        assert(full !== null, "read() returned null for a delivered message");
+
+        const keys = Object.keys(full!).sort();
+        const canonical = [
+          "attachments", "bodyHtml", "bodyText", "cc", "date",
+          "from", "headers", "subject", "to", "uid",
+        ].sort();
+        assert(
+          keys.length === 10,
+          `read() must have EXACTLY 10 keys, got ${keys.length}: ${JSON.stringify(keys)}`,
+        );
+        assert(
+          JSON.stringify(keys) === JSON.stringify(canonical),
+          `read() key set must be EXACTLY the 10 canonical keys, got ${JSON.stringify(keys)}`,
         );
       });
   }
