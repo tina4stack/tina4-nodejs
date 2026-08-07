@@ -167,8 +167,8 @@ assert("POST creates second user", create2.status === 201, `got ${create2.status
 
 const list = await request("GET", "/api/users");
 assert("GET /api/users lists users", list.status === 200);
-assert("List returns 2 users", list.data?.data?.length === 2, `got: ${list.data?.data?.length}`);
-assert("List has pagination meta", list.data?.meta?.total === 2, `got: ${list.data?.meta?.total}`);
+assert("List returns 2 users", list.data?.records?.length === 2, `got: ${list.data?.records?.length}`);
+assert("List total is the true count", list.data?.total === 2, `got: ${list.data?.total}`);
 
 const update = await request("PUT", "/api/users/1", { name: "Alice Updated" });
 assert("PUT /api/users/1 updates", update.status === 200, `got ${update.status}: ${JSON.stringify(update.data)}`);
@@ -178,7 +178,7 @@ const del = await request("DELETE", "/api/users/2");
 assert("DELETE /api/users/2 works", del.status === 200, `got ${del.status}: ${JSON.stringify(del.data)}`);
 
 const afterDelete = await request("GET", "/api/users");
-assert("After delete, 1 user remains", afterDelete.data?.data?.length === 1, `got: ${afterDelete.data?.data?.length}`);
+assert("After delete, 1 user remains", afterDelete.data?.records?.length === 1, `got: ${afterDelete.data?.records?.length}`);
 
 console.log("\n--- Filtering & Pagination ---");
 
@@ -186,15 +186,15 @@ await request("POST", "/api/users", { name: "Charlie", email: "charlie@test.com"
 await request("POST", "/api/users", { name: "Diana", email: "diana@test.com", age: 28 });
 
 const filtered = await request("GET", "/api/users?filter[name]=Charlie");
-assert("Filter by name works", filtered.data?.data?.length === 1, `got: ${filtered.data?.data?.length}`);
-assert("Filtered result is Charlie", filtered.data?.data?.[0]?.name === "Charlie", `got: ${filtered.data?.data?.[0]?.name}`);
+assert("Filter by name works", filtered.data?.records?.length === 1, `got: ${filtered.data?.records?.length}`);
+assert("Filtered result is Charlie", filtered.data?.records?.[0]?.name === "Charlie", `got: ${filtered.data?.records?.[0]?.name}`);
 
 const sorted = await request("GET", "/api/users?sort=-name");
-assert("Sort descending works", sorted.data?.data?.[0]?.name === "Diana", `got: ${sorted.data?.data?.[0]?.name}`);
+assert("Sort descending works", sorted.data?.records?.[0]?.name === "Diana", `got: ${sorted.data?.records?.[0]?.name}`);
 
 const paged = await request("GET", "/api/users?page=1&limit=1");
-assert("Pagination limit works", paged.data?.data?.length === 1, `got: ${paged.data?.data?.length}`);
-assert("Pagination meta correct", paged.data?.meta?.totalPages === 3, `got: ${paged.data?.meta?.totalPages}`);
+assert("Pagination limit works", paged.data?.records?.length === 1, `got: ${paged.data?.records?.length}`);
+assert("Pagination total_pages correct", paged.data?.total_pages === 3, `got: ${paged.data?.total_pages}`);
 
 console.log("\n--- Validation ---");
 

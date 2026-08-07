@@ -1,6 +1,7 @@
 import type { RouteDefinition, Tina4Request, Tina4Response } from "../../core/src/index.js";
 import type { DiscoveredModel } from "./model.js";
 import { getAdapter, adapterQuery, adapterExecute } from "./database.js";
+import { DatabaseResult } from "./databaseResult.js";
 import { buildQuery, parseQueryString } from "./query.js";
 import { validate } from "./validation.js";
 
@@ -158,20 +159,21 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         const countParams = params.slice(0, -2);
         const rows = await adapterQuery(adapter, sql, params);
 
+        // total is the TRUE total for the filter (a COUNT probe), NEVER the number
+        // of rows this page returned (ADR-0043). limit/offset are exactly what the
+        // SQL applied — buildQuery derives offset as (page - 1) * limit.
         const countRow = await adapterQuery(adapter, countSql, countParams);
         const total = Number(countRow[0]?.total ?? 0);
         const limit = qp.limit ?? 100;
         const page = qp.page ?? 1;
+        const offset = (page - 1) * limit;
 
-        res.json({
-          data: rows,
-          meta: {
-            total,
-            page,
-            limit,
-            totalPages: Math.ceil(total / limit),
-          },
-        });
+        // The REST list envelope IS the canonical paginate envelope: exactly the
+        // seven snake_case keys DatabaseResult.toPaginate() builds — records, total,
+        // page, per_page, total_pages, limit, offset — so this endpoint and
+        // db.fetch(...).toPaginate() can never drift (ADR-0043). No `data` alias, no
+        // camelCase `totalPages`, no nested `meta`.
+        res.json(new DatabaseResult(rows, undefined, total, limit, offset).toPaginate());
       },
     });
 

@@ -8,7 +8,6 @@ import { Router, RouteGroup } from "../packages/core/src/index.ts";
 import type { Tina4Request, Tina4Response, UploadedFile } from "../packages/core/src/index.ts";
 import { SQLiteAdapter } from "../packages/orm/src/adapters/sqlite.ts";
 import { DatabaseResult } from "../packages/orm/src/databaseResult.ts";
-import { FetchResult } from "../packages/orm/src/types.ts";
 import { buildQuery, parseQueryString } from "../packages/orm/src/query.ts";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -155,37 +154,27 @@ assert(
 );
 
 // -------------------------------------------------------
-// 4. toPaginate() slices correctly
+// 4. toPaginate() describes the fetched page (ADR-0043)
 // -------------------------------------------------------
-console.log("\n--- 4. toPaginate() slices correctly ---");
+console.log("\n--- 4. toPaginate() describes the fetched page (ADR-0043) ---");
 
-const records: Record<string, unknown>[] = [];
-for (let i = 0; i < 50; i++) {
-  records.push({ id: i + 1, name: `Item ${i + 1}` });
-}
+// The old FetchResult.toPaginate(page, perPage) re-sliced rows in memory; ADR-0043
+// abolished that. The real DatabaseResult (what db.fetch returns) holds the page's
+// rows plus the TRUE total, and toPaginate() takes NO arguments — it derives the
+// seven-key envelope from the query that ran, never re-slicing. A page-2 fetch
+// (limit 10, offset 10) over a 50-row table:
+const pageRecords: Record<string, unknown>[] = [];
+for (let i = 11; i <= 20; i++) pageRecords.push({ id: i, name: `Item ${i}` });
+const pageResult = new DatabaseResult(pageRecords, undefined, 50, 10, 10);
+const env106 = pageResult.toPaginate();
 
-const fetchResult = new FetchResult(records);
-const page2 = fetchResult.toPaginate(2, 10);
-
-assert("Page 2, perPage 10 returns 10 items", page2.data.length === 10);
-assert(
-  "First item on page 2 is id 11",
-  (page2.data[0] as { id: number }).id === 11,
-);
-assert(
-  "Last item on page 2 is id 20",
-  (page2.data[9] as { id: number }).id === 20,
-);
-assert("Total count is 50", page2.total === 50);
-assert("Total pages is 5", page2.totalPages === 5);
-assert("Page 2 hasNext is true", page2.hasNext === true);
-assert("Page 2 hasPrev is true", page2.hasPrev === true);
-
-// Edge: last page
-const lastPage = fetchResult.toPaginate(5, 10);
-assert("Last page hasNext is false", lastPage.hasNext === false);
-assert("Last page hasPrev is true", lastPage.hasPrev === true);
-assert("Last page has 10 items", lastPage.data.length === 10);
+assert("Page 2 carries its 10 rows verbatim", env106.records.length === 10);
+assert("First row on page 2 is id 11", (env106.records[0] as { id: number }).id === 11);
+assert("Last row on page 2 is id 20", (env106.records[9] as { id: number }).id === 20);
+assert("total is the true total (50), not rows returned", env106.total === 50);
+assert("total_pages is ceil(50/10) = 5", env106.total_pages === 5);
+assert("page is derived from the offset (2)", env106.page === 2);
+assert("per_page is the applied limit (10)", env106.per_page === 10);
 
 // -------------------------------------------------------
 // 5. columnInfo() types

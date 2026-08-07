@@ -7,10 +7,7 @@ export type {
   ColumnInfo,
   QueryOptions,
   RelationshipDefinition,
-  PaginatedResult,
 } from "./types.js";
-
-export { FetchResult } from "./types.js";
 
 export { DatabaseResult } from "./databaseResult.js";
 export type { ColumnInfoResult } from "./databaseResult.js";

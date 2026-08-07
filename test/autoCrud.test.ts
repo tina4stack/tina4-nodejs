@@ -182,29 +182,35 @@ await (async () => {
   const getByIdHandler = liveRoutes.find(r => r.method === "GET" && r.pattern === "/api/users/{id}")!.handler;
 
   // GET /api/users — the list handler must run a real SELECT and return the
-  // real rows plus pagination meta computed from a real COUNT(*).
+  // canonical seven-key paginate envelope (ADR-0043): records + a true COUNT(*),
+  // NOT a `data`/`meta` shape.
   {
     const { statusCode, body } = await invokeHandler(listHandler);
     assert("GET-list handler responds 200 off the wire", statusCode === 200, String(statusCode));
-    assert("GET-list returns data array of the 3 real rows",
-      Array.isArray(body?.data) && body.data.length === 3,
+    assert("GET-list returns records array of the 3 real rows",
+      Array.isArray(body?.records) && body.records.length === 3,
       JSON.stringify(body));
     assert("GET-list rows carry the real column values",
-      body?.data?.[0]?.name === "Alice" && body?.data?.[0]?.email === "alice@example.com",
-      JSON.stringify(body?.data?.[0]));
-    assert("GET-list meta.total reflects real COUNT(*)", body?.meta?.total === 3, JSON.stringify(body?.meta));
-    assert("GET-list meta.page defaults to 1", body?.meta?.page === 1, JSON.stringify(body?.meta));
-    assert("GET-list meta.limit defaults to 100", body?.meta?.limit === 100, JSON.stringify(body?.meta));
-    assert("GET-list meta.totalPages computed from total/limit", body?.meta?.totalPages === 1, JSON.stringify(body?.meta));
+      body?.records?.[0]?.name === "Alice" && body?.records?.[0]?.email === "alice@example.com",
+      JSON.stringify(body?.records?.[0]));
+    assert("GET-list total reflects real COUNT(*)", body?.total === 3, JSON.stringify(body));
+    assert("GET-list page defaults to 1", body?.page === 1, JSON.stringify(body));
+    assert("GET-list per_page defaults to 100", body?.per_page === 100, JSON.stringify(body));
+    assert("GET-list limit defaults to 100", body?.limit === 100, JSON.stringify(body));
+    assert("GET-list total_pages computed from total/per_page", body?.total_pages === 1, JSON.stringify(body));
+    assert("GET-list envelope is exactly the seven snake_case keys",
+      JSON.stringify(Object.keys(body ?? {}).sort()) ===
+        JSON.stringify(["limit", "offset", "page", "per_page", "records", "total", "total_pages"]),
+      JSON.stringify(Object.keys(body ?? {})));
   }
 
   // GET /api/users?filter[active]=1 — the real WHERE filter narrows the rows.
   {
     const { statusCode, body } = await invokeHandler(listHandler, { query: { "filter[active]": "1" } });
     assert("GET-list honours a real ?filter[] (active=1 → 2 rows)",
-      statusCode === 200 && Array.isArray(body?.data) && body.data.length === 2,
+      statusCode === 200 && Array.isArray(body?.records) && body.records.length === 2,
       JSON.stringify(body));
-    assert("GET-list filtered meta.total reflects filtered COUNT(*)", body?.meta?.total === 2, JSON.stringify(body?.meta));
+    assert("GET-list filtered total reflects filtered COUNT(*)", body?.total === 2, JSON.stringify(body));
   }
 
   // GET /api/users/{id} — the by-id handler returns the single real row.
