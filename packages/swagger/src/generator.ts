@@ -233,14 +233,18 @@ export function generate(
     if (route.meta?.description) operation.description = route.meta.description;
     if (route.meta?.deprecated) operation.deprecated = true;
 
-    // Add path parameters
+    // Add path parameters. Each typed token maps to its JSON Schema fragment
+    // (int -> integer, uuid -> string+format, slug -> string+pattern, ...) via
+    // PARAM_TYPE_SCHEMA below, mirroring the Python master's _PARAM_TYPE_SCHEMA
+    // and the router's accepted token set. An unknown token degrades to string
+    // rather than dropping the parameter, and the token never reaches the key.
     const pathParams = extractPathParams(route.pattern);
     if (pathParams.length > 0) {
-      operation.parameters = pathParams.map((name) => ({
+      operation.parameters = pathParams.map(({ name, schema }) => ({
         name,
         in: "path",
         required: true,
-        schema: { type: "string" },
+        schema,
       }));
     }
 
@@ -522,35 +526,93 @@ function inferSchema(value: unknown): Record<string, unknown> {
   return { type: "string" };
 }
 
-function patternToOpenAPI(pattern: string): string {
-  return pattern.replace(/\[\.\.\.(\w+)\]/g, "{$1}").replace(/\[(\w+)\]/g, "{$1}");
+/**
+ * Path-param type token -> JSON Schema fragment. Mirrors the Python master's
+ * `_PARAM_TYPE_SCHEMA` (tina4_python/swagger/__init__.py) and the router's
+ * `PARAM_TYPE_PATTERNS`, so the documented contract matches EXACTLY what the
+ * router accepts. `int`/`integer` -> integer, `float`/`number` -> number,
+ * `uuid` -> string+format, `slug`/`alpha`/`alnum` -> string+pattern, bare/`path`
+ * -> string. A token NOT in this table degrades to `{type:"string"}` (see
+ * `extractPathParams`) rather than dropping the parameter.
+ */
+const PARAM_TYPE_SCHEMA: Record<string, Record<string, unknown>> = {
+  int: { type: "integer" },
+  integer: { type: "integer" },
+  float: { type: "number" },
+  number: { type: "number" },
+  uuid: { type: "string", format: "uuid" },
+  slug: { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+  alpha: { type: "string", pattern: "^[A-Za-z]+$" },
+  alnum: { type: "string", pattern: "^[A-Za-z0-9]+$" },
+  path: { type: "string" },
+  string: { type: "string" },
+};
+
+/**
+ * The (name, type) of a single dynamic path segment, or null for a static one.
+ *
+ * Accepts EVERY shape a route pattern can carry: the brace form `{id}` /
+ * `{id:int}` / `{...slug}` (the runtime/programmatic spelling), the file-system
+ * form `[id]` / `[...slug]` (route discovery converts these to `{...}` before a
+ * route is registered, but `generate()` is public and a caller may hand either),
+ * and the Express form `:id`. A catch-all (`...`) carries no type token, so it
+ * is always a string.
+ */
+function segmentParam(segment: string): { name: string; type: string } | null {
+  if (segment.startsWith("{") && segment.endsWith("}")) {
+    const inner = segment.slice(1, -1);
+    if (inner.startsWith("...")) return { name: inner.slice(3), type: "string" };
+    const colon = inner.indexOf(":");
+    if (colon >= 0) return { name: inner.slice(0, colon), type: inner.slice(colon + 1) };
+    return { name: inner, type: "string" };
+  }
+  if (segment.startsWith("[") && segment.endsWith("]")) {
+    const inner = segment.slice(1, -1);
+    return { name: inner.startsWith("...") ? inner.slice(3) : inner, type: "string" };
+  }
+  if (segment.startsWith(":") && segment.length > 1) {
+    return { name: segment.slice(1), type: "string" };
+  }
+  return null;
 }
 
 /**
- * The dynamic segment names in a route pattern, in BOTH spellings.
- *
- * This matched only `[id]` - the FILE-SYSTEM spelling. Route discovery converts
- * `[id]` directories to `{id}` URL patterns before a route is ever registered
- * ("File system uses [id] notation, but URL patterns use {id} to match
- * Python"), so at runtime this regex ran against `{id}` looking for `[id]` and
- * returned nothing. Every operation shipped with no `in: path` parameter, which
- * makes the document invalid OpenAPI - measured against openapi-spec-validator,
- * and unconditionally, because the framework registers `/__frond/live/{name}`
- * itself.
- *
- * It looked fine for two reasons: the path KEY was built by a different
- * function that handles both, and swagger.test.ts hand-fed bracket patterns the
- * framework never produces.
- *
- * Both spellings are accepted rather than only the runtime one, because
- * `generate()` is public and a caller may hand it either.
+ * The OpenAPI path key for a route pattern: every dynamic segment collapses to a
+ * bare `{name}`, so the type token NEVER leaks into the key (PHP shipped
+ * `/api/typed/{id:int}` as the key — invalid, and a mismatch with the declared
+ * parameter). File-system `[id]`/`[...slug]`, runtime `{id:int}`/`{...slug}` and
+ * Express `:id` all normalise to `{name}`.
  */
-function extractPathParams(pattern: string): string[] {
-  const params: string[] = [];
-  const regex = /\[(?:\.\.\.)?(\w+)\]|\{(?:\.\.\.)?(\w+)\}/g;
-  let match;
-  while ((match = regex.exec(pattern)) !== null) {
-    params.push(match[1] ?? match[2]);
+function patternToOpenAPI(pattern: string): string {
+  return pattern
+    .split("/")
+    .map((segment) => {
+      const p = segmentParam(segment);
+      return p ? `{${p.name}}` : segment;
+    })
+    .join("/");
+}
+
+/**
+ * Every dynamic path parameter of a route pattern as a `{name, schema}` pair.
+ *
+ * This once matched only `[id]` - the FILE-SYSTEM spelling - while route
+ * discovery had already converted `[id]` to `{id}`, so at runtime the regex ran
+ * against `{id}` looking for `[id]` and returned nothing: every operation
+ * shipped with no `in: path` parameter, an invalid document (measured against
+ * openapi-spec-validator), unconditionally, because the framework registers
+ * `/__frond/live/{name}` itself. Beyond that first fix, a TYPED token like
+ * `{id:int}` was still dropped (the name-only regex did not match past the
+ * colon) and its type leaked into the path key. This segment-based walk resolves
+ * both spellings AND the type token, mapping it through PARAM_TYPE_SCHEMA so the
+ * documented type matches the route the router compiled.
+ */
+function extractPathParams(pattern: string): Array<{ name: string; schema: Record<string, unknown> }> {
+  const params: Array<{ name: string; schema: Record<string, unknown> }> = [];
+  for (const segment of pattern.split("/")) {
+    const p = segmentParam(segment);
+    if (!p) continue;
+    params.push({ name: p.name, schema: { ...(PARAM_TYPE_SCHEMA[p.type] ?? { type: "string" }) } });
   }
   return params;
 }

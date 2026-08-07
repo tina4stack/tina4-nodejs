@@ -94,6 +94,7 @@
     "redis": "^4.7.0"
   },
   "devDependencies": {
+    "@apidevtools/swagger-parser": "^12.1.0",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.20.0",
     "esbuild": "^0.24.0",
