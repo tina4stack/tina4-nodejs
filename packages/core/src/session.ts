@@ -711,10 +711,17 @@ export class Session {
    *
    *   session.flash("message", "Saved!")  // set
    *   session.flash("message")            // get + auto-remove → "Saved!"
+   *   session.flash("message", null)      // get + auto-remove (null is a GET sentinel)
+   *
+   * `null` — NOT just `undefined` — is the GET sentinel, so `flash(key, null)`
+   * READS and clears rather than STORING null. This matches the Python master
+   * (`if value is not None`), PHP (`if ($value !== null)`) and Ruby
+   * (`if value.nil?`): passing the language's "no value" literal means GET. A
+   * caller wanting to persist an explicit null should store it with `set()`.
    */
   flash(key: string, value?: unknown): unknown {
     const flashKey = `${FLASH_PREFIX}${key}`;
-    if (value !== undefined) {
+    if (value !== undefined && value !== null) {
       // Set mode
       this.set(flashKey, value);
       return undefined;
