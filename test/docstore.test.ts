@@ -187,6 +187,44 @@ console.log("\n--- ObjectId field round-trip ---");
   db.close();
 }
 
+// ── distinct dedups by value (ObjectId + Date) ───────────────────────────────
+// distinct() dedups by VALUE, including ObjectId (24-hex) and Date (instant) -
+// not by object identity. valuesEqual() handles both; decoded docs rehydrate
+// ObjectId/Date as fresh objects, so a plain === would treat equal values as
+// distinct. Parity with the PHP fix + Python master + Ruby.
+console.log("\n--- distinct dedups by value ---");
+{
+  const { db, orders } = freshOrders();
+  const catA = new ObjectId("64d2f8a1b2c3d4e5f6a7b8c9");
+  const catB = new ObjectId("64d2f8a1b2c3d4e5f6a7b8ca");
+  const d1 = new Date("2026-08-07T12:00:00Z");
+  const d2 = new Date("2026-08-08T09:30:00Z");
+  await orders.insertMany([
+    { category_id: catA, when: d1 },
+    { category_id: catA, when: d1 },
+    { category_id: catA, when: d2 },
+    { category_id: catB, when: d2 },
+    { category_id: catB, when: d1 },
+  ]);
+
+  // ObjectId: two distinct values (A x3, B x2) -> exactly 2, not 5.
+  const ids = (await orders.distinct("category_id")) as ObjectId[];
+  const hexes = ids.map((o) => o.toString()).sort();
+  assert("distinct dedups repeated ObjectId by value",
+    ids.length === 2 &&
+    JSON.stringify(hexes) === JSON.stringify(["64d2f8a1b2c3d4e5f6a7b8c9", "64d2f8a1b2c3d4e5f6a7b8ca"]),
+    `got ${ids.length}: ${JSON.stringify(hexes)}`);
+
+  // Date: two distinct instants (D1 x3, D2 x2) -> exactly 2, not 5.
+  const dates = (await orders.distinct("when")) as Date[];
+  const times = dates.map((d) => d.getTime()).sort();
+  assert("distinct dedups repeated Date by value",
+    dates.length === 2 &&
+    JSON.stringify(times) === JSON.stringify([d1.getTime(), d2.getTime()].sort()),
+    `got ${dates.length}`);
+  db.close();
+}
+
 // ── updates ──────────────────────────────────────────────────────────────────
 console.log("\n--- updates ---");
 {
