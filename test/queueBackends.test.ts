@@ -140,11 +140,25 @@ if (!(await reachable(rmqHost, rmqPort))) {
     rabbit.pop(rmqQueue);
     assert("RabbitMQBackend.size reflects a dequeue (1 after 1 pop)", rabbit.size(rmqQueue) === 1, `got ${rabbit.size(rmqQueue)}`);
 
-    // (5) clear() purges the queue — size()===0 and pop()===null afterwards.
+    // (5) clear()/purge() REFUSE by name (ADR-0022): RabbitMQ cannot address
+    // messages by status, so a status-addressed clear/purge would have to drain
+    // the WHOLE live queue. Both must throw naming themselves, and the pending
+    // job must SURVIVE - never silently drained. (Was: assert clear() drained
+    // the queue to size 0, which locked in the data-loss bug this release fixes.)
     rabbit.push(rmqQueue, { n: 3 });
-    rabbit.clear(rmqQueue);
-    assert("RabbitMQBackend.clear purges the queue (size 0)", rabbit.size(rmqQueue) === 0, `got ${rabbit.size(rmqQueue)}`);
-    assert("RabbitMQBackend.clear leaves pop returning null", rabbit.pop(rmqQueue) === null);
+    const rmqSizeBefore = rabbit.size(rmqQueue);
+    let rmqClearMsg = "";
+    try { rabbit.clear(rmqQueue); } catch (e: any) { rmqClearMsg = String(e?.message ?? e); }
+    assert("RabbitMQBackend.clear refuses by name instead of draining the live queue",
+      /rabbitmq/i.test(rmqClearMsg) && /clear/i.test(rmqClearMsg), rmqClearMsg.slice(0, 90) || "it did NOT throw");
+    let rmqPurgeMsg = "";
+    try { rabbit.purge(rmqQueue, "completed"); } catch (e: any) { rmqPurgeMsg = String(e?.message ?? e); }
+    assert("RabbitMQBackend.purge refuses by name instead of draining the live queue",
+      /rabbitmq/i.test(rmqPurgeMsg) && /purge/i.test(rmqPurgeMsg), rmqPurgeMsg.slice(0, 90) || "it did NOT throw");
+    // The refused clear+purge must have touched NOTHING: the pending jobs the
+    // old draining clear() would have destroyed are all still on the broker.
+    assert("RabbitMQBackend.clear/purge left the pending jobs intact (no drain, no data loss)",
+      rmqSizeBefore > 0 && rabbit.size(rmqQueue) === rmqSizeBefore, `before ${rmqSizeBefore}, after ${rabbit.size(rmqQueue)}`);
   } catch (err) {
     assert("RabbitMQBackend lifecycle ran without throwing", false, String(err));
   } finally {
@@ -272,12 +286,21 @@ if (!(await reachable(kHost, kPort))) {
       // here as the behavioural design assert (the typeof check was redundant).
       assert("KafkaBackend.size is 0 by design (no queue-size concept)", kafka.size(kTopic) === 0, `got ${kafka.size(kTopic)}`);
 
-      // (12)+(15) clear() is a documented no-op. Assert the no-op contract
-      // behaviourally: after clear() the producer is still usable for a
-      // subsequent push and size() stays 0 by design — not just "did not throw".
-      kafka.clear(kTopic);
+      // (12)+(15) clear()/purge() REFUSE by name (ADR-0022): a Kafka log cannot
+      // delete records on demand, so both must THROW naming themselves rather
+      // than be a silent no-op. The refusal touches nothing, so the producer
+      // stays usable afterwards. (Was: assert clear() is a no-op, which locked
+      // in the silent no-op this release fixes.)
+      let kClearMsg = "";
+      try { kafka.clear(kTopic); } catch (e: any) { kClearMsg = String(e?.message ?? e); }
+      assert("KafkaBackend.clear refuses by name instead of silently no-opping",
+        /kafka/i.test(kClearMsg) && /clear/i.test(kClearMsg), kClearMsg.slice(0, 90) || "it did NOT throw");
+      let kPurgeMsg = "";
+      try { kafka.purge(kTopic, "completed"); } catch (e: any) { kPurgeMsg = String(e?.message ?? e); }
+      assert("KafkaBackend.purge refuses by name instead of silently no-opping",
+        /kafka/i.test(kPurgeMsg) && /purge/i.test(kPurgeMsg), kPurgeMsg.slice(0, 90) || "it did NOT throw");
       const kId2 = kafka.push(kTopic, { data: "after-clear", nonce: Math.random().toString(16).slice(2) });
-      assert("KafkaBackend.clear is a no-op: producer still usable after it", typeof kId2 === "string" && kId2.length > 0 && kafka.size(kTopic) === 0, kId2);
+      assert("KafkaBackend.clear/purge did not disturb the producer (still usable after the refusal)", typeof kId2 === "string" && kId2.length > 0 && kafka.size(kTopic) === 0, kId2);
     } catch (err) {
       assert("KafkaBackend lifecycle ran without throwing", false, String(err));
     }

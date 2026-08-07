@@ -697,7 +697,28 @@ export class KafkaBackend implements QueueBackend {
   }
 
   clear(_queue: string): void {
-    // Kafka topics are cleared via retention policies, not purging
-    // This is a no-op for Kafka
+    // Not performable on Kafka - throws naming the backend and the operation.
+    // clear() empties the queue, but a Kafka log cannot delete records on
+    // demand: a partition is read in offset order and records leave only by
+    // retention. This used to be a silent no-op, which claimed the queue was
+    // emptied when it was untouched (ADR-0022 invariant 6). PHP, Python and
+    // Ruby already refuse by name; this brings the Node backend class in line.
+    throw new Error(
+      "The kafka queue backend cannot perform clear(): Kafka has no notion of " +
+        "job status and cannot delete records on demand. A log is read in " +
+        "offset order and records leave only by retention. Use the file or " +
+        "mongodb backend.",
+    );
+  }
+
+  purge(_queue: string, _status?: string): number {
+    // Not performable on Kafka - throws naming the backend and the operation.
+    // purge(status) removes jobs SELECTED BY STATUS; a Kafka log has no notion
+    // of status to purge by. Refusing by name is the honest answer.
+    throw new Error(
+      "The kafka queue backend cannot perform purge(): Kafka has no notion of " +
+        "job status to purge by. A log is read in offset order and records " +
+        "leave only by retention. Use the file or mongodb backend.",
+    );
   }
 }

@@ -471,16 +471,8 @@ export class RabbitMQBackend implements QueueBackend {
             process.stdout.write(String(msgCount));
             closeConnection();
           }
-          else if (operation === "purge") {
-            // Queue.Purge
-            const qBuf = Buffer.from(queueName, "utf-8");
-            const purgePayload = Buffer.alloc(4 + qBuf.length);
-            purgePayload.writeUInt16BE(0, 0);
-            purgePayload.writeUInt8(qBuf.length, 2);
-            qBuf.copy(purgePayload, 3);
-            purgePayload.writeUInt8(0, 3 + qBuf.length); // no-wait=false
-            sendMethod(1, 50, 30, purgePayload);
-          }
+          // No "purge" operation: clear()/purge() refuse by name (ADR-0022),
+          // so nothing ever sends Queue.Purge and the drain path is gone.
         }
         else if (classId === 60 && methodId === 71) {
           // Basic.Get-Ok — message body will follow in content frames
@@ -489,11 +481,6 @@ export class RabbitMQBackend implements QueueBackend {
         else if (classId === 60 && methodId === 72) {
           // Basic.Get-Empty
           process.stdout.write("__EMPTY__");
-          closeConnection();
-        }
-        else if (classId === 50 && methodId === 31) {
-          // Queue.Purge-Ok
-          process.stdout.write("__PURGED__");
           closeConnection();
         }
         else if (classId === 10 && methodId === 50) {
@@ -633,7 +620,32 @@ export class RabbitMQBackend implements QueueBackend {
     return isNaN(num) ? 0 : num;
   }
 
-  clear(queue: string): void {
-    this.execSync("purge", queue);
+  clear(_queue: string): void {
+    // Not performable on RabbitMQ - throws naming the backend and the operation.
+    // clear() empties the queue, but RabbitMQ cannot address messages by status;
+    // the only thing it could do is queue.purge the WHOLE live queue. This used
+    // to do exactly that (execSync("purge", queue)), silently destroying every
+    // pending job. Draining a live broker on a status-addressed clear is data
+    // loss (ADR-0022 invariant 6), so it refuses by name instead. PHP, Python
+    // and Ruby already refuse; this brings the Node backend class in line.
+    throw new Error(
+      "The rabbitmq queue backend cannot perform clear(): RabbitMQ cannot " +
+        "address messages by status (basic.get pops the head of the queue), so " +
+        "a status-addressed clear would have to drain the entire live queue and " +
+        "destroy pending work. Use the file or mongodb backend.",
+    );
+  }
+
+  purge(_queue: string, _status?: string): number {
+    // Not performable on RabbitMQ - throws naming the backend and the operation.
+    // purge(status) removes jobs SELECTED BY STATUS; RabbitMQ has no status
+    // concept and could only drain the whole live queue. Refusing by name is
+    // the honest answer.
+    throw new Error(
+      "The rabbitmq queue backend cannot perform purge(): RabbitMQ cannot " +
+        "address messages by status (basic.get pops the head of the queue), so " +
+        "a status-addressed purge would have to drain the entire live queue and " +
+        "destroy pending work. Use the file or mongodb backend.",
+    );
   }
 }
