@@ -33,11 +33,13 @@ assert("records are the rows the query returned", p.records.length === 20, `got 
 assert("records are not re-sliced", (p.records[0] as any)?.id === 40, `got ${(p.records[0] as any)?.id}`);
 assert("total is the true total", p.total === 250, `got ${p.total}`);
 
-// NEGATIVE: slicing from row 0 a result whose rows start at 40 is the measured
-// Ruby zero-rows bug. It must throw, not answer wrongly.
+// NEGATIVE (ADR-0043): toPaginate() takes NO arguments — passing any argument
+// RAISES. A DatabaseResult holds no connection, so an argument could only
+// re-slice rows already in memory (the measured Ruby zero-rows bug) and lie
+// about total_pages. It must throw, not answer wrongly.
 let threw = false;
-try { pageThree().toPaginate(2, 10); } catch { threw = true; }
-assert("slicing an already-offset page is refused", threw);
+try { (pageThree() as unknown as { toPaginate: (p: number, q: number) => unknown }).toPaginate(2, 10); } catch { threw = true; }
+assert("passing an argument to toPaginate() is refused", threw);
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

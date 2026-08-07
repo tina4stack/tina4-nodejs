@@ -6,6 +6,34 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+### Breaking: `toPaginate()` is the seven-key envelope and `.count` is the true total (3.13.96)
+
+Feature 18, ADR-0043. MEASURED 2026-08-05 across all four frameworks on a real
+250-row table read with limit=20 offset=40 (page 3 of 13); Node emitted 13 keys,
+the worst of the four, and diverged on the values.
+
+- `DatabaseResult.toPaginate()` now takes NO arguments and derives every field
+  from the query that ran. Passing any argument RAISES: a `DatabaseResult` holds
+  no connection, so an argument could only re-slice rows already in memory and
+  report `total_pages` for pages it can never reach. To read page N, FETCH it —
+  `db.fetch(sql, params, perPage, (N - 1) * perPage).toPaginate()`.
+- The envelope is EXACTLY seven snake_case keys — `records, total, page,
+  per_page, total_pages, limit, offset`. Dropped: `data`, `count`, `perPage`,
+  `totalPages`, `has_next`, `has_prev` (a JSON key is data, so it stays
+  snake_case even though the method name is camelCase).
+- `.count` / the envelope `total` is the TRUE total for the filter (a `COUNT(*)`
+  probe), NEVER rows-returned, on BOTH read paths that build a `DatabaseResult`:
+  `db.fetch()` (already probed) and now `QueryBuilder.get()`, which left `count`
+  at rows-returned — diverging from `db.fetch()` AND from Python/Ruby, whose
+  `get()` routes through `fetch()`. The probe runs only when a limit was applied.
+
+**Migration.** A caller reading `.count` (or `toPaginate().total`) as the number
+of rows a limited query returned must now read it as the filter's true total —
+use `records.length` for the page size. Replace `toPaginate(page, perPage)` with a
+fetch of that page followed by an argumentless `toPaginate()`. Consumers reading
+`data`, `count`, `perPage`, `totalPages`, `has_next` or `has_prev` off the
+envelope must move to the canonical seven keys.
+
 ### Breaking: Messenger read/send shapes move to the cross-framework contract (3.13.96)
 
 MEASURED 2026-08-06 across all four frameworks against a live GreenMail. Node was

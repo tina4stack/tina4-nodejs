@@ -18,7 +18,7 @@
  */
 
 import type { DatabaseAdapter } from "./types.js";
-import { getAdapter, adapterFetch, adapterFetchOne } from "./database.js";
+import { getAdapter, adapterFetch, adapterFetchOne, probeTotal } from "./database.js";
 import { DatabaseResult } from "./databaseResult.js";
 
 export class QueryBuilder {
@@ -227,22 +227,29 @@ export class QueryBuilder {
     const sql = this.toSql();
     const allParams = [...this.params, ...this.havingParams];
 
+    const queryParams = allParams.length > 0 ? allParams : undefined;
     const rows = await adapterFetch(
       this.db!,
       sql,
-      allParams.length > 0 ? allParams : undefined,
+      queryParams,
       this.limitVal,
       this.offsetVal,
     );
 
     // Constructed exactly as Database._fetchWithLimit does, so a QueryBuilder
     // result and a db.fetch() result are the same object in the same state --
-    // including leaving `count` to default to the row count and handing the
-    // adapter + sql through.
+    // INCLUDING `count`, which is the TRUE total for the filter via the shared
+    // COUNT probe (ADR-0043), not rows-returned. Python's get() -> db.fetch()
+    // and Ruby's get -> @db.fetch() already carried the true total; Node used to
+    // leave it at the row count here, so `QueryBuilder.get().toPaginate()`
+    // under-reported `total` while `db.fetch().toPaginate()` did not. The probe
+    // is best-effort (undefined on any error -> falls back to rows.length) and
+    // only runs when a limit was applied, so an unlimited get() is one query.
+    const total = await probeTotal(this.db!, sql, queryParams, this.limitVal);
     return new DatabaseResult(
       rows as Record<string, unknown>[],
       undefined,
-      undefined,
+      total,
       this.limitVal,
       this.offsetVal,
       this.db!,

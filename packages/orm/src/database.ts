@@ -114,6 +114,67 @@ export async function adapterCreateTable(
 }
 
 /**
+ * The true row count for `sql`, ignoring the pagination the caller applied.
+ *
+ * `count` on a DatabaseResult is the TRUE TOTAL for the filter, not the number
+ * of rows the page returned. Node and Ruby used to populate it with
+ * `records.length` while Python and PHP populated it from a probe, so
+ * `db.fetch(sql).count` answered 20 here and 250 there for one query against one
+ * table, and every `toPaginate()` envelope built on it under-reported (ADR-0043).
+ * MEASURED 2026-08-05 on a 250-row table read with limit=20: Node reported total
+ * 20 over 2 pages against Python's 250 over 13.
+ *
+ * This is the single source of truth for that probe. Both read paths that build a
+ * DatabaseResult — `Database.fetch()` and `QueryBuilder.get()` — call it, so the
+ * two can never drift (QueryBuilder.get used to leave `count` at rows-returned,
+ * diverging from db.fetch AND from Python/Ruby, whose get() routes through fetch).
+ *
+ * Only probed when a limit was actually applied. With no limit the rows returned
+ * ARE the whole answer for this SQL, so `records.length` is already the true total
+ * and a second round-trip would buy nothing — which is also what keeps
+ * `fetchAll()` at one query.
+ *
+ * BEST EFFORT, and it can never mask a real failure: it runs AFTER the main query
+ * (which has already thrown on bad SQL) and returns `undefined` on any error.
+ * `undefined` — not 0 — is the miss value, so DatabaseResult falls back to
+ * records.length, a true lower bound. Reporting 0 next to 100 real records would
+ * be the same "states a wrong number authoritatively" defect this exists to remove.
+ *
+ * The closing paren goes on its OWN LINE: appended inline, a trailing
+ * `-- comment` in the caller's SQL comments it out and the probe dies with
+ * "incomplete input". Postgres, MySQL and MSSQL additionally require a name for
+ * the derived table; SQLite and Firebird do not, and Firebird rejects `AS` there —
+ * so the alias comes from the adapter, not an assumption.
+ */
+export async function probeTotal(
+  adapter: DatabaseAdapter,
+  sql: string,
+  params: unknown[] | undefined,
+  limit: number | undefined,
+): Promise<number | undefined> {
+  if (limit === undefined || limit <= 0) return undefined;
+  try {
+    const alias = (adapter as any).countSubqueryAlias as string | undefined;
+    const suffix = alias ? ` AS ${alias}` : "";
+    const rows = await adapterFetch(
+      adapter,
+      `SELECT COUNT(*) AS tina4_total FROM (${sql}\n)${suffix}`,
+      params,
+      undefined,
+      undefined,
+      true,
+    );
+    const row = Array.isArray(rows) ? (rows[0] as Record<string, unknown> | undefined) : undefined;
+    if (!row) return undefined;
+    const value = row["tina4_total"] ?? row["TINA4_TOTAL"] ?? Object.values(row)[0];
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Extract the engine-assigned auto-increment id from an `execute()` result.
  *
  * SQLite returns `{ lastInsertRowid }`. PostgreSQL (pg) returns a result whose
@@ -575,69 +636,12 @@ export class Database {
       // no store, run directly (mirrors the Python master's `no_cache`).
       const rows = await adapterFetch(adapter, sql, params, limit, offset, opts?.noCache);
       this.lastError = null;
-      const total = await this.countProbe(adapter, sql, params, limit);
+      const total = await probeTotal(adapter, sql, params, limit);
       return new DatabaseResult(rows, undefined, total, limit, offset, adapter, sql);
     } catch (e: any) {
       // v3.13.11 #49.2: fetch() records last_error like execute() does.
       this.lastError = e?.message ?? String(e);
       throw e;
-    }
-  }
-
-  /**
-   * The true row count for `sql`, ignoring the pagination we appended.
-   *
-   * `count` is the TRUE TOTAL for the filter, not the number of rows this page
-   * returned. Node and Ruby used to populate it with `records.length` while
-   * Python and PHP populated it from a probe, so `db.fetch(sql).count` answered
-   * 20 here and 250 there for one query against one table, and every paginated
-   * response built on it under-reported. MEASURED 2026-08-05 on a 250-row table
-   * read with limit=20: Node reported total 20 over 2 pages against Python's
-   * 250 over 13.
-   *
-   * Only probed when a limit was actually applied. With no limit the rows
-   * returned ARE the whole answer for this SQL, so `records.length` is already
-   * the true total and a second round-trip would buy nothing — which is also
-   * what keeps `fetchAll()` at one query.
-   *
-   * BEST EFFORT, and it can never mask a real failure: it runs AFTER the main
-   * query (which has already thrown on bad SQL) and returns undefined on any
-   * error. `undefined` — not 0 — is the miss value, so DatabaseResult falls
-   * back to records.length, a true lower bound. Reporting 0 next to 100 real
-   * records would be the same "states a wrong number authoritatively" defect
-   * this change exists to remove.
-   *
-   * The closing paren goes on its OWN LINE: appended inline, a trailing
-   * `-- comment` in the caller's SQL comments it out and the probe dies with
-   * "incomplete input". Postgres, MySQL and MSSQL additionally require a name
-   * for the derived table; SQLite and Firebird do not, and Firebird rejects
-   * `AS` there — so the alias comes from the adapter, not an assumption.
-   */
-  private async countProbe(
-    adapter: DatabaseAdapter,
-    sql: string,
-    params: unknown[] | undefined,
-    limit: number | undefined,
-  ): Promise<number | undefined> {
-    if (limit === undefined || limit <= 0) return undefined;
-    try {
-      const alias = (adapter as any).countSubqueryAlias as string | undefined;
-      const suffix = alias ? ` AS ${alias}` : "";
-      const rows = await adapterFetch(
-        adapter,
-        `SELECT COUNT(*) AS tina4_total FROM (${sql}\n)${suffix}`,
-        params,
-        undefined,
-        undefined,
-        true,
-      );
-      const row = Array.isArray(rows) ? (rows[0] as Record<string, unknown> | undefined) : undefined;
-      if (!row) return undefined;
-      const value = row["tina4_total"] ?? row["TINA4_TOTAL"] ?? Object.values(row)[0];
-      const n = Number(value);
-      return Number.isFinite(n) ? n : undefined;
-    } catch {
-      return undefined;
     }
   }
 

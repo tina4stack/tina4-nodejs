@@ -78,6 +78,16 @@ async function main(): Promise<void> {
     assert("an explicit limit still truncates the records", paged.records.length === 2,
       `got ${paged.records.length}`);
 
+    // The COUNT probe rides on QueryBuilder.get() too (ADR-0043): `.count` is the
+    // TRUE total for the filter, NOT rows-returned. Pre-fix Node left it at the
+    // row count (2 here), diverging from db.fetch() AND from Python/Ruby, whose
+    // get() routes through fetch(). 3 rows in the table, a 2-row page -> count 3,
+    // so get().toPaginate().total is honest.
+    assert("get() with a limit carries the true total, not rows-returned",
+      paged.count === 3, `got ${paged.count}`);
+    assert("get().toPaginate() reports the true total over the filter",
+      paged.toPaginate().total === 3, `got ${paged.toPaginate().total}`);
+
     // No .limit() call must still mean no cap (v3.13.39) — unchanged by this.
     assert("no .limit() means no silent cap", result.records.length === 3);
 

@@ -97,99 +97,70 @@ export class DatabaseResult implements Iterable<Record<string, unknown>> {
     return this.records;
   }
 
-  /** Pagination envelope — accepts either (page, perPage) or (offset, limit) style.
-   *
-   * When called with two arguments both >= 0 and the first >= the second
-   * (i.e. offset-style), pass `{ offset, limit }` as the first argument.
-   * The simplest way is to always use the default (page, perPage) form and
-   * let the autoCRUD layer supply offset/limit from the query string.
-   *
-   * Returns a superset of keys for backwards-compatibility across all clients.
-   */
   /**
-   * Describe the page this result actually IS. Takes no arguments.
+   * Describe the page this result IS — the canonical pagination envelope.
    *
-   * MEASURED 2026-08-05 on a real 250-row table read with limit=20 offset=40
-   * (page 3 of 13): this reported page 1 of 2 and returned 10 of the 20 rows.
-   * It ignored the query entirely - defaulting page to 1 and perPage to 10 -
-   * then re-sliced the rows it was handed, which were already just that page.
-   * So a caller who paginated correctly at the SQL level had the answer
-   * silently re-paginated underneath them, with a page number that was simply
-   * wrong.
+   * Takes NO arguments and derives every field from the query that produced this
+   * result (ADR-0043). Passing ANY argument RAISES: a DatabaseResult holds no
+   * connection, so an argument could only re-slice the rows already in memory and
+   * then report total_pages for pages it can never reach. To read page N, FETCH
+   * page N (limit + offset) and call this with no arguments.
    *
-   * WITH page/perPage it slices this result in memory, the behaviour GitHub
-   * issue #106 asked for. Valid ONLY when the result holds the WHOLE set
-   * (records.length >= count). A PARTIAL result cannot be sliced by page number
-   * without lying: MEASURED on 100,000 rows read under the default cap of 100,
-   * pages 1-5 of 20 were right and every page from 6 onward came back EMPTY
-   * while totalPages reported 5,000.
+   * The envelope is EXACTLY seven snake_case keys, identical across all four
+   * frameworks: `records, total, page, per_page, total_pages, limit, offset`.
    *
-   * `total` is `count`, and `count` is now the TRUE total for the filter in
-   * all four frameworks - Database.fetch runs a COUNT probe whenever it applied
-   * a limit. It used to be ROWS RETURNED here and in Ruby while Python and PHP
-   * probed, so one query answered 20 in two frameworks and 250 in the other
-   * two.
+   *   per_page    = the query's limit
+   *   page        = floor(offset / limit) + 1
+   *   total       = the TRUE total for the filter — Database.fetch (and
+   *                 QueryBuilder.get) run a COUNT probe whenever a limit was
+   *                 applied — NEVER the number of rows returned
+   *   total_pages = ceil(total / per_page)
+   *   records     = the rows the query returned, VERBATIM (never re-sliced)
+   *   limit       = the SQL limit actually applied
+   *   offset      = the SQL offset actually applied
+   *
+   * The JSON payload is snake_case even though the method name is camelCase — a
+   * JSON key is data, not a language surface (ADR-0043). The old duplicate and
+   * camelCase keys (`data`, `count`, `perPage`, `totalPages`, `has_next`,
+   * `has_prev`) are removed: Node emitted 13 keys, the worst offender of the four.
+   *
+   * @throws {TypeError} if called with any argument.
    */
-  toPaginate(page?: number, perPage?: number): {
+  toPaginate(): {
     records: Record<string, unknown>[];
-    data: Record<string, unknown>[];
-    count: number;
     total: number;
-    limit: number;
-    offset: number;
     page: number;
     per_page: number;
-    perPage: number;
-    totalPages: number;
     total_pages: number;
-    has_next: boolean;
-    has_prev: boolean;
+    limit: number;
+    offset: number;
   } {
-    if ((page !== undefined || perPage !== undefined) && this.records.length < this.count) {
+    // No parameters (ADR-0043). `arguments` catches an argument passed anyway —
+    // including from plain JS, where the 0-arity signature is not enforced — so a
+    // caller porting the old two-argument form gets a hard error, never a silent
+    // in-memory re-slice that lies about total_pages.
+    if (arguments.length > 0) {
       throw new TypeError(
-        `toPaginate(page, perPage) slices the rows this result holds, but this ` +
-          `result holds only ${this.records.length} of ${this.count} rows - it is a ` +
-          `PARTIAL result, so any page past the rows it holds comes back empty while ` +
-          `totalPages claims it exists. MEASURED on 100,000 rows read under the ` +
-          `default cap of 100: pages 1-5 of 20 were right and pages 6 onward returned ` +
-          `NOTHING. Fetch the page you want instead: fetch(sql, params, perPage, ` +
-          `(page - 1) * perPage), then call toPaginate() with no arguments.`,
+        "toPaginate() takes no arguments and derives the page from the query that " +
+          "ran (ADR-0043). A DatabaseResult holds no connection, so an argument could " +
+          "only re-slice the rows already in memory and report total_pages for pages " +
+          "it can never reach. To read a page, FETCH it: db.fetch(sql, params, perPage, " +
+          "(page - 1) * perPage), then call toPaginate() with no arguments.",
       );
     }
 
-    let resolvedPerPage: number;
-    let resolvedPage: number;
-    let offset: number;
-    let rows: Record<string, unknown>[];
-
-    if (page === undefined && perPage === undefined) {
-      resolvedPerPage = this.limit > 0 ? this.limit : this.records.length;
-      resolvedPage = resolvedPerPage > 0 ? Math.floor(this.offset / resolvedPerPage) + 1 : 1;
-      offset = this.offset;
-      rows = this.records;
-    } else {
-      resolvedPage = page ?? 1;
-      resolvedPerPage = perPage ?? (this.limit > 0 ? this.limit : 10);
-      offset = (resolvedPage - 1) * resolvedPerPage;
-      rows = this.records.slice(offset, offset + resolvedPerPage);
-    }
-    const totalPages =
-      resolvedPerPage > 0 ? Math.max(1, Math.ceil(this.count / resolvedPerPage)) : 1;
+    const perPage = this.limit > 0 ? this.limit : this.records.length;
+    const page = perPage > 0 ? Math.floor(this.offset / perPage) + 1 : 1;
+    const totalPages = perPage > 0 ? Math.max(1, Math.ceil(this.count / perPage)) : 1;
 
     return {
-      records: rows,
-      data: rows,
-      count: this.count,
+      records: this.records,
       total: this.count,
-      limit: resolvedPerPage,
-      offset,
-      page: resolvedPage,
-      per_page: resolvedPerPage,
-      perPage: resolvedPerPage,
-      totalPages,
+      page,
+      per_page: perPage,
       total_pages: totalPages,
-      has_next: resolvedPage < totalPages,
-      has_prev: resolvedPage > 1,
+      limit: perPage,
+      offset: this.offset,
     };
   }
 
