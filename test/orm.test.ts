@@ -198,6 +198,29 @@ assert("all excludes soft-deleted records", allArticles.length === 1);
 const rawRows = adapter.query(`SELECT * FROM "articles" WHERE id = ?`, [articleId]);
 assert("Soft-deleted record still in database", rawRows.length === 1);
 
+// --- Force Delete (bypasses soft-delete AND hard-removes the row) ---
+console.log("\n--- Force Delete ---");
+
+const forceArticle = new Article({ title: "Gone", body: "Bye", author_id: userId });
+await forceArticle.save();
+const forceId = (forceArticle as any).id;
+
+// Sanity: the row is really in the table before we force-delete it.
+const beforeForce = adapter.query(`SELECT * FROM "articles" WHERE id = ?`, [forceId]);
+assert("Article present before forceDelete", beforeForce.length === 1);
+
+await forceArticle.forceDelete();
+
+// forceDelete HARD-removes the row: unlike delete() (which leaves an is_deleted=1
+// row that withTrashed still returns), withTrashed finds nothing... (mirrors the
+// Python master test_force_delete).
+const forceTrashed = await Article.withTrashed("id = ?", [forceId]);
+assert("forceDelete: withTrashed finds no row", forceTrashed.length === 0);
+
+// ...and a raw SELECT confirms the row is gone from the DB entirely.
+const rawAfterForce = adapter.query(`SELECT * FROM "articles" WHERE id = ?`, [forceId]);
+assert("forceDelete: row removed from database", rawAfterForce.length === 0);
+
 // --- Hard Delete ---
 console.log("\n--- Hard Delete ---");
 
