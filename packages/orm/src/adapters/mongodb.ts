@@ -118,9 +118,40 @@ function parseWhereClause(where: string, params: unknown[], paramOffset = 0): { 
       filter[nullMatch[1]] = nullMatch[2] ? { $ne: null } : null;
       continue;
     }
+
+    // Fail closed. An unrecognised condition must NEVER be silently dropped:
+    // dropping it leaves an empty (match-all) filter, and on a DELETE/UPDATE
+    // that empty filter reaches deleteMany({})/updateMany({}) and wipes or
+    // rewrites the WHOLE collection. Throw so the caller sees the unsupported
+    // SQL instead of silently losing data.
+    throw new Error(
+      `Unsupported MongoDB WHERE condition: ${JSON.stringify(trimmed)}. The ` +
+        `MongoDB SQL provider fails closed rather than matching every document. ` +
+        `Supported: = != <> > >= < <= LIKE, IN, IS [NOT] NULL, AND.`,
+    );
   }
 
   return { filter, consumed: paramIndex - paramOffset };
+}
+
+/**
+ * Fail closed: a DELETE/UPDATE must carry a real filter.
+ *
+ * An empty MongoDB filter matches EVERY document, so deleteMany({}) /
+ * updateMany({}) would wipe or rewrite the whole collection. Refuse it. The
+ * explicit whole-collection spelling is truncate() (it passes WHERE 1 = 1, which
+ * translates to a non-empty { "1": 1 } filter); the raw driver is the escape
+ * hatch for anything the SQL subset cannot express. Shared by both write paths
+ * so the guard cannot drift.
+ */
+function requireWriteFilter(filter: Record<string, unknown> | undefined, operation: string, table: string | undefined): void {
+  if (!filter || Object.keys(filter).length === 0) {
+    throw new Error(
+      `Refusing to ${operation} every document in ${table}: the statement has no ` +
+        `WHERE clause, which would affect the whole collection. Add a WHERE, or use ` +
+        `truncate() to clear it explicitly.`,
+    );
+  }
 }
 
 /** Parse a SQL string into a MongoOperation. Returns null if parsing is not supported. */
@@ -199,8 +230,12 @@ function parseSql(sql: string, params: unknown[] = []): MongoOperation | null {
   }
 
   // ---- UPDATE ----
+  // WHERE is OPTIONAL in the grammar so a filterless UPDATE ("UPDATE t SET x=1")
+  // is RECOGNISED as an updateMany with an empty filter and reaches the
+  // fail-closed guard -- rather than failing the regex, returning null, and
+  // being silently acknowledged as a no-op (a silent wrong result).
   const updateMatch = s.match(
-    /^UPDATE\s+["']?(\w+)["']?\s+SET\s+(.*?)\s+WHERE\s+(.+)$/is,
+    /^UPDATE\s+["']?(\w+)["']?\s+SET\s+(.*?)(?:\s+WHERE\s+(.+))?$/is,
   );
   if (updateMatch) {
     const [, collection, setClause, whereClause] = updateMatch;
@@ -220,8 +255,11 @@ function parseSql(sql: string, params: unknown[] = []): MongoOperation | null {
       }
     }
 
-    // Parse WHERE clause (params start after SET params)
-    const { filter } = parseWhereClause(whereClause.trim(), params, setParamIndex);
+    // Parse WHERE clause (params start after SET params). No WHERE -> empty
+    // filter, which the write guard refuses.
+    const filter = whereClause
+      ? parseWhereClause(whereClause.trim(), params, setParamIndex).filter
+      : {};
 
     return { type: "updateMany", collection, filter, update: { $set: setDoc } };
   }
@@ -368,11 +406,13 @@ export class MongodbAdapter implements DatabaseAdapter {
         return result;
       }
       case "updateMany": {
-        const result = await col.updateMany(op.filter ?? {}, op.update!, { session: this.session });
+        requireWriteFilter(op.filter, "UPDATE", op.collection);
+        const result = await col.updateMany(op.filter!, op.update!, { session: this.session });
         return result;
       }
       case "deleteMany": {
-        const result = await col.deleteMany(op.filter ?? {}, { session: this.session });
+        requireWriteFilter(op.filter, "DELETE", op.collection);
+        const result = await col.deleteMany(op.filter!, { session: this.session });
         return result;
       }
       case "find": {
@@ -491,6 +531,7 @@ export class MongodbAdapter implements DatabaseAdapter {
 
   async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): Promise<DatabaseResult> {
     this.ensureConnected();
+    requireWriteFilter(filter, "UPDATE", table);
     const col = this.db.collection(table);
     try {
       const result = await col.updateMany(filter, { $set: data }, { session: this.session });
@@ -511,25 +552,28 @@ export class MongodbAdapter implements DatabaseAdapter {
       if (Array.isArray(filter)) {
         let total = 0;
         for (const f of filter) {
+          requireWriteFilter(f, "DELETE", table);
           const r = await col.deleteMany(f, { session: this.session });
           total += r.deletedCount;
         }
         return { success: true, affectedRows: total };
       }
 
-      // String WHERE clause — not directly translatable; delete nothing safely
+      // String WHERE clause. A BLANK string (or a WHERE that translates to an
+      // empty filter) is REFUSED -- it would delete every document. truncate()
+      // passes "1 = 1", which translates to a non-empty { "1": 1 } filter, so
+      // the explicit whole-collection path still works.
       if (typeof filter === "string") {
         if (!filter.trim()) {
-          // Empty filter = delete all documents
-          const r = await col.deleteMany({}, { session: this.session });
-          return { success: true, affectedRows: r.deletedCount };
+          requireWriteFilter({}, "DELETE", table); // always throws: no filter
         }
-        // Attempt parse via dummy SELECT wrapping
         const { filter: parsedFilter } = parseWhereClause(filter, []);
+        requireWriteFilter(parsedFilter, "DELETE", table);
         const r = await col.deleteMany(parsedFilter, { session: this.session });
         return { success: true, affectedRows: r.deletedCount };
       }
 
+      requireWriteFilter(filter as Record<string, unknown>, "DELETE", table);
       const result = await col.deleteMany(filter as Record<string, unknown>, { session: this.session });
       return { success: true, affectedRows: result.deletedCount };
     } catch (e) {
