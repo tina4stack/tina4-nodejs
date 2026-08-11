@@ -19,7 +19,7 @@ import { DevMailbox } from "./devMailbox.js";
 import { isTruthy } from "./dotenv.js";
 import { quickMetrics, fullAnalysis, fileDetail, MetricsEngineError } from "./metrics.js";
 import { registerFeedbackRoutes } from "./feedback.js";
-import { getDefaultDevServer, mcpEnabled, isRequestAllowed } from "./mcp.js";
+import { getDefaultDevServer, mcpEnabled, isRequestAllowed, isLoopback } from "./mcp.js";
 import { timingSafeEqual } from "node:crypto";
 
 const cpuCount = osCpus().length;
@@ -39,6 +39,105 @@ const TINA4_VERSION = (() => {
   } catch {}
   return "0.0.0";
 })();
+
+// ── Dev-admin mutation security (feature 127, DEVADMIN-DEC-01/02/03) ──────────
+// The dashboard can write files, run SQL and install packages, so it must assume
+// the developer ALSO browses the web. Two fail-closed gates guard every /__dev
+// write, and a secret denylist guards the file-read surface. Mirrors the Python
+// master (tina4_python/dev_admin/__init__.py).
+
+/** Safe HTTP methods that never carry a state change — they skip the write gate. */
+export const DEV_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * The MCP surface carries its OWN richer loopback+token+remote gate
+ * (mcpRequestAllowed -> 404), so the REST loopback gate skips these prefixes and
+ * lets the MCP gate govern (keeps the mcp/call refusal a 404, not a 403).
+ */
+const DEV_MCP_PREFIXES = ["/__dev/api/mcp", "/__dev/mcp"];
+
+/** Private-key / credential basenames the file endpoints must never serve. */
+const DEV_SECRET_BASENAMES = new Set([
+  ".env", ".envrc", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+]);
+const DEV_SECRET_SUFFIXES = [".pem", ".key", ".pfx", ".p12", ".keystore", ".jks"];
+
+/** HTML-escape `& < > " '` — the injected toolbar reflects the raw request path. */
+function escapeHtml(value: string): string {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Fail-closed same-origin check for a dev-admin mutation (DEVADMIN-DEC-01).
+ *
+ * A drive-by CSRF is a BROWSER cross-origin request, and a modern browser always
+ * sends `Sec-Fetch-Site` (and any browser sends `Origin` on a cross-origin POST):
+ *   - Sec-Fetch-Site present -> trust the browser's classification
+ *     (cross-site refused; same-origin / same-site / none ok).
+ *   - else Origin present -> require its host to match the request Host.
+ *   - else neither header -> not a browser cross-origin request (curl, a test
+ *     client, a server-side caller); it cannot be a drive-by, so allow here and
+ *     let the loopback gate still constrain the peer.
+ */
+export function devSameOriginOk(req: Tina4Request): boolean {
+  const secFetchSite = (req.header("sec-fetch-site") ?? "").trim().toLowerCase();
+  if (secFetchSite) {
+    return secFetchSite === "same-origin" || secFetchSite === "same-site" || secFetchSite === "none";
+  }
+  const origin = (req.header("origin") ?? "").trim();
+  if (origin) {
+    const netloc = origin.includes("://") ? origin.split("://", 2)[1] : origin;
+    const host = (req.header("host") ?? "").trim();
+    return host !== "" && netloc.toLowerCase() === host.toLowerCase();
+  }
+  return true;
+}
+
+/**
+ * Return `{status, error}` to REFUSE a dev-admin write, or `null` to allow.
+ *
+ * Two independent fail-closed gates on every /__dev mutation:
+ *   DEVADMIN-DEC-01  same-origin (all writes, incl. mcp/call) - drive-by CSRF.
+ *   DEVADMIN-DEC-02  loopback peer (all writes EXCEPT the MCP surface, which
+ *                    carries its own gate) - a network-exposed debug box.
+ * Reads the RAW socket peer (never X-Forwarded-For), exactly like the MCP gate.
+ */
+export function devMutationDenial(req: Tina4Request): { status: number; error: string } | null {
+  if (!devSameOriginOk(req)) {
+    return { status: 403, error: "dev-admin: refused (cross-origin request)" };
+  }
+  const path = req.path ?? "";
+  const isMcp = DEV_MCP_PREFIXES.some((prefix) => path.startsWith(prefix));
+  if (!isMcp) {
+    const peer = (req as unknown as { socket?: { remoteAddress?: string } }).socket?.remoteAddress ?? "";
+    if (!(isLoopback(peer) || mcpTokenOk(req))) {
+      return { status: 403, error: "dev-admin: refused (non-loopback peer)" };
+    }
+  }
+  return null;
+}
+
+/**
+ * True when `rel` names secret material the file endpoints must never serve
+ * (DEVADMIN-DEC-03): `.env` / `.env.*` (the `.env.example` template is allowed),
+ * anything under `.git/` or `secrets/`, and private-key material.
+ */
+export function isSecretPath(rel: string): boolean {
+  const norm = (rel ?? "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
+  if (!norm) return false;
+  const parts = norm.split("/");
+  if (parts.some((p) => p === ".git" || p === "secrets")) return true;
+  const base = parts[parts.length - 1];
+  if (base === ".env.example") return false;
+  if (base === ".env" || base.startsWith(".env.")) return true;
+  if (DEV_SECRET_BASENAMES.has(base)) return true;
+  return DEV_SECRET_SUFFIXES.some((suffix) => base.endsWith(suffix));
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -2081,7 +2180,10 @@ const DEV_FILES_IGNORED = new Set([
 // Hidden dot-entries are filtered too, except the env files.
 function devFilesHidden(name: string): boolean {
   if (DEV_FILES_IGNORED.has(name)) return true;
-  return name.startsWith(".") && name !== ".env" && name !== ".env.example";
+  // DEVADMIN-DEC-03: hide every dotfile EXCEPT the safe `.env.example` template.
+  // `.env` is a secret (TINA4_SECRET / DB password / TINA4_MCP_TOKEN) and must
+  // NOT be surfaced in the browser (it used to be un-hidden here).
+  return name.startsWith(".") && name !== ".env.example";
 }
 
 // Same 4-status mapping Python/PHP use for a porcelain code.
@@ -2171,6 +2273,9 @@ const handleFiles: RouteHandler = async (req, res) => {
     if (devFilesHidden(name)) continue;
     const full = join(target, name);
     const entryRel = relative(root, full).replace(/\\/g, "/");
+    // DEVADMIN-DEC-03: never surface secrets in the listing (.env, keys, .git/,
+    // secrets/). The .env.example template is safe and stays visible.
+    if (isSecretPath(entryRel)) continue;
 
     let isDir = false;
     let size: number | null = null;
@@ -2265,6 +2370,11 @@ export function devAdminLanguage(rel: string): string {
 const handleFileRead: RouteHandler = (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const rel = url.searchParams.get("path") ?? "";
+  // DEVADMIN-DEC-03: never serve secret material (.env, keys, .git/, secrets/).
+  if (isSecretPath(rel)) {
+    res.json({ error: "Refused: secret file", path: rel, content: "", language: "text", bytes: 0 }, 403);
+    return;
+  }
   const root = resolve(process.cwd());
   const target = safeJoin(root, rel);
   if (!target || !existsSync(target) || !statSync(target).isFile()) {
@@ -2307,6 +2417,11 @@ const handleFileSave: RouteHandler = async (req, res) => {
 const handleFileRaw: RouteHandler = (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const rel = url.searchParams.get("path") ?? "";
+  // DEVADMIN-DEC-03: never serve secret material (.env, keys, .git/, secrets/).
+  if (isSecretPath(rel)) {
+    res.json({ error: "Refused: secret file" }, 403);
+    return;
+  }
   const root = resolve(process.cwd());
   const target = safeJoin(root, rel);
   if (!target || !existsSync(target) || !statSync(target).isFile()) {
@@ -2873,6 +2988,13 @@ function renderToolbarHtml(ctx: {
   routeCount: number;
 }): string {
   const nodeVersion = process.version;
+  // DEVADMIN-DEC-04: the toolbar is injected into every text/html response
+  // (including 404s), so the reflected request path/method MUST be HTML-escaped
+  // or a crafted path reflects <script> that runs in the dev-server origin and
+  // can then drive every /__dev mutation route. (PHP already escapes; parity.)
+  const method = escapeHtml(ctx.method);
+  const path = escapeHtml(ctx.path);
+  const matchedPattern = escapeHtml(ctx.matchedPattern);
   return `<div id="tina4-dev-toolbar" style="position:fixed;bottom:0;left:0;right:0;background:#333;color:#fff;font-family:monospace;font-size:12px;padding:6px 16px;z-index:99999;display:flex;align-items:center;gap:16px;">
     <span id="tina4-ver-btn" style="color:#2e7d32;font-weight:bold;cursor:pointer;text-decoration:underline dotted;" onclick="tina4VersionModal()" title="Click to check for updates">Tina4 v${ctx.version}</span>
     <div id="tina4-ver-modal" style="display:none;position:fixed;bottom:3rem;left:1rem;background:#1e1e2e;border:1px solid #2e7d32;border-radius:8px;padding:16px 20px;z-index:100000;min-width:320px;box-shadow:0 8px 32px rgba(0,0,0,0.5);font-family:monospace;font-size:13px;color:#cdd6f4;">
@@ -2885,9 +3007,9 @@ function renderToolbarHtml(ctx: {
         <div id="tina4-ver-latest" style="color:#888;">Checking for updates...</div>
       </div>
     </div>
-    <span style="color:#4caf50;">${ctx.method}</span>
-    <span>${ctx.path}</span>
-    <span style="color:#666;">&rarr; ${ctx.matchedPattern}</span>
+    <span style="color:#4caf50;">${method}</span>
+    <span>${path}</span>
+    <span style="color:#666;">&rarr; ${matchedPattern}</span>
     <span style="color:#ffeb3b;">req:${ctx.requestId}</span>
     <span style="color:#90caf9;">${ctx.routeCount} routes</span>
     <span style="color:#888;">Node.js ${nodeVersion}</span>

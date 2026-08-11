@@ -24,7 +24,7 @@ import { loadEnv, isTruthy } from "./dotenv.js";
 import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
-import { DevAdmin, RequestInspector, WsTracker } from "./devAdmin.js";
+import { DevAdmin, RequestInspector, WsTracker, devMutationDenial, DEV_SAFE_METHODS } from "./devAdmin.js";
 import { CLOSE_GOING_AWAY, devReloadWs, serveWebSocketRoute, wsRouteManager } from "./websocket.js";
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
@@ -401,10 +401,16 @@ export function resolvePortAndHost(config?: { port?: number; host?: string }): {
     port = 7148;
   }
 
+  // DEVADMIN-DEC-02: in dev/serve mode (TINA4_DEBUG) the /__dev dashboard exposes
+  // an unauthenticated file/SQL/RCE surface, so the DEFAULT bind is loopback, not
+  // 0.0.0.0. Only the default changes: an explicit config.host / TINA4_HOST / HOST
+  // still wins (production passes one and does not set TINA4_DEBUG), so a developer
+  // who WANTS network exposure sets TINA4_HOST=0.0.0.0 to override deliberately.
+  const defaultHost = isTruthy(process.env.TINA4_DEBUG) ? "127.0.0.1" : "0.0.0.0";
   const host = config?.host
     ?? process.env.TINA4_HOST
     ?? process.env.HOST
-    ?? "0.0.0.0";
+    ?? defaultHost;
   return { port, host };
 }
 
@@ -1048,6 +1054,21 @@ interface MatchedRouteContext {
 async function runMatchedRoute(ctx: MatchedRouteContext): Promise<void> {
   const { req, res, match, postMatchMiddleware } = ctx;
   req.params = match.params as never;
+
+  // DEVADMIN-DEC-01/02: fail-closed same-origin + loopback gate on every /__dev
+  // write (POST/PUT/PATCH/DELETE), BEFORE the handler runs. Closes drive-by CSRF
+  // (a cross-origin page POSTing to /file/save then /reload) and a network-exposed
+  // debug box. Scoped to /__dev so /__feedback + /ai are unaffected; GET/HEAD/
+  // OPTIONS are safe and skip the gate. The MCP endpoints keep their own 404 gate
+  // (devMutationDenial skips the mcp prefixes for the loopback part).
+  const devMethod = (req.method ?? "GET").toUpperCase();
+  if (ctx.pathname.startsWith("/__dev") && !DEV_SAFE_METHODS.has(devMethod)) {
+    const denial = devMutationDenial(req);
+    if (denial) {
+      res.json({ ok: false, error: denial.error }, denial.status);
+      return;
+    }
+  }
 
   if (await runGlobalMiddlewarePass(postMatchMiddleware, req, res)) return;
 
