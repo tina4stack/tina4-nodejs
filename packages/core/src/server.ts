@@ -1,4 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
 import { resolve, dirname, join, relative } from "node:path";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isatty } from "node:tty";
@@ -1322,7 +1323,10 @@ async function renderDispatchError(
 
   const html500 = await renderErrorPage(500, {
     error_message: "",
-    request_id: `${Date.now().toString(36)}`,
+    // The canonical per-request id (set at the top of dispatch), so the id a
+    // user reports off the 500 page matches the log lines and the X-Request-ID
+    // response header - not a throwaway base36 clock value.
+    request_id: Log.getRequestId() ?? randomBytes(4).toString("hex"),
     path: req.path,
   }, templatesDir);
   if (html500) {
@@ -1818,6 +1822,20 @@ ${reset}
   }
 
   async function dispatch(rawReq: IncomingMessage, rawRes: ServerResponse): Promise<void> {
+    // Feature 43: PER-REQUEST correlation id. Honour a sanitized inbound
+    // X-Request-ID so a client or upstream service can thread its own id
+    // through - a CR/LF, over-long or illegal-charset value is rejected (never
+    // echoed) - else generate one. Echo it on the response by stamping the raw
+    // response NOW, so every outcome (200/404/500/413, Tina4Response OR a raw
+    // rawRes.end) carries it. Then establish it in an AsyncLocalStorage so every
+    // log line for this request - across every await - carries it, and two
+    // requests interleaving on the one event loop never read each other's id.
+    const requestId = Log.sanitizeRequestId(rawReq.headers["x-request-id"]) ?? randomBytes(4).toString("hex");
+    if (!rawRes.headersSent) rawRes.setHeader("x-request-id", requestId);
+    return Log.runWithRequestId(requestId, () => dispatchInner(rawReq, rawRes, requestId));
+  }
+
+  async function dispatchInner(rawReq: IncomingMessage, rawRes: ServerResponse, requestId: string): Promise<void> {
     const req = createRequest(rawReq);
     const res = createResponse(rawRes);
 
@@ -1874,7 +1892,6 @@ ${reset}
       // A HOLDER, not a plain string: the end-wrapper below reads it at end()
       // time, after route matching has assigned it.
       const matchedPattern = { value: "" };
-      const requestId = Date.now().toString(36);
 
       // Wrap res.raw.end to inject dev toolbar and capture requests
       // Skip toolbar injection on the AI port (no-reload behaviour)

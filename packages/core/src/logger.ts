@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, dirname, isAbsolute } from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { isTruthy } from "./dotenv.js";
 
 /** Log level severity */
@@ -234,7 +235,17 @@ function resolveLogFilePath(logDir: string, logFile: string): string {
  *   - _SIZE=0 disables rotation entirely.
  */
 export class Log {
-  private static requestId: string | undefined;
+  // Request id for log correlation. Stored in an AsyncLocalStorage so two
+  // requests interleaving on the one event loop never read each other's id: a
+  // plain static field is shared across every in-flight request, so request A
+  // sets it, awaits, request B sets it, and A's later log lines carry B's id
+  // (the Node equivalent of Python's ContextVar and Ruby's thread-local; see
+  // the feature 43 porting capsule). The fallback holds the id for OUT-of-
+  // request use only (a CLI, a worker, a direct unit test) - it is never shared
+  // between concurrent requests, because each request runs inside its own ALS
+  // context established by runWithRequestId().
+  private static requestIdStore = new AsyncLocalStorage<{ id: string | undefined }>();
+  private static requestIdFallback: string | undefined;
 
   /**
    * What configure() was explicitly told, held HERE rather than written back
@@ -367,17 +378,59 @@ export class Log {
   }
 
   /**
-   * Set the current request ID for log correlation.
+   * Run `fn` with `id` established as the request-scoped correlation id. Every
+   * log line emitted inside `fn` - across every await - carries `id`, and two
+   * concurrent requests each keep their own. Called once per request by the
+   * server's dispatch entry.
    */
-  static setRequestId(id: string | undefined): void {
-    Log.requestId = id;
+  static runWithRequestId<T>(id: string | undefined, fn: () => T): T {
+    return Log.requestIdStore.run({ id }, fn);
   }
 
   /**
-   * Get the current request ID.
+   * Set the current request ID for log correlation. Inside a request (an ALS
+   * context) it updates that request's own id; outside one it sets the process
+   * fallback (a CLI / worker / direct call).
+   */
+  static setRequestId(id: string | undefined): void {
+    const store = Log.requestIdStore.getStore();
+    if (store) {
+      store.id = id;
+    } else {
+      Log.requestIdFallback = id;
+    }
+  }
+
+  /**
+   * Get the current request ID (the request's own inside a request context,
+   * else the process fallback).
    */
   static getRequestId(): string | undefined {
-    return Log.requestId;
+    const store = Log.requestIdStore.getStore();
+    return store ? store.id : Log.requestIdFallback;
+  }
+
+  /**
+   * Sanitize an inbound X-Request-ID (feature 43).
+   *
+   * Honours a well-formed inbound id ([A-Za-z0-9._-], 1..128 chars) so a client
+   * or an upstream service can thread its own correlation id through. Anything
+   * else - empty, over 128 chars, or carrying CR/LF, control chars or any
+   * character outside the allow-list - is rejected wholesale (undefined), so
+   * nothing attacker-controlled is ever reflected into the response header or a
+   * log line; the caller then generates a fresh id.
+   */
+  static sanitizeRequestId(value: string | string[] | undefined | null): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    // node:http joins duplicate request headers into one string; coerce an
+    // array form to a comma-joined string, which then fails the charset test.
+    const raw = Array.isArray(value) ? value.join(",") : value;
+    if (raw.length === 0 || raw.length > 128) return undefined;
+    // Reject if ANY character is outside the allow-list - CR, LF, space, every
+    // other control char, any non-ASCII byte. Testing for a bad char (not
+    // anchoring ^...$) is the identical rule in all four frameworks.
+    if (/[^A-Za-z0-9._-]/.test(raw)) return undefined;
+    return raw;
   }
 
   /**
@@ -621,8 +674,9 @@ export class Log {
       message,
     };
 
-    if (Log.requestId) {
-      entry.request_id = Log.requestId;
+    const requestId = Log.getRequestId();
+    if (requestId) {
+      entry.request_id = requestId;
     }
 
     // Caller-name injection — opt-in via TINA4_LOG_FUNC=true. Off by default
@@ -639,7 +693,7 @@ export class Log {
 
     // Build human-readable line
     const paddedLevel = level.padEnd(8);
-    const reqPart = Log.requestId ? ` [${Log.requestId}]` : "";
+    const reqPart = requestId ? ` [${requestId}]` : "";
     const fnPart = fnName ? ` [${fnName}]` : "";
     const dataPart = data !== undefined ? ` ${JSON.stringify(data)}` : "";
     const humanLine = `${entry.timestamp} [${paddedLevel}]${reqPart}${fnPart} ${message}${dataPart}`;
