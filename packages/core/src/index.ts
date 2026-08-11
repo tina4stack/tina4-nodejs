@@ -151,3 +151,10 @@ export type { FileEntry, FileRoute } from "./projectIndex.js";
 export { Docs } from "./docs.js";
 export type { DocsHit, ClassSpec, MethodSpec, IndexEntry, DriftHit } from "./docs.js";
 export { writeMcpDiscovery } from "./docsAutoDiscovery.js";
+export {
+  takeOverPort, selectablePids, inContainer, isDev, noTakeoverOptedOut,
+  writePidfile, readPidfile, removePidfile, pidfilePath, runtimeDir,
+  TAKEOVER_NOTHING, TAKEOVER_KILLED, TAKEOVER_REFUSED_FOREIGN, TAKEOVER_REFUSED_OPTOUT,
+  TAKEOVER_REFUSED_PROD, TAKEOVER_SKIPPED_CONTAINER, TAKEOVER_REFUSALS,
+} from "./portTakeover.js";
+export type { TakeoverResult } from "./portTakeover.js";

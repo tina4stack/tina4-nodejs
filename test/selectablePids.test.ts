@@ -24,7 +24,7 @@
  *
  * Run with: npx tsx test/selectablePids.test.ts
  */
-import { selectablePids } from "../packages/cli/src/bin.ts";
+import { selectablePids } from "../packages/core/src/portTakeover.ts";
 
 let pass = 0;
 let fail = 0;

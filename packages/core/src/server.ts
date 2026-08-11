@@ -12,6 +12,15 @@ import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
 import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
 import { enforceRouteAuth } from "./authGate.js";
 import { discoverRoutes } from "./routeDiscovery.js";
+import {
+  takeOverPort,
+  isDev as isTakeoverDev,
+  noTakeoverOptedOut,
+  writePidfile,
+  removePidfile,
+  TAKEOVER_KILLED,
+  TAKEOVER_REFUSALS,
+} from "./portTakeover.js";
 import { createRequest } from "./request.js";
 import {
   resetRequestCaches,
@@ -304,39 +313,30 @@ export function _checkLegacyEnvVars(): void {
  * Uses lsof on macOS/Linux and netstat + taskkill on Windows.
  * Throws if the port cannot be freed.
  */
-function killPort(port: number): void {
-  // execFileSync is imported at the top of the file
-  console.log(`  Port ${port} in use — killing existing process...`);
-  try {
-    if (process.platform === "win32") {
-      const out = execFileSync("netstat", ["-ano"], { encoding: "utf-8", timeout: 5000 });
-      for (const line of out.split("\n")) {
-        if (line.includes(`:${port}`) && (line.includes("LISTENING") || line.includes("ESTABLISHED"))) {
-          const parts = line.trim().split(/\s+/);
-          const pid = parts[parts.length - 1];
-          if (/^\d+$/.test(pid)) {
-            execFileSync("taskkill", ["/PID", pid, "/F"], { timeout: 5000 });
-            break;
-          }
-        }
-      }
-    } else {
-      const pids = execFileSync("lsof", ["-ti", `:${port}`], { encoding: "utf-8", timeout: 5000 })
-        .trim()
-        .split("\n")
-        .filter(Boolean);
-      for (const pid of pids) {
-        if (/^\d+$/.test(pid.trim())) {
-          process.kill(parseInt(pid.trim(), 10), "SIGTERM");
-        }
-      }
-    }
-    // Brief pause for the OS to reclaim the port
-    execFileSync(process.execPath, ["-e", "setTimeout(() => {}, 500)"], { timeout: 2000 });
-    console.log(`  Port ${port} freed`);
-  } catch (err) {
-    throw new Error(`Could not free port ${port}: ${err}`);
+/**
+ * Reclaim `port` from a stale Tina4 dev server via the shared, guarded path.
+ *
+ * This is the runtime bind-failure fallback. It used to SIGTERM whatever held
+ * the port with NONE of the CLI's guards -- no identity check, no container
+ * guard, no PID-safety filter -- so a foreign holder (another dev server, a
+ * database) was killed on any bind failure. It now routes through the SAME
+ * identity-checked helper the CLI uses (TAKEOVER-DEC-02), so only a
+ * PID-file-confirmed Tina4 dev server is ever signalled.
+ *
+ * Throws when the port is held by a non-Tina4 process (or takeover is opted out
+ * / disabled outside dev), so the bind fails loudly with a clear message instead
+ * of killing an innocent process.
+ */
+export function killPort(port: number): void {
+  const result = takeOverPort(port, isTakeoverDev(), noTakeoverOptedOut());
+  if (result.status === TAKEOVER_KILLED) {
+    console.log(`  ${result.message}`);
+    return;
   }
+  if (TAKEOVER_REFUSALS.includes(result.status)) {
+    throw new Error(result.message);
+  }
+  // NOTHING / container: nothing to reclaim -- let the real bind decide.
 }
 
 /**
@@ -2018,6 +2018,10 @@ ${reset}
 
   return new Promise((resolvePromise) => {
     server.listen(port, host, () => {
+      // Record THIS process as the Tina4 dev server on this port, so a later
+      // `tina4 serve` can identify it as reclaimable (TAKEOVER-DEC-01). Only the
+      // single dev process needs it; takeover is dev-gated off in cluster/prod.
+      if (!cluster.isWorker) writePidfile(port);
       const displayHost = host === "0.0.0.0" ? "localhost" : host;
       const isDebug = isTruthy(process.env.TINA4_DEBUG);
       const logLevel = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
@@ -2162,6 +2166,9 @@ ${reset}
         if (shuttingDown) return;
         shuttingDown = true;
         Log.info(`Received ${signal}, shutting down gracefully...`);
+
+        // Drop our identity marker so a later takeover does not match a dead PID.
+        if (!cluster.isWorker) removePidfile(port);
 
         stopAllBackgroundTasks();
 
