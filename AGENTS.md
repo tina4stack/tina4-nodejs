@@ -5,7 +5,7 @@ Documentation: https://tina4.com
 
 ## AI Skills
 
-Codex discovers the project skills in `.agents/skills`; each is a tracked entrypoint to the canonical `.claude/skills` instructions also used by Claude. Use the maintainer, Node.js developer, and Tina4-js skills that apply to the task.
+Codex discovers the project skills in `.agents/skills`; Cursor discovers them in `.cursor/skills`. Each is a tracked entrypoint to the canonical `.claude/skills` instructions also used by Claude. Use the maintainer, Node.js developer, and Tina4-js skills that apply to the task.
 
 ## Project Structure
 
