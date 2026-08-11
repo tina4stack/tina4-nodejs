@@ -31,6 +31,7 @@ import { createResponse, setDefaultTemplatesDir } from "./response.js";
 import { MiddlewareChain, MiddlewareRunner, cors, requestLogger, isMiddlewareClass, attachCsrfFromEnv, SecurityHeadersMiddleware } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
 import { loadEnv, isTruthy } from "./dotenv.js";
+import { isDebugMode } from "./errorOverlay.js";
 import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
@@ -442,7 +443,10 @@ export function isBannerSuppressed(): boolean {
 }
 
 function isDevMode(): boolean {
-  return isTruthy(process.env.TINA4_DEBUG);
+  // OVERLAY-DEC-04: unify the debug gate on the overlay module's isDebugMode() so the
+  // error-overlay gate (and every other dev gate that calls isDevMode) has ONE
+  // definition, instead of recomputing isTruthy(TINA4_DEBUG) separately. Same value.
+  return isDebugMode();
 }
 
 /**
@@ -1314,11 +1318,29 @@ async function renderDispatchError(
   if (res.raw.writableEnded) return;
 
   if (isDevMode() && err instanceof Error) {
-    // Rich error overlay with stack trace, source context, and line numbers
-    const { renderErrorOverlay } = await import("./errorOverlay.js");
-    res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
-    res.raw.end(renderErrorOverlay(err, req));
-    return;
+    // OVERLAY-DEC-03: guard the dev-overlay render. This call site sits INSIDE the
+    // dispatch catch, so if the overlay itself throws (a malformed frame, an
+    // unrenderable request value) it would double-fault out of dispatch. Wrap it and
+    // fall through to the same safe production page, so a broken overlay still yields a
+    // bounded 500 — never a crash.
+    try {
+      const { renderErrorOverlay } = await import("./errorOverlay.js");
+      const overlayHtml = renderErrorOverlay(err, req);
+      res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+      res.raw.end(overlayHtml);
+      return;
+    } catch (overlayErr) {
+      try {
+        Log.warn(
+          `Error overlay render failed, serving the safe page: ${
+            overlayErr instanceof Error ? `${overlayErr.name}: ${overlayErr.message}` : String(overlayErr)
+          }`
+        );
+      } catch {
+        // Log failures must never block the 500 render.
+      }
+      // fall through to the safe production page below
+    }
   }
 
   const html500 = await renderErrorPage(500, {

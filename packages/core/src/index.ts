@@ -101,7 +101,7 @@ export { DevMailbox } from "./devMailbox.js";
 export { WSDLService, WSDLOperation } from "./wsdl.js";
 export type { WSDLOperationMeta } from "./wsdl.js";
 export { HtmlElement, htmlElement, addHtmlHelpers, Raw, SafeString } from "./htmlElement.js";
-export { renderErrorOverlay, renderProductionError, isDebugMode } from "./errorOverlay.js";
+export { renderErrorOverlay, isDebugMode } from "./errorOverlay.js";
 export { AI_TOOLS, isInstalled, showMenu, installSelected, installAll, generateContext } from "./ai.js";
 export type { AiTool } from "./ai.js";
 export type { ImapMessage, ImapFullMessage, ImapAttachment } from "./messenger.js";

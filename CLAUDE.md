@@ -110,7 +110,7 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `types.ts` — All shared type definitions (`Tina4Request`, `Tina4Response`, `RouteHandler`, etc.)
 - `events.ts` — Observer-pattern event system (`Events.on`, `emit`, `once`, `off`, `clear`)
 - `ai.ts` — AI coding tool context installer (`AI_TOOLS`, `isInstalled`, `showMenu`, `installSelected`, `installAll`, `generateContext`)
-- `errorOverlay.ts` — Rich debug error page for dev mode (`renderErrorOverlay`, `renderProductionError`, `isDebugMode`)
+- `errorOverlay.ts` — Rich debug error page for dev mode (`renderErrorOverlay`, `isDebugMode`)
 - `htmlElement.ts` — Programmatic HTML builder (`HtmlElement`, `htmlElement`, `addHtmlHelpers`)
 - `testing.ts` — Inline testing framework (`tests`, `assertEqual`, `assertRaises`, `runAll`)
 - `fakeData.ts` — Core fake data generator (names, emails, addresses, UUIDs, etc.)
@@ -409,20 +409,19 @@ const doc = generateContext("cursor");
 Rich HTML error page for development mode. Uses Catppuccin Mocha colour palette, shows syntax-highlighted source context around the error line, stack trace with source preview, request details, and environment info. Controlled by `TINA4_DEBUG` env var.
 
 ```typescript
-import { renderErrorOverlay, renderProductionError, isDebugMode } from "@tina4/core";
+import { renderErrorOverlay, isDebugMode } from "@tina4/core";
 
-// In a route error handler:
+// In a route error handler — dev only:
 try {
   await handler(req, res);
 } catch (err) {
-  const html = isDebugMode()
-    ? renderErrorOverlay(err as Error, req)   // full debug overlay
-    : renderProductionError(500, "Internal Server Error");  // safe production page
-  res.html(html, 500);
+  if (isDebugMode()) res.html(renderErrorOverlay(err as Error, req), 500);
 }
 
 // isDebugMode() returns true when TINA4_DEBUG is "true"
 ```
+
+The overlay is dev-only (gated on `isDebugMode()`/`TINA4_DEBUG`). The production 500 is NOT rendered here — the server dispatch renders `errors/500.twig` with an empty `error_message` (CWE-209), so the exception detail stays in the server log only. Sensitive request fields (Authorization / Cookie / Set-Cookie headers and password-like body/param keys) are redacted even in the overlay, the frame count is capped, and the dispatch guards the render.
 
 ## Module: HtmlElement (`packages/core/src/htmlElement.ts`)
 

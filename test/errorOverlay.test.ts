@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { renderErrorOverlay, renderProductionError, isDebugMode } from "../packages/core/src/index.ts";
+import { renderErrorOverlay, isDebugMode } from "../packages/core/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -34,16 +34,6 @@ assert("renderErrorOverlay renders the error message", boomHtml.includes("boom")
 assert("renderErrorOverlay surfaces the .test.ts caller frame from the stack",
   boomHtml.includes("errorOverlay.test.ts") && boomHtml.includes("Stack Trace"),
   `(html len=${boomHtml.length})`);
-
-// renderProductionError: a 404 body actually contains the status + message but
-// leaks NO stack/file path — proves the production-safe page was produced.
-const notFoundHtml = renderProductionError(404, "Not Found");
-assert("renderProductionError(404) body contains status and message",
-  notFoundHtml.includes("404") && notFoundHtml.includes("Not Found"));
-assert("renderProductionError(404) leaks no stack/source path",
-  !notFoundHtml.includes("Stack Trace")
-  && !notFoundHtml.includes("errorOverlay.test.ts")
-  && !notFoundHtml.includes(".ts:"));
 
 // isDebugMode: real toggle of the env var flips the result (also exercised
 // exhaustively in the isDebugMode section below).
@@ -110,28 +100,6 @@ const customErr = new ValidationError("Field is required");
 const customHtml = renderErrorOverlay(customErr);
 assert("Contains custom error type", customHtml.includes("ValidationError"));
 assert("Contains custom error message", customHtml.includes("Field is required"));
-
-// --- renderProductionError ---
-console.log("\n--- renderProductionError ---");
-
-const prodHtml = renderProductionError();
-assert("Default production error is a complete 500 document with no stack",
-  prodHtml.includes("<!DOCTYPE html>")
-  && prodHtml.includes("500")
-  && prodHtml.includes("Internal Server Error")
-  && !prodHtml.includes("Stack Trace"),
-  `(len=${prodHtml.length})`);
-assert("Production error contains 500", prodHtml.includes("500"));
-assert("Production error contains Internal Server Error", prodHtml.includes("Internal Server Error"));
-assert("Production error contains DOCTYPE", prodHtml.includes("<!DOCTYPE html>"));
-assert("Production error does NOT contain stack trace", !prodHtml.includes("Stack Trace"));
-
-const custom404 = renderProductionError(404, "Not Found");
-assert("Custom status code 404", custom404.includes("404"));
-assert("Custom message Not Found", custom404.includes("Not Found"));
-
-const custom503 = renderProductionError(503, "Service Unavailable");
-assert("Custom status code 503", custom503.includes("503"));
 
 // --- isDebugMode ---
 console.log("\n--- isDebugMode ---");

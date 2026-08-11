@@ -1,27 +1,46 @@
 /**
  * Tina4 Debug — Rich error overlay for development mode.
  *
- * Renders a professional, syntax-highlighted HTML error page when an unhandled
- * exception occurs in a route handler.
+ * Renders a rich HTML error page (exception type + message, the full stack with a
+ * seven-line source window per frame, request details, environment) when an unhandled
+ * exception reaches the server dispatch in development.
  *
- *   import { renderErrorOverlay, renderProductionError, isDebugMode } from "./errorOverlay.js";
+ *   import { renderErrorOverlay, isDebugMode } from "./errorOverlay.js";
  *
  *   try {
  *     await handler(req, res);
  *   } catch (err) {
- *     const html = isDebugMode()
- *       ? renderErrorOverlay(err as Error, req)
- *       : renderProductionError();
- *     res.html(html, 500);
+ *     if (isDebugMode()) res.html(renderErrorOverlay(err as Error, req), 500);
  *   }
  *
- * Only activate when TINA4_DEBUG is true.
- * In production, call renderProductionError() instead.
+ * Dev-only: the caller gates this on isDebugMode() (TINA4_DEBUG). The production 500 is
+ * NOT rendered here — the server dispatch renders errors/500.twig with an empty
+ * error_message (CWE-209), so the exception detail stays in the server log only.
+ *
+ * Sensitive request fields (Authorization / Cookie / Set-Cookie headers and
+ * password-like body/param keys) are redacted even in the dev overlay, the frame count
+ * is capped, and the caller wraps this render in a guard, so a broken overlay or a
+ * recursive stack still yields a bounded, safe 500.
  */
 
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { isTruthy } from "./dotenv.js";
+
+// OVERLAY-DEC-03: cap the rendered frames so a deep/recursive stack yields a bounded
+// page, not one source-file read per frame.
+const MAX_FRAMES = 50;
+
+// OVERLAY-DEC-02: request fields whose KEY matches this are masked in the dev overlay
+// (Authorization/Cookie/Set-Cookie headers via authorization|cookie; password/token/
+// secret/api_key body/param keys via the rest). Over-matching a benign field is the
+// SAFE direction in a dev tool — over-masking leaks nothing; under-masking leaks.
+const SENSITIVE_KEY_RE = /password|passwd|secret|token|authorization|cookie|key/i;
+const REDACTED = "[redacted]";
+
+function redact(key: string, value: string): string {
+  return SENSITIVE_KEY_RE.test(key) ? REDACTED : value;
+}
 
 // ── Colour palette (Catppuccin Mocha) ────────────────────────────────────
 const BG = "#1e1e2e";
@@ -196,9 +215,17 @@ export function renderErrorOverlay(error: Error, request?: any): string {
   // if the file has been modified since — protects against the "browser cached
   // an old overlay, then the AI rewrote the file" confusion where displayed
   // source no longer matches what actually raised the error.
+  // OVERLAY-DEC-03: cap the rendered frames. A recursive stack of thousands of frames
+  // would otherwise do one source-file read per frame and emit an unbounded page;
+  // render only the innermost MAX_FRAMES and note the rest.
   let framesHtml = "";
-  for (const frame of frames) {
+  for (const frame of frames.slice(0, MAX_FRAMES)) {
     framesHtml += formatFrame(frame, capturedAt);
+  }
+  const hidden = frames.length - Math.min(frames.length, MAX_FRAMES);
+  if (hidden > 0) {
+    framesHtml += `<div style="color:${SUBTEXT};padding:8px 0;font-size:13px;">`
+      + `&#8230; ${hidden} more stack frames hidden (truncated at ${MAX_FRAMES})</div>`;
   }
 
   // ── Request info ──
@@ -216,7 +243,8 @@ export function renderErrorOverlay(error: Error, request?: any): string {
     for (const [label, val] of dictFields) {
       if (val != null && typeof val === "object" && Object.keys(val as object).length > 0) {
         for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
-          requestPairs.push([`${label}.${k}`, String(v)]);
+          const pairKey = `${label}.${k}`;
+          requestPairs.push([pairKey, redact(pairKey, String(v))]);
         }
       } else if (val != null && typeof val === "string" && val !== "") {
         requestPairs.push([label, val]);
@@ -268,43 +296,6 @@ body{background:${BG};color:${TEXT};font-family:-apple-system,BlinkMacSystemFont
   <div style="margin-top:32px;padding-top:16px;border-top:1px solid ${OVERLAY};color:${SUBTEXT};font-size:12px;">
     Tina4 Debug Overlay &mdash; This page is only shown in debug mode. Set TINA4_DEBUG=false in production.
   </div>
-</div>
-</body>
-</html>`;
-}
-
-/**
- * Render a safe, generic error page for production.
- */
-export function renderProductionError(statusCode = 500, message = "Internal Server Error", path = ""): string {
-  const codeColor = statusCode === 403 ? "#f59e0b" : statusCode === 404 ? "#3b82f6" : "#ef4444";
-  const pathHtml = path ? `<div class="error-path">${esc(path)}</div><br>` : "";
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${statusCode} — ${esc(message)}</title>
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-.error-card { background: #1e293b; border: 1px solid #334155; border-radius: 1rem; padding: 3rem; text-align: center; max-width: 520px; width: 90%; }
-.error-code { font-size: 8rem; font-weight: 900; color: ${codeColor}; opacity: 0.6; line-height: 1; margin-bottom: 0.5rem; }
-.error-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.75rem; }
-.error-msg { color: #94a3b8; font-size: 1rem; margin-bottom: 1.5rem; line-height: 1.5; }
-.error-path { font-family: 'SF Mono', monospace; background: #0f172a; color: ${codeColor}; padding: 0.5rem 1rem; border-radius: 0.5rem; font-size: 0.85rem; word-break: break-all; margin-bottom: 1.5rem; display: inline-block; }
-.error-home { display: inline-block; padding: 0.6rem 2rem; background: #3b82f6; color: #fff; text-decoration: none; border-radius: 0.5rem; font-size: 0.9rem; font-weight: 600; }
-.error-home:hover { opacity: 0.9; }
-.logo { font-size: 1.5rem; margin-bottom: 1rem; opacity: 0.5; }
-</style>
-</head>
-<body>
-<div class="error-card">
-    <div class="error-code">${statusCode}</div>
-    <div class="error-title">${esc(message)}</div>
-    <div class="error-msg">Something went wrong while processing your request.</div>
-    ${pathHtml}
-    <a href="/" class="error-home">Go Home</a>
 </div>
 </body>
 </html>`;
