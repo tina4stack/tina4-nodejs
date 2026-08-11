@@ -1587,7 +1587,14 @@ export function setFormTokenSessionId(sessionId: string): void {
 }
 
 function _buildFormTokenJwt(descriptor: string = ""): string {
-  const secret = process.env.TINA4_SECRET || "tina4-default-secret";
+  // Fail-closed, IDENTICAL to the validator (auth.ts validToken:
+  // `secret ?? process.env.TINA4_SECRET ?? ""`). With TINA4_SECRET unset the
+  // signing secret resolves to BLANK — there is NO built-in default. Signing
+  // with the retired public 'tina4-default-secret' made the generator disagree
+  // with the fail-closed validator: a legitimately-rendered token was rejected
+  // AND a ''-forged token was accepted (CSRF-NODE-SECRET-SPLIT, feature 37).
+  // The generator and the validator MUST resolve the same secret.
+  const secret = process.env.TINA4_SECRET ?? "";
   const ttlMinutes = parseInt(process.env.TINA4_TOKEN_LIMIT || "60", 10);
 
   const header = { alg: "HS256", typ: "JWT" };

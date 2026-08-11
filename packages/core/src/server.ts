@@ -18,7 +18,7 @@ import {
   sessionAutoStart,
 } from "./dispatchPipeline.js";
 import { createResponse, setDefaultTemplatesDir } from "./response.js";
-import { MiddlewareChain, MiddlewareRunner, cors, requestLogger, isMiddlewareClass } from "./middleware.js";
+import { MiddlewareChain, MiddlewareRunner, cors, requestLogger, isMiddlewareClass, attachCsrfFromEnv } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
 import { loadEnv, isTruthy } from "./dotenv.js";
 import { createHealthRoutes } from "./health.js";
@@ -1661,6 +1661,14 @@ ${reset}
     }
   } else {
     console.log(`\n  No routes directory found at ${routesDir}`);
+  }
+
+  // Auto-attach CSRF when TINA4_CSRF is enabled — AFTER route discovery, BEFORE
+  // listen. OFF by default: unset means no CSRF gate; TINA4_CSRF=true/1/yes/on
+  // attaches CsrfMiddleware globally so every write is gated (CSRF-DEC-02).
+  // Idempotent. Mirrors Python's attach_csrf_from_env in server boot.
+  if (attachCsrfFromEnv()) {
+    console.log(`\n  \x1b[36mCSRF\x1b[0m protection enabled (TINA4_CSRF)`);
   }
 
   // Initialize ORM if models directory exists (check src/orm/ first, then src/models/)
