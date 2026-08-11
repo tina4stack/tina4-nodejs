@@ -1,19 +1,23 @@
 /**
  * Tina4 Node.js — Inline testing framework.
  *
- * Attach test assertions to functions and run them all at once.
+ * Attach test expectations to functions and run them all at once.
  *
- *     import { tests, assertEqual, assertRaises, runAll } from "./testing.js";
+ *     import { tests, expectEqual, expectRaises, runAll } from "./testing.js";
  *
  *     const add = tests(
- *       assertEqual([5, 3], 8),
- *       assertRaises(Error, [null]),
+ *       expectEqual([5, 3], 8),
+ *       expectRaises(Error, [null]),
  *     )(function add(a: number, b: number | null = null): number {
  *       if (b === null) throw new Error("b required");
  *       return a + b;
  *     });
  *
  *     runAll();
+ *
+ * The builders are named expect* — DESCRIPTORS that record an expectation for the
+ * runner — deliberately distinct from the xUnit assert* on Tina4Test (test.ts),
+ * so importing the wrong surface can never silently change call semantics.
  */
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -44,26 +48,26 @@ const registry: RegistryEntry[] = [];
 
 // ── Assertion builders ─────────────────────────────────────────────
 
-/** Assert that calling the function with `args` returns `expected`. */
-export function assertEqual(args: unknown[], expected: unknown): Assertion {
+/** Expect that calling the function with `args` returns `expected`. */
+export function expectEqual(args: unknown[], expected: unknown): Assertion {
   return { type: "equal", args, expected };
 }
 
-/** Assert that calling the function with `args` throws an instance of `errorClass`. */
-export function assertRaises(
+/** Expect that calling the function with `args` throws an instance of `errorClass`. */
+export function expectRaises(
   errorClass: new (...a: unknown[]) => Error,
   args: unknown[],
 ): Assertion {
   return { type: "raises", args, exception: errorClass };
 }
 
-/** Assert that calling the function with `args` returns a truthy value. */
-export function assertTrue(args: unknown[]): Assertion {
+/** Expect that calling the function with `args` returns a truthy value. */
+export function expectTrue(args: unknown[]): Assertion {
   return { type: "true", args };
 }
 
-/** Assert that calling the function with `args` returns a falsy value. */
-export function assertFalse(args: unknown[]): Assertion {
+/** Expect that calling the function with `args` returns a falsy value. */
+export function expectFalse(args: unknown[]): Assertion {
   return { type: "false", args };
 }
 

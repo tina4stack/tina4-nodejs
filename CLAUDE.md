@@ -112,7 +112,7 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `ai.ts` — AI coding tool context installer (`AI_TOOLS`, `isInstalled`, `showMenu`, `installSelected`, `installAll`, `generateContext`)
 - `errorOverlay.ts` — Rich debug error page for dev mode (`renderErrorOverlay`, `isDebugMode`)
 - `htmlElement.ts` — Programmatic HTML builder (`HtmlElement`, `htmlElement`, `addHtmlHelpers`)
-- `testing.ts` — Inline testing framework (`tests`, `assertEqual`, `assertRaises`, `runAll`)
+- `testing.ts` — Inline testing framework (`tests`, `expectEqual`, `expectRaises`, `runAll`)
 - `fakeData.ts` — Core fake data generator (names, emails, addresses, UUIDs, etc.)
 - `constants.ts` — HTTP status codes (`HTTP_OK`, `HTTP_NOT_FOUND`, etc.) and content types (`APPLICATION_JSON`, `TEXT_HTML`, etc.)
 - `devAdmin.ts` — Dev toolbar (fixed bottom bar injected into HTML pages) and admin dashboard at `/_dev/`
@@ -460,16 +460,16 @@ Void tags (`br`, `hr`, `img`, `input`, `meta`, etc.) render without closing tags
 
 ## Module: Inline Testing (`packages/core/src/testing.ts`)
 
-Attach test assertions directly to functions. Tests are registered globally and run with `runAll()`. No external test runner needed.
+Attach inline test expectations directly to functions with the `expect*` DESCRIPTOR builders — named apart from the xUnit `assert*` on `Tina4Test` (test.ts) so the two surfaces never collide. `npx tsx packages/cli/src/bin.ts test` (or `npx tina4nodejs test`) discovers `tests()`-decorated functions under `src/` and runs them with a real exit code (non-zero on any failure), then runs the file-based `test/` suite.
 
 ```typescript
-import { tests, assertEqual, assertRaises, assertTrue, assertFalse, runAll, reset } from "@tina4/core";
+import { tests, expectEqual, expectRaises, expectTrue, expectFalse, runAll, reset } from "@tina4/core";
 
-// Decorate a function with inline tests
+// Decorate a function with inline expectations
 const add = tests(
-  assertEqual([5, 3], 8),        // add(5, 3) === 8
-  assertEqual([0, 0], 0),        // add(0, 0) === 0
-  assertRaises(Error, [null]),   // add(null) throws Error
+  expectEqual([5, 3], 8),        // add(5, 3) === 8
+  expectEqual([0, 0], 0),        // add(0, 0) === 0
+  expectRaises(Error, [null]),   // add(null) throws Error
 )(function add(a: number, b: number | null = null): number {
   if (b === null) throw new Error("b required");
   return a + b;
@@ -482,9 +482,9 @@ add(2, 3);  // 5
 const results = runAll({ quiet: false, failfast: false });
 // → { passed: 3, failed: 0, errors: 0, details: [...] }
 
-// Additional assertion types
-assertTrue([someArgs]);   // result is truthy
-assertFalse([someArgs]);  // result is falsy
+// Additional expectation types
+expectTrue([someArgs]);   // result is truthy
+expectFalse([someArgs]);  // result is falsy
 
 // Reset registry between test runs
 reset();

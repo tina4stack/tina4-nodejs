@@ -2,7 +2,7 @@
  * Unit tests for the inline testing framework (testing.ts).
  * Run with: npx tsx test/testing.test.ts
  */
-import { tests, assertEqual, assertRaises, assertTrue, assertFalse, runAll, reset } from "../packages/core/src/index.ts";
+import { tests, expectEqual, expectRaises, expectTrue, expectFalse, runAll, reset } from "../packages/core/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -24,148 +24,148 @@ console.log("--- Exports (behavioural) ---");
 
 // tests() registers exactly one entry that runAll reports as a single pass.
 reset();
-tests(assertEqual([1, 1], 2))(function f(a: number, b: number): number { return a + b; });
+tests(expectEqual([1, 1], 2))(function f(a: number, b: number): number { return a + b; });
 {
   const r = runAll({ quiet: true });
   assert("tests registers one passing entry", r.passed === 1 && r.failed === 0 && r.errors === 0 && r.details.length === 1);
 }
 
-// assertEqual drives a real comparison: 1+1+1 == 3 passes against add3.
+// expectEqual drives a real comparison: 1+1+1 == 3 passes against add3.
 reset();
-tests(assertEqual([1, 1, 1], 3))(function add3(a: number, b: number, c: number): number { return a + b + c; });
-assert("assertEqual is exercised by runAll", runAll({ quiet: true }).passed === 1);
+tests(expectEqual([1, 1, 1], 3))(function add3(a: number, b: number, c: number): number { return a + b + c; });
+assert("expectEqual is exercised by runAll", runAll({ quiet: true }).passed === 1);
 
-// assertRaises catches a real thrown error.
+// expectRaises catches a real thrown error.
 reset();
-tests(assertRaises(Error, [null]))(function g(b: number | null): number { if (b === null) throw new Error("x"); return b; });
-assert("assertRaises is exercised by runAll", runAll({ quiet: true }).passed === 1);
+tests(expectRaises(Error, [null]))(function g(b: number | null): number { if (b === null) throw new Error("x"); return b; });
+assert("expectRaises is exercised by runAll", runAll({ quiet: true }).passed === 1);
 
-// assertTrue verifies a real truthy result.
+// expectTrue verifies a real truthy result.
 reset();
-tests(assertTrue([1]))(function idTrue(x: unknown): unknown { return x; });
-assert("assertTrue is exercised by runAll", runAll({ quiet: true }).passed === 1);
+tests(expectTrue([1]))(function idTrue(x: unknown): unknown { return x; });
+assert("expectTrue is exercised by runAll", runAll({ quiet: true }).passed === 1);
 
-// assertFalse verifies a real falsy result.
+// expectFalse verifies a real falsy result.
 reset();
-tests(assertFalse([0]))(function idFalse(x: unknown): unknown { return x; });
-assert("assertFalse is exercised by runAll", runAll({ quiet: true }).passed === 1);
+tests(expectFalse([0]))(function idFalse(x: unknown): unknown { return x; });
+assert("expectFalse is exercised by runAll", runAll({ quiet: true }).passed === 1);
 
 // runAll returns a real results summary reflecting the registered tests.
 reset();
-tests(assertEqual([2, 2], 4))(function add2(a: number, b: number): number { return a + b; });
+tests(expectEqual([2, 2], 4))(function add2(a: number, b: number): number { return a + b; });
 assert("runAll reports the registered pass", runAll({ quiet: true }).passed === 1);
 
 // reset() clears the registry: after reset, runAll sees nothing.
 reset();
-tests(assertEqual([9, 9], 18))(function add9(a: number, b: number): number { return a + b; });
+tests(expectEqual([9, 9], 18))(function add9(a: number, b: number): number { return a + b; });
 reset();
 {
   const r = runAll({ quiet: true });
   assert("reset clears the registry", r.passed === 0 && r.failed === 0 && r.errors === 0 && r.details.length === 0);
 }
 
-// --- assertEqual (behavioural) ---
-console.log("\n--- assertEqual ---");
+// --- expectEqual (behavioural) ---
+console.log("\n--- expectEqual ---");
 
 function addEq(a: number, b: number): number { return a + b; }
 
 // The built assertion actually drives a passing test against add(2,3)===5.
 reset();
-tests(assertEqual([2, 3], 5))(addEq);
-assert("assertEqual drives a passing test", runAll({ quiet: true }).passed === 1);
+tests(expectEqual([2, 3], 5))(addEq);
+assert("expectEqual drives a passing test", runAll({ quiet: true }).passed === 1);
 
 // The 'equal' assertion FAILS when the function returns the wrong value.
 reset();
-tests(assertEqual([1, 1], 999))(addEq);
+tests(expectEqual([1, 1], 999))(addEq);
 {
   const r = runAll({ quiet: true });
-  assert("assertEqual fails on wrong return value", r.failed === 1 && r.details[0].status === "failed");
+  assert("expectEqual fails on wrong return value", r.failed === 1 && r.details[0].status === "failed");
 }
 
 // The stored args are actually passed to the function: [2,3] applied -> 5.
 reset();
-tests(assertEqual([2, 3], 5))(function add(a: number, b: number): number { return a + b; });
-assert("assertEqual passes stored args to the function", runAll({ quiet: true }).passed === 1);
+tests(expectEqual([2, 3], 5))(function add(a: number, b: number): number { return a + b; });
+assert("expectEqual passes stored args to the function", runAll({ quiet: true }).passed === 1);
 
 // The expected value is the comparison target: 1+1!==3 fails, ===2 passes.
 reset();
-tests(assertEqual([1, 1], 3))(addEq);
-assert("assertEqual expected is the comparison target (mismatch fails)", runAll({ quiet: true }).failed === 1);
+tests(expectEqual([1, 1], 3))(addEq);
+assert("expectEqual expected is the comparison target (mismatch fails)", runAll({ quiet: true }).failed === 1);
 reset();
-tests(assertEqual([1, 1], 2))(addEq);
-assert("assertEqual expected is the comparison target (match passes)", runAll({ quiet: true }).passed === 1);
+tests(expectEqual([1, 1], 2))(addEq);
+assert("expectEqual expected is the comparison target (match passes)", runAll({ quiet: true }).passed === 1);
 
-// --- assertRaises (behavioural) ---
-console.log("\n--- assertRaises ---");
+// --- expectRaises (behavioural) ---
+console.log("\n--- expectRaises ---");
 
 // The raises assertion catches a thrown Error.
 reset();
-tests(assertRaises(Error, [null]))(function fRaises(b: number | null): number { if (b === null) throw new Error("x"); return b; });
-assert("assertRaises catches the thrown Error", runAll({ quiet: true }).passed === 1);
+tests(expectRaises(Error, [null]))(function fRaises(b: number | null): number { if (b === null) throw new Error("x"); return b; });
+assert("expectRaises catches the thrown Error", runAll({ quiet: true }).passed === 1);
 
 // A raises assertion FAILS when no error is thrown.
 reset();
-tests(assertRaises(Error, [1]))(function fNoThrow(b: number): number { return b; });
-assert("assertRaises fails when nothing is thrown", runAll({ quiet: true }).failed === 1);
+tests(expectRaises(Error, [1]))(function fNoThrow(b: number): number { return b; });
+assert("expectRaises fails when nothing is thrown", runAll({ quiet: true }).failed === 1);
 
 // The exception class is matched: wrong class does NOT pass, right class does.
 reset();
-tests(assertRaises(TypeError, [null]))(function fRange(): number { throw new RangeError("x"); });
-assert("assertRaises fails on wrong exception class", runAll({ quiet: true }).passed === 0);
+tests(expectRaises(TypeError, [null]))(function fRange(): number { throw new RangeError("x"); });
+assert("expectRaises fails on wrong exception class", runAll({ quiet: true }).passed === 0);
 reset();
-tests(assertRaises(RangeError, [null]))(function fRange2(): number { throw new RangeError("x"); });
-assert("assertRaises passes on matching exception class", runAll({ quiet: true }).passed === 1);
+tests(expectRaises(RangeError, [null]))(function fRange2(): number { throw new RangeError("x"); });
+assert("expectRaises passes on matching exception class", runAll({ quiet: true }).passed === 1);
 
 // The args reach the function: 'bad' triggers the throw.
 reset();
-tests(assertRaises(Error, ["bad"]))(function fArg(x: string): void { if (x === "bad") throw new Error("boom"); });
-assert("assertRaises passes args through to the function", runAll({ quiet: true }).passed === 1);
+tests(expectRaises(Error, ["bad"]))(function fArg(x: string): void { if (x === "bad") throw new Error("boom"); });
+assert("expectRaises passes args through to the function", runAll({ quiet: true }).passed === 1);
 
-// --- assertTrue (behavioural) ---
-console.log("\n--- assertTrue ---");
+// --- expectTrue (behavioural) ---
+console.log("\n--- expectTrue ---");
 
 function idT(x: unknown): unknown { return x; }
 
-// 42 is truthy -> assertTrue passes.
+// 42 is truthy -> expectTrue passes.
 reset();
-tests(assertTrue([42]))(idT);
-assert("assertTrue passes on a truthy result", runAll({ quiet: true }).passed === 1);
+tests(expectTrue([42]))(idT);
+assert("expectTrue passes on a truthy result", runAll({ quiet: true }).passed === 1);
 
-// 0 is falsy -> assertTrue fails.
+// 0 is falsy -> expectTrue fails.
 reset();
-tests(assertTrue([0]))(idT);
-assert("assertTrue fails on a falsy result", runAll({ quiet: true }).failed === 1);
+tests(expectTrue([0]))(idT);
+assert("expectTrue fails on a falsy result", runAll({ quiet: true }).failed === 1);
 
 // The arg drives truthiness: 0 fails, 42 passes.
 reset();
-tests(assertTrue([0]))(idT);
-assert("assertTrue arg drives truthiness (0 fails)", runAll({ quiet: true }).failed === 1);
+tests(expectTrue([0]))(idT);
+assert("expectTrue arg drives truthiness (0 fails)", runAll({ quiet: true }).failed === 1);
 reset();
-tests(assertTrue([42]))(idT);
-assert("assertTrue arg drives truthiness (42 passes)", runAll({ quiet: true }).passed === 1);
+tests(expectTrue([42]))(idT);
+assert("expectTrue arg drives truthiness (42 passes)", runAll({ quiet: true }).passed === 1);
 
-// --- assertFalse (behavioural) ---
-console.log("\n--- assertFalse ---");
+// --- expectFalse (behavioural) ---
+console.log("\n--- expectFalse ---");
 
 function idF(x: unknown): unknown { return x; }
 
-// 0 is falsy -> assertFalse passes.
+// 0 is falsy -> expectFalse passes.
 reset();
-tests(assertFalse([0]))(idF);
-assert("assertFalse passes on a falsy result", runAll({ quiet: true }).passed === 1);
+tests(expectFalse([0]))(idF);
+assert("expectFalse passes on a falsy result", runAll({ quiet: true }).passed === 1);
 
-// 1 is truthy -> assertFalse fails.
+// 1 is truthy -> expectFalse fails.
 reset();
-tests(assertFalse([1]))(idF);
-assert("assertFalse fails on a truthy result", runAll({ quiet: true }).failed === 1);
+tests(expectFalse([1]))(idF);
+assert("expectFalse fails on a truthy result", runAll({ quiet: true }).failed === 1);
 
 // The arg drives falsiness: 1 fails, 0 passes.
 reset();
-tests(assertFalse([1]))(idF);
-assert("assertFalse arg drives falsiness (1 fails)", runAll({ quiet: true }).failed === 1);
+tests(expectFalse([1]))(idF);
+assert("expectFalse arg drives falsiness (1 fails)", runAll({ quiet: true }).failed === 1);
 reset();
-tests(assertFalse([0]))(idF);
-assert("assertFalse arg drives falsiness (0 passes)", runAll({ quiet: true }).passed === 1);
+tests(expectFalse([0]))(idF);
+assert("expectFalse arg drives falsiness (0 passes)", runAll({ quiet: true }).passed === 1);
 
 // --- tests decorator ---
 console.log("\n--- tests Decorator ---");
@@ -176,9 +176,9 @@ function originalAdd(a: number, b: number): number {
   return a + b;
 }
 const add = tests(
-  assertEqual([2, 3], 5),
-  assertEqual([0, 0], 0),
-  assertEqual([-1, 1], 0),
+  expectEqual([2, 3], 5),
+  expectEqual([0, 0], 0),
+  expectEqual([-1, 1], 0),
 )(originalAdd);
 
 // tests() returns the SAME function object unchanged (identity), still callable.
@@ -210,7 +210,7 @@ console.log("\n--- runAll Failing ---");
 reset();
 
 tests(
-  assertEqual([1, 1], 999),  // This will fail: 1+1=2, not 999
+  expectEqual([1, 1], 999),  // This will fail: 1+1=2, not 999
 )(function badAdd(a: number, b: number): number {
   return a + b;
 });
@@ -221,33 +221,33 @@ assert("Failing test detail has status 'failed'", failResults.details[0].status 
 assert("Failing test detail has message", typeof failResults.details[0].message === "string");
 
 // --- runAll with error (throws) ---
-console.log("\n--- runAll with assertRaises ---");
+console.log("\n--- runAll with expectRaises ---");
 
 reset();
 
 tests(
-  assertRaises(Error, [null]),
-  assertEqual([5, 3], 8),
+  expectRaises(Error, [null]),
+  expectEqual([5, 3], 8),
 )(function divide(a: number, b: number | null = null): number {
   if (b === null) throw new Error("b required");
   return a + b;
 });
 
 const throwResults = runAll({ quiet: true });
-assert("assertRaises passes when error thrown", throwResults.passed === 2);
+assert("expectRaises passes when error thrown", throwResults.passed === 2);
 assert("No failures in throw test", throwResults.failed === 0);
 
-// --- assertTrue / assertFalse in runAll ---
-console.log("\n--- assertTrue/assertFalse in Runner ---");
+// --- expectTrue / expectFalse in runAll ---
+console.log("\n--- expectTrue/expectFalse in Runner ---");
 
 reset();
 
 tests(
-  assertTrue([1]),
-  assertTrue(["hello"]),
-  assertFalse([0]),
-  assertFalse([""]),
-  assertFalse([null]),
+  expectTrue([1]),
+  expectTrue(["hello"]),
+  expectFalse([0]),
+  expectFalse([""]),
+  expectFalse([null]),
 )(function identity(x: unknown): unknown {
   return x;
 });
@@ -269,8 +269,8 @@ console.log("\n--- failfast ---");
 reset();
 
 tests(
-  assertEqual([1, 1], 999),  // fail
-  assertEqual([1, 1], 2),    // would pass, but won't run with failfast
+  expectEqual([1, 1], 999),  // fail
+  expectEqual([1, 1], 2),    // would pass, but won't run with failfast
 )(function mathy(a: number, b: number): number {
   return a + b;
 });

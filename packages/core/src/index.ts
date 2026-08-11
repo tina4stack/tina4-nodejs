@@ -122,7 +122,7 @@ export { MongoSessionHandler } from "./sessionHandlers/mongoHandler.js";
 export type { MongoSessionConfig } from "./sessionHandlers/mongoHandler.js";
 export { ValkeySessionHandler } from "./sessionHandlers/valkeyHandler.js";
 export type { ValkeySessionConfig } from "./sessionHandlers/valkeyHandler.js";
-export { tests, assertEqual, assertRaises, assertTrue, assertFalse, runAll, reset } from "./testing.js";
+export { tests, expectEqual, expectRaises, expectTrue, expectFalse, runAll, reset } from "./testing.js";
 export { TestClient, TestResponse } from "./testClient.js";
 export { Tina4Test, AssertionError as Tina4AssertionError } from "./test.js";
 export type { TestRunResults } from "./test.js";
