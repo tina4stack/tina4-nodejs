@@ -5,8 +5,8 @@
  * extends/block, include, macro, set, comments, whitespace control, tests.
  */
 import { createHash, createHmac, randomBytes } from "node:crypto";
-import { readFileSync, existsSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync, existsSync, statSync, realpathSync } from "node:fs";
+import { join, resolve, isAbsolute, sep } from "node:path";
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -1896,12 +1896,34 @@ export class Frond {
     return renderDump(value).toString();
   }
 
+  /**
+   * Load a template's source, CONFINED under the templates directory.
+   *
+   * Every path-taking tag ({% include %}, {% extends %}, {% import %},
+   * {% from ... import %}) funnels through this one loader, so this single guard
+   * confines them all (TAG-DEC-01): a name that is absolute, climbs out with a
+   * `..` up-level segment, or resolves through a symlink to a location OUTSIDE
+   * the templates root is REFUSED -- the outside file is never read. Template
+   * -side analogue of the static-asset confinement (feature 41 / ADR-0050).
+   */
   private load(name: string): string {
+    // Lexical belt: refuse an absolute path or a `..` up-level segment before
+    // touching the filesystem (defense in depth in front of the realpath check).
+    if (isAbsolute(name) || name.split(/[\\/]/).includes("..")) {
+      throw new Error(`Template path escapes the templates directory: ${name}`);
+    }
     const filePath = join(this.templateDir, name);
-    if (!existsSync(filePath)) {
+    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
       throw new Error(`Template not found: ${filePath}`);
     }
-    return readFileSync(filePath, "utf-8");
+    // Realpath containment: a symlink INSIDE the templates dir whose target
+    // resolves OUTSIDE it is refused (the lexical belt cannot see a symlink).
+    const root = realpathSync(this.templateDir);
+    const real = realpathSync(filePath);
+    if (real !== root && !real.startsWith(root + sep)) {
+      throw new Error(`Template path escapes the templates directory: ${name}`);
+    }
+    return readFileSync(real, "utf-8");
   }
 
   /** Execute pre-tokenized template against context. */
@@ -2791,9 +2813,12 @@ export class Frond {
     let source: string;
     try {
       source = this.load(filename);
-    } catch {
+    } catch (err) {
+      // A genuinely missing optional include is silenced; an escape/other error
+      // is re-thrown with its own message (so a confinement refusal is loud, not
+      // masked as "not found").
       if (ignoreMissing) return "";
-      throw new Error(`Template not found: ${join(this.templateDir, filename)}`);
+      throw err;
     }
 
     const incContext = { ...context };
