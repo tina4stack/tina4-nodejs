@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, statSync, type Stats } from "node:fs";
-import { join, extname } from "node:path";
+import { readFileSync, realpathSync, statSync, type Stats } from "node:fs";
+import { join, extname, sep } from "node:path";
 import type { Tina4Request, Tina4Response } from "./types.js";
 
 const MIME_TYPES: Record<string, string> = {
@@ -37,6 +37,22 @@ export function tryServeStatic(
       : raw.split("?")[0];
   }
 
+  // Security: refuse an up-level segment or a dotfile before touching the FS
+  // (defense in depth; the realpath confinement below is what actually stops a
+  // symlink escape). This also blocks the sibling-prefix vector reachable via the
+  // malformed-URL fallback, since that path carries `..` too.
+  if (hasHiddenSegment(pathname)) return false;
+
+  // Resolve the real static root ONCE. Resolving the dir AND the file keeps them
+  // consistent when the temp/base path itself is a symlink (e.g. macOS
+  // /var -> /private/var), which a startsWith on the raw dir would break.
+  let realDir: string;
+  try {
+    realDir = realpathSync(staticDir);
+  } catch {
+    return false;
+  }
+
   // Try exact file match, then index.html for directory requests
   const candidates = [
     join(staticDir, pathname),
@@ -44,15 +60,27 @@ export function tryServeStatic(
   ];
 
   for (const filePath of candidates) {
-    if (!existsSync(filePath)) continue;
+    let realPath: string;
+    try {
+      realPath = realpathSync(filePath);
+    } catch {
+      continue; // missing path component
+    }
 
-    const stat = statSync(filePath);
+    const stat = statSync(realPath);
     if (!stat.isFile()) continue;
 
-    // Prevent directory traversal
-    if (!filePath.startsWith(staticDir)) continue;
+    // Confinement: realpath + trailing separator (ADR-0050) — a symlink pointing
+    // outside, a sibling-prefix dir (publicsecret) and a `..` escape all fail
+    // this. The trailing separator is what defeats the sibling-prefix match.
+    if (realPath !== realDir && !realPath.startsWith(realDir + sep)) continue;
 
-    const ext = extname(filePath);
+    // Never emit bytes from a dotfile, even when a symlink inside the public dir
+    // points AT one. Check the segments BELOW the public dir so a public dir that
+    // itself lives under a dot-directory is unaffected.
+    if (hasHiddenSegment(realPath.slice(realDir.length + 1), sep)) continue;
+
+    const ext = extname(realPath);
     const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
 
     // Cheap validators from the file's size + mtime — no hashing needed. A weak
@@ -80,11 +108,20 @@ export function tryServeStatic(
 
     res.raw.setHeader("Content-Type", contentType);
     res.raw.setHeader("Content-Length", stat.size);
-    res.raw.end(readFileSync(filePath));
+    res.raw.end(readFileSync(realPath));
     return true;
   }
 
   return false;
+}
+
+/**
+ * Whether any separator-delimited segment of `path` is hidden (begins with a
+ * dot). Refuses a dotfile (`.env`, `.git/config`); a `..` segment also begins
+ * with a dot, so this doubles as a belt on traversal.
+ */
+function hasHiddenSegment(path: string, separator = "/"): boolean {
+  return path.split(separator).some((segment) => segment.length > 0 && segment.startsWith("."));
 }
 
 /**

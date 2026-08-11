@@ -1439,6 +1439,11 @@ function serveMethodNotAllowed(ctx: FallbackContext): boolean {
  * regardless of TINA4_SWAGGER_ENABLED / TINA4_DEBUG.
  */
 function serveStaticAsset(ctx: FallbackContext): boolean {
+  // ONE search order across the four frameworks (ST-SEARCHDIR-DIVERGE):
+  // TINA4_PUBLIC_DIR override first (ST-PUBLICDIR-ENV-PARTIAL), then the app's
+  // public then src/public, then the framework built-in public last.
+  const custom = process.env.TINA4_PUBLIC_DIR;
+  if (custom && existsSync(custom) && tryServeStatic(custom, ctx.req, ctx.res)) return true;
   if (existsSync(ctx.staticDir) && tryServeStatic(ctx.staticDir, ctx.req, ctx.res)) return true;
   if (existsSync(ctx.srcPublicDir) && tryServeStatic(ctx.srcPublicDir, ctx.req, ctx.res)) return true;
 
