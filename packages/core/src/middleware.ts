@@ -822,8 +822,13 @@ export class SecurityHeadersMiddleware {
 
     res.header("X-Content-Type-Options", "nosniff");
 
+    // HSTS is HTTPS-only (SECHDR-DEC-02): a downgrade-protection header on a
+    // plain-HTTP response is inert at best and ships a bad max-age on an
+    // unencrypted scheme at worst. Emit it ONLY when TINA4_HSTS is set AND the
+    // request is HTTPS (x-forwarded-proto first hop, else the native TLS socket)
+    // — the same proxy-aware scheme the session cookie's Secure flag uses.
     const hsts = process.env.TINA4_HSTS ?? "";
-    if (hsts) {
+    if (hsts && SecurityHeadersMiddleware.isSecureRequest(req)) {
       res.header(
         "Strict-Transport-Security",
         `max-age=${hsts}; includeSubDomains`,
@@ -848,6 +853,26 @@ export class SecurityHeadersMiddleware {
     );
 
     return [req, res];
+  }
+
+  /**
+   * True when the client request is HTTPS. Proxy-aware and byte-parity with
+   * Python (request.is_secure_scheme), PHP (Request::isSecureScheme) and Ruby
+   * (Request.secure_scheme?): a TLS-terminating proxy forwards plain HTTP with
+   * `x-forwarded-proto`, whose FIRST hop is the client-facing scheme; falling
+   * back to the native TLS socket when no such header is present. Its name is
+   * not before- or after-prefixed, so hook discovery never calls it as a hook.
+   */
+  private static isSecureRequest(req: Tina4Request): boolean {
+    const xfProto = (req.headers as Record<string, string | string[] | undefined>)[
+      "x-forwarded-proto"
+    ];
+    const firstHop = (Array.isArray(xfProto) ? xfProto[0] : xfProto)
+      ?.split(",")[0]
+      ?.trim()
+      .toLowerCase();
+    if (firstHop) return firstHop === "https";
+    return Boolean((req.socket as { encrypted?: boolean } | undefined)?.encrypted);
   }
 }
 

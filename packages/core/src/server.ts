@@ -19,7 +19,7 @@ import {
   sessionAutoStart,
 } from "./dispatchPipeline.js";
 import { createResponse, setDefaultTemplatesDir } from "./response.js";
-import { MiddlewareChain, MiddlewareRunner, cors, requestLogger, isMiddlewareClass, attachCsrfFromEnv } from "./middleware.js";
+import { MiddlewareChain, MiddlewareRunner, cors, requestLogger, isMiddlewareClass, attachCsrfFromEnv, SecurityHeadersMiddleware } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
 import { loadEnv, isTruthy } from "./dotenv.js";
 import { createHealthRoutes } from "./health.js";
@@ -1678,6 +1678,13 @@ ${reset}
   middleware.use(cors());
   middleware.use(requestLogger());
   middleware.use(rateLimiter());
+
+  // Security headers: register in the default chain UNCONDITIONALLY
+  // (secure-by-default, SECHDR-DEC-01). It is CLASS middleware (a beforeSecurity
+  // hook), so it goes in the MiddlewareRunner registry like CsrfMiddleware — no
+  // opt-in: a default app ships X-Frame-Options/X-Content-Type-Options/CSP/etc.
+  // HSTS stays HTTPS-only. Idempotent (MiddlewareRunner.use de-dupes).
+  MiddlewareRunner.use(SecurityHeadersMiddleware);
 
   // Discover file-based routes
   if (existsSync(routesDir)) {
