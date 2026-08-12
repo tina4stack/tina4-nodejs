@@ -290,20 +290,23 @@ async function run() {
     try { await closeDatabase(); } catch { /* ignore */ }
   }
 
-  // ── 8. softDelete provisioning: createTable() omits is_deleted; syncModels() adds it ──
-  console.log("\n--- 8. softDelete needs is_deleted; createTable() omits it, syncModels() adds it ---");
+  // ── 8. softDelete provisioning: createTable() INJECTS is_deleted (SOFTDEL-DEC-02); syncModels() adds it too ──
+  console.log("\n--- 8. softDelete needs is_deleted; createTable() injects it (SOFTDEL-DEC-02), syncModels() adds it too ---");
   {
     const db = await initDatabase({ url: `sqlite:///${join(tmp, "f8.db")}` });
 
-    // (negative) createTable() on a bare softDelete model does NOT add is_deleted →
-    // the first delete() throws referencing the missing column.
+    // (SOFTDEL-DEC-02) createTable() on a bare softDelete model now INJECTS
+    // is_deleted, so the soft-delete path works with no manual column.
     await FSoftBare.createTable();
     const bare = await FSoftBare.create({ name: "bare" });
     assert("setup: bare softDelete row created", bare instanceof FSoftBare);
     const bareDelErr = await captureThrow(async () => { await (bare as FSoftBare).delete(); });
-    assert("createTable() omits is_deleted → delete() throws", bareDelErr !== null);
-    assert("the throw references the is_deleted column",
-      !!bareDelErr && /is_deleted/.test(bareDelErr.message), bareDelErr ? bareDelErr.message : "no error");
+    assert("createTable() injects is_deleted → delete() does NOT throw", bareDelErr === null,
+      bareDelErr ? bareDelErr.message : "no error");
+    assert("bare softDelete row is filtered from reads after delete",
+      (await FSoftBare.all()).length === 0);
+    assert("the row still physically exists (soft, not hard, delete)",
+      (await db.fetch("SELECT * FROM fsoft_bare")).records.length === 1);
 
     // (positive fix A) declaring is_deleted yourself + createTable() → soft delete works.
     await FSoftDeclared.createTable();

@@ -1139,6 +1139,15 @@ export class BaseModel {
           mappedFields[dbCol] = def;
         }
       }
+      // SOFTDEL-DEC-02: a softDelete model needs an is_deleted flag column, but
+      // createTable() built the schema from DECLARED fields only — so a
+      // softDelete = true model that never declared is_deleted produced a table
+      // with NO such column, and every soft-delete read/write then errored on
+      // the missing column. syncModels() adds it on boot; createTable() must too.
+      // Inject it (INTEGER 0/1, default 0) unless the model already declares it.
+      if (this.softDelete && !("is_deleted" in mappedFields)) {
+        mappedFields["is_deleted"] = { type: "integer", default: 0 };
+      }
       await adapterCreateTable(db, this.tableName, mappedFields);
       return true;
     }
@@ -1175,6 +1184,15 @@ export class BaseModel {
         parts.push(`DEFAULT ${dv}`);
       }
       colDefs.push(parts.join(" "));
+    }
+
+    // SOFTDEL-DEC-02 (fallback path): inject the is_deleted flag column for a
+    // softDelete model that did not declare it, mirroring the adapter path above.
+    if (this.softDelete) {
+      const dbCols = Object.keys(this.fields).map((f) => this.getDbColumn(f));
+      if (!dbCols.includes("is_deleted")) {
+        colDefs.push(`"is_deleted" INTEGER DEFAULT 0`);
+      }
     }
 
     // A COMPOSITE key is declared ONCE, at table level; the per-column inline
