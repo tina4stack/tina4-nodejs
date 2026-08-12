@@ -278,6 +278,18 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         const adapter = getAdapter();
         const body = req.body as Record<string, unknown>;
 
+        // Feature 19 (VALID-NODE-PUT-NOVALIDATE): the update path validates the
+        // request body too — previously only POST did, so a PUT could write
+        // type/length/pattern-violating data a create would reject. isUpdate=true
+        // wires the partial-update mode: an absent field is not spuriously
+        // "required" (the row already has it), but a field that IS present is
+        // still held to its type/length/pattern/range constraints.
+        const errors = validate(body, fields, true);
+        if (errors.length > 0) {
+          res.status(422).json({ error: "Validation failed", errors });
+          return;
+        }
+
         const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
         const existing = await adapterQuery(adapter,
           `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,

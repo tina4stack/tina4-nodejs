@@ -726,18 +726,6 @@ export class BaseModel {
   async save(): Promise<this | false> {
     const ModelClass = this.constructor as typeof BaseModel;
 
-    // ── Canonical #2: validate() is enforced. An invalid model never reaches
-    // the driver — fail loud (log + lastError), return false. ──
-    const errors = this.validate();
-    if (errors.length > 0) {
-      this.lastError = errors.join("; ");
-      Log.error(
-        `${ModelClass.name}.save() refused: validation failed for table ` +
-          `'${ModelClass.tableName}' — ${this.lastError}`,
-      );
-      return false;
-    }
-
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
     const pkCol = ModelClass.getPkColumn();
@@ -783,6 +771,21 @@ export class BaseModel {
           isUpdate = false;
         }
       }
+    }
+
+    // ── Canonical #2: validate() is enforced. An invalid model never reaches
+    // the driver — fail loud (log + lastError), return false. Feature 19: on an
+    // UPDATE the partial-update mode (isUpdate) is passed so an unset field is
+    // not spuriously "required" (the persisted row already carries it), while a
+    // field that IS present stays held to its type/length/pattern/range rules.
+    const errors = this.validate(isUpdate);
+    if (errors.length > 0) {
+      this.lastError = errors.join("; ");
+      Log.error(
+        `${ModelClass.name}.save() refused: validation failed for table ` +
+          `'${ModelClass.tableName}' — ${this.lastError}`,
+      );
+      return false;
     }
 
     await adapterStartTransaction(db);
@@ -1096,13 +1099,16 @@ export class BaseModel {
    * Validate this instance's values against the model's field definitions.
    * Returns an array of error strings (empty array means valid).
    */
-  validate(): string[] {
+  validate(isUpdate = false): string[] {
     const ModelClass = this.constructor as typeof BaseModel;
     const data: Record<string, unknown> = {};
     for (const name of Object.keys(ModelClass.fields)) {
       data[name] = this[name];
     }
-    const errors = validateFields(data, ModelClass.fields);
+    // isUpdate wires the partial-update mode: on an update a field that is not
+    // provided is not spuriously "required" (see validateFields). Field values
+    // that ARE present stay held to their type/length/pattern/range rules.
+    const errors = validateFields(data, ModelClass.fields, isUpdate);
     return errors.map((e) => `${e.field} ${e.message}`);
   }
 

@@ -50,7 +50,11 @@ export function validate(
           }
           const regex = compiledPatterns.get(name);
           if (regex && !regex.test(value)) {
-            errors.push({ field: name, message: `does not match required pattern` });
+            // Feature 19 (VALID-TWO-MESSAGES): one canonical wording per rule
+            // across BOTH validators. The request Validator says "does not match
+            // the required format"; the ORM validator must say the same so a
+            // client keying on the message matches either surface.
+            errors.push({ field: name, message: `does not match the required format` });
           }
         }
         break;
