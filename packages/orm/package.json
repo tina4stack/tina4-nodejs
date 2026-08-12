@@ -17,6 +17,7 @@
   "optionalDependencies": {
     "mongodb": "^6.0.0",
     "mysql2": "^3.22.5",
+    "node-firebird": "^2.14.3",
     "pg": "^8.20.0",
     "tedious": "^19.2.1"
   }

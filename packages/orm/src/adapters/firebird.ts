@@ -201,6 +201,31 @@ export class FirebirdAdapter implements DatabaseAdapter {
   private db: any = null;
   private transaction: any = null;
   private _lastInsertId: number | bigint | null = null;
+  /** Resolved node-firebird config, kept so a dead connection can re-attach. */
+  private fbConfig: any = null;
+
+  // Substring markers (lowercased) that identify a dead-socket Firebird error
+  // worth reconnecting for (FB-DEC-01). Idle Firebird connections die behind NAT
+  // timeouts, server-side ConnectionIdleTimeout, or Docker network rotation.
+  // MEASURED on the lab: a killed attachment raises "Connection shutdown, Killed
+  // by database administrator." Node had no reconnect path before -- this closes
+  // the parity gap with Python/PHP/Ruby.
+  private static readonly DEAD_CONN_MARKERS = [
+    "error writing data to the connection",
+    "error reading data from the connection",
+    "connection shutdown",
+    "connection lost",
+    "network error",
+    "connection is not active",
+    "broken pipe",
+  ];
+
+  /** Is this a dead-socket error worth a transparent reconnect (not a logical SQL error)? */
+  static isDeadConnection(err: unknown): boolean {
+    const message = String((err as Error)?.message ?? err ?? "").toLowerCase();
+    if (!message) return false;
+    return FirebirdAdapter.DEAD_CONN_MARKERS.some((marker) => message.includes(marker));
+  }
 
   constructor(private config: FirebirdConfig | string) {}
 
@@ -253,20 +278,74 @@ export class FirebirdAdapter implements DatabaseAdapter {
       fbConfig.database = normalizeFirebirdDbIdentifier(fbConfig.database);
     }
 
+    // Kept so a dead connection can re-attach with the same config (FB-DEC-01).
+    this.fbConfig = fbConfig;
+
     // node-firebird has NO connect-timeout option of its own, so there is no
     // driver timer to translate and the outer bound is the ONLY thing standing
     // between a silent driver and a permanently hung boot. This is the adapter
-    // the 16-minute probe measured.
+    // the 16-minute probe measured. The SRP-login retry lives inside the bound
+    // (FB-DEC-03), so the whole retry sequence is still capped by the timeout.
     this.db = await withConnectTimeout(
-      () => new Promise<any>((resolve, reject) => {
-        fb.attach(fbConfig, (err: Error | null, db: any) => (err ? reject(err) : resolve(db)));
-      }),
+      () => this.attachWithRetry(fbConfig),
       connectTimeoutMillis(),
       fbConfig.host,
       fbConfig.port,
       // Answered after we gave up: detach so the socket does not outlive the boot.
       (db: any) => { try { db?.detach?.(() => {}); } catch { /* already gone */ } },
     );
+  }
+
+  private attachOnce(config: any): Promise<any> {
+    const fb = requireFirebird();
+    return new Promise((resolve, reject) => {
+      fb.attach(config, (err: Error | null, db: any) => (err ? reject(err) : resolve(db)));
+    });
+  }
+
+  /**
+   * Attach with a BOUNDED retry (FB-DEC-03). node-firebird's SRP login over
+   * WireCrypt is intermittently flaky (~12% measured historically), and a flake
+   * surfaces as an auth/handshake error indistinguishable from a real one, so a
+   * bounded retry-all is the robust, honest handling: a transient handshake
+   * failure recovers, while a genuine bad credential still fails after the bound
+   * -- never skipped, never papered over.
+   */
+  private async attachWithRetry(config: any, attempts = 4): Promise<any> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        return await this.attachOnce(config);
+      } catch (err) {
+        lastError = err;
+        if (attempt < attempts - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+        }
+      }
+    }
+    throw lastError;
+  }
+
+  /**
+   * Run a node-firebird op; on a DEAD-connection error (outside an explicit
+   * transaction) re-attach once and retry (FB-DEC-01). Inside a transaction the
+   * error surfaces -- atomicity beats resilience, and the caller rolls back.
+   */
+  private async withReconnect<T>(op: () => Promise<T>): Promise<T> {
+    try {
+      return await op();
+    } catch (err) {
+      if (this.transaction || !FirebirdAdapter.isDeadConnection(err)) throw err;
+      await this.reconnectFirebird();
+      return op();
+    }
+  }
+
+  private async reconnectFirebird(): Promise<void> {
+    try { this.db?.detach?.(() => {}); } catch { /* already gone */ }
+    this.db = null;
+    if (!this.fbConfig) throw new Error("Firebird reconnect called before connect().");
+    this.db = await this.attachWithRetry(this.fbConfig);
   }
 
   private parseUrl(url: string): { host?: string; port?: number; user?: string; password?: string; database?: string } {
@@ -330,21 +409,74 @@ export class FirebirdAdapter implements DatabaseAdapter {
   }
 
   private queryPromise(sql: string, params?: unknown[]): Promise<any[]> {
-    return new Promise((resolve, reject) => {
-      const translated = this.translateSql(sql);
+    const translated = this.translateSql(sql);
+    // statementHandle() is read INSIDE the op so a reconnect (which replaces
+    // this.db) is picked up on the retry.
+    return this.withReconnect(() => new Promise<any[]>((resolve, reject) => {
       this.statementHandle().query(translated, params ?? [], (err: Error | null, result: any[]) => {
         if (err) reject(err);
         else resolve(result ?? []);
       });
-    });
+    }));
   }
 
   private executePromise(sql: string, params?: unknown[]): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const translated = this.translateSql(sql);
+    const translated = this.translateSql(sql);
+    return this.withReconnect(() => new Promise<void>((resolve, reject) => {
       this.statementHandle().execute(translated, params ?? [], (err: Error | null) => {
         if (err) reject(err);
         else resolve();
+      });
+    }));
+  }
+
+  /**
+   * The real affected-row count. node-firebird gives NO DML count of its own
+   * (the callback result is undefined -- MEASURED), but Firebird 5 multi-row
+   * RETURNING surfaces one row per affected row, so `... RETURNING 1` + the row
+   * count IS the real count (FB-AFFECTED-FAB replaces the hardcoded 1). RETURNING
+   * a constant, not `*`, so a large update/delete does not materialise full rows.
+   */
+  private async executeReturningCount(sql: string, params?: unknown[]): Promise<number> {
+    const rows = await this.queryPromise(`${sql} RETURNING 1`, params);
+    return Array.isArray(rows) ? rows.length : 0;
+  }
+
+  /**
+   * Firebird has no generic last_insert_id -- read the GEN_<TABLE>_ID generator
+   * the row's BEFORE INSERT trigger drew from (FB-LASTID-GAP). Column-name-
+   * independent, so correct for a non-`id` PK too. null when the table has no
+   * such generator (GEN_ID then throws -> caught).
+   */
+  private async readGeneratorId(table: string): Promise<number | bigint | null> {
+    const generator = "GEN_" + table.replace(/"/g, "").toUpperCase() + "_ID";
+    try {
+      const rows = await this.queryPromise(`SELECT GEN_ID(${generator}, 0) AS LID FROM RDB$DATABASE`);
+      const value = (rows[0]?.["LID"] ?? rows[0]?.["lid"]) as number | bigint | undefined;
+      this._lastInsertId = value ?? null;
+      return this._lastInsertId;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Read a node-firebird BLOB column into a Buffer. A BLOB arrives as a STREAMING
+   * FUNCTION (fn((err, name, emitter) => emitter.on('data'|'end'))), NOT a Buffer
+   * -- MEASURED -- so the old decodeBlobs no-op leaked the function to the caller
+   * and no bytes round-tripped (FB-BLOB-SRP-UNVERIFIED).
+   */
+  private readBlob(
+    blobFn: (cb: (err: Error | null, name: string, emitter: any) => void) => void,
+  ): Promise<Buffer | null> {
+    return new Promise((resolve, reject) => {
+      blobFn((err, _name, emitter) => {
+        if (err) return reject(err);
+        if (!emitter) return resolve(null);
+        const chunks: Buffer[] = [];
+        emitter.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+        emitter.on("end", () => resolve(Buffer.concat(chunks)));
+        emitter.on("error", (streamErr: Error) => reject(streamErr));
       });
     });
   }
@@ -379,14 +511,29 @@ export class FirebirdAdapter implements DatabaseAdapter {
   async queryAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
     this.ensureConnected();
     const rows = await this.queryPromise(sql, params);
-    return (rows as T[]).map(row => this.decodeBlobs(foldColumnNames(row)));
+    const decoded: T[] = [];
+    for (const row of rows as T[]) {
+      decoded.push(await this.decodeBlobs(foldColumnNames(row)));
+    }
+    return decoded;
   }
 
-  /** Ensure BLOB columns are readable — node-firebird may return callback-based
-   *  blob readers. Convert to Buffer. Regular buffers pass through unchanged. */
-  private decodeBlobs<T>(row: T): T {
-    // node-firebird returns BLOBs as Buffer by default when using
-    // query(sql, params, callback) — already raw bytes.
+  /**
+   * Read out any BLOB columns to Buffers. node-firebird returns a BLOB as a
+   * STREAMING FUNCTION, not a Buffer (MEASURED), so a column whose value is a
+   * function is read via readBlob(); everything else passes through unchanged
+   * (FB-BLOB-SRP-UNVERIFIED -- the old no-op leaked the function to the caller).
+   */
+  private async decodeBlobs<T>(row: T): Promise<T> {
+    if (row === null || typeof row !== "object") return row;
+    const record = row as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      if (typeof record[key] === "function") {
+        record[key] = await this.readBlob(
+          record[key] as (cb: (err: Error | null, name: string, emitter: any) => void) => void,
+        );
+      }
+    }
     return row;
   }
 
@@ -431,7 +578,9 @@ export class FirebirdAdapter implements DatabaseAdapter {
       const sql = buildInsert(FB_DIALECT, table, keys);
       const paramsList = data.map((row) => keys.map((k) => row[k]));
       const result = await this.executeManyAsync(sql, paramsList);
-      return { success: true, affectedRows: result.totalAffected, lastId: result.lastId };
+      // The generator holds the LAST inserted id after the batch (FB-LASTID-GAP).
+      const lastId = (await this.readGeneratorId(table)) ?? result.lastId;
+      return { success: true, affectedRows: result.totalAffected, lastId: lastId ?? undefined };
     }
 
     const keys = Object.keys(data);
@@ -443,8 +592,10 @@ export class FirebirdAdapter implements DatabaseAdapter {
     // is what hid a wholly broken write path — the caller awaited a resolved
     // promise, read back zero rows, and no error surfaced anywhere.
     await this.executePromise(sql, values);
-    // Firebird doesn't have a generic last_insert_id — return success without id
-    return { success: true, affectedRows: 1 };
+    // Derive the last-id from the GEN_<TABLE>_ID generator the trigger drew from
+    // (FB-LASTID-GAP); null when the table has no such generator.
+    const lastId = await this.readGeneratorId(table);
+    return { success: true, affectedRows: 1, lastId: lastId ?? undefined };
   }
 
   update(table: string, data: Record<string, unknown>, filter: Record<string, unknown>, params?: unknown[]): DatabaseResult {
@@ -466,19 +617,19 @@ export class FirebirdAdapter implements DatabaseAdapter {
     // Firebird already uses `?`, so the fragment needs no rewriting.
     if (typeof filter === "string") {
       const where = filter ? ` WHERE ${filter}` : "";
-      await this.executePromise(
+      const affected = await this.executeReturningCount(
         `UPDATE ${fbQuote(table)} SET ${setClauses}${where}`,
         [...Object.values(data), ...(params ?? [])],
       );
-      return { success: true, affectedRows: 1 };
+      return { success: true, affectedRows: affected };
     }
 
     const whereClauses = buildWhereClause(FB_DIALECT, Object.keys(filter));
     const sql = `UPDATE ${FB_DIALECT.quote(table)} SET ${setClauses} WHERE ${whereClauses}`;
     const values = [...Object.values(data), ...Object.values(filter)];
 
-    await this.executePromise(sql, values);
-    return { success: true, affectedRows: 1 };
+    const affected = await this.executeReturningCount(sql, values);
+    return { success: true, affectedRows: affected };
   }
 
   delete(table: string, filter: Record<string, unknown>, params?: unknown[]): DatabaseResult {
@@ -492,8 +643,8 @@ export class FirebirdAdapter implements DatabaseAdapter {
     // string as an object — db.truncate() was broken outright.
     if (typeof filter === "string") {
       const where = filter ? ` WHERE ${filter}` : "";
-      await this.executePromise(`DELETE FROM ${fbQuote(table)}${where}`, params ?? []);
-      return { success: true, affectedRows: 1 };
+      const affected = await this.executeReturningCount(`DELETE FROM ${fbQuote(table)}${where}`, params ?? []);
+      return { success: true, affectedRows: affected };
     }
 
     // Same fbQuote policy as insert/update — see updateAsync.
@@ -501,8 +652,8 @@ export class FirebirdAdapter implements DatabaseAdapter {
     const sql = `DELETE FROM ${FB_DIALECT.quote(table)} WHERE ${whereClauses}`;
     const values = Object.values(filter);
 
-    await this.executePromise(sql, values);
-    return { success: true, affectedRows: 1 };
+    const affected = await this.executeReturningCount(sql, values);
+    return { success: true, affectedRows: affected };
   }
 
   startTransaction(): void {
