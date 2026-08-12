@@ -39,8 +39,12 @@ export class FakeData extends CoreFakeData {
       return undefined;
     }
 
-    // If there's a default, use it sometimes (but not always for variety)
-    if (fieldDef.default !== undefined) {
+    // If there's a default, use it SOME of the time (SEED-NODE-DEFAULT fix) so
+    // a defaulted field still gets varied fakes across a seeded batch instead
+    // of the identical value on every row. This coin-flip reads from the same
+    // instance PRNG as every other generator, so it stays reproducible under
+    // a seed.
+    if (fieldDef.default !== undefined && this.boolean()) {
       return fieldDef.default;
     }
 

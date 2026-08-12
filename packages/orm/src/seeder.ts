@@ -37,7 +37,18 @@ export interface SeedOptions {
   overrides?: Record<string, unknown>;
   /** Delete every existing row in the target before seeding (P2). */
   clear?: boolean;
-  /** PRNG seed for reproducible FakeData output (P3). */
+  /**
+   * PRNG seed for reproducible FakeData output (P3). Honoured by seedOrm and
+   * seedModels, which build and seed their own FakeData internally.
+   *
+   * NOT honoured by seedTable (SEED-TABLE-SEED-INERT, SEED-DEC-01, ratified
+   * 2026-08-11 — same principle as the no-op ForeignKeyField on_delete):
+   * seedTable has no generators of its own to seed — fieldMap callables are
+   * opaque — so this used to be a silent no-op there. Passing it to seedTable
+   * now THROWS instead. Build your own `new FakeData(seed)` and close over it
+   * in fieldMap: `const fake = new FakeData(42); seedTable(db, table, count,
+   * { name: () => fake.name() })`.
+   */
   seed?: number;
   /** Re-raise on the first failed row instead of skipping it (P1). */
   strict?: boolean;
@@ -51,14 +62,13 @@ export interface SeedOptions {
 function normaliseOptions(
   overrides?: Record<string, unknown>,
   opts?: SeedOptions,
-): Required<Pick<SeedOptions, "clear" | "strict">> & { overrides?: Record<string, unknown>; seed?: number } {
+): Required<Pick<SeedOptions, "clear" | "strict">> & { overrides?: Record<string, unknown> } {
   const merged: SeedOptions = { ...(opts ?? {}) };
   // The new `opts.overrides` takes precedence if both are supplied.
   const effectiveOverrides = merged.overrides ?? overrides;
   return {
     overrides: effectiveOverrides,
     clear: merged.clear ?? false,
-    seed: merged.seed,
     strict: merged.strict ?? false,
   };
 }
@@ -154,8 +164,10 @@ export async function autoFieldMap(
  *                   (or a static value). If not provided, no rows are inserted.
  * @param overrides - (legacy positional) Static values applied to every row.
  *                   Prefer `opts.overrides`.
- * @param opts - Seed options: `{ overrides, clear, seed, strict }`.
+ * @param opts - Seed options: `{ overrides, clear, strict }`. `opts.seed` is
+ *   NOT honoured here (see {@link SeedOptions.seed}) and throws if supplied.
  * @returns A SeedSummary `{ seeded, failed, errors }`.
+ * @throws {Error} If `opts.seed` is defined (SEED-TABLE-SEED-INERT removal).
  *
  * @example
  *   const fake = new FakeData();
@@ -172,6 +184,15 @@ export async function seedTable(
   overrides?: Record<string, unknown>,
   opts?: SeedOptions,
 ): Promise<SeedSummary> {
+  if (opts?.seed !== undefined) {
+    throw new Error(
+      "seedTable() no longer accepts opts.seed: it has no generators of its own to seed " +
+        "(fieldMap callables are opaque). Build a seeded FakeData yourself and close over it " +
+        "in fieldMap, e.g. const fake = new FakeData(42); seedTable(db, table, count, " +
+        "{ name: () => fake.name() }).",
+    );
+  }
+
   const { overrides: effectiveOverrides, clear, strict } = normaliseOptions(overrides, opts);
 
   if (!fieldMap || Object.keys(fieldMap).length === 0) {

@@ -1350,7 +1350,10 @@ const handleSeed: RouteHandler = async (req, res) => {
     }
     // P1 — delegate to the shared seedTable so each row is wrapped (no
     // unhandled failure can crash the endpoint) and we get a summary back.
-    const summary = await seedTable(db, table, count, fieldMap, undefined, { clear, seed, strict });
+    // SEED-TABLE-SEED-INERT: seedTable no longer takes opts.seed (it throws
+    // if supplied) — reproducibility already comes from the seeded `fake`
+    // built above and closed over by every entry in fieldMap.
+    const summary = await seedTable(db, table, count, fieldMap, undefined, { clear, strict });
     res.json({ seeded: summary.seeded, failed: summary.failed, errors: summary.errors, table });
   } catch (e) {
     res.json({ error: (e as Error)?.message ?? "Database not connected" });
