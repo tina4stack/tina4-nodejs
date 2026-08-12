@@ -241,6 +241,46 @@ async function run(): Promise<void> {
     );
   });
 
+  // ── Feature 14b: the explicit 1=1 tautology (truncate) empties the collection ─
+
+  await withCase(async (adapter, witness, collection) => {
+    // truncate() issues deleteAsync(table, "1 = 1", []) (Database.truncate's
+    // body). The explicit 1=1 tautology must translate to a MATCH-ALL {} filter
+    // so EVERY document is removed — not the { "1": 1 } filter that matched
+    // nothing and made truncate() a silent no-op (PHP already special-cased it).
+    // Mutation-proved: revert the 1=1 -> match-all handling and this count stays 3.
+    await seed(witness, [
+      { id: 1, status: "keep" },
+      { id: 2, status: "keep" },
+      { id: 3, status: "gone" },
+    ]);
+    await adapter.deleteAsync(collection, "1 = 1", []);
+    const remaining = await count(witness);
+    check(
+      "a truncate empties the collection",
+      remaining === 0,
+      `remaining=${remaining}`,
+    );
+  });
+
+  await withCase(async (adapter, witness, collection) => {
+    // The tautology fix must be TIGHT: only a lone "1 = 1" is match-all. An
+    // ordinary numeric equality like "id = 1" — superficially close to "1 = 1" —
+    // must stay SCOPED to its one match, never widening to a delete-all.
+    await seed(witness, [
+      { id: 1, status: "keep" },
+      { id: 2, status: "keep" },
+    ]);
+    await adapter.executeAsync(`DELETE FROM ${collection} WHERE id = 1`);
+    const remaining = await count(witness);
+    const after = await statuses(witness);
+    check(
+      "a scoped equality is not widened to match all",
+      remaining === 1 && JSON.stringify(after) === JSON.stringify(["keep"]),
+      `remaining=${remaining} statuses=${JSON.stringify(after)}`,
+    );
+  });
+
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
   console.log(`${"=".repeat(60)}\n`);

@@ -32,6 +32,28 @@ interface MongoOperation {
   skip?: number;
   sort?: Record<string, 1 | -1>;
   pipeline?: Record<string, unknown>[];
+  /**
+   * The write's empty filter is an INTENTIONAL match-all (an explicit 1=1
+   * tautology, e.g. truncate()'s WHERE 1 = 1), not a blank/absent WHERE. The
+   * executor uses this to let the whole-collection write through the
+   * requireWriteFilter guard, which otherwise (correctly) refuses an empty
+   * filter as the mass-write footgun.
+   */
+  matchAll?: boolean;
+}
+
+/**
+ * The explicit whole-collection tautology: the WHERE clause truncate() issues,
+ * "1 = 1". It means MATCH-ALL, so it translates to an empty {} filter and the
+ * write reaches deleteMany({}) / updateMany({}) -- emptying or rewriting every
+ * document -- exactly as Python/PHP/Ruby do. It is NOT an unparseable WHERE (the
+ * fail-closed parse still throws for unsupported SQL) and NOT a blank/absent
+ * WHERE (requireWriteFilter still refuses that), so the mass-write guard stays
+ * intact.
+ */
+const MATCH_ALL_WHERE = /^\s*1\s*=\s*1\s*$/;
+function isMatchAllWhere(where: string | null | undefined): boolean {
+  return where != null && MATCH_ALL_WHERE.test(where);
 }
 
 /** Convert SQL WHERE clause tokens into a MongoDB filter object. */
@@ -43,6 +65,12 @@ function parseWhereClause(where: string, params: unknown[], paramOffset = 0): { 
 
   for (const part of parts) {
     const trimmed = part.trim();
+
+    // The explicit 1=1 tautology contributes no constraint (match-all): skip it
+    // rather than mis-parsing "1 = 1" as { "1": 1 } (which matched nothing and
+    // made truncate() a silent no-op). NOT an unparseable WHERE -- the
+    // fail-closed throw below still fires for genuinely unsupported SQL.
+    if (MATCH_ALL_WHERE.test(trimmed)) continue;
 
     // key = ?
     const eqParam = trimmed.match(/^["']?(\w+)["']?\s*=\s*\?$/i);
@@ -138,11 +166,12 @@ function parseWhereClause(where: string, params: unknown[], paramOffset = 0): { 
  * Fail closed: a DELETE/UPDATE must carry a real filter.
  *
  * An empty MongoDB filter matches EVERY document, so deleteMany({}) /
- * updateMany({}) would wipe or rewrite the whole collection. Refuse it. The
- * explicit whole-collection spelling is truncate() (it passes WHERE 1 = 1, which
- * translates to a non-empty { "1": 1 } filter); the raw driver is the escape
- * hatch for anything the SQL subset cannot express. Shared by both write paths
- * so the guard cannot drift.
+ * updateMany({}) would wipe or rewrite the whole collection. Refuse it -- UNLESS
+ * the empty filter is an intentional match-all (an explicit 1=1 tautology, the
+ * spelling truncate() uses; the caller signals that with the operation's
+ * `matchAll` flag or an isMatchAllWhere() check and bypasses this guard). The
+ * raw driver is the escape hatch for anything the SQL subset cannot express.
+ * Shared by both write paths so the guard cannot drift.
  */
 function requireWriteFilter(filter: Record<string, unknown> | undefined, operation: string, table: string | undefined): void {
   if (!filter || Object.keys(filter).length === 0) {
@@ -256,12 +285,14 @@ function parseSql(sql: string, params: unknown[] = []): MongoOperation | null {
     }
 
     // Parse WHERE clause (params start after SET params). No WHERE -> empty
-    // filter, which the write guard refuses.
+    // filter, which the write guard refuses; an explicit 1=1 tautology -> an
+    // empty filter that IS an intentional match-all (matchAll bypasses the guard).
+    const matchAll = isMatchAllWhere(whereClause?.trim());
     const filter = whereClause
       ? parseWhereClause(whereClause.trim(), params, setParamIndex).filter
       : {};
 
-    return { type: "updateMany", collection, filter, update: { $set: setDoc } };
+    return { type: "updateMany", collection, filter, update: { $set: setDoc }, matchAll };
   }
 
   // ---- DELETE ----
@@ -270,10 +301,13 @@ function parseSql(sql: string, params: unknown[] = []): MongoOperation | null {
   );
   if (deleteMatch) {
     const [, collection, whereClause] = deleteMatch;
+    // An explicit 1=1 tautology (truncate()'s WHERE) is an intentional match-all;
+    // a blank/absent WHERE is the mass-delete footgun the executor guard refuses.
+    const matchAll = isMatchAllWhere(whereClause?.trim());
     const filter = whereClause
       ? parseWhereClause(whereClause.trim(), params).filter
       : {};
-    return { type: "deleteMany", collection, filter };
+    return { type: "deleteMany", collection, filter, matchAll };
   }
 
   // ---- CREATE TABLE (treated as createCollection) ----
@@ -406,12 +440,14 @@ export class MongodbAdapter implements DatabaseAdapter {
         return result;
       }
       case "updateMany": {
-        requireWriteFilter(op.filter, "UPDATE", op.collection);
+        // matchAll = an explicit 1=1 tautology; its empty filter is an
+        // intentional whole-collection write, not the blank-WHERE footgun.
+        if (!op.matchAll) requireWriteFilter(op.filter, "UPDATE", op.collection);
         const result = await col.updateMany(op.filter!, op.update!, { session: this.session });
         return result;
       }
       case "deleteMany": {
-        requireWriteFilter(op.filter, "DELETE", op.collection);
+        if (!op.matchAll) requireWriteFilter(op.filter, "DELETE", op.collection);
         const result = await col.deleteMany(op.filter!, { session: this.session });
         return result;
       }
@@ -606,13 +642,20 @@ export class MongodbAdapter implements DatabaseAdapter {
         return { success: true, affectedRows: total };
       }
 
-      // String WHERE clause. A BLANK string (or a WHERE that translates to an
-      // empty filter) is REFUSED -- it would delete every document. truncate()
-      // passes "1 = 1", which translates to a non-empty { "1": 1 } filter, so
-      // the explicit whole-collection path still works.
+      // String WHERE clause. A BLANK/absent WHERE is REFUSED -- it would delete
+      // every document. The explicit 1=1 tautology (truncate()'s spelling) is
+      // the ONE intentional whole-collection delete: the WHERE is present and
+      // non-blank, so it is NOT a filterless write -- deleteMany({}) empties the
+      // collection, matching Python/PHP/Ruby (where "1 = 1" translates to an
+      // empty match-all filter). An unparseable WHERE still throws in
+      // parseWhereClause below.
       if (typeof filter === "string") {
         if (!filter.trim()) {
           requireWriteFilter({}, "DELETE", table); // always throws: no filter
+        }
+        if (isMatchAllWhere(filter.trim())) {
+          const r = await col.deleteMany({}, { session: this.session });
+          return { success: true, affectedRows: r.deletedCount };
         }
         const { filter: parsedFilter } = parseWhereClause(filter, []);
         requireWriteFilter(parsedFilter, "DELETE", table);
