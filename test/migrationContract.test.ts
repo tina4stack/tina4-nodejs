@@ -144,6 +144,20 @@ async function withAdapter<T>(url: string, fn: (db: DatabaseAdapter) => Promise<
   }
 }
 
+/**
+ * Best-effort delete of a stale tina4_migration row. On a genuinely fresh
+ * database/engine the tracking table itself may not exist yet (nothing has
+ * called migrate() there before) -- that is not a real failure, just nothing
+ * to clean up.
+ */
+async function cleanLedgerRow(db: DatabaseAdapter, migrationName: string): Promise<void> {
+  try {
+    await adapterExecute(db, `DELETE FROM tina4_migration WHERE migration_name = ?`, [migrationName]);
+  } catch {
+    // table doesn't exist yet -- nothing to clean up
+  }
+}
+
 function tmpMigDir(label: string): string {
   const dir = resolve(tmpdir(), `tina4_mig_contract_${label}_${process.pid}_${Date.now()}`);
   mkdirSync(join(dir, "migrations"), { recursive: true });
@@ -186,7 +200,7 @@ async function run(): Promise<void> {
     try {
       await withAdapter(`mysql://${MYSQL_USER}:${MYSQL_PASS}@${MYSQL_HOST}:${MYSQL_PORT}/${MYSQL_DB}`, async (db) => {
         await adapterExecute(db, `DROP TABLE IF EXISTS ${table}`);
-        await adapterExecute(db, `DELETE FROM tina4_migration WHERE migration_name = ?`, [name]);
+        await cleanLedgerRow(db, name);
 
         writeFileSync(
           join(projectDir, "migrations", `${name}.sql`),
@@ -204,7 +218,7 @@ async function run(): Promise<void> {
           JSON.stringify(rows),
         );
         await adapterExecute(db, `DROP TABLE IF EXISTS ${table}`);
-        await adapterExecute(db, `DELETE FROM tina4_migration WHERE migration_name = ?`, [name]);
+        await cleanLedgerRow(db, name);
       });
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
@@ -223,7 +237,7 @@ async function run(): Promise<void> {
     try {
       await withAdapter(`postgres://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/${PG_DB}`, async (db) => {
         await adapterExecute(db, `DROP TABLE IF EXISTS ${table}`);
-        await adapterExecute(db, `DELETE FROM tina4_migration WHERE migration_name = ?`, [name]);
+        await cleanLedgerRow(db, name);
 
         writeFileSync(
           join(projectDir, "migrations", `${name}.sql`),
@@ -240,7 +254,7 @@ async function run(): Promise<void> {
         );
         check("PG: no ledger row for a fully-rolled-back file", rows.length === 0);
         await adapterExecute(db, `DROP TABLE IF EXISTS ${table}`);
-        await adapterExecute(db, `DELETE FROM tina4_migration WHERE migration_name = ?`, [name]);
+        await cleanLedgerRow(db, name);
       });
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
