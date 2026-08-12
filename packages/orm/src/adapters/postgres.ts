@@ -559,6 +559,8 @@ function fieldTypeToPostgres(def: FieldDefinition): string {
     case "number":
     case "numeric":
       return "DOUBLE PRECISION";
+    case "decimal":
+      return `DECIMAL(${def.precision ?? 10},${def.scale ?? 2})`;
     case "boolean":
       return "BOOLEAN";
     case "datetime":

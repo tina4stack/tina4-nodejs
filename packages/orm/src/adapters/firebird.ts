@@ -892,8 +892,14 @@ function fieldTypeToFirebird(def: FieldDefinition): string {
     case "number":
     case "numeric":
       return "DOUBLE PRECISION";
+    case "decimal":
+      return `DECIMAL(${def.precision ?? 10},${def.scale ?? 2})`;
     case "boolean":
-      return "SMALLINT";
+      // INTEGER, not SMALLINT: parity with the Python master + PHP + Ruby, which
+      // all map a Firebird boolean column to INTEGER (the driver round-trip for a
+      // native BOOLEAN is uneven across Firebird versions). The real-engine DDL
+      // contract (feature 18) pins this four-way.
+      return "INTEGER";
     case "datetime":
       return "TIMESTAMP";
     case "text":

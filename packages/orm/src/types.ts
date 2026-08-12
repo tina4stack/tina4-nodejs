@@ -1,4 +1,4 @@
-export type FieldType = "string" | "integer" | "number" | "numeric" | "boolean" | "datetime" | "text" | "json" | "foreignKey";
+export type FieldType = "string" | "integer" | "number" | "numeric" | "decimal" | "boolean" | "datetime" | "text" | "json" | "foreignKey";
 
 export interface FieldDefinition {
   type: FieldType;
@@ -11,6 +11,15 @@ export interface FieldDefinition {
   min?: number;
   max?: number;
   pattern?: string;
+  /**
+   * For type "decimal": the fixed precision/scale of a real DECIMAL(p, s)
+   * column. `number`/`numeric` stay a floating type (the documented money
+   * guidance); a `decimal` field keeps the declared scale in the COLUMN, so
+   * createTable emits DECIMAL(precision, scale) — identical on
+   * PostgreSQL/MySQL/MSSQL/Firebird/SQLite. Default 10 / 2 when omitted.
+   */
+  precision?: number;
+  scale?: number;
   /** For type "foreignKey": the referenced model name (string) */
   references?: string;
   /** For type "foreignKey": override the has-many property name on the referenced model */

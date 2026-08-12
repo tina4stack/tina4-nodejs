@@ -589,6 +589,8 @@ function fieldTypeToMssql(def: FieldDefinition): string {
     case "number":
     case "numeric":
       return "FLOAT";
+    case "decimal":
+      return `DECIMAL(${def.precision ?? 10},${def.scale ?? 2})`;
     case "boolean":
       return "BIT";
     case "datetime":

@@ -397,7 +397,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
     const pkCols = Object.entries(columns).filter(([, d]) => d.primaryKey).map(([c]) => c);
     const composite = pkCols.length > 1;
     for (const [colName, def] of Object.entries(columns)) {
-      const sqlType = fieldTypeToSQLite(def.type);
+      const sqlType = fieldTypeToSQLite(def);
       const parts = [`"${colName}" ${sqlType}`];
       if (def.primaryKey && !composite) parts.push("PRIMARY KEY");
       if (def.autoIncrement) parts.push("AUTOINCREMENT");
@@ -419,7 +419,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
   }
 
   addColumn(table: string, colName: string, def: FieldDefinition): void {
-    const sqlType = fieldTypeToSQLite(def.type);
+    const sqlType = fieldTypeToSQLite(def);
     let sql = `ALTER TABLE "${table}" ADD COLUMN "${colName}" ${sqlType}`;
     if (def.default !== undefined && def.default !== "now") sql += ` DEFAULT ${sqlDefault(def.default)}`;
     else if (def.default === "now") sql += " DEFAULT CURRENT_TIMESTAMP";
@@ -427,10 +427,11 @@ export class SQLiteAdapter implements DatabaseAdapter {
   }
 }
 
-function fieldTypeToSQLite(type: string): string {
-  switch (type) {
+function fieldTypeToSQLite(def: FieldDefinition): string {
+  switch (def.type) {
     case "integer": return "INTEGER";
     case "number": case "numeric": return "REAL";
+    case "decimal": return `DECIMAL(${def.precision ?? 10},${def.scale ?? 2})`;
     case "boolean": return "INTEGER";
     case "datetime": return "TEXT";
     case "text": return "TEXT";

@@ -452,7 +452,7 @@ export class OdbcAdapter implements DatabaseAdapter {
   async createTableAsync(name: string, columns: Record<string, FieldDefinition>): Promise<void> {
     const colDefs: string[] = [];
     for (const [colName, def] of Object.entries(columns)) {
-      const sqlType = fieldTypeToOdbc(def.type);
+      const sqlType = fieldTypeToOdbc(def);
       const parts = [`"${colName}" ${sqlType}`];
       if (def.primaryKey) parts.push("PRIMARY KEY");
       if (def.autoIncrement) parts.push("GENERATED ALWAYS AS IDENTITY"); // ANSI SQL
@@ -476,7 +476,7 @@ export class OdbcAdapter implements DatabaseAdapter {
 
   /** Add a column to an existing table. */
   async addColumnAsync(table: string, colName: string, def: FieldDefinition): Promise<void> {
-    const sqlType = fieldTypeToOdbc(def.type);
+    const sqlType = fieldTypeToOdbc(def);
     let sql = `ALTER TABLE "${table}" ADD COLUMN "${colName}" ${sqlType}`;
     if (def.default !== undefined && def.default !== "now") {
       sql += ` DEFAULT ${sqlDefault(def.default)}`;
@@ -503,11 +503,12 @@ export class OdbcAdapter implements DatabaseAdapter {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function fieldTypeToOdbc(type: string): string {
-  switch (type) {
+function fieldTypeToOdbc(def: FieldDefinition): string {
+  switch (def.type) {
     case "integer": return "INTEGER";
     case "number":
     case "numeric": return "DOUBLE PRECISION";
+    case "decimal": return `DECIMAL(${def.precision ?? 10},${def.scale ?? 2})`;
     case "boolean": return "SMALLINT";
     case "datetime": return "TIMESTAMP";
     case "text": return "CLOB";

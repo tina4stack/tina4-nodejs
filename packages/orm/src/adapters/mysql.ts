@@ -460,6 +460,8 @@ function fieldTypeToMysql(def: FieldDefinition): string {
     case "number":
     case "numeric":
       return "DOUBLE";
+    case "decimal":
+      return `DECIMAL(${def.precision ?? 10},${def.scale ?? 2})`;
     case "boolean":
       return "TINYINT(1)";
     case "datetime":
