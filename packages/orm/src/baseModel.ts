@@ -94,6 +94,39 @@ const _fkRegistry = new Map<string, Array<{ foreignKey: string; declaringModel: 
  *     static autoMap = true; // auto-generate fieldMapping from camelCase → snake_case
  *   }
  */
+
+/**
+ * The ONE process-wide, tag-aware model query cache shared by EVERY model, so a
+ * write on one model busts a cross-table query cached on another (CACHE-DEC-01).
+ * Mirrors the Python master's module-level `_query_cache`; it is the existing
+ * QueryCache subsystem (TTL + tags) -- zero new deps -- and is separate from the
+ * adapter-level auto-cache (CachedDatabaseAdapter), which is env-gated and off by
+ * default.
+ */
+const modelQueryCache = new QueryCache({ defaultTtl: 0, maxSize: 500 });
+
+/** Identifier after a FROM / JOIN keyword (optionally schema-qualified/quoted). */
+const CACHE_TABLE_RE =
+  /\b(?:FROM|JOIN)\s+([`"[]?[A-Za-z_][\w$]*[`"\]]?(?:\.[`"[]?[A-Za-z_][\w$]*[`"\]]?)?)/gi;
+
+/**
+ * Table names a query reads FROM / JOINs -- lowercased, schema-stripped.
+ *
+ * Best-effort: for each FROM/JOIN keyword it takes the following identifier,
+ * drops any quoting (backticks, double quotes, square brackets) and schema
+ * prefix (public.users -> users), and ignores the alias. A cached query is
+ * tagged with these tables so a write to any one of them invalidates it.
+ */
+function tablesInSql(sql: string): string[] {
+  const tables = new Set<string>();
+  for (const match of (sql ?? "").matchAll(CACHE_TABLE_RE)) {
+    let name = match[1].replace(/[`"[\]]/g, "");
+    if (name.includes(".")) name = name.split(".").pop() ?? name;
+    if (name) tables.add(name.toLowerCase());
+  }
+  return [...tables];
+}
+
 export class BaseModel {
   static tableName: string;
   static fields: Record<string, FieldDefinition>;
@@ -103,7 +136,6 @@ export class BaseModel {
   static hasMany?: RelationshipDefinition[];
   static belongsTo?: RelationshipDefinition[];
   static _db?: string;
-  static _queryCache?: QueryCache;
 
   /**
    * When true, auto-generates fieldMapping entries from camelCase field names
@@ -896,6 +928,8 @@ export class BaseModel {
     // Success — clear any previously-recorded error.
     this.lastError = null;
     (this as any)._exists = true;
+    // Bust cached reads of any table this write touched (CACHE-DEC-01).
+    ModelClass.clearCache();
     return this;
   }
 
@@ -944,6 +978,8 @@ export class BaseModel {
       await adapterRollback(db);
       throw e;
     }
+    // Bust cached reads of any table this write touched (CACHE-DEC-01).
+    ModelClass.clearCache();
     return true;
   }
 
@@ -1181,11 +1217,31 @@ export class BaseModel {
   }
 
   /**
-   * Run a raw SQL query with results cached by TTL. Cache is per-model-class.
+   * Every table a cached query touches: this model's table plus every FROM/JOIN
+   * table in `sql`. A write to any of these busts the entry (CACHE-DEC-01).
+   */
+  static _cacheTags(sql: string): string[] {
+    const ModelClass = this as unknown as typeof BaseModel;
+    const tags = [(ModelClass.tableName ?? "").toLowerCase()];
+    for (const table of tablesInSql(sql)) {
+      if (!tags.includes(table)) tags.push(table);
+    }
+    return tags;
+  }
+
+  /**
+   * Run a raw SQL query with results cached by TTL.
+   *
+   * Invalidation (CACHE-DEC-01): the entry is tagged by every table the query
+   * touches (this model's table plus any FROM/JOIN tables) in ONE process-wide
+   * shared cache, so a write through the ORM (save/delete/forceDelete/restore)
+   * to ANY of those tables busts it -- including a cross-table JOIN cached on a
+   * different model. `ttl <= 0` means NO-CACHE: the query runs and the rows are
+   * returned but nothing is stored, so every read hits the database.
    *
    * @param sql     SQL query string.
    * @param params  Bind parameters.
-   * @param ttl     Cache TTL in seconds (default 60).
+   * @param ttl     Cache TTL in seconds (default 60; <= 0 = no-cache).
    * @param limit   Max records to return (default 100).
    * @param offset  Records to skip (default 0).
    * @param include Relationship names to eager-load on cache miss.
@@ -1200,33 +1256,43 @@ export class BaseModel {
     include?: string[],
   ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
-    if (!ModelClass._queryCache) {
-      ModelClass._queryCache = new QueryCache({ defaultTtl: ttl, maxSize: 500 });
-    }
+    const db = ModelClass.getDb();
+
+    const runQuery = async (): Promise<T[]> => {
+      const querySql = `${sql} LIMIT ${limit} OFFSET ${offset}`;
+      const rows = await adapterQuery(db, querySql, params);
+      const results = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
+      if (include && results.length > 0) {
+        await ModelClass._eagerLoad(results as BaseModel[], include);
+      }
+      return results;
+    };
+
+    // ttl <= 0 is NO-CACHE: run it live, store nothing, read nothing.
+    if (ttl <= 0) return runQuery();
+
     const cacheKey = `${ModelClass.tableName}:${sql}:${limit}:${offset}`;
-    const key = QueryCache.queryKey(cacheKey, params ?? [], ModelClass.getDb().cacheIdentity ?? "");
-    const hit = ModelClass._queryCache.get(key) as T[] | undefined;
+    const key = QueryCache.queryKey(cacheKey, params ?? [], (db as unknown as { cacheIdentity?: string }).cacheIdentity ?? "");
+    const hit = modelQueryCache.get<T[]>(key);
     if (hit !== undefined) return hit;
 
-    const db = ModelClass.getDb();
-    const querySql = `${sql} LIMIT ${limit} OFFSET ${offset}`;
-    const rows = await adapterQuery(db, querySql, params);
-    const results = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
-    if (include && results.length > 0) {
-      await ModelClass._eagerLoad(results as BaseModel[], include);
-    }
-    ModelClass._queryCache.set(key, results, ttl);
+    const results = await runQuery();
+    modelQueryCache.set(key, results, ttl, ModelClass._cacheTags(sql));
     return results;
   }
 
   /**
-   * Clear the per-model query cache.
+   * Invalidate every cached query that touches this model's table.
+   *
+   * Tag-scoped, NOT a wholesale flush: a cached JOIN on another model that reads
+   * this table is busted too (it carries this table's tag), while a query that
+   * never touches this table is left intact. Called after every ORM write
+   * (save/delete/forceDelete/restore) so a read-after-write never serves a
+   * stale/deleted row (CACHE-DEC-01).
    */
   static clearCache(): void {
     const ModelClass = this as unknown as typeof BaseModel;
-    if (ModelClass._queryCache) {
-      ModelClass._queryCache.clear();
-    }
+    modelQueryCache.clearTag((ModelClass.tableName ?? "").toLowerCase());
   }
 
   /**
@@ -1291,6 +1357,8 @@ export class BaseModel {
       await adapterRollback(db);
       throw e;
     }
+    // Bust cached reads of any table this write touched (CACHE-DEC-01).
+    ModelClass.clearCache();
     return true;
   }
 
@@ -1324,6 +1392,8 @@ export class BaseModel {
       throw e;
     }
     this.is_deleted = 0;
+    // Bust cached reads of any table this write touched (CACHE-DEC-01).
+    ModelClass.clearCache();
     return true;
   }
 
