@@ -43,6 +43,17 @@ function tlsRejectUnauthorized(): boolean {
   return !isTruthy(process.env.TINA4_MAIL_TLS_INSECURE);
 }
 
+/**
+ * Parse TINA4_MAIL_REDIRECT_TO (MAIL-DEC-01): comma-separated addresses, each
+ * trimmed, blanks dropped. Unset/empty -> [] (redirect off, no behaviour
+ * change). Read fresh on every send() call — same style as shouldCapture()'s
+ * TINA4_MAIL_CAPTURE read — so a changed env is honoured without restart.
+ */
+function parseMailRedirectList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
 // ── Types ────────────────────────────────────────────────────
 
 export interface SendResult {
@@ -476,10 +487,10 @@ export class Messenger {
     headers?: Record<string, string>,
   ): Promise<SendResult> {
     const options: SendOptions = { to, subject, body, html, text, cc, bcc, replyTo, attachments, headers };
-    const toList = Array.isArray(options.to) ? options.to : [options.to];
-    const ccList = Array.isArray(options.cc) ? options.cc : (options.cc ? [options.cc] : []);
-    const bccList = Array.isArray(options.bcc) ? options.bcc : (options.bcc ? [options.bcc] : []);
-    const allRecipients = [...toList, ...ccList, ...bccList];
+    let toList = Array.isArray(options.to) ? options.to : [options.to];
+    let ccList = Array.isArray(options.cc) ? options.cc : (options.cc ? [options.cc] : []);
+    let bccList = Array.isArray(options.bcc) ? options.bcc : (options.bcc ? [options.bcc] : []);
+    let allRecipients = [...toList, ...ccList, ...bccList];
 
     // Dev capture is a BRANCH here, not a different object returned by the factory.
     // createMessenger() used to hand back a DevMailbox, which has capture() and no
@@ -489,6 +500,22 @@ export class Messenger {
         to, subject, body, html, text, ccList, bccList, replyTo,
         attachments, this.fromAddress || undefined,
       );
+    }
+
+    // TINA4_MAIL_REDIRECT_TO (MAIL-DEC-01): on the REAL-SEND path only — capture
+    // already returned above, so this never touches the capture branch. When the
+    // list is non-empty, replace every recipient with the redirect list (so ONLY
+    // the dev list receives the mail, never the real recipients) and preserve the
+    // original recipients in X-Tina4-Original-To. Subject/body/attachments are
+    // untouched, and send()'s return shape is unchanged.
+    const redirectTo = parseMailRedirectList(process.env.TINA4_MAIL_REDIRECT_TO);
+    if (redirectTo.length > 0) {
+      const originalTo = allRecipients.join(", ");
+      toList = redirectTo;
+      ccList = [];
+      bccList = [];
+      allRecipients = [...toList];
+      options.headers = { ...(options.headers ?? {}), "X-Tina4-Original-To": originalTo };
     }
 
     const messageId = `${randomUUID()}@${this.host}`;
