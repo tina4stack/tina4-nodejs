@@ -1048,7 +1048,22 @@ export class BaseModel {
         // isn't cached is simply skipped here — async lazy-load on a sync
         // serializer is not possible after the Option A async refactor.
         const data = this._relCache[relName];
-        if (data === undefined) continue;
+        if (data === undefined) {
+          // LOAD-NODE-SERIALIZE-OMIT (feature 26, 3.13.99): the omission used
+          // to be completely silent — a developer who forgot `include` on the
+          // finder that produced this instance got a serialized object
+          // missing the relation with no signal at all. Warn (never throw —
+          // serialization must keep working) naming the model, the relation,
+          // and the fix, so the gap is visible instead of a quiet data loss.
+          Log.warning(
+            `${ModelClass.name}.toDict(): relation "${relName}" was requested via ` +
+              `include but was never eager-loaded (a synchronous serializer cannot ` +
+              `lazy-load it), so it is OMITTED from the result. Pass ` +
+              `include: ["${relName}"] to the finder (find/all/where/select/load) ` +
+              `that produced this instance.`,
+          );
+          continue;
+        }
         if (data === null || data === undefined) {
           result[relName] = null;
         } else if (Array.isArray(data)) {
