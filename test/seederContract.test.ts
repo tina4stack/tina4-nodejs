@@ -38,8 +38,22 @@
 import net from "node:net";
 import {
   seedTable, seedOrm, seedModels, FakeData, BaseModel, bindDatabase, createAdapterFromUrl,
+  adapterExecute, adapterFetch,
 } from "../packages/orm/src/index.ts";
 import { SQLiteAdapter } from "../packages/orm/src/adapters/sqlite.ts";
+
+// PostgreSQL/MSSQL/Firebird adapters require the ASYNC method (executeAsync/
+// fetchAsync) -- calling the sync execute()/fetch() directly throws "Use
+// executeAsync() ...". adapterExecute()/adapterFetch() (the same helpers
+// seedTable()/seedOrm() use internally) dispatch to whichever the adapter
+// actually has, so ONE code path below works for SQLite AND the three real
+// engines without an if/else per call site.
+async function rawExecute(db: any, sql: string): Promise<void> {
+  await adapterExecute(db, sql);
+}
+async function rawFetch<T = Record<string, unknown>>(db: any, sql: string): Promise<T[]> {
+  return adapterFetch<T>(db, sql);
+}
 
 let pass = 0;
 let fail = 0;
@@ -95,7 +109,7 @@ const FIREBIRD_URL = process.env.TINA4_TEST_FIREBIRD_URL;
 
 async function dropAll(db: any, ...statements: string[]): Promise<void> {
   for (const sql of statements) {
-    try { await db.execute(sql); } catch { /* best effort */ }
+    try { await rawExecute(db, sql); } catch { /* best effort */ }
   }
 }
 
@@ -107,7 +121,7 @@ console.log("--- seed_table_inserts_on_every_engine ---");
 async function seedTableRoundtrip(db: any, table: string, setup: string[], drop: string[]): Promise<void> {
   await dropAll(db, ...drop);
   try {
-    for (const sql of setup) await db.execute(sql);
+    for (const sql of setup) await rawExecute(db, sql);
     const fake = new FakeData(1);
     const summary = await seedTable(db, table, 5, {
       name: () => fake.name(),
@@ -115,7 +129,7 @@ async function seedTableRoundtrip(db: any, table: string, setup: string[], drop:
     });
     assert(`${table}: seeded 5`, summary.seeded === 5, `seeded=${summary.seeded} errors=${JSON.stringify(summary.errors)}`);
     assert(`${table}: 0 failed`, summary.failed === 0);
-    const rows = await db.fetch(`SELECT name, score FROM ${table}`);
+    const rows = await rawFetch(db, `SELECT name, score FROM ${table}`);
     assert(`${table}: 5 rows read back`, rows.length === 5);
     assert(
       `${table}: every row has a name and an in-range score`,
@@ -256,13 +270,13 @@ if (await tcpReachable(PG_HOST, PG_PORT)) {
   async function runPg(table: string): Promise<Array<[unknown, unknown]>> {
     const db = await createAdapterFromUrl(pgUrl());
     await dropAll(db, `DROP TABLE ${table}`);
-    await db.execute(`CREATE TABLE ${table} (id SERIAL PRIMARY KEY, name VARCHAR(100), score INTEGER)`);
+    await rawExecute(db, `CREATE TABLE ${table} (id SERIAL PRIMARY KEY, name VARCHAR(100), score INTEGER)`);
     const fake = new FakeData(555);
     await seedTable(db, table, 5, { name: () => fake.name(), score: () => fake.integer(1, 100) });
-    const rows = await db.fetch(`SELECT name, score FROM ${table} ORDER BY id`);
+    const rows = await rawFetch<{ name: unknown; score: unknown }>(db, `SELECT name, score FROM ${table} ORDER BY id`);
     await dropAll(db, `DROP TABLE ${table}`);
     await db.close();
-    return rows.map((r: any) => [r.name, r.score]);
+    return rows.map((r) => [r.name, r.score]);
   }
   const a = await runPg("contract_repro_pg_a");
   const b = await runPg("contract_repro_pg_b");
@@ -322,8 +336,9 @@ if (await tcpReachable(PG_HOST, PG_PORT)) {
   const db = await createAdapterFromUrl(pgUrl());
   bindDatabase(db);
   await dropAll(db, "DROP TABLE seedercontract_pg_book", "DROP TABLE seedercontract_pg_author");
-  await db.execute("CREATE TABLE seedercontract_pg_author (id SERIAL PRIMARY KEY, name VARCHAR(100))");
-  await db.execute(
+  await rawExecute(db, "CREATE TABLE seedercontract_pg_author (id SERIAL PRIMARY KEY, name VARCHAR(100))");
+  await rawExecute(
+    db,
     "CREATE TABLE seedercontract_pg_book (id SERIAL PRIMARY KEY, title VARCHAR(100), " +
       "author_id INTEGER NOT NULL REFERENCES seedercontract_pg_author(id))",
   );
@@ -354,7 +369,8 @@ if (await tcpReachable(PG_HOST, PG_PORT)) {
     assert("SeederContractPgBook seeded 5 (postgresql)", results["SeederContractPgBook"].seeded === 5);
     assert("SeederContractPgBook 0 failed (postgresql)", results["SeederContractPgBook"].failed === 0);
 
-    const orphans = await db.fetch(
+    const orphans = await rawFetch(
+      db,
       "SELECT * FROM seedercontract_pg_book b LEFT JOIN seedercontract_pg_author a ON b.author_id = a.id " +
         "WHERE a.id IS NULL",
     );
@@ -406,12 +422,12 @@ if (await tcpReachable(PG_HOST, PG_PORT)) {
   const db = await createAdapterFromUrl(pgUrl());
   const table = "contract_fail_pg";
   await dropAll(db, `DROP TABLE ${table}`);
-  await db.execute(`CREATE TABLE ${table} (id SERIAL PRIMARY KEY, email VARCHAR(100) NOT NULL)`);
+  await rawExecute(db, `CREATE TABLE ${table} (id SERIAL PRIMARY KEY, email VARCHAR(100) NOT NULL)`);
   try {
     const summary = await seedTable(db, table, 4, { email: () => null });
     assert("failures (postgresql): seeded 0", summary.seeded === 0);
     assert("failures (postgresql): 4 failed", summary.failed === 4);
-    const remaining = await db.fetch(`SELECT * FROM ${table}`);
+    const remaining = await rawFetch(db, `SELECT * FROM ${table}`);
     assert("failures (postgresql): no rows landed", remaining.length === 0);
   } finally {
     await dropAll(db, `DROP TABLE ${table}`);
