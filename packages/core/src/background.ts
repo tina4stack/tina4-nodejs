@@ -50,12 +50,15 @@ const _tasks: BackgroundTask[] = [];
  *
  * @param callback         Function to call (sync or async, no arguments).
  * @param intervalSeconds  Seconds between invocations (default: 1).
- * @returns A handle whose `stop()` clears just this one task.
+ * @returns A handle whose `stop()` clears just this one task and returns whether
+ *          it removed a live task (true) or was already stopped (false). This is
+ *          the ONE background surface — a stop-handle plus a count — shared with
+ *          Python/PHP/Ruby (`handle.stop()` -> bool, `backgroundTaskCount()`).
  */
 export function background(
   callback: () => unknown | Promise<unknown>,
   intervalSeconds = 1,
-): { stop: () => void } {
+): { stop: () => boolean } {
   if (typeof callback !== "function") {
     throw new TypeError("background(callback, interval): callback must be a function");
   }
@@ -99,11 +102,14 @@ export function background(
   _tasks.push(task);
 
   return {
-    stop: () => {
+    stop: (): boolean => {
+      // Idempotent: true the first time (a live task was removed), false after.
+      if (task.stopped) return false;
       task.stopped = true;
       clearTimeout(task.timer);
       const idx = _tasks.indexOf(task);
       if (idx !== -1) _tasks.splice(idx, 1);
+      return true;
     },
   };
 }
