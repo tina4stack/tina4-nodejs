@@ -544,7 +544,6 @@ export class BaseModel {
     const data = (rows as any)?.data ?? rows;
     const instances = (Array.isArray(data) ? data : []).map((row: Record<string, unknown>) => {
       const inst = new this(row) as T;
-      (inst as any)._exists = true;
       return inst;
     });
 
@@ -596,7 +595,6 @@ export class BaseModel {
     for (const [key, value] of Object.entries(data)) {
       (this as any)[key] = value;
     }
-    (this as any)._exists = true;
     return true;
   }
 
@@ -927,7 +925,6 @@ export class BaseModel {
     }
     // Success — clear any previously-recorded error.
     this.lastError = null;
-    (this as any)._exists = true;
     // Bust cached reads of any table this write touched (CACHE-DEC-01).
     ModelClass.clearCache();
     return this;
@@ -952,7 +949,6 @@ export class BaseModel {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
-    const pkCol = ModelClass.getPkColumn();
     const pkValue = this[pk];
 
     if (pkValue === undefined || pkValue === null) {
@@ -1339,7 +1335,6 @@ export class BaseModel {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
-    const pkCol = ModelClass.getPkColumn();
     const pkValue = this[pk];
 
     if (pkValue === undefined || pkValue === null) {
@@ -1373,7 +1368,6 @@ export class BaseModel {
 
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
-    const pkCol = ModelClass.getPkColumn();
     const pkValue = this[pk];
 
     if (pkValue === undefined || pkValue === null) {
