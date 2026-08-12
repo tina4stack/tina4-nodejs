@@ -4,8 +4,9 @@
  *
  * - [10] `//` delimiter no longer swallows a URL (`https://…`) as a stored-proc block.
  * - [8]  discovery sort is numeric-aware (`9_` before `10_`).
- * - [9]  CREATE TABLE is idempotent on engines lacking IF NOT EXISTS (Firebird/MSSQL),
- *        NOT skipped on SQLite/Postgres (IF NOT EXISTS) or when the table is absent.
+ * - [9]  CREATE TABLE idempotency on Firebird/MSSQL moved to
+ *        test/migrationContract.test.ts ("firebird_mssql_create_add_idempotency_real",
+ *        feature 15 MIG-DEC-03) -- real engines, no fake adapters.
  *
  * Run with: npx tsx test/migrationFootguns.test.ts
  */
@@ -16,7 +17,6 @@ import {
   parseSetTerm,
   normalizeQuotes,
   sortMigrationFiles,
-  shouldSkipCreateTable,
   initDatabase,
   closeDatabase,
   getAdapter,
@@ -25,7 +25,6 @@ import {
   adapterExecute,
   adapterQuery,
 } from "../packages/orm/src/index.ts";
-import type { DatabaseAdapter } from "../packages/orm/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -41,26 +40,6 @@ function assert(name: string, condition: boolean, detail = "") {
 }
 
 console.log("=== Migration Footgun Lock-in Tests ===\n");
-
-// Fake adapters whose constructor.name is the engine discriminator the runner
-// uses (engineOf reads constructor.name; adapterTableExists calls tableExists).
-class MssqlAdapter {
-  constructor(private exists: boolean) {}
-  tableExists(_name: string): boolean { return this.exists; }
-}
-class FirebirdAdapter {
-  constructor(private exists: boolean) {}
-  tableExists(_name: string): boolean { return this.exists; }
-}
-class SQLiteAdapter {
-  constructor(private exists: boolean) {}
-  tableExists(_name: string): boolean { return this.exists; }
-}
-class PostgresAdapter {
-  constructor(private exists: boolean) {}
-  tableExists(_name: string): boolean { return this.exists; }
-}
-const asDb = (a: unknown): DatabaseAdapter => a as DatabaseAdapter;
 
 // ── [10] `//` delimiter must not swallow a URL ──────────────────────────
 console.log("--- [10] slash-slash URL guard ---");
@@ -144,45 +123,20 @@ console.log("\n--- [8] numeric-aware sort ---");
 }
 
 // ── [9] CREATE TABLE idempotency on Firebird/MSSQL ──────────────────────
-console.log("\n--- [9] CREATE TABLE idempotency ---");
-
-{
-  const r = await shouldSkipCreateTable(asDb(new MssqlAdapter(true)), "CREATE TABLE users (id INT)");
-  assert("MSSQL + table exists → skip", r !== null && r.includes("users"), String(r));
-}
-{
-  const r = await shouldSkipCreateTable(
-    asDb(new FirebirdAdapter(true)),
-    'CREATE TABLE "Orders" (id INT)',
-  );
-  assert("Firebird + quoted table exists → skip", r !== null && r.includes("Orders"), String(r));
-}
-{
-  const r = await shouldSkipCreateTable(
-    asDb(new FirebirdAdapter(false)),
-    "CREATE TABLE users (id INT)",
-  );
-  assert("Firebird + table absent → NOT skipped (null)", r === null, String(r));
-}
-{
-  const rSqlite = await shouldSkipCreateTable(
-    asDb(new SQLiteAdapter(true)),
-    "CREATE TABLE users (id INT)",
-  );
-  const rPg = await shouldSkipCreateTable(
-    asDb(new PostgresAdapter(true)),
-    "CREATE TABLE users (id INT)",
-  );
-  assert("SQLite → never skipped by this guard (IF NOT EXISTS)", rSqlite === null, String(rSqlite));
-  assert("Postgres → never skipped by this guard (IF NOT EXISTS)", rPg === null, String(rPg));
-}
-{
-  const r = await shouldSkipCreateTable(
-    asDb(new MssqlAdapter(true)),
-    "INSERT INTO users VALUES (1)",
-  );
-  assert("non-CREATE statement ignored (null)", r === null, String(r));
-}
+//
+// MIG-FBMSSQL-MOCK (feature 15, MIG-DEC-03): this block used to exercise
+// shouldSkipCreateTable against fake MssqlAdapter/FirebirdAdapter classes
+// whose constructor.name was spoofed to satisfy engineOf()'s dialect
+// detection (`unwrapAdapter(db).constructor.name === "FirebirdAdapter"`) --
+// a fake of that exact name trivially "detects" as the real engine without
+// ever proving the real catalogue lookup (RDB$RELATION_FIELDS / tableExists)
+// works against a live server. NO DOUBLES -- moved to
+// test/migrationContract.test.ts's "firebird_mssql_create_add_idempotency_real",
+// which drives the SAME guard against a REAL Firebird 5 and a REAL MSSQL
+// (tina4-php's MigrationFootgunsLiveEngineTest is the model this release
+// aligned Ruby and Node to). The SQLite/Postgres negative branch (the guard
+// returns null before ever calling tableExists for either engine) is proven
+// there too, on a real SQLite connection.
 
 // ── G3 (data-integrity): migrate() STOPS at the first failed file ───────
 console.log("\n--- G3: stop at first failure ---");

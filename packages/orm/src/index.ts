@@ -43,6 +43,7 @@ export {
   normalizeQuotes,
   sortMigrationFiles,
   shouldSkipCreateTable,
+  shouldSkipForFirebird,
 } from "./migration.js";
 export type { MigrationResult, MigrationStatus } from "./migration.js";
 export { AutoCrud, generateCrudRoutes, crudEligibleModels } from "./autoCrud.js";

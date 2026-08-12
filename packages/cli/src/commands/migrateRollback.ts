@@ -54,7 +54,16 @@ export async function migrateRollback(migrationDir?: string): Promise<void> {
 
   console.log(`  Rolling back batch ${lastBatch[0].batch} (${lastBatch.length} migration(s))...`);
 
-  const rolledBack = await rollbackFn(dir);
+  // rollback() is fail-safe (MIG-DEC-02): a missing/failed down artifact now
+  // THROWS instead of silently dropping the tracking record, so the CLI must
+  // catch it and exit non-zero rather than let it crash with a raw stack.
+  let rolledBack: string[];
+  try {
+    rolledBack = await rollbackFn(dir);
+  } catch (err) {
+    console.error(`  Rollback failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
 
   if (rolledBack.length === 0) {
     console.log("  Nothing was rolled back.");

@@ -1,15 +1,25 @@
 /**
  * CLI command: migrate — Run pending SQL migration files.
  *
- * Scans the migrations/ directory for .sql files (excluding .down.sql),
- * executes them in order, and records each as applied with a batch number.
+ * MIG-NODE-CLI-DIVERGENT (feature 15, MIG-DEC-01): this used to be a SECOND,
+ * weaker migration implementation -- a naive `sql.split(";")` (breaks on a
+ * `;` inside a string/comment/proc block), no per-file transaction (a
+ * mid-file failure left earlier statements applied on every engine
+ * including PostgreSQL, with no rollback), no Firebird/MSSQL idempotency
+ * skips, and the ledger row recorded OUTSIDE any transaction. All untested.
+ *
+ * It now delegates to the SAME `migrate()` the ORM's programmatic API uses
+ * (`packages/orm/src/migration.ts`) -- ONE code path, so the CLI gets the
+ * transactional, robust-split, idempotent behaviour for free. The weaker
+ * re-implementation is deleted, not kept alongside (maintainability = less
+ * code).
  *
  * Supports both naming patterns:
  *   - Sequential: 000001_name.sql
  *   - Timestamp:  YYYYMMDDHHMMSS_name.sql
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { loadEnv } from "../../../core/src/dotenv.js";
 
 export async function runMigrations(migrationDir?: string): Promise<void> {
@@ -25,33 +35,22 @@ export async function runMigrations(migrationDir?: string): Promise<void> {
     return;
   }
 
-  // Initialise the database so the adapter is available
   let initDatabase: typeof import("../../../orm/src/index.js").initDatabase;
-  let ensureMigrationTable: typeof import("../../../orm/src/index.js").ensureMigrationTable;
-  let isMigrationApplied: typeof import("../../../orm/src/index.js").isMigrationApplied;
-  let recordMigration: typeof import("../../../orm/src/index.js").recordMigration;
-  let getNextBatch: typeof import("../../../orm/src/index.js").getNextBatch;
-  let getAdapter: typeof import("../../../orm/src/index.js").getAdapter;
-  let adapterExecute: typeof import("../../../orm/src/index.js").adapterExecute;
+  let migrate: typeof import("../../../orm/src/index.js").migrate;
 
   try {
     const orm = await import("../../../orm/src/index.js");
     initDatabase = orm.initDatabase;
-    ensureMigrationTable = orm.ensureMigrationTable;
-    isMigrationApplied = orm.isMigrationApplied;
-    recordMigration = orm.recordMigration;
-    getNextBatch = orm.getNextBatch;
-    getAdapter = orm.getAdapter;
-    adapterExecute = orm.adapterExecute;
+    migrate = orm.migrate;
   } catch {
     console.error("  Error: @tina4/orm is required to run migrations.");
     process.exit(1);
   }
 
-  // Ensure database is initialised (uses TINA4_DATABASE_URL/DATABASE_URL or
-  // defaults to sqlite). initDatabase() is async — MUST be awaited, otherwise
-  // setAdapter() has not run by the time ensureMigrationTable() asks for the
-  // adapter and the whole CLI crashes with "No database adapter configured."
+  // Initialise the database so the adapter is available. initDatabase() is
+  // async — MUST be awaited, otherwise setAdapter() has not run by the time
+  // migrate() asks for the adapter and the whole CLI crashes with
+  // "No database adapter configured."
   try {
     await initDatabase();
   } catch (err) {
@@ -59,64 +58,26 @@ export async function runMigrations(migrationDir?: string): Promise<void> {
     process.exit(1);
   }
 
-  await ensureMigrationTable();
+  const result = await migrate(undefined, { migrationsDir: dir });
 
-  // Collect .sql files, excluding .down.sql, sorted by numeric prefix
-  const files = readdirSync(dir)
-    .filter((f) => f.endsWith(".sql") && !f.endsWith(".down.sql"))
-    .sort((a, b) => {
-      const aMatch = a.match(/^(\d+)/);
-      const bMatch = b.match(/^(\d+)/);
-      if (aMatch && bMatch) {
-        const aNum = BigInt(aMatch[1]);
-        const bNum = BigInt(bMatch[1]);
-        if (aNum < bNum) return -1;
-        if (aNum > bNum) return 1;
-      }
-      return a.localeCompare(b);
-    });
-
-  if (files.length === 0) {
-    console.log("  No .sql migration files found.");
-    return;
-  }
-
-  const batch = await getNextBatch();
-  let applied = 0;
-
-  for (const file of files) {
-    const name = file.replace(/\.sql$/, "");
-
-    if (await isMigrationApplied(name)) {
-      continue;
-    }
-
-    const sql = readFileSync(join(dir, file), "utf-8").trim();
-    if (!sql) continue;
-
-    console.log(`  Migrating: ${file}`);
-
-    const adapter = getAdapter();
-    // Split on semicolons and execute each statement
-    const statements = sql.split(";").map((s) => s.trim()).filter(Boolean);
-
-    for (const stmt of statements) {
-      try {
-        await adapterExecute(adapter, stmt);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`  Error in ${file}: ${msg}`);
-        process.exit(1);
-      }
-    }
-
-    await recordMigration(name, batch);
-    applied++;
-  }
-
-  if (applied === 0) {
+  if (result.applied.length === 0 && result.failed.length === 0) {
     console.log("  Nothing to migrate — all migrations already applied.");
   } else {
-    console.log(`  Applied ${applied} migration(s) (batch ${batch}).`);
+    for (const file of result.applied) {
+      console.log(`  Migrated: ${file}`);
+    }
+    if (result.applied.length > 0) {
+      console.log(`  Applied ${result.applied.length} migration(s).`);
+    }
+  }
+
+  if (result.failed.length > 0) {
+    // migrate() has already logged the specific statement error for each
+    // failed file (console.error + Log.error) -- fail-fast so CI/CD actually
+    // fails when a migration breaks, matching the explicit `tina4 migrate`
+    // CLI contract in every other framework (the startup auto-migrate hook
+    // is the one that swallows; this command must not).
+    console.error(`  ${result.failed.length} migration(s) failed: ${result.failed.join(", ")}`);
+    process.exit(1);
   }
 }

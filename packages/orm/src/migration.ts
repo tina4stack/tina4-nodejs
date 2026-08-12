@@ -83,8 +83,12 @@ async function firebirdColumnExists(
 /**
  * If stmt is an ALTER TABLE ... ADD on Firebird and the column already exists,
  * returns a skip reason string. Returns null if the statement should execute normally.
+ *
+ * Exported (like its shouldSkipCreateTable sibling) so it can be driven
+ * directly against a REAL Firebird connection in
+ * test/migrationContract.test.ts -- no fake adapter needed.
  */
-async function shouldSkipForFirebird(
+export async function shouldSkipForFirebird(
   db: DatabaseAdapter,
   stmt: string,
 ): Promise<string | null> {
@@ -589,17 +593,26 @@ export async function removeMigrationRecord(name: string): Promise<void> {
 /**
  * Rollback the last batch of migrations using .down.sql files.
  *
- * For each migration in the last batch (in reverse order):
- * 1. Looks for a corresponding .down.sql file on disk
- * 2. If found, reads and executes the SQL statements
- * 3. If not found, logs a warning
- * 4. Deletes the tracking record either way
+ * FAIL-SAFE (MIG-DEC-02, reuses the Python reference model): for each
+ * migration in the last batch (in reverse order), the down artifact must
+ * actually run before the tracking record is removed. A MISSING .down.sql
+ * (or, on the legacy Map API, no registered down function) or a FAILING down
+ * statement now THROWS instead of logging a warning/error and still deleting
+ * the record — the old behaviour was the exact MIG-ROLLBACK-DROPS-LEDGER bug:
+ * the schema stayed applied but the ledger row vanished, silently untracked.
+ * The DELETE runs inside the SAME transaction as the down statements, so a
+ * partially-executed down (some statements ran, a later one failed) rolls
+ * back too — no half-reversed schema left behind either.
  *
  * @param migrationsDir - Directory containing migration files (default: "migrations")
  * @param delimiter - SQL statement delimiter (default: ";")
  * @returns Array of the down-migration files that were run, e.g.
  *   "000001_create_users.down.sql". (The legacy down-FUNCTION Map API returns the
  *   bare migration name instead, since no .down.sql file is involved there.)
+ * @throws When a migration in the batch has no down artifact, or its down
+ *   statement(s) fail — the batch stops at that migration; earlier
+ *   migrations in the SAME call that already rolled back stay rolled back
+ *   (each is its own transaction).
  *
  * NOTE on return form (intentional, cross-framework): migration return values reflect
  * WHAT each method acted on, so the forms differ by method and that is by design (not
@@ -620,9 +633,12 @@ export async function rollback(
     const rolledBack: string[] = [];
     for (const migration of migrations) {
       const down = downFunctions.get(migration.migration_name);
-      if (down) {
-        await down();
+      if (!down) {
+        throw new Error(
+          `Cannot rollback ${migration.migration_name}: no down function registered`,
+        );
       }
+      await down();
       await removeMigrationRecord(migration.migration_name);
       // Legacy down-FUNCTION API: no .down.sql file is involved here, so return the
       // bare migration name (the file-based path below returns "name.down.sql").
@@ -642,32 +658,41 @@ export async function rollback(
     const downFile = `${migration.migration_name}.down.sql`;
     const downPath = join(dir, downFile);
 
-    if (existsSync(downPath)) {
-      const sqlContent = readFileSync(downPath, "utf-8").trim();
-      if (sqlContent) {
-        const statements = splitStatements(sqlContent, delim);
-        try {
-          await adapterStartTransaction(db);
-          for (const stmt of statements) {
-            await adapterExecute(db, stmt);
-          }
-          await adapterCommit(db);
-        } catch (err) {
-          try {
-            await adapterRollback(db);
-          } catch {
-            // rollback may fail if auto-rolled-back
-          }
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(`  Rollback failed for ${migration.migration_name}: ${msg}`);
-          // Still remove the record so the migration can be re-applied
-        }
-      }
-    } else {
-      console.warn(`  Warning: No .down.sql file found for ${migration.migration_name} — skipping SQL execution`);
+    if (!existsSync(downPath)) {
+      throw new Error(
+        `Cannot rollback ${migration.migration_name}: no .down.sql file found`,
+      );
     }
 
-    await removeMigrationRecord(migration.migration_name);
+    const sqlContent = readFileSync(downPath, "utf-8").trim();
+    if (sqlContent) {
+      const statements = splitStatements(sqlContent, delim);
+      try {
+        await adapterStartTransaction(db);
+        for (const stmt of statements) {
+          await adapterExecute(db, stmt);
+        }
+        // Remove the tracking record INSIDE the same transaction as the down
+        // statements, so a failure below rolls back the DDL too, not just the
+        // record removal.
+        await removeMigrationRecord(migration.migration_name);
+        await adapterCommit(db);
+      } catch (err) {
+        try {
+          await adapterRollback(db);
+        } catch {
+          // rollback may fail if auto-rolled-back
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Rollback failed: ${migration.migration_name} — ${msg}`);
+      }
+    } else {
+      // An EXISTING but empty/comment-only .down.sql (0 statements) is a
+      // deliberate no-op success — matches the Python reference
+      // (createMigration scaffolds an empty .down.sql by default).
+      await removeMigrationRecord(migration.migration_name);
+    }
+
     // Return the down-migration file that was run (e.g. "name.down.sql"), matching
     // the Python master's rollback return form.
     rolledBack.push(`${migration.migration_name}.down.sql`);
