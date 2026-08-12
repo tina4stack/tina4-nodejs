@@ -58,11 +58,16 @@ mkdirSync(TEST_DIR, { recursive: true });
 await initDatabase({ type: "sqlite", path: TEST_DB });
 const adapter = getAdapter()!;
 
-/** Fresh table before each case (single-process script). */
+/**
+ * Fresh table before each case (single-process script). `name` is UNIQUE so
+ * the constraint-violation case below has a real driver error to trigger --
+ * none of the other cases in this file ever insert a duplicate name within
+ * one reset() window, so the extra constraint is inert for them.
+ */
 function reset(): void {
   adapter.execute("DROP TABLE IF EXISTS basewidget");
   adapter.execute(
-    "CREATE TABLE basewidget (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, qty INTEGER)",
+    "CREATE TABLE basewidget (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, qty INTEGER)",
   );
 }
 
@@ -135,6 +140,34 @@ async function newWidget(name: string, qty: number): Promise<void> {
   const cnt = await BaseWidget.count();
   // Guards the dead-local (pkCol) removal in delete().
   assertEqual("a deleted model is absent from find and count", [gone, cnt], [null, 0]);
+}
+
+// ── Invariant: save() returns false, never raises, on a real constraint
+// violation -- the write-path fail-loud fix (Database.insert() now throws on
+// SQLite) must not ripple into BaseModel.save() raising too. save()'s insert
+// path never calls Database.insert() -- it builds its own INSERT and runs it
+// through adapterExecute(), which already fails loud, and save()'s own
+// try/catch already converts that throw into `false` (unaffected by the
+// Database.insert() fix; characterised here so the contract stays pinned). ──
+
+{
+  reset();
+  await newWidget("alpha", 1);
+  const before = await BaseWidget.count();
+  const duplicate = new BaseWidget({ name: "alpha", qty: 2 }); // UNIQUE(name) collides
+  let threw = false;
+  let result: unknown = "unset";
+  try {
+    result = await duplicate.save();
+  } catch {
+    threw = true;
+  }
+  const after = await BaseWidget.count();
+  assertEqual(
+    "save_on_constraint_violation_returns_false",
+    [threw, result, before, after, duplicate.getError() !== null],
+    [false, false, 1, 1, true],
+  );
 }
 
 closeDatabase();

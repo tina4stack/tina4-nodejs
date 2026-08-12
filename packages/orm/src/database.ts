@@ -765,7 +765,19 @@ export class Database {
     }
   }
 
-  /** Insert one row (object) or a batch of rows (array of objects) into a table. */
+  /**
+   * Insert one row (object) or a batch of rows (array of objects) into a table.
+   *
+   * FAIL LOUD, matching update()/delete()/truncate(): a real driver failure
+   * (e.g. a NOT NULL / UNIQUE constraint violation) throws rather than
+   * resolving to `{ success: false, affectedRows: 0 }`. The async adapters
+   * (Postgres/MySQL/MSSQL/Firebird) already throw directly from insertAsync();
+   * SQLiteAdapter.insert() is the one adapter that CATCHES the driver error
+   * and returns a `{ success: false, error }` result instead (its own
+   * documented contract for the synchronous path) — assertWrote is what
+   * converts that into the same thrown DatabaseException every other engine
+   * already produces, exactly as it already does for update/delete/truncate.
+   */
   async insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): Promise<DatabaseWriteResult> {
     const adapter = this.getNextAdapter();
     const result = (adapter as any).insertAsync
@@ -774,7 +786,7 @@ export class Database {
     if (this.autoCommit && !this.inExplicitTransaction()) {
       try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     }
-    return result;
+    return Database.assertWrote(result, "insert", table);
   }
 
   /**
