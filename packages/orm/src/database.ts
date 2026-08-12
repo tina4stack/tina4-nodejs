@@ -73,6 +73,39 @@ export async function adapterExecute(
     : adapter.execute(sql, params);
 }
 
+/**
+ * Insert one row (or a batch) through the adapter's OWN native insert path
+ * (each adapter's `buildInsert()`/`Dialect`, feature 3's SQL builder
+ * consolidation) instead of hand-built SQL. This is the ONLY correct way to
+ * insert into a caller-named table/columns: Firebird's Dialect quotes only
+ * when it has to (an unquoted identifier folds to UPPERCASE, so quoting a
+ * lower-case name makes it unfindable — SQL error -204 "Table unknown"),
+ * while PostgreSQL/MSSQL/SQLite quote unconditionally. A caller that hand-
+ * quotes with one fixed style (e.g. always `"col"`) works on three engines
+ * and silently breaks on the fourth. seedTable()/seedOrm() route through
+ * this so their engine portability matches insert()/insertAsync()'s, which
+ * the write-path + provider contract suites already prove on all four real
+ * engines (features 9/10/11/12).
+ */
+export async function adapterInsert(
+  adapter: DatabaseAdapter, table: string, data: Record<string, unknown>,
+): Promise<unknown> {
+  const result: any = (adapter as any).insertAsync
+    ? await (adapter as any).insertAsync(table, data)
+    : adapter.insert(table, data);
+  // FAIL LOUD, matching adapterExecute(): the async adapters (Postgres/MSSQL/
+  // Firebird) already throw directly on a bad statement, but SQLiteAdapter's
+  // synchronous insert() CATCHES the driver error and returns
+  // `{ success: false, error }` instead (its own documented contract, unlike
+  // execute()'s always-throw). Without this check a constraint violation on
+  // SQLite silently reported success=seeded to seedTable()/seedOrm(), which
+  // count failures via a catch block that a non-throwing result never enters.
+  if (result && result.success === false) {
+    throw new Error(result.error ?? `insert into '${table}' failed`);
+  }
+  return result;
+}
+
 export async function adapterStartTransaction(adapter: DatabaseAdapter): Promise<void> {
   if ((adapter as any).startTransactionAsync) await (adapter as any).startTransactionAsync();
   else adapter.startTransaction();

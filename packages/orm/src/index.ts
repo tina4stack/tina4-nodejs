@@ -13,7 +13,7 @@ export { DatabaseResult } from "./databaseResult.js";
 export type { ColumnInfoResult } from "./databaseResult.js";
 export { Database, initDatabase, getAdapter, setAdapter, bindDatabase, createAdapterFromUrl, closeDatabase, parseDatabaseUrl, setNamedAdapter, getNamedAdapter, resolveDbPool, stripTrailingSemicolons, wrapWithCache, resetRequestCaches } from "./database.js";
 export {
-  adapterFetch, adapterQuery, adapterFetchOne, adapterExecute,
+  adapterFetch, adapterQuery, adapterFetchOne, adapterExecute, adapterInsert,
   adapterStartTransaction, adapterCommit, adapterRollback,
   adapterTableExists, adapterTables, adapterColumns, adapterCreateTable,
   extractLastInsertId,
