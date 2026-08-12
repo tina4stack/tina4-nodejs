@@ -34,8 +34,19 @@ export function makeCaseInsensitiveHeaders(
   }) as IncomingHttpHeaders;
 }
 
+/** Strips `readonly` so construction code can write once; callers outside
+ * this function still see the real (readonly) `Tina4Request` shape
+ * (REQ-IMMUTABILITY-DIVERGE, 3.13.99). */
+type Writable<T> = { -readonly [K in keyof T]: T[K] };
+
 export function createRequest(req: IncomingMessage): Tina4Request {
   const tReq = req as Tina4Request;
+  // Construction-only mutable view of the same object — the core wire-derived
+  // fields (path/queryString/url/ip/remoteIp/cookies/contentType/query) are
+  // `readonly` on Tina4Request itself; this alias is how THIS function is
+  // still allowed to set them exactly once, the same way PHP's constructor
+  // writes its own `readonly` properties.
+  const w = tReq as Writable<Tina4Request>;
   // Wrap `req.headers` so mixed-case lookups work — Node's underlying object
   // is already lower-cased, this just lets readers use any casing they like.
   (tReq as unknown as { headers: IncomingHttpHeaders }).headers =
@@ -82,17 +93,17 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   }
 
   tReq.params = {};
-  tReq.query = query;
+  w.query = query;
   // Path, query string, and full URL — same shape across all four frameworks.
   // `path` is the URL path only; `queryString` is the raw query without "?".
   // `url` is overridden from Node's IncomingMessage.url (path+query) to the
   // full absolute URL — parity with PHP/Python/Ruby.
-  tReq.path = path;
-  tReq.queryString = queryString;
-  tReq.url = fullUrl;
+  w.path = path;
+  w.queryString = queryString;
+  w.url = fullUrl;
   tReq.body = undefined;
   tReq.files = {};
-  tReq.contentType = (req.headers["content-type"] ?? "") as string;
+  w.contentType = (req.headers["content-type"] ?? "") as string;
 
   // Parse cookies from Cookie header
   const cookieHeader = (req.headers.cookie ?? "") as string;
@@ -103,13 +114,13 @@ export function createRequest(req: IncomingMessage): Tina4Request {
       if (k) cookies[k.trim()] = v.join("=").trim();
     }
   }
-  tReq.cookies = cookies;
+  w.cookies = cookies;
 
   // Raw socket peer — NEVER honours a forwarding header, so it can be trusted
   // for security decisions. Resolved BEFORE .ip: the peer decides whether the
   // forwarding headers may be believed at all (TINA4_TRUSTED_PROXIES, ADR-0019).
-  tReq.remoteIp = req.socket?.remoteAddress ?? "";
-  tReq.ip = resolveClientIp(req.headers, tReq.remoteIp) || "127.0.0.1";
+  w.remoteIp = req.socket?.remoteAddress ?? "";
+  w.ip = resolveClientIp(req.headers, tReq.remoteIp) || "127.0.0.1";
 
   // Add convenience methods
   tReq.header = function (name: string): string | undefined {

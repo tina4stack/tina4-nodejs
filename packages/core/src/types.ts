@@ -21,20 +21,32 @@ export interface Tina4Request extends IncomingMessage {
   /**
    * Path params. Typed params arrive coerced: `{id:int}`/`{id:integer}` and
    * `{p:float}`/`{p:number}` are JS `number`s; every other type and untyped
-   * `{id}` stay `string` (parity with Python/PHP/Ruby).
+   * `{id}` stay `string` (parity with Python/PHP/Ruby). ROUTE-ONLY — never
+   * the query string or body (REQ-PARAM-POLLUTION, 3.13.99). Writable: the
+   * router assigns it AFTER createRequest() builds the wire-derived fields
+   * below, once a route has matched.
    */
   params: Record<string, string | number>;
-  query: Record<string, string>;
+  /**
+   * Core wire-derived fields below are `readonly` (REQ-IMMUTABILITY-DIVERGE,
+   * 3.13.99) — set once in createRequest() and never reassigned afterward,
+   * matching PHP's `readonly` properties and Ruby's writer-less attr_reader
+   * (the two languages already at this posture; this is TS-compile-time
+   * only, like PHP/Ruby's enforcement is at their own language boundary).
+   * `params`/`body`/`files`/`session`/`user` stay mutable: the router and
+   * middleware legitimately set them after construction.
+   */
+  readonly query: Record<string, string>;
   /**
    * Request path only — no query string. Matches `request.path` in
    * Python/PHP/Ruby. Example: `/users/42`.
    */
-  path: string;
+  readonly path: string;
   /**
    * Raw query string with no leading "?". Matches `request.query_string`
    * (Python/Ruby) and `request.queryString` (PHP). Example: `"page=2"`.
    */
-  queryString: string;
+  readonly queryString: string;
   /**
    * Full absolute URL — `scheme://host[:port]/path[?query]`.
    * Honours X-Forwarded-Proto / X-Forwarded-Host. Matches PHP/Ruby/Python parity.
@@ -42,19 +54,19 @@ export interface Tina4Request extends IncomingMessage {
    * Note: this overrides Node's native `IncomingMessage.url` (which contains
    * only path+query). Inside Tina4 handlers, `req.url` is always the full URL.
    */
-  url: string;
+  readonly url: string;
   body: unknown;
-  ip: string;
+  readonly ip: string;
   /**
    * Raw socket peer address - NEVER honours X-Forwarded-For (which any
    * caller can spoof), so it can be trusted for security decisions.
    * Empty for in-process / synthetic requests. Parity with Python's
    * request.remote_ip and PHP's Request::$remoteIp.
    */
-  remoteIp: string;
+  readonly remoteIp: string;
   files: Record<string, UploadedFile | UploadedFile[]>;
-  cookies: Record<string, string>;
-  contentType: string;
+  readonly cookies: Record<string, string>;
+  readonly contentType: string;
   /**
    * NULL when the session backend was unusable for this request (ADR-0021).
    * The request path logs the failure and degrades rather than 500-ing, so a
