@@ -1349,15 +1349,17 @@ export class Database {
       // Row likely already exists (PK conflict) — fine, keep going.
       try { await adapterRollback(adapter); } catch { /* nothing to roll back */ }
     }
-    await adapterExecute(adapter,
-      "UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ?",
+    // Single ATOMIC increment-and-return. The old path did the UPDATE then a
+    // SEPARATE SELECT, with an `await` between them: another concurrent caller
+    // could increment and commit in that window, so both read the same value and
+    // returned a DUPLICATE id (a TOCTOU). PostgreSQL (the engine that reaches
+    // this fallback) supports UPDATE ... RETURNING, so the value read is exactly
+    // the one this statement wrote.
+    const row = await adapterFetchOne<Record<string, unknown>>(adapter,
+      "UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ? RETURNING current_value",
       [seqName],
     );
     try { await adapterCommit(adapter); } catch { /* no active transaction */ }
-    const row = await adapterFetchOne<Record<string, unknown>>(adapter,
-      "SELECT current_value FROM tina4_sequences WHERE seq_name = ?",
-      [seqName],
-    );
     if (!row || row.current_value == null) {
       throw new Error(`getNextId: sequence row '${seqName}' missing`);
     }
@@ -1377,9 +1379,17 @@ export class Database {
   async getNextId(table: string, pkColumn = "id", generatorName?: string): Promise<number> {
     const adapter = this.getNextAdapter();
 
-    // MongoDB uses ObjectId for _id by default; integer sequences fall through
-    // to the tina4_sequences table strategy below (which works on Mongo too
-    // because the adapter implements the SQL-ish methods over collections).
+    // MongoDB — a DEDICATED atomic counter (findOneAndUpdate($inc) keyed by _id),
+    // monotonic and concurrency-safe. NEVER routed through the relational
+    // tina4_sequences path: the Mongo SET-clause parser matches only `col = ?`
+    // and DROPS the arithmetic `current_value + 1`, so the increment vanished
+    // (empty $set) and every call returned the same id — a duplicate generator.
+    if (this.dbType === "mongodb") {
+      const mongo = adapter as unknown as { getNextId?: (t: string, p: string) => Promise<number> };
+      if (typeof mongo.getNextId === "function") {
+        return mongo.getNextId(table, pkColumn);
+      }
+    }
 
     // Firebird — use generators (atomic)
     if (this.dbType === "firebird") {
@@ -1399,29 +1409,41 @@ export class Database {
     // PostgreSQL — try sequence first, auto-create if missing, fall through to sequence table
     if (this.dbType === "postgres") {
       const seqName = generatorName ?? `${table.toLowerCase()}_${pkColumn.toLowerCase()}_seq`;
+      // Fast path: the sequence already exists — nextval() is atomic.
       try {
         const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT nextval('${seqName}') AS next_id`);
         if (row?.next_id != null) {
           return Number(row.next_id);
         }
       } catch {
-        // Sequence doesn't exist — try to auto-create it
+        // Sequence missing — create it idempotently below.
       }
 
-      // Auto-create sequence seeded from MAX
+      // First use: create the sequence IDEMPOTENTLY (CREATE SEQUENCE IF NOT
+      // EXISTS), seeded from MAX(pk). Two concurrent first-callers therefore
+      // share ONE counter — the loser's create is a no-op, not an error, so it
+      // never falls to the tina4_sequences table and draws a DUPLICATE id from a
+      // second, independent counter (the first-use race).
       try {
         const maxRow = await adapterFetchOne<Record<string, unknown>>(adapter,
           `SELECT COALESCE(MAX(${pkColumn}), 0) AS max_id FROM ${table}`
         );
         const start = maxRow?.max_id != null ? Number(maxRow.max_id) + 1 : 1;
-        await adapterExecute(adapter, `CREATE SEQUENCE ${seqName} START WITH ${start}`);
+        await adapterExecute(adapter, `CREATE SEQUENCE IF NOT EXISTS ${seqName} START WITH ${start}`);
         try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+      } catch {
+        // A concurrent creator won the catalog race — the sequence exists now.
+      }
+
+      // ALWAYS draw from the sequence now that it exists. Never fall to the
+      // sequence table just because our own CREATE lost the race.
+      try {
         const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT nextval('${seqName}') AS next_id`);
         if (row?.next_id != null) {
           return Number(row.next_id);
         }
       } catch {
-        // Fall through to sequence table
+        // Truly cannot use a sequence — last-resort table below.
       }
     }
 

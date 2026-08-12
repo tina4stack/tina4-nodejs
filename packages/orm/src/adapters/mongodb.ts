@@ -505,6 +505,53 @@ export class MongodbAdapter implements DatabaseAdapter {
     return rows[0] ?? null;
   }
 
+  /**
+   * Atomic, monotonic, concurrency-safe next id — feature 16. A
+   * findOneAndUpdate($inc) on the tina4_sequences collection, keyed by _id (its
+   * built-in unique index makes concurrent first-use upserts race-safe: two
+   * callers can never create two counters for one table). Seeds from
+   * MAX(pkColumn) the FIRST time only ($setOnInsert). Throws on an impossible
+   * empty result rather than returning a fixed id that could collide with a row.
+   */
+  async getNextId(table: string, pkColumn = "id"): Promise<number> {
+    this.ensureConnected();
+    const sequences = this.db.collection("tina4_sequences");
+    const seqName = `${table}.${pkColumn}`;
+
+    const existing = await sequences.findOne({ _id: seqName }, { session: this.session });
+    if (existing == null) {
+      let seed = 0;
+      try {
+        const maxDoc = await this.db.collection(table)
+          .find({}, { session: this.session })
+          .sort({ [pkColumn]: -1 })
+          .limit(1)
+          .next();
+        if (maxDoc && maxDoc[pkColumn] != null) seed = Number(maxDoc[pkColumn]);
+      } catch { /* collection may not exist yet — seed 0 */ }
+      try {
+        await sequences.updateOne(
+          { _id: seqName },
+          { $setOnInsert: { current_value: seed } },
+          { upsert: true, session: this.session },
+        );
+      } catch { /* race — another caller seeded first; the $inc below still holds */ }
+    }
+
+    const res = await sequences.findOneAndUpdate(
+      { _id: seqName },
+      { $inc: { current_value: 1 } },
+      { upsert: true, returnDocument: "after", session: this.session },
+    );
+    // The mongodb driver returns the doc directly (v5/v6) or wrapped as
+    // { value: doc } (v4). Our counter doc has no `value` field, so this is safe.
+    const doc = res != null && (res as any).value !== undefined ? (res as any).value : res;
+    if (!doc || (doc as any).current_value == null) {
+      throw new Error(`getNextId: MongoDB counter '${seqName}' produced no value`);
+    }
+    return Number((doc as any).current_value);
+  }
+
   insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): DatabaseResult {
     throw new Error("Use insertAsync() for MongoDB — async adapter requires async methods.");
   }
