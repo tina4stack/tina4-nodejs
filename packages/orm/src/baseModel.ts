@@ -1555,17 +1555,27 @@ export class BaseModel {
     // indexed for writing (TS2862), but `T extends BaseModel` guarantees `this`
     // is a BaseModel, whose `[key: string]: unknown` signature is writable.
     (this as BaseModel)[relKey] = related;
+    // IMPREL-NODE-ORPHAN: also store under the serializer's key so an
+    // imperatively-loaded relation is included by toDict([relKey]) -- toDict
+    // reads _relCache, which the imperative path never populated before, so an
+    // imperatively-loaded relation was orphaned from serialization.
+    (this as BaseModel)._relCache[relKey] = related;
     return related;
   }
 
   /**
    * Load has-many related model instances.
+   *
+   * With no explicit `limit` this returns the WHOLE set (paged internally, like
+   * the lazy accessor), never a silent row cap -- so an imperatively-loaded
+   * has_many yields the SAME row count as the lazy path. An explicit `limit`
+   * still pages.
    */
   async hasMany<T extends BaseModel, R extends BaseModel>(
     this: T,
     relatedClass: typeof BaseModel & (new (data?: Record<string, unknown>) => R),
     foreignKey: string,
-    limit: number = 100,
+    limit?: number,
     offset: number = 0,
   ): Promise<R[]> {
     const ModelClass = this.constructor as typeof BaseModel;
@@ -1577,17 +1587,28 @@ export class BaseModel {
     }
 
     const db = relatedClass.getDb();
+    const orderCol = relatedClass.getPkColumn();
     let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${foreignKey}" = ?`;
     if (relatedClass.softDelete) {
       sql += ` AND is_deleted = 0`;
     }
-    sql += ` LIMIT ${limit} OFFSET ${offset}`;
+    // Order by the child PK for a stable read (parity with the lazy accessor).
+    sql += ` ORDER BY "${orderCol}"`;
+    // IMPREL-PY-CAP parity: with no explicit limit, return the WHOLE set (like
+    // the lazy accessor, which is uncapped) instead of a silent 100-row cap. An
+    // explicit limit still pages (explicit, never silent).
+    if (limit !== undefined) {
+      sql += ` LIMIT ${limit} OFFSET ${offset}`;
+    }
 
     const rows = await adapterQuery(db, sql, [pkValue]);
     const related = rows.map((row) => new relatedClass(row as Record<string, unknown>) as R);
     const relKey = relatedClass.tableName.toLowerCase();
     // See hasOne: write through BaseModel's writable index signature (TS2862).
     (this as BaseModel)[relKey] = related;
+    // IMPREL-NODE-ORPHAN: store under the serializer's key so an imperatively
+    // loaded relation is included by toDict([relKey]) (was orphaned).
+    (this as BaseModel)._relCache[relKey] = related;
     return related;
   }
 
@@ -1624,6 +1645,9 @@ export class BaseModel {
     const relKey = relatedClass.tableName.toLowerCase();
     // See hasOne: write through BaseModel's writable index signature (TS2862).
     (this as BaseModel)[relKey] = related;
+    // IMPREL-NODE-ORPHAN: store under the serializer's key so an imperatively
+    // loaded relation is included by toDict([relKey]) (was orphaned).
+    (this as BaseModel)._relCache[relKey] = related;
     return related;
   }
 
