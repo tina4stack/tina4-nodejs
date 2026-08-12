@@ -78,6 +78,32 @@ function _pluralRelKeys(): boolean {
 const _fkRegistry = new Map<string, Array<{ foreignKey: string; declaringModel: string; hasManyKey: string }>>();
 
 /**
+ * REL-EAGER-UNBOUNDED: max parent PKs per eager `WHERE fk IN (...)` query, so a
+ * very large parent set never yields an unbounded IN list (a query-size / driver
+ * parameter-limit risk). Each chunk is one query.
+ */
+const EAGER_IN_CHUNK = 500;
+
+/** Split an array into fixed-size chunks. */
+function _chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/**
+ * Normalize an eager-load join key so an INTEGER primary key (1) matches a
+ * foreign key that round-tripped through the driver as "1.0" / 1.0 (SQLite gives
+ * a FK column TEXT/REAL affinity, so `String(1)` and `String("1.0")` would not
+ * group together). A genuinely non-numeric key (e.g. a UUID) is left untouched.
+ */
+function _joinKey(v: unknown): string {
+  if (typeof v === "number") return String(v);
+  if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return String(Number(v));
+  return String(v);
+}
+
+/**
  * BaseModel provides instance methods for ORM models.
  * Models extend this class and define static properties.
  *
@@ -1608,20 +1634,19 @@ export class BaseModel {
 
   static registerModel(name: string, modelClass: typeof BaseModel): void {
     BaseModel._modelRegistry[name] = modelClass;
-    // Eagerly process this model's foreignKey fields so the cross-model
-    // _fkRegistry is populated as soon as the model is known — not only when
-    // the *declaring* model happens to be touched first. This is what makes
-    // eager loading work standalone (without server-boot auto-discovery):
-    // a parent's hasMany is registered by the child's _processForeignKeys(),
-    // so we must run it for every registered model proactively.
-    modelClass._processForeignKeys();
+    // Wire every registered model's FK relationships AND lazy accessors now that
+    // a new model is known. A parent's has-many is declared by the CHILD's
+    // foreignKey field, so re-wiring all registered models on each registration
+    // makes BOTH sides functional (belongsTo + has-many) with lazy accessors,
+    // without depending on server-boot auto-discovery. Idempotent.
+    BaseModel._processAllForeignKeys();
   }
 
   /**
    * Process foreignKey fields on every registered model so the cross-model
    * _fkRegistry (and each model's belongsTo/hasMany) is fully wired regardless
-   * of which model was used first. Idempotent — _processForeignKeys() and
-   * _applyFkRegistry() both guard against duplicates.
+   * of which model was used first, then attach the lazy relationship accessors.
+   * Idempotent — every step guards against duplicates.
    */
   private static _processAllForeignKeys(): void {
     for (const modelClass of Object.values(BaseModel._modelRegistry)) {
@@ -1630,6 +1655,99 @@ export class BaseModel {
     for (const modelClass of Object.values(BaseModel._modelRegistry)) {
       modelClass._applyFkRegistry();
     }
+    // REL-NODE-AUTOWIRE-DEAD: attach lazy accessors (post.author / author.posts)
+    // on both sides so DECLARATIVE relationships actually function — matching the
+    // imperative belongsTo()/hasMany() path and Python/PHP/Ruby.
+    for (const modelClass of Object.values(BaseModel._modelRegistry)) {
+      modelClass._wireRelationshipAccessors();
+    }
+  }
+
+  /**
+   * REL-NODE-AUTOWIRE-DEAD: attach a lazy-loading accessor for each declared
+   * relationship (belongsTo/hasOne/hasMany) on this model's prototype, so
+   * `post.author` / `author.posts` resolve on attribute access. The accessor is
+   * async (Node lazy load) and caches into `_relCache` — the SAME cache eager
+   * loading fills, so `toDict` stays consistent once a relation has been loaded.
+   * Reuses the imperative belongsTo()/hasOne() path and the cross-model registry;
+   * a soft-deleted child is excluded and the has-many read is uncapped.
+   */
+  static _wireRelationshipAccessors(): void {
+    const proto = this.prototype as Record<string, unknown>;
+    const fields = this.fields ?? {};
+
+    const define = (
+      name: string,
+      rel: RelationshipDefinition,
+      kind: "belongsTo" | "hasOne" | "hasMany",
+    ): void => {
+      // Never shadow a declared column or an existing member (method / prior
+      // accessor). `name in proto` also makes re-wiring idempotent.
+      if (!name || name in fields || name in proto) return;
+      Object.defineProperty(proto, name, {
+        configurable: true,
+        enumerable: false,
+        get(this: Record<string, unknown>) {
+          const cache = this._relCache as Record<string, unknown>;
+          if (name in cache) return cache[name]; // eager or prior-lazy value
+          const pending = (this._relPromises ??= {}) as Record<string, unknown>;
+          if (name in pending) return pending[name]; // in-flight dedupe
+          const promise = (async () => {
+            const related = BaseModel._modelRegistry[rel.model];
+            let value: unknown;
+            if (!related) {
+              value = kind === "hasMany" ? [] : null;
+            } else if (kind === "belongsTo") {
+              value = await (this as unknown as BaseModel).belongsTo(related as never, rel.foreignKey);
+            } else if (kind === "hasOne") {
+              value = await (this as unknown as BaseModel).hasOne(related as never, rel.foreignKey);
+            } else {
+              value = await BaseModel._loadHasManyLazy(this as unknown as BaseModel, related, rel.foreignKey);
+            }
+            cache[name] = value;
+            delete pending[name];
+            return value;
+          })();
+          pending[name] = promise;
+          return promise;
+        },
+      });
+    };
+
+    for (const rel of this.belongsTo ?? []) {
+      const name = rel.relatedName
+        ?? (rel.foreignKey.endsWith("_id") ? rel.foreignKey.slice(0, -3) : rel.foreignKey);
+      define(name, rel, "belongsTo");
+    }
+    for (const rel of this.hasOne ?? []) {
+      define(rel.relatedName ?? rel.model.toLowerCase(), rel, "hasOne");
+    }
+    for (const rel of this.hasMany ?? []) {
+      define(rel.relatedName ?? (rel.model.toLowerCase() + "s"), rel, "hasMany");
+    }
+  }
+
+  /**
+   * Lazy has-many read for a relationship accessor: excludes soft-deleted
+   * children and returns the WHOLE set (adapterQuery is uncapped, so the tail is
+   * never lost). Ordered by the child PK for a stable read.
+   */
+  private static async _loadHasManyLazy(
+    inst: BaseModel,
+    relatedClass: typeof BaseModel,
+    foreignKey: string,
+  ): Promise<BaseModel[]> {
+    const ModelClass = inst.constructor as typeof BaseModel;
+    const pk = ModelClass.getPkField();
+    const pkValue = (inst as Record<string, unknown>)[pk];
+    if (pkValue === undefined || pkValue === null) return [];
+    const db = relatedClass.getDb();
+    const orderCol = relatedClass.getPkColumn();
+    let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${foreignKey}" = ?`;
+    if (relatedClass.softDelete) sql += ` AND is_deleted = 0`;
+    sql += ` ORDER BY "${orderCol}"`;
+    const rows = await adapterQuery(db, sql, [pkValue]);
+    return rows.map((row) => new (relatedClass as unknown as new (d: Record<string, unknown>) => BaseModel)(row as Record<string, unknown>));
   }
 
   /**
@@ -1739,14 +1857,18 @@ export class BaseModel {
           .filter((v) => v !== undefined && v !== null);
         if (pkValues.length === 0) continue;
 
-        const placeholders = pkValues.map(() => "?").join(",");
-        let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${fk}" IN (${placeholders})`;
-        if (relatedClass.softDelete) {
-          sql += ` AND is_deleted = 0`;
+        // REL-EAGER-UNBOUNDED: chunk the parent PKs so the IN list stays bounded
+        // (each chunk is one query). adapterQuery is uncapped, so no row cap.
+        const related: BaseModel[] = [];
+        for (const pkChunk of _chunk(pkValues, EAGER_IN_CHUNK)) {
+          const placeholders = pkChunk.map(() => "?").join(",");
+          let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${fk}" IN (${placeholders})`;
+          if (relatedClass.softDelete) {
+            sql += ` AND is_deleted = 0`;
+          }
+          const rows = await adapterQuery(db, sql, pkChunk);
+          for (const row of rows) related.push(new relatedClass(row as Record<string, unknown>));
         }
-
-        const rows = await adapterQuery(db, sql, pkValues);
-        const related = rows.map((row) => new relatedClass(row as Record<string, unknown>));
 
         // Eager load nested
         if (nested.length > 0 && related.length > 0) {
@@ -1758,13 +1880,13 @@ export class BaseModel {
         const fkProp = relatedReverseMap[fk] ?? fk;
         const grouped: Record<string, BaseModel[]> = {};
         for (const record of related) {
-          const fkVal = String(record[fkProp]);
+          const fkVal = _joinKey(record[fkProp]);
           if (!grouped[fkVal]) grouped[fkVal] = [];
           grouped[fkVal].push(record);
         }
 
         for (const inst of instances) {
-          const pkVal = String(inst[pk]);
+          const pkVal = _joinKey(inst[pk]);
           const records = grouped[pkVal] || [];
           if (relType === "hasOne") {
             inst._relCache[relName] = records[0] ?? null;
@@ -1785,14 +1907,17 @@ export class BaseModel {
 
         const relatedPk = relatedClass.getPkField();
         const relatedPkCol = relatedClass.getPkColumn();
-        const placeholders = fkValues.map(() => "?").join(",");
-        let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${relatedPkCol}" IN (${placeholders})`;
-        if (relatedClass.softDelete) {
-          sql += ` AND is_deleted = 0`;
+        // REL-EAGER-UNBOUNDED: chunk the FK values so the IN list stays bounded.
+        const related: BaseModel[] = [];
+        for (const fkChunk of _chunk(fkValues, EAGER_IN_CHUNK)) {
+          const placeholders = fkChunk.map(() => "?").join(",");
+          let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${relatedPkCol}" IN (${placeholders})`;
+          if (relatedClass.softDelete) {
+            sql += ` AND is_deleted = 0`;
+          }
+          const rows = await adapterQuery(db, sql, fkChunk);
+          for (const row of rows) related.push(new relatedClass(row as Record<string, unknown>));
         }
-
-        const rows = await adapterQuery(db, sql, fkValues);
-        const related = rows.map((row) => new relatedClass(row as Record<string, unknown>));
 
         if (nested.length > 0 && related.length > 0) {
           await relatedClass._eagerLoad(related, nested);
@@ -1800,13 +1925,13 @@ export class BaseModel {
 
         const lookup: Record<string, BaseModel> = {};
         for (const record of related) {
-          lookup[String(record[relatedPk])] = record;
+          lookup[_joinKey(record[relatedPk])] = record;
         }
 
         for (const inst of instances) {
           const fkVal = inst[fkProp];
           inst._relCache[relName] = fkVal !== undefined && fkVal !== null
-            ? lookup[String(fkVal)] ?? null
+            ? lookup[_joinKey(fkVal)] ?? null
             : null;
         }
       }
