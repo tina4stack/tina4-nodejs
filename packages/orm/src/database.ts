@@ -1540,7 +1540,11 @@ async function buildAdapterFromUrl(url: string, username?: string, password?: st
     }
     case "odbc": {
       const { OdbcAdapter } = await import("./adapters/odbc.js");
-      const adapter = new OdbcAdapter({ connectionString: parsed.connectionString ?? "" });
+      const adapter = new OdbcAdapter({
+        connectionString: parsed.connectionString ?? "",
+        username: parsed.username ?? undefined,
+        password: parsed.password ?? undefined,
+      });
       await adapter.connect();
       return adapter;
     }
@@ -1745,7 +1749,11 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
     case "odbc": {
       const { OdbcAdapter } = await import("./adapters/odbc.js");
       const connStr = config?.connectionString ?? config?.url?.replace(/^odbc:\/\/\//, "") ?? "";
-      const adapter = new OdbcAdapter({ connectionString: connStr });
+      const adapter = new OdbcAdapter({
+        connectionString: connStr,
+        username: resolvedUser ?? undefined,
+        password: resolvedPassword ?? undefined,
+      });
       await adapter.connect();
       return finished(adapter);
     }

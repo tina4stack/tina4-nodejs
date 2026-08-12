@@ -36,6 +36,10 @@ function requireOdbc(): any {
 export interface OdbcConfig {
   /** Full ODBC connection string, e.g. "DSN=MyDSN" or "DRIVER={SQL Server};SERVER=host;DATABASE=db" */
   connectionString: string;
+  /** Optional username; appended as UID when not already in the connection string. */
+  username?: string;
+  /** Optional password; appended as PWD when not already in the connection string. */
+  password?: string;
 }
 
 export class OdbcAdapter implements DatabaseAdapter {
@@ -57,6 +61,22 @@ export class OdbcAdapter implements DatabaseAdapter {
   }
 
   /**
+   * The connection string with credentials applied. ODBC has no separate-
+   * credentials API (odbc.connect() reads only the string), so a username/
+   * password passed to Database.create() must be folded in as UID/PWD - the
+   * adapter used to drop them. Never used for diagnostics (describeTarget reads
+   * the raw string), so the password never reaches an error message.
+   */
+  private effectiveConnectionString(): string {
+    let connStr = this.getConnectionString();
+    if (typeof this.config === "string") return connStr;
+    const { username, password } = this.config;
+    if (username && !/(?:^|;)\s*UID\s*=/i.test(connStr)) connStr += `;UID=${username}`;
+    if (password && !/(?:^|;)\s*PWD\s*=/i.test(connStr)) connStr += `;PWD=${password}`;
+    return connStr;
+  }
+
+  /**
    * The address for a diagnostic message. ODBC hides it inside an opaque
    * driver keyword string, so this reads the standard keywords and falls back to
    * the data-source name - it is never used to connect, only to say which target
@@ -74,7 +94,7 @@ export class OdbcAdapter implements DatabaseAdapter {
   /** Connect to the ODBC data source. Must be called before using the adapter. */
   async connect(): Promise<void> {
     const odbc = requireOdbc();
-    const connStr = this.getConnectionString();
+    const connStr = this.effectiveConnectionString();
     // odbc package may expose connect as default export or named export
     const connectFn = odbc.connect ?? odbc.default?.connect;
     if (!connectFn) {
@@ -192,22 +212,31 @@ export class OdbcAdapter implements DatabaseAdapter {
   async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<{ totalAffected: number; lastId?: number | bigint }> {
     this.ensureConnected();
     let totalAffected = 0;
-    let lastId: number | bigint | undefined;
 
-    await this.startTransactionAsync();
+    // Owns-guard (mirrors pg/mysql/mssql + the Python master): only manage the
+    // transaction when NOT already inside an explicit one. Without it, nested in
+    // a caller's transaction this method's commit() committed the OUTER
+    // transaction early.
+    const owns = !this._inTransaction;
+    if (owns) await this.startTransactionAsync();
     try {
       for (const params of paramsList) {
-        await this.connection.query(sql, params);
-        totalAffected++;
+        const result = await this.connection.query(sql, params);
+        totalAffected += this.affectedCount(result);
       }
-      await this.commitAsync();
+      if (owns) await this.commitAsync();
     } catch (e) {
-      await this.rollbackAsync();
+      if (owns) await this.rollbackAsync();
       throw e;
     }
 
-    if (lastId !== undefined) this._lastInsertId = lastId;
-    return { totalAffected, lastId: lastId };
+    return { totalAffected };
+  }
+
+  /** The real affected-row count from an odbc result, when the driver reports it. */
+  private affectedCount(result: any): number {
+    const n = result?.count;
+    return typeof n === "number" && n >= 0 ? n : 1;
   }
 
   /** Run a SELECT and return all matching rows. */
@@ -238,32 +267,64 @@ export class OdbcAdapter implements DatabaseAdapter {
     return rows[0] ?? null;
   }
 
-  /** Insert a single row into a table. */
-  async insertAsync(table: string, data: Record<string, unknown>): Promise<DatabaseResult> {
+  /** Insert a single row, or a list of rows as a batch. */
+  async insertAsync(table: string, data: Record<string, unknown> | Record<string, unknown>[]): Promise<DatabaseResult> {
     this.ensureConnected();
+
+    // A list of rows is a batch: ONE parameterised statement run per row through
+    // executeManyAsync (owns-guarded, one transaction), matching pg/mysql and the
+    // Python master. The single-object path used to run Object.keys() over the
+    // array here -> ["0","1",...], a broken INSERT, so batch insert never worked.
+    if (Array.isArray(data)) {
+      if (data.length === 0) return { success: true, affectedRows: 0 };
+      const keys = Object.keys(data[0]);
+      const sql = buildInsert(ANSI_DIALECT, table, keys);
+      const paramsList = data.map((row) => keys.map((k) => (row as Record<string, unknown>)[k]));
+      const { totalAffected } = await this.executeManyAsync(sql, paramsList);
+      return { success: true, affectedRows: totalAffected };
+    }
+
     const keys = Object.keys(data);
     const sql = buildInsert(ANSI_DIALECT, table, keys);
     const values = Object.values(data);
 
     try {
-      await this.connection.query(sql, values);
-      return { success: true, affectedRows: 1, lastId: this._lastInsertId ?? undefined };
+      const result = await this.connection.query(sql, values);
+      return { success: true, affectedRows: this.affectedCount(result), lastId: this._lastInsertId ?? undefined };
     } catch (e) {
       return { success: false, affectedRows: 0, error: (e as Error).message };
     }
   }
 
   /** Update rows in a table matching filter. */
-  async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): Promise<DatabaseResult> {
+  async updateAsync(
+    table: string,
+    data: Record<string, unknown>,
+    filter: Record<string, unknown> | string,
+    params?: unknown[],
+  ): Promise<DatabaseResult> {
     this.ensureConnected();
     const setClauses = buildSetClause(ANSI_DIALECT, Object.keys(data));
-    const whereClauses = buildWhereClause(ANSI_DIALECT, Object.keys(filter));
-    const sql = `UPDATE ${ANSI_DIALECT.quote(table)} SET ${setClauses} WHERE ${whereClauses}`;
-    const values = [...Object.values(data), ...Object.values(filter)];
+
+    let whereSql: string;
+    let values: unknown[];
+    if (typeof filter === "string") {
+      // The string form ("id = ?" + params). Without this branch Object.keys()
+      // walked the STRING -> ["0","1",...], building a nonsense WHERE clause -
+      // the exact bug the pg/mysql/mssql adapters guard against. params was also
+      // dropped entirely (the method never took it), so a parameterised string
+      // filter could not bind at all.
+      whereSql = filter;
+      values = [...Object.values(data), ...(params ?? [])];
+    } else {
+      whereSql = buildWhereClause(ANSI_DIALECT, Object.keys(filter));
+      values = [...Object.values(data), ...Object.values(filter)];
+    }
+    const sql = `UPDATE ${ANSI_DIALECT.quote(table)} SET ${setClauses} WHERE ${whereSql}`;
 
     try {
-      await this.connection.query(sql, values);
-      return { success: true, affectedRows: 1 };
+      const result = await this.connection.query(sql, values);
+      return { success: true, affectedRows: this.affectedCount(result) };
     } catch (e) {
       return { success: false, affectedRows: 0, error: (e as Error).message };
     }
@@ -273,6 +334,7 @@ export class OdbcAdapter implements DatabaseAdapter {
   async deleteAsync(
     table: string,
     filter: Record<string, unknown> | string | Record<string, unknown>[],
+    params?: unknown[],
   ): Promise<DatabaseResult> {
     this.ensureConnected();
 
@@ -286,12 +348,13 @@ export class OdbcAdapter implements DatabaseAdapter {
     }
 
     if (typeof filter === "string") {
+      // The string form binds its own params (was dropped: query ran with []).
       const sql = filter
         ? `DELETE FROM "${table}" WHERE ${filter}`
         : `DELETE FROM "${table}"`;
       try {
-        await this.connection.query(sql, []);
-        return { success: true, affectedRows: 1 };
+        const result = await this.connection.query(sql, params ?? []);
+        return { success: true, affectedRows: this.affectedCount(result) };
       } catch (e) {
         return { success: false, affectedRows: 0, error: (e as Error).message };
       }
@@ -302,8 +365,8 @@ export class OdbcAdapter implements DatabaseAdapter {
     const values = Object.values(filter);
 
     try {
-      await this.connection.query(sql, values);
-      return { success: true, affectedRows: 1 };
+      const result = await this.connection.query(sql, values);
+      return { success: true, affectedRows: this.affectedCount(result) };
     } catch (e) {
       return { success: false, affectedRows: 0, error: (e as Error).message };
     }
@@ -349,15 +412,33 @@ export class OdbcAdapter implements DatabaseAdapter {
   /** Get column metadata for a table using ODBC catalog functions. */
   async columnsAsync(table: string): Promise<ColumnInfo[]> {
     this.ensureConnected();
-    // odbc.Connection.getColumns(catalog, schema, table, column)
+    // odbc.Connection.columns(catalog, schema, table, column)
     const rows: any[] = await this.connection.columns(null, null, table, null);
+    // Real PK, from the ODBC catalog (SQLPrimaryKeys) - not the old `false` stub.
+    // Feature 4's filterless-write guard reads primaryKey, so without this a
+    // PK-keyed update(table, data) on ODBC could not introspect the key.
+    const pk = await this.primaryKeyColumns(table);
     return rows.map((r: any) => ({
       name: r.COLUMN_NAME ?? r.column_name,
       type: r.TYPE_NAME ?? r.type_name ?? r.DATA_TYPE ?? "",
       nullable: (r.NULLABLE ?? r.nullable) === 1,
       default: r.COLUMN_DEF ?? r.column_def ?? null,
-      primaryKey: false, // ODBC catalog doesn't easily expose PK; requires separate primaryKeys() call
+      primaryKey: pk.has(String(r.COLUMN_NAME ?? r.column_name ?? "").toLowerCase()),
     }));
+  }
+
+  /**
+   * The table's primary-key columns from the ODBC catalog (SQLPrimaryKeys),
+   * lower-cased for case-insensitive matching. Empty on any target that does not
+   * report them - the write-guard then requires an explicit filter.
+   */
+  private async primaryKeyColumns(table: string): Promise<Set<string>> {
+    try {
+      const rows: any[] = await this.connection.primaryKeys(null, null, table);
+      return new Set(rows.map((r: any) => String(r.COLUMN_NAME ?? r.column_name ?? "").toLowerCase()));
+    } catch {
+      return new Set();
+    }
   }
 
   /** Check whether a table exists. */
