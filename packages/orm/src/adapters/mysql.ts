@@ -368,8 +368,13 @@ export class MysqlAdapter implements DatabaseAdapter {
   async columnsAsync(table: string): Promise<ColumnInfo[]> {
     // v3.13.14 (#48): a qualified name ("db.table") must back-quote each part
     // separately, otherwise the dot is read as part of one identifier.
+    // MYSQL-DESCRIBE-UNPARAM: DESCRIBE takes an IDENTIFIER, not a bind parameter,
+    // so each part is STRICT-quoted with embedded backticks ESCAPED (doubled) -
+    // a crafted/odd name becomes ONE escaped identifier (a clean "unknown table",
+    // never runnable SQL) instead of a backtick in the name closing the quote.
     const [schema, tbl] = SQLTranslator.splitSchema(table);
-    const target = schema ? `\`${schema}\`.\`${tbl}\`` : `\`${tbl}\``;
+    const q = (part: string): string => "`" + String(part).replace(/`/g, "``") + "`";
+    const target = schema ? `${q(schema)}.${q(tbl)}` : q(tbl);
     const rows = await this.queryAsync<{
       Field: string;
       Type: string;
