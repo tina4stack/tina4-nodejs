@@ -79,6 +79,31 @@ function tcpReachable(host: string, port: number): Promise<boolean> {
   });
 }
 
+/**
+ * Deterministic JSON.stringify with OBJECT keys sorted recursively (array
+ * ELEMENT order is left significant). Used to compare a hydrated JSON column
+ * for equal content regardless of key order: PostgreSQL's JSONB storage does
+ * not preserve object key insertion order (SQLite's TEXT column does), so the
+ * SAME data can legitimately come back "{"n":1,"tags":[...]}" on one engine
+ * and "{"tags":[...],"n":1}" on the other -- a real, engine-level JSONB
+ * property, not a hydration bug. A plain JSON.stringify() comparison is
+ * order-sensitive and would fail on that engine difference alone.
+ */
+function canonicalJson(value: unknown): string {
+  const sortKeys = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(sortKeys);
+    if (v !== null && typeof v === "object") {
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(v as Record<string, unknown>).sort()) {
+        out[key] = sortKeys((v as Record<string, unknown>)[key]);
+      }
+      return out;
+    }
+    return v;
+  };
+  return JSON.stringify(sortKeys(value));
+}
+
 // ── models ────────────────────────────────────────────────────────────────
 //
 // V1 ("loose"): defines the table's DDL. `name` carries no `required` -- the
@@ -139,7 +164,7 @@ async function runCases(): Promise<void> {
   );
   check(
     "json_column_round_trips_via_finder",
-    JSON.stringify(got?.payload) === JSON.stringify({ tags: ["a", "b"], n: 1 }),
+    canonicalJson(got?.payload) === canonicalJson({ tags: ["a", "b"], n: 1 }),
     `expected {tags:[a,b],n:1}, got ${JSON.stringify(got?.payload)}`,
   );
 
@@ -155,7 +180,7 @@ async function runCases(): Promise<void> {
   );
   check(
     "json_column_round_trips_via_load",
-    JSON.stringify(reloaded.payload) === JSON.stringify({ tags: ["a", "b"], n: 1 }),
+    canonicalJson(reloaded.payload) === canonicalJson({ tags: ["a", "b"], n: 1 }),
     `expected {tags:[a,b],n:1}, got ${JSON.stringify(reloaded.payload)}`,
   );
 
