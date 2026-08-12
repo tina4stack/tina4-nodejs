@@ -29,6 +29,8 @@
  *      the source of the stage-list-as-data pattern.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { gzipSync } from "node:zlib";
+import { createHash } from "node:crypto";
 import type { Tina4Request } from "./types.js";
 import type { Session as SessionInstance } from "./session.js";
 import { Log } from "./logger.js";
@@ -40,6 +42,7 @@ import { Log } from "./logger.js";
 export const PROLOGUE_STAGES = [
   "resetRequestCaches",
   "headStripIntercept",
+  "compressionEtagIntercept",
   "sessionAutoStart",
 ] as const;
 
@@ -169,6 +172,169 @@ export function headStripIntercept(rawReq: IncomingMessage, rawRes: ServerRespon
     const realCb = typeof chunk === "function" ? chunk : cb;
     void origWrite; // referenced to keep tsc happy
     return typeof realCb === "function" ? origEnd(realCb) : origEnd();
+  }) as typeof rawRes.end;
+}
+
+/** Content-type prefixes that benefit from gzip. Mirrors the Python master's `_is_compressible`. */
+const COMPRESSIBLE_PREFIXES = [
+  "text/",
+  "application/json",
+  "application/xml",
+  "application/javascript",
+  "image/svg",
+];
+
+/** Whether a content type benefits from gzip compression (feature 40, CE-DEC-01). */
+function isCompressibleContentType(contentType: string): boolean {
+  return COMPRESSIBLE_PREFIXES.some((prefix) => contentType.includes(prefix));
+}
+
+/**
+ * Match an If-None-Match header value against `etag` (RFC 7232 S3.2 weak
+ * comparison): an optional W/ prefix is ignored on both sides, the header may
+ * carry a comma-separated candidate list, and `*` matches any current
+ * representation. Same algorithm as static.ts's own matcher (kept local here
+ * rather than imported, since static.ts writes to the raw response directly
+ * and never reaches this interceptor).
+ */
+function etagMatchesInm(ifNoneMatch: string, etag: string): boolean {
+  const strip = (tag: string) => tag.trim().replace(/^W\//, "");
+  const target = strip(etag);
+  return ifNoneMatch.split(",").some((candidate) => {
+    const trimmed = candidate.trim();
+    return trimmed === "*" || strip(trimmed) === target;
+  });
+}
+
+/**
+ * Gzip-compress + attach an ETag, and answer a matching conditional GET with
+ * a 304 that PRESERVES whichever validators the 200 would have carried
+ * (feature 40, CE-DEC-01/02). Mirrors the Python master's `build_headers()` +
+ * `app()` dispatch — the ONE header-builder step every DYNAMIC response
+ * funnels through.
+ *
+ * Node has no single "build the response, then send it" object the way
+ * Python/PHP/Ruby do — every response.ts method (json/html/text/xml/send/
+ * file/render) calls `res.end()` directly. So this intercepts `write`/`end`
+ * on the raw `ServerResponse` and buffers the body until `end()` is finally
+ * called, which is the only point a COMPLETE body — and therefore a
+ * Content-Length, a gzip candidate, and an ETag — exists to compute.
+ *
+ * BYPASS: a response that has ALREADY sent its headers by the time
+ * write()/end() is first called here (checked via `rawRes.headersSent`) is a
+ * streaming response — `response.ts`'s `stream()` calls `res.raw.writeHead()`
+ * up front, before any chunk — and is passed straight through unbuffered,
+ * exactly like Python's "streaming responses bypass ETag/compression".
+ *
+ * Installed in the PROLOGUE, right after `headStripIntercept`: since the LAST
+ * installed wrapper runs FIRST when `end()` is finally called, and
+ * `wrapResponseEnd` (dev-toolbar/feedback injection) installs LATER (in the
+ * REQUEST stage), the real execution order at send time is
+ * injection -> this -> `headStripIntercept` -> the true Node `res.end()` — so
+ * a HEAD response's preserved Content-Length reflects the (possibly
+ * compressed) body the equivalent GET would have sent, and the injected
+ * bytes are included in the compressed body + ETag hash, matching Python's
+ * ordering exactly.
+ *
+ * A static-file response (`static.ts`) still funnels through this same
+ * intercepted `write`/`end` — it pins its own weak size+mtime ETag and (when
+ * eligible) compresses itself BEFORE calling `res.raw.end()`, so by the time
+ * this runs, its status is already 200-with-ETag-set (this never overwrites
+ * it) or already 304 (the `statusCode === 200` guard below leaves it alone).
+ *
+ * @param rawReq Node's incoming message, read for Accept-Encoding / If-None-Match / If-Modified-Since
+ * @param rawRes Node's server response, whose write/end are replaced in place
+ */
+export function compressionEtagIntercept(rawReq: IncomingMessage, rawRes: ServerResponse): void {
+  const origEnd = rawRes.end.bind(rawRes);
+  const origWrite = rawRes.write.bind(rawRes);
+  const chunks: Buffer[] = [];
+  let bypass = false;
+
+  const toBuffer = (chunk: unknown, encoding?: unknown): Buffer | null => {
+    if (chunk == null || typeof chunk === "function") return null;
+    if (Buffer.isBuffer(chunk)) return chunk;
+    return Buffer.from(String(chunk), typeof encoding === "string" ? (encoding as BufferEncoding) : "utf-8");
+  };
+
+  rawRes.write = ((chunk?: any, encodingOrCb?: any, cb?: any): boolean => {
+    if (bypass || rawRes.headersSent) {
+      bypass = true;
+      return origWrite(chunk, encodingOrCb, cb);
+    }
+    const buf = toBuffer(chunk, typeof encodingOrCb === "string" ? encodingOrCb : undefined);
+    if (buf) chunks.push(buf);
+    const realCb = typeof encodingOrCb === "function" ? encodingOrCb : cb;
+    if (typeof realCb === "function") realCb();
+    return true;
+  }) as typeof rawRes.write;
+
+  rawRes.end = ((chunk?: any, encodingOrCb?: any, cb?: any): any => {
+    if (bypass || rawRes.headersSent) {
+      return origEnd(chunk, encodingOrCb, cb);
+    }
+
+    const buf = toBuffer(chunk, typeof encodingOrCb === "string" ? encodingOrCb : undefined);
+    if (buf) chunks.push(buf);
+    let body = chunks.length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0);
+    const realCb = typeof encodingOrCb === "function" ? encodingOrCb : cb;
+    const statusCode = rawRes.statusCode || 200;
+
+    // Compression: body > 1024 bytes AND Accept-Encoding offers gzip AND the
+    // content type is compressible. Applies to ANY response (matches every
+    // route, not status-gated), same as the Python master.
+    const acceptEncoding = String(rawReq.headers["accept-encoding"] ?? "");
+    const contentTypeHeader = rawRes.getHeader("content-type");
+    const contentType = typeof contentTypeHeader === "string" ? contentTypeHeader : "";
+    if (body.length > 1024 && acceptEncoding.includes("gzip") && isCompressibleContentType(contentType)) {
+      body = gzipSync(body, { level: 6 });
+      rawRes.setHeader("Content-Encoding", "gzip");
+      rawRes.setHeader("Vary", "Accept-Encoding");
+    }
+
+    if (statusCode === 200 && body.length > 0) {
+      // ETag: a strong md5 hash (first 16 hex chars) over the FINAL
+      // (post-compression) body, UNLESS a validator is already set — a
+      // static-file response (static.ts) pins its own weak size+mtime ETag
+      // before this ever runs (CE-DEC-02), so this never overwrites it with
+      // a content hash.
+      let etag = rawRes.getHeader("etag");
+      if (!etag) {
+        etag = `"${createHash("md5").update(body).digest("hex").slice(0, 16)}"`;
+        rawRes.setHeader("ETag", etag);
+      }
+
+      // Conditional GET -> 304, preserving whichever validators are set.
+      // If-None-Match takes precedence over If-Modified-Since (RFC 9110 S13.1.3).
+      const ifNoneMatch = String(rawReq.headers["if-none-match"] ?? "");
+      const lastModifiedHeader = rawRes.getHeader("last-modified");
+      const lastModified = typeof lastModifiedHeader === "string" ? lastModifiedHeader : "";
+      let notModified = false;
+      if (ifNoneMatch) {
+        notModified = etagMatchesInm(ifNoneMatch, String(etag));
+      } else if (lastModified) {
+        const ifModifiedSince = String(rawReq.headers["if-modified-since"] ?? "");
+        if (ifModifiedSince) {
+          const modified = Date.parse(lastModified);
+          const since = Date.parse(ifModifiedSince);
+          notModified = !Number.isNaN(modified) && !Number.isNaN(since) && modified <= since;
+        }
+      }
+
+      if (notModified) {
+        rawRes.statusCode = 304;
+        rawRes.removeHeader("Content-Type");
+        rawRes.removeHeader("Content-Encoding");
+        rawRes.removeHeader("Vary");
+        rawRes.removeHeader("Content-Length");
+        return typeof realCb === "function" ? origEnd(realCb) : origEnd();
+      }
+    }
+
+    if (!rawRes.headersSent && statusCode !== 304) {
+      rawRes.setHeader("Content-Length", body.length);
+    }
+    return typeof realCb === "function" ? origEnd(body, realCb) : origEnd(body);
   }) as typeof rawRes.end;
 }
 

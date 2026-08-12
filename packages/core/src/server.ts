@@ -25,6 +25,7 @@ import { createRequest } from "./request.js";
 import {
   resetRequestCaches,
   headStripIntercept,
+  compressionEtagIntercept,
   sessionAutoStart,
 } from "./dispatchPipeline.js";
 import { createResponse, setDefaultTemplatesDir } from "./response.js";
@@ -1870,10 +1871,16 @@ ${reset}
 
     // PROLOGUE STAGES. Extracted to dispatchPipeline.ts - see PROLOGUE_STAGES
     // there for the ordered list and why the order is behaviour, not taste.
-    // These three close over nothing from startServer, which is why they went
+    // These four close over nothing from startServer, which is why they went
     // first: no context object is needed for them at all.
     await resetRequestCaches();
     headStripIntercept(rawReq, rawRes);
+    // Feature 40 (CE-DEC-01/02): gzip + ETag + conditional-GET for every
+    // dynamic response. Installed right after headStripIntercept so it runs
+    // (execution order is the REVERSE of installation for these monkey-patch
+    // interceptors) AFTER the dev-toolbar/feedback injection but BEFORE the
+    // HEAD body-strip - see compressionEtagIntercept's docblock.
+    compressionEtagIntercept(rawReq, rawRes);
 
     // res.render() is handled natively by response.ts via Frond
 

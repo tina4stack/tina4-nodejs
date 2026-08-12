@@ -1,6 +1,21 @@
 import { readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import { join, extname, sep } from "node:path";
+import { gzipSync } from "node:zlib";
 import type { Tina4Request, Tina4Response } from "./types.js";
+
+/** Content-type prefixes that benefit from gzip. Mirrors the Python master's `_is_compressible`. */
+const COMPRESSIBLE_PREFIXES = [
+  "text/",
+  "application/json",
+  "application/xml",
+  "application/javascript",
+  "image/svg",
+];
+
+/** Whether a content type benefits from gzip compression (feature 40, CE-DEC-01). */
+function isCompressible(contentType: string): boolean {
+  return COMPRESSIBLE_PREFIXES.some((prefix) => contentType.includes(prefix));
+}
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -85,9 +100,13 @@ export function tryServeStatic(
 
     // Cheap validators from the file's size + mtime — no hashing needed. A weak
     // ETag (W/) is correct here: two representations with the same size+mtime
-    // are treated as equivalent for caching. Last-Modified is second-resolution
-    // per HTTP.
-    const etag = `W/"${stat.size}-${stat.mtimeMs}"`;
+    // are treated as equivalent for caching. Format PINNED across all four
+    // frameworks (feature 40, CE-DEC-02): decimal `W/"<size>-<mtime>"`,
+    // integer-SECOND mtime (dropping the fractional-ms Node otherwise reports)
+    // — a client behind a reverse proxy sees an identical validator for the
+    // same file regardless of backend language. Last-Modified is
+    // second-resolution per HTTP.
+    const etag = `W/"${stat.size}-${Math.floor(stat.mtimeMs / 1000)}"`;
     const lastModified = stat.mtime.toUTCString();
 
     // A static asset MAY be cached but MUST be revalidated before use, so a
@@ -106,9 +125,22 @@ export function tryServeStatic(
       return true;
     }
 
+    // Compression (feature 40, CE-DEC-01): gzip when eligible — a static
+    // asset gets the SAME treatment as a dynamic response. The ETag stays
+    // file-stat-based regardless (a weak validator is deliberately
+    // representation-independent — CE-ETAG-OVER-COMPRESSED), so compressing
+    // here never invalidates the ETag/Last-Modified already sent above.
+    let body: Buffer = readFileSync(realPath);
+    const acceptEncoding = conditionalHeader(req, "accept-encoding");
+    if (body.length > 1024 && acceptEncoding.includes("gzip") && isCompressible(contentType)) {
+      body = gzipSync(body, { level: 6 });
+      res.raw.setHeader("Content-Encoding", "gzip");
+      res.raw.setHeader("Vary", "Accept-Encoding");
+    }
+
     res.raw.setHeader("Content-Type", contentType);
-    res.raw.setHeader("Content-Length", stat.size);
-    res.raw.end(readFileSync(realPath));
+    res.raw.setHeader("Content-Length", body.length);
+    res.raw.end(body);
     return true;
   }
 
