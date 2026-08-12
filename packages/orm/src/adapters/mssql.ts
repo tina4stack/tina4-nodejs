@@ -176,7 +176,11 @@ export class MssqlAdapter implements DatabaseAdapter {
         params.forEach((p, i) => {
           const paramName = `p${i}`;
           let type = TYPES.NVarChar;
-          if (typeof p === "number") type = Number.isInteger(p) ? TYPES.Int : TYPES.Float;
+          // MSSQL-BUFFER-NODE: a Buffer is raw bytes -> VarBinary. Checked FIRST so
+          // it can never fall through to the NVarChar default, which applied a text
+          // encoding to the bytes and corrupted every binary write.
+          if (Buffer.isBuffer(p)) type = TYPES.VarBinary;
+          else if (typeof p === "number") type = Number.isInteger(p) ? TYPES.Int : TYPES.Float;
           else if (typeof p === "boolean") type = TYPES.Bit;
           else if (p instanceof Date) type = TYPES.DateTime;
           request.addParameter(paramName, type, p);
@@ -267,17 +271,22 @@ export class MssqlAdapter implements DatabaseAdapter {
 
   async fetchAsync<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): Promise<T[]> {
     let effectiveSql = sql;
-    if (limit !== undefined) {
-      if (skip !== undefined && skip > 0) {
-        // MSSQL uses OFFSET...FETCH for pagination (requires ORDER BY)
-        if (!/ORDER BY/i.test(effectiveSql)) {
-          effectiveSql += " ORDER BY (SELECT NULL)";
-        }
-        effectiveSql += ` OFFSET ${skip} ROWS FETCH NEXT ${limit} ROWS ONLY`;
-      } else {
-        // Use TOP for simple limit
-        effectiveSql = effectiveSql.replace(/^(SELECT)\b/i, `$1 TOP ${limit}`);
+    if (limit !== undefined && limit > 0) {
+      // MSSQL-PAGINATION-DIVERGE: ONE pagination strategy across all four
+      // frameworks - OFFSET/FETCH (the modern standard, requiring an ORDER BY),
+      // matching Python/PHP/Ruby. Node used to branch to `TOP n` for the first
+      // page (skip 0): it returned the same window but diverged the generated SQL
+      // and the `^SELECT` regex could not prefix a CTE / leading-comment / nested
+      // SELECT. OFFSET/FETCH appended after the ORDER BY is uniform and robust.
+      if (!/ORDER BY/i.test(effectiveSql)) {
+        effectiveSql += " ORDER BY (SELECT NULL)";
       }
+      effectiveSql += ` OFFSET ${skip ?? 0} ROWS FETCH NEXT ${limit} ROWS ONLY`;
+    } else if (limit === 0) {
+      // limit 0 == "zero rows" (the LIMIT 0 semantics the other Node adapters
+      // keep). OFFSET/FETCH cannot express `FETCH NEXT 0`, so TOP 0 remains for
+      // this one degenerate case only.
+      effectiveSql = effectiveSql.replace(/^(\s*SELECT)\b/i, "$1 TOP 0");
     }
     return this.queryAsync<T>(effectiveSql, params);
   }
