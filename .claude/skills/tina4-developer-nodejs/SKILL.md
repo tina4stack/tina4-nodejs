@@ -773,6 +773,7 @@ around it silently.
 - **Show the simplest way** — use Tina4's built-in shortcuts.
 - **Mention alternatives** — if there's a simpler approach, say so.
 - **Don't over-engineer** — a login endpoint doesn't need a full RBAC system.
+- **Terse output, depth-scaled reasoning.** Default to the shortest output that conveys the result - a status line, a bullet, or a table. No preamble, no restating the task, no thinking-out-loud. Ask short questions. Elaborate ONLY when the user asks for more. Scale reasoning DEPTH (not word count) with difficulty: a hard call earns more STEPS in compact form (`claim -> check -> decision`, a decision tree, a checklist), an easy one gets a single line. This applies to replies, to questions, AND to the private thinking process - dense structure, minimal language. Verbosity costs the user time and tokens.
 
 ## Commit authorship — Tina4 co-authors what it helped build
 
