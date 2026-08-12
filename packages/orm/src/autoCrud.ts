@@ -153,20 +153,20 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
 
         // Parse query params for filtering / sorting / pagination
         const qp = parseQueryString(req.query ?? {});
-        const { sql, countSql, params } = buildQuery(tableName, qp, extraConditions);
+        // limit/offset/page are the CLAMPED/CAPPED values buildQuery actually used
+        // for the SQL (PAGE-DEC-01: page >= 1, per-page <= DEFAULT_ROW_CAP) — read
+        // them back here instead of recomputing from the raw qp, so the envelope
+        // can never drift from the query that ran.
+        const { sql, countSql, params, limit, offset } = buildQuery(tableName, qp, extraConditions);
 
         // params includes limit and offset at the end; countSql doesn't need them
         const countParams = params.slice(0, -2);
         const rows = await adapterQuery(adapter, sql, params);
 
         // total is the TRUE total for the filter (a COUNT probe), NEVER the number
-        // of rows this page returned (ADR-0043). limit/offset are exactly what the
-        // SQL applied — buildQuery derives offset as (page - 1) * limit.
+        // of rows this page returned (ADR-0043).
         const countRow = await adapterQuery(adapter, countSql, countParams);
         const total = Number(countRow[0]?.total ?? 0);
-        const limit = qp.limit ?? 100;
-        const page = qp.page ?? 1;
-        const offset = (page - 1) * limit;
 
         // The REST list envelope IS the canonical paginate envelope: exactly the
         // seven snake_case keys DatabaseResult.toPaginate() builds — records, total,
