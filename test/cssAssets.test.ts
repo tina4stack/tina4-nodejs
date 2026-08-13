@@ -10,6 +10,14 @@
  * apply. 12 declarations shipped broken in every framework.
  *
  * These tests read the REAL shipped files off disk -- no mocks, no fixtures.
+ *
+ * NODE-3.13.99: the framework no longer vendors an SCSS source tree per
+ * package (chore(scss): remove the bundled tina4css SCSS source from the
+ * framework; "Remove the framework SCSS compilers; the Rust CLI owns SCSS").
+ * Only the compiled CSS ships, in packages/core/public/css/ -- that is what
+ * this file checks below. The companion "is the shipped CSS a current
+ * compile of source" check now lives centrally in
+ * tina4-documentation/scripts/build-tina4css.py --check, not per framework.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -17,7 +25,6 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CSS_DIR = join(__dirname, "..", "packages", "core", "public", "css");
-const SCSS_DIR = join(__dirname, "..", "packages", "core", "scss", "tina4css");
 
 // A `$name` that is not the CSS `[attr$="x"]` suffix operator.
 const UNRESOLVED_VARIABLE = /\$(?!=)[A-Za-z_][A-Za-z0-9_-]*/g;
@@ -80,22 +87,6 @@ for (const name of ["tina4.css", "tina4.min.css"]) {
   assert(
     `${name}: ships the resolved card corner radius`,
     /calc\(0?\.5rem - 1px\)/.test(css),
-  );
-}
-
-console.log("\n--- vendored SCSS source ---");
-{
-  const scss = readFileSync(join(SCSS_DIR, "_grid.scss"), "utf8");
-  assert("vendored _grid.scss keeps the gutter variable", scss.includes("$grid-gutter"));
-  // The source legitimately uses `calc($grid-gutter / 2)`; the compiler resolves
-  // it. What must never happen is that form reaching the shipped CSS.
-  assert(
-    "vendored _grid.scss uses calc($grid-gutter / 2)",
-    scss.includes("calc($grid-gutter / 2)"),
-  );
-  assert(
-    "shipped tina4.css does NOT contain calc($grid-gutter / 2)",
-    !read("tina4.css").includes("calc($grid-gutter / 2)"),
   );
 }
 
