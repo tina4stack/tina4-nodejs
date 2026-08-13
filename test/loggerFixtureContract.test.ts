@@ -1451,8 +1451,10 @@ console.log("=== Structured logger contract (feature 2) ===\n");
 
 {
   cleanEnv();
-  const unwritable = freshDir("e01-unwritable-parent");
-  mkdirSync(unwritable, { recursive: true, mode: 0o500 }); // read+execute, no write
+  // Parent is a FILE, so a sink dir under it is ENOTDIR -- fails even as root
+  // (a mode 0o500 dir is bypassed by root's CAP_DAC_OVERRIDE; the lab runs as root).
+  const unwritable = join(freshDir("e01-unwritable-parent"), "parent");
+  writeFileSync(unwritable, ""); // a regular file, not a directory
   const target = join(unwritable, "nested", "logs");
   process.env.TINA4_LOG_DIR = target;
   process.env.TINA4_LOG_OUTPUT = "file";
