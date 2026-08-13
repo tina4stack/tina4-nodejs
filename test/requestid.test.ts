@@ -182,9 +182,13 @@ async function main() {
       const logText = readFileSync(join(logDir, "tina4.log"), "utf8");
       const markerLines = logText.split("\n").filter((l) => l.includes("rid-log-marker"));
       assert("the handler log line was written to the file", markerLines.length > 0);
+      // Format-agnostic (Decision 3): with TINA4_DEBUG unset (set just above)
+      // this resolves to JSON by default, where the id appears as
+      // "request_id":"corr-9f8e7d" rather than TEXT format's [corr-9f8e7d]
+      // bracket. Accept either real rendering rather than pinning one format.
       assert(
         "the log line carries the request id",
-        markerLines.some((l) => l.includes("[corr-9f8e7d]")),
+        markerLines.some((l) => l.includes("[corr-9f8e7d]") || l.includes('"request_id":"corr-9f8e7d"')),
         markerLines.join(" | "),
       );
     }

@@ -604,6 +604,7 @@ const savedLogFile = process.env.TINA4_LOG_FILE;
 const savedLogLevel = process.env.TINA4_LOG_LEVEL;
 const savedLogDebug = process.env.TINA4_DEBUG;
 const savedLogFormat = process.env.TINA4_LOG_FORMAT;
+const savedLogFileLevel = process.env.TINA4_LOG_FILE_LEVEL;
 
 const logFile = join(TMP, "logger", "tina4.log");
 process.env.TINA4_LOG_OUTPUT = "file";       // file-only sink; keeps test stdout clean
@@ -612,8 +613,25 @@ delete process.env.TINA4_DEBUG;               // no colour codes in the file lin
 
 const readLog = (): string => (existsSync(logFile) ? readFileSync(logFile, "utf-8") : "");
 
+// Log.configure() now resolves and CACHES one stable snapshot (LOG-C05) rather
+// than re-reading the environment on every call, so every env mutation below
+// is followed by Log.reset() before the next Log.* call -- otherwise it would
+// silently keep using whatever snapshot an earlier section of this file
+// already caused to resolve.
+//
+// isEnabled() is also sink-aware now (Decision 8): the console-implicit form
+// (no second argument) reflects whether STDOUT is enabled, which this block
+// deliberately keeps off throughout (TINA4_LOG_OUTPUT=file, to keep test
+// output clean) -- so a console-implicit isEnabled() would be false at every
+// level regardless of threshold, proving nothing about the threshold this
+// case is actually about. Query the FILE sink explicitly instead (the sink
+// that IS active here), and move TINA4_LOG_FILE_LEVEL together with
+// TINA4_LOG_LEVEL so the file's own threshold is what is under test.
+process.env.TINA4_LOG_FILE_LEVEL = "INFO";
+
 // Case 11: Log.info emits a real INFO line containing the message; isEnabled reflects threshold.
 process.env.TINA4_LOG_LEVEL = "INFO";
+Log.reset();
 Log.info("hello world");
 const afterInfo = readLog();
 assert(
@@ -621,17 +639,25 @@ assert(
   afterInfo.includes("hello world") && afterInfo.includes("INFO"),
 );
 process.env.TINA4_LOG_LEVEL = "ERROR";
-assert("Log.info suppressed at console when level=error (isEnabled false)", Log.isEnabled("info") === false);
+process.env.TINA4_LOG_FILE_LEVEL = "ERROR";
+Log.reset();
+assert("Log.info suppressed at console when level=error (isEnabled false)", Log.isEnabled("info", "file") === false);
 
 // Case 12: Log.debug writes when level=debug; threshold logic gates it at info.
 process.env.TINA4_LOG_LEVEL = "DEBUG";
+process.env.TINA4_LOG_FILE_LEVEL = "DEBUG";
+Log.reset();
 Log.debug("dbg-line");
 assert("Log.debug emits a line at level=debug", readLog().includes("dbg-line"));
 process.env.TINA4_LOG_LEVEL = "INFO";
-assert("Log.debug suppressed at console when level=info (isEnabled false)", Log.isEnabled("debug") === false);
+process.env.TINA4_LOG_FILE_LEVEL = "INFO";
+Log.reset();
+assert("Log.debug suppressed at console when level=info (isEnabled false)", Log.isEnabled("debug", "file") === false);
 
 // Case 13: Log.warning emits a WARNING line; suppressed at console when level=error.
 process.env.TINA4_LOG_LEVEL = "WARNING";
+process.env.TINA4_LOG_FILE_LEVEL = "WARNING";
+Log.reset();
 Log.warning("careful");
 const afterWarn = readLog();
 assert(
@@ -639,22 +665,31 @@ assert(
   afterWarn.includes("careful") && afterWarn.includes("WARNING"),
 );
 process.env.TINA4_LOG_LEVEL = "ERROR";
-assert("Log.warning suppressed at console when level=error (isEnabled false)", Log.isEnabled("warning") === false);
+process.env.TINA4_LOG_FILE_LEVEL = "ERROR";
+Log.reset();
+assert("Log.warning suppressed at console when level=error (isEnabled false)", Log.isEnabled("warning", "file") === false);
 
 // Case 14: Log.error emits an ERROR line and always passes the threshold at level=error.
 process.env.TINA4_LOG_LEVEL = "ERROR";
+process.env.TINA4_LOG_FILE_LEVEL = "ERROR";
+Log.reset();
 Log.error("boom");
 const afterError = readLog();
 assert(
   "Log.error emits an ERROR line with the message even at level=error",
   afterError.includes("boom") && afterError.includes("ERROR"),
 );
-assert("Log.error always passes threshold at level=error (isEnabled true)", Log.isEnabled("error") === true);
+assert("Log.error always passes threshold at level=error (isEnabled true)", Log.isEnabled("error", "file") === true);
 
 // Case 15: Log.configure changes the sink — point it at a fresh file and prove output lands there.
+// output: "file" is required explicitly (LOG-C08): naming a file alone no
+// longer enables the file sink by itself (a deliberate 3.13.99 change).
 const configuredFile = join(TMP, "logger", "configured.log");
-Log.configure({ logFile: configuredFile });
-process.env.TINA4_LOG_LEVEL = "INFO";
+// fileLevel passed explicitly too -- TINA4_LOG_FILE_LEVEL is still "ERROR" in
+// the environment from Case 14 above, and an explicit argument is required to
+// beat it (ADR-0041); relying on the env here would gate this INFO write out
+// via the file sink's own independent threshold (Decision 8).
+Log.configure({ logFile: configuredFile, level: "info", fileLevel: "info", output: "file" });
 Log.info("to-file");
 assert(
   "Log.configure redirects output to the configured file",
@@ -667,6 +702,12 @@ if (savedLogFile === undefined) delete process.env.TINA4_LOG_FILE; else process.
 if (savedLogLevel === undefined) delete process.env.TINA4_LOG_LEVEL; else process.env.TINA4_LOG_LEVEL = savedLogLevel;
 if (savedLogDebug === undefined) delete process.env.TINA4_DEBUG; else process.env.TINA4_DEBUG = savedLogDebug;
 if (savedLogFormat === undefined) delete process.env.TINA4_LOG_FORMAT; else process.env.TINA4_LOG_FORMAT = savedLogFormat;
+if (savedLogFileLevel === undefined) delete process.env.TINA4_LOG_FILE_LEVEL; else process.env.TINA4_LOG_FILE_LEVEL = savedLogFileLevel;
+// Log.configure() now caches a stable snapshot (LOG-C05) -- without reset()
+// here, Case 15's file/level from just above would silently stay ACTIVE for
+// every later section of this file instead of resolving fresh from the
+// (just-restored) ambient environment on next use.
+Log.reset();
 
 // ═══════════════════════════════════════════════════════════════════
 // 26. API Client

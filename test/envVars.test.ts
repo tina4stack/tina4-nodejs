@@ -157,6 +157,17 @@ assert("TINA4_TRAILING_SLASH_REDIRECT=true honoured", isTrailingSlashRedirectEna
 delete process.env.TINA4_TRAILING_SLASH_REDIRECT;
 
 // ── logger.ts: TINA4_LOG_FILE / DIR / FORMAT / OUTPUT / CRITICAL ───
+//
+// Rewritten 2026-08-13 alongside the shared logger_contract.json conformance
+// pass. Two load-bearing changes throughout this section:
+//   1. Log.configure() now resolves and CACHES one stable snapshot (LOG-C05) —
+//      a later process.env.TINA4_LOG_* mutation is IGNORED until Log.reset()
+//      is called, the opposite of the old "every call re-reads the
+//      environment" contract this file used to assume. Every env change below
+//      is now followed by Log.reset() before the next Log.* call.
+//   2. TINA4_LOG_ROTATE_SIZE has a real 1024-byte minimum (LOG-V02) — the old
+//      "200" test value and the old "0 disables rotation" escape hatch are
+//      both now configuration ERRORS rather than silently honoured.
 console.log("\n--- TINA4_LOG_* (file, dir, format, output, critical) ---");
 
 const logDir = mkdtempSync(join(tmpdir(), "tina4-log-"));
@@ -168,6 +179,7 @@ delete process.env.TINA4_LOG_OUTPUT;
 delete process.env.TINA4_LOG_ROTATE_SIZE;
 delete process.env.TINA4_LOG_ROTATE_KEEP;
 delete process.env.TINA4_LOG_CRITICAL;
+Log.reset();
 
 Log.info("default-format-message");
 const appLogPath = join(logDir, "app.log");
@@ -176,8 +188,9 @@ const appContent0 = readFileSync(appLogPath, "utf-8");
 assert("default format is text (no JSON brace prefix)",
   appContent0.split("\n")[0].startsWith(new Date().toISOString().slice(0, 4)));
 
-// JSON format
+// JSON format — env changed, so reset() before the next call (LOG-C05/C06).
 process.env.TINA4_LOG_FORMAT = "json";
+Log.reset();
 Log.info("json-message", { id: 1 });
 const appContentJson = readFileSync(appLogPath, "utf-8");
 const lines = appContentJson.trim().split("\n");
@@ -188,23 +201,37 @@ assert("TINA4_LOG_FORMAT=json emits valid JSON", parsed !== null);
 assert("JSON line carries level + message",
   parsed?.level === "INFO" && parsed?.message === "json-message");
 delete process.env.TINA4_LOG_FORMAT;
+Log.reset();
 
 // CRITICAL — first-class, ALWAYS emits (TINA4_LOG_CRITICAL toggle retired).
 // With no toggle set, critical() must still write a line.
 delete process.env.TINA4_LOG_CRITICAL;
+Log.reset();
 const sizeBeforeCritical = statSync(appLogPath).size;
 Log.critical("always-emits");
 assert("CRITICAL always emits (no toggle needed)", statSync(appLogPath).size > sizeBeforeCritical);
 
-// The retired env var must NOT suppress critical, even set to a falsy value.
+// The retired env var is now a REMOVED setting (LOG-V04): merely being
+// present hard-fails configuration rather than being silently tolerated.
 process.env.TINA4_LOG_CRITICAL = "false";
-const sizeBeforeRetired = statSync(appLogPath).size;
-Log.critical("still-emits-with-retired-false");
-assert("CRITICAL ignores retired TINA4_LOG_CRITICAL=false", statSync(appLogPath).size > sizeBeforeRetired);
+Log.reset();
+let criticalRemovedThrew: unknown = null;
+try {
+  Log.critical("must not emit — configuration must fail first");
+} catch (err) {
+  criticalRemovedThrew = err;
+}
+assert(
+  "TINA4_LOG_CRITICAL present (even falsy) now hard-fails configuration (LOG-V04)",
+  criticalRemovedThrew instanceof Error && /TINA4_LOG_CRITICAL/.test((criticalRemovedThrew as Error).message),
+  String(criticalRemovedThrew),
+);
 delete process.env.TINA4_LOG_CRITICAL;
+Log.reset();
 
-// OUTPUT modes
+// OUTPUT modes — env changed, reset() before the next call.
 process.env.TINA4_LOG_OUTPUT = "file";
+Log.reset();
 const origConsole = console.log;
 let captured = "";
 console.log = (...args: unknown[]) => { captured += args.join(" "); };
@@ -215,6 +242,7 @@ delete process.env.TINA4_LOG_OUTPUT;
 delete process.env.TINA4_LOG_FILE;
 delete process.env.TINA4_LOG_DIR;
 delete process.env.TINA4_DEBUG;
+Log.reset();
 
 // ── logger.ts: TINA4_LOG_ROTATE_SIZE + TINA4_LOG_ROTATE_KEEP ──────
 console.log("\n--- TINA4_LOG_ROTATE_SIZE + _KEEP ---");
@@ -224,14 +252,15 @@ process.env.TINA4_LOG_DIR = rotDir;
 process.env.TINA4_LOG_FILE = "rot.log";
 process.env.TINA4_DEBUG = "true";
 
-// Tiny size so we trigger rotation quickly. Each Log.info() writes ~120 bytes,
-// so 200 bytes per file means rotation after every 1-2 messages.
-process.env.TINA4_LOG_ROTATE_SIZE = "200";
+// Minimum is 1024 bytes now (LOG-V02) — sized so ~8 messages of ~120 bytes
+// each cross it more than once, still exercising real rotation.
+process.env.TINA4_LOG_ROTATE_SIZE = "1024";
 process.env.TINA4_LOG_ROTATE_KEEP = "3";
 process.env.TINA4_LOG_OUTPUT = "file"; // silence stdout for the rotation loop
+Log.reset();
 
 const rotPath = join(rotDir, "rot.log");
-for (let i = 0; i < 8; i++) {
+for (let i = 0; i < 20; i++) {
   Log.info(`rotation-message-${i} ${"x".repeat(80)}`);
 }
 
@@ -250,19 +279,21 @@ rmSync(rotDir, { recursive: true, force: true });
 const rotDir2 = mkdtempSync(join(tmpdir(), "tina4-rotate2-"));
 process.env.TINA4_LOG_DIR = rotDir2;
 process.env.TINA4_LOG_FILE = "rot2.log";
-process.env.TINA4_LOG_ROTATE_SIZE = "200";
+process.env.TINA4_LOG_ROTATE_SIZE = "1024";
 process.env.TINA4_LOG_ROTATE_KEEP = "2";
 process.env.TINA4_LOG_OUTPUT = "file";
+Log.reset();
 
 const rot2Path = join(rotDir2, "rot2.log");
-for (let i = 0; i < 8; i++) {
+for (let i = 0; i < 20; i++) {
   Log.info(`keep2-message-${i} ${"x".repeat(80)}`);
 }
 assert("KEEP=2 retains .1", existsSync(`${rot2Path}.1`));
 assert("KEEP=2 retains .2", existsSync(`${rot2Path}.2`));
 assert("KEEP=2 drops .3", !existsSync(`${rot2Path}.3`));
 
-// _SIZE=0 disables rotation
+// _SIZE=0 is now a CONFIGURATION ERROR (LOG-V02), not "disable rotation" —
+// the pre-3.13.99 escape hatch is gone; this proves the new reject.
 delete process.env.TINA4_LOG_ROTATE_SIZE;
 delete process.env.TINA4_LOG_ROTATE_KEEP;
 delete process.env.TINA4_LOG_OUTPUT;
@@ -272,21 +303,29 @@ const noRotDir = mkdtempSync(join(tmpdir(), "tina4-norot-"));
 process.env.TINA4_LOG_DIR = noRotDir;
 process.env.TINA4_LOG_FILE = "norot.log";
 process.env.TINA4_LOG_ROTATE_SIZE = "0";
-process.env.TINA4_LOG_OUTPUT = "file"; // silence the burst-writes loop
+process.env.TINA4_LOG_OUTPUT = "file";
+Log.reset();
 
-for (let i = 0; i < 50; i++) {
-  Log.info(`no-rotate-${i} ${"y".repeat(120)}`);
+let sizeZeroThrew: unknown = null;
+try {
+  Log.info("must not emit — configuration must fail first");
+} catch (err) {
+  sizeZeroThrew = err;
 }
+assert(
+  "TINA4_LOG_ROTATE_SIZE=0 now hard-fails configuration (LOG-V02, was 'disable rotation')",
+  sizeZeroThrew instanceof Error && /TINA4_LOG_ROTATE_SIZE/.test((sizeZeroThrew as Error).message),
+  String(sizeZeroThrew),
+);
 const noRotPath = join(noRotDir, "norot.log");
-assert("SIZE=0 disables rotation (no .1 file)", !existsSync(`${noRotPath}.1`));
-const noRotSize = statSync(noRotPath).size;
-assert("SIZE=0 keeps appending to single file", noRotSize > 5_000);
+assert("SIZE=0 rejected before any file is written", !existsSync(noRotPath));
 
 delete process.env.TINA4_LOG_ROTATE_SIZE;
 delete process.env.TINA4_LOG_FILE;
 delete process.env.TINA4_LOG_DIR;
 delete process.env.TINA4_LOG_OUTPUT;
 delete process.env.TINA4_DEBUG;
+Log.reset();
 rmSync(noRotDir, { recursive: true, force: true });
 
 // ── session.ts: TINA4_SESSION_HTTPONLY / NAME / SECURE ─────────────

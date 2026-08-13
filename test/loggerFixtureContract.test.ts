@@ -48,7 +48,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
-import { chmodSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -1453,7 +1453,9 @@ console.log("=== Structured logger contract (feature 2) ===\n");
   cleanEnv();
   // Parent is a FILE, so a sink dir under it is ENOTDIR -- fails even as root
   // (a mode 0o500 dir is bypassed by root's CAP_DAC_OVERRIDE; the lab runs as root).
-  const unwritable = join(freshDir("e01-unwritable-parent"), "parent");
+  const unwritableParentDir = freshDir("e01-unwritable-parent");
+  mkdirSync(unwritableParentDir, { recursive: true }); // freshDir() only builds the path string
+  const unwritable = join(unwritableParentDir, "parent");
   writeFileSync(unwritable, ""); // a regular file, not a directory
   const target = join(unwritable, "nested", "logs");
   process.env.TINA4_LOG_DIR = target;
@@ -1475,7 +1477,6 @@ console.log("=== Structured logger contract (feature 2) ===\n");
       after.log_dir === before.log_dir,
     `threw=${String(threw)} after=${JSON.stringify(after)}`,
   );
-  try { chmodSync(unwritable, 0o700); } catch { /* best effort cleanup */ }
   Log.reset();
 }
 
