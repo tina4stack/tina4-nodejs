@@ -317,11 +317,16 @@ function liveAttr(value: unknown): string {
 
 // ── Caches (module level) ─────────────────────────────────────
 
-/** Cache for parsed filter chains: expr string -> [variable, filters] */
-const filterChainCache = new Map<string, [string, [string, unknown[]][]]>();
+/**
+ * Cache for parsed filter chains: expr string -> [variable, filters].
+ * Exported (like TEMPLATE_CACHE_MAX) so the ADR-0004 bound has something for
+ * a test to inspect directly — module-level state has no instance to read
+ * off, unlike `compiled`/`compiledStrings`/`fragmentCache`.
+ */
+export const filterChainCache = new Map<string, [string, [string, unknown[]][]]>();
 
-/** Cache for parsed dotted/bracket paths: expr string -> [parts, fromBracket] */
-const pathParseCache = new Map<string, [string[], boolean[]]>();
+/** Cache for parsed dotted/bracket paths: expr string -> [parts, fromBracket]. Exported for the same reason as filterChainCache. */
+export const pathParseCache = new Map<string, [string[], boolean[]]>();
 
 /**
  * Hard cap on the template caches — `compiled` and `compiledStrings`
@@ -335,6 +340,19 @@ const pathParseCache = new Map<string, [string[], boolean[]]>();
  * dynamically adds an entry per distinct string.
  */
 export const TEMPLATE_CACHE_MAX = 256;
+
+/**
+ * Hard cap on every per-expression memo cache — `filterChainCache` and
+ * `pathParseCache` (ADR-0004, parity with PHP's MEMO_CACHE_MAX and the
+ * Python master's `@lru_cache(maxsize=1024)` on the equivalent module-level
+ * parsers). Deliberately higher than TEMPLATE_CACHE_MAX: one entry here is a
+ * small parsed-path array, orders of magnitude smaller than a token list.
+ *
+ * Also reused for `fragmentCache` (the `{% cache %}` tag's runtime store):
+ * TEMPLATE_CACHE_MAX, not this one — a rendered fragment is a whole HTML
+ * string, the same order of magnitude as a compiled template.
+ */
+export const MEMO_CACHE_MAX = 1024;
 
 /**
  * Keep a memo cache bounded. Call immediately before inserting a new entry.
@@ -354,6 +372,29 @@ function capCache(cache: Map<string, unknown>, maxEntries: number): void {
   for (const key of cache.keys()) {
     cache.delete(key);
     if (--drop <= 0) break;
+  }
+}
+
+/**
+ * Drop every TTL-expired entry from the `{% cache %}` fragment store:
+ * key -> [html, expiresAtEpochMs].
+ *
+ * `capCache` bounds a cache by SIZE (insertion order, oldest first) but says
+ * nothing about STALENESS: a key that expired and is never visited again
+ * would otherwise sit in the Map, still counted against the cap, until
+ * something else finally evicts it. An app keying fragments on a dynamic
+ * value (a page id, a user id) can churn through many such keys, so
+ * staleness has to be swept on its own schedule, not just bounded by count.
+ *
+ * Called on every `{% cache %}` render (cheap: bounded by TEMPLATE_CACHE_MAX
+ * entries, so at most 256 comparisons) rather than only for the key being
+ * read, so an unrelated key's expiry is cleaned up as a side effect of ANY
+ * fragment-cache render, not just a future hit on that same key.
+ */
+function sweepExpiredCache(cache: Map<string, [string, number]>): void {
+  const now = Date.now();
+  for (const [key, [, expiresAt]] of cache) {
+    if (expiresAt <= now) cache.delete(key);
   }
 }
 
@@ -539,6 +580,7 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
       }
       if (current) { parts.push(current); fromBracket.push(false); }
     }
+    capCache(pathParseCache, MEMO_CACHE_MAX);
     pathParseCache.set(expr, [parts, fromBracket]);
   }
 
@@ -1230,6 +1272,7 @@ function parseFilterChain(expr: string): [string, [string, unknown[]][]] {
   }
 
   const result: [string, [string, unknown[]][]] = [variable, filters];
+  capCache(filterChainCache, MEMO_CACHE_MAX);
   filterChainCache.set(expr, result);
   return result;
 }
@@ -3061,6 +3104,8 @@ export class Frond {
     const cacheKey = m ? m[1] : "default";
     const ttl = m && m[2] ? parseInt(m[2], 10) : 60;
 
+    sweepExpiredCache(this.fragmentCache);
+
     // Check cache
     const cached = this.fragmentCache.get(cacheKey);
     if (cached) {
@@ -3114,6 +3159,7 @@ export class Frond {
 
     // Render and cache
     const rendered = this.renderTokens([...bodyTokens], context);
+    capCache(this.fragmentCache as Map<string, unknown>, TEMPLATE_CACHE_MAX);
     this.fragmentCache.set(cacheKey, [rendered, Date.now() + ttl * 1000]);
     return [rendered, i];
   }
