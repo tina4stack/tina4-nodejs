@@ -283,10 +283,19 @@ export function compressionEtagIntercept(rawReq: IncomingMessage, rawRes: Server
     // Compression: body > 1024 bytes AND Accept-Encoding offers gzip AND the
     // content type is compressible. Applies to ANY response (matches every
     // route, not status-gated), same as the Python master.
+    //
+    // REAL BUG (found 2026-08-13, tina4cssServed.test.ts): a static-file
+    // response (static.ts) already gzips itself and sets Content-Encoding
+    // before calling res.raw.end() — but that end() is THIS intercepted one,
+    // so without the guard below it gzipped an already-gzipped body a second
+    // time. The client's one layer of automatic decompression then handed
+    // back a still-gzipped blob instead of the real bytes. Skip compression
+    // here whenever an earlier stage already set Content-Encoding.
     const acceptEncoding = String(rawReq.headers["accept-encoding"] ?? "");
     const contentTypeHeader = rawRes.getHeader("content-type");
     const contentType = typeof contentTypeHeader === "string" ? contentTypeHeader : "";
-    if (body.length > 1024 && acceptEncoding.includes("gzip") && isCompressibleContentType(contentType)) {
+    const alreadyEncoded = !!rawRes.getHeader("content-encoding");
+    if (!alreadyEncoded && body.length > 1024 && acceptEncoding.includes("gzip") && isCompressibleContentType(contentType)) {
       body = gzipSync(body, { level: 6 });
       rawRes.setHeader("Content-Encoding", "gzip");
       rawRes.setHeader("Vary", "Accept-Encoding");
