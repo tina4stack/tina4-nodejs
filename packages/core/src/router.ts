@@ -696,7 +696,15 @@ export class Router {
           paramTypes.push("string");
           return "(.+)";
         }
-        return segment;
+        // Literal segment -- escape every regex metacharacter so it matches
+        // itself only (real-bug pre-merge, 3.13.99). Before this, a literal
+        // segment was interpolated into the pattern string UNESCAPED: e.g.
+        // registering `/blocked-xss(1)` compiled `(1)` as a capture group,
+        // so `new RegExp('^/blocked-xss(1)$')` actually required the URL
+        // WITHOUT the parens -- the exact literal path it was registered
+        // for 404'd. Mirrors Python's re.escape / Ruby's Regexp.escape /
+        // PHP's preg_quote, all already correct here.
+        return segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       })
       .join("/");
 

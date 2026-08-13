@@ -68,6 +68,17 @@ Router.group("/__rg32/c4", (group) => {
 // under the normalized prefix join.
 Router.group("/__rg32/c5", (group) => { group.post("/thing", ok); }, [counting]);
 
+// Real-bug audit (3.13.99): a literal regex metacharacter in a route path
+// must match ONLY that literal path. Node's compilePattern() interpolated
+// a literal path segment straight into the pattern string UNESCAPED -
+// registering `/blocked-xss(1)` compiled the trailing `(1)` as a capture
+// group, so the exact literal path it was registered for 404'd (the SAME
+// class of bug CONFIRMED in PHP; Python/Ruby already escaped correctly).
+Router.get("/__router_literal/blocked-xss(1)", ok);
+Router.get("/__router_literal/files/report.pdf", ok);
+Router.get("/__router_literal/products/{id}", async (req: any, res: any) =>
+  res({ id: req.params.id }, 200));
+
 const port = await freePort();
 const server: any = await startServer({ port, routesDir: ROUTES_DIR });
 
@@ -111,6 +122,23 @@ assert("nested_groups_concatenate_the_prefix (negative: bare-concat mis-registra
 // group_middleware_never_opens_the_write_auth_gate
 assert("group_middleware_never_opens_the_write_auth_gate",
   (await hit("POST", "/__rg32/c5/thing")) === 401);
+
+// literal_regex_metacharacters_in_a_route_path_match_themselves
+assert("literal_regex_metacharacters_in_a_route_path_match_themselves (paren route matches its own exact path)",
+  (await hit("GET", "/__router_literal/blocked-xss(1)")) === 200);
+assert("literal_regex_metacharacters_in_a_route_path_match_themselves (de-parenthesised form must NOT also match)",
+  (await hit("GET", "/__router_literal/blocked-xss1")) === 404);
+assert("literal_regex_metacharacters_in_a_route_path_match_themselves (dot route matches its own exact path)",
+  (await hit("GET", "/__router_literal/files/report.pdf")) === 200);
+assert("literal_regex_metacharacters_in_a_route_path_match_themselves (a literal dot must not act as a wildcard)",
+  (await hit("GET", "/__router_literal/files/reportXpdf")) === 404);
+{
+  const r = await fetch(`http://127.0.0.1:${port}/__router_literal/products/42`);
+  const paramBody: any = await r.json();
+  assert("literal_regex_metacharacters_in_a_route_path_match_themselves (negative control: {param} route still captures)",
+    r.status === 200 && paramBody.id === "42",
+    `got status=${r.status} body=${JSON.stringify(paramBody)}`);
+}
 
 if (server?.close) server.close();
 
