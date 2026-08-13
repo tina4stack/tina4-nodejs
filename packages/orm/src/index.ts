@@ -9,6 +9,8 @@ export type {
   RelationshipDefinition,
 } from "./types.js";
 
+export { REQUIRED_ADAPTER_CAPABILITIES, NOT_REQUIRED_ON_ADAPTER } from "./types.js";
+
 export { DatabaseResult } from "./databaseResult.js";
 export type { ColumnInfoResult } from "./databaseResult.js";
 export { Database, initDatabase, getAdapter, setAdapter, bindDatabase, createAdapterFromUrl, closeDatabase, parseDatabaseUrl, setNamedAdapter, getNamedAdapter, resolveDbPool, stripTrailingSemicolons, wrapWithCache, resetRequestCaches } from "./database.js";

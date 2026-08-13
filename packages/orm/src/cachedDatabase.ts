@@ -311,12 +311,43 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
 
   // ── DatabaseAdapter interface — writes flush, reads cache ──
 
+  /** ADR-0044 required capability — delegates to the wrapped adapter. */
+  connect(): void | Promise<void> {
+    return this.adapter.connect?.();
+  }
+
+  /** ADR-0044 required capability — delegates to the wrapped adapter. */
+  getDatabaseType(): string {
+    return this.adapter.getDatabaseType();
+  }
+
+  /**
+   * ADR-0044 required capability — a native boolean, readable and writable.
+   * A getter/setter pair (not a plain field) so it genuinely delegates to the
+   * wrapped adapter rather than drifting out of sync with its real setting.
+   */
+  get autocommit(): boolean {
+    return this.adapter.autocommit;
+  }
+
+  set autocommit(value: boolean) {
+    this.adapter.autocommit = value;
+  }
+
+  get supportsAtomicBatch(): boolean {
+    return this.adapter.supportsAtomicBatch ?? true;
+  }
+
+  set supportsAtomicBatch(value: boolean) {
+    this.adapter.supportsAtomicBatch = value;
+  }
+
   execute(sql: string, params?: unknown[]): unknown {
     if (this.enabled) this.invalidate();
     return this.adapter.execute(sql, params);
   }
 
-  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastId?: number | bigint } {
+  executeMany(sql: string, paramsList: unknown[][]): import("./types.js").DatabaseResult | { totalAffected: number; lastId?: number | bigint } {
     if (this.enabled) this.invalidate();
     return this.adapter.executeMany(sql, paramsList);
   }
@@ -544,6 +575,22 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     return (this.adapter as any).executeAsync
       ? await (this.adapter as any).executeAsync(sql, params)
       : this.adapter.execute(sql, params);
+  }
+
+  /**
+   * ADR-0044: the async passthrough executeMany() itself was missing (unlike
+   * its executeAsync/insertAsync siblings above), so adapterExecuteMany()'s
+   * `(adapter as any).executeManyAsync` check found nothing on THIS wrapper
+   * and fell through to the synchronous executeMany() below — which forwards
+   * to the wrapped adapter's OWN sync executeMany(), the throwing "Use
+   * executeManyAsync()" stub on every async-native adapter (Postgres/MySQL/
+   * MSSQL/Firebird/Mongo). Real bug, caught by executeManyFacadeTxn.test.ts.
+   */
+  async executeManyAsync(sql: string, paramsList: unknown[][]): Promise<import("./types.js").DatabaseResult | { totalAffected: number; lastId?: number | bigint }> {
+    if (this.enabled) await this.invalidateAsync();
+    return (this.adapter as any).executeManyAsync
+      ? await (this.adapter as any).executeManyAsync(sql, paramsList)
+      : this.adapter.executeMany(sql, paramsList);
   }
 
   async insertAsync(table: string, data: Record<string, unknown> | Record<string, unknown>[]): Promise<DatabaseResult> {

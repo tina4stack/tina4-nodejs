@@ -3,7 +3,7 @@ import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult, ColumnInfo
 import { DatabaseResult } from "./databaseResult.js";
 import { DatabaseUrl } from "./databaseUrl.js";
 import { CachedDatabaseAdapter, type CachedAdapterOptions } from "./cachedDatabase.js";
-import { QueryCache, SQLTranslator } from "./sqlTranslator.js";
+import { QueryCache } from "./sqlTranslator.js";
 
 /**
  * v3.13.12 — strip trailing `;` and whitespace from user-supplied SQL
@@ -71,6 +71,29 @@ export async function adapterExecute(
   return (adapter as any).executeAsync
     ? await (adapter as any).executeAsync(sql, params)
     : adapter.execute(sql, params);
+}
+
+/**
+ * ADR-0044: the adapter-level batch primitive, called exactly once by
+ * Database#executeMany (never looped) — one aggregate DatabaseResult for the
+ * whole batch. Normalises whichever native shape an adapter returns: SQLite's
+ * `{success, affectedRows, lastId}` (the shared write shape already used by
+ * insert/update/delete) or an async-native adapter's `{totalAffected, lastId}`
+ * (pre-ADR-0044 shape, not yet unified per-adapter — normalised HERE at the
+ * one chokepoint every public write flows through, so the facade's contract
+ * is uniform without touching each of the five adapter files' internals).
+ */
+export async function adapterExecuteMany(
+  adapter: DatabaseAdapter, sql: string, paramsList: unknown[][],
+): Promise<import("./types.js").DatabaseResult> {
+  const raw = (adapter as any).executeManyAsync
+    ? await (adapter as any).executeManyAsync(sql, paramsList)
+    : adapter.executeMany(sql, paramsList);
+  if (raw && typeof raw === "object" && "success" in raw) {
+    return raw as import("./types.js").DatabaseResult;
+  }
+  const legacy = raw as { totalAffected?: number; lastId?: number | bigint };
+  return { success: true, affectedRows: legacy?.totalAffected ?? 0, lastId: legacy?.lastId };
 }
 
 /**
@@ -801,7 +824,19 @@ export class Database {
       let pk: string[] = [];
       try {
         const columns = await this.getColumns(table);
-        pk = columns.filter((c) => c.primaryKey).map((c) => c.name);
+        // ADR-0044 amendment: sort by primaryKeyPosition so a composite
+        // PRIMARY KEY (b, a) returns ["b", "a"] (declared key order), not
+        // table-column order. A column with no reported position sorts last.
+        const pkColumns = columns.filter((c) => c.primaryKey);
+        pkColumns.sort((a, b) => {
+          const posA = a.primaryKeyPosition ?? null;
+          const posB = b.primaryKeyPosition ?? null;
+          if (posA === posB) return 0;
+          if (posA === null) return 1;
+          if (posB === null) return -1;
+          return posA - posB;
+        });
+        pk = pkColumns.map((c) => c.name);
       } catch {
         pk = [];
       }
@@ -1094,21 +1129,35 @@ export class Database {
    * @param tableName - Name of the table to inspect.
    * @returns Array of column info objects: { name, type, nullable, default, primaryKey }.
    */
-  async getColumns(tableName: string): Promise<{ name: string; type: string; nullable?: boolean; default?: unknown; primaryKey?: boolean }[]> {
+  async getColumns(tableName: string): Promise<{ name: string; type: string; nullable?: boolean; default?: unknown; primaryKey?: boolean; primaryKeyPosition?: number | null }[]> {
     return adapterColumns(this.getNextAdapter(), tableName);
   }
 
   /**
-   * Execute a SQL statement with multiple parameter sets (batch insert/update).
-   * Wraps all executions in a single transaction for atomicity and performance.
+   * Execute a SQL statement with multiple parameter sets as ONE aggregate
+   * batch (ADR-0044). Wraps the single delegated call in a transaction for
+   * atomicity — never loops #execute itself.
+   *
+   * BREAKING (ADR-0044, pre-3.14.0): used to return one result PER ROW
+   * (`unknown[]`, callers indexed into it) built by the FACADE looping
+   * execute()/adapterExecute() per chunk or per row. It now delegates to the
+   * adapter's OWN executeMany/executeManyAsync exactly once (DBA-D02: facade
+   * delegates once, never a facade row loop) and returns the SAME shared
+   * DatabaseResult shape insert()/update()/delete() already return
+   * ({success, affectedRows, lastId}) — affectedRows is the total ROW count,
+   * never the number of chunks/statements. A caller that indexed into the old
+   * per-row array must switch to inspecting the aggregate result.
    *
    * @param sql - The SQL statement with parameter placeholders.
-   * @param paramSets - Array of parameter arrays, one per execution.
-   * @returns Array of results from each execution.
+   * @param paramSets - Array of parameter arrays, one per row.
+   * @returns The aggregate DatabaseResult for the whole batch.
    */
-  async executeMany(sql: string, paramSets: unknown[][] = []): Promise<unknown[]> {
-    const adapter = this.getNextAdapter();
-    const results: unknown[] = [];
+  async executeMany(sql: string, paramSets: unknown[][] = []): Promise<DatabaseWriteResult> {
+    // ADR-0044 (DBA-B01): empty input is a successful no-op — it opens no
+    // transaction and calls no adapter.
+    if (paramSets.length === 0) {
+      return { success: true, affectedRows: 0 };
+    }
 
     // Own the batch transaction ONLY when not already inside a caller's explicit
     // transaction. inExplicitTransaction() is true when startTransaction() has
@@ -1118,48 +1167,27 @@ export class Database {
     // rollback() would undo nothing (the batch rows survive). So: standalone
     // batch -> own BEGIN/COMMIT (atomic, all-or-nothing); nested batch -> join
     // the caller's transaction and let their commit/rollback decide. Mirrors the
-    // sibling execute()/insert()/update()/delete() owns-guard, the PostgreSQL
-    // adapter's executeManyAsync owns-guard, and the Python master
-    // (Database.execute_many delegating to adapter.execute_many's owns_txn guard).
+    // sibling execute()/insert()/update()/delete() owns-guard and the Python
+    // master (Database.execute_many delegating to adapter.execute_many's
+    // owns_txn guard).
     const owns = !this.inExplicitTransaction();
+    const adapter = this.getNextAdapter();
     if (owns) await adapterStartTransaction(adapter);
 
-    // ONE round-trip per CHUNK instead of one per ROW. Looping execute() here
-    // pays a full network round-trip for every row: 500 rows took 9848ms on
-    // PostgreSQL against 15.8ms as a single multi-row VALUES (625x), MySQL 216x,
-    // MSSQL 121x. buildBatchInserts returns an empty array for anything it
-    // cannot collapse safely — RETURNING, upserts, non-INSERT statements, ragged
-    // rows, Firebird — and the row-at-a-time loop then runs unchanged.
-    const batched = SQLTranslator.buildBatchInserts(sql, paramSets, this.dbType ?? "");
-
+    let result: DatabaseWriteResult;
     try {
-      if (batched.length > 0) {
-        let row = 0;
-        for (const [chunkSql, chunkParams] of batched) {
-          const result = await adapterExecute(adapter, chunkSql, chunkParams);
-          // executeMany's contract is ONE RESULT PER ROW, and callers index into
-          // it. Collapsing rows into chunks must not shorten the array, so each
-          // row reports the result of the statement that actually wrote it.
-          // Node is the only one of the four returning per-row results — Python,
-          // PHP and Ruby return a count or a single DatabaseResult — so this is
-          // the one place the collapse could have been observable.
-          const rowsInChunk = chunkParams.length / (paramSets[0]?.length || 1);
-          for (let i = 0; i < rowsInChunk && row < paramSets.length; i++, row++) {
-            results.push(result);
-          }
-        }
-      } else {
-        for (const params of paramSets) {
-          results.push(await adapterExecute(adapter, sql, params));
-        }
-      }
+      // ONE delegated call — native batching (one multi-row round-trip instead
+      // of one per row: 500 rows measured 9848ms on PostgreSQL row-at-a-time
+      // against 15.8ms batched — 625x, MySQL 216x, MSSQL 121x) is the
+      // ADAPTER's job, not a facade loop.
+      result = await adapterExecuteMany(adapter, sql, paramSets);
       if (owns) await adapterCommit(adapter);
     } catch (e) {
       if (owns) await adapterRollback(adapter);
       throw e;
     }
 
-    return results;
+    return result;
   }
 
   /** Return the last execute() error message, or null. */

@@ -100,6 +100,32 @@ export class SQLiteAdapter implements DatabaseAdapter {
   private db: DatabaseSync;
   private _lastInsertId: number | bigint | null = null;
 
+  /** ADR-0044: readable/writable native boolean. */
+  autocommit = true;
+
+  /**
+   * ADR-0044 / DBA-P02: every built-in adapter can guarantee an atomic
+   * multi-row batch by default. A test-only deployment representing one that
+   * cannot (a standalone MongoDB without a replica set is the motivating real
+   * case) sets this false so executeMany rejects BEFORE the first write.
+   */
+  supportsAtomicBatch = true;
+
+  /** ADR-0044 required adapter capability. */
+  getDatabaseType(): string {
+    return "sqlite";
+  }
+
+  /**
+   * ADR-0044 canonical lifecycle name. A genuine no-op: `node:sqlite` opens
+   * the file synchronously in the constructor (see the timeout note below),
+   * so by the time a caller could reach connect() the adapter is already
+   * connected — repeated calls open no additional physical connection.
+   */
+  connect(): void {
+    // Already connected by the constructor.
+  }
+
   /**
    * TINA4_DATABASE_CONNECT_TIMEOUT DOES NOT APPLY HERE, deliberately.
    *
@@ -128,12 +154,48 @@ export class SQLiteAdapter implements DatabaseAdapter {
     return result;
   }
 
-  executeMany(sql: string, paramsList: unknown[][]): { totalAffected: number; lastId?: number | bigint } {
+  executeMany(sql: string, paramsList: unknown[][]): DatabaseResult {
+    // ADR-0044 (DBA-B01): empty input is a successful no-op — it opens no
+    // transaction and performs no write.
+    if (paramsList.length === 0) {
+      return { success: true, affectedRows: 0 };
+    }
+
+    // ADR-0044 (DBA-B05): a ragged parameter set must fail BEFORE any durable
+    // partial success — checked against the FIRST row's length generically
+    // (no per-dialect placeholder parsing needed).
+    const expected = paramsList[0].length;
+    for (const params of paramsList) {
+      if (params.length !== expected) {
+        throw new Error(
+          `executeMany binding count mismatch - expected ${expected} parameters, got ${params.length}`,
+        );
+      }
+    }
+
+    // ADR-0044 (DBA-P02): reject an unsupported multi-row batch before the
+    // first write rather than risking partial durability.
+    if (!this.supportsAtomicBatch && paramsList.length > 1) {
+      throw new Error(
+        `provider "sqlite" cannot guarantee an atomic batch write on this deployment ` +
+        `(required deployment capability: a transaction-capable configuration) - ` +
+        `rejected before the first write rather than risking partial durability`,
+      );
+    }
+
     const stmt = this.db.prepare(sql);
     let totalAffected = 0;
     let lastId: number | bigint | undefined;
 
-    this.db.exec("BEGIN TRANSACTION");
+    // Own the transaction only when not ALREADY inside one — Database#execute
+    // Many (ADR-0044) already brackets ONE call to this method in its own
+    // start/commit/rollback when the caller is standalone, so this must join
+    // rather than double-BEGIN when called from there. Still safe to call
+    // directly/standalone (a caller bypassing the facade): startTransaction()/
+    // commit()/rollback() already guard on _inTransaction, exactly mirroring
+    // the facade's own owns-guard.
+    const owns = !this._inTransaction;
+    if (owns) this.startTransaction();
     try {
       for (const params of paramsList) {
         const result = stmt.run(...toSqlParams(params));
@@ -143,13 +205,13 @@ export class SQLiteAdapter implements DatabaseAdapter {
           this._lastInsertId = result.lastInsertRowid;
         }
       }
-      this.db.exec("COMMIT");
+      if (owns) this.commit();
     } catch (e) {
-      this.db.exec("ROLLBACK");
+      if (owns) this.rollback();
       throw e;
     }
 
-    return { totalAffected, lastId: lastId };
+    return { success: true, affectedRows: totalAffected, lastId };
   }
 
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[] {
@@ -181,7 +243,7 @@ export class SQLiteAdapter implements DatabaseAdapter {
       const sql = buildInsert(ANSI_DIALECT, table, keys);
       const paramsList = data.map((row) => keys.map((k) => row[k]));
       const result = this.executeMany(sql, paramsList);
-      return { success: true, affectedRows: result.totalAffected, lastId: result.lastId };
+      return { success: true, affectedRows: result.affectedRows, lastId: result.lastId };
     }
 
     const keys = Object.keys(data);
@@ -305,16 +367,32 @@ export class SQLiteAdapter implements DatabaseAdapter {
     const rows = this.db.prepare(pragma).all() as Array<{
       name: string; type: string; notnull: number; dflt_value: unknown; pk: number;
     }>;
-    return rows.map((r) => ({
+    return rows.map((r) => {
       // PRAGMA table_info reports `pk` as the 1-BASED POSITION within the primary
       // key, not a boolean: a composite key gives pk=1, pk=2, ... Testing `=== 1`
       // reported only the first column of a composite key.
-      name: r.name, type: r.type, nullable: r.notnull === 0, default: r.dflt_value, primaryKey: Number(r.pk) > 0,
-    }));
+      const pk = Number(r.pk);
+      return {
+        name: r.name, type: r.type, nullable: r.notnull === 0, default: r.dflt_value, primaryKey: pk > 0,
+        // ADR-0044 amendment (Feature 5 Decision 7): null for a non-key
+        // column; for a composite key this IS the declared PRIMARY KEY (...)
+        // order, not table-column order.
+        primaryKeyPosition: pk > 0 ? pk : null,
+      };
+    });
   }
 
   lastInsertId(): number | bigint | null { return this._lastInsertId; }
-  close(): void { this.db.close(); }
+  private _closed = false;
+
+  /** ADR-0044 (DBA-L02): idempotent — node:sqlite's DatabaseSync.close()
+   * throws when called on an already-closed database, so a second close()
+   * must not reach it. */
+  close(): void {
+    if (this._closed) return;
+    this.db.close();
+    this._closed = true;
+  }
 
   /**
    * Atomically increment and return the next value of a tina4_sequences row.

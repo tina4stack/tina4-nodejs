@@ -90,6 +90,22 @@ export class PostgresAdapter implements DatabaseAdapter {
   constructor(private config: PostgresConfig | string) {}
 
   /** Connect to PostgreSQL. Must be called before using the adapter. */
+  /** ADR-0044 required adapter capability. */
+  getDatabaseType(): string {
+    return 'postgres';
+  }
+
+  /** ADR-0044: readable/writable native boolean. */
+  autocommit = true;
+
+  /**
+   * ADR-0044 / DBA-P02: every built-in adapter can guarantee an atomic
+   * multi-row batch by default. A test-only deployment representing one
+   * that cannot sets this false so executeMany rejects BEFORE the first
+   * write rather than risking partial durability.
+   */
+  supportsAtomicBatch = true;
+
   async connect(): Promise<void> {
     const pgModule = requirePg();
     const Client = pgModule.Client ?? (pgModule as any).default?.Client;
