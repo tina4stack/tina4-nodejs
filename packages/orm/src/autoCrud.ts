@@ -1,9 +1,43 @@
 import type { RouteDefinition, Tina4Request, Tina4Response } from "../../core/src/index.js";
 import type { DiscoveredModel } from "./model.js";
+import type { FieldDefinition } from "./types.js";
 import { getAdapter, adapterQuery, adapterExecute } from "./database.js";
 import { DatabaseResult } from "./databaseResult.js";
 import { buildQuery, parseQueryString } from "./query.js";
 import { validate } from "./validation.js";
+
+/**
+ * CRUD-MASS-ASSIGNMENT: filter a write body down to writable columns before
+ * it is mapped to DB columns. Only DECLARED fields pass through (an unknown
+ * key -- including a real-but-undeclared column like a framework-injected
+ * `is_deleted` -- is dropped by construction, since it can never be `in
+ * fields`); `is_deleted` is ALSO explicitly guarded for the case a model
+ * chooses to declare it (soft-delete is mutated only by the DELETE handler,
+ * never a POST/PUT body); and the primary key is stripped except a
+ * genuinely natural (non-autoIncrement) key on CREATE, the documented way to
+ * choose one (an autoIncrement CREATE has the database assign it -- a
+ * client-supplied id previously passed straight into the INSERT column
+ * list -- and every UPDATE strips it, because the row is addressed by the
+ * URL `{id}` alone and a body PK would otherwise rename the row's own
+ * identity column via the SET clause).
+ */
+function allowListedBody(
+  fields: Record<string, FieldDefinition>,
+  pkField: string,
+  body: Record<string, unknown> | null | undefined,
+  isCreate: boolean,
+): Record<string, unknown> {
+  const pkDef = fields[pkField];
+  const stripPk = isCreate ? pkDef?.autoIncrement === true : true;
+  const allowed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body ?? {})) {
+    if (!(key in fields)) continue;
+    if (key === "is_deleted") continue;
+    if (stripPk && key === pkField) continue;
+    allowed[key] = value;
+  }
+  return allowed;
+}
 
 /**
  * Auto-CRUD — discovers ORM models and auto-generates REST endpoints.
@@ -153,20 +187,20 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
 
         // Parse query params for filtering / sorting / pagination
         const qp = parseQueryString(req.query ?? {});
-        const { sql, countSql, params } = buildQuery(tableName, qp, extraConditions);
+        // limit/offset/page are the CLAMPED/CAPPED values buildQuery actually used
+        // for the SQL (PAGE-DEC-01: page >= 1, per-page <= DEFAULT_ROW_CAP) — read
+        // them back here instead of recomputing from the raw qp, so the envelope
+        // can never drift from the query that ran.
+        const { sql, countSql, params, limit, offset } = buildQuery(tableName, qp, extraConditions);
 
         // params includes limit and offset at the end; countSql doesn't need them
         const countParams = params.slice(0, -2);
         const rows = await adapterQuery(adapter, sql, params);
 
         // total is the TRUE total for the filter (a COUNT probe), NEVER the number
-        // of rows this page returned (ADR-0043). limit/offset are exactly what the
-        // SQL applied — buildQuery derives offset as (page - 1) * limit.
+        // of rows this page returned (ADR-0043).
         const countRow = await adapterQuery(adapter, countSql, countParams);
         const total = Number(countRow[0]?.total ?? 0);
-        const limit = qp.limit ?? 100;
-        const page = qp.page ?? 1;
-        const offset = (page - 1) * limit;
 
         // The REST list envelope IS the canonical paginate envelope: exactly the
         // seven snake_case keys DatabaseResult.toPaginate() builds — records, total,
@@ -214,7 +248,11 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
         const adapter = getAdapter();
-        const body = req.body as Record<string, unknown>;
+        const rawBody = req.body as Record<string, unknown>;
+
+        // CRUD-MASS-ASSIGNMENT: allow-list before anything downstream (both
+        // validation and persistence) ever sees the body.
+        const body = allowListedBody(fields, pkField, rawBody, true);
 
         // Validate against field definitions
         const errors = validate(body, fields);
@@ -276,7 +314,25 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
         const adapter = getAdapter();
-        const body = req.body as Record<string, unknown>;
+        const rawBody = req.body as Record<string, unknown>;
+
+        // CRUD-MASS-ASSIGNMENT: allow-list -- the row is addressed by the URL
+        // {id} alone, so a body PK is stripped (never lets the write rename
+        // the row's own identity column or, on a mis-wired WHERE, redirect
+        // to a different row); is_deleted is guarded the same as create.
+        const body = allowListedBody(fields, pkField, rawBody, false);
+
+        // Feature 19 (VALID-NODE-PUT-NOVALIDATE): the update path validates the
+        // request body too — previously only POST did, so a PUT could write
+        // type/length/pattern-violating data a create would reject. isUpdate=true
+        // wires the partial-update mode: an absent field is not spuriously
+        // "required" (the row already has it), but a field that IS present is
+        // still held to its type/length/pattern/range constraints.
+        const errors = validate(body, fields, true);
+        if (errors.length > 0) {
+          res.status(422).json({ error: "Validation failed", errors });
+          return;
+        }
 
         const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
         const existing = await adapterQuery(adapter,
@@ -292,6 +348,14 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         const dbBody: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(body)) {
           dbBody[getDbCol(key)] = value;
+        }
+
+        // Nothing left to write once guarded/unknown keys are stripped (e.g.
+        // a body of only `{is_deleted: 1}`) -- a no-op update, not a broken
+        // empty SET clause.
+        if (Object.keys(dbBody).length === 0) {
+          res.json({ data: existing[0] });
+          return;
         }
 
         const setClauses = Object.keys(dbBody)

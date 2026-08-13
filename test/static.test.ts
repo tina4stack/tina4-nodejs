@@ -185,8 +185,11 @@ console.log("\n--- Response headers ---");
 // --- Custom static directory ---
 console.log("\n--- Custom static directory ---");
 
-import { mkdirSync, writeFileSync, rmSync as rmSyncFs } from "node:fs";
+import { mkdirSync, writeFileSync, symlinkSync, rmSync as rmSyncFs } from "node:fs";
 import { tmpdir } from "node:os";
+import http from "node:http";
+import { startServer } from "../packages/core/src/index.ts";
+import { freePort } from "./freePort.ts";
 const customDir = join(tmpdir(), "tina4-static-test-" + Date.now());
 mkdirSync(join(customDir, "images"), { recursive: true });
 mkdirSync(join(customDir, "data"), { recursive: true });
@@ -287,8 +290,117 @@ console.log("\n--- Content-Length Accuracy ---");
   assert("CSS Content-Length is correct", res.headersRef["Content-Length"] === 20);
 }
 
+// --- Feature 41 shared contract (static_contract.json) ---
+// ADR-0050 realpath + separator confinement, dotfile block, and TINA4_PUBLIC_DIR
+// honoured — REAL files, a REAL symlink, and (for the env case) a REAL server.
+console.log("\n--- Feature 41 static contract ---");
+
+const c41 = join(tmpdir(), "tina4-static-c41-" + Date.now());
+const c41Pub = join(c41, "pub");
+mkdirSync(join(c41Pub, "css"), { recursive: true });
+mkdirSync(join(c41Pub, ".git"), { recursive: true });
+writeFileSync(join(c41Pub, "css", "app.css"), "body{color:green}");
+writeFileSync(join(c41Pub, ".env"), "TINA4_SECRET=leaked");
+writeFileSync(join(c41Pub, ".git", "config"), "[core]");
+// A real secret OUTSIDE the public dir, reached by a real symlink placed INSIDE it.
+writeFileSync(join(c41, "outside-secret.txt"), "SUPER SECRET");
+symlinkSync(join(c41, "outside-secret.txt"), join(c41Pub, "leak.txt"));
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(c41Pub, mockReq("/css/app.css"), res);
+  assert(
+    "a legit asset is served with its content type",
+    served === true && String(res.headersRef["Content-Type"]).includes("text/css"),
+    `served=${served} ct=${res.headersRef["Content-Type"]}`,
+  );
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(c41Pub, mockReq("/css/../../outside-secret.txt"), res);
+  assert("a dot dot traversal path is refused", served === false, `served=${served}`);
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(c41Pub, mockReq("/leak.txt"), res);
+  assert(
+    "a symlink escaping the public dir is refused",
+    served === false && res.bodyRef === null,
+    `served=${served}`,
+  );
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(c41Pub, mockReq("/.env"), res);
+  assert("a dotenv file is refused", served === false, `served=${served}`);
+}
+
+{
+  const res = mockRes();
+  const served = tryServeStatic(c41Pub, mockReq("/.git/config"), res);
+  assert("a dotgit file is refused", served === false, `served=${served}`);
+}
+
+// TINA4_PUBLIC_DIR honoured — driven through a REAL server (the env is read in
+// server.ts, not in tryServeStatic), reaped in the finally.
+{
+  const envRoot = join(c41, "env-root");
+  const appBase = join(c41, "app-base");
+  mkdirSync(envRoot, { recursive: true });
+  mkdirSync(join(appBase, "src/routes"), { recursive: true });
+  writeFileSync(join(appBase, "package.json"), '{"type":"module"}');
+  writeFileSync(join(envRoot, "brand.css"), ".brand{color:teal}");
+
+  const prevDebug = process.env.TINA4_DEBUG;
+  const prevPublic = process.env.TINA4_PUBLIC_DIR;
+  const prevRate = process.env.TINA4_RATE_LIMIT;
+  delete process.env.TINA4_DEBUG;
+  process.env.TINA4_RATE_LIMIT = "10000";
+  process.env.TINA4_PUBLIC_DIR = envRoot;
+
+  const port = await freePort();
+  const server = await startServer({
+    port,
+    basePath: appBase,
+    routesDir: join(appBase, "src/routes"),
+    modelsDir: join(appBase, "src/models"),
+    staticDir: join(appBase, "public"), // deliberately absent — only the env root has the asset
+  });
+  try {
+    const got = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const r = http.request(
+        { hostname: "localhost", port, path: "/brand.css", method: "GET" },
+        (rs) => {
+          let body = "";
+          rs.on("data", (c) => (body += c));
+          rs.on("end", () => resolve({ status: rs.statusCode!, body }));
+        },
+      );
+      r.on("error", reject);
+      r.end();
+    });
+    assert(
+      "tina4 public dir env relocates the root",
+      got.status === 200 && got.body === ".brand{color:teal}",
+      `got ${got.status} "${got.body}"`,
+    );
+  } finally {
+    server.close();
+    if (prevDebug === undefined) delete process.env.TINA4_DEBUG;
+    else process.env.TINA4_DEBUG = prevDebug;
+    if (prevPublic === undefined) delete process.env.TINA4_PUBLIC_DIR;
+    else process.env.TINA4_PUBLIC_DIR = prevPublic;
+    if (prevRate === undefined) delete process.env.TINA4_RATE_LIMIT;
+    else process.env.TINA4_RATE_LIMIT = prevRate;
+  }
+}
+
 // Cleanup
 try { rmSyncFs(customDir, { recursive: true, force: true }); } catch {}
+try { rmSyncFs(c41, { recursive: true, force: true }); } catch {}
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

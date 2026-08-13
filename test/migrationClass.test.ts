@@ -160,7 +160,13 @@ console.log("=== Migration Class Tests ===\n");
     migrationsDir,
     "000002_add_email.sql",
     "ALTER TABLE users ADD COLUMN email TEXT;",
-    "DROP TABLE users;",  // real down SQL so the rollback has an observable effect
+    // Undo ONLY what 000002 did (fail-safe rollback, MIG-DEC-02): a down
+    // script must reverse its OWN migration, not double as a second
+    // DROP TABLE for the whole schema -- that second drop would fail
+    // ("no such table") once 000001's down already removed the table,
+    // and a fail-safe rollback correctly RAISES on that instead of
+    // silently continuing, so the fixture must be realistic.
+    "ALTER TABLE users DROP COLUMN email;",
   );
   await m.migrate();   // batch 2: 000002
   const rolled = await m.rollback(2);  // unwind both batches

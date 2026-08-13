@@ -1,33 +1,32 @@
 /**
- * The SETTLED LOGGER CONTRACT (owner decision 2026-08-01) — regression gates.
+ * The SETTLED LOGGER CONTRACT (owner decision 2026-08-09/10) — regression
+ * gates, superseding the 2026-08-01 pass this file used to pin.
  * Run with: npx tsx test/loggerContract.test.ts
  *
- * These are the clauses that were measured to be WRONG or MISSING, one named
- * gate per clause, each with its negative half:
+ * L1  FORMAT IS DEBUG-DERIVED (Decision 3, supersedes the 2026-08-01 "text
+ *     always unless TINA4_LOG_FORMAT=json" rule): explicit TINA4_LOG_FORMAT
+ *     wins; otherwise truthy TINA4_DEBUG selects text, and a falsy/absent
+ *     TINA4_DEBUG selects JSON. An OBJECT passed as the message is still
+ *     JSON-encoded INLINE inside a text line — that behaviour is unchanged
+ *     and pinned here so a future "make it all text" does not flatten it to
+ *     [object Object].
  *
- *   L1  Format is TEXT by default. TINA4_LOG_FORMAT=json is the ONLY switch.
- *       MEASURED: Node reformatted every line to JSON whenever TINA4_DEBUG was
- *       unset, so the same .env produced four different formats across the four
- *       frameworks ("production" meant !TINA4_DEBUG here, TINA4_ENV/RACK_ENV/
- *       RUBY_ENV in Ruby, a configure() kwarg in Python, and nothing at all in
- *       PHP where JSON was simply the default). The implicit switch is deleted.
- *       An OBJECT passed as the message is still JSON-encoded INLINE in the text
- *       line — that behaviour was already right and is pinned here so a future
- *       "make it all text" does not flatten it to [object Object].
+ * L2  THE ENV IS RESOLVED ONCE, ON FIRST USE, THEN STABLE (LOG-C05/C06,
+ *     BREAKING vs the pre-3.13.99 pass this file used to pin): a mid-process
+ *     environment mutation is IGNORED until an explicit reset() — the
+ *     opposite of the old "every log() call re-reads the environment"
+ *     contract. This is what lets a snapshot be a coherent, defensive
+ *     `Log.configuration()` copy (LOG-C10) instead of a value that could
+ *     change out from under a caller between two reads.
  *
- *   L2  The env is read LAZILY, on first use. A script / worker / CLI tool / test
- *       that logs without booting a server must still get the operator's config.
- *       Node already did this; nothing pinned it.
- *
- *   L3  TINA4_LOG_STRICT: documented on all four env-var pages, implemented only
- *       in Ruby — a documented no-op here. When truthy a log-write failure must
- *       RAISE instead of being swallowed.
+ * L3  TINA4_LOG_STRICT: a log-write failure RAISES the structured
+ *     Tina4::LogWriteError-equivalent (Node: LogWriteError) instead of being
+ *     swallowed, carrying sink/operation for diagnosis.
  *
  * NO MOCKS. The format cases run the REAL logger in a REAL child process and
- * read its REAL stdout bytes (which is also the L2 proof: those processes never
- * call configure() and never boot a server). The strict cases write to a REAL
- * path on disk that cannot accept a write — a directory sitting where the log
- * file should be — so the EISDIR is genuine, not simulated.
+ * read its REAL stdout bytes. The strict cases write to a REAL path on disk
+ * that cannot accept a write — a directory sitting where the log file should
+ * be — so the EISDIR is genuine, not simulated.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
@@ -66,8 +65,9 @@ const TMP = mkdtempSync(join(tmpdir(), "tina4-logger-contract-"));
 
 // ── The child script ────────────────────────────────────────────────────────
 // It imports the REAL logger module and logs two messages: a plain string and
-// an object. It never calls Log.configure() and never starts a server, so every
-// setting it honours had to be resolved lazily from the environment (L2).
+// an object. It never calls Log.configure() and never starts a server, so
+// every setting it honours had to be resolved from the environment on first
+// use (L2's "lazily, once" half).
 const CHILD = join(TMP, "logChild.ts");
 writeFileSync(
   CHILD,
@@ -102,69 +102,101 @@ function runChild(env: Record<string, string | undefined>): string[] {
   return out.trim().split("\n").filter((l) => l.trim() !== "");
 }
 
-console.log("=== Logger Contract Tests (L1 format, L2 lazy env, L3 strict) ===\n");
+console.log("=== Logger Contract Tests (L1 format, L2 stable snapshot, L3 strict) ===\n");
 
-// ── L1: format is TEXT by default ───────────────────────────────────────────
-console.log("--- L1: TEXT by default; TINA4_LOG_FORMAT=json is the only switch ---");
+// ── L1: format is DEBUG-DERIVED ─────────────────────────────────────────────
+console.log("--- L1: debug-derived format; TINA4_LOG_FORMAT is the explicit override ---");
 
-// POSITIVE half of the deleted switch: TINA4_DEBUG unset (what Node called
-// "production") must NOT change the format. Before 3.13.95 both of these lines
-// came out as JSON.
+// TINA4_DEBUG unset/falsy ("production") selects JSON by default.
 {
   const lines = runChild({ TINA4_LOG_LEVEL: "INFO" });
   assert(
-    "L1 default+no-TINA4_DEBUG: stdout line is TEXT, not JSON",
-    lines.length >= 1 && !isJsonLine(lines[0]),
-    `line was: ${lines[0]}`,
-  );
-  assert(
-    "L1 default+no-TINA4_DEBUG: text line carries level and message",
-    (lines[0] ?? "").includes("[INFO") && (lines[0] ?? "").includes("contract-string-message"),
-    `line was: ${lines[0]}`,
-  );
-  // An OBJECT message is JSON-encoded INLINE inside that text line — the line as
-  // a whole is still text, the object is still readable, never "[object Object]".
-  const objLine = lines[1] ?? "";
-  assert(
-    "L1 object message: JSON-encoded INLINE inside the text line",
-    !isJsonLine(objLine) && objLine.includes('{"user":42,"action":"login"}'),
-    `line was: ${objLine}`,
-  );
-  assert(
-    "L1 object message: never rendered as [object Object]",
-    !objLine.includes("[object Object]"),
-    `line was: ${objLine}`,
-  );
-}
-
-// NEGATIVE half: the explicit opt-in must still work — and it must work with
-// TINA4_DEBUG unset AND set, because format no longer depends on it at all.
-{
-  const lines = runChild({ TINA4_LOG_FORMAT: "json", TINA4_LOG_LEVEL: "INFO" });
-  assert(
-    "L1 TINA4_LOG_FORMAT=json: stdout line IS JSON",
+    "L1 default+no-TINA4_DEBUG: stdout line IS JSON",
     lines.length >= 1 && isJsonLine(lines[0]),
     `line was: ${lines[0]}`,
   );
   const entry = isJsonLine(lines[0] ?? "") ? JSON.parse(lines[0]) : {};
   assert(
-    "L1 TINA4_LOG_FORMAT=json: JSON line carries level + message",
+    "L1 default+no-TINA4_DEBUG: JSON line carries level + message",
     entry.level === "INFO" && entry.message === "contract-string-message",
     `entry was: ${lines[0]}`,
   );
+  // An OBJECT message is still JSON-encoded (compact, sorted keys) — never
+  // "[object Object]" — whichever format wraps it.
+  const objEntry = isJsonLine(lines[1] ?? "") ? JSON.parse(lines[1]) : {};
+  assert(
+    "L1 object message: JSON message field, never [object Object]",
+    objEntry.message === '{"action":"login","user":42}',
+    `line was: ${lines[1]}`,
+  );
+}
+
+// TINA4_DEBUG truthy selects TEXT by default.
+{
+  const devDir = join(TMP, "dev");
+  const lines = runChild({ TINA4_DEBUG: "true", TINA4_LOG_LEVEL: "INFO", TINA4_LOG_DIR: devDir });
+  const raw = lines[0] ?? "";
+  const stripped = raw.replace(/\x1b\[[0-9;]*m/g, "");
+  assert("L1 dev (TINA4_DEBUG truthy): stdout line is TEXT", !isJsonLine(stripped), `line was: ${raw}`);
+  // ANSI colour is gated on a REAL interactive TTY (LOG-F07), not merely on
+  // TINA4_DEBUG — a piped child's stdout is never a TTY, so no colour here is
+  // the CORRECT outcome, not a gap. The genuine TTY-gated colour proof lives
+  // in test/loggerFixtureContract.test.ts (LOG-F07), which drives a real pty.
+  assert("L1 dev: stdout line carries NO ANSI over a real pipe (not a TTY)", !raw.includes("\x1b["), `line was: ${raw}`);
+  assert(
+    "L1 dev: text line carries level + message",
+    stripped.includes("[INFO") && stripped.includes("contract-string-message"),
+    `line was: ${raw}`,
+  );
+  const objLine = (lines[1] ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+  assert(
+    "L1 dev object message: JSON-encoded INLINE inside the text line",
+    !isJsonLine(objLine) && objLine.includes('{"action":"login","user":42}'),
+    `line was: ${objLine}`,
+  );
+}
+
+// The explicit opt-in wins over the debug-derived default in BOTH directions.
+{
+  const lines = runChild({ TINA4_LOG_FORMAT: "json", TINA4_LOG_LEVEL: "INFO" });
+  assert(
+    "L1 TINA4_LOG_FORMAT=json (TINA4_DEBUG unset): stdout line IS JSON",
+    lines.length >= 1 && isJsonLine(lines[0]),
+    `line was: ${lines[0]}`,
+  );
 }
 {
-  const lines = runChild({ TINA4_LOG_FORMAT: "json", TINA4_DEBUG: "true", TINA4_LOG_LEVEL: "INFO", TINA4_LOG_DIR: join(TMP, "devjson") });
+  const lines = runChild({
+    TINA4_LOG_FORMAT: "text",
+    TINA4_DEBUG: "true",
+    TINA4_LOG_LEVEL: "INFO",
+    TINA4_LOG_DIR: join(TMP, "explicit-text-dev"),
+  });
   const stripped = (lines[0] ?? "").replace(/\x1b\[[0-9;]*m/g, "");
   assert(
-    "L1 TINA4_LOG_FORMAT=json in DEV: stdout line IS JSON too",
+    "L1 NEGATIVE: TINA4_LOG_FORMAT=text still text even with TINA4_DEBUG truthy",
+    !isJsonLine(stripped),
+    `line was: ${lines[0]}`,
+  );
+}
+{
+  const lines = runChild({
+    TINA4_LOG_FORMAT: "json",
+    TINA4_DEBUG: "true",
+    TINA4_LOG_LEVEL: "INFO",
+    TINA4_LOG_DIR: join(TMP, "devjson"),
+  });
+  const stripped = (lines[0] ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+  assert(
+    "L1 NEGATIVE: TINA4_LOG_FORMAT=json wins even with TINA4_DEBUG truthy",
     isJsonLine(stripped),
     `line was: ${lines[0]}`,
   );
 }
 
-// The other three frameworks' notions of "production" must not sneak the switch
-// back in through a different env var name. None of these may select a format.
+// The other three frameworks' notions of "production" must not sneak a
+// format switch back in through a different env var name — only
+// TINA4_LOG_FORMAT and TINA4_DEBUG participate in this decision.
 {
   const lines = runChild({
     TINA4_ENV: "production",
@@ -173,37 +205,15 @@ console.log("--- L1: TEXT by default; TINA4_LOG_FORMAT=json is the only switch -
     TINA4_LOG_LEVEL: "INFO",
   });
   assert(
-    "L1 TINA4_ENV/NODE_ENV/RACK_ENV=production: stdout is STILL text",
-    lines.length >= 1 && !isJsonLine(lines[0]),
+    "L1 TINA4_ENV/NODE_ENV/RACK_ENV=production: format unaffected (still JSON, TINA4_DEBUG unset)",
+    lines.length >= 1 && isJsonLine(lines[0]),
     `line was: ${lines[0]}`,
   );
 }
 
-// Dev (TINA4_DEBUG=true) is text as well — colour is the only thing TINA4_DEBUG
-// decides, so ANSI is present but the payload is the same human-readable line.
-{
-  const devDir = join(TMP, "dev");
-  const lines = runChild({ TINA4_DEBUG: "true", TINA4_LOG_LEVEL: "INFO", TINA4_LOG_DIR: devDir });
-  const raw = lines[0] ?? "";
-  const stripped = raw.replace(/\x1b\[[0-9;]*m/g, "");
-  assert("L1 dev: stdout line is TEXT", !isJsonLine(stripped), `line was: ${raw}`);
-  assert("L1 dev: stdout line is coloured (ANSI present)", raw.includes("\x1b["), `line was: ${raw}`);
-  // L2 corroboration: the child never called configure(), yet TINA4_LOG_DIR was
-  // honoured — the dev default writes logs/tina4.log under the configured dir.
-  assert(
-    "L2 dev child honoured TINA4_LOG_DIR with no configure() call",
-    existsSync(join(devDir, "tina4.log")),
-    `expected ${join(devDir, "tina4.log")}`,
-  );
-}
+// ── L2: the env is resolved ONCE, then STABLE (LOG-C05/C06) ────────────────
+console.log("\n--- L2: env resolved on first use, then stable until reset() ---");
 
-// ── L2: the env is read lazily, on every call ───────────────────────────────
-console.log("\n--- L2: env resolved on first use, no configure() required ---");
-
-// This whole FILE never calls Log.configure(). Import the logger and log — the
-// file must land where the env says, and a LATER env change must be picked up
-// without any re-configuration. (Python and PHP only read TINA4_LOG_* inside
-// configure(), which only the server calls; Node and Ruby resolve per call.)
 const { Log } = await import("../packages/core/src/logger.ts");
 
 {
@@ -213,6 +223,7 @@ const { Log } = await import("../packages/core/src/logger.ts");
   process.env.TINA4_LOG_LEVEL = "INFO";
   delete process.env.TINA4_LOG_FILE;
   delete process.env.TINA4_LOG_FORMAT;
+  Log.reset();
   Log.info("lazy-first-use");
   assert(
     "L2 first log with no configure(): file written under TINA4_LOG_DIR",
@@ -221,44 +232,62 @@ const { Log } = await import("../packages/core/src/logger.ts");
     `expected ${join(dirA, "tina4.log")}`,
   );
 
-  // Change the env AFTER the first write — still no configure() — and the next
-  // line must follow it.
+  // Change the env AFTER the first write, WITHOUT reset() — the snapshot
+  // resolved on first use is now STABLE (LOG-C05): the change must be
+  // IGNORED, and the next line must still land in dirA.
   const dirB = join(TMP, "lazy-b");
   process.env.TINA4_LOG_DIR = dirB;
-  Log.info("lazy-second-dir");
+  Log.info("lazy-second-line-ignored-dir-change");
   assert(
-    "L2 env change between calls is picked up with no configure()",
-    existsSync(join(dirB, "tina4.log")) &&
-      readFileSync(join(dirB, "tina4.log"), "utf-8").includes("lazy-second-dir"),
-    `expected ${join(dirB, "tina4.log")}`,
+    "L2 NEGATIVE (LOG-C05): an env change after first use is ignored without reset()",
+    !existsSync(join(dirB, "tina4.log")) &&
+      readFileSync(join(dirA, "tina4.log"), "utf-8").includes("lazy-second-line-ignored-dir-change"),
+    `dirB should not exist yet; dirA should carry the second line too`,
   );
+
+  // reset() reloads the environment (LOG-C06) — the pending TINA4_LOG_DIR=
+  // dirB change now takes effect.
+  Log.reset();
+  Log.info("lazy-third-after-reset");
   assert(
-    "L2 the first file did NOT receive the second line",
-    !readFileSync(join(dirA, "tina4.log"), "utf-8").includes("lazy-second-dir"),
+    "L2 (LOG-C06): reset() reloads the environment — dirB now takes effect",
+    existsSync(join(dirB, "tina4.log")) &&
+      readFileSync(join(dirB, "tina4.log"), "utf-8").includes("lazy-third-after-reset"),
+    `expected ${join(dirB, "tina4.log")}`,
   );
 }
 
 // ── L3: TINA4_LOG_STRICT ────────────────────────────────────────────────────
-console.log("\n--- L3: TINA4_LOG_STRICT raises on a log-write failure ---");
+console.log("\n--- L3: TINA4_LOG_STRICT raises Tina4's structured LogWriteError ---");
 
-// A REAL unwritable target: a DIRECTORY sitting exactly where the log file
-// should be. appendFileSync raises EISDIR — a genuine failure of the real write,
-// not a simulated one, and it reproduces on any user (unlike a chmod, which root
-// walks straight through).
-const strictDir = join(TMP, "strict");
-const blockedPath = join(strictDir, "blocked.log");
-mkdirSync(blockedPath, { recursive: true });
+const { LogWriteError } = await import("../packages/core/src/logger.ts");
 
-process.env.TINA4_LOG_OUTPUT = "file";
-process.env.TINA4_LOG_DIR = strictDir;
-process.env.TINA4_LOG_FILE = blockedPath;
-process.env.TINA4_LOG_LEVEL = "INFO";
+// configure() itself proves the sink opens (LOG-E01) — a target that is
+// ALREADY unwritable fails at CONFIGURE time with LogConfigurationError, not
+// at write time, so it can never exercise TINA4_LOG_STRICT (which governs
+// WRITE failures only). Each variant below therefore: configures against a
+// GENUINELY writable path (proving the open succeeds), THEN swaps that exact
+// path for a directory — a REAL unwritable target, appendFileSync raises
+// EISDIR — so the NEXT write is what fails, which is the case strict governs.
+function sabotage(path: string): void {
+  try { rmSync(path, { force: true }); } catch { /* fresh */ }
+  mkdirSync(path, { recursive: true });
+}
 
 // NEGATIVE half: default (strict off) still swallows. Logging must never crash
 // an app that did not ask for it — deleting the swallow entirely is the obvious
 // wrong "fix" and this is the gate against it.
 {
+  const dir = join(TMP, "strict-off");
+  const target = join(dir, "target.log");
   delete process.env.TINA4_LOG_STRICT;
+  process.env.TINA4_LOG_OUTPUT = "file";
+  process.env.TINA4_LOG_DIR = dir;
+  process.env.TINA4_LOG_FILE = target;
+  process.env.TINA4_LOG_LEVEL = "INFO";
+  Log.reset();
+  Log.info("first line, sink opens fine"); // proves open succeeded
+  sabotage(target);
   let threw = false;
   try {
     Log.info("write must fail silently");
@@ -270,7 +299,14 @@ process.env.TINA4_LOG_LEVEL = "INFO";
 
 // Explicitly falsy is the same as unset.
 {
+  const dir = join(TMP, "strict-false");
+  const target = join(dir, "target.log");
   process.env.TINA4_LOG_STRICT = "false";
+  process.env.TINA4_LOG_DIR = dir;
+  process.env.TINA4_LOG_FILE = target;
+  Log.reset();
+  Log.info("first line, sink opens fine");
+  sabotage(target);
   let threw = false;
   try {
     Log.info("write must still fail silently");
@@ -280,9 +316,16 @@ process.env.TINA4_LOG_LEVEL = "INFO";
   assert("L3 TINA4_LOG_STRICT=false: a failed write is still swallowed", !threw);
 }
 
-// POSITIVE half: truthy → the failure reaches the caller.
+// POSITIVE half: truthy → the structured LogWriteError reaches the caller.
 {
+  const dir = join(TMP, "strict-true");
+  const target = join(dir, "target.log");
   process.env.TINA4_LOG_STRICT = "true";
+  process.env.TINA4_LOG_DIR = dir;
+  process.env.TINA4_LOG_FILE = target;
+  Log.reset();
+  Log.info("first line, sink opens fine");
+  sabotage(target);
   let caught: unknown = null;
   try {
     Log.info("write must raise");
@@ -291,9 +334,19 @@ process.env.TINA4_LOG_LEVEL = "INFO";
   }
   assert("L3 TINA4_LOG_STRICT=true: a failed write RAISES", caught !== null);
   assert(
-    "L3 the raised error is the real fs failure (EISDIR on the log path)",
-    String((caught as NodeJS.ErrnoException | null)?.code ?? caught).includes("EISDIR"),
+    "L3 the raised error IS the structured LogWriteError",
+    caught instanceof LogWriteError,
     `error was: ${String(caught)}`,
+  );
+  assert(
+    "L3 LogWriteError carries the real cause (EISDIR on the log path)",
+    String((caught as Error).message).includes("EISDIR"),
+    `error was: ${String(caught)}`,
+  );
+  assert(
+    "L3 LogWriteError names the operation as write",
+    (caught as InstanceType<typeof LogWriteError>).operation === "write",
+    `operation was: ${(caught as InstanceType<typeof LogWriteError>)?.operation}`,
   );
 }
 
@@ -303,6 +356,7 @@ process.env.TINA4_LOG_LEVEL = "INFO";
   process.env.TINA4_LOG_STRICT = "true";
   process.env.TINA4_LOG_DIR = okDir;
   process.env.TINA4_LOG_FILE = join(okDir, "ok.log");
+  Log.reset();
   let threw = false;
   try {
     Log.info("strict but writable");
@@ -318,29 +372,27 @@ process.env.TINA4_LOG_LEVEL = "INFO";
 }
 
 // ── L4: the canonical rotation names, and ONLY those ────────────────────────
-console.log("\n--- L4: TINA4_LOG_ROTATE_* only — no legacy aliases ---");
+console.log("\n--- L4: TINA4_LOG_ROTATE_* only — removed settings now hard-fail ---");
 
-// Owner rule: no alias methods / no alias env vars — rename the primary instead.
-// TINA4_LOG_KEEP and TINA4_LOG_MAX_SIZE are documented as legacy aliases on all
-// four env-var pages and are being deleted from Python and PHP. Node never read
-// them; this pins that, so a future "parity" pass cannot quietly add them here.
+// Owner rule: no alias methods / no alias env vars — rename the primary
+// instead. BREAKING (Decision 19 / LOG-V04, supersedes the pre-3.13.99 "the
+// legacy names are silently not read" pass this file used to pin):
+// TINA4_LOG_KEEP and TINA4_LOG_MAX_SIZE are REMOVED settings — their mere
+// PRESENCE now hard-fails configure() naming the removed setting, rather
+// than being tolerated as an inert no-op. TINA4_LOG_ROTATE_SIZE now has a
+// real 1024-byte minimum (LOG-V02) so every positive value here is >= 1024.
 {
   delete process.env.TINA4_LOG_STRICT;
+  delete process.env.TINA4_LOG_KEEP;
+  delete process.env.TINA4_LOG_MAX_SIZE;
   const rotDir = join(TMP, "rotate");
   process.env.TINA4_LOG_OUTPUT = "file";
   process.env.TINA4_LOG_DIR = rotDir;
   process.env.TINA4_LOG_FILE = join(rotDir, "rot.log");
-
-  // POSITIVE: the canonical names drive rotation. 200 bytes is a couple of lines,
-  // so 24 lines rotate several times; the default keep (5) leaves .1 .. .3 behind.
-  process.env.TINA4_LOG_ROTATE_SIZE = "200";
+  process.env.TINA4_LOG_ROTATE_SIZE = "1024";
   delete process.env.TINA4_LOG_ROTATE_KEEP;
-  // NEGATIVE: the legacy alias names are set to values that WOULD be visible if
-  // they were read — keep=1 would leave only rot.log.1, and a max-size read as
-  // bytes would rotate on every single line.
-  process.env.TINA4_LOG_KEEP = "1";
-  process.env.TINA4_LOG_MAX_SIZE = "1";
-  for (let i = 0; i < 24; i++) Log.info(`rotate-line-${i}`);
+  Log.reset();
+  for (let i = 0; i < 60; i++) Log.info(`rotate-line-${i}-padding-padding-padding-padding`);
 
   assert(
     "L4 canonical TINA4_LOG_ROTATE_SIZE rotates the log file",
@@ -348,37 +400,41 @@ console.log("\n--- L4: TINA4_LOG_ROTATE_* only — no legacy aliases ---");
     `expected ${join(rotDir, "rot.log.1")}`,
   );
   assert(
-    "L4 legacy TINA4_LOG_KEEP is NOT read (default keep=5 retains .2 and .3)",
+    "L4 default TINA4_LOG_ROTATE_KEEP=5 retains .2 and .3",
     existsSync(join(rotDir, "rot.log.2")) && existsSync(join(rotDir, "rot.log.3")),
     `dir held: ${existsSync(join(rotDir, "rot.log.2"))}/${existsSync(join(rotDir, "rot.log.3"))}`,
   );
 
-  // And with NO canonical size at all, the default 10MB applies — the legacy
-  // TINA4_LOG_MAX_SIZE alone must not cause any rotation.
-  const aliasDir = join(TMP, "alias-only");
-  delete process.env.TINA4_LOG_ROTATE_SIZE;
-  process.env.TINA4_LOG_DIR = aliasDir;
-  process.env.TINA4_LOG_FILE = join(aliasDir, "alias.log");
-  for (let i = 0; i < 24; i++) Log.info(`alias-line-${i}`);
-  assert(
-    "L4 legacy TINA4_LOG_MAX_SIZE alone causes NO rotation (default 10MB stands)",
-    !existsSync(join(aliasDir, "alias.log.1")),
-    `unexpected ${join(aliasDir, "alias.log.1")}`,
-  );
-  delete process.env.TINA4_LOG_KEEP;
-  delete process.env.TINA4_LOG_MAX_SIZE;
+  // NEGATIVE (LOG-V04): the removed legacy names now hard-fail configuration.
+  const { LogConfigurationError } = await import("../packages/core/src/logger.ts");
+  for (const legacy of ["TINA4_LOG_KEEP", "TINA4_LOG_MAX_SIZE"]) {
+    const aliasDir = join(TMP, `removed-${legacy}`);
+    process.env.TINA4_LOG_DIR = aliasDir;
+    process.env.TINA4_LOG_FILE = join(aliasDir, "removed.log");
+    process.env[legacy] = "1";
+    Log.reset();
+    let caught: unknown = null;
+    try {
+      Log.info("must not log — configuration must fail first");
+    } catch (err) {
+      caught = err;
+    }
+    assert(
+      `L4 removed setting ${legacy} hard-fails configuration`,
+      caught instanceof LogConfigurationError && String((caught as Error).message).includes(legacy),
+      `error was: ${String(caught)}`,
+    );
+    assert(
+      `L4 removed setting ${legacy}: no file written (fails before any sink mutation)`,
+      !existsSync(join(aliasDir, "removed.log")),
+      `unexpected ${join(aliasDir, "removed.log")}`,
+    );
+    delete process.env[legacy];
+  }
+  Log.reset();
 }
 
-// Cleanup
 // ── L5: explicit argument > environment > default (ADR-0041) ────────────────
-//
-// `Log.configure("/srv/app/logs")` is one line that means one thing, and it did
-// three different things across the four frameworks. Node reached the RIGHT
-// answer -- the argument won -- through a mechanism no other framework has:
-// configure() ASSIGNED to process.env.TINA4_LOG_DIR. So the argument won by
-// DESTROYING the operator's value for the rest of the process, and every child
-// process spawned afterwards inherited the argument instead of what the
-// operator set. Reading configuration must not write it.
 //
 // The coordinate under test IS "which value wins", so the child must not ask
 // the logger which directory it chose -- that delegates the asserted property
@@ -394,7 +450,7 @@ writeFileSync(
     `import { existsSync } from "node:fs";`,
     `const envDir = process.env.PROBE_ENV_DIR!;`,
     `const argDir = process.env.PROBE_ARG_DIR!;`,
-    `if (process.env.PROBE_PASS_ARG === "1") Log.configure(argDir);`,
+    `if (process.env.PROBE_PASS_ARG === "1") Log.configure({ logDir: argDir });`,
     `else Log.configure();`,
     `Log.info("which directory won?");`,
     `console.log(JSON.stringify({`,
@@ -456,6 +512,7 @@ delete process.env.TINA4_LOG_OUTPUT;
 delete process.env.TINA4_LOG_DIR;
 delete process.env.TINA4_LOG_FILE;
 delete process.env.TINA4_LOG_LEVEL;
+Log.reset();
 try { rmSync(TMP, { recursive: true }); } catch { /* best effort */ }
 
 console.log(`\n${"=".repeat(50)}`);

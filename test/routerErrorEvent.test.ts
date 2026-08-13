@@ -12,7 +12,7 @@
  *      trace (CWE-209). Debug mode keeps the ErrorOverlay path intact.
  *
  *   3. Listener exceptions MUST NOT break the 500 render. A broken
- *      listener gets logged via `Log.warn` and the framework proceeds.
+ *      listener gets logged via `Log.warning` and the framework proceeds.
  */
 
 import { startServer, defaultRouter, Events, get } from "../packages/core/src/index.ts";

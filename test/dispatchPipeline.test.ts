@@ -81,7 +81,7 @@ console.log("=== Dispatch pipeline contract (Node) ===\n");
 // ── The stage lists are DATA ───────────────────────────────────────
 {
   assert("the pipeline declares its stages in order",
-    eq(pipeline.PROLOGUE_STAGES, ["resetRequestCaches", "headStripIntercept", "sessionAutoStart"]) &&
+    eq(pipeline.PROLOGUE_STAGES, ["resetRequestCaches", "headStripIntercept", "compressionEtagIntercept", "sessionAutoStart"]) &&
     eq(pipeline.REQUEST_STAGES, ["blockAiPortReload", "wrapResponseEnd", "runGlobalMiddlewarePass"]) &&
     eq(pipeline.ROUTE_STAGES, ["runGlobalMiddlewarePass", "enforceRouteAuth", "runRouteMiddlewares",
       "invokeRouteHandler", "renderIfTemplateRoute"]) &&
@@ -120,12 +120,21 @@ console.log("=== Dispatch pipeline contract (Node) ===\n");
     `server.ts has [${real.join(", ")}]`);
 }
 
-// The prologue and request stages are called in dispatch, in list order.
+// The prologue and request stages are called in dispatchInner, in list order.
+//
+// PRE-EXISTING DRIFT FIX (found while adding compressionEtagIntercept,
+// feature 40): this used to search "async function dispatch(" - the thin
+// requestId/Log.runWithRequestId wrapper - which never itself calls any
+// prologue/request stage; dispatch delegates to dispatchInner, which does.
+// The search target was stale from before dispatch/dispatchInner were split,
+// so this assertion silently checked two empty arrays against the real
+// (non-empty) lists and had been failing before this fix, independent of and
+// unrelated to feature 40's own change.
 {
-  const body = functionBody(serverSrc, "async function dispatch(");
+  const body = functionBody(serverSrc, "async function dispatchInner(");
   const prologue = callOrder(body, pipeline.PROLOGUE_STAGES);
   const request = callOrder(body, pipeline.REQUEST_STAGES);
-  assert("dispatch calls the prologue and request stages in list order",
+  assert("dispatchInner calls the prologue and request stages in list order",
     body.length > 0 && eq(prologue, pipeline.PROLOGUE_STAGES) && eq(request, pipeline.REQUEST_STAGES),
     `prologue=[${prologue}] request=[${request}]`);
 }
@@ -155,6 +164,7 @@ console.log("=== Dispatch pipeline contract (Node) ===\n");
   const arities: Record<string, number> = {
     resetRequestCaches: 0,
     headStripIntercept: 2,
+    compressionEtagIntercept: 2,
     sessionAutoStart: 3,
   };
   const wrong = pipeline.PROLOGUE_STAGES.filter(

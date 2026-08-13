@@ -3,7 +3,7 @@ import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult, ColumnInfo
 import { DatabaseResult } from "./databaseResult.js";
 import { DatabaseUrl } from "./databaseUrl.js";
 import { CachedDatabaseAdapter, type CachedAdapterOptions } from "./cachedDatabase.js";
-import { QueryCache, SQLTranslator } from "./sqlTranslator.js";
+import { QueryCache } from "./sqlTranslator.js";
 
 /**
  * v3.13.12 — strip trailing `;` and whitespace from user-supplied SQL
@@ -71,6 +71,62 @@ export async function adapterExecute(
   return (adapter as any).executeAsync
     ? await (adapter as any).executeAsync(sql, params)
     : adapter.execute(sql, params);
+}
+
+/**
+ * ADR-0044: the adapter-level batch primitive, called exactly once by
+ * Database#executeMany (never looped) — one aggregate DatabaseResult for the
+ * whole batch. Normalises whichever native shape an adapter returns: SQLite's
+ * `{success, affectedRows, lastId}` (the shared write shape already used by
+ * insert/update/delete) or an async-native adapter's `{totalAffected, lastId}`
+ * (pre-ADR-0044 shape, not yet unified per-adapter — normalised HERE at the
+ * one chokepoint every public write flows through, so the facade's contract
+ * is uniform without touching each of the five adapter files' internals).
+ */
+export async function adapterExecuteMany(
+  adapter: DatabaseAdapter, sql: string, paramsList: unknown[][],
+): Promise<import("./types.js").DatabaseResult> {
+  const raw = (adapter as any).executeManyAsync
+    ? await (adapter as any).executeManyAsync(sql, paramsList)
+    : adapter.executeMany(sql, paramsList);
+  if (raw && typeof raw === "object" && "success" in raw) {
+    return raw as import("./types.js").DatabaseResult;
+  }
+  const legacy = raw as { totalAffected?: number; lastId?: number | bigint };
+  return { success: true, affectedRows: legacy?.totalAffected ?? 0, lastId: legacy?.lastId };
+}
+
+/**
+ * Insert one row (or a batch) through the adapter's OWN native insert path
+ * (each adapter's `buildInsert()`/`Dialect`, feature 3's SQL builder
+ * consolidation) instead of hand-built SQL. This is the ONLY correct way to
+ * insert into a caller-named table/columns: Firebird's Dialect quotes only
+ * when it has to (an unquoted identifier folds to UPPERCASE, so quoting a
+ * lower-case name makes it unfindable — SQL error -204 "Table unknown"),
+ * while PostgreSQL/MSSQL/SQLite quote unconditionally. A caller that hand-
+ * quotes with one fixed style (e.g. always `"col"`) works on three engines
+ * and silently breaks on the fourth. seedTable()/seedOrm() route through
+ * this so their engine portability matches insert()/insertAsync()'s, which
+ * the write-path + provider contract suites already prove on all four real
+ * engines (features 9/10/11/12).
+ */
+export async function adapterInsert(
+  adapter: DatabaseAdapter, table: string, data: Record<string, unknown>,
+): Promise<unknown> {
+  const result: any = (adapter as any).insertAsync
+    ? await (adapter as any).insertAsync(table, data)
+    : adapter.insert(table, data);
+  // FAIL LOUD, matching adapterExecute(): the async adapters (Postgres/MSSQL/
+  // Firebird) already throw directly on a bad statement, but SQLiteAdapter's
+  // synchronous insert() CATCHES the driver error and returns
+  // `{ success: false, error }` instead (its own documented contract, unlike
+  // execute()'s always-throw). Without this check a constraint violation on
+  // SQLite silently reported success=seeded to seedTable()/seedOrm(), which
+  // count failures via a catch block that a non-throwing result never enters.
+  if (result && result.success === false) {
+    throw new Error(result.error ?? `insert into '${table}' failed`);
+  }
+  return result;
 }
 
 export async function adapterStartTransaction(adapter: DatabaseAdapter): Promise<void> {
@@ -732,7 +788,19 @@ export class Database {
     }
   }
 
-  /** Insert one row (object) or a batch of rows (array of objects) into a table. */
+  /**
+   * Insert one row (object) or a batch of rows (array of objects) into a table.
+   *
+   * FAIL LOUD, matching update()/delete()/truncate(): a real driver failure
+   * (e.g. a NOT NULL / UNIQUE constraint violation) throws rather than
+   * resolving to `{ success: false, affectedRows: 0 }`. The async adapters
+   * (Postgres/MySQL/MSSQL/Firebird) already throw directly from insertAsync();
+   * SQLiteAdapter.insert() is the one adapter that CATCHES the driver error
+   * and returns a `{ success: false, error }` result instead (its own
+   * documented contract for the synchronous path) — assertWrote is what
+   * converts that into the same thrown DatabaseException every other engine
+   * already produces, exactly as it already does for update/delete/truncate.
+   */
   async insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): Promise<DatabaseWriteResult> {
     const adapter = this.getNextAdapter();
     const result = (adapter as any).insertAsync
@@ -741,7 +809,7 @@ export class Database {
     if (this.autoCommit && !this.inExplicitTransaction()) {
       try { await adapterCommit(adapter); } catch { /* no active transaction */ }
     }
-    return result;
+    return Database.assertWrote(result, "insert", table);
   }
 
   /**
@@ -756,7 +824,19 @@ export class Database {
       let pk: string[] = [];
       try {
         const columns = await this.getColumns(table);
-        pk = columns.filter((c) => c.primaryKey).map((c) => c.name);
+        // ADR-0044 amendment: sort by primaryKeyPosition so a composite
+        // PRIMARY KEY (b, a) returns ["b", "a"] (declared key order), not
+        // table-column order. A column with no reported position sorts last.
+        const pkColumns = columns.filter((c) => c.primaryKey);
+        pkColumns.sort((a, b) => {
+          const posA = a.primaryKeyPosition ?? null;
+          const posB = b.primaryKeyPosition ?? null;
+          if (posA === posB) return 0;
+          if (posA === null) return 1;
+          if (posB === null) return -1;
+          return posA - posB;
+        });
+        pk = pkColumns.map((c) => c.name);
       } catch {
         pk = [];
       }
@@ -1049,21 +1129,35 @@ export class Database {
    * @param tableName - Name of the table to inspect.
    * @returns Array of column info objects: { name, type, nullable, default, primaryKey }.
    */
-  async getColumns(tableName: string): Promise<{ name: string; type: string; nullable?: boolean; default?: unknown; primaryKey?: boolean }[]> {
+  async getColumns(tableName: string): Promise<{ name: string; type: string; nullable?: boolean; default?: unknown; primaryKey?: boolean; primaryKeyPosition?: number | null }[]> {
     return adapterColumns(this.getNextAdapter(), tableName);
   }
 
   /**
-   * Execute a SQL statement with multiple parameter sets (batch insert/update).
-   * Wraps all executions in a single transaction for atomicity and performance.
+   * Execute a SQL statement with multiple parameter sets as ONE aggregate
+   * batch (ADR-0044). Wraps the single delegated call in a transaction for
+   * atomicity — never loops #execute itself.
+   *
+   * BREAKING (ADR-0044, pre-3.14.0): used to return one result PER ROW
+   * (`unknown[]`, callers indexed into it) built by the FACADE looping
+   * execute()/adapterExecute() per chunk or per row. It now delegates to the
+   * adapter's OWN executeMany/executeManyAsync exactly once (DBA-D02: facade
+   * delegates once, never a facade row loop) and returns the SAME shared
+   * DatabaseResult shape insert()/update()/delete() already return
+   * ({success, affectedRows, lastId}) — affectedRows is the total ROW count,
+   * never the number of chunks/statements. A caller that indexed into the old
+   * per-row array must switch to inspecting the aggregate result.
    *
    * @param sql - The SQL statement with parameter placeholders.
-   * @param paramSets - Array of parameter arrays, one per execution.
-   * @returns Array of results from each execution.
+   * @param paramSets - Array of parameter arrays, one per row.
+   * @returns The aggregate DatabaseResult for the whole batch.
    */
-  async executeMany(sql: string, paramSets: unknown[][] = []): Promise<unknown[]> {
-    const adapter = this.getNextAdapter();
-    const results: unknown[] = [];
+  async executeMany(sql: string, paramSets: unknown[][] = []): Promise<DatabaseWriteResult> {
+    // ADR-0044 (DBA-B01): empty input is a successful no-op — it opens no
+    // transaction and calls no adapter.
+    if (paramSets.length === 0) {
+      return { success: true, affectedRows: 0 };
+    }
 
     // Own the batch transaction ONLY when not already inside a caller's explicit
     // transaction. inExplicitTransaction() is true when startTransaction() has
@@ -1073,48 +1167,27 @@ export class Database {
     // rollback() would undo nothing (the batch rows survive). So: standalone
     // batch -> own BEGIN/COMMIT (atomic, all-or-nothing); nested batch -> join
     // the caller's transaction and let their commit/rollback decide. Mirrors the
-    // sibling execute()/insert()/update()/delete() owns-guard, the PostgreSQL
-    // adapter's executeManyAsync owns-guard, and the Python master
-    // (Database.execute_many delegating to adapter.execute_many's owns_txn guard).
+    // sibling execute()/insert()/update()/delete() owns-guard and the Python
+    // master (Database.execute_many delegating to adapter.execute_many's
+    // owns_txn guard).
     const owns = !this.inExplicitTransaction();
+    const adapter = this.getNextAdapter();
     if (owns) await adapterStartTransaction(adapter);
 
-    // ONE round-trip per CHUNK instead of one per ROW. Looping execute() here
-    // pays a full network round-trip for every row: 500 rows took 9848ms on
-    // PostgreSQL against 15.8ms as a single multi-row VALUES (625x), MySQL 216x,
-    // MSSQL 121x. buildBatchInserts returns an empty array for anything it
-    // cannot collapse safely — RETURNING, upserts, non-INSERT statements, ragged
-    // rows, Firebird — and the row-at-a-time loop then runs unchanged.
-    const batched = SQLTranslator.buildBatchInserts(sql, paramSets, this.dbType ?? "");
-
+    let result: DatabaseWriteResult;
     try {
-      if (batched.length > 0) {
-        let row = 0;
-        for (const [chunkSql, chunkParams] of batched) {
-          const result = await adapterExecute(adapter, chunkSql, chunkParams);
-          // executeMany's contract is ONE RESULT PER ROW, and callers index into
-          // it. Collapsing rows into chunks must not shorten the array, so each
-          // row reports the result of the statement that actually wrote it.
-          // Node is the only one of the four returning per-row results — Python,
-          // PHP and Ruby return a count or a single DatabaseResult — so this is
-          // the one place the collapse could have been observable.
-          const rowsInChunk = chunkParams.length / (paramSets[0]?.length || 1);
-          for (let i = 0; i < rowsInChunk && row < paramSets.length; i++, row++) {
-            results.push(result);
-          }
-        }
-      } else {
-        for (const params of paramSets) {
-          results.push(await adapterExecute(adapter, sql, params));
-        }
-      }
+      // ONE delegated call — native batching (one multi-row round-trip instead
+      // of one per row: 500 rows measured 9848ms on PostgreSQL row-at-a-time
+      // against 15.8ms batched — 625x, MySQL 216x, MSSQL 121x) is the
+      // ADAPTER's job, not a facade loop.
+      result = await adapterExecuteMany(adapter, sql, paramSets);
       if (owns) await adapterCommit(adapter);
     } catch (e) {
       if (owns) await adapterRollback(adapter);
       throw e;
     }
 
-    return results;
+    return result;
   }
 
   /** Return the last execute() error message, or null. */
@@ -1349,15 +1422,17 @@ export class Database {
       // Row likely already exists (PK conflict) — fine, keep going.
       try { await adapterRollback(adapter); } catch { /* nothing to roll back */ }
     }
-    await adapterExecute(adapter,
-      "UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ?",
+    // Single ATOMIC increment-and-return. The old path did the UPDATE then a
+    // SEPARATE SELECT, with an `await` between them: another concurrent caller
+    // could increment and commit in that window, so both read the same value and
+    // returned a DUPLICATE id (a TOCTOU). PostgreSQL (the engine that reaches
+    // this fallback) supports UPDATE ... RETURNING, so the value read is exactly
+    // the one this statement wrote.
+    const row = await adapterFetchOne<Record<string, unknown>>(adapter,
+      "UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ? RETURNING current_value",
       [seqName],
     );
     try { await adapterCommit(adapter); } catch { /* no active transaction */ }
-    const row = await adapterFetchOne<Record<string, unknown>>(adapter,
-      "SELECT current_value FROM tina4_sequences WHERE seq_name = ?",
-      [seqName],
-    );
     if (!row || row.current_value == null) {
       throw new Error(`getNextId: sequence row '${seqName}' missing`);
     }
@@ -1377,9 +1452,17 @@ export class Database {
   async getNextId(table: string, pkColumn = "id", generatorName?: string): Promise<number> {
     const adapter = this.getNextAdapter();
 
-    // MongoDB uses ObjectId for _id by default; integer sequences fall through
-    // to the tina4_sequences table strategy below (which works on Mongo too
-    // because the adapter implements the SQL-ish methods over collections).
+    // MongoDB — a DEDICATED atomic counter (findOneAndUpdate($inc) keyed by _id),
+    // monotonic and concurrency-safe. NEVER routed through the relational
+    // tina4_sequences path: the Mongo SET-clause parser matches only `col = ?`
+    // and DROPS the arithmetic `current_value + 1`, so the increment vanished
+    // (empty $set) and every call returned the same id — a duplicate generator.
+    if (this.dbType === "mongodb") {
+      const mongo = adapter as unknown as { getNextId?: (t: string, p: string) => Promise<number> };
+      if (typeof mongo.getNextId === "function") {
+        return mongo.getNextId(table, pkColumn);
+      }
+    }
 
     // Firebird — use generators (atomic)
     if (this.dbType === "firebird") {
@@ -1399,29 +1482,41 @@ export class Database {
     // PostgreSQL — try sequence first, auto-create if missing, fall through to sequence table
     if (this.dbType === "postgres") {
       const seqName = generatorName ?? `${table.toLowerCase()}_${pkColumn.toLowerCase()}_seq`;
+      // Fast path: the sequence already exists — nextval() is atomic.
       try {
         const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT nextval('${seqName}') AS next_id`);
         if (row?.next_id != null) {
           return Number(row.next_id);
         }
       } catch {
-        // Sequence doesn't exist — try to auto-create it
+        // Sequence missing — create it idempotently below.
       }
 
-      // Auto-create sequence seeded from MAX
+      // First use: create the sequence IDEMPOTENTLY (CREATE SEQUENCE IF NOT
+      // EXISTS), seeded from MAX(pk). Two concurrent first-callers therefore
+      // share ONE counter — the loser's create is a no-op, not an error, so it
+      // never falls to the tina4_sequences table and draws a DUPLICATE id from a
+      // second, independent counter (the first-use race).
       try {
         const maxRow = await adapterFetchOne<Record<string, unknown>>(adapter,
           `SELECT COALESCE(MAX(${pkColumn}), 0) AS max_id FROM ${table}`
         );
         const start = maxRow?.max_id != null ? Number(maxRow.max_id) + 1 : 1;
-        await adapterExecute(adapter, `CREATE SEQUENCE ${seqName} START WITH ${start}`);
+        await adapterExecute(adapter, `CREATE SEQUENCE IF NOT EXISTS ${seqName} START WITH ${start}`);
         try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+      } catch {
+        // A concurrent creator won the catalog race — the sequence exists now.
+      }
+
+      // ALWAYS draw from the sequence now that it exists. Never fall to the
+      // sequence table just because our own CREATE lost the race.
+      try {
         const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT nextval('${seqName}') AS next_id`);
         if (row?.next_id != null) {
           return Number(row.next_id);
         }
       } catch {
-        // Fall through to sequence table
+        // Truly cannot use a sequence — last-resort table below.
       }
     }
 
@@ -1518,7 +1613,11 @@ async function buildAdapterFromUrl(url: string, username?: string, password?: st
     }
     case "odbc": {
       const { OdbcAdapter } = await import("./adapters/odbc.js");
-      const adapter = new OdbcAdapter({ connectionString: parsed.connectionString ?? "" });
+      const adapter = new OdbcAdapter({
+        connectionString: parsed.connectionString ?? "",
+        username: parsed.username ?? undefined,
+        password: parsed.password ?? undefined,
+      });
       await adapter.connect();
       return adapter;
     }
@@ -1723,7 +1822,11 @@ export async function initDatabase(config?: DatabaseConfig): Promise<Database> {
     case "odbc": {
       const { OdbcAdapter } = await import("./adapters/odbc.js");
       const connStr = config?.connectionString ?? config?.url?.replace(/^odbc:\/\/\//, "") ?? "";
-      const adapter = new OdbcAdapter({ connectionString: connStr });
+      const adapter = new OdbcAdapter({
+        connectionString: connStr,
+        username: resolvedUser ?? undefined,
+        password: resolvedPassword ?? undefined,
+      });
       await adapter.connect();
       return finished(adapter);
     }

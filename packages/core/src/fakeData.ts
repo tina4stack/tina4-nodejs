@@ -1,5 +1,20 @@
 // Tina4 FakeData — Fake data generation and database seeding, zero dependencies.
 // Instance-based with optional seeded PRNG for deterministic output.
+//
+// Determinism is PER-LANGUAGE, not cross-language (SEED-DETERMINISM-PERLANG):
+// `new FakeData(42)` reproduces the identical sequence on every run *within
+// Node*, but the same seed on Python/PHP/Ruby's FakeData will NOT produce the
+// same values -- each language uses its own PRNG (Node's mulberry32, Python's
+// Mersenne Twister, PHP's per-instance Mt19937, Ruby's Random). There is no
+// shared cross-language PRNG, and hand-rolling one would add cost for no real
+// benefit -- use a seed to make ONE language's run reproducible, never to
+// compare output across languages.
+//
+// NOT FOR SECRETS (SEED-SECRETS-DOC): this is a non-cryptographic PRNG meant
+// for realistic-looking fixtures and test data. Never use it to generate API
+// keys, passwords, tokens, or anything else that must be unguessable -- use
+// node:crypto's randomBytes/randomUUID (already used here for the unseeded
+// path) directly, or Tina4's Auth helpers for password hashing.
 
 import { randomInt, randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";

@@ -20,6 +20,21 @@ interface OpenAPISpec {
 
 const WRITE_METHODS = new Set(["post", "put", "patch", "delete"]);
 
+/**
+ * Framework-internal route prefixes that are NEVER part of an application's
+ * public API document. SHARED across all four frameworks (SWAG-EXCLUSION-NOT-
+ * SHARED, ADR-0004) so the exclusion is one rule everywhere, not three
+ * mechanisms: the dev tools (/swagger, /__dev), the feedback widget
+ * (/__feedback), and the built-in AI/RAG service probes (/ai, /rag, /vision,
+ * /embed, /image). This is the ONE thing standing between `/__feedback/*`
+ * (genuinely registered into the router by DevAdmin.register -> feedback.ts)
+ * and the public document now that generate() reads the LIVE route table per
+ * request (SWAG-NODE-FEEDBACK-LEAK) — before this list carried only
+ * /swagger + /__dev, so `/__feedback` was excluded only by BOOT ORDERING
+ * (swagger's route snapshot predated DevAdmin.register), not by a rule.
+ */
+const INTERNAL_PREFIXES = ["/swagger", "/__dev", "/__feedback", "/ai", "/rag", "/vision", "/embed", "/image"];
+
 // ── Configuration registries (v3.13.42) ───────────────────────────
 // Process-wide registries for security schemes and reusable component schemas
 // declared programmatically (addSecurityScheme / addSchema). Kept module-level so
@@ -365,12 +380,12 @@ function routeRequiresAuth(route: RouteDefinition, method: string): boolean {
 }
 
 /**
- * Path-filter a raw route pattern. Framework internals (/swagger, /__dev) are
- * ALWAYS excluded; then TINA4_SWAGGER_INCLUDE (allow-list) / _EXCLUDE apply.
- * Mirrors Python's _included.
+ * Path-filter a raw route pattern. Framework internals (INTERNAL_PREFIXES)
+ * are ALWAYS excluded; then TINA4_SWAGGER_INCLUDE (allow-list) / _EXCLUDE
+ * apply. Mirrors the other three frameworks' _included/included?.
  */
 function isIncludedPath(rawPath: string, include: string[], exclude: string[]): boolean {
-  for (const internal of ["/swagger", "/__dev"]) {
+  for (const internal of INTERNAL_PREFIXES) {
     if (rawPath === internal || rawPath.startsWith(internal + "/")) return false;
   }
   if (include.length > 0 && !include.some((p) => rawPath === p || rawPath.startsWith(p))) {

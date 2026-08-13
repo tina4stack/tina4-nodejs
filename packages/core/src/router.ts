@@ -39,6 +39,26 @@ function coerceParam(raw: string, type: string | undefined): string | number {
   }
 }
 
+/**
+ * Join a route-group prefix with a route's own path.
+ *
+ * Feature 32 (RG-DEC-01): ports PHP's normalization grammar verbatim
+ * (`Tina4/Router.php` `addRoute` — the reference) so Node converges with
+ * PHP/Python/Ruby instead of `RouteGroup`'s old bare concatenation. One
+ * separator between prefix and path, a single leading slash, no trailing
+ * slash, and any run of slashes collapsed to one — so `group("/api")` +
+ * `get("users")`, `get("/users")`, and `group("/api/")` + `get("/users")`
+ * all resolve to the SAME `/api/users`. Before this fix, `this.prefix +
+ * path` bare-concatenated with NO normalization at all — the worst of the
+ * four, since Node's `RouteGroup` prefix isn't even trailing-slash-trimmed
+ * on construction (unlike Python's `rstrip`/Ruby's `chomp`).
+ */
+function joinGroupPath(prefix: string, path: string): string {
+  const full = `${prefix}/${path.replace(/^\/+/, "")}`;
+  const trimmed = `/${full.replace(/^\/+|\/+$/g, "")}`;
+  return trimmed.replace(/\/+/g, "/");
+}
+
 interface MatchResult {
   handler: RouteHandler;
   params: Record<string, string | number>;
@@ -676,7 +696,15 @@ export class Router {
           paramTypes.push("string");
           return "(.+)";
         }
-        return segment;
+        // Literal segment -- escape every regex metacharacter so it matches
+        // itself only (real-bug pre-merge, 3.13.99). Before this, a literal
+        // segment was interpolated into the pattern string UNESCAPED: e.g.
+        // registering `/blocked-xss(1)` compiled `(1)` as a capture group,
+        // so `new RegExp('^/blocked-xss(1)$')` actually required the URL
+        // WITHOUT the parens -- the exact literal path it was registered
+        // for 404'd. Mirrors Python's re.escape / Ruby's Regexp.escape /
+        // PHP's preg_quote, all already correct here.
+        return segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       })
       .join("/");
 
@@ -708,7 +736,7 @@ export class RouteGroup {
   get(path: string, handler: RouteHandler, middlewares?: MiddlewareSpec[], meta?: RouteMeta): RouteRef {
     return this.router.addRoute({
       method: "GET",
-      pattern: this.prefix + path,
+      pattern: joinGroupPath(this.prefix, path),
       handler,
       middlewares: this.mergeMiddlewares(middlewares),
       meta,
@@ -718,7 +746,7 @@ export class RouteGroup {
   post(path: string, handler: RouteHandler, middlewares?: MiddlewareSpec[], meta?: RouteMeta): RouteRef {
     return this.router.addRoute({
       method: "POST",
-      pattern: this.prefix + path,
+      pattern: joinGroupPath(this.prefix, path),
       handler,
       middlewares: this.mergeMiddlewares(middlewares),
       meta,
@@ -728,7 +756,7 @@ export class RouteGroup {
   put(path: string, handler: RouteHandler, middlewares?: MiddlewareSpec[], meta?: RouteMeta): RouteRef {
     return this.router.addRoute({
       method: "PUT",
-      pattern: this.prefix + path,
+      pattern: joinGroupPath(this.prefix, path),
       handler,
       middlewares: this.mergeMiddlewares(middlewares),
       meta,
@@ -738,7 +766,7 @@ export class RouteGroup {
   patch(path: string, handler: RouteHandler, middlewares?: MiddlewareSpec[], meta?: RouteMeta): RouteRef {
     return this.router.addRoute({
       method: "PATCH",
-      pattern: this.prefix + path,
+      pattern: joinGroupPath(this.prefix, path),
       handler,
       middlewares: this.mergeMiddlewares(middlewares),
       meta,
@@ -748,7 +776,7 @@ export class RouteGroup {
   delete(path: string, handler: RouteHandler, middlewares?: MiddlewareSpec[], meta?: RouteMeta): RouteRef {
     return this.router.addRoute({
       method: "DELETE",
-      pattern: this.prefix + path,
+      pattern: joinGroupPath(this.prefix, path),
       handler,
       middlewares: this.mergeMiddlewares(middlewares),
       meta,
@@ -760,7 +788,7 @@ export class RouteGroup {
     for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]) {
       lastRef = this.router.addRoute({
         method,
-        pattern: this.prefix + path,
+        pattern: joinGroupPath(this.prefix, path),
         handler,
         middlewares: this.mergeMiddlewares(middlewares),
         meta,

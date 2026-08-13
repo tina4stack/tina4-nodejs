@@ -267,7 +267,7 @@ assert("Required fields validation", v1.length >= 2); // name and email required
 
 const v2 = validate({ name: "A", email: "bad", age: 200 }, User.fields, false);
 assert("minLength validation", v2.some(e => e.field === "name" && e.message.includes("at least")));
-assert("Pattern validation", v2.some(e => e.field === "email" && e.message.includes("pattern")));
+assert("Pattern validation", v2.some(e => e.field === "email" && e.message.includes("format")));
 assert("Max validation", v2.some(e => e.field === "age" && e.message.includes("at most")));
 
 const v3 = validate({ name: "Valid Name", email: "valid@test.com" }, User.fields, false);

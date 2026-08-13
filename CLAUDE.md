@@ -1,10 +1,10 @@
-# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.97)
+# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.99)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.13.97 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.13.99 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -110,9 +110,9 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
 - `types.ts` — All shared type definitions (`Tina4Request`, `Tina4Response`, `RouteHandler`, etc.)
 - `events.ts` — Observer-pattern event system (`Events.on`, `emit`, `once`, `off`, `clear`)
 - `ai.ts` — AI coding tool context installer (`AI_TOOLS`, `isInstalled`, `showMenu`, `installSelected`, `installAll`, `generateContext`)
-- `errorOverlay.ts` — Rich debug error page for dev mode (`renderErrorOverlay`, `renderProductionError`, `isDebugMode`)
+- `errorOverlay.ts` — Rich debug error page for dev mode (`renderErrorOverlay`, `isDebugMode`)
 - `htmlElement.ts` — Programmatic HTML builder (`HtmlElement`, `htmlElement`, `addHtmlHelpers`)
-- `testing.ts` — Inline testing framework (`tests`, `assertEqual`, `assertRaises`, `runAll`)
+- `testing.ts` — Inline testing framework (`tests`, `expectEqual`, `expectRaises`, `runAll`)
 - `fakeData.ts` — Core fake data generator (names, emails, addresses, UUIDs, etc.)
 - `constants.ts` — HTTP status codes (`HTTP_OK`, `HTTP_NOT_FOUND`, etc.) and content types (`APPLICATION_JSON`, `TEXT_HTML`, etc.)
 - `devAdmin.ts` — Dev toolbar (fixed bottom bar injected into HTML pages) and admin dashboard at `/_dev/`
@@ -157,7 +157,7 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 - `sqlTranslator.ts` — Cross-engine SQL translator (`SQLTranslator`) and TTL query cache (`QueryCache`)
 - **Instance methods:** `save(): this|false` (fluent, false on failure), `delete()`, `forceDelete()`, `restore()`, `load(sql, params?, include?): boolean`, `validate(): string[]`, `toDict(include?)`, `toAssoc(include?)`, `toObject()`, `toArray(): unknown[]`, `toList()`, `toJson(include?)`, `hasOne(class, fk)`, `hasMany(class, fk, limit?, offset?)`, `belongsTo(class, fk)`
 - **Static methods:** `find(id, include?)`, `findById(id, include?)`, `findOrFail(id)`, `create(data)`, `all(limit=100, offset=0, include?, orderBy?)`, `select(sql, params?, limit=100, offset=0)`, `selectOne(sql, params?, include?)`, `where(conditions, params?, limit=100, offset=0, include?, orderBy?)`, `count(conditions?, params?)`, `withTrashed(conditions?, params?, limit=100, offset=0)`, `scope(name, filterSql, params?)` (registers reusable method), `createTable()`, `query()`, `_processForeignKeys()`, `_applyFkRegistry()`
-- **Foreign key auto-wire:** Declare a field with `type: "foreignKey"` and `references: "ModelName"` to auto-wire both `belongsTo` on the declaring model and `hasMany` on the referenced model. Optional `relatedName` overrides the has-many key. Models must be registered via `BaseModel.registerModel(name, class)` for name-based resolution. Example: `user_id: { type: "foreignKey", references: "User" }` → `post.belongsTo(User, "user_id")` and `user.hasMany(Post, "user_id")` both resolve without extra wiring.
+- **Foreign key auto-wire (declarative, read-side-only):** Declare a field with `type: "foreignKey"` and `references: "ModelName"` to auto-wire both `belongsTo` on the declaring model and `hasMany` on the referenced model. Optional `relatedName` overrides the has-many key. Models must be registered via `BaseModel.registerModel(name, class)` for name-based resolution. Example: `author_id: { type: "foreignKey", references: "Author", relatedName: "posts" }` attaches LAZY accessors on both sides — `await post.author` (belongsTo) and `await author.posts` (hasMany) resolve on attribute access (async, cached), and `include: ["posts"]` on `find`/`all`/`where` eager-loads them in ONE query per relation. A soft-deleted child is excluded from traversal, and the has-many read is uncapped. The auto-wire emits NO DB-level FK / ON DELETE clause (REL-DEC-01, read-side-only): referential integrity is the migration/DDL's job, so deleting a parent does not cascade to children at the engine level. (Before 3.13.99 the declarative accessors did not attach and lazy load did not exist — only the imperative `post.belongsTo(Author, "author_id")` / `author.hasMany(Post, "author_id")` worked.)
 - QueryBuilder supports `toMongo()` for generating MongoDB query documents from the same fluent API
 - `getNextId(table: string, pkColumn?: string, generatorName?: string): Promise<number>` — Race-safe ID generation using atomic sequence table (`tina4_sequences`). SQLite/MySQL/MSSQL use `tina4_sequences` with atomic UPDATE+SELECT. PostgreSQL auto-creates sequences if missing. Firebird uses existing generators (unchanged).
 
@@ -321,7 +321,7 @@ Auto-generates OpenAPI 3.0.3 docs.
 **Environment (read by `generator.ts` / `ui.ts`):**
 - `TINA4_SWAGGER_ENABLED` - turns the `/swagger` UI + `/swagger/openapi.json` endpoints on/off (`ui.ts`). Explicit `true`/`false` wins; unset falls back to `TINA4_DEBUG`. Set `false` to DISABLE swagger in ANY environment (including dev); set `true` to expose it in production. This is the documented production on/off switch (wired for real in 3.13.40 - previously ignored). **This is how you disable swagger.**
 - `TINA4_SWAGGER_SERVERS` - comma-separated list of server URLs for the OpenAPI `servers[]` block (multi-server / multi-environment). Falls back to `SWAGGER_DEV_URL`, else the framework default.
-- `TINA4_SWAGGER_UI_CDN` - base URL for the Swagger UI assets (`swagger-ui.css` + `swagger-ui-bundle.js`). Defaults to the public CDN (`https://unpkg.com/swagger-ui-dist@5`); point it at a self-hosted mirror for air-gapped deployments.
+- `TINA4_SWAGGER_UI_CDN` - base URL for the Swagger UI assets (`swagger-ui.css` + `swagger-ui-bundle.js`). Defaults to the public CDN (`https://cdn.jsdelivr.net/npm/swagger-ui-dist@5`, matching python/php/ruby); point it at a self-hosted mirror for air-gapped deployments.
 - Info block: `TINA4_SWAGGER_TITLE`, `TINA4_SWAGGER_VERSION`, `TINA4_SWAGGER_DESCRIPTION`, `TINA4_SWAGGER_CONTACT_EMAIL`, `TINA4_SWAGGER_CONTACT_TEAM`, `TINA4_SWAGGER_CONTACT_URL`, `TINA4_SWAGGER_LICENSE`.
 
 **Configurability (v3.13.42):**
@@ -409,20 +409,19 @@ const doc = generateContext("cursor");
 Rich HTML error page for development mode. Uses Catppuccin Mocha colour palette, shows syntax-highlighted source context around the error line, stack trace with source preview, request details, and environment info. Controlled by `TINA4_DEBUG` env var.
 
 ```typescript
-import { renderErrorOverlay, renderProductionError, isDebugMode } from "@tina4/core";
+import { renderErrorOverlay, isDebugMode } from "@tina4/core";
 
-// In a route error handler:
+// In a route error handler — dev only:
 try {
   await handler(req, res);
 } catch (err) {
-  const html = isDebugMode()
-    ? renderErrorOverlay(err as Error, req)   // full debug overlay
-    : renderProductionError(500, "Internal Server Error");  // safe production page
-  res.html(html, 500);
+  if (isDebugMode()) res.html(renderErrorOverlay(err as Error, req), 500);
 }
 
 // isDebugMode() returns true when TINA4_DEBUG is "true"
 ```
+
+The overlay is dev-only (gated on `isDebugMode()`/`TINA4_DEBUG`). The production 500 is NOT rendered here — the server dispatch renders `errors/500.twig` with an empty `error_message` (CWE-209), so the exception detail stays in the server log only. Sensitive request fields (Authorization / Cookie / Set-Cookie headers and password-like body/param keys) are redacted even in the overlay, the frame count is capped, and the dispatch guards the render.
 
 ## Module: HtmlElement (`packages/core/src/htmlElement.ts`)
 
@@ -461,16 +460,16 @@ Void tags (`br`, `hr`, `img`, `input`, `meta`, etc.) render without closing tags
 
 ## Module: Inline Testing (`packages/core/src/testing.ts`)
 
-Attach test assertions directly to functions. Tests are registered globally and run with `runAll()`. No external test runner needed.
+Attach inline test expectations directly to functions with the `expect*` DESCRIPTOR builders — named apart from the xUnit `assert*` on `Tina4Test` (test.ts) so the two surfaces never collide. `npx tsx packages/cli/src/bin.ts test` (or `npx tina4nodejs test`) discovers `tests()`-decorated functions under `src/` and runs them with a real exit code (non-zero on any failure), then runs the file-based `test/` suite.
 
 ```typescript
-import { tests, assertEqual, assertRaises, assertTrue, assertFalse, runAll, reset } from "@tina4/core";
+import { tests, expectEqual, expectRaises, expectTrue, expectFalse, runAll, reset } from "@tina4/core";
 
-// Decorate a function with inline tests
+// Decorate a function with inline expectations
 const add = tests(
-  assertEqual([5, 3], 8),        // add(5, 3) === 8
-  assertEqual([0, 0], 0),        // add(0, 0) === 0
-  assertRaises(Error, [null]),   // add(null) throws Error
+  expectEqual([5, 3], 8),        // add(5, 3) === 8
+  expectEqual([0, 0], 0),        // add(0, 0) === 0
+  expectRaises(Error, [null]),   // add(null) throws Error
 )(function add(a: number, b: number | null = null): number {
   if (b === null) throw new Error("b required");
   return a + b;
@@ -483,9 +482,9 @@ add(2, 3);  // 5
 const results = runAll({ quiet: false, failfast: false });
 // → { passed: 3, failed: 0, errors: 0, details: [...] }
 
-// Additional assertion types
-assertTrue([someArgs]);   // result is truthy
-assertFalse([someArgs]);  // result is falsy
+// Additional expectation types
+expectTrue([someArgs]);   // result is truthy
+expectFalse([someArgs]);  // result is falsy
 
 // Reset registry between test runs
 reset();
@@ -823,7 +822,7 @@ bindDatabase(await createAdapterFromUrl("postgres://localhost:5432/analytics"), 
 // silently falling back to the default. (initDatabase / the internal setAdapter are unchanged.)
 ```
 
-**Soft delete:** set `static softDelete = true`. Server boot (`syncModels()`) adds the `is_deleted` INTEGER column (0/1) — but **`Model.createTable()` does not**, so declare it there yourself. `delete()` flips the flag, `forceDelete()` removes the row, `restore()` clears it.
+**Soft delete:** set `static softDelete = true`. Server boot (`syncModels()`) AND `Model.createTable()` both add the `is_deleted` INTEGER column (0/1) automatically for a soft-delete model that does not declare it (SOFTDEL-DEC-02, 3.13.99). `delete()` flips the flag, `forceDelete()` removes the row, `restore()` clears it.
 
 ## Module: QueryBuilder (`packages/orm/src/queryBuilder.ts`)
 
@@ -887,7 +886,7 @@ syncModels(discoveredModels);               // auto-create tables / add columns 
 - Files are applied in **numeric-prefix order** (`9_` before `10_` — a plain lexical sort misorders unpadded prefixes because `"10" < "9"`). A file with no numeric/timestamp prefix sorts **after** the numbered ones (lexically) and logs a `Log.warning` — its order is undefined.
 - State is tracked in the `tina4_migration` table (auto-created per engine, canonical columns `id, migration_name VARCHAR(500) NOT NULL UNIQUE, description VARCHAR(500), batch INTEGER NOT NULL DEFAULT 1, executed_at VARCHAR(50) NOT NULL, passed INTEGER NOT NULL DEFAULT 1` - identical across all four frameworks). A migration is **applied** when a row exists for it with `passed = 1` (the applied-read is `WHERE passed = 1`). `migrate()` writes **only `passed = 1` rows**, and it does so **delete-before-insert**: on success it DELETEs any existing row for that `migration_name` and then INSERTs the fresh `passed = 1` row (the shared `recordApplied()` helper, mirroring the Python master's `_record_applied()`), so the table holds **at most one row per `migration_name`** - latest state wins. A FAILED migration file is rolled back and **no row is written** for it (it is NOT recorded as `passed = 0`; the record step is never reached), and the run STOPS (the `migrate()` summary's `failed[]` carries the failure). The public `recordMigration(name, batch, passed)` API can write a `passed = 0` row (and one may be carried over from an older table); any `passed = 0` row is treated as **not applied**. Because the success path deletes any existing row for the `migration_name` before the `passed = 1` INSERT, a leftover `passed = 0` row **re-applies cleanly** on the next `migrate()` - the stale row is superseded rather than colliding on the UNIQUE `migration_name` (that collision previously wedged a re-run). Fix the bad file and re-run.
 - **Each migration FILE is wrapped in its own transaction.** On a failure the file rolls back and `migrate()` **STOPS** — later files are never applied on top of a missing earlier one (parity with Python/PHP/Ruby). Already-applied files stay applied. The explicit `tina4 migrate` CLI surfaces a non-empty `failed[]` as a non-zero exit; startup auto-migration logs it and the service still boots (see `TINA4_AUTO_MIGRATE` above).
-- **Atomicity caveat:** per-file transactions are truly atomic only on engines with **transactional DDL (PostgreSQL)**. MySQL, Firebird, and SQLite auto-commit DDL, so a multi-statement migration that fails midway on those engines leaves earlier statements applied — keep one logical change per file. `CREATE TABLE` and `ALTER TABLE ... ADD` are made idempotent on Firebird/MSSQL (existence-checked via `RDB$RELATION_FIELDS` / `tableExists`) so a re-run with a raw `CREATE`/`ADD` does not error "object already exists"; SQLite/MySQL/PostgreSQL support `IF NOT EXISTS` and are left to the engine. Only a genuine already-exists is skipped — every other error still raises.
+- **Atomicity caveat:** per-file transactions are truly atomic on engines with **transactional DDL (PostgreSQL, and SQLite)**. SQLite's DDL is transactional too (autocommit is off inside `adapterStartTransaction`), so a multi-statement migration that fails midway on SQLite rolls back cleanly, including any `CREATE TABLE` that already ran earlier in the same file — proven by `test/migrationContract.test.ts`. MySQL and Firebird **auto-commit DDL**, so the same failure on those two engines leaves earlier statements applied — keep one logical change per file there. `CREATE TABLE` and `ALTER TABLE ... ADD` are made idempotent on Firebird/MSSQL (existence-checked via `RDB$RELATION_FIELDS` / `tableExists`) so a re-run with a raw `CREATE`/`ADD` does not error "object already exists"; SQLite/MySQL/PostgreSQL support `IF NOT EXISTS` and are left to the engine. Only a genuine already-exists is skipped — every other error still raises.
 - The stored-proc block delimiters (`$$ … $$` / `// … //`) are extracted before splitting, but a `//` preceded by a colon is **not** treated as a delimiter, so a URL (`https://…`) or any `://` literal inside a migration is never swallowed as an opaque block.
 
 Schema sync (`syncModels`) runs alongside SQL migrations on boot.
@@ -1204,7 +1203,7 @@ import { Router } from "./router.js";  // .js even though the file is .ts
 1. **Native `node:http`** — No framework dependency. Zero overhead.
 2. **`tsx` for dev** — No build step needed during development. TypeScript runs directly.
 3. **Convention-based models** — `static fields = {}` over decorators. No special TypeScript config needed.
-4. **CDN for Swagger UI** — Keeps install under 8MB. Single HTML file loads from unpkg.com.
+4. **CDN for Swagger UI** — Keeps install under 8MB. Single HTML file loads from jsdelivr.net (the same default across all four frameworks).
 5. **Browser reload, not process restart** — The `tina4` Rust CLI watches `src/`, `migrations/`, `.env` and POSTs `/__dev/api/reload` to the running server. The server stays up; only the browser reloads (via WS on `/__dev_reload`, polling fallback on `GET /__dev/api/mtime`). No ESM HMR gymnastics, no server restart, no framework-side watcher.
 6. **SQLite default** — `node:sqlite` is synchronous and fast. Full adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird.
 7. **CLI named `tina4nodejs`** (primary) with `tina4` as alias — So `npx tina4nodejs init` or `npx tina4 init` both work.
@@ -1385,7 +1384,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 ## v3 Features Summary
 
 - **98 built-in features**, zero third-party dependencies
-- **7,537 tests** passing, 0 failed, **0 skipped** across 262 files (typecheck exit 0) - measured 2026-08-06 on the lab host (Ubuntu 24.04.4 LTS x86_64, Node v24.18.0) against live services with TINA4_REQUIRE_SERVICES=1. **Firebird is NOT excluded** - `test/firebird*.test.ts` runs against a REAL Firebird 5. The last six skips are closed, each by giving it the environment its condition needs rather than by relaxing what it asserts: the four missing-driver cases run in a child process that genuinely cannot resolve the driver (the source is copied out of the repo to a tree with no `node_modules` above it and run with plain `node` - `test/_driverlessTree.ts`, no resolver shim); the strict-mode write failure drops the effective uid so a 0400 file really denies root; and the RabbitMQ default-config round-trip clears the per-framework isolation overrides for that one case so "default" means the default. Every one was proven able to FAIL by mutating the code it guards.
+- **7,537 tests** passing, 0 failed, **0 skipped** across 262 files (typecheck exit 0) - measured 2026-08-06 on the lab host (Ubuntu 24.04.4 LTS x86_64, Node v24.18.0) against live services with TINA4_REQUIRE_SERVICES=1. **Firebird runs on the lab but IS excluded from the require-services gate** - `test/_serviceGate.ts` lists `firebird` in `EXCLUDED_KEYWORDS` because GitHub CI provisions no Firebird, so a Firebird skip has to stay green there; the lab provisions a live Firebird 5 (`TINA4_TEST_FIREBIRD_URL`) and `test/firebird*.test.ts` (plus the feature-12 `test/firebirdProviderContract.test.ts`) runs against it. Those are two different things: real-Firebird coverage is enforced on the LAB, not by CI (FB-GATE-EXCLUDED). `node-firebird` is an optionalDependency of `@tina4/orm`, not a devDependency. The last six skips are closed, each by giving it the environment its condition needs rather than by relaxing what it asserts: the four missing-driver cases run in a child process that genuinely cannot resolve the driver (the source is copied out of the repo to a tree with no `node_modules` above it and run with plain `node` - `test/_driverlessTree.ts`, no resolver shim); the strict-mode write failure drops the effective uid so a 0400 file really denies root; and the RabbitMQ default-config round-trip clears the per-framework isolation overrides for that one case so "default" means the default. Every one was proven able to FAIL by mutating the code it guards.
 - **Race-safe `getNextId()`** with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode

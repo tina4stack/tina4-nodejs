@@ -1,6 +1,6 @@
 {
   "name": "@tina4/orm",
-  "version": "3.13.97",
+  "version": "3.13.99",
   "description": "Tina4 ORM — models, auto-CRUD, query builder",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,6 +17,8 @@
   "optionalDependencies": {
     "mongodb": "^6.0.0",
     "mysql2": "^3.22.5",
+    "node-firebird": "^2.14.3",
+    "odbc": "^2.4.9",
     "pg": "^8.20.0",
     "tedious": "^19.2.1"
   }

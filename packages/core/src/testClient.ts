@@ -1,6 +1,28 @@
 /**
  * Tina4 Test Client — Test routes without starting a server.
  *
+ * Builds a mock IncomingMessage/ServerResponse and dispatches them through
+ * the REAL Tina4 front controller (server.ts's `runDispatch`, over either the
+ * live server's DispatchContext when one is running in this process, or a
+ * standalone one bound to the given/default router when none is) — the same
+ * function every live socket connection runs. Everything a live request
+ * gets, an in-process test request gets: the session stage, global + per-
+ * route middleware in the live order (gate BEFORE route middleware, per
+ * ADR-0012), the secure-by-default auth gate, static files, template routes,
+ * the landing page, RFC 9110 OPTIONS/405 `Allow` responses, and the 404/500
+ * renderers.
+ *
+ * This used to re-implement the dispatch order itself — matching the route
+ * directly and running global/route middleware and the auth gate by hand —
+ * which meant the session stage never ran (a session-token auth regression
+ * was structurally unreachable) and route middleware ran BEFORE the gate
+ * (the live server's order is gate first, ADR-0012). Delegating to the real
+ * `runDispatch` closes both gaps for free, along with everything else the
+ * live pipeline does that this file never had to know about (feature 131,
+ * TC-DEC-01 — the same shape as the #PY2 auth fix and the Python/PHP/Ruby
+ * TestClients, which have always called their own real front controller:
+ * `core.server.app`, `Router::dispatch`, `RackApp#call`).
+ *
  * Usage:
  *
  *   import { TestClient } from "@tina4/core";
@@ -16,11 +38,8 @@
  */
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
-import { createRequest } from "./request.js";
-import { createResponse } from "./response.js";
-import { defaultRouter, Router, runRouteMiddlewares } from "./router.js";
-import { MiddlewareRunner, isMiddlewareClass } from "./middleware.js";
-import { enforceRouteAuth } from "./authGate.js";
+import { defaultRouter, Router } from "./router.js";
+import { runDispatch, buildDispatchContext, getLiveDispatchContext, type DispatchContext } from "./server.js";
 
 export class TestResponse {
   public readonly status: number;
@@ -28,11 +47,39 @@ export class TestResponse {
   public readonly headers: Record<string, string>;
   public readonly contentType: string;
 
-  constructor(statusCode: number, headers: Record<string, string>, body: string) {
+  /** Every value sent per header name (lowercased), in emission order. */
+  private readonly headerList: Record<string, string[]>;
+
+  constructor(statusCode: number, headerList: Record<string, string[]>, body: string) {
     this.status = statusCode;
     this.body = body;
-    this.headers = headers;
-    this.contentType = headers["content-type"] ?? "";
+    this.headerList = headerList;
+
+    // `headers` stays the back-compat single-value view — the LAST value per
+    // name, the shape every existing reader already expects (TC-HEADER-
+    // COLLAPSE, TC-DEC-02: a duplicate response header, e.g. two Set-Cookie
+    // from two response.cookie() calls, used to collapse via a comma-join
+    // here, which is unsafe for Set-Cookie specifically since a cookie's own
+    // Expires attribute can itself contain a comma — getHeaderList() below is
+    // the one place every value is visible; headers[name] keeps collapsing).
+    const flat: Record<string, string> = {};
+    for (const [name, values] of Object.entries(headerList)) {
+      if (values.length > 0) flat[name] = values[values.length - 1]!;
+    }
+    this.headers = flat;
+    this.contentType = this.headers["content-type"] ?? "";
+  }
+
+  /**
+   * Every value sent for `name` (case-insensitive), in emission order.
+   *
+   * A header sent once returns a one-item array; a header never sent returns
+   * an empty array. This is the one place a duplicate response header (two
+   * `Set-Cookie`) is visible — `headers[name]` always collapses to the LAST
+   * value, same as before (TC-HEADER-COLLAPSE, TC-DEC-02).
+   */
+  getHeaderList(name: string): string[] {
+    return this.headerList[name.toLowerCase()] ?? [];
   }
 
   /** Parse body as JSON. */
@@ -62,10 +109,39 @@ export interface RequestOptions {
 }
 
 export class TestClient {
-  private router: Router;
+  /** An explicitly-injected router (test isolation); undefined means "use the live server's router, or defaultRouter". */
+  private readonly explicitRouter: Router | undefined;
+  private ctxPromise: Promise<DispatchContext> | null = null;
 
   constructor(router?: Router) {
-    this.router = router ?? defaultRouter;
+    this.explicitRouter = router;
+  }
+
+  /**
+   * Resolve (and memoise) the DispatchContext this client dispatches
+   * through.
+   *
+   * An explicitly-injected router always gets its OWN standalone context
+   * (buildDispatchContext) — the test-isolation contract an injected router
+   * has always had: a dedicated Router never races with whatever else is
+   * registered on defaultRouter or a live server. With no injected router,
+   * the LIVE server's context wins when one is running in this process
+   * (getLiveDispatchContext — maximum fidelity, mirrors Ruby's
+   * `RackApp.current`), else a standalone context bound to defaultRouter.
+   */
+  private context(): Promise<DispatchContext> {
+    if (this.ctxPromise) return this.ctxPromise;
+
+    if (!this.explicitRouter) {
+      const live = getLiveDispatchContext();
+      if (live) {
+        this.ctxPromise = Promise.resolve(live);
+        return this.ctxPromise;
+      }
+    }
+
+    this.ctxPromise = buildDispatchContext(this.explicitRouter ?? defaultRouter);
+    return this.ctxPromise;
   }
 
   /** Send a GET request. */
@@ -93,7 +169,7 @@ export class TestClient {
     return this._request("DELETE", path, options);
   }
 
-  /** Build a mock request, match the route, execute the handler. */
+  /** Build a mock request/response pair and dispatch it through the REAL pipeline (runDispatch). */
   private async _request(method: string, path: string, options?: RequestOptions): Promise<TestResponse> {
     const { json, body, headers } = options ?? {};
 
@@ -126,7 +202,7 @@ export class TestClient {
     const rawReq = new IncomingMessage(socket);
     rawReq.method = method.toUpperCase();
     rawReq.url = path;
-    rawReq.headers = { ...reqHeaders, host: "localhost:7145" };
+    rawReq.headers = { ...reqHeaders, host: "localhost:7148" };
 
     // Push body data into the readable stream
     if (rawBody) {
@@ -134,133 +210,47 @@ export class TestClient {
     }
     rawReq.push(null); // signal end of stream
 
-    // Create a mock ServerResponse that captures output
+    // Create a mock ServerResponse that captures output.
+    //
+    // A response over a real socket flips `writableEnded` only when Node's
+    // OWN write/end implementation actually runs, and this mock never calls
+    // it — write()/end() are fully replaced, since there is no real peer to
+    // stream bytes to. Left alone, `rawRes.writableEnded` therefore stays
+    // FALSE forever (confirmed empirically), even after this mock's own
+    // end() has "completed". The real pipeline checks `res.raw.writableEnded`
+    // in several places to decide whether a stage already answered the
+    // request — most importantly runMatchedRoute's trailing
+    // `if (!res.raw.writableEnded) res.raw.end();` — so a permanently-false
+    // reading causes a SECOND, redundant end() call after every matched
+    // route. That reaches compressionEtagIntercept's wrapped end(), whose own
+    // buffered chunks were never cleared from the first call, and it resends
+    // them: the captured body comes out DUPLICATED. `ended` is the real
+    // single source of truth here, exposed via an own-property override of
+    // `writableEnded` so every pipeline stage's check reads correctly, and
+    // write()/end() themselves become no-ops once it is set (idempotent,
+    // matching the real "write/end after end is a no-op" contract).
     const rawRes = new ServerResponse(rawReq);
     const chunks: Buffer[] = [];
-    const originalWrite = rawRes.write.bind(rawRes);
-    const originalEnd = rawRes.end.bind(rawRes);
+    let ended = false;
+    Object.defineProperty(rawRes, "writableEnded", { get: () => ended, configurable: true });
 
-    rawRes.write = function (chunk: any, ...args: any[]): boolean {
-      if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    rawRes.write = ((chunk?: any, ..._args: any[]): boolean => {
+      if (ended) return true;
+      if (chunk != null) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
       return true;
-    } as typeof rawRes.write;
+    }) as typeof rawRes.write;
 
-    rawRes.end = function (chunk?: any, ...args: any[]): ServerResponse {
-      if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    rawRes.end = ((chunk?: any, ..._args: any[]): ServerResponse => {
+      if (ended) return rawRes;
+      if (chunk != null && typeof chunk !== "function") {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+      }
+      ended = true;
       return rawRes;
-    } as typeof rawRes.end;
+    }) as typeof rawRes.end;
 
-    // Create Tina4 request/response wrappers
-    const req = createRequest(rawReq);
-    const res = createResponse(rawRes);
-
-    // Parse body (populates req.body)
-    await req.parseBody();
-
-    // Split path for route matching
-    const cleanPath = path.includes("?") ? path.split("?")[0] : path;
-
-    // Match route
-    const httpMethod = method.toUpperCase();
-    const match = this.router.match(httpMethod, cleanPath);
-    if (!match) {
-      // D6: dispatch through the REAL front-controller behaviour on a miss —
-      // never fabricate a body. This mirrors the live server tail
-      // (server.ts dispatch): RFC 9110 conformance first (a path registered
-      // under another method answers OPTIONS with 204 + Allow and any other
-      // method with 405 + Allow), then the framework's real 404. The old
-      // TestClient short-circuited to a hand-invented {"error":"Not found"}
-      // that the live server never sends, so a green test proved nothing about
-      // production (the same silent-success class as Python's pre-fix client).
-      const allowed = this.router.methodsAllowedForPath(cleanPath);
-      if (allowed.length > 0) {
-        const allowHeader = allowed.join(", ");
-        if (httpMethod === "OPTIONS") {
-          return new TestResponse(204, { allow: allowHeader, "content-length": "0" }, "");
-        }
-        const body405 = JSON.stringify({
-          error: "Method Not Allowed",
-          path: cleanPath,
-          method: httpMethod,
-          allow: allowed,
-          statusCode: 405,
-        });
-        return new TestResponse(405, { allow: allowHeader, "content-type": "application/json" }, body405);
-      }
-      // The framework's real 404. The live server renders an HTML error page
-      // when a project templatesDir/frondEngine exists and otherwise emits this
-      // exact JSON; a server-less TestClient has no project dir, so it produces
-      // the JSON fallback the live front controller itself falls back to.
-      // tina4: HTML-error-page + filesystem static serving are the only live
-      // front-controller steps a server-less client can't reproduce.
-      const body404 = JSON.stringify({
-        error: "Not Found",
-        statusCode: 404,
-        message: `No route found for ${httpMethod} ${cleanPath}`,
-      });
-      return new TestResponse(404, { "content-type": "application/json" }, body404);
-    }
-
-    // Inject route params
-    req.params = match.params;
-
-    // Global class-based middleware (Router.use / MiddlewareRunner.use), run in
-    // the SAME order the live dispatcher uses (server.ts): beforeX hooks before
-    // the handler, afterX hooks after — even on a before-short-circuit. Empty
-    // when a test registers none, so this is additive/non-breaking.
-    const globalMiddleware = [
-      ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
-    ];
-    if (globalMiddleware.length > 0) {
-      const [, , proceed] = await MiddlewareRunner.runBefore(globalMiddleware, req, res);
-      if (!proceed || res.raw.writableEnded) {
-        await MiddlewareRunner.runAfter(globalMiddleware, req, res);
-        if (!res.raw.writableEnded) res.raw.end();
-        return this._collect(rawRes, chunks, socket);
-      }
-    }
-
-    // Per-route middleware: functions, string specs, and CLASSES, through the
-    // same runner the live dispatcher uses. A route class's afterX hooks join
-    // the after pass below, exactly as in server.ts.
-    //
-    // ORDER DRIFT, stated rather than hidden: the live dispatcher runs the auth
-    // gate BEFORE the route's own middleware (ADR-0012 — middleware on a
-    // secured route must never process a request that is about to be rejected);
-    // here it still runs before the gate. Aligning the two is a behaviour
-    // change to the test surface and belongs in its own change.
-    const routeMiddlewareClasses = (match.middlewares ?? []).filter(isMiddlewareClass);
-    if (match.middlewares && match.middlewares.length > 0) {
-      const proceed = await runRouteMiddlewares(match.middlewares, req, res);
-      if (!proceed || res.raw.writableEnded) {
-        await MiddlewareRunner.runAfter([...globalMiddleware, ...routeMiddlewareClasses], req, res);
-        if (!res.raw.writableEnded) res.raw.end();
-        return this._collect(rawRes, chunks, socket);
-      }
-    }
-
-    // Route through the REAL auth gate (parity with the live server). A write to
-    // an auth-required route (secure-by-default POST/PUT/PATCH/DELETE, or any
-    // .secure() route) with no valid token / formToken / session token 401s here
-    // exactly as it would in production. The TestClient used to skip this and run
-    // the handler directly, so a green test could hide a live 401 — the
-    // verification layer lied. A public route (GET, or a write marked .noAuth())
-    // passes straight through. When rejected, enforceRouteAuth has written a 401
-    // to res.raw, so the collection below reports it just like a handler response.
-    // (#PY2 parity)
-    const isDevAdmin = cleanPath.startsWith("/__dev");
-    const rejected = enforceRouteAuth(req, res, match, isDevAdmin);
-
-    // Execute handler (only if auth passed)
-    if (!rejected) {
-      await match.handler(req, res);
-      // Global + route-class afterX hooks (logging / post-processing),
-      // mirroring the live tail.
-      const afterMiddleware = [...globalMiddleware, ...routeMiddlewareClasses];
-      if (afterMiddleware.length > 0) {
-        await MiddlewareRunner.runAfter(afterMiddleware, req, res);
-      }
-    }
+    const ctx = await this.context();
+    await runDispatch(ctx, rawReq, rawRes);
 
     return this._collect(rawRes, chunks, socket);
   }
@@ -268,13 +258,12 @@ export class TestClient {
   /** Gather the captured status/headers/body into a TestResponse and free the socket. */
   private _collect(rawRes: ServerResponse, chunks: Buffer[], socket: Socket): TestResponse {
     const responseBody = Buffer.concat(chunks).toString();
-    const responseHeaders: Record<string, string> = {};
+    const headerList: Record<string, string[]> = {};
     for (const [name, value] of Object.entries(rawRes.getHeaders())) {
-      if (value !== undefined) {
-        responseHeaders[name] = Array.isArray(value) ? value.join(", ") : String(value);
-      }
+      if (value === undefined) continue;
+      headerList[name.toLowerCase()] = Array.isArray(value) ? value.map(String) : [String(value)];
     }
     socket.destroy();
-    return new TestResponse(rawRes.statusCode, responseHeaders, responseBody);
+    return new TestResponse(rawRes.statusCode, headerList, responseBody);
   }
 }

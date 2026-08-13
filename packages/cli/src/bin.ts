@@ -11,7 +11,7 @@ import { runSeeds } from "./commands/seed.js";
 import { runMetrics } from "./commands/metrics.js";
 import { queueCommand, QUEUE_SUBCOMMAND_NAMES } from "./commands/queue.js";
 import { buildImage } from "./commands/build.js";
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -43,81 +43,34 @@ function readCliVersion(): string {
   return "0.0.0";
 }
 
-// ── Port-kill helper ────────────────────────────────────────────────
+// ── Port-takeover helper ────────────────────────────────────────────
+//
+// The identity check, PID safety filter, container guard, dev gate and opt-out
+// all live in ONE shared module (@tina4/core portTakeover) so this CLI path and
+// the runtime bind-failure fallback in core/server.ts cannot diverge
+// (TAKEOVER-DEC-02). Loaded lazily (mirroring how serve.ts pulls in core) so a
+// quick `tina4nodejs --help` never pays to import it.
 
 /**
- * Whether this process is running inside a container.
+ * Reclaim `port` from a stale Tina4 dev server, only when it is safe.
  *
- * Reclaiming a port makes sense on a dev machine, where a previous serve may
- * still hold it. Inside a container the server IS the container, so there is no
- * stale sibling to reclaim from -- and trying is dangerous (see below).
+ * Signals a holder ONLY when a Tina4 dev server recorded its PID in the per-port
+ * PID file (TAKEOVER-DEC-01). A foreign holder is left running and a clear
+ * message is printed; takeover is also skipped in a container, outside dev mode,
+ * and when opted out (`TINA4_NO_TAKEOVER` / `tina4 serve --no-kill`).
+ *
+ * Returns true only when a Tina4 holder was actually signalled.
  */
-function inContainer(): boolean {
-  if (existsSync("/.dockerenv") || existsSync("/run/.containerenv")) return true;
-  try {
-    const blob = readFileSync("/proc/1/cgroup", "utf-8");
-    return blob.includes("docker") || blob.includes("containerd") || blob.includes("kubepods");
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Kill any process listening on `port`. Returns true if anything was killed.
- *
- * Every PID is validated first. `parseInt` on a non-numeric lsof field yields
- * 1, and SIGTERM to PID 1 is the container's own init -- which is exactly how a
- * production container logged "Killed existing process on port 7148 (PID: 1
- * ...)" and then exited 143, killing itself on startup.
- */
-/**
- * The PIDs from `lsof -ti` output that are safe to signal.
- *
- * Pure so the safety rule can be tested directly. An unvalidated parse is a
- * footgun with real teeth: where lsof prints a different shape than -ti
- * implies, a non-numeric field becomes 0, and signalling PID 0 hits EVERY
- * process in the caller's own process group -- the server kills itself. That
- * is what produced "Killed existing process on port 7148 (PID: 1 ...)" in a
- * real image, where the container then exited 143.
- *
- * Accepts only all-digit tokens; never PID 0 (our group), PID 1 (init),
- * ourselves, or our own process group.
- */
-export function selectablePids(lsofOutput: string, me: number, myGroup?: number): number[] {
-  const pids: number[] = [];
-  for (const token of lsofOutput.split(/\s+/)) {
-    if (!/^\d+$/.test(token)) continue;   // never coerce junk into a PID
-    const pid = Number(token);
-    if (pid <= 1 || pid === me) continue;  // 0 = our group, 1 = init, me = suicide
-    if (myGroup !== undefined && pid === myGroup) continue;
-    if (!pids.includes(pid)) pids.push(pid);
-  }
-  return pids;
-}
-
-function killProcessOnPort(port: number): boolean {
-  if (inContainer()) return false;
-  try {
-    const result = execSync(`lsof -ti :${port}`, { encoding: "utf-8", timeout: 5000 }).trim();
-    if (!result) return false;
-
-    const killed: string[] = [];
-    // Node core exposes no getpgrp(), so myGroup stays unset here. The pid <= 1
-    // guard already covers the dangerous case (a junk field coercing to 0);
-    // Python and Ruby pass their real process group in addition.
-    for (const pid of selectablePids(result, process.pid)) {
-      try {
-        process.kill(pid, "SIGTERM");
-        killed.push(String(pid));
-      } catch {
-        // ignore ProcessLookupError / PermissionError
-      }
-    }
-    if (killed.length === 0) return false;
-    console.log(`  Killed existing process on port ${port} (PID: ${killed.join(", ")})`);
+async function killProcessOnPort(port: number): Promise<boolean> {
+  const { takeOverPort, isDev, noTakeoverOptedOut, TAKEOVER_KILLED, TAKEOVER_REFUSALS } =
+    await import("../../core/src/portTakeover.js");
+  const result = takeOverPort(port, isDev(), noTakeoverOptedOut());
+  if (result.status === TAKEOVER_KILLED) {
+    console.log(`  ${result.message}`);
     return true;
-  } catch {
-    // lsof not found or no process on port — that's fine
+  }
+  if (result.message && TAKEOVER_REFUSALS.includes(result.status)) {
+    console.log(`  ${result.message}`);
   }
   return false;
 }
@@ -352,7 +305,11 @@ export const COMMANDS: Record<string, CommandSpec> = {
       const port = portIndex !== -1 ? parseInt(a[portIndex + 1], 10) : 7148;
       const noBrowser = a.includes("--no-browser");
       const noReload = a.includes("--no-reload");
-      killProcessOnPort(port);
+      // --no-kill opts out of port takeover for the whole process, so the CLI
+      // path here AND the runtime bind-failure fallback both honour it
+      // (TAKEOVER-DEC-03).
+      if (a.includes("--no-kill")) process.env.TINA4_NO_TAKEOVER = "true";
+      await killProcessOnPort(port);
       await serveProject({ port, noBrowser, noReload });
     },
     usage: "[--port P] [--no-browser] [--no-reload]",

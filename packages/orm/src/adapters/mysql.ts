@@ -57,6 +57,22 @@ export class MysqlAdapter implements DatabaseAdapter {
   constructor(private config: MysqlConfig | string) {}
 
   /** Connect to MySQL. Must be called before using the adapter. */
+  /** ADR-0044 required adapter capability. */
+  getDatabaseType(): string {
+    return 'mysql';
+  }
+
+  /** ADR-0044: readable/writable native boolean. */
+  autocommit = true;
+
+  /**
+   * ADR-0044 / DBA-P02: every built-in adapter can guarantee an atomic
+   * multi-row batch by default. A test-only deployment representing one
+   * that cannot sets this false so executeMany rejects BEFORE the first
+   * write rather than risking partial durability.
+   */
+  supportsAtomicBatch = true;
+
   async connect(): Promise<void> {
     const mod = requireMysql2();
 
@@ -368,8 +384,13 @@ export class MysqlAdapter implements DatabaseAdapter {
   async columnsAsync(table: string): Promise<ColumnInfo[]> {
     // v3.13.14 (#48): a qualified name ("db.table") must back-quote each part
     // separately, otherwise the dot is read as part of one identifier.
+    // MYSQL-DESCRIBE-UNPARAM: DESCRIBE takes an IDENTIFIER, not a bind parameter,
+    // so each part is STRICT-quoted with embedded backticks ESCAPED (doubled) -
+    // a crafted/odd name becomes ONE escaped identifier (a clean "unknown table",
+    // never runnable SQL) instead of a backtick in the name closing the quote.
     const [schema, tbl] = SQLTranslator.splitSchema(table);
-    const target = schema ? `\`${schema}\`.\`${tbl}\`` : `\`${tbl}\``;
+    const q = (part: string): string => "`" + String(part).replace(/`/g, "``") + "`";
+    const target = schema ? `${q(schema)}.${q(tbl)}` : q(tbl);
     const rows = await this.queryAsync<{
       Field: string;
       Type: string;
@@ -455,6 +476,8 @@ function fieldTypeToMysql(def: FieldDefinition): string {
     case "number":
     case "numeric":
       return "DOUBLE";
+    case "decimal":
+      return `DECIMAL(${def.precision ?? 10},${def.scale ?? 2})`;
     case "boolean":
       return "TINYINT(1)";
     case "datetime":

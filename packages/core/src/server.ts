@@ -1,4 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
 import { resolve, dirname, join, relative } from "node:path";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isatty } from "node:tty";
@@ -11,24 +12,36 @@ import type { Tina4Config, Tina4Request, Tina4Response } from "./types.js";
 import { Router, defaultRouter, runRouteMiddlewares } from "./router.js";
 import { enforceRouteAuth } from "./authGate.js";
 import { discoverRoutes } from "./routeDiscovery.js";
+import {
+  takeOverPort,
+  isDev as isTakeoverDev,
+  noTakeoverOptedOut,
+  writePidfile,
+  removePidfile,
+  TAKEOVER_KILLED,
+  TAKEOVER_REFUSALS,
+} from "./portTakeover.js";
 import { createRequest } from "./request.js";
 import {
   resetRequestCaches,
   headStripIntercept,
+  compressionEtagIntercept,
   sessionAutoStart,
 } from "./dispatchPipeline.js";
-import { createResponse, setDefaultTemplatesDir } from "./response.js";
-import { MiddlewareChain, MiddlewareRunner, cors, requestLogger, isMiddlewareClass } from "./middleware.js";
+import { createResponse, setDefaultTemplatesDir, wantsJson, negotiatedErrorBody } from "./response.js";
+import { MiddlewareChain, MiddlewareRunner, cors, requestLogger, isMiddlewareClass, attachCsrfFromEnv, SecurityHeadersMiddleware } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
 import { loadEnv, isTruthy } from "./dotenv.js";
+import { isDebugMode } from "./errorOverlay.js";
 import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
-import { DevAdmin, RequestInspector, WsTracker } from "./devAdmin.js";
+import { DevAdmin, RequestInspector, WsTracker, devMutationDenial, DEV_SAFE_METHODS } from "./devAdmin.js";
 import { CLOSE_GOING_AWAY, devReloadWs, serveWebSocketRoute, wsRouteManager } from "./websocket.js";
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
 import { stopAllBackgroundTasks } from "./background.js";
+import { TINA4_VERSION } from "./version.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -200,18 +213,12 @@ export async function autoMigrateOnStartup(
   }
 }
 
-/** Read version from root package.json so the banner always matches the published version. */
-function readPackageVersion(): string {
-  try {
-    const pkgPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-    return pkg.version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
-const TINA4_VERSION = readPackageVersion();
+// VERSION-DEC-01 (feature 130): TINA4_VERSION is the ONE shared resolver in
+// ./version.ts (a walk-up to the nearest package.json, not this file's old
+// fixed depth-3 read, which silently returned "0.0.0" once @tina4/core was
+// relocated out of the monorepo layout). devAdmin.ts and mcp.ts's default dev
+// server import the SAME constant, so the banner, health, dashboard, and MCP
+// serverInfo can never drift from each other.
 
 /** Cache Frond instances by template directory to avoid repeated instantiation. */
 const frondCache = new Map<string, InstanceType<any>>();
@@ -303,39 +310,30 @@ export function _checkLegacyEnvVars(): void {
  * Uses lsof on macOS/Linux and netstat + taskkill on Windows.
  * Throws if the port cannot be freed.
  */
-function killPort(port: number): void {
-  // execFileSync is imported at the top of the file
-  console.log(`  Port ${port} in use — killing existing process...`);
-  try {
-    if (process.platform === "win32") {
-      const out = execFileSync("netstat", ["-ano"], { encoding: "utf-8", timeout: 5000 });
-      for (const line of out.split("\n")) {
-        if (line.includes(`:${port}`) && (line.includes("LISTENING") || line.includes("ESTABLISHED"))) {
-          const parts = line.trim().split(/\s+/);
-          const pid = parts[parts.length - 1];
-          if (/^\d+$/.test(pid)) {
-            execFileSync("taskkill", ["/PID", pid, "/F"], { timeout: 5000 });
-            break;
-          }
-        }
-      }
-    } else {
-      const pids = execFileSync("lsof", ["-ti", `:${port}`], { encoding: "utf-8", timeout: 5000 })
-        .trim()
-        .split("\n")
-        .filter(Boolean);
-      for (const pid of pids) {
-        if (/^\d+$/.test(pid.trim())) {
-          process.kill(parseInt(pid.trim(), 10), "SIGTERM");
-        }
-      }
-    }
-    // Brief pause for the OS to reclaim the port
-    execFileSync(process.execPath, ["-e", "setTimeout(() => {}, 500)"], { timeout: 2000 });
-    console.log(`  Port ${port} freed`);
-  } catch (err) {
-    throw new Error(`Could not free port ${port}: ${err}`);
+/**
+ * Reclaim `port` from a stale Tina4 dev server via the shared, guarded path.
+ *
+ * This is the runtime bind-failure fallback. It used to SIGTERM whatever held
+ * the port with NONE of the CLI's guards -- no identity check, no container
+ * guard, no PID-safety filter -- so a foreign holder (another dev server, a
+ * database) was killed on any bind failure. It now routes through the SAME
+ * identity-checked helper the CLI uses (TAKEOVER-DEC-02), so only a
+ * PID-file-confirmed Tina4 dev server is ever signalled.
+ *
+ * Throws when the port is held by a non-Tina4 process (or takeover is opted out
+ * / disabled outside dev), so the bind fails loudly with a clear message instead
+ * of killing an innocent process.
+ */
+export function killPort(port: number): void {
+  const result = takeOverPort(port, isTakeoverDev(), noTakeoverOptedOut());
+  if (result.status === TAKEOVER_KILLED) {
+    console.log(`  ${result.message}`);
+    return;
   }
+  if (TAKEOVER_REFUSALS.includes(result.status)) {
+    throw new Error(result.message);
+  }
+  // NOTHING / container: nothing to reclaim -- let the real bind decide.
 }
 
 /**
@@ -401,10 +399,16 @@ export function resolvePortAndHost(config?: { port?: number; host?: string }): {
     port = 7148;
   }
 
+  // DEVADMIN-DEC-02: in dev/serve mode (TINA4_DEBUG) the /__dev dashboard exposes
+  // an unauthenticated file/SQL/RCE surface, so the DEFAULT bind is loopback, not
+  // 0.0.0.0. Only the default changes: an explicit config.host / TINA4_HOST / HOST
+  // still wins (production passes one and does not set TINA4_DEBUG), so a developer
+  // who WANTS network exposure sets TINA4_HOST=0.0.0.0 to override deliberately.
+  const defaultHost = isTruthy(process.env.TINA4_DEBUG) ? "127.0.0.1" : "0.0.0.0";
   const host = config?.host
     ?? process.env.TINA4_HOST
     ?? process.env.HOST
-    ?? "0.0.0.0";
+    ?? defaultHost;
   return { port, host };
 }
 
@@ -435,7 +439,10 @@ export function isBannerSuppressed(): boolean {
 }
 
 function isDevMode(): boolean {
-  return isTruthy(process.env.TINA4_DEBUG);
+  // OVERLAY-DEC-04: unify the debug gate on the overlay module's isDebugMode() so the
+  // error-overlay gate (and every other dev gate that calls isDevMode) has ONE
+  // definition, instead of recomputing isTruthy(TINA4_DEBUG) separately. Same value.
+  return isDebugMode();
 }
 
 /**
@@ -654,7 +661,7 @@ export function resolveTemplate(pathname: string, templatesDir: string): string 
   return templateCache.get(cleanPath) ?? null;
 }
 
-function renderLandingPage(routes: Array<{ method: string; pattern: string; flags?: string[] }>, port: number = 7148): string {
+function renderLandingPage(port: number = 7148): string {
   const version = TINA4_VERSION;
 
   const galleryItems = [
@@ -818,6 +825,24 @@ function deployGallery(name) {
 // Module-level dispatch function — assigned when startServer() is called.
 // Allows handle() to route requests without requiring a reference to the server.
 let _dispatchFn: ((rawReq: IncomingMessage, rawRes: ServerResponse) => Promise<void>) | null = null;
+
+// The DispatchContext startServer() built for the currently-running server (if
+// any) — see getLiveDispatchContext() below. `null` until startServer() runs.
+let _liveDispatchContext: DispatchContext | null = null;
+
+/**
+ * The DispatchContext the currently-running server (if any) built at
+ * startServer() time — the FULL context (real ORM/Swagger/DevAdmin/CSRF
+ * wiring included), not the lighter one buildDispatchContext() makes on its
+ * own. `null` when startServer() has not run yet in this process.
+ *
+ * TestClient prefers this over a freshly-built context so a no-argument
+ * `new TestClient()` gets maximum fidelity to whatever server is actually
+ * live — mirroring Ruby's `RackApp.current` (feature 131, TC-DEC-01).
+ */
+export function getLiveDispatchContext(): DispatchContext | null {
+  return _liveDispatchContext;
+}
 
 // Lazily-resolved Database.resetRequestCaches binding (or null if the ORM is
 // not installed). Memoised so the dynamic import happens once, then every
@@ -1049,6 +1074,21 @@ async function runMatchedRoute(ctx: MatchedRouteContext): Promise<void> {
   const { req, res, match, postMatchMiddleware } = ctx;
   req.params = match.params as never;
 
+  // DEVADMIN-DEC-01/02: fail-closed same-origin + loopback gate on every /__dev
+  // write (POST/PUT/PATCH/DELETE), BEFORE the handler runs. Closes drive-by CSRF
+  // (a cross-origin page POSTing to /file/save then /reload) and a network-exposed
+  // debug box. Scoped to /__dev so /__feedback + /ai are unaffected; GET/HEAD/
+  // OPTIONS are safe and skip the gate. The MCP endpoints keep their own 404 gate
+  // (devMutationDenial skips the mcp prefixes for the loopback part).
+  const devMethod = (req.method ?? "GET").toUpperCase();
+  if (ctx.pathname.startsWith("/__dev") && !DEV_SAFE_METHODS.has(devMethod)) {
+    const denial = devMutationDenial(req);
+    if (denial) {
+      res.json({ ok: false, error: denial.error }, denial.status);
+      return;
+    }
+  }
+
   if (await runGlobalMiddlewarePass(postMatchMiddleware, req, res)) return;
 
   // Auth enforcement lives in enforceRouteAuth (authGate.ts) so the in-process
@@ -1277,7 +1317,7 @@ async function renderDispatchError(
     Events.emit("tina4.request.error", { exception: err, request: req });
   } catch (listenerErr) {
     try {
-      Log.warn(
+      Log.warning(
         `Listener for tina4.request.error raised: ${
           listenerErr instanceof Error
             ? `${listenerErr.name}: ${listenerErr.message}`
@@ -1292,23 +1332,56 @@ async function renderDispatchError(
   if (res.raw.writableEnded) return;
 
   if (isDevMode() && err instanceof Error) {
-    // Rich error overlay with stack trace, source context, and line numbers
-    const { renderErrorOverlay } = await import("./errorOverlay.js");
-    res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
-    res.raw.end(renderErrorOverlay(err, req));
+    // OVERLAY-DEC-03: guard the dev-overlay render. This call site sits INSIDE the
+    // dispatch catch, so if the overlay itself throws (a malformed frame, an
+    // unrenderable request value) it would double-fault out of dispatch. Wrap it and
+    // fall through to the same safe production page, so a broken overlay still yields a
+    // bounded 500 — never a crash.
+    try {
+      const { renderErrorOverlay } = await import("./errorOverlay.js");
+      const overlayHtml = renderErrorOverlay(err, req);
+      res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+      res.raw.end(overlayHtml);
+      return;
+    } catch (overlayErr) {
+      try {
+        Log.warning(
+          `Error overlay render failed, serving the safe page: ${
+            overlayErr instanceof Error ? `${overlayErr.name}: ${overlayErr.message}` : String(overlayErr)
+          }`
+        );
+      } catch {
+        // Log failures must never block the 500 render.
+      }
+      // fall through to the safe production page below
+    }
+  }
+
+  // The canonical per-request id (set at the top of dispatch), so the id a
+  // user reports off the 500 page matches the log lines and the X-Request-ID
+  // response header - not a throwaway base36 clock value.
+  const requestId = Log.getRequestId() ?? randomBytes(4).toString("hex");
+
+  // ERR-DEC-02: a JSON API client gets the JSON error body directly. The
+  // message is ALWAYS the generic "Internal Server Error" here - CWE-209 -
+  // never the real exception (same guarantee as error_message='' below).
+  if (wantsJson(req)) {
+    const body = negotiatedErrorBody(500, "Internal Server Error", requestId);
+    res.raw.writeHead(500, { "Content-Type": "application/json" });
+    res.raw.end(JSON.stringify(body));
     return;
   }
 
   const html500 = await renderErrorPage(500, {
     error_message: "",
-    request_id: `${Date.now().toString(36)}`,
+    request_id: requestId,
     path: req.path,
   }, templatesDir);
   if (html500) {
     res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
     res.raw.end(html500);
   } else {
-    res({ error: "Internal Server Error", statusCode: 500 }, 500);
+    res(negotiatedErrorBody(500, "Internal Server Error", requestId), 500);
   }
 }
 
@@ -1324,6 +1397,33 @@ interface FallbackContext {
   res: Tina4Response;
   pathname: string;
   router: Router;
+  port: number;
+  staticDir: string;
+  srcPublicDir: string;
+  templatesDir: string;
+  frondEngine: { render(file: string, data: Record<string, unknown>): string } | null;
+  swaggerAssetsEnabled: boolean;
+}
+
+/**
+ * Everything one request's dispatch needs beyond req/res: the resolved
+ * router, middleware chain, filesystem roots and template engine a boot
+ * resolved once.
+ *
+ * Passed explicitly — never closed over — so the SAME dispatch function can
+ * be driven from TWO places: the live socket server (startServer() builds
+ * the full context, wired to real ORM/Swagger/DevAdmin/CSRF registrations)
+ * and the in-process TestClient (buildDispatchContext(), below, when no live
+ * server is running in this process, or when the caller wants an isolated
+ * router). Both run the identical runDispatch()/dispatchInner() — no stage
+ * is ever skipped for one caller and not the other (feature 131, TC-DEC-01
+ * — this was a closure trapped inside startServer() until now, which is
+ * exactly why TestClient could not call it and grew its own competing
+ * dispatch instead).
+ */
+export interface DispatchContext {
+  router: Router;
+  middleware: MiddlewareChain;
   port: number;
   staticDir: string;
   srcPublicDir: string;
@@ -1363,13 +1463,8 @@ function serveLandingPage(ctx: FallbackContext): boolean {
   if ((ctx.req.method ?? "GET") !== "GET") return false;
   if (ctx.pathname !== "/" || !isDevMode()) return false;
 
-  const allRoutes = ctx.router.getRoutes().map((r) => ({
-    method: r.method,
-    pattern: r.pattern,
-    flags: [] as string[],
-  }));
   ctx.res.raw.writeHead(200, undefined, { "Content-Type": "text/html; charset=utf-8" });
-  ctx.res.raw.end(renderLandingPage(allRoutes, ctx.port));
+  ctx.res.raw.end(renderLandingPage(ctx.port));
   return true;
 }
 
@@ -1418,6 +1513,11 @@ function serveMethodNotAllowed(ctx: FallbackContext): boolean {
  * regardless of TINA4_SWAGGER_ENABLED / TINA4_DEBUG.
  */
 function serveStaticAsset(ctx: FallbackContext): boolean {
+  // ONE search order across the four frameworks (ST-SEARCHDIR-DIVERGE):
+  // TINA4_PUBLIC_DIR override first (ST-PUBLICDIR-ENV-PARTIAL), then the app's
+  // public then src/public, then the framework built-in public last.
+  const custom = process.env.TINA4_PUBLIC_DIR;
+  if (custom && existsSync(custom) && tryServeStatic(custom, ctx.req, ctx.res)) return true;
   if (existsSync(ctx.staticDir) && tryServeStatic(ctx.staticDir, ctx.req, ctx.res)) return true;
   if (existsSync(ctx.srcPublicDir) && tryServeStatic(ctx.srcPublicDir, ctx.req, ctx.res)) return true;
 
@@ -1429,15 +1529,26 @@ function serveStaticAsset(ctx: FallbackContext): boolean {
 
 /** Terminal stage: 404, with the canonical reason phrase so the status line is well-formed. */
 async function serveNotFound(ctx: FallbackContext): Promise<boolean> {
-  const html404 = await renderErrorPage(404, { path: ctx.pathname }, ctx.templatesDir);
+  // The canonical per-request id (set at the top of dispatch), so the id a
+  // user reports off the 404 matches the log lines and the X-Request-ID
+  // response header - not a throwaway (ERR-404-REQUESTID).
+  const requestId = Log.getRequestId() ?? randomBytes(4).toString("hex");
+
+  // ERR-DEC-02: a JSON API client gets the JSON error body directly - no
+  // need to even try the HTML template.
+  if (wantsJson(ctx.req)) {
+    const body = negotiatedErrorBody(404, "Not Found", requestId);
+    ctx.res.raw.writeHead(404, httpReason(404), { "Content-Type": "application/json" });
+    ctx.res.raw.end(JSON.stringify(body));
+    return true;
+  }
+
+  const html404 = await renderErrorPage(404, { path: ctx.pathname, request_id: requestId }, ctx.templatesDir);
   if (html404) {
     ctx.res.raw.writeHead(404, httpReason(404), { "Content-Type": "text/html; charset=utf-8" });
     ctx.res.raw.end(html404);
   } else {
-    ctx.res(
-      { error: "Not Found", statusCode: 404, message: `No route found for ${ctx.req.method} ${ctx.pathname}` },
-      404,
-    );
+    ctx.res(negotiatedErrorBody(404, `No route found for ${ctx.req.method} ${ctx.pathname}`, requestId), 404);
   }
   return true;
 }
@@ -1457,6 +1568,225 @@ const FALLBACK_STAGES: Array<(ctx: FallbackContext) => boolean | Promise<boolean
   serveStaticAsset,
   serveNotFound,
 ];
+
+/**
+ * Build a standalone DispatchContext bound to `router`, without booting a
+ * real server — no port bind, no route discovery, no ORM/Swagger/DevAdmin/
+ * CSRF wiring (those are startServer()'s job, and they mutate global/process
+ * state a lightweight caller should not trigger just by dispatching one
+ * request).
+ *
+ * For the in-process TestClient (and any other embedder) to reach the REAL
+ * pipeline when no `startServer()` has run yet in this process, or when the
+ * caller wants an ISOLATED router independent of whatever live server might
+ * be running — parity with the existing `new TestClient(router)`
+ * test-isolation contract (see testClientFrontController.test.ts, which
+ * builds a fresh Router precisely so it never races with concurrent
+ * TestClient suites on the shared defaultRouter).
+ *
+ * Best-effort, like startServer()'s own setup: Frond and @tina4/swagger are
+ * optional dependencies of @tina4/core, so a missing package degrades to
+ * `null` / `false` rather than throwing — a template route or a swagger
+ * asset request simply falls through the fallback chain the same way it
+ * would if those packages were never installed.
+ */
+export async function buildDispatchContext(router: Router, base?: string): Promise<DispatchContext> {
+  const root = base ? resolve(base) : process.cwd();
+  const staticDir = resolve(root, "public");
+  const srcPublicDir = resolve(root, "src/public");
+  const templatesDir = resolve(root, "src/templates");
+
+  let frondEngine: DispatchContext["frondEngine"] = null;
+  try {
+    const { Frond } = await import("../../frond/src/engine.js");
+    frondEngine = new Frond(templatesDir);
+  } catch {
+    // Frond not available — template-route fallback stays inert, same guard startServer() uses.
+  }
+
+  let swaggerAssetsEnabled = false;
+  try {
+    const swagger = await import("../../swagger/src/index.js");
+    swaggerAssetsEnabled = swagger.swaggerEnabled();
+  } catch {
+    // Swagger not available — bundled swagger assets stay ungated-but-absent, same as startServer().
+  }
+
+  return {
+    router,
+    middleware: new MiddlewareChain(),
+    port: 7148,
+    staticDir,
+    srcPublicDir,
+    templatesDir,
+    frondEngine,
+    swaggerAssetsEnabled,
+  };
+}
+
+/**
+ * Drive one request through PROLOGUE_STAGES -> REQUEST_STAGES -> route match
+ * -> ROUTE_STAGES (or FALLBACK_STAGES on a miss) -> ERROR_STAGES. This is the
+ * function every stage list in dispatchPipeline.ts describes; ctx supplies
+ * everything a boot resolved once (router, middleware, filesystem roots,
+ * Frond) so this function itself closes over nothing from a particular
+ * server instance.
+ */
+async function dispatchInner(
+  ctx: DispatchContext,
+  rawReq: IncomingMessage,
+  rawRes: ServerResponse,
+  requestId: string,
+): Promise<void> {
+  const req = createRequest(rawReq);
+  const res = createResponse(rawRes);
+
+  // PROLOGUE STAGES. Extracted to dispatchPipeline.ts - see PROLOGUE_STAGES
+  // there for the ordered list and why the order is behaviour, not taste.
+  // These four close over nothing but the raw req/res (never ctx), which is
+  // why they take no context object at all.
+  await resetRequestCaches();
+  headStripIntercept(rawReq, rawRes);
+  // Feature 40 (CE-DEC-01/02): gzip + ETag + conditional-GET for every
+  // dynamic response. Installed right after headStripIntercept so it runs
+  // (execution order is the REVERSE of installation for these monkey-patch
+  // interceptors) AFTER the dev-toolbar/feedback injection but BEFORE the
+  // HEAD body-strip - see compressionEtagIntercept's docblock.
+  compressionEtagIntercept(rawReq, rawRes);
+
+  // res.render() is handled natively by response.ts via Frond
+
+  try {
+    // sessionAutoStart is the one prologue stage INSIDE the try. It degrades
+    // on its own (ADR-0021), so the only thing that escapes it is a
+    // TINA4_SESSION_STRICT refusal - and that must become a 500 through the
+    // normal error renderer, like Python's raise becomes a 500 in the ASGI
+    // server. Outside the try it rejected `dispatch`, and nothing awaits the
+    // listener http.createServer() calls: an unhandled rejection that takes
+    // the whole worker down is not "refuse this request".
+    await sessionAutoStart(rawReq, rawRes, req);
+
+    // Run middleware chain
+    await ctx.middleware.run(req, res);
+    if (res.raw.writableEnded) return;
+
+    // Parse request body.
+    //
+    // A body that breaks a documented limit is the client's error, not the
+    // server's. PayloadTooLargeError already carried `statusCode = 413` and
+    // nothing read it, so an oversized upload answered 500 - which tells the
+    // caller to retry the exact request that will fail again.
+    try {
+      await req.parseBody();
+    } catch (err) {
+      const status = (err as { statusCode?: number })?.statusCode;
+      if (typeof status === "number" && status >= 400 && status < 500) {
+        if (!rawRes.writableEnded) {
+          rawRes.statusCode = status;
+          rawRes.setHeader("content-type", "application/json");
+          rawRes.end(JSON.stringify({ error: (err as Error).message }));
+        }
+        return;
+      }
+      throw err;
+    }
+
+    const pathname = req.path;
+
+    // Track request start time for dev inspector
+    const reqStartTime = DevAdmin.isEnabled() ? Date.now() : 0;
+
+    // Mutable ref so wrappedEnd can read the matched pattern after route matching
+    // A HOLDER, not a plain string: the end-wrapper below reads it at end()
+    // time, after route matching has assigned it.
+    const matchedPattern = { value: "" };
+
+    // Wrap res.raw.end to inject dev toolbar and capture requests
+    // Skip toolbar injection on the AI port (no-reload behaviour)
+    const isAiPortRequest = !!(rawReq as any)._tina4AiPort;
+
+    // AI port: block /__dev_reload so AI tools never trigger a browser reload.
+    if (blockAiPortReload(res, pathname, isAiPortRequest)) return;
+
+    // Wrap res.raw.end so the dev toolbar / feedback widget can be injected
+    // and the request captured for the inspector. Extracted - see
+    // wrapResponseEnd. matchedPattern is a HOLDER because the wrapper reads
+    // it at end() time, long after route matching has assigned it.
+    wrapResponseEnd({
+      req, res, pathname, router: ctx.router,
+      reqStartTime, requestId, matchedPattern, isAiPortRequest,
+    });
+
+    // Global middleware, split by what it depends on (ADR-0012). The
+    // PRE-match set runs before a route is even looked up, so CORS and
+    // anything else that must survive a short-circuit can set headers that
+    // outlive a 401/403; opt in with `static preMatch = true`.
+    const { pre: preMatchMiddleware, post: postMatchMiddleware } =
+      MiddlewareRunner.partitionByMatchPhase([
+        ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
+      ]);
+
+    if (await runGlobalMiddlewarePass(preMatchMiddleware, req, res)) return;
+
+    // Match route. ROUTES BEAT FILES (ADR-0010): static assets resolve in
+    // the not-found fallback below, only once no route has claimed the path.
+    // A file in public/ can arrive from a build step, an upload directory or
+    // a careless deploy, and it must never silently shadow a reviewed route.
+    const match = ctx.router.match(req.method ?? "GET", pathname);
+    if (match) {
+      matchedPattern.value = match.pattern;
+      await runMatchedRoute({
+        req, res, pathname, match, postMatchMiddleware,
+        allGlobalMiddleware: [...preMatchMiddleware, ...postMatchMiddleware],
+      });
+      return;
+    }
+
+    // NOT-FOUND FALLBACK STAGES. Nothing matched a route, so walk the
+    // fallback chain in order - see FALLBACK_STAGES. Each returns true when
+    // it has answered the request.
+    //
+    // ADR-0010 (routes beat files) is why this chain runs AFTER matching: a
+    // file dropped into public/ by a build step or a careless deploy must
+    // never shadow a reviewed route.
+    const fallback: FallbackContext = {
+      req, res, pathname, router: ctx.router, port: ctx.port, staticDir: ctx.staticDir, srcPublicDir: ctx.srcPublicDir,
+      templatesDir: ctx.templatesDir, frondEngine: ctx.frondEngine, swaggerAssetsEnabled: ctx.swaggerAssetsEnabled,
+    };
+    for (const stage of FALLBACK_STAGES) {
+      if (await stage(fallback)) return;
+    }
+  } catch (err) {
+    await renderDispatchError(err, req, res, ctx.templatesDir);
+  }
+}
+
+/**
+ * Dispatch one request through the REAL Tina4 pipeline (stamps the
+ * per-request correlation id, then hands off to dispatchInner). This is the
+ * exact function startServer() wires to every live socket connection AND to
+ * the module-level handle() — an in-process caller (TestClient) that builds
+ * its own DispatchContext (buildDispatchContext(), or the live one via
+ * getLiveDispatchContext()) runs the IDENTICAL function, so no stage is ever
+ * skipped for one caller and not the other (feature 131, TC-DEC-01).
+ */
+export async function runDispatch(
+  ctx: DispatchContext,
+  rawReq: IncomingMessage,
+  rawRes: ServerResponse,
+): Promise<void> {
+  // Feature 43: PER-REQUEST correlation id. Honour a sanitized inbound
+  // X-Request-ID so a client or upstream service can thread its own id
+  // through - a CR/LF, over-long or illegal-charset value is rejected (never
+  // echoed) - else generate one. Echo it on the response by stamping the raw
+  // response NOW, so every outcome (200/404/500/413, Tina4Response OR a raw
+  // rawRes.end) carries it. Then establish it in an AsyncLocalStorage so every
+  // log line for this request - across every await - carries it, and two
+  // requests interleaving on the one event loop never read each other's id.
+  const requestId = Log.sanitizeRequestId(rawReq.headers["x-request-id"]) ?? randomBytes(4).toString("hex");
+  if (!rawRes.headersSent) rawRes.setHeader("x-request-id", requestId);
+  return Log.runWithRequestId(requestId, () => dispatchInner(ctx, rawReq, rawRes, requestId));
+}
 
 export async function startServer(config?: Tina4Config): Promise<{
   close: () => void;
@@ -1649,6 +1979,13 @@ ${reset}
   middleware.use(requestLogger());
   middleware.use(rateLimiter());
 
+  // Security headers: register in the default chain UNCONDITIONALLY
+  // (secure-by-default, SECHDR-DEC-01). It is CLASS middleware (a beforeSecurity
+  // hook), so it goes in the MiddlewareRunner registry like CsrfMiddleware — no
+  // opt-in: a default app ships X-Frame-Options/X-Content-Type-Options/CSP/etc.
+  // HSTS stays HTTPS-only. Idempotent (MiddlewareRunner.use de-dupes).
+  MiddlewareRunner.use(SecurityHeadersMiddleware);
+
   // Discover file-based routes
   if (existsSync(routesDir)) {
     const routes = await discoverRoutes(routesDir);
@@ -1661,6 +1998,14 @@ ${reset}
     }
   } else {
     console.log(`\n  No routes directory found at ${routesDir}`);
+  }
+
+  // Auto-attach CSRF when TINA4_CSRF is enabled — AFTER route discovery, BEFORE
+  // listen. OFF by default: unset means no CSRF gate; TINA4_CSRF=true/1/yes/on
+  // attaches CsrfMiddleware globally so every write is gated (CSRF-DEC-02).
+  // Idempotent. Mirrors Python's attach_csrf_from_env in server boot.
+  if (attachCsrfFromEnv()) {
+    console.log(`\n  \x1b[36mCSRF\x1b[0m protection enabled (TINA4_CSRF)`);
   }
 
   // Initialize ORM if models directory exists (check src/orm/ first, then src/models/)
@@ -1740,7 +2085,6 @@ ${reset}
       // Skip the rest of the swagger block when disabled.
       throw new Error("__swagger_disabled__");
     }
-    const allRoutes = router.getRoutes();
 
     // Collect model definitions for schema generation
     let modelDefs: Array<{ tableName: string; fields: Record<string, unknown> }> = [];
@@ -1761,7 +2105,14 @@ ${reset}
       // ORM not available, swagger will work without model schemas
     }
 
-    const getSpec = () => swagger.generate(allRoutes, modelDefs as any);
+    // Read router.getRoutes() LIVE on every call — never a captured snapshot
+    // (SWAG-NODE-BOOT-SNAPSHOT, ADR-0004). This used to close over a
+    // boot-time `allRoutes` array, so the spec regenerated per request but
+    // over a FROZEN route list: a route registered after boot (hot-reload, or
+    // DevAdmin.register running after this block — see the /__feedback
+    // exclusion above) never appeared. Python/PHP/Ruby always read the live
+    // route table inside their generate() call; this is that same shape.
+    const getSpec = () => swagger.generate(router.getRoutes(), modelDefs as any);
     const swaggerRoutes = swagger.createSwaggerRoutes(getSpec);
     for (const route of swaggerRoutes) {
       router.addRoute(route);
@@ -1783,127 +2134,22 @@ ${reset}
     }
   }
 
-  async function dispatch(rawReq: IncomingMessage, rawRes: ServerResponse): Promise<void> {
-    const req = createRequest(rawReq);
-    const res = createResponse(rawRes);
+  // The one DispatchContext this server instance dispatches every request
+  // through — router/middleware/filesystem roots/Frond, resolved above.
+  // runDispatch() (module-level, exported) is the SAME function TestClient
+  // calls for an in-process request; wiring both to one function is the
+  // fix for feature 131 TC-DEC-01 (Node used to re-implement the dispatch
+  // order in TestClient instead of calling this).
+  const dispatchCtx: DispatchContext = {
+    router, middleware, port, staticDir, srcPublicDir, templatesDir, frondEngine, swaggerAssetsEnabled,
+  };
+  const dispatch = (rawReq: IncomingMessage, rawRes: ServerResponse): Promise<void> =>
+    runDispatch(dispatchCtx, rawReq, rawRes);
 
-    // PROLOGUE STAGES. Extracted to dispatchPipeline.ts - see PROLOGUE_STAGES
-    // there for the ordered list and why the order is behaviour, not taste.
-    // These three close over nothing from startServer, which is why they went
-    // first: no context object is needed for them at all.
-    await resetRequestCaches();
-    headStripIntercept(rawReq, rawRes);
-
-    // res.render() is handled natively by response.ts via Frond
-
-    try {
-      // sessionAutoStart is the one prologue stage INSIDE the try. It degrades
-      // on its own (ADR-0021), so the only thing that escapes it is a
-      // TINA4_SESSION_STRICT refusal - and that must become a 500 through the
-      // normal error renderer, like Python's raise becomes a 500 in the ASGI
-      // server. Outside the try it rejected `dispatch`, and nothing awaits the
-      // listener http.createServer() calls: an unhandled rejection that takes
-      // the whole worker down is not "refuse this request".
-      await sessionAutoStart(rawReq, rawRes, req);
-
-      // Run middleware chain
-      await middleware.run(req, res);
-      if (res.raw.writableEnded) return;
-
-      // Parse request body.
-      //
-      // A body that breaks a documented limit is the client's error, not the
-      // server's. PayloadTooLargeError already carried `statusCode = 413` and
-      // nothing read it, so an oversized upload answered 500 - which tells the
-      // caller to retry the exact request that will fail again.
-      try {
-        await req.parseBody();
-      } catch (err) {
-        const status = (err as { statusCode?: number })?.statusCode;
-        if (typeof status === "number" && status >= 400 && status < 500) {
-          if (!rawRes.writableEnded) {
-            rawRes.statusCode = status;
-            rawRes.setHeader("content-type", "application/json");
-            rawRes.end(JSON.stringify({ error: (err as Error).message }));
-          }
-          return;
-        }
-        throw err;
-      }
-
-      const pathname = req.path;
-
-      // Track request start time for dev inspector
-      const reqStartTime = DevAdmin.isEnabled() ? Date.now() : 0;
-
-      // Mutable ref so wrappedEnd can read the matched pattern after route matching
-      // A HOLDER, not a plain string: the end-wrapper below reads it at end()
-      // time, after route matching has assigned it.
-      const matchedPattern = { value: "" };
-      const requestId = Date.now().toString(36);
-
-      // Wrap res.raw.end to inject dev toolbar and capture requests
-      // Skip toolbar injection on the AI port (no-reload behaviour)
-      const isAiPortRequest = !!(rawReq as any)._tina4AiPort;
-
-      // AI port: block /__dev_reload so AI tools never trigger a browser reload.
-      if (blockAiPortReload(res, pathname, isAiPortRequest)) return;
-
-      // Wrap res.raw.end so the dev toolbar / feedback widget can be injected
-      // and the request captured for the inspector. Extracted - see
-      // wrapResponseEnd. matchedPattern is a HOLDER because the wrapper reads
-      // it at end() time, long after route matching has assigned it.
-      wrapResponseEnd({
-        req, res, pathname, router,
-        reqStartTime, requestId, matchedPattern, isAiPortRequest,
-      });
-
-      // Global middleware, split by what it depends on (ADR-0012). The
-      // PRE-match set runs before a route is even looked up, so CORS and
-      // anything else that must survive a short-circuit can set headers that
-      // outlive a 401/403; opt in with `static preMatch = true`.
-      const { pre: preMatchMiddleware, post: postMatchMiddleware } =
-        MiddlewareRunner.partitionByMatchPhase([
-          ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
-        ]);
-
-      if (await runGlobalMiddlewarePass(preMatchMiddleware, req, res)) return;
-
-      // Match route. ROUTES BEAT FILES (ADR-0010): static assets resolve in
-      // the not-found fallback below, only once no route has claimed the path.
-      // A file in public/ can arrive from a build step, an upload directory or
-      // a careless deploy, and it must never silently shadow a reviewed route.
-      const match = router.match(req.method ?? "GET", pathname);
-      if (match) {
-        matchedPattern.value = match.pattern;
-        await runMatchedRoute({
-          req, res, pathname, match, postMatchMiddleware,
-          allGlobalMiddleware: [...preMatchMiddleware, ...postMatchMiddleware],
-        });
-        return;
-      }
-
-      // NOT-FOUND FALLBACK STAGES. Nothing matched a route, so walk the
-      // fallback chain in order - see FALLBACK_STAGES. Each returns true when
-      // it has answered the request.
-      //
-      // ADR-0010 (routes beat files) is why this chain runs AFTER matching: a
-      // file dropped into public/ by a build step or a careless deploy must
-      // never shadow a reviewed route.
-      const fallback: FallbackContext = {
-        req, res, pathname, router, port, staticDir, srcPublicDir,
-        templatesDir, frondEngine, swaggerAssetsEnabled,
-      };
-      for (const stage of FALLBACK_STAGES) {
-        if (await stage(fallback)) return;
-      }
-    } catch (err) {
-      await renderDispatchError(err, req, res, templatesDir);
-    }
-  }
-
-  // Assign to module-level so handle() can dispatch without a server reference
+  // Assign to module-level so handle() (and TestClient, via
+  // getLiveDispatchContext()) can dispatch without a server reference
   _dispatchFn = dispatch;
+  _liveDispatchContext = dispatchCtx;
 
   // Dual-port (debug + no TINA4_NO_AI_PORT): the MAIN port hot-reloads for the human
   // dev; the stable AI port (port+1000, created below) suppresses reload/toolbar so an
@@ -1960,6 +2206,10 @@ ${reset}
 
   return new Promise((resolvePromise) => {
     server.listen(port, host, () => {
+      // Record THIS process as the Tina4 dev server on this port, so a later
+      // `tina4 serve` can identify it as reclaimable (TAKEOVER-DEC-01). Only the
+      // single dev process needs it; takeover is dev-gated off in cluster/prod.
+      if (!cluster.isWorker) writePidfile(port);
       const displayHost = host === "0.0.0.0" ? "localhost" : host;
       const isDebug = isTruthy(process.env.TINA4_DEBUG);
       const logLevel = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
@@ -2022,7 +2272,7 @@ ${reset}
 
         aiServer.on("error", (err: any) => {
           if (err.code === "EADDRINUSE") {
-            Log.warn(`Test port ${testPort} in use — skipping`);
+            Log.warning(`Test port ${testPort} in use — skipping`);
             aiServer = null;
           }
         });
@@ -2105,6 +2355,9 @@ ${reset}
         shuttingDown = true;
         Log.info(`Received ${signal}, shutting down gracefully...`);
 
+        // Drop our identity marker so a later takeover does not match a dead PID.
+        if (!cluster.isWorker) removePidfile(port);
+
         stopAllBackgroundTasks();
 
         // Tell live WebSocket peers we are going away (RFC 6455 s7.4.1 code
@@ -2151,6 +2404,13 @@ ${reset}
         }
 
         Log.info("Server stopped.");
+        // Graceful shutdown owns the final call to reset() (Decision 24 /
+        // LOG-I02): flush the shutdown record above, then clear the resolved
+        // snapshot, exactly once. process.exit() below makes this moot for a
+        // real process, but a test harness that drives gracefulShutdown()
+        // without letting exit() actually kill the process (see
+        // test/gracefulShutdown.test.ts) must not inherit a stale snapshot.
+        Log.reset();
         // Exit 0: this process was ASKED to stop and did so cleanly. 128+signum
         // is what waitpid reports for a process killed BY a signal, i.e. one
         // that did NOT handle it - it is a diagnosis, not a target. Gunicorn

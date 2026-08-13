@@ -6,6 +6,109 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+### Breaking: `req.params` is route-params-only
+
+Client input now lives only in `req.query` and `req.body`; `req.params` holds route params
+and nothing else, closing a param-pollution surface in the other three frameworks. A
+malformed JSON body returns the raw string it failed to parse; an empty body returns `null`.
+
+**Migration.** Replace any `req.params[...]` read of a client-supplied value with
+`req.query[...]` or `req.body[...]`.
+
+### Breaking: `Log.warn` is removed, use `Log.warning`
+
+The shared logger conformance runner settled on one name per level across all four
+frameworks. Node's `Log.warn` alias is removed; `Log.warning` is the only spelling now. Node
+also gains `TINA4_LOG_FILE_LEVEL` (the file sink's level, independent of the console's
+`TINA4_LOG_LEVEL`; additive, defaults to `ALL`), and env vars now resolve once at startup
+instead of being re-read on every call.
+
+**Migration.** Rename every `Log.warn(...)` call site to `Log.warning(...)`.
+
+### Breaking: `Database.executeMany()` returns one aggregate result
+
+`Database.executeMany()` used to loop per row and return an array of one result per row. It
+now delegates once through `adapterExecuteMany()` and returns a single aggregate
+`DatabaseResult`, matching `insert`/`update`/`delete`. The rewiring also fixed
+`CachedDatabaseAdapter`, which had no `executeManyAsync` passthrough (so a standalone
+`executeMany` against any network adapter threw), and `SQLiteAdapter`, whose `executeMany`
+issued an unguarded raw `BEGIN`.
+
+**Migration.** Replace any code iterating the old per-row result array with a read of the
+single aggregate `DatabaseResult`.
+
+### Breaking: security headers, CSRF, and the dev server default on
+
+`Content-Security-Policy: default-src 'self'` and the other security headers now emit by
+default (relax with `TINA4_CSP`; HSTS on HTTPS via `TINA4_HSTS`). The CSRF `403` body is
+unified to `{error, code, message, status}`, where Node used to send
+`{error: "CSRF_INVALID"}`. `TINA4_CSRF=true` now actually attaches the CSRF middleware, and a
+blank `TINA4_SECRET` fails closed instead of minting a forgeable public-default token. The
+dev server binds `127.0.0.1` by default (`TINA4_HOST=0.0.0.0` to expose it), refuses a
+cross-origin `/__dev` mutation, never serves `.env` through the file endpoints, and now
+honours `TINA4_PUBLIC_DIR`.
+
+**Migration.** Set `TINA4_CSP` if you depend on inline scripts or a third-party CDN. Set
+`TINA4_HOST=0.0.0.0` if you need the dev server reachable from another machine.
+
+### Breaking: Mongo, Firebird, and MSSQL footguns closed
+
+An unparseable/unsupported MongoDB WHERE now raises instead of silently matching every
+document (a DELETE/UPDATE with no WHERE is rejected); `truncate()` on Mongo now actually
+empties the collection. MSSQL pagination no longer uses `TOP` for page one; it uses
+`OFFSET`/`FETCH` like the other three. `node-firebird` moves from a devDependency to an
+optionalDependency of `@tina4/orm`, so it installs only when you use Firebird.
+`handle.stop()` on a background task now returns a boolean instead of `void`. Frond
+`{% include %}`/`{% extends %}`/`{% import %}` now raise on a path that escapes the templates
+directory.
+
+**Migration.** Add an explicit WHERE to any Mongo query relying on the old match-all
+fallback, or call `truncate()`. Run `npm install` after upgrading so the Firebird driver
+installs correctly if you use it.
+
+### Breaking: ORM relationships, validation, and AutoCrud parity fixes
+
+**Declarative relationships now function and lazy-load.** A field declared with
+`type: "foreignKey"` never attached its accessors before; only the imperative
+`post.belongsTo(Author, "author_id")` form worked. Both work now. `toDict()` now includes an
+imperatively-loaded relation that used to be silently omitted whenever the table name
+differed from the lowercased model name, and logs a warning instead of dropping a declared
+relation that was not eager-loaded. The imperative `hasMany` cap changes from a silent 100 to
+the whole result set. AutoCrud PUT now validates the request body (was create-only): an
+update with a type/length/pattern/required violation now gets a `422`, and the `isUpdate`
+partial-update mode no longer requires unrelated fields. The regex validation message becomes
+`"does not match the required format"`. `createTable()` injects `is_deleted` for a
+soft-delete model automatically. AutoCrud never accepts `is_deleted` or a client-supplied
+primary key in the write body.
+
+**Migration.** A PUT that previously skipped validation may now fail with `422`. A relation
+Node used to silently drop from `toDict()` now appears, or logs a warning.
+
+### Breaking: migrations, response, and dev-tooling fixes
+
+`rollback` is fail-safe now; a missing `.down.sql` file or a failed down script raises and
+leaves the `tina4_migration` ledger row in place. **The `tina4 migrate` CLI now runs the same
+ORM `migrate()`** (transactional, a robust `;` split, Firebird/MSSQL idempotency skips),
+replacing its own naive `split(";")` re-implementation. Responses gzip-compress when
+eligible; the static-file ETag format is unified to `W/"<size>-<mtime>"` across all four
+frameworks. A `403` now returns a real negotiated body, where it used to return a bare empty
+body. The OpenAPI spec now includes routes registered or hot-reloaded after boot, where it
+used to freeze at a boot-time snapshot; the Swagger UI CDN default moves to jsdelivr, off
+unpkg. A route group's prefix join is normalized. `TestClient` now dispatches through the
+real request pipeline instead of short-circuiting around it; `sessionAutoStart` now uses
+`appendHeader` so a route-set cookie is no longer clobbered. The banner and health check
+report the real framework version instead of `0.0.0`. The inline `tests()` descriptor
+builders are renamed `assert*` -> `expect*`.
+
+**Migration.** Rename any `assert*` descriptor call to `expect*`. A test leaning on
+`TestClient`'s old short-circuit behaviour may see a different, correct, outcome now.
+
+### Fixed: route path literal-parenthesis 404
+
+`router.ts`'s `compilePattern()` interpolated a literal path segment unescaped, so a route
+like `/products/(sale)` 404'd because `(`/`)`/`.` compiled as regex syntax. Only `{param}`
+becomes a capture group now.
+
 ### Breaking: `toPaginate()` is the seven-key envelope and `.count` is the true total (3.13.96)
 
 Feature 18, ADR-0043. MEASURED 2026-08-05 across all four frameworks on a real

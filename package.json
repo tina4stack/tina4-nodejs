@@ -1,6 +1,6 @@
 {
   "name": "tina4-nodejs",
-  "version": "3.13.98",
+  "version": "3.13.99",
   "type": "module",
   "description": "Tina4 for Node.js/TypeScript - 54 built-in features, zero dependencies",
   "keywords": [
@@ -99,7 +99,6 @@
     "@types/pg": "^8.20.0",
     "esbuild": "^0.24.0",
     "mongodb": "^6.0.0",
-    "node-firebird": "^2.14.3",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.9"

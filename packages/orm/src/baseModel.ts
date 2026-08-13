@@ -78,6 +78,32 @@ function _pluralRelKeys(): boolean {
 const _fkRegistry = new Map<string, Array<{ foreignKey: string; declaringModel: string; hasManyKey: string }>>();
 
 /**
+ * REL-EAGER-UNBOUNDED: max parent PKs per eager `WHERE fk IN (...)` query, so a
+ * very large parent set never yields an unbounded IN list (a query-size / driver
+ * parameter-limit risk). Each chunk is one query.
+ */
+const EAGER_IN_CHUNK = 500;
+
+/** Split an array into fixed-size chunks. */
+function _chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/**
+ * Normalize an eager-load join key so an INTEGER primary key (1) matches a
+ * foreign key that round-tripped through the driver as "1.0" / 1.0 (SQLite gives
+ * a FK column TEXT/REAL affinity, so `String(1)` and `String("1.0")` would not
+ * group together). A genuinely non-numeric key (e.g. a UUID) is left untouched.
+ */
+function _joinKey(v: unknown): string {
+  if (typeof v === "number") return String(v);
+  if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return String(Number(v));
+  return String(v);
+}
+
+/**
  * BaseModel provides instance methods for ORM models.
  * Models extend this class and define static properties.
  *
@@ -94,6 +120,39 @@ const _fkRegistry = new Map<string, Array<{ foreignKey: string; declaringModel: 
  *     static autoMap = true; // auto-generate fieldMapping from camelCase → snake_case
  *   }
  */
+
+/**
+ * The ONE process-wide, tag-aware model query cache shared by EVERY model, so a
+ * write on one model busts a cross-table query cached on another (CACHE-DEC-01).
+ * Mirrors the Python master's module-level `_query_cache`; it is the existing
+ * QueryCache subsystem (TTL + tags) -- zero new deps -- and is separate from the
+ * adapter-level auto-cache (CachedDatabaseAdapter), which is env-gated and off by
+ * default.
+ */
+const modelQueryCache = new QueryCache({ defaultTtl: 0, maxSize: 500 });
+
+/** Identifier after a FROM / JOIN keyword (optionally schema-qualified/quoted). */
+const CACHE_TABLE_RE =
+  /\b(?:FROM|JOIN)\s+([`"[]?[A-Za-z_][\w$]*[`"\]]?(?:\.[`"[]?[A-Za-z_][\w$]*[`"\]]?)?)/gi;
+
+/**
+ * Table names a query reads FROM / JOINs -- lowercased, schema-stripped.
+ *
+ * Best-effort: for each FROM/JOIN keyword it takes the following identifier,
+ * drops any quoting (backticks, double quotes, square brackets) and schema
+ * prefix (public.users -> users), and ignores the alias. A cached query is
+ * tagged with these tables so a write to any one of them invalidates it.
+ */
+function tablesInSql(sql: string): string[] {
+  const tables = new Set<string>();
+  for (const match of (sql ?? "").matchAll(CACHE_TABLE_RE)) {
+    let name = match[1].replace(/[`"[\]]/g, "");
+    if (name.includes(".")) name = name.split(".").pop() ?? name;
+    if (name) tables.add(name.toLowerCase());
+  }
+  return [...tables];
+}
+
 export class BaseModel {
   static tableName: string;
   static fields: Record<string, FieldDefinition>;
@@ -103,7 +162,6 @@ export class BaseModel {
   static hasMany?: RelationshipDefinition[];
   static belongsTo?: RelationshipDefinition[];
   static _db?: string;
-  static _queryCache?: QueryCache;
 
   /**
    * When true, auto-generates fieldMapping entries from camelCase field names
@@ -512,7 +570,6 @@ export class BaseModel {
     const data = (rows as any)?.data ?? rows;
     const instances = (Array.isArray(data) ? data : []).map((row: Record<string, unknown>) => {
       const inst = new this(row) as T;
-      (inst as any)._exists = true;
       return inst;
     });
 
@@ -564,7 +621,6 @@ export class BaseModel {
     for (const [key, value] of Object.entries(data)) {
       (this as any)[key] = value;
     }
-    (this as any)._exists = true;
     return true;
   }
 
@@ -696,18 +752,6 @@ export class BaseModel {
   async save(): Promise<this | false> {
     const ModelClass = this.constructor as typeof BaseModel;
 
-    // ── Canonical #2: validate() is enforced. An invalid model never reaches
-    // the driver — fail loud (log + lastError), return false. ──
-    const errors = this.validate();
-    if (errors.length > 0) {
-      this.lastError = errors.join("; ");
-      Log.error(
-        `${ModelClass.name}.save() refused: validation failed for table ` +
-          `'${ModelClass.tableName}' — ${this.lastError}`,
-      );
-      return false;
-    }
-
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
     const pkCol = ModelClass.getPkColumn();
@@ -753,6 +797,21 @@ export class BaseModel {
           isUpdate = false;
         }
       }
+    }
+
+    // ── Canonical #2: validate() is enforced. An invalid model never reaches
+    // the driver — fail loud (log + lastError), return false. Feature 19: on an
+    // UPDATE the partial-update mode (isUpdate) is passed so an unset field is
+    // not spuriously "required" (the persisted row already carries it), while a
+    // field that IS present stays held to its type/length/pattern/range rules.
+    const errors = this.validate(isUpdate);
+    if (errors.length > 0) {
+      this.lastError = errors.join("; ");
+      Log.error(
+        `${ModelClass.name}.save() refused: validation failed for table ` +
+          `'${ModelClass.tableName}' — ${this.lastError}`,
+      );
+      return false;
     }
 
     await adapterStartTransaction(db);
@@ -895,7 +954,8 @@ export class BaseModel {
     }
     // Success — clear any previously-recorded error.
     this.lastError = null;
-    (this as any)._exists = true;
+    // Bust cached reads of any table this write touched (CACHE-DEC-01).
+    ModelClass.clearCache();
     return this;
   }
 
@@ -918,7 +978,6 @@ export class BaseModel {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
-    const pkCol = ModelClass.getPkColumn();
     const pkValue = this[pk];
 
     if (pkValue === undefined || pkValue === null) {
@@ -944,6 +1003,8 @@ export class BaseModel {
       await adapterRollback(db);
       throw e;
     }
+    // Bust cached reads of any table this write touched (CACHE-DEC-01).
+    ModelClass.clearCache();
     return true;
   }
 
@@ -987,7 +1048,22 @@ export class BaseModel {
         // isn't cached is simply skipped here — async lazy-load on a sync
         // serializer is not possible after the Option A async refactor.
         const data = this._relCache[relName];
-        if (data === undefined) continue;
+        if (data === undefined) {
+          // LOAD-NODE-SERIALIZE-OMIT (feature 26, 3.13.99): the omission used
+          // to be completely silent — a developer who forgot `include` on the
+          // finder that produced this instance got a serialized object
+          // missing the relation with no signal at all. Warn (never throw —
+          // serialization must keep working) naming the model, the relation,
+          // and the fix, so the gap is visible instead of a quiet data loss.
+          Log.warning(
+            `${ModelClass.name}.toDict(): relation "${relName}" was requested via ` +
+              `include but was never eager-loaded (a synchronous serializer cannot ` +
+              `lazy-load it), so it is OMITTED from the result. Pass ` +
+              `include: ["${relName}"] to the finder (find/all/where/select/load) ` +
+              `that produced this instance.`,
+          );
+          continue;
+        }
         if (data === null || data === undefined) {
           result[relName] = null;
         } else if (Array.isArray(data)) {
@@ -1064,13 +1140,16 @@ export class BaseModel {
    * Validate this instance's values against the model's field definitions.
    * Returns an array of error strings (empty array means valid).
    */
-  validate(): string[] {
+  validate(isUpdate = false): string[] {
     const ModelClass = this.constructor as typeof BaseModel;
     const data: Record<string, unknown> = {};
     for (const name of Object.keys(ModelClass.fields)) {
       data[name] = this[name];
     }
-    const errors = validateFields(data, ModelClass.fields);
+    // isUpdate wires the partial-update mode: on an update a field that is not
+    // provided is not spuriously "required" (see validateFields). Field values
+    // that ARE present stay held to their type/length/pattern/range rules.
+    const errors = validateFields(data, ModelClass.fields, isUpdate);
     return errors.map((e) => `${e.field} ${e.message}`);
   }
 
@@ -1100,6 +1179,15 @@ export class BaseModel {
         } else {
           mappedFields[dbCol] = def;
         }
+      }
+      // SOFTDEL-DEC-02: a softDelete model needs an is_deleted flag column, but
+      // createTable() built the schema from DECLARED fields only — so a
+      // softDelete = true model that never declared is_deleted produced a table
+      // with NO such column, and every soft-delete read/write then errored on
+      // the missing column. syncModels() adds it on boot; createTable() must too.
+      // Inject it (INTEGER 0/1, default 0) unless the model already declares it.
+      if (this.softDelete && !("is_deleted" in mappedFields)) {
+        mappedFields["is_deleted"] = { type: "integer", default: 0 };
       }
       await adapterCreateTable(db, this.tableName, mappedFields);
       return true;
@@ -1137,6 +1225,15 @@ export class BaseModel {
         parts.push(`DEFAULT ${dv}`);
       }
       colDefs.push(parts.join(" "));
+    }
+
+    // SOFTDEL-DEC-02 (fallback path): inject the is_deleted flag column for a
+    // softDelete model that did not declare it, mirroring the adapter path above.
+    if (this.softDelete) {
+      const dbCols = Object.keys(this.fields).map((f) => this.getDbColumn(f));
+      if (!dbCols.includes("is_deleted")) {
+        colDefs.push(`"is_deleted" INTEGER DEFAULT 0`);
+      }
     }
 
     // A COMPOSITE key is declared ONCE, at table level; the per-column inline
@@ -1181,11 +1278,31 @@ export class BaseModel {
   }
 
   /**
-   * Run a raw SQL query with results cached by TTL. Cache is per-model-class.
+   * Every table a cached query touches: this model's table plus every FROM/JOIN
+   * table in `sql`. A write to any of these busts the entry (CACHE-DEC-01).
+   */
+  static _cacheTags(sql: string): string[] {
+    const ModelClass = this as unknown as typeof BaseModel;
+    const tags = [(ModelClass.tableName ?? "").toLowerCase()];
+    for (const table of tablesInSql(sql)) {
+      if (!tags.includes(table)) tags.push(table);
+    }
+    return tags;
+  }
+
+  /**
+   * Run a raw SQL query with results cached by TTL.
+   *
+   * Invalidation (CACHE-DEC-01): the entry is tagged by every table the query
+   * touches (this model's table plus any FROM/JOIN tables) in ONE process-wide
+   * shared cache, so a write through the ORM (save/delete/forceDelete/restore)
+   * to ANY of those tables busts it -- including a cross-table JOIN cached on a
+   * different model. `ttl <= 0` means NO-CACHE: the query runs and the rows are
+   * returned but nothing is stored, so every read hits the database.
    *
    * @param sql     SQL query string.
    * @param params  Bind parameters.
-   * @param ttl     Cache TTL in seconds (default 60).
+   * @param ttl     Cache TTL in seconds (default 60; <= 0 = no-cache).
    * @param limit   Max records to return (default 100).
    * @param offset  Records to skip (default 0).
    * @param include Relationship names to eager-load on cache miss.
@@ -1200,33 +1317,43 @@ export class BaseModel {
     include?: string[],
   ): Promise<T[]> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
-    if (!ModelClass._queryCache) {
-      ModelClass._queryCache = new QueryCache({ defaultTtl: ttl, maxSize: 500 });
-    }
+    const db = ModelClass.getDb();
+
+    const runQuery = async (): Promise<T[]> => {
+      const querySql = `${sql} LIMIT ${limit} OFFSET ${offset}`;
+      const rows = await adapterQuery(db, querySql, params);
+      const results = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
+      if (include && results.length > 0) {
+        await ModelClass._eagerLoad(results as BaseModel[], include);
+      }
+      return results;
+    };
+
+    // ttl <= 0 is NO-CACHE: run it live, store nothing, read nothing.
+    if (ttl <= 0) return runQuery();
+
     const cacheKey = `${ModelClass.tableName}:${sql}:${limit}:${offset}`;
-    const key = QueryCache.queryKey(cacheKey, params ?? [], ModelClass.getDb().cacheIdentity ?? "");
-    const hit = ModelClass._queryCache.get(key) as T[] | undefined;
+    const key = QueryCache.queryKey(cacheKey, params ?? [], (db as unknown as { cacheIdentity?: string }).cacheIdentity ?? "");
+    const hit = modelQueryCache.get<T[]>(key);
     if (hit !== undefined) return hit;
 
-    const db = ModelClass.getDb();
-    const querySql = `${sql} LIMIT ${limit} OFFSET ${offset}`;
-    const rows = await adapterQuery(db, querySql, params);
-    const results = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
-    if (include && results.length > 0) {
-      await ModelClass._eagerLoad(results as BaseModel[], include);
-    }
-    ModelClass._queryCache.set(key, results, ttl);
+    const results = await runQuery();
+    modelQueryCache.set(key, results, ttl, ModelClass._cacheTags(sql));
     return results;
   }
 
   /**
-   * Clear the per-model query cache.
+   * Invalidate every cached query that touches this model's table.
+   *
+   * Tag-scoped, NOT a wholesale flush: a cached JOIN on another model that reads
+   * this table is busted too (it carries this table's tag), while a query that
+   * never touches this table is left intact. Called after every ORM write
+   * (save/delete/forceDelete/restore) so a read-after-write never serves a
+   * stale/deleted row (CACHE-DEC-01).
    */
   static clearCache(): void {
     const ModelClass = this as unknown as typeof BaseModel;
-    if (ModelClass._queryCache) {
-      ModelClass._queryCache.clear();
-    }
+    modelQueryCache.clearTag((ModelClass.tableName ?? "").toLowerCase());
   }
 
   /**
@@ -1273,7 +1400,6 @@ export class BaseModel {
     const ModelClass = this.constructor as typeof BaseModel;
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
-    const pkCol = ModelClass.getPkColumn();
     const pkValue = this[pk];
 
     if (pkValue === undefined || pkValue === null) {
@@ -1291,6 +1417,8 @@ export class BaseModel {
       await adapterRollback(db);
       throw e;
     }
+    // Bust cached reads of any table this write touched (CACHE-DEC-01).
+    ModelClass.clearCache();
     return true;
   }
 
@@ -1305,7 +1433,6 @@ export class BaseModel {
 
     const db = ModelClass.getDb();
     const pk = ModelClass.getPkField();
-    const pkCol = ModelClass.getPkColumn();
     const pkValue = this[pk];
 
     if (pkValue === undefined || pkValue === null) {
@@ -1324,6 +1451,8 @@ export class BaseModel {
       throw e;
     }
     this.is_deleted = 0;
+    // Bust cached reads of any table this write touched (CACHE-DEC-01).
+    ModelClass.clearCache();
     return true;
   }
 
@@ -1441,17 +1570,27 @@ export class BaseModel {
     // indexed for writing (TS2862), but `T extends BaseModel` guarantees `this`
     // is a BaseModel, whose `[key: string]: unknown` signature is writable.
     (this as BaseModel)[relKey] = related;
+    // IMPREL-NODE-ORPHAN: also store under the serializer's key so an
+    // imperatively-loaded relation is included by toDict([relKey]) -- toDict
+    // reads _relCache, which the imperative path never populated before, so an
+    // imperatively-loaded relation was orphaned from serialization.
+    (this as BaseModel)._relCache[relKey] = related;
     return related;
   }
 
   /**
    * Load has-many related model instances.
+   *
+   * With no explicit `limit` this returns the WHOLE set (paged internally, like
+   * the lazy accessor), never a silent row cap -- so an imperatively-loaded
+   * has_many yields the SAME row count as the lazy path. An explicit `limit`
+   * still pages.
    */
   async hasMany<T extends BaseModel, R extends BaseModel>(
     this: T,
     relatedClass: typeof BaseModel & (new (data?: Record<string, unknown>) => R),
     foreignKey: string,
-    limit: number = 100,
+    limit?: number,
     offset: number = 0,
   ): Promise<R[]> {
     const ModelClass = this.constructor as typeof BaseModel;
@@ -1463,17 +1602,28 @@ export class BaseModel {
     }
 
     const db = relatedClass.getDb();
+    const orderCol = relatedClass.getPkColumn();
     let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${foreignKey}" = ?`;
     if (relatedClass.softDelete) {
       sql += ` AND is_deleted = 0`;
     }
-    sql += ` LIMIT ${limit} OFFSET ${offset}`;
+    // Order by the child PK for a stable read (parity with the lazy accessor).
+    sql += ` ORDER BY "${orderCol}"`;
+    // IMPREL-PY-CAP parity: with no explicit limit, return the WHOLE set (like
+    // the lazy accessor, which is uncapped) instead of a silent 100-row cap. An
+    // explicit limit still pages (explicit, never silent).
+    if (limit !== undefined) {
+      sql += ` LIMIT ${limit} OFFSET ${offset}`;
+    }
 
     const rows = await adapterQuery(db, sql, [pkValue]);
     const related = rows.map((row) => new relatedClass(row as Record<string, unknown>) as R);
     const relKey = relatedClass.tableName.toLowerCase();
     // See hasOne: write through BaseModel's writable index signature (TS2862).
     (this as BaseModel)[relKey] = related;
+    // IMPREL-NODE-ORPHAN: store under the serializer's key so an imperatively
+    // loaded relation is included by toDict([relKey]) (was orphaned).
+    (this as BaseModel)._relCache[relKey] = related;
     return related;
   }
 
@@ -1510,6 +1660,9 @@ export class BaseModel {
     const relKey = relatedClass.tableName.toLowerCase();
     // See hasOne: write through BaseModel's writable index signature (TS2862).
     (this as BaseModel)[relKey] = related;
+    // IMPREL-NODE-ORPHAN: store under the serializer's key so an imperatively
+    // loaded relation is included by toDict([relKey]) (was orphaned).
+    (this as BaseModel)._relCache[relKey] = related;
     return related;
   }
 
@@ -1520,20 +1673,19 @@ export class BaseModel {
 
   static registerModel(name: string, modelClass: typeof BaseModel): void {
     BaseModel._modelRegistry[name] = modelClass;
-    // Eagerly process this model's foreignKey fields so the cross-model
-    // _fkRegistry is populated as soon as the model is known — not only when
-    // the *declaring* model happens to be touched first. This is what makes
-    // eager loading work standalone (without server-boot auto-discovery):
-    // a parent's hasMany is registered by the child's _processForeignKeys(),
-    // so we must run it for every registered model proactively.
-    modelClass._processForeignKeys();
+    // Wire every registered model's FK relationships AND lazy accessors now that
+    // a new model is known. A parent's has-many is declared by the CHILD's
+    // foreignKey field, so re-wiring all registered models on each registration
+    // makes BOTH sides functional (belongsTo + has-many) with lazy accessors,
+    // without depending on server-boot auto-discovery. Idempotent.
+    BaseModel._processAllForeignKeys();
   }
 
   /**
    * Process foreignKey fields on every registered model so the cross-model
    * _fkRegistry (and each model's belongsTo/hasMany) is fully wired regardless
-   * of which model was used first. Idempotent — _processForeignKeys() and
-   * _applyFkRegistry() both guard against duplicates.
+   * of which model was used first, then attach the lazy relationship accessors.
+   * Idempotent — every step guards against duplicates.
    */
   private static _processAllForeignKeys(): void {
     for (const modelClass of Object.values(BaseModel._modelRegistry)) {
@@ -1542,6 +1694,99 @@ export class BaseModel {
     for (const modelClass of Object.values(BaseModel._modelRegistry)) {
       modelClass._applyFkRegistry();
     }
+    // REL-NODE-AUTOWIRE-DEAD: attach lazy accessors (post.author / author.posts)
+    // on both sides so DECLARATIVE relationships actually function — matching the
+    // imperative belongsTo()/hasMany() path and Python/PHP/Ruby.
+    for (const modelClass of Object.values(BaseModel._modelRegistry)) {
+      modelClass._wireRelationshipAccessors();
+    }
+  }
+
+  /**
+   * REL-NODE-AUTOWIRE-DEAD: attach a lazy-loading accessor for each declared
+   * relationship (belongsTo/hasOne/hasMany) on this model's prototype, so
+   * `post.author` / `author.posts` resolve on attribute access. The accessor is
+   * async (Node lazy load) and caches into `_relCache` — the SAME cache eager
+   * loading fills, so `toDict` stays consistent once a relation has been loaded.
+   * Reuses the imperative belongsTo()/hasOne() path and the cross-model registry;
+   * a soft-deleted child is excluded and the has-many read is uncapped.
+   */
+  static _wireRelationshipAccessors(): void {
+    const proto = this.prototype as Record<string, unknown>;
+    const fields = this.fields ?? {};
+
+    const define = (
+      name: string,
+      rel: RelationshipDefinition,
+      kind: "belongsTo" | "hasOne" | "hasMany",
+    ): void => {
+      // Never shadow a declared column or an existing member (method / prior
+      // accessor). `name in proto` also makes re-wiring idempotent.
+      if (!name || name in fields || name in proto) return;
+      Object.defineProperty(proto, name, {
+        configurable: true,
+        enumerable: false,
+        get(this: Record<string, unknown>) {
+          const cache = this._relCache as Record<string, unknown>;
+          if (name in cache) return cache[name]; // eager or prior-lazy value
+          const pending = (this._relPromises ??= {}) as Record<string, unknown>;
+          if (name in pending) return pending[name]; // in-flight dedupe
+          const promise = (async () => {
+            const related = BaseModel._modelRegistry[rel.model];
+            let value: unknown;
+            if (!related) {
+              value = kind === "hasMany" ? [] : null;
+            } else if (kind === "belongsTo") {
+              value = await (this as unknown as BaseModel).belongsTo(related as never, rel.foreignKey);
+            } else if (kind === "hasOne") {
+              value = await (this as unknown as BaseModel).hasOne(related as never, rel.foreignKey);
+            } else {
+              value = await BaseModel._loadHasManyLazy(this as unknown as BaseModel, related, rel.foreignKey);
+            }
+            cache[name] = value;
+            delete pending[name];
+            return value;
+          })();
+          pending[name] = promise;
+          return promise;
+        },
+      });
+    };
+
+    for (const rel of this.belongsTo ?? []) {
+      const name = rel.relatedName
+        ?? (rel.foreignKey.endsWith("_id") ? rel.foreignKey.slice(0, -3) : rel.foreignKey);
+      define(name, rel, "belongsTo");
+    }
+    for (const rel of this.hasOne ?? []) {
+      define(rel.relatedName ?? rel.model.toLowerCase(), rel, "hasOne");
+    }
+    for (const rel of this.hasMany ?? []) {
+      define(rel.relatedName ?? (rel.model.toLowerCase() + "s"), rel, "hasMany");
+    }
+  }
+
+  /**
+   * Lazy has-many read for a relationship accessor: excludes soft-deleted
+   * children and returns the WHOLE set (adapterQuery is uncapped, so the tail is
+   * never lost). Ordered by the child PK for a stable read.
+   */
+  private static async _loadHasManyLazy(
+    inst: BaseModel,
+    relatedClass: typeof BaseModel,
+    foreignKey: string,
+  ): Promise<BaseModel[]> {
+    const ModelClass = inst.constructor as typeof BaseModel;
+    const pk = ModelClass.getPkField();
+    const pkValue = (inst as Record<string, unknown>)[pk];
+    if (pkValue === undefined || pkValue === null) return [];
+    const db = relatedClass.getDb();
+    const orderCol = relatedClass.getPkColumn();
+    let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${foreignKey}" = ?`;
+    if (relatedClass.softDelete) sql += ` AND is_deleted = 0`;
+    sql += ` ORDER BY "${orderCol}"`;
+    const rows = await adapterQuery(db, sql, [pkValue]);
+    return rows.map((row) => new (relatedClass as unknown as new (d: Record<string, unknown>) => BaseModel)(row as Record<string, unknown>));
   }
 
   /**
@@ -1629,7 +1874,7 @@ export class BaseModel {
       if (!relDef || !relType) {
         // Don't silently skip — a typo'd or unknown include name is almost
         // always a developer mistake. Surface it so it's visible.
-        Log.warn(
+        Log.warning(
           `eager-load: include "${relName}" did not match any relationship on ` +
             `${ModelClass.name} (table "${ModelClass.tableName}"). ` +
             `Accepted forms are the related model name, its singular/plural ` +
@@ -1651,14 +1896,18 @@ export class BaseModel {
           .filter((v) => v !== undefined && v !== null);
         if (pkValues.length === 0) continue;
 
-        const placeholders = pkValues.map(() => "?").join(",");
-        let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${fk}" IN (${placeholders})`;
-        if (relatedClass.softDelete) {
-          sql += ` AND is_deleted = 0`;
+        // REL-EAGER-UNBOUNDED: chunk the parent PKs so the IN list stays bounded
+        // (each chunk is one query). adapterQuery is uncapped, so no row cap.
+        const related: BaseModel[] = [];
+        for (const pkChunk of _chunk(pkValues, EAGER_IN_CHUNK)) {
+          const placeholders = pkChunk.map(() => "?").join(",");
+          let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${fk}" IN (${placeholders})`;
+          if (relatedClass.softDelete) {
+            sql += ` AND is_deleted = 0`;
+          }
+          const rows = await adapterQuery(db, sql, pkChunk);
+          for (const row of rows) related.push(new relatedClass(row as Record<string, unknown>));
         }
-
-        const rows = await adapterQuery(db, sql, pkValues);
-        const related = rows.map((row) => new relatedClass(row as Record<string, unknown>));
 
         // Eager load nested
         if (nested.length > 0 && related.length > 0) {
@@ -1670,13 +1919,13 @@ export class BaseModel {
         const fkProp = relatedReverseMap[fk] ?? fk;
         const grouped: Record<string, BaseModel[]> = {};
         for (const record of related) {
-          const fkVal = String(record[fkProp]);
+          const fkVal = _joinKey(record[fkProp]);
           if (!grouped[fkVal]) grouped[fkVal] = [];
           grouped[fkVal].push(record);
         }
 
         for (const inst of instances) {
-          const pkVal = String(inst[pk]);
+          const pkVal = _joinKey(inst[pk]);
           const records = grouped[pkVal] || [];
           if (relType === "hasOne") {
             inst._relCache[relName] = records[0] ?? null;
@@ -1697,14 +1946,17 @@ export class BaseModel {
 
         const relatedPk = relatedClass.getPkField();
         const relatedPkCol = relatedClass.getPkColumn();
-        const placeholders = fkValues.map(() => "?").join(",");
-        let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${relatedPkCol}" IN (${placeholders})`;
-        if (relatedClass.softDelete) {
-          sql += ` AND is_deleted = 0`;
+        // REL-EAGER-UNBOUNDED: chunk the FK values so the IN list stays bounded.
+        const related: BaseModel[] = [];
+        for (const fkChunk of _chunk(fkValues, EAGER_IN_CHUNK)) {
+          const placeholders = fkChunk.map(() => "?").join(",");
+          let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${relatedPkCol}" IN (${placeholders})`;
+          if (relatedClass.softDelete) {
+            sql += ` AND is_deleted = 0`;
+          }
+          const rows = await adapterQuery(db, sql, fkChunk);
+          for (const row of rows) related.push(new relatedClass(row as Record<string, unknown>));
         }
-
-        const rows = await adapterQuery(db, sql, fkValues);
-        const related = rows.map((row) => new relatedClass(row as Record<string, unknown>));
 
         if (nested.length > 0 && related.length > 0) {
           await relatedClass._eagerLoad(related, nested);
@@ -1712,13 +1964,13 @@ export class BaseModel {
 
         const lookup: Record<string, BaseModel> = {};
         for (const record of related) {
-          lookup[String(record[relatedPk])] = record;
+          lookup[_joinKey(record[relatedPk])] = record;
         }
 
         for (const inst of instances) {
           const fkVal = inst[fkProp];
           inst._relCache[relName] = fkVal !== undefined && fkVal !== null
-            ? lookup[String(fkVal)] ?? null
+            ? lookup[_joinKey(fkVal)] ?? null
             : null;
         }
       }

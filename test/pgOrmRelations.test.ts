@@ -11,7 +11,7 @@
  *   Bug 2 (low) — `include` matching was effectively case-sensitive; only the
  *     exact model name worked. Now resolved case-insensitively against the
  *     model name, its singular/plural key, and the related table name, and a
- *     Log.warn is emitted when an include name matches nothing (no silent skip).
+ *     Log.warning is emitted when an include name matches nothing (no silent skip).
  *
  *   Bug 3 (low/parity) — aggregate columns (SUM, AVG, …) came back as strings
  *     because node-postgres returns int8/numeric as strings. The Postgres
@@ -163,16 +163,18 @@ try {
   );
 
   // ── Bug 2: a bad include name warns instead of silently skipping ─
-  const origWarn = Log.warn;
+  // Log.warn was the prohibited alias (LOG-A02) and is gone -- warning() is
+  // the one spelling now, and the real code path calls it internally.
+  const origWarning = Log.warning;
   let warned = "";
-  (Log as unknown as { warn: (m: string) => void }).warn = (m: string) => { warned += m; };
+  (Log as unknown as { warning: (m: string) => void }).warning = (m: string) => { warned += m; };
   try {
     await Author.findById(author.id, ["totally_bogus"]);
   } finally {
-    (Log as unknown as { warn: (m: string) => void }).warn = origWarn;
+    (Log as unknown as { warning: (m: string) => void }).warning = origWarning;
   }
   assert(
-    "unknown include name emits a Log.warn (Bug 2)",
+    "unknown include name emits a Log.warning (Bug 2)",
     /totally_bogus/.test(warned) && /did not match/.test(warned),
     `(warned: ${JSON.stringify(warned)})`,
   );

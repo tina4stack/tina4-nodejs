@@ -5,6 +5,7 @@ import { Log } from "./logger.js";
 import { isTruthy } from "./dotenv.js";
 import { defaultRouter, type Router } from "./router.js";
 import { resolveClientIp } from "./trustedProxy.js";
+import { getFrond, getFrameworkFrond, wantsJson, negotiatedErrorBody } from "./response.js";
 
 /**
  * Whether to emit a per-request log line (v3.13.14). TINA4_LOG_REQUESTS is
@@ -102,6 +103,55 @@ function isResponse(value: unknown): value is Tina4Response {
 }
 
 /**
+ * The 403 a hook gets when it says no without saying what to send
+ * (ERR-DEC-01/ERR-DEC-02). Routed through the SAME negotiated renderer
+ * 404/500 use (server.ts's serveNotFound/renderDispatchError share the same
+ * getFrond/getFrameworkFrond singletons via response.ts), so a middleware
+ * refusal looks like every other error page - a user template if the app
+ * ships one, the framework's errors/403.twig otherwise, negotiated JSON for
+ * an API client - instead of the old bare `res.raw.statusCode = 403` with no
+ * body at all.
+ */
+async function renderForbidden(req: Tina4Request, res: Tina4Response): Promise<void> {
+  const requestId = Log.getRequestId() ?? "";
+
+  if (wantsJson(req)) {
+    const body = negotiatedErrorBody(403, "Forbidden", requestId);
+    res.raw.statusCode = HTTP_FORBIDDEN;
+    res.raw.setHeader("Content-Type", "application/json");
+    res.raw.end(JSON.stringify(body));
+    return;
+  }
+
+  const data = { path: req.path ?? "", error_message: "Forbidden", request_id: requestId, status_code: 403 };
+  let html: string | null = null;
+  try {
+    html = (await getFrond()).render("errors/403.twig", data);
+  } catch {
+    // fall through to the framework default
+  }
+  if (!html) {
+    try {
+      const fw = await getFrameworkFrond();
+      html = fw ? fw.render("errors/403.twig", data) : null;
+    } catch {
+      html = null;
+    }
+  }
+
+  if (html) {
+    res.raw.writeHead(HTTP_FORBIDDEN, { "Content-Type": "text/html; charset=utf-8" });
+    res.raw.end(html);
+    return;
+  }
+
+  const body = negotiatedErrorBody(403, "Forbidden", requestId);
+  res.raw.statusCode = HTTP_FORBIDDEN;
+  res.raw.setHeader("Content-Type", "application/json");
+  res.raw.end(JSON.stringify(body));
+}
+
+/**
  * ONE return-value table, for EVERY beforeX/afterX hook, at EVERY scope
  * (global and per-route):
  *
@@ -111,17 +161,19 @@ function isResponse(value: unknown): value is Tina4Response {
  *   the [req, res] pair rebind both, continue (length >= 2, mirroring Python's
  *                       `isinstance(result, tuple) and len(result) >= 2`)
  *   false               SHORT-CIRCUIT. Send the response AS SET; a still
- *                       default and still unwritten response becomes a 403,
- *                       because a bare `return false` is a deny.
+ *                       default and still unwritten response becomes a
+ *                       NEGOTIATED 403 (renderForbidden), because a bare
+ *                       `return false` is a deny.
  *   undefined / null    continue
  *
+ * ASYNC because the false-row now renders a template (await getFrond()).
  * Returns [req, res, stop].
  */
-function interpretHookResult(
+async function interpretHookResult(
   result: unknown,
   req: Tina4Request,
   res: Tina4Response,
-): [Tina4Request, Tina4Response, boolean] {
+): Promise<[Tina4Request, Tina4Response, boolean]> {
   if (Array.isArray(result)) {
     return result.length >= 2
       ? [result[0] as Tina4Request, result[1] as Tina4Response, false]
@@ -130,7 +182,7 @@ function interpretHookResult(
   if (isResponse(result)) return [req, result, true];
   if (result === false) {
     if (!res.raw.writableEnded && res.raw.statusCode === HTTP_OK) {
-      res.raw.statusCode = HTTP_FORBIDDEN;
+      await renderForbidden(req, res);
     }
     return [req, res, true];
   }
@@ -319,7 +371,7 @@ export class MiddlewareRunner {
       for (const method of MiddlewareRunner.methodNames(cls, "before")) {
         try {
           const [nextReq, nextRes, stop] =
-            interpretHookResult(await cls[method](req, res), req, res);
+            await interpretHookResult(await cls[method](req, res), req, res);
           req = nextReq;
           res = nextRes;
           if (stop) return [req, res, false];
@@ -376,7 +428,7 @@ export class MiddlewareRunner {
       for (const method of MiddlewareRunner.methodNames(cls, "after")) {
         try {
           const [nextReq, nextRes, stop] =
-            interpretHookResult(await cls[method](req, res), req, res);
+            await interpretHookResult(await cls[method](req, res), req, res);
           req = nextReq;
           res = nextRes;
           if (stop) return [req, res];
@@ -822,8 +874,13 @@ export class SecurityHeadersMiddleware {
 
     res.header("X-Content-Type-Options", "nosniff");
 
+    // HSTS is HTTPS-only (SECHDR-DEC-02): a downgrade-protection header on a
+    // plain-HTTP response is inert at best and ships a bad max-age on an
+    // unencrypted scheme at worst. Emit it ONLY when TINA4_HSTS is set AND the
+    // request is HTTPS (x-forwarded-proto first hop, else the native TLS socket)
+    // — the same proxy-aware scheme the session cookie's Secure flag uses.
     const hsts = process.env.TINA4_HSTS ?? "";
-    if (hsts) {
+    if (hsts && SecurityHeadersMiddleware.isSecureRequest(req)) {
       res.header(
         "Strict-Transport-Security",
         `max-age=${hsts}; includeSubDomains`,
@@ -849,31 +906,71 @@ export class SecurityHeadersMiddleware {
 
     return [req, res];
   }
+
+  /**
+   * True when the client request is HTTPS. Proxy-aware and byte-parity with
+   * Python (request.is_secure_scheme), PHP (Request::isSecureScheme) and Ruby
+   * (Request.secure_scheme?): a TLS-terminating proxy forwards plain HTTP with
+   * `x-forwarded-proto`, whose FIRST hop is the client-facing scheme; falling
+   * back to the native TLS socket when no such header is present. Its name is
+   * not before- or after-prefixed, so hook discovery never calls it as a hook.
+   */
+  private static isSecureRequest(req: Tina4Request): boolean {
+    const xfProto = (req.headers as Record<string, string | string[] | undefined>)[
+      "x-forwarded-proto"
+    ];
+    const firstHop = (Array.isArray(xfProto) ? xfProto[0] : xfProto)
+      ?.split(",")[0]
+      ?.trim()
+      .toLowerCase();
+    if (firstHop) return firstHop === "https";
+    return Boolean((req.socket as { encrypted?: boolean } | undefined)?.encrypted);
+  }
 }
 
 /**
  * Class-based CSRF middleware using the before/after convention.
  * Validates form tokens on state-changing requests (POST, PUT, PATCH, DELETE).
  *
- * Off by default — only active when TINA4_CSRF=true in .env or when
- * registered explicitly via Router.use(CsrfMiddleware).
+ * OFF by default — a default app has NO CSRF gate because the middleware is
+ * NOT attached. Set TINA4_CSRF=true (or 1/yes/on) and the framework
+ * auto-attaches it at boot (see attachCsrfFromEnv); or register it explicitly
+ * via Router.use(CsrfMiddleware). Once attached, TINA4_CSRF=false (or 0/no) is
+ * the kill switch that disables enforcement again.
  *
- * Behaviour:
+ * Behaviour (identical to the Python master, feature 37):
  *   - Skips GET, HEAD, OPTIONS requests.
  *   - Skips routes marked .noAuth().
+ *   - Fails CLOSED: with TINA4_SECRET unset the signing secret resolves to
+ *     blank (there is NO built-in default), and a blank HMAC key is publicly
+ *     reproducible — so no token can be trusted and every write is rejected
+ *     (403). This is the SEC-01 / CSRF-DEC-01 no-default-secret guarantee.
  *   - Skips requests with a valid Authorization: Bearer header (API clients).
  *   - Checks request body formToken then X-Form-Token header.
  *   - Rejects if token found in query string formToken (log warning, 403).
- *   - Validates token with validToken using SECRET env var.
+ *   - Validates token with validToken using the resolved SECRET, and enforces
+ *     that the token's `type` claim is "form" — a non-form JWT presented in the
+ *     formToken slot is rejected (CSRF-DEC-02).
  *   - If token payload has session_id, verifies it matches request session.
- *   - Returns 403 on failure.
+ *   - Every rejection is 403 with the CSRF_INVALID envelope
+ *     { error: true, code: "CSRF_INVALID", message, status: 403 }.
  *
  * Usage:
  *   Router.use(CsrfMiddleware);
  */
 export class CsrfMiddleware {
   static beforeCsrf(req: Tina4Request, res: Tina4Response): [Tina4Request, Tina4Response] {
-    // Skip CSRF validation entirely if disabled via env
+    // Every CSRF rejection carries the SAME 403 envelope across all four
+    // frameworks (Python master's shape): a real client recognises a CSRF
+    // failure by one stable code + status regardless of the framework.
+    const reject = (message: string): [Tina4Request, Tina4Response] => {
+      res({ error: true, code: "CSRF_INVALID", message, status: HTTP_FORBIDDEN }, HTTP_FORBIDDEN);
+      return [req, res];
+    };
+
+    // TINA4_CSRF=false (or 0/no) disables all CSRF checks, even when the
+    // middleware is attached — the documented kill switch. Unset defaults to
+    // enabled (the middleware only runs at all once attached).
     const csrfEnv = process.env.TINA4_CSRF;
     if (csrfEnv === "false" || csrfEnv === "0" || csrfEnv === "no") {
       return [req, res];
@@ -891,26 +988,35 @@ export class CsrfMiddleware {
       return [req, res];
     }
 
-    // Skip requests with valid Bearer token (API clients)
+    // Resolve the signing secret ONCE, fail-closed — IDENTICAL to the validator
+    // (auth.ts validToken: `secret ?? process.env.TINA4_SECRET ?? ""`). Blank
+    // when TINA4_SECRET is unset; there is NO built-in default.
+    const secret = process.env.TINA4_SECRET ?? "";
+
+    // BLANK-SECRET HARD-FAIL (SEC-01 / CSRF-DEC-01): a blank HMAC key is
+    // publicly reproducible, so a token signed with it (or with the retired
+    // public 'tina4-default-secret') is a forgery. Reject every write rather
+    // than validate against a guessable key — fail closed, hard.
+    if (secret === "") {
+      return reject("CSRF token cannot be validated: TINA4_SECRET is not set");
+    }
+
+    // Skip requests with a valid Bearer token (API clients). Pass the resolved
+    // secret so the Bearer check uses the SAME key as the form-token check.
     const authHeader = req.headers.authorization ?? "";
     if (authHeader.startsWith("Bearer ")) {
       const bearerToken = authHeader.slice(7).trim();
-      if (bearerToken) {
-        if (validToken(bearerToken)) {
-          return [req, res];
-        }
+      if (bearerToken && validToken(bearerToken, secret)) {
+        return [req, res];
       }
     }
 
-    // Reject if token is in query string (security risk)
+    // Reject if token is in query string (security risk — a URL leaks through
+    // logs, referers and history).
     const query = (req as any).query ?? {};
     if (query.formToken) {
       console.warn("[Tina4 CSRF] Token found in query string — rejected for security");
-      res({
-        error: "CSRF_INVALID",
-        message: "Form token must not be sent in the URL query string",
-      }, 403);
-      return [req, res];
+      return reject("Form token must not be sent in the URL query string");
     }
 
     // Extract token: body first, then header
@@ -925,25 +1031,25 @@ export class CsrfMiddleware {
     }
 
     if (!token) {
-      res({
-        error: "CSRF_INVALID",
-        message: "Invalid or missing form token",
-      }, 403);
-      return [req, res];
+      return reject("Invalid or missing form token");
     }
 
-    // Validate the token
-    if (!validToken(token)) {
-      res({
-        error: "CSRF_INVALID",
-        message: "Invalid or missing form token",
-      }, 403);
-      return [req, res];
+    // Validate the token signature / expiry against the resolved secret.
+    if (!validToken(token, secret)) {
+      return reject("Invalid or missing form token");
     }
 
     const payload = getPayload(token) ?? {};
 
-    // Session binding — if token has session_id, verify it matches
+    // TYPE ENFORCEMENT (CSRF-DEC-02): a valid signature is not enough. A
+    // non-form JWT (e.g. an auth/session token) must never be accepted in the
+    // formToken slot — the token's `type` claim MUST be "form".
+    if (payload.type !== "form") {
+      return reject("Invalid or missing form token");
+    }
+
+    // Session binding — if token has session_id, verify it matches the request
+    // session. A token minted for one session cannot be replayed against another.
     const tokenSessionId = payload.session_id as string | undefined;
     if (tokenSessionId) {
       const session = (req as any).session;
@@ -956,16 +1062,36 @@ export class CsrfMiddleware {
       }
 
       if (currentSessionId && tokenSessionId !== currentSessionId) {
-        res({
-          error: "CSRF_INVALID",
-          message: "Invalid or missing form token",
-        }, 403);
-        return [req, res];
+        return reject("Invalid or missing form token");
       }
     }
 
     return [req, res];
   }
+}
+
+/**
+ * Auto-attach CsrfMiddleware when TINA4_CSRF is enabled in the environment.
+ *
+ * CSRF is OFF by default: with TINA4_CSRF unset the middleware is never
+ * attached, so a default app has no CSRF gate. Setting TINA4_CSRF to a truthy
+ * value (true/1/yes/on, case-insensitive, trimmed) attaches it globally at boot
+ * so every state-changing route is gated — the env flag is the switch, no code
+ * change needed. Idempotent (MiddlewareRunner.use de-dupes). Returns true when
+ * the middleware is now attached.
+ *
+ * The framework calls this once during startServer (after route discovery,
+ * before listen); a false/0/no value still lets an explicit Router.use opt-in
+ * be disabled at runtime by the kill switch in beforeCsrf. Mirrors Python's
+ * attach_csrf_from_env.
+ */
+export function attachCsrfFromEnv(): boolean {
+  const value = (process.env.TINA4_CSRF ?? "").trim().toLowerCase();
+  if (value === "true" || value === "1" || value === "yes" || value === "on") {
+    MiddlewareRunner.use(CsrfMiddleware);
+    return true;
+  }
+  return false;
 }
 
 // Built-in request logger middleware.

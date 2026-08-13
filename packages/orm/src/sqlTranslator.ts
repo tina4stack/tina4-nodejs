@@ -67,37 +67,119 @@ export class SQLTranslator {
     return sql;
   }
 
+  // ── Literal-safe rewriting ──────────────────────────────────────
+  //
+  // A dialect rewrite (|| -> CONCAT, TRUE -> 1, ILIKE -> LOWER LIKE) must NEVER
+  // touch text inside a string literal, a quoted identifier or a comment: a
+  // column value of 'a||b', a label 'TRUE', or a LIKE pattern that mentions
+  // ILIKE is DATA, not SQL. Each transform masks every literal/identifier/comment
+  // to an opaque token, rewrites the masked SQL, then restores the tokens, so the
+  // rewrite only ever sees real SQL structure.
+
+  /** Replace string literals, quoted identifiers and comments with opaque
+   * `\x00N\x00` tokens (doubled-quote escapes handled). */
+  private static maskLiterals(sql: string): { masked: string; literals: string[] } {
+    const literals: string[] = [];
+    let out = "";
+    let i = 0;
+    const n = sql.length;
+    while (i < n) {
+      const c = sql[i];
+      const next = sql[i + 1];
+      if (c === "'" || c === '"' || c === "`") {
+        const start = i;
+        i++;
+        while (i < n) {
+          if (sql[i] === c) {
+            if (sql[i + 1] === c) { i += 2; continue; }
+            i++;
+            break;
+          }
+          i++;
+        }
+        out += `\x00${literals.length}\x00`;
+        literals.push(sql.slice(start, i));
+        continue;
+      }
+      if (c === "-" && next === "-") {
+        const start = i;
+        while (i < n && sql[i] !== "\n") i++;
+        out += `\x00${literals.length}\x00`;
+        literals.push(sql.slice(start, i));
+        continue;
+      }
+      if (c === "/" && next === "*") {
+        const start = i;
+        i += 2;
+        while (i < n && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
+        i = Math.min(i + 2, n);
+        out += `\x00${literals.length}\x00`;
+        literals.push(sql.slice(start, i));
+        continue;
+      }
+      out += c;
+      i++;
+    }
+    return { masked: out, literals };
+  }
+
+  /** Inverse of maskLiterals. */
+  private static restoreLiterals(masked: string, literals: string[]): string {
+    return masked.replace(/\x00(\d+)\x00/g, (_m, idx) => literals[Number(idx)]);
+  }
+
+  // A concat/ilike operand: a masked literal-or-identifier token, a simple
+  // function call, a (qualified) identifier, a placeholder, or a number. The
+  // function-call args exclude `|` so a nested `||` never splits the chain.
+  private static readonly PRIMARY =
+    "(?:\\x00\\d+\\x00|[A-Za-z_][\\w$]*\\s*\\([^()|]*\\)|[A-Za-z_][\\w$]*(?:\\.[A-Za-z_][\\w$]*)*|:[A-Za-z_]\\w*|\\$\\d+|\\?|%s|\\d+(?:\\.\\d+)?)";
+
   /**
-   * Convert || concatenation to CONCAT() for MySQL/MSSQL.
+   * Convert `||` string concatenation to `CONCAT(...)` for MySQL/MSSQL.
    *
-   * 'a' || 'b' || 'c'  →  CONCAT('a', 'b', 'c')
+   * Rewrites ONLY `||` operators joining expression operands OUTSIDE any string
+   * literal or comment, and only the operand chain — never the whole statement:
+   *   SELECT a || b FROM t   ->  SELECT CONCAT(a, b) FROM t
+   *   WHERE data = 'a||b'    ->  WHERE data = 'a||b'   (literal untouched)
    */
   static concatPipesToFunc(sql: string): string {
     if (!sql.includes("||")) return sql;
-    const parts = sql.split("||");
-    if (parts.length > 1) {
-      return "CONCAT(" + parts.map((p) => p.trim()).join(", ") + ")";
-    }
-    return sql;
+    const { masked, literals } = SQLTranslator.maskLiterals(sql);
+    if (!masked.includes("||")) return sql; // every || was inside a literal/comment
+    const chain = new RegExp(
+      `${SQLTranslator.PRIMARY}(?:\\s*\\|\\|\\s*${SQLTranslator.PRIMARY})+`,
+      "g",
+    );
+    const rewritten = masked.replace(chain, (m) => "CONCAT(" + m.split(/\s*\|\|\s*/).join(", ") + ")");
+    return SQLTranslator.restoreLiterals(rewritten, literals);
   }
 
   /**
-   * Convert TRUE/FALSE to 1/0 for engines without boolean type (Firebird).
+   * Convert bare TRUE/FALSE to 1/0 for engines without a boolean type. A
+   * TRUE/FALSE INSIDE a string literal is data and is left untouched
+   * (`WHERE label = 'TRUE'` is preserved).
    */
   static booleanToInt(sql: string): string {
-    sql = sql.replace(/\bTRUE\b/gi, "1");
-    sql = sql.replace(/\bFALSE\b/gi, "0");
-    return sql;
+    if (!/\b(?:TRUE|FALSE)\b/i.test(sql)) return sql;
+    const { masked, literals } = SQLTranslator.maskLiterals(sql);
+    const rewritten = masked.replace(/\bTRUE\b/gi, "1").replace(/\bFALSE\b/gi, "0");
+    return SQLTranslator.restoreLiterals(rewritten, literals);
   }
 
   /**
-   * Convert ILIKE to LOWER() LIKE LOWER() for engines without ILIKE.
+   * Convert `col ILIKE pattern` to `LOWER(col) LIKE LOWER(pattern)` for engines
+   * without ILIKE. The pattern operand is captured whole (a multi-word
+   * `'%two words%'` survives) and an ILIKE INSIDE a string literal is untouched.
    */
   static ilikeToLike(sql: string): string {
-    return sql.replace(
-      /(\S+)\s+ILIKE\s+(\S+)/gi,
-      (_match, col: string, val: string) => `LOWER(${col.trim()}) LIKE LOWER(${val.trim()})`,
+    if (!/ilike/i.test(sql)) return sql;
+    const { masked, literals } = SQLTranslator.maskLiterals(sql);
+    const re = new RegExp(
+      `(${SQLTranslator.PRIMARY})\\s+ILIKE\\s+(${SQLTranslator.PRIMARY})`,
+      "gi",
     );
+    const rewritten = masked.replace(re, (_m, col: string, val: string) => `LOWER(${col}) LIKE LOWER(${val})`);
+    return SQLTranslator.restoreLiterals(rewritten, literals);
   }
 
   /**
@@ -108,10 +190,13 @@ export class SQLTranslator {
       case "mysql":
         return sql.replace(/AUTOINCREMENT/gi, "AUTO_INCREMENT");
       case "postgresql":
-        return sql.replace(
-          /INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT/gi,
-          "SERIAL PRIMARY KEY",
-        );
+        // BIGINT PRIMARY KEY AUTOINCREMENT -> BIGSERIAL (a real 64-bit sequence);
+        // INTEGER PRIMARY KEY AUTOINCREMENT -> SERIAL. A plain BIGINT with the
+        // keyword merely stripped has no sequence and cannot auto-increment.
+        return sql
+          .replace(/\bBIGINT\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b/gi, "BIGSERIAL PRIMARY KEY")
+          .replace(/\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b/gi, "SERIAL PRIMARY KEY")
+          .replace(/\s*\bAUTOINCREMENT\b/gi, "");
       case "mssql":
         return sql.replace(/AUTOINCREMENT/gi, "IDENTITY(1,1)");
       case "firebird":

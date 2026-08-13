@@ -32,6 +32,28 @@ interface MongoOperation {
   skip?: number;
   sort?: Record<string, 1 | -1>;
   pipeline?: Record<string, unknown>[];
+  /**
+   * The write's empty filter is an INTENTIONAL match-all (an explicit 1=1
+   * tautology, e.g. truncate()'s WHERE 1 = 1), not a blank/absent WHERE. The
+   * executor uses this to let the whole-collection write through the
+   * requireWriteFilter guard, which otherwise (correctly) refuses an empty
+   * filter as the mass-write footgun.
+   */
+  matchAll?: boolean;
+}
+
+/**
+ * The explicit whole-collection tautology: the WHERE clause truncate() issues,
+ * "1 = 1". It means MATCH-ALL, so it translates to an empty {} filter and the
+ * write reaches deleteMany({}) / updateMany({}) -- emptying or rewriting every
+ * document -- exactly as Python/PHP/Ruby do. It is NOT an unparseable WHERE (the
+ * fail-closed parse still throws for unsupported SQL) and NOT a blank/absent
+ * WHERE (requireWriteFilter still refuses that), so the mass-write guard stays
+ * intact.
+ */
+const MATCH_ALL_WHERE = /^\s*1\s*=\s*1\s*$/;
+function isMatchAllWhere(where: string | null | undefined): boolean {
+  return where != null && MATCH_ALL_WHERE.test(where);
 }
 
 /** Convert SQL WHERE clause tokens into a MongoDB filter object. */
@@ -43,6 +65,12 @@ function parseWhereClause(where: string, params: unknown[], paramOffset = 0): { 
 
   for (const part of parts) {
     const trimmed = part.trim();
+
+    // The explicit 1=1 tautology contributes no constraint (match-all): skip it
+    // rather than mis-parsing "1 = 1" as { "1": 1 } (which matched nothing and
+    // made truncate() a silent no-op). NOT an unparseable WHERE -- the
+    // fail-closed throw below still fires for genuinely unsupported SQL.
+    if (MATCH_ALL_WHERE.test(trimmed)) continue;
 
     // key = ?
     const eqParam = trimmed.match(/^["']?(\w+)["']?\s*=\s*\?$/i);
@@ -118,9 +146,41 @@ function parseWhereClause(where: string, params: unknown[], paramOffset = 0): { 
       filter[nullMatch[1]] = nullMatch[2] ? { $ne: null } : null;
       continue;
     }
+
+    // Fail closed. An unrecognised condition must NEVER be silently dropped:
+    // dropping it leaves an empty (match-all) filter, and on a DELETE/UPDATE
+    // that empty filter reaches deleteMany({})/updateMany({}) and wipes or
+    // rewrites the WHOLE collection. Throw so the caller sees the unsupported
+    // SQL instead of silently losing data.
+    throw new Error(
+      `Unsupported MongoDB WHERE condition: ${JSON.stringify(trimmed)}. The ` +
+        `MongoDB SQL provider fails closed rather than matching every document. ` +
+        `Supported: = != <> > >= < <= LIKE, IN, IS [NOT] NULL, AND.`,
+    );
   }
 
   return { filter, consumed: paramIndex - paramOffset };
+}
+
+/**
+ * Fail closed: a DELETE/UPDATE must carry a real filter.
+ *
+ * An empty MongoDB filter matches EVERY document, so deleteMany({}) /
+ * updateMany({}) would wipe or rewrite the whole collection. Refuse it -- UNLESS
+ * the empty filter is an intentional match-all (an explicit 1=1 tautology, the
+ * spelling truncate() uses; the caller signals that with the operation's
+ * `matchAll` flag or an isMatchAllWhere() check and bypasses this guard). The
+ * raw driver is the escape hatch for anything the SQL subset cannot express.
+ * Shared by both write paths so the guard cannot drift.
+ */
+function requireWriteFilter(filter: Record<string, unknown> | undefined, operation: string, table: string | undefined): void {
+  if (!filter || Object.keys(filter).length === 0) {
+    throw new Error(
+      `Refusing to ${operation} every document in ${table}: the statement has no ` +
+        `WHERE clause, which would affect the whole collection. Add a WHERE, or use ` +
+        `truncate() to clear it explicitly.`,
+    );
+  }
 }
 
 /** Parse a SQL string into a MongoOperation. Returns null if parsing is not supported. */
@@ -199,8 +259,12 @@ function parseSql(sql: string, params: unknown[] = []): MongoOperation | null {
   }
 
   // ---- UPDATE ----
+  // WHERE is OPTIONAL in the grammar so a filterless UPDATE ("UPDATE t SET x=1")
+  // is RECOGNISED as an updateMany with an empty filter and reaches the
+  // fail-closed guard -- rather than failing the regex, returning null, and
+  // being silently acknowledged as a no-op (a silent wrong result).
   const updateMatch = s.match(
-    /^UPDATE\s+["']?(\w+)["']?\s+SET\s+(.*?)\s+WHERE\s+(.+)$/is,
+    /^UPDATE\s+["']?(\w+)["']?\s+SET\s+(.*?)(?:\s+WHERE\s+(.+))?$/is,
   );
   if (updateMatch) {
     const [, collection, setClause, whereClause] = updateMatch;
@@ -220,10 +284,15 @@ function parseSql(sql: string, params: unknown[] = []): MongoOperation | null {
       }
     }
 
-    // Parse WHERE clause (params start after SET params)
-    const { filter } = parseWhereClause(whereClause.trim(), params, setParamIndex);
+    // Parse WHERE clause (params start after SET params). No WHERE -> empty
+    // filter, which the write guard refuses; an explicit 1=1 tautology -> an
+    // empty filter that IS an intentional match-all (matchAll bypasses the guard).
+    const matchAll = isMatchAllWhere(whereClause?.trim());
+    const filter = whereClause
+      ? parseWhereClause(whereClause.trim(), params, setParamIndex).filter
+      : {};
 
-    return { type: "updateMany", collection, filter, update: { $set: setDoc } };
+    return { type: "updateMany", collection, filter, update: { $set: setDoc }, matchAll };
   }
 
   // ---- DELETE ----
@@ -232,10 +301,13 @@ function parseSql(sql: string, params: unknown[] = []): MongoOperation | null {
   );
   if (deleteMatch) {
     const [, collection, whereClause] = deleteMatch;
+    // An explicit 1=1 tautology (truncate()'s WHERE) is an intentional match-all;
+    // a blank/absent WHERE is the mass-delete footgun the executor guard refuses.
+    const matchAll = isMatchAllWhere(whereClause?.trim());
     const filter = whereClause
       ? parseWhereClause(whereClause.trim(), params).filter
       : {};
-    return { type: "deleteMany", collection, filter };
+    return { type: "deleteMany", collection, filter, matchAll };
   }
 
   // ---- CREATE TABLE (treated as createCollection) ----
@@ -296,6 +368,22 @@ export class MongodbAdapter implements DatabaseAdapter {
   }
 
   /** Connect to MongoDB. Must be called before using the adapter. */
+  /** ADR-0044 required adapter capability. */
+  getDatabaseType(): string {
+    return 'mongodb';
+  }
+
+  /** ADR-0044: readable/writable native boolean. */
+  autocommit = true;
+
+  /**
+   * ADR-0044 / DBA-P02: every built-in adapter can guarantee an atomic
+   * multi-row batch by default. A test-only deployment representing one
+   * that cannot sets this false so executeMany rejects BEFORE the first
+   * write rather than risking partial durability.
+   */
+  supportsAtomicBatch = true;
+
   async connect(): Promise<void> {
     let MongoClient: any;
     try {
@@ -368,11 +456,15 @@ export class MongodbAdapter implements DatabaseAdapter {
         return result;
       }
       case "updateMany": {
-        const result = await col.updateMany(op.filter ?? {}, op.update!, { session: this.session });
+        // matchAll = an explicit 1=1 tautology; its empty filter is an
+        // intentional whole-collection write, not the blank-WHERE footgun.
+        if (!op.matchAll) requireWriteFilter(op.filter, "UPDATE", op.collection);
+        const result = await col.updateMany(op.filter!, op.update!, { session: this.session });
         return result;
       }
       case "deleteMany": {
-        const result = await col.deleteMany(op.filter ?? {}, { session: this.session });
+        if (!op.matchAll) requireWriteFilter(op.filter, "DELETE", op.collection);
+        const result = await col.deleteMany(op.filter!, { session: this.session });
         return result;
       }
       case "find": {
@@ -465,6 +557,53 @@ export class MongodbAdapter implements DatabaseAdapter {
     return rows[0] ?? null;
   }
 
+  /**
+   * Atomic, monotonic, concurrency-safe next id — feature 16. A
+   * findOneAndUpdate($inc) on the tina4_sequences collection, keyed by _id (its
+   * built-in unique index makes concurrent first-use upserts race-safe: two
+   * callers can never create two counters for one table). Seeds from
+   * MAX(pkColumn) the FIRST time only ($setOnInsert). Throws on an impossible
+   * empty result rather than returning a fixed id that could collide with a row.
+   */
+  async getNextId(table: string, pkColumn = "id"): Promise<number> {
+    this.ensureConnected();
+    const sequences = this.db.collection("tina4_sequences");
+    const seqName = `${table}.${pkColumn}`;
+
+    const existing = await sequences.findOne({ _id: seqName }, { session: this.session });
+    if (existing == null) {
+      let seed = 0;
+      try {
+        const maxDoc = await this.db.collection(table)
+          .find({}, { session: this.session })
+          .sort({ [pkColumn]: -1 })
+          .limit(1)
+          .next();
+        if (maxDoc && maxDoc[pkColumn] != null) seed = Number(maxDoc[pkColumn]);
+      } catch { /* collection may not exist yet — seed 0 */ }
+      try {
+        await sequences.updateOne(
+          { _id: seqName },
+          { $setOnInsert: { current_value: seed } },
+          { upsert: true, session: this.session },
+        );
+      } catch { /* race — another caller seeded first; the $inc below still holds */ }
+    }
+
+    const res = await sequences.findOneAndUpdate(
+      { _id: seqName },
+      { $inc: { current_value: 1 } },
+      { upsert: true, returnDocument: "after", session: this.session },
+    );
+    // The mongodb driver returns the doc directly (v5/v6) or wrapped as
+    // { value: doc } (v4). Our counter doc has no `value` field, so this is safe.
+    const doc = res != null && (res as any).value !== undefined ? (res as any).value : res;
+    if (!doc || (doc as any).current_value == null) {
+      throw new Error(`getNextId: MongoDB counter '${seqName}' produced no value`);
+    }
+    return Number((doc as any).current_value);
+  }
+
   insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): DatabaseResult {
     throw new Error("Use insertAsync() for MongoDB — async adapter requires async methods.");
   }
@@ -491,6 +630,7 @@ export class MongodbAdapter implements DatabaseAdapter {
 
   async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown>): Promise<DatabaseResult> {
     this.ensureConnected();
+    requireWriteFilter(filter, "UPDATE", table);
     const col = this.db.collection(table);
     try {
       const result = await col.updateMany(filter, { $set: data }, { session: this.session });
@@ -511,25 +651,35 @@ export class MongodbAdapter implements DatabaseAdapter {
       if (Array.isArray(filter)) {
         let total = 0;
         for (const f of filter) {
+          requireWriteFilter(f, "DELETE", table);
           const r = await col.deleteMany(f, { session: this.session });
           total += r.deletedCount;
         }
         return { success: true, affectedRows: total };
       }
 
-      // String WHERE clause — not directly translatable; delete nothing safely
+      // String WHERE clause. A BLANK/absent WHERE is REFUSED -- it would delete
+      // every document. The explicit 1=1 tautology (truncate()'s spelling) is
+      // the ONE intentional whole-collection delete: the WHERE is present and
+      // non-blank, so it is NOT a filterless write -- deleteMany({}) empties the
+      // collection, matching Python/PHP/Ruby (where "1 = 1" translates to an
+      // empty match-all filter). An unparseable WHERE still throws in
+      // parseWhereClause below.
       if (typeof filter === "string") {
         if (!filter.trim()) {
-          // Empty filter = delete all documents
+          requireWriteFilter({}, "DELETE", table); // always throws: no filter
+        }
+        if (isMatchAllWhere(filter.trim())) {
           const r = await col.deleteMany({}, { session: this.session });
           return { success: true, affectedRows: r.deletedCount };
         }
-        // Attempt parse via dummy SELECT wrapping
         const { filter: parsedFilter } = parseWhereClause(filter, []);
+        requireWriteFilter(parsedFilter, "DELETE", table);
         const r = await col.deleteMany(parsedFilter, { session: this.session });
         return { success: true, affectedRows: r.deletedCount };
       }
 
+      requireWriteFilter(filter as Record<string, unknown>, "DELETE", table);
       const result = await col.deleteMany(filter as Record<string, unknown>, { session: this.session });
       return { success: true, affectedRows: result.deletedCount };
     } catch (e) {

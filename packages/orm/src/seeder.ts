@@ -14,7 +14,7 @@
 //         real parent PKs, and warns on clear type mismatches.
 
 import { FakeData } from "./fakeData.js";
-import { adapterExecute, adapterFetch, adapterColumns } from "./database.js";
+import { adapterExecute, adapterFetch, adapterColumns, adapterInsert } from "./database.js";
 import { Log } from "../../core/src/index.js";
 import type { DatabaseAdapter, FieldDefinition, FieldType } from "./types.js";
 
@@ -37,7 +37,18 @@ export interface SeedOptions {
   overrides?: Record<string, unknown>;
   /** Delete every existing row in the target before seeding (P2). */
   clear?: boolean;
-  /** PRNG seed for reproducible FakeData output (P3). */
+  /**
+   * PRNG seed for reproducible FakeData output (P3). Honoured by seedOrm and
+   * seedModels, which build and seed their own FakeData internally.
+   *
+   * NOT honoured by seedTable (SEED-TABLE-SEED-INERT, SEED-DEC-01, ratified
+   * 2026-08-11 — same principle as the no-op ForeignKeyField on_delete):
+   * seedTable has no generators of its own to seed — fieldMap callables are
+   * opaque — so this used to be a silent no-op there. Passing it to seedTable
+   * now THROWS instead. Build your own `new FakeData(seed)` and close over it
+   * in fieldMap: `const fake = new FakeData(42); seedTable(db, table, count,
+   * { name: () => fake.name() })`.
+   */
   seed?: number;
   /** Re-raise on the first failed row instead of skipping it (P1). */
   strict?: boolean;
@@ -51,14 +62,13 @@ export interface SeedOptions {
 function normaliseOptions(
   overrides?: Record<string, unknown>,
   opts?: SeedOptions,
-): Required<Pick<SeedOptions, "clear" | "strict">> & { overrides?: Record<string, unknown>; seed?: number } {
+): Required<Pick<SeedOptions, "clear" | "strict">> & { overrides?: Record<string, unknown> } {
   const merged: SeedOptions = { ...(opts ?? {}) };
   // The new `opts.overrides` takes precedence if both are supplied.
   const effectiveOverrides = merged.overrides ?? overrides;
   return {
     overrides: effectiveOverrides,
     clear: merged.clear ?? false,
-    seed: merged.seed,
     strict: merged.strict ?? false,
   };
 }
@@ -154,8 +164,10 @@ export async function autoFieldMap(
  *                   (or a static value). If not provided, no rows are inserted.
  * @param overrides - (legacy positional) Static values applied to every row.
  *                   Prefer `opts.overrides`.
- * @param opts - Seed options: `{ overrides, clear, seed, strict }`.
+ * @param opts - Seed options: `{ overrides, clear, strict }`. `opts.seed` is
+ *   NOT honoured here (see {@link SeedOptions.seed}) and throws if supplied.
  * @returns A SeedSummary `{ seeded, failed, errors }`.
+ * @throws {Error} If `opts.seed` is defined (SEED-TABLE-SEED-INERT removal).
  *
  * @example
  *   const fake = new FakeData();
@@ -172,6 +184,15 @@ export async function seedTable(
   overrides?: Record<string, unknown>,
   opts?: SeedOptions,
 ): Promise<SeedSummary> {
+  if (opts?.seed !== undefined) {
+    throw new Error(
+      "seedTable() no longer accepts opts.seed: it has no generators of its own to seed " +
+        "(fieldMap callables are opaque). Build a seeded FakeData yourself and close over it " +
+        "in fieldMap, e.g. const fake = new FakeData(42); seedTable(db, table, count, " +
+        "{ name: () => fake.name() }).",
+    );
+  }
+
   const { overrides: effectiveOverrides, clear, strict } = normaliseOptions(overrides, opts);
 
   if (!fieldMap || Object.keys(fieldMap).length === 0) {
@@ -202,18 +223,19 @@ export async function seedTable(
         }
       }
 
-      // Build INSERT SQL
-      const columns = Object.keys(row);
-      const colList = columns.map((c) => `"${c}"`).join(", ");
-      const placeholders = columns.map(() => "?").join(", ");
-      const values = columns.map((c) => row[c]);
-
-      // adapterExecute() RAISES on a constraint/SQL error since v3.13.x — the
+      // Route through the adapter's OWN native insert path (feature 3's
+      // shared buildInsert()/Dialect) instead of hand-built SQL with a fixed
+      // quote style. A hardcoded double-quote works on PostgreSQL/MSSQL/
+      // SQLite but breaks Firebird: an unquoted CREATE TABLE folds the name
+      // to UPPERCASE, so a quoted lower-case INSERT target is a DIFFERENT,
+      // unfindable identifier ("Table unknown" -204) — the SAME class of
+      // engine-portability bug as PHP's old backtick-quoted seed_table.
+      // adapterInsert() RAISES on a constraint/SQL error since v3.13.x — the
       // try/except is what turns that into a counted, logged, skipped failure.
-      await adapterExecute(
+      await adapterInsert(
         db,
-        `INSERT INTO "${tableName}" (${colList}) VALUES (${placeholders})`,
-        values,
+        tableName,
+        row,
       );
       seeded++;
     } catch (e) {
@@ -410,16 +432,12 @@ export async function seedOrm(
       }
       validateTypes(fields, attrs, modelName);
 
-      const columns = Object.keys(attrs);
-      const colList = columns.map((c) => `"${c}"`).join(", ");
-      const placeholders = columns.map(() => "?").join(", ");
-      const values = columns.map((c) => attrs[c]);
-
-      await adapterExecute(
-        db,
-        `INSERT INTO "${ormClass.tableName}" (${colList}) VALUES (${placeholders})`,
-        values,
-      );
+      // Route through the adapter's OWN native insert path (feature 3's
+      // shared buildInsert()/Dialect) — see the identical note in seedTable()
+      // above. A hand-built, unconditionally double-quoted INSERT breaks
+      // Firebird (asymmetric case-folding: an unquoted CREATE TABLE stores
+      // UPPERCASE, so a quoted lower-case INSERT target is unfindable).
+      await adapterInsert(db, ormClass.tableName, attrs);
       seeded++;
     } catch (e) {
       const message = (e as Error).message ?? String(e);

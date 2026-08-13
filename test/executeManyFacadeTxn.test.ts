@@ -10,10 +10,18 @@
  * `db.rollback()` then undid NOTHING — the batch rows survived. Atomicity gone.
  *
  * This is the FACADE twin of the adapter-level `_inTransaction` bug locked in by
- * test/pgBatchTxnAtomicity.test.ts. The adapter fix (owns-guard on
- * PostgresAdapter.executeManyAsync) does NOT cover this path because the facade
- * `executeMany` drives adapterStartTransaction/adapterExecute/adapterCommit
- * DIRECTLY — it never calls the adapter's executeManyAsync.
+ * test/pgBatchTxnAtomicity.test.ts. At the time this file was written the adapter
+ * fix (owns-guard on PostgresAdapter.executeManyAsync) did NOT cover this path
+ * because the facade `executeMany` drove adapterStartTransaction/adapterExecute/
+ * adapterCommit DIRECTLY, looping the adapter's plain execute() per row/chunk
+ * and never calling the adapter's own executeManyAsync at all.
+ *
+ * UPDATED (ADR-0044, feature 3, pre-3.14.0): the facade now delegates to the
+ * adapter's OWN executeMany/executeManyAsync exactly ONCE (never loops execute()
+ * itself) via the new adapterExecuteMany() helper, still bracketed by this same
+ * owns-guarded start/commit/rollback — the atomicity property below is UNCHANGED
+ * and re-proven against the new code path, only the return SHAPE changed (one
+ * aggregate DatabaseResult, not one result per row — see case 3 below).
  *
  * FIX: the facade guards with `owns = !this.inExplicitTransaction()`
  * (inExplicitTransaction() = a pinned adapter in txStore from startTransaction()).
@@ -167,8 +175,15 @@ try {
   {
     const db = await newDb();
     try {
-      const results = await db.executeMany(INSERT, [["s1"], ["s2"], ["s3"]]);
-      assert("standalone db.executeMany returns one result per row (3)", results.length === 3);
+      // ADR-0044 (feature 3, pre-3.14.0 BREAKING CHANGE): executeMany() used
+      // to return one result PER ROW (an array the caller indexed into) built
+      // by this facade looping adapterExecute() itself. It now delegates to
+      // the adapter's OWN executeMany/executeManyAsync exactly once and
+      // returns the SAME shared aggregate DatabaseResult shape insert/update/
+      // delete already use ({success, affectedRows, lastId?}) — affectedRows
+      // is the total row count, not an array length.
+      const result: any = await db.executeMany(INSERT, [["s1"], ["s2"], ["s3"]]);
+      assert("standalone db.executeMany returns one aggregate DatabaseResult (affectedRows 3)", result?.success === true && result?.affectedRows === 3);
     } finally {
       db.close();
     }

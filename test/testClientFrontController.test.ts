@@ -1,23 +1,31 @@
 /**
- * D6: TestClient dispatches through the REAL front-controller behaviour.
+ * D6 / feature 131 (TC-DEC-01): TestClient dispatches through the REAL
+ * front-controller behaviour — server.ts's runDispatch(), the exact function
+ * every live socket connection runs (see testClientDispatchesThroughRealPipeline
+ * .test.ts for the full oracle/session/gate-order/duplicate-header suite).
  *
- * The in-process TestClient is the surface developers test routes on. Before
- * this fix, on a route miss it returned a hand-invented {"error":"Not found"}
- * body that the live server never sends, and it skipped RFC 9110 conformance
- * (OPTIONS/405) and global middleware — so a green test proved nothing about
- * production. This is the same silent-success class as Python's pre-fix client
- * (fixed in the Python master).
+ * Before the D6 fix, a route miss returned a hand-invented
+ * {"error":"Not found"} body the live server never sends, and TestClient
+ * skipped RFC 9110 conformance (OPTIONS/405) and global middleware — so a
+ * green test proved nothing about production. Before the 131 fix, TestClient
+ * still RE-IMPLEMENTED the dispatch order (its own route matching, its own
+ * hand-built 404/405 JSON, middleware BEFORE the auth gate) instead of
+ * calling the live pipeline — this file's own 404 assertions were pinned to
+ * that hand-built shape, not to what a live request actually gets.
  *
- * TestClient now mirrors the live dispatch tail (server.ts): on a miss it does
- * RFC 9110 conformance first (a path registered under another method answers
- * OPTIONS with 204 + Allow and any other method with 405 + Allow), then the
- * framework's REAL 404 — the exact {"error":"Not Found",statusCode,message}
- * body the live front controller emits when no HTML error template is
- * available. It also runs the same global (Router.use) + per-route middleware.
+ * TestClient now calls the real runDispatch(), so a miss falls all the way
+ * through FALLBACK_STAGES exactly as a live request would: RFC 9110
+ * conformance first (a path registered under another method answers OPTIONS
+ * with 204 + Allow and any other method with 405 + Allow — serveMethodNotAllowed's
+ * own JSON shape, unchanged), THEN content negotiation (ERR-DEC-02,
+ * negotiatedErrorBody — `Accept: application/json` gets the real
+ * {error:true,code,message,status,request_id} envelope; a browser-style or
+ * absent Accept header gets the framework's HTML 404 page, not JSON — this
+ * is genuinely new, since the old TestClient could not distinguish the two).
  *
- * The discriminator: the miss body is the real 404 JSON, NOT the fabricated
- * {"error":"Not found"}. If a future change reverts TestClient to the invented
- * body, the assertion below fails — that is the bite.
+ * The discriminator: the miss body is the real negotiated 404, NOT the
+ * fabricated {"error":"Not found"}. If a future change reverts TestClient to
+ * the invented body, the assertion below fails — that is the bite.
  *
  * NOT a mock: real Router registration, real router.match / methodsAllowedForPath,
  * real enforceRouteAuth, real dispatch.
@@ -57,15 +65,32 @@ async function run(): Promise<void> {
   router.get("/d6-open", async (_req: Tina4Request, res: Tina4Response) => res.json({ ok: true }));
   const client = new TestClient(router);
 
-  // ── THE discriminator: a miss is the real 404, never a fabricated body ──
-  it("returns the real 404, not the fabricated {\"error\":\"Not found\"}", async () => {
-    const r = await client.get("/d6-definitely-not-a-route");
+  // ── THE discriminator: a miss is the real negotiated 404, never a fabricated body ──
+  it("returns the real negotiated 404 JSON for an Accept:application/json miss, not the fabricated {\"error\":\"Not found\"}", async () => {
+    const r = await client.get("/d6-definitely-not-a-route", { headers: { Accept: "application/json" } });
     assert.equal(r.status, 404);
     assert.notEqual(r.text(), '{"error":"Not found"}', "TestClient still fabricates the pre-fix 404 body");
+    // The REAL envelope (response.ts negotiatedErrorBody, ERR-DEC-02) — not
+    // the old TestClient's hand-rolled {error,statusCode,message} shape.
     const body = r.json() as Record<string, unknown>;
-    assert.equal(body.error, "Not Found");
-    assert.equal(body.statusCode, 404);
-    assert.ok(String(body.message).includes("/d6-definitely-not-a-route"));
+    assert.equal(body.error, true);
+    assert.equal(body.code, "NOT_FOUND");
+    assert.equal(body.message, "Not Found");
+    assert.equal(body.status, 404);
+    assert.ok(typeof body.request_id === "string" && body.request_id.length > 0);
+  });
+
+  // ── A miss with no Accept header gets the real HTML 404 page, not JSON ──
+  // (content negotiation, ERR-DEC-02) — the old TestClient always returned
+  // JSON regardless of Accept, which is what the pre-131 version of this
+  // very test asserted; that was the low-fidelity re-implementation, not the
+  // live server's actual behaviour.
+  it("returns the framework's real HTML 404 page for a miss with no Accept header", async () => {
+    const r = await client.get("/d6-definitely-not-a-route");
+    assert.equal(r.status, 404);
+    assert.ok(r.contentType.includes("text/html"), `expected an HTML 404, got content-type ${r.contentType}`);
+    assert.ok(r.text().includes("404"), "the framework's built-in 404 page must mention 404");
+    assert.notEqual(r.text(), '{"error":"Not found"}', "TestClient still fabricates the pre-fix 404 body");
   });
 
   // ── A matched route runs the full pipeline ──────────────────────────────

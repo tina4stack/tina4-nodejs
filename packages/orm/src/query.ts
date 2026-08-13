@@ -1,4 +1,5 @@
 import type { QueryOptions } from "./types.js";
+import { DEFAULT_ROW_CAP } from "./database.js";
 
 export interface ParsedQuery {
   where: string;
@@ -12,7 +13,7 @@ export function buildQuery(
   tableName: string,
   options: QueryOptions,
   extraConditions?: string[],
-): { sql: string; countSql: string; params: unknown[] } {
+): { sql: string; countSql: string; params: unknown[]; limit: number; offset: number; page: number } {
   const conditions: string[] = [];
   const params: unknown[] = [];
 
@@ -57,9 +58,17 @@ export function buildQuery(
     orderClause = `ORDER BY ${parts.join(", ")}`;
   }
 
-  // Pagination
-  const limit = options.limit ?? 100;
-  const page = options.page ?? 1;
+  // Pagination — PAGE-DEC-01: clamp page >= 1 BEFORE deriving offset, so
+  // offset=(page-1)*limit can never go negative (a page=0/negative request used
+  // to hand the driver a negative OFFSET - a hard error on PostgreSQL and a
+  // silent-wrong result on SQLite), and cap the per-page size at DEFAULT_ROW_CAP
+  // (100 - the same row cap Database.fetch()/BaseModel.all() already share) so a
+  // client cannot request the whole table in one query. Returning the clamped
+  // limit/offset/page (not just using them locally) lets the caller build the
+  // REST envelope from the values the SQL actually used, instead of recomputing
+  // the same arithmetic a second time from the raw, unclamped query params.
+  const limit = Math.min(options.limit ?? DEFAULT_ROW_CAP, DEFAULT_ROW_CAP);
+  const page = Math.max(options.page ?? 1, 1);
   const offset = (page - 1) * limit;
 
   const sql = `SELECT * FROM "${tableName}" ${whereClause} ${orderClause} LIMIT ? OFFSET ?`;
@@ -69,6 +78,9 @@ export function buildQuery(
     sql,
     countSql,
     params: [...params, limit, offset],
+    limit,
+    offset,
+    page,
   };
 }
 

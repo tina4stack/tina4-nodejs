@@ -20,6 +20,7 @@ import * as os from "node:os";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomBytes } from "node:crypto";
+import { TINA4_VERSION } from "./version.js";
 
 // Synchronous CommonJS-style require that works under real ESM (where the
 // bare `require` global is undefined). Dev-tool handlers are synchronous, so
@@ -728,7 +729,14 @@ let _defaultToolsRegistered = false;
 
 function _getDefaultServer(): McpServer {
   if (_defaultServer === null) {
-    _defaultServer = new McpServer("/__dev/mcp", "Tina4 Dev Tools");
+    // VERSION-DEC-01 (feature 130): the built-in dev server's serverInfo must
+    // report the SAME version every other surface does, not the constructor's
+    // generic '1.0.0' default -- TINA4_VERSION is the one shared resolver
+    // (health, banner, dashboard already read it). A user's OWN custom
+    // `new McpServer(path, name)` (no third arg) is unaffected -- that default
+    // stays '1.0.0' for app authors who have not set their own tool-server
+    // version.
+    _defaultServer = new McpServer("/__dev/mcp", "Tina4 Dev Tools", TINA4_VERSION);
   }
   return _defaultServer;
 }

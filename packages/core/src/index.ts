@@ -20,14 +20,17 @@ export { Router, RouteGroup, RouteRef, WsRouteRef, defaultRouter, runRouteMiddle
 export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";
 export { discoverRoutes } from "./routeDiscovery.js";
-export { MiddlewareChain, MiddlewareRunner, cors, requestLogger, CorsMiddleware, RateLimiterMiddleware, RequestLogger, SecurityHeadersMiddleware, CsrfMiddleware } from "./middleware.js";
+export { MiddlewareChain, MiddlewareRunner, cors, requestLogger, CorsMiddleware, RateLimiterMiddleware, RequestLogger, SecurityHeadersMiddleware, CsrfMiddleware, attachCsrfFromEnv } from "./middleware.js";
 export type { CorsConfig } from "./middleware.js";
-export { createRequest, makeCaseInsensitiveHeaders } from "./request.js";
-export { createResponse, errorResponse, setDefaultTemplatesDir, getFrond, setFrond, getFrameworkFrond } from "./response.js";
+export { createRequest, makeCaseInsensitiveHeaders, parseMultipart, saveUpload } from "./request.js";
+export {
+  createResponse, errorResponse, setDefaultTemplatesDir, getFrond, setFrond, getFrameworkFrond,
+  acceptPrefersJson, wantsJson, negotiatedErrorBody,
+} from "./response.js";
 export { tryServeStatic } from "./static.js";
 export { loadEnv, getEnv, requireEnv, hasEnv, allEnv, resetEnv, isTruthy } from "./dotenv.js";
 export { Env } from "./env.js";
-export { Log } from "./logger.js";
+export { Log, LogConfigurationError, LogArgumentError, LogWriteError } from "./logger.js";
 export { createHealthRoute, createHealthRoutes, healthPath } from "./health.js";
 export { rateLimiter } from "./rateLimiter.js";
 export { isTrustedProxy, trustedProxyNetworks, resolveClientIp, resetTrustedProxyCache } from "./trustedProxy.js";
@@ -101,7 +104,7 @@ export { DevMailbox } from "./devMailbox.js";
 export { WSDLService, WSDLOperation } from "./wsdl.js";
 export type { WSDLOperationMeta } from "./wsdl.js";
 export { HtmlElement, htmlElement, addHtmlHelpers, Raw, SafeString } from "./htmlElement.js";
-export { renderErrorOverlay, renderProductionError, isDebugMode } from "./errorOverlay.js";
+export { renderErrorOverlay, isDebugMode } from "./errorOverlay.js";
 export { AI_TOOLS, isInstalled, showMenu, installSelected, installAll, generateContext } from "./ai.js";
 export type { AiTool } from "./ai.js";
 export type { ImapMessage, ImapFullMessage, ImapAttachment } from "./messenger.js";
@@ -122,7 +125,7 @@ export { MongoSessionHandler } from "./sessionHandlers/mongoHandler.js";
 export type { MongoSessionConfig } from "./sessionHandlers/mongoHandler.js";
 export { ValkeySessionHandler } from "./sessionHandlers/valkeyHandler.js";
 export type { ValkeySessionConfig } from "./sessionHandlers/valkeyHandler.js";
-export { tests, assertEqual, assertRaises, assertTrue, assertFalse, runAll, reset } from "./testing.js";
+export { tests, expectEqual, expectRaises, expectTrue, expectFalse, runAll, reset } from "./testing.js";
 export { TestClient, TestResponse } from "./testClient.js";
 export { Tina4Test, AssertionError as Tina4AssertionError } from "./test.js";
 export type { TestRunResults } from "./test.js";
@@ -151,3 +154,11 @@ export type { FileEntry, FileRoute } from "./projectIndex.js";
 export { Docs } from "./docs.js";
 export type { DocsHit, ClassSpec, MethodSpec, IndexEntry, DriftHit } from "./docs.js";
 export { writeMcpDiscovery } from "./docsAutoDiscovery.js";
+export {
+  takeOverPort, selectablePids, inContainer, isDev, noTakeoverOptedOut,
+  writePidfile, readPidfile, removePidfile, pidfilePath, runtimeDir,
+  TAKEOVER_NOTHING, TAKEOVER_KILLED, TAKEOVER_REFUSED_FOREIGN, TAKEOVER_REFUSED_OPTOUT,
+  TAKEOVER_REFUSED_PROD, TAKEOVER_SKIPPED_CONTAINER, TAKEOVER_REFUSALS,
+} from "./portTakeover.js";
+export type { TakeoverResult } from "./portTakeover.js";
+export { resolveFrameworkVersion, TINA4_VERSION } from "./version.js";
