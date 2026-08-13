@@ -666,7 +666,7 @@ export function resolveTemplate(pathname: string, templatesDir: string): string 
   return templateCache.get(cleanPath) ?? null;
 }
 
-function renderLandingPage(routes: Array<{ method: string; pattern: string; flags?: string[] }>, port: number = 7148): string {
+function renderLandingPage(port: number = 7148): string {
   const version = TINA4_VERSION;
 
   const galleryItems = [
@@ -1423,13 +1423,8 @@ function serveLandingPage(ctx: FallbackContext): boolean {
   if ((ctx.req.method ?? "GET") !== "GET") return false;
   if (ctx.pathname !== "/" || !isDevMode()) return false;
 
-  const allRoutes = ctx.router.getRoutes().map((r) => ({
-    method: r.method,
-    pattern: r.pattern,
-    flags: [] as string[],
-  }));
   ctx.res.raw.writeHead(200, undefined, { "Content-Type": "text/html; charset=utf-8" });
-  ctx.res.raw.end(renderLandingPage(allRoutes, ctx.port));
+  ctx.res.raw.end(renderLandingPage(ctx.port));
   return true;
 }
 
