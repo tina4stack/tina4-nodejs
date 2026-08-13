@@ -41,6 +41,7 @@ import { CLOSE_GOING_AWAY, devReloadWs, serveWebSocketRoute, wsRouteManager } fr
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
 import { stopAllBackgroundTasks } from "./background.js";
+import { TINA4_VERSION } from "./version.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -212,18 +213,12 @@ export async function autoMigrateOnStartup(
   }
 }
 
-/** Read version from root package.json so the banner always matches the published version. */
-function readPackageVersion(): string {
-  try {
-    const pkgPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-    return pkg.version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
-const TINA4_VERSION = readPackageVersion();
+// VERSION-DEC-01 (feature 130): TINA4_VERSION is the ONE shared resolver in
+// ./version.ts (a walk-up to the nearest package.json, not this file's old
+// fixed depth-3 read, which silently returned "0.0.0" once @tina4/core was
+// relocated out of the monorepo layout). devAdmin.ts and mcp.ts's default dev
+// server import the SAME constant, so the banner, health, dashboard, and MCP
+// serverInfo can never drift from each other.
 
 /** Cache Frond instances by template directory to avoid repeated instantiation. */
 const frondCache = new Map<string, InstanceType<any>>();

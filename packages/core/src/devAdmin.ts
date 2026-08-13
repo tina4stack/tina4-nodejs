@@ -21,24 +21,14 @@ import { quickMetrics, fullAnalysis, fileDetail, MetricsEngineError } from "./me
 import { registerFeedbackRoutes } from "./feedback.js";
 import { getDefaultDevServer, mcpEnabled, isRequestAllowed, isLoopback } from "./mcp.js";
 import { timingSafeEqual } from "node:crypto";
+// VERSION-DEC-01 (feature 130): the dashboard reads the SAME resolved version
+// as server.ts's banner/health and mcp.ts's default dev server -- one shared
+// walk-up resolver in ./version.ts, not this file's own two-fixed-path reader
+// (which also floored at "0.0.0" once @tina4/core was relocated out of the
+// monorepo layout).
+import { TINA4_VERSION } from "./version.js";
 
 const cpuCount = osCpus().length;
-
-// Read version from root package.json dynamically
-const TINA4_VERSION = (() => {
-  try {
-    const __dirname = dirname(fileURLToPath(import.meta.url));
-    // Try root package.json first, then core package.json
-    for (const rel of ["../../../package.json", "../../package.json"]) {
-      const p = resolve(__dirname, rel);
-      if (existsSync(p)) {
-        const pkg = JSON.parse(readFileSync(p, "utf-8"));
-        if (pkg.version) return pkg.version;
-      }
-    }
-  } catch {}
-  return "0.0.0";
-})();
 
 // ── Dev-admin mutation security (feature 127, DEVADMIN-DEC-01/02/03) ──────────
 // The dashboard can write files, run SQL and install packages, so it must assume

@@ -161,3 +161,4 @@ export {
   TAKEOVER_REFUSED_PROD, TAKEOVER_SKIPPED_CONTAINER, TAKEOVER_REFUSALS,
 } from "./portTakeover.js";
 export type { TakeoverResult } from "./portTakeover.js";
+export { resolveFrameworkVersion, TINA4_VERSION } from "./version.js";

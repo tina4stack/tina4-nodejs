@@ -20,6 +20,7 @@ import { randomBytes } from "node:crypto";
 import { promises as fsp, createWriteStream } from "node:fs";
 import { basename } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { TINA4_VERSION } from "./version.js";
 
 export interface ApiResult {
     http_code: number | null;
@@ -617,10 +618,17 @@ export class Api {
     }
 
     /**
-     * Build the request headers (auth + cookie jar + extras) and serialize the
-     * body to a Buffer. Shared by every verb, upload, and download so the wire
-     * shape is identical and the transport seam sees exactly what the network
-     * path would.
+     * Build the request headers (default User-Agent + auth + cookie jar +
+     * extras) and serialize the body to a Buffer. Shared by every verb,
+     * upload, and download so the wire shape is identical and the transport
+     * seam sees exactly what the network path would.
+     *
+     * VERSION-DEC-03 (feature 130): every outbound request carries a default
+     * `Tina4/<version>` User-Agent. `this.headers` is spread AFTER the
+     * default, and `extraHeaders` after that, so a caller-supplied
+     * `User-Agent` (via the constructor's `headers` option, `addHeaders()`,
+     * or a per-call `extraHeaders`) always wins -- this is a default, never a
+     * clobber.
      */
     private buildRequest(
         method: string,
@@ -628,7 +636,7 @@ export class Api {
         body: unknown,
         extraHeaders?: Record<string, string>,
     ): { headers: Record<string, string>; data: Buffer | undefined } {
-        const headers: Record<string, string> = { ...this.headers };
+        const headers: Record<string, string> = { "User-Agent": `Tina4/${TINA4_VERSION}`, ...this.headers };
         if (this.authHeader) {
             headers["Authorization"] = this.authHeader;
         }
