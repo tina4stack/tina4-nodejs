@@ -116,6 +116,12 @@ function skillsRef(): string {
  * The child prints a JSON array of the URLs it fetched successfully; any fetch
  * failure is skipped, never fatal.
  *
+ * MEASURED (2026-08-13): a real GitHub raw-content fetch occasionally drops a
+ * request under load (transient DNS/TLS hiccup, not a missing file — every
+ * URL here resolves fine on its own) while its siblings in the same batch
+ * succeed. One retry pass over just the stragglers, still inside the same
+ * child process, fixes that for real installer users too, not only the test.
+ *
  * @param jobs  one entry per unique URL, with every file path it should land in
  * @returns the set of URLs that were fetched and written to disk
  */
@@ -125,27 +131,37 @@ function downloadSkillsSync(jobs: { url: string; dests: string[] }[]): Set<strin
     const jobs = JSON.parse(process.argv[1]);
     const fs = require("node:fs");
     const path = require("node:path");
+    async function fetchOne(job) {
+      const resp = await fetch(job.url, { signal: AbortSignal.timeout(15000) });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const buf = Buffer.from(await resp.arrayBuffer());
+      for (const dest of job.dests) {
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, buf);
+      }
+    }
     (async () => {
       const ok = [];
-      await Promise.all(jobs.map(async (job) => {
-        try {
-          const resp = await fetch(job.url, { signal: AbortSignal.timeout(15000) });
-          if (!resp.ok) return;
-          const buf = Buffer.from(await resp.arrayBuffer());
-          for (const dest of job.dests) {
-            fs.mkdirSync(path.dirname(dest), { recursive: true });
-            fs.writeFileSync(dest, buf);
+      let pending = jobs;
+      for (let attempt = 0; attempt < 2 && pending.length > 0; attempt++) {
+        const failed = [];
+        await Promise.all(pending.map(async (job) => {
+          try {
+            await fetchOne(job);
+            ok.push(job.url);
+          } catch {
+            failed.push(job);
           }
-          ok.push(job.url);
-        } catch { /* skip this file */ }
-      }));
+        }));
+        pending = failed;
+      }
       process.stdout.write(JSON.stringify(ok));
     })();
   `;
   try {
     const out = execFileSync(process.execPath, ["-e", child, JSON.stringify(jobs)], {
       encoding: "utf-8",
-      timeout: 45000,
+      timeout: 50000,
       maxBuffer: 8 * 1024 * 1024,
     });
     return new Set<string>(JSON.parse(out || "[]"));
