@@ -504,3 +504,70 @@ export function createResponse(res: ServerResponse): Tina4Response {
 export function errorResponse(code: string, message: string, status: number = 400): Record<string, unknown> {
   return { error: true, code, message, status };
 }
+
+/**
+ * Content negotiation for an error response (feature 42, ERR-DEC-02): does an
+ * Accept header prefer application/json over text/html?
+ *
+ * `Accept: application/json` (an API client) prefers JSON; a browser Accept
+ * (`text/html`, `*\/*`, or no header at all) prefers HTML. A mixed Accept
+ * header - a real browser's
+ * `text/html,application/xhtml+xml,application/xml;q=0.9,*\/*;q=0.8` - is
+ * resolved by q-value: whichever of the two media types this function cares
+ * about is weighted higher wins; a tie or neither present defaults to HTML,
+ * the historical/back-compatible behaviour for an unspecified client. This is
+ * the ONE shared decision reused by the 403/404/500 error paths (server.ts's
+ * serveNotFound/renderDispatchError, middleware.ts's interpretHookResult), so
+ * a JSON API client sees the SAME negotiated shape everywhere
+ * (ERR-403-SPLIT) - ported with the same algorithm to Python/PHP/Ruby.
+ */
+export function acceptPrefersJson(accept: string | undefined | null): boolean {
+  if (!accept) return false;
+
+  let bestJson = -1;
+  let bestHtml = -1;
+  for (const part of accept.split(",")) {
+    const segments = part.trim().split(";");
+    const media = (segments[0] ?? "").trim().toLowerCase();
+    let q = 1;
+    for (const rawParam of segments.slice(1)) {
+      const param = rawParam.trim();
+      if (param.startsWith("q=")) {
+        const parsed = Number(param.slice(2));
+        if (!Number.isNaN(parsed)) q = parsed;
+      }
+    }
+    if (media === "application/json") {
+      bestJson = Math.max(bestJson, q);
+    } else if (media === "text/html" || media === "*/*" || media === "application/xhtml+xml") {
+      bestHtml = Math.max(bestHtml, q);
+    }
+  }
+
+  if (bestJson < 0) return false;
+  if (bestHtml < 0) return true;
+  return bestJson > bestHtml;
+}
+
+/** True when the request's Accept header prefers JSON - see acceptPrefersJson(). */
+export function wantsJson(req: { headers?: Record<string, string | string[] | undefined> }): boolean {
+  const accept = req?.headers?.["accept"];
+  return acceptPrefersJson(Array.isArray(accept) ? accept[0] : accept);
+}
+
+const ERROR_CODE_NAMES: Record<number, string> = {
+  403: "FORBIDDEN", 404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED", 500: "INTERNAL_SERVER_ERROR",
+};
+
+/**
+ * The ONE JSON error envelope for a negotiated 403/404/500 (ERR-DEC-02).
+ *
+ * Reuses errorResponse() (error: true, code, message, status) already shared
+ * by app-level response.error() calls, plus request_id for correlation
+ * (feature 43, ERR-404-REQUESTID) - the SAME shape Python/PHP/Ruby build.
+ */
+export function negotiatedErrorBody(code: number, message: string, requestId: string): Record<string, unknown> {
+  const body = errorResponse(ERROR_CODE_NAMES[code] ?? `HTTP_${code}`, message, code);
+  body.request_id = requestId;
+  return body;
+}

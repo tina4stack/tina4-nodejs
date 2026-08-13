@@ -5,6 +5,7 @@ import { Log } from "./logger.js";
 import { isTruthy } from "./dotenv.js";
 import { defaultRouter, type Router } from "./router.js";
 import { resolveClientIp } from "./trustedProxy.js";
+import { getFrond, getFrameworkFrond, wantsJson, negotiatedErrorBody } from "./response.js";
 
 /**
  * Whether to emit a per-request log line (v3.13.14). TINA4_LOG_REQUESTS is
@@ -102,6 +103,55 @@ function isResponse(value: unknown): value is Tina4Response {
 }
 
 /**
+ * The 403 a hook gets when it says no without saying what to send
+ * (ERR-DEC-01/ERR-DEC-02). Routed through the SAME negotiated renderer
+ * 404/500 use (server.ts's serveNotFound/renderDispatchError share the same
+ * getFrond/getFrameworkFrond singletons via response.ts), so a middleware
+ * refusal looks like every other error page - a user template if the app
+ * ships one, the framework's errors/403.twig otherwise, negotiated JSON for
+ * an API client - instead of the old bare `res.raw.statusCode = 403` with no
+ * body at all.
+ */
+async function renderForbidden(req: Tina4Request, res: Tina4Response): Promise<void> {
+  const requestId = Log.getRequestId() ?? "";
+
+  if (wantsJson(req)) {
+    const body = negotiatedErrorBody(403, "Forbidden", requestId);
+    res.raw.statusCode = HTTP_FORBIDDEN;
+    res.raw.setHeader("Content-Type", "application/json");
+    res.raw.end(JSON.stringify(body));
+    return;
+  }
+
+  const data = { path: req.path ?? "", error_message: "Forbidden", request_id: requestId, status_code: 403 };
+  let html: string | null = null;
+  try {
+    html = (await getFrond()).render("errors/403.twig", data);
+  } catch {
+    // fall through to the framework default
+  }
+  if (!html) {
+    try {
+      const fw = await getFrameworkFrond();
+      html = fw ? fw.render("errors/403.twig", data) : null;
+    } catch {
+      html = null;
+    }
+  }
+
+  if (html) {
+    res.raw.writeHead(HTTP_FORBIDDEN, { "Content-Type": "text/html; charset=utf-8" });
+    res.raw.end(html);
+    return;
+  }
+
+  const body = negotiatedErrorBody(403, "Forbidden", requestId);
+  res.raw.statusCode = HTTP_FORBIDDEN;
+  res.raw.setHeader("Content-Type", "application/json");
+  res.raw.end(JSON.stringify(body));
+}
+
+/**
  * ONE return-value table, for EVERY beforeX/afterX hook, at EVERY scope
  * (global and per-route):
  *
@@ -111,17 +161,19 @@ function isResponse(value: unknown): value is Tina4Response {
  *   the [req, res] pair rebind both, continue (length >= 2, mirroring Python's
  *                       `isinstance(result, tuple) and len(result) >= 2`)
  *   false               SHORT-CIRCUIT. Send the response AS SET; a still
- *                       default and still unwritten response becomes a 403,
- *                       because a bare `return false` is a deny.
+ *                       default and still unwritten response becomes a
+ *                       NEGOTIATED 403 (renderForbidden), because a bare
+ *                       `return false` is a deny.
  *   undefined / null    continue
  *
+ * ASYNC because the false-row now renders a template (await getFrond()).
  * Returns [req, res, stop].
  */
-function interpretHookResult(
+async function interpretHookResult(
   result: unknown,
   req: Tina4Request,
   res: Tina4Response,
-): [Tina4Request, Tina4Response, boolean] {
+): Promise<[Tina4Request, Tina4Response, boolean]> {
   if (Array.isArray(result)) {
     return result.length >= 2
       ? [result[0] as Tina4Request, result[1] as Tina4Response, false]
@@ -130,7 +182,7 @@ function interpretHookResult(
   if (isResponse(result)) return [req, result, true];
   if (result === false) {
     if (!res.raw.writableEnded && res.raw.statusCode === HTTP_OK) {
-      res.raw.statusCode = HTTP_FORBIDDEN;
+      await renderForbidden(req, res);
     }
     return [req, res, true];
   }
@@ -319,7 +371,7 @@ export class MiddlewareRunner {
       for (const method of MiddlewareRunner.methodNames(cls, "before")) {
         try {
           const [nextReq, nextRes, stop] =
-            interpretHookResult(await cls[method](req, res), req, res);
+            await interpretHookResult(await cls[method](req, res), req, res);
           req = nextReq;
           res = nextRes;
           if (stop) return [req, res, false];
@@ -376,7 +428,7 @@ export class MiddlewareRunner {
       for (const method of MiddlewareRunner.methodNames(cls, "after")) {
         try {
           const [nextReq, nextRes, stop] =
-            interpretHookResult(await cls[method](req, res), req, res);
+            await interpretHookResult(await cls[method](req, res), req, res);
           req = nextReq;
           res = nextRes;
           if (stop) return [req, res];

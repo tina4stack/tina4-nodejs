@@ -23,7 +23,10 @@ export { discoverRoutes } from "./routeDiscovery.js";
 export { MiddlewareChain, MiddlewareRunner, cors, requestLogger, CorsMiddleware, RateLimiterMiddleware, RequestLogger, SecurityHeadersMiddleware, CsrfMiddleware, attachCsrfFromEnv } from "./middleware.js";
 export type { CorsConfig } from "./middleware.js";
 export { createRequest, makeCaseInsensitiveHeaders, parseMultipart, saveUpload } from "./request.js";
-export { createResponse, errorResponse, setDefaultTemplatesDir, getFrond, setFrond, getFrameworkFrond } from "./response.js";
+export {
+  createResponse, errorResponse, setDefaultTemplatesDir, getFrond, setFrond, getFrameworkFrond,
+  acceptPrefersJson, wantsJson, negotiatedErrorBody,
+} from "./response.js";
 export { tryServeStatic } from "./static.js";
 export { loadEnv, getEnv, requireEnv, hasEnv, allEnv, resetEnv, isTruthy } from "./dotenv.js";
 export { Env } from "./env.js";

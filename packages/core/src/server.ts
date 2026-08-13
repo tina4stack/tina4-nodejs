@@ -28,7 +28,7 @@ import {
   compressionEtagIntercept,
   sessionAutoStart,
 } from "./dispatchPipeline.js";
-import { createResponse, setDefaultTemplatesDir } from "./response.js";
+import { createResponse, setDefaultTemplatesDir, wantsJson, negotiatedErrorBody } from "./response.js";
 import { MiddlewareChain, MiddlewareRunner, cors, requestLogger, isMiddlewareClass, attachCsrfFromEnv, SecurityHeadersMiddleware } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
 import { loadEnv, isTruthy } from "./dotenv.js";
@@ -1344,19 +1344,31 @@ async function renderDispatchError(
     }
   }
 
+  // The canonical per-request id (set at the top of dispatch), so the id a
+  // user reports off the 500 page matches the log lines and the X-Request-ID
+  // response header - not a throwaway base36 clock value.
+  const requestId = Log.getRequestId() ?? randomBytes(4).toString("hex");
+
+  // ERR-DEC-02: a JSON API client gets the JSON error body directly. The
+  // message is ALWAYS the generic "Internal Server Error" here - CWE-209 -
+  // never the real exception (same guarantee as error_message='' below).
+  if (wantsJson(req)) {
+    const body = negotiatedErrorBody(500, "Internal Server Error", requestId);
+    res.raw.writeHead(500, { "Content-Type": "application/json" });
+    res.raw.end(JSON.stringify(body));
+    return;
+  }
+
   const html500 = await renderErrorPage(500, {
     error_message: "",
-    // The canonical per-request id (set at the top of dispatch), so the id a
-    // user reports off the 500 page matches the log lines and the X-Request-ID
-    // response header - not a throwaway base36 clock value.
-    request_id: Log.getRequestId() ?? randomBytes(4).toString("hex"),
+    request_id: requestId,
     path: req.path,
   }, templatesDir);
   if (html500) {
     res.raw.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
     res.raw.end(html500);
   } else {
-    res({ error: "Internal Server Error", statusCode: 500 }, 500);
+    res(negotiatedErrorBody(500, "Internal Server Error", requestId), 500);
   }
 }
 
@@ -1482,15 +1494,26 @@ function serveStaticAsset(ctx: FallbackContext): boolean {
 
 /** Terminal stage: 404, with the canonical reason phrase so the status line is well-formed. */
 async function serveNotFound(ctx: FallbackContext): Promise<boolean> {
-  const html404 = await renderErrorPage(404, { path: ctx.pathname }, ctx.templatesDir);
+  // The canonical per-request id (set at the top of dispatch), so the id a
+  // user reports off the 404 matches the log lines and the X-Request-ID
+  // response header - not a throwaway (ERR-404-REQUESTID).
+  const requestId = Log.getRequestId() ?? randomBytes(4).toString("hex");
+
+  // ERR-DEC-02: a JSON API client gets the JSON error body directly - no
+  // need to even try the HTML template.
+  if (wantsJson(ctx.req)) {
+    const body = negotiatedErrorBody(404, "Not Found", requestId);
+    ctx.res.raw.writeHead(404, httpReason(404), { "Content-Type": "application/json" });
+    ctx.res.raw.end(JSON.stringify(body));
+    return true;
+  }
+
+  const html404 = await renderErrorPage(404, { path: ctx.pathname, request_id: requestId }, ctx.templatesDir);
   if (html404) {
     ctx.res.raw.writeHead(404, httpReason(404), { "Content-Type": "text/html; charset=utf-8" });
     ctx.res.raw.end(html404);
   } else {
-    ctx.res(
-      { error: "Not Found", statusCode: 404, message: `No route found for ${ctx.req.method} ${ctx.pathname}` },
-      404,
-    );
+    ctx.res(negotiatedErrorBody(404, `No route found for ${ctx.req.method} ${ctx.pathname}`, requestId), 404);
   }
   return true;
 }
