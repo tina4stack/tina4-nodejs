@@ -30,7 +30,7 @@ export {
 export { tryServeStatic } from "./static.js";
 export { loadEnv, getEnv, requireEnv, hasEnv, allEnv, resetEnv, isTruthy } from "./dotenv.js";
 export { Env } from "./env.js";
-export { Log } from "./logger.js";
+export { Log, LogConfigurationError, LogArgumentError, LogWriteError } from "./logger.js";
 export { createHealthRoute, createHealthRoutes, healthPath } from "./health.js";
 export { rateLimiter } from "./rateLimiter.js";
 export { isTrustedProxy, trustedProxyNetworks, resolveClientIp, resetTrustedProxyCache } from "./trustedProxy.js";

@@ -1317,7 +1317,7 @@ async function renderDispatchError(
     Events.emit("tina4.request.error", { exception: err, request: req });
   } catch (listenerErr) {
     try {
-      Log.warn(
+      Log.warning(
         `Listener for tina4.request.error raised: ${
           listenerErr instanceof Error
             ? `${listenerErr.name}: ${listenerErr.message}`
@@ -1345,7 +1345,7 @@ async function renderDispatchError(
       return;
     } catch (overlayErr) {
       try {
-        Log.warn(
+        Log.warning(
           `Error overlay render failed, serving the safe page: ${
             overlayErr instanceof Error ? `${overlayErr.name}: ${overlayErr.message}` : String(overlayErr)
           }`
@@ -2272,7 +2272,7 @@ ${reset}
 
         aiServer.on("error", (err: any) => {
           if (err.code === "EADDRINUSE") {
-            Log.warn(`Test port ${testPort} in use — skipping`);
+            Log.warning(`Test port ${testPort} in use — skipping`);
             aiServer = null;
           }
         });
@@ -2404,6 +2404,13 @@ ${reset}
         }
 
         Log.info("Server stopped.");
+        // Graceful shutdown owns the final call to reset() (Decision 24 /
+        // LOG-I02): flush the shutdown record above, then clear the resolved
+        // snapshot, exactly once. process.exit() below makes this moot for a
+        // real process, but a test harness that drives gracefulShutdown()
+        // without letting exit() actually kill the process (see
+        // test/gracefulShutdown.test.ts) must not inherit a stale snapshot.
+        Log.reset();
         // Exit 0: this process was ASKED to stop and did so cleanly. 128+signum
         // is what waitpid reports for a process killed BY a signal, i.e. one
         // that did NOT handle it - it is a diagnosis, not a target. Gunicorn

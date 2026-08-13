@@ -1874,7 +1874,7 @@ export class BaseModel {
       if (!relDef || !relType) {
         // Don't silently skip — a typo'd or unknown include name is almost
         // always a developer mistake. Surface it so it's visible.
-        Log.warn(
+        Log.warning(
           `eager-load: include "${relName}" did not match any relationship on ` +
             `${ModelClass.name} (table "${ModelClass.tableName}"). ` +
             `Accepted forms are the related model name, its singular/plural ` +

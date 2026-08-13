@@ -676,13 +676,13 @@ export class WebSocketServer {
       const backlog = client.socket.writableLength ?? 0;
       const maxBacklog = parseInt(process.env.TINA4_WS_MAX_BACKLOG ?? "1048576", 10);
       if (maxBacklog > 0 && backlog > maxBacklog) {
-        Log.warn(`WebSocket client ${client.id} backlog ${backlog}B exceeds limit, dropping slow client`);
+        Log.warning(`WebSocket client ${client.id} backlog ${backlog}B exceeds limit, dropping slow client`);
         this.pruneClient(client);
         return false;
       }
       return true;
     } catch (err) {
-      Log.warn(`WebSocket send to ${client.id} failed, pruning: ${(err as Error).message}`);
+      Log.warning(`WebSocket send to ${client.id} failed, pruning: ${(err as Error).message}`);
       this.pruneClient(client);
       return false;
     }

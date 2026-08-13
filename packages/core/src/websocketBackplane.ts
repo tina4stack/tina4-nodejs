@@ -348,7 +348,7 @@ export class WsBackplaneManager {
     // publish() is async; we fire-and-forget but still catch a rejection so a
     // dead bus can't produce an unhandled rejection that crashes the worker.
     Promise.resolve(this.backplane.publish(this.channel, JSON.stringify(envelope))).catch(
-      (err) => log?.warn(`WebSocket backplane publish failed: ${(err as Error).message}`),
+      (err) => log?.warning(`WebSocket backplane publish failed: ${(err as Error).message}`),
     );
   }
 
@@ -366,7 +366,7 @@ export class WsBackplaneManager {
 /** Minimal logger shape so the manager doesn't import the logger module. */
 export interface WsBackplaneLogger {
   info(message: string): void;
-  warn(message: string): void;
+  warning(message: string): void;
   error(message: string): void;
 }
 

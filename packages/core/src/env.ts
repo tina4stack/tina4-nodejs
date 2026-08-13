@@ -34,7 +34,7 @@ function logWarning(message: string): void {
     import("./logger.js")
       .then((mod) => {
         try {
-          mod.Log.warn(message);
+          mod.Log.warning(message);
         } catch {
           /* Log not ready — skip */
         }
