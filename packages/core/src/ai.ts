@@ -122,10 +122,14 @@ function skillsRef(): string {
  * succeed. One retry pass over just the stragglers, still inside the same
  * child process, fixes that for real installer users too, not only the test.
  *
+ * Exported (like `writeOrMerge`/`markersFor`/`skillBlock` above) so
+ * aiFetchRetry.test.ts can drive it directly against a real local server —
+ * a pure visibility change, no behaviour change.
+ *
  * @param jobs  one entry per unique URL, with every file path it should land in
  * @returns the set of URLs that were fetched and written to disk
  */
-function downloadSkillsSync(jobs: { url: string; dests: string[] }[]): Set<string> {
+export function downloadSkillsSync(jobs: { url: string; dests: string[] }[]): Set<string> {
   if (jobs.length === 0) return new Set();
   const child = `
     const jobs = JSON.parse(process.argv[1]);
