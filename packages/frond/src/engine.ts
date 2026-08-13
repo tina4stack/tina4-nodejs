@@ -299,6 +299,10 @@ const THOUSANDS_RE = /\B(?=(\d{3})+(?!\d))/g;
 const LIVE_RE = /^live\s+["']([^"']+)["']([\s\S]*)$/;
 const LIVE_WS_RE = /ws\s+["']([^"']+)["']/;
 const LIVE_SRC_RE = /src\s+["']([^"']+)["']/;
+const EXTENDS_RE = /\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/;
+// Global-flag twin of EXTENDS_RE purely for counting every occurrence (a
+// non-global RegExp's .exec()/.match() only ever reports the first match).
+const EXTENDS_RE_GLOBAL = /\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/g;
 
 /** Escape a value for a live-marker HTML attribute. Byte-identical order to
  * the Python master / PHP liveAttr / Ruby live_attr so the emitted marker
@@ -435,6 +439,30 @@ function stripTag(raw: string): [string, boolean, boolean] {
   }
 
   return [inner.trim(), stripBefore, stripAfter];
+}
+
+/**
+ * Return this template's OWN `{% extends %}` parent name, or "".
+ *
+ * A template may extend at most one parent. Before 3.13.100 a SECOND
+ * `{% extends %}` tag anywhere in the source was silently invisible: only
+ * the first occurrence was ever matched, and the rest of the child's
+ * non-block content -- including the second extends tag -- was already
+ * discarded the same way ordinary non-block child content is discarded
+ * during inheritance. That hid what is almost always a mistake (a
+ * copy-paste, a bad merge) with zero signal. Throw clearly instead, the
+ * same policy 3.13.89 applied to an unknown tag.
+ */
+function extendsTarget(source: string): string {
+  const matches = source.match(EXTENDS_RE_GLOBAL);
+  if (matches && matches.length > 1) {
+    throw new Error(
+      `Frond: template has ${matches.length} "{% extends %}" tags -- ` +
+        "a template can extend only one parent",
+    );
+  }
+  const match = source.match(EXTENDS_RE);
+  return match ? match[1] : "";
 }
 
 // ── Expression Evaluator ───────────────────────────────────────
@@ -1957,9 +1985,8 @@ export class Frond {
       context.__frond_tests__ = this.tests;
     }
 
-    const extendsMatch = source.match(/\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/);
-    if (extendsMatch) {
-      const parentName = extendsMatch[1];
+    const parentName = extendsTarget(source);
+    if (parentName) {
       const parentSource = this.load(parentName);
       const childBlocks = this.extractBlocks(source);
       return this.renderWithBlocks(parentSource, context, childBlocks);
@@ -1975,9 +2002,8 @@ export class Frond {
     }
 
     // Handle extends first
-    const extendsMatch = source.match(/\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/);
-    if (extendsMatch) {
-      const parentName = extendsMatch[1];
+    const parentName = extendsTarget(source);
+    if (parentName) {
       const parentSource = this.load(parentName);
       const childBlocks = this.extractBlocks(source);
       return this.renderWithBlocks(parentSource, context, childBlocks);
@@ -2038,9 +2064,8 @@ export class Frond {
     childBlocks: Record<string, string>,
   ): string {
     // --- Multi-level extends: check if parent itself extends a grandparent ---
-    const extendsMatch = parentSource.trimStart().match(/\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/);
-    if (extendsMatch) {
-      const grandparentName = extendsMatch[1];
+    const grandparentName = extendsTarget(parentSource);
+    if (grandparentName) {
       const grandparentSource = this.load(grandparentName);
 
       // Extract block defaults defined in the parent template

@@ -299,6 +299,37 @@ writeFileSync(join(tmpDir, "child.html"), '{% extends "base.html" %}{% block tit
 
 assert("Extends and block override", engine.render("child.html", {}) === "<h1>My Page</h1><div>child content</div>");
 
+// 3.13.100: a SECOND {% extends %} tag throws instead of being silently
+// discarded. Before the fix, only the first {% extends %} occurrence was
+// ever matched by the source-level regex; the second tag -- along with the
+// rest of the child's non-block content -- was silently dropped the same
+// way ordinary child content outside a block always is. Mirrors the
+// unknown-tag-throws policy (3.13.89): fail loud instead of guessing.
+writeFileSync(join(tmpDir, "base-double-a.html"), "A {% block content %}{% endblock %}");
+writeFileSync(join(tmpDir, "base-double-b.html"), "B {% block content %}{% endblock %}");
+writeFileSync(
+  join(tmpDir, "double-extends.html"),
+  '{% extends "base-double-a.html" %}\n{% extends "base-double-b.html" %}\n{% block content %}X{% endblock %}',
+);
+{
+  let threw = "";
+  try {
+    engine.render("double-extends.html", {});
+  } catch (err: any) {
+    threw = err.message;
+  }
+  assert('Second {% extends %} tag throws', threw.includes('2 "{% extends %}" tags'));
+}
+{
+  let threw = "";
+  try {
+    engine.renderString('{% extends "base-double-a.html" %}{% extends "base-double-b.html" %}', {});
+  } catch (err: any) {
+    threw = err.message;
+  }
+  assert('Second {% extends %} tag throws via renderString', threw.includes('2 "{% extends %}" tags'));
+}
+
 // Render parent directly (default blocks)
 assert("Parent default blocks", engine.render("base.html", {}) === "<h1>Default</h1><div>base content</div>");
 
