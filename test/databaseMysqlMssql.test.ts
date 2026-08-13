@@ -28,7 +28,10 @@
  */
 import net from "node:net";
 
-const MYSQL_HOST = process.env.TINA4_TEST_MYSQL_HOST ?? "localhost";
+// 127.0.0.1, not "localhost": mysql2 treats the literal host "localhost" as a
+// UNIX-socket request (ignoring the port), so a locally-run TCP-only MySQL
+// (e.g. a Docker container) is unreachable under that default.
+const MYSQL_HOST = process.env.TINA4_TEST_MYSQL_HOST ?? "127.0.0.1";
 const MYSQL_PORT = parseInt(process.env.TINA4_TEST_MYSQL_PORT ?? "3306", 10);
 const MYSQL_USER = process.env.TINA4_TEST_MYSQL_USERNAME ?? "tina4";
 const MYSQL_PASS = process.env.TINA4_TEST_MYSQL_PASSWORD ?? "tina4";

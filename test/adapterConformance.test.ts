@@ -68,6 +68,7 @@ function check(name: string, condition: boolean, detail = ""): void {
 }
 
 const requireServices = /^(1|true|yes|on)$/i.test(process.env.TINA4_REQUIRE_SERVICES ?? "");
+/** A provisioned service (PG/MySQL/MSSQL) that is missing is a hard FAILURE. */
 function skip(msg: string): void {
   // "a run with skips is NOT verification" -- under the gate a provisioned
   // service that is missing is a hard FAILURE, not a green skip.
@@ -76,6 +77,21 @@ function skip(msg: string): void {
     process.exitCode = 1;
     return;
   }
+  console.log(`  \x1b[33mSKIP\x1b[0m ${msg}`);
+}
+
+/**
+ * Firebird is NOT in the require-services gate (test/_serviceGate.ts's
+ * EXCLUDED_KEYWORDS=["firebird"] -- the main CI job does not provision it, by
+ * design, in favour of the dedicated `firebird:` job + the lab): an unset URL
+ * stays a green skip here too, exactly like every other Firebird-gated
+ * fixture in this suite (see ormFieldsContract.test.ts's skipGated). Before
+ * this, skip() above made ANY missing service fatal under
+ * TINA4_REQUIRE_SERVICES, including Firebird -- contradicting the exclusion
+ * the rest of the framework already honours and failing the main job on a gap
+ * it was never meant to cover.
+ */
+function skipGated(msg: string): void {
   console.log(`  \x1b[33mSKIP\x1b[0m ${msg}`);
 }
 
@@ -717,7 +733,7 @@ async function run(): Promise<void> {
   if (FIREBIRD_URL) {
     await proveStructuralSliceOn(await providerDb(FIREBIRD_URL, "", "", "firebird"), "firebird");
   } else {
-    skip("configured providers run without skip (TINA4_TEST_FIREBIRD_URL not set)");
+    skipGated("configured providers run without skip (TINA4_TEST_FIREBIRD_URL not set)");
   }
 
   {

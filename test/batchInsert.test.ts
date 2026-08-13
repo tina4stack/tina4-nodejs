@@ -210,7 +210,10 @@ const tmp = mkdtempSync(join(tmpdir(), "tina4-batch-"));
 // ── MySQL (live, gated on reachability + the mysql2 driver) ──────────
 {
   console.log("\n-- MySQL (live) --");
-  const HOST = process.env.TINA4_TEST_MYSQL_HOST ?? "localhost";
+  // 127.0.0.1, not "localhost": mysql2 treats the literal host "localhost" as a
+  // UNIX-socket request (ignoring the port), so a TCP-only MySQL is unreachable
+  // under that default.
+  const HOST = process.env.TINA4_TEST_MYSQL_HOST ?? "127.0.0.1";
   const PORT = parseInt(process.env.TINA4_TEST_MYSQL_PORT ?? "3306", 10);
   const USER = process.env.TINA4_TEST_MYSQL_USERNAME ?? "tina4";
   const PASS = process.env.TINA4_TEST_MYSQL_PASSWORD ?? "tina4";

@@ -872,6 +872,26 @@ function buildLineIndex(text: string): (offset: number) => number {
 
 // ── Public Docs class ───────────────────────────────────────────────
 
+/**
+ * Framework-wide reflection index, shared across every `Docs` instance in
+ * this process (keyed by frameworkRoots + version — both are baked into the
+ * built entries, see buildEntriesForFile's `rel`/`version` fields).
+ *
+ * `detectFrameworkRoots()` never depends on `projectRoot` (it walks up from
+ * THIS module's own file location), so the framework source tree is the same
+ * for every instance that resolves the same roots+version — re-walking and
+ * re-parsing it per INSTANCE was pure waste. Measured: docs.test.ts alone
+ * constructs ~17 fresh `Docs` instances, each paying a full AST walk over
+ * packages/{core,orm,swagger,frond}/src on first use — fast on an idle
+ * machine (~1s total on the lab), but it blew the test runner's 60s
+ * per-file budget on a CI runner under load (many concurrent service
+ * containers sharing 2 vCPUs), landing as "died before reporting" with no
+ * useful diagnostic. Still mtime-gated exactly as before (see `ensureIndex`),
+ * so a framework source edit during a live dev session is still picked up —
+ * this changes WHEN the scan is shared, never WHETHER the index stays fresh.
+ */
+const sharedFrameworkIndex = new Map<string, { entries: Map<string, InternalEntry>; mtime: number }>();
+
 export class Docs {
   private projectRoot: string;
   private frameworkRoots: string[];
@@ -1157,16 +1177,24 @@ export class Docs {
   }
 
   private ensureIndex(): void {
-    // Framework: rebuild only if not built yet OR mtime changed.
+    // Framework: shared process-wide, rebuilt only if not built yet OR mtime
+    // changed (see `sharedFrameworkIndex` above for why this is safe to share).
+    const fwKey = `${this.frameworkRoots.join("|")}@${this.version}`;
     const fwMtime = this.maxMtime(this.frameworkRoots);
-    if (this.frameworkEntries === null || fwMtime !== this.frameworkMtime) {
-      this.frameworkEntries = new Map();
+    let shared = sharedFrameworkIndex.get(fwKey);
+    if (!shared || fwMtime !== shared.mtime) {
+      const entries = new Map<string, InternalEntry>();
       for (const root of this.frameworkRoots) {
         for (const f of walkTsFiles(root)) {
-          buildEntriesForFile(f, "framework", this.frameworkRoots, this.projectRoot, this.version, this.frameworkEntries);
+          buildEntriesForFile(f, "framework", this.frameworkRoots, this.projectRoot, this.version, entries);
         }
       }
-      this.frameworkMtime = fwMtime;
+      shared = { entries, mtime: fwMtime };
+      sharedFrameworkIndex.set(fwKey, shared);
+    }
+    if (this.frameworkEntries !== shared.entries) {
+      this.frameworkEntries = shared.entries;
+      this.frameworkMtime = shared.mtime;
       this.indexCache = null;
     }
 

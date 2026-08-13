@@ -125,7 +125,11 @@ jobs:
       TINA4_TEST_PG_URL: postgres://tina4:tina4@localhost:55432/tina4_node
       # MySQL 8 + MSSQL 2022 (#262) — mirror the service containers above and the
       # local docker harness. The MySQL+MSSQL boolean round-trip test reads these.
-      TINA4_TEST_MYSQL_HOST: localhost
+      # 127.0.0.1, not "localhost": mysql2 (like libmysqlclient) treats the literal
+      # host "localhost" as a request to connect over a UNIX SOCKET, silently
+      # ignoring the port — the CI MySQL service is TCP-only (parity fix, PHP/Ruby
+      # already use 127.0.0.1 here).
+      TINA4_TEST_MYSQL_HOST: 127.0.0.1
       TINA4_TEST_MYSQL_PORT: '3306'
       TINA4_TEST_MYSQL_USERNAME: tina4
       TINA4_TEST_MYSQL_PASSWORD: tina4
@@ -150,6 +154,19 @@ jobs:
       TINA4_TEST_MQTT_EMQX_URL: mqtt://127.0.0.1:1885
       TINA4_TEST_MQTT_USERNAME: tina4
       TINA4_TEST_MQTT_PASSWORD: testpass
+      # ODBC: unixODBC + the PostgreSQL ODBC driver (psqlodbc), provisioned by the
+      # "Install ODBC" / "Create ODBC Postgres database" steps below against the
+      # SAME Postgres service container. AUTH_DSN carries no UID/PWD -- the
+      # official postgres image demands scram-sha-256 for every host connection
+      # once POSTGRES_PASSWORD is set (no separate loopback-trust exception), so
+      # a bare DSN here already requires the credentials to arrive as params,
+      # exactly what the "credentials passed as params" / "wrong password fails
+      # loud" cases need -- no second address is needed the way the lab's
+      # trust-vs-scram split does it.
+      TINA4_TEST_ODBC_DSN: 'DRIVER={PostgreSQL Unicode};SERVER=127.0.0.1;PORT=55432;DATABASE=tina4_odbc;UID=tina4;PWD=tina4'
+      TINA4_TEST_ODBC_AUTH_DSN: 'DRIVER={PostgreSQL Unicode};SERVER=127.0.0.1;PORT=55432;DATABASE=tina4_odbc'
+      TINA4_TEST_ODBC_USERNAME: tina4
+      TINA4_TEST_ODBC_PASSWORD: tina4
       # Turn a missing provisioned service into a hard failure (no green skips).
       # The run-all.ts gate fails the run if a real-service test skips because a
       # PROVISIONED service was unavailable. MySQL/MSSQL joined the provisioned
@@ -204,6 +221,60 @@ jobs:
           done
           PGPASSWORD=tina4 psql -h localhost -p 55432 -U tina4 -d tina4_node \
             -c "CREATE DATABASE tina4_py" || echo "tina4_py may already exist"
+
+      # Two more Postgres databases beyond the service container's default:
+      #   * "tina4" — the ADMIN/maintenance database
+      #     test/cacheKeyDatabaseIdentity.test.ts connects to in order to CREATE
+      #     its two per-run cache-identity databases (tina4_cache_ident_node_a/b).
+      #     Postgres needs an existing database to connect to before it can run
+      #     CREATE DATABASE, and the lab (where this suite is 100% green) has
+      #     always had a "tina4" database for exactly this — this step gives CI
+      #     the same fixture instead of the test failing "database tina4 does
+      #     not exist" on a fresh service container that only ever had
+      #     tina4_node/tina4_py.
+      #   * "tina4_odbc" — the target database for the ODBC provider contract
+      #     (test/odbcProviderContract.test.ts), reached over TINA4_TEST_ODBC_DSN
+      #     via the driver registered in "Install ODBC" below.
+      - name: Create additional Postgres databases (tina4, tina4_odbc)
+        run: |
+          for db in tina4 tina4_odbc; do
+            PGPASSWORD=tina4 psql -h localhost -p 55432 -U tina4 -d tina4_node \
+              -c "CREATE DATABASE $db" || echo "$db may already exist"
+          done
+
+      # unixODBC + the PostgreSQL ODBC driver (psqlodbc), the same pairing the
+      # lab provisions (lab-odbcprovider.sh) so odbcProviderContract.test.ts
+      # RUNS instead of skipping "TINA4_TEST_ODBC_DSN not set". Must run BEFORE
+      # "Install dependencies" -- @tina4/orm's `odbc` optionalDependency needs
+      # the unixODBC headers present to build; without them npm silently skips
+      # it (that's what "optional" means) and the driver is never there to load.
+      # The driver .so path is looked up via dpkg rather than hardcoded, so a
+      # future Ubuntu image that moves it does not silently go stale.
+      - name: Install ODBC (unixODBC + PostgreSQL driver)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq unixodbc unixodbc-dev odbc-postgresql
+          DRV=$(dpkg -L odbc-postgresql | grep -E 'psqlodbcw?\.so' | head -1)
+          if [ -z "$DRV" ]; then echo "psqlodbc .so not found"; exit 1; fi
+          printf '%s\n' \
+            '[PostgreSQL Unicode]' \
+            'Description = PostgreSQL ODBC driver (Unicode) for Tina4 tests' \
+            "Driver      = $DRV" \
+            'Threading   = 2' \
+            | sudo tee /etc/odbcinst.ini >/dev/null
+          echo "registered ODBC driver: $DRV"
+          cat /etc/odbcinst.ini
+
+      # Fail fast with a clear diagnostic if the driver/DSN is wrong, rather
+      # than a confusing failure deep inside the test run (mirrors the lab's
+      # own preflight in lab-odbcprovider.sh).
+      - name: ODBC preflight (real round trip via isql)
+        run: |
+          if echo "SELECT 1;" | isql -v -k "$TINA4_TEST_ODBC_DSN" 2>&1 | tee /tmp/isql-preflight.log | grep -q "Connected"; then
+            echo "ODBC preflight OK (isql connected + queried)"
+          else
+            echo "::error::ODBC preflight failed -- see /tmp/isql-preflight.log"; cat /tmp/isql-preflight.log; exit 1
+          fi
 
       # MSSQL 2022 (#262) starts with NO user database — create tina4_test once
       # the server is accepting connections. sqlcmd lives in the mssql container;

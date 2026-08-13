@@ -70,8 +70,15 @@ const PG_URL = `postgres://${process.env.TINA4_TEST_PG_USERNAME ?? "tina4"}:`
   + `${process.env.TINA4_TEST_PG_PASSWORD ?? "tina4"}@`
   + `${process.env.TINA4_TEST_PG_HOST ?? "127.0.0.1"}:`
   + `${process.env.TINA4_TEST_PG_PORT ?? "55432"}/tina4_node`;
+// The database name must be the CONFIGURED one (TINA4_TEST_MYSQL_DB, same
+// default "tina4_test" every sibling suite uses), not a bare "tina4" — CI's
+// MySQL user is scoped to "tina4_test" only (GRANT ALL ON tina4_test.* TO
+// tina4@%), so a hardcoded "tina4" fails "Access denied ... to database
+// 'tina4'" there. It only ever worked on the lab because the lab's MySQL
+// creds default to root (a superuser, any database), masking the mismatch.
 const MYSQL_URL = `mysql://${process.env.TINA4_TEST_MYSQL_USERNAME ?? "root"}:`
-  + `${process.env.TINA4_TEST_MYSQL_PASSWORD ?? "tina4"}@127.0.0.1:3306/tina4`;
+  + `${process.env.TINA4_TEST_MYSQL_PASSWORD ?? "tina4"}@127.0.0.1:3306/`
+  + `${process.env.TINA4_TEST_MYSQL_DB ?? "tina4_test"}`;
 
 const originalUrl = process.env.TINA4_DATABASE_URL;
 const originalCwd = process.cwd();

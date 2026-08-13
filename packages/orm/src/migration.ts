@@ -283,6 +283,24 @@ function buildAddColumnSql(
 const MIGRATION_TABLE = "tina4_migration";
 
 /**
+ * The tracking-table identifier, quoted for the CALLING adapter's engine.
+ *
+ * SQLite, PostgreSQL, MSSQL and Firebird all accept ANSI double-quoted
+ * identifiers, but MySQL's default sql_mode (no ANSI_QUOTES — the stock
+ * `mysql:8` image never sets it) parses `"..."` as a STRING LITERAL, not an
+ * identifier. `CREATE TABLE "tina4_migration" (...)` on a database where the
+ * table does not already exist fails: "You have an error in your SQL syntax
+ * ... near '"tina4_migration" ('" — MEASURED against a real fresh MySQL 8
+ * container (a long-lived dev database that already has the table masks this
+ * completely, which is exactly why it only ever surfaced on CI's ephemeral
+ * one). Backticks are MySQL's identifier quote and are accepted in every
+ * sql_mode, so they are always correct there.
+ */
+function mt(db: DatabaseAdapter): string {
+  return engineOf(db) === "mysql" ? `\`${MIGRATION_TABLE}\`` : `"${MIGRATION_TABLE}"`;
+}
+
+/**
  * Derive a human-readable description from a migration name, matching the
  * Python master: strip a leading numeric/timestamp prefix and turn `_` into
  * spaces. `20250101120000_create_users` -> `create users`.
@@ -295,8 +313,8 @@ function deriveDescription(name: string): string {
  * Build an `ALTER TABLE ... ADD` statement for the tracking table. Firebird
  * uses `ADD <col>` (no COLUMN keyword); every other engine uses `ADD COLUMN`.
  */
-function migrationAddColumnSql(fb: boolean, col: string, type: string, extra = ""): string {
-  return `ALTER TABLE "${MIGRATION_TABLE}" ADD ${fb ? "" : "COLUMN "}${col} ${type}${extra}`;
+function migrationAddColumnSql(db: DatabaseAdapter, col: string, type: string, extra = ""): string {
+  return `ALTER TABLE ${mt(db)} ADD ${isFirebirdAdapter(db) ? "" : "COLUMN "}${col} ${type}${extra}`;
 }
 
 /**
@@ -325,7 +343,7 @@ async function ensureMigrationTableOn(db: DatabaseAdapter): Promise<void> {
       } catch {
         // Generator may already exist
       }
-      await adapterExecute(db, `CREATE TABLE "${MIGRATION_TABLE}" (
+      await adapterExecute(db, `CREATE TABLE ${mt(db)} (
         id INTEGER NOT NULL PRIMARY KEY,
         migration_name VARCHAR(500) NOT NULL UNIQUE,
         description VARCHAR(500),
@@ -344,7 +362,7 @@ async function ensureMigrationTableOn(db: DatabaseAdapter): Promise<void> {
       const idCol = migrationIdColumn(db);
       const engine = engineOf(db);
       const ifNotExists = engine === "mssql" ? "" : "IF NOT EXISTS ";
-      await adapterExecute(db, `CREATE TABLE ${ifNotExists}"${MIGRATION_TABLE}" (
+      await adapterExecute(db, `CREATE TABLE ${ifNotExists}${mt(db)} (
         ${idCol},
         migration_name VARCHAR(500) NOT NULL UNIQUE,
         description VARCHAR(500),
@@ -391,17 +409,17 @@ async function upgradeMigrationTable(db: DatabaseAdapter): Promise<void> {
       try { await adapterExecute(db, sql); } catch { /* column may already exist */ }
     };
 
-    await tryExec(migrationAddColumnSql(fb, "migration_name", nameType));
-    if (!cols.has("description")) await tryExec(migrationAddColumnSql(fb, "description", nameType));
-    if (!cols.has("passed")) await tryExec(migrationAddColumnSql(fb, "passed", "INTEGER", " DEFAULT 1"));
-    if (!cols.has("executed_at")) await tryExec(migrationAddColumnSql(fb, "executed_at", tsType));
-    if (!cols.has("batch")) await tryExec(migrationAddColumnSql(fb, "batch", "INTEGER", " DEFAULT 1"));
+    await tryExec(migrationAddColumnSql(db, "migration_name", nameType));
+    if (!cols.has("description")) await tryExec(migrationAddColumnSql(db, "description", nameType));
+    if (!cols.has("passed")) await tryExec(migrationAddColumnSql(db, "passed", "INTEGER", " DEFAULT 1"));
+    if (!cols.has("executed_at")) await tryExec(migrationAddColumnSql(db, "executed_at", tsType));
+    if (!cols.has("batch")) await tryExec(migrationAddColumnSql(db, "batch", "INTEGER", " DEFAULT 1"));
 
     // Copy legacy values across so applied migrations remain applied.
-    await tryExec(`UPDATE "${MIGRATION_TABLE}" SET migration_name = name WHERE migration_name IS NULL`);
-    await tryExec(`UPDATE "${MIGRATION_TABLE}" SET passed = 1 WHERE passed IS NULL`);
+    await tryExec(`UPDATE ${mt(db)} SET migration_name = name WHERE migration_name IS NULL`);
+    await tryExec(`UPDATE ${mt(db)} SET passed = 1 WHERE passed IS NULL`);
     if (cols.has("applied_at")) {
-      await tryExec(`UPDATE "${MIGRATION_TABLE}" SET executed_at = applied_at WHERE executed_at IS NULL`);
+      await tryExec(`UPDATE ${mt(db)} SET executed_at = applied_at WHERE executed_at IS NULL`);
     }
     return;
   }
@@ -409,7 +427,7 @@ async function upgradeMigrationTable(db: DatabaseAdapter): Promise<void> {
   // Any other legacy shape: just ensure the batch column exists (prior behaviour).
   if (!cols.has("batch")) {
     try {
-      await adapterExecute(db, migrationAddColumnSql(fb, "batch", "INTEGER", " NOT NULL DEFAULT 1"));
+      await adapterExecute(db, migrationAddColumnSql(db, "batch", "INTEGER", " NOT NULL DEFAULT 1"));
     } catch {
       // ignore — column may already exist
     }
@@ -430,7 +448,7 @@ export async function ensureMigrationTable(): Promise<void> {
 export async function getNextBatch(): Promise<number> {
   const adapter = getAdapter();
   const rows = await adapterQuery<{ max_batch: number | null }>(adapter,
-    `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}" WHERE passed = 1`,
+    `SELECT MAX(batch) as max_batch FROM ${mt(adapter)} WHERE passed = 1`,
   );
   return (rows[0]?.max_batch ?? 0) + 1;
 }
@@ -441,7 +459,7 @@ export async function getNextBatch(): Promise<number> {
 export async function isMigrationApplied(name: string): Promise<boolean> {
   const adapter = getAdapter();
   const rows = await adapterQuery(adapter,
-    `SELECT id FROM "${MIGRATION_TABLE}" WHERE migration_name = ? AND passed = 1`,
+    `SELECT id FROM ${mt(adapter)} WHERE migration_name = ? AND passed = 1`,
     [name],
   );
   return rows.length > 0;
@@ -478,7 +496,7 @@ async function recordApplied(
   // Delete-before-insert: supersede any leftover row for this migration_name so
   // the INSERT below never collides on the UNIQUE migration_name.
   await adapterExecute(db,
-    `DELETE FROM "${MIGRATION_TABLE}" WHERE migration_name = ?`,
+    `DELETE FROM ${mt(db)} WHERE migration_name = ?`,
     [name],
   );
   // Build the column list from the columns that ACTUALLY exist on the table, so
@@ -508,7 +526,7 @@ async function recordApplied(
 
   const placeholders = insertCols.map(() => "?").join(", ");
   await adapterExecute(db,
-    `INSERT INTO "${MIGRATION_TABLE}" (${insertCols.join(", ")}) VALUES (${placeholders})`,
+    `INSERT INTO ${mt(db)} (${insertCols.join(", ")}) VALUES (${placeholders})`,
     values,
   );
 }
@@ -568,13 +586,13 @@ export async function applyMigration(
 export async function getLastBatchMigrations(): Promise<Array<{ id: number; migration_name: string; batch: number }>> {
   const adapter = getAdapter();
   const rows = await adapterQuery<{ max_batch: number | null }>(adapter,
-    `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}" WHERE passed = 1`,
+    `SELECT MAX(batch) as max_batch FROM ${mt(adapter)} WHERE passed = 1`,
   );
   const lastBatch = rows[0]?.max_batch;
   if (lastBatch === null || lastBatch === undefined) return [];
 
   return adapterQuery<{ id: number; migration_name: string; batch: number }>(adapter,
-    `SELECT id, migration_name, batch FROM "${MIGRATION_TABLE}" WHERE batch = ? AND passed = 1 ORDER BY id DESC`,
+    `SELECT id, migration_name, batch FROM ${mt(adapter)} WHERE batch = ? AND passed = 1 ORDER BY id DESC`,
     [lastBatch],
   );
 }
@@ -585,7 +603,7 @@ export async function getLastBatchMigrations(): Promise<Array<{ id: number; migr
 export async function removeMigrationRecord(name: string): Promise<void> {
   const adapter = getAdapter();
   await adapterExecute(adapter,
-    `DELETE FROM "${MIGRATION_TABLE}" WHERE migration_name = ?`,
+    `DELETE FROM ${mt(adapter)} WHERE migration_name = ?`,
     [name],
   );
 }
@@ -707,7 +725,7 @@ export async function rollback(
 export async function getAppliedMigrations(): Promise<Array<{ id: number; migration_name: string; description: string; batch: number; executed_at: string; passed: number }>> {
   const adapter = getAdapter();
   return adapterQuery<{ id: number; migration_name: string; description: string; batch: number; executed_at: string; passed: number }>(adapter,
-    `SELECT * FROM "${MIGRATION_TABLE}" WHERE passed = 1 ORDER BY id ASC`,
+    `SELECT * FROM ${mt(adapter)} WHERE passed = 1 ORDER BY id ASC`,
   );
 }
 
@@ -1032,7 +1050,7 @@ export async function migrate(
   let currentBatch = 1;
   try {
     const batchRows = await adapterQuery<{ max_batch: number | null }>(db,
-      `SELECT MAX(batch) as max_batch FROM "${MIGRATION_TABLE}" WHERE passed = 1`,
+      `SELECT MAX(batch) as max_batch FROM ${mt(db)} WHERE passed = 1`,
     );
     currentBatch = (batchRows[0]?.max_batch ?? 0) + 1;
   } catch {
@@ -1048,7 +1066,7 @@ export async function migrate(
     let alreadyApplied = false;
     try {
       const existing = await adapterQuery<{ id: number }>(db,
-        `SELECT id FROM "${MIGRATION_TABLE}" WHERE migration_name = ? AND passed = 1`,
+        `SELECT id FROM ${mt(db)} WHERE migration_name = ? AND passed = 1`,
         [migrationId],
       );
       alreadyApplied = existing.length > 0;
@@ -1161,7 +1179,7 @@ export async function status(
   const appliedNames = new Set<string>();
   try {
     const rows = await adapterQuery<{ migration_name: string }>(db,
-      `SELECT migration_name FROM "${MIGRATION_TABLE}" WHERE passed = 1`,
+      `SELECT migration_name FROM ${mt(db)} WHERE passed = 1`,
     );
     for (const row of rows) {
       if (row.migration_name) appliedNames.add(row.migration_name);
