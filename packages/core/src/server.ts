@@ -1831,7 +1831,6 @@ ${reset}
       // Skip the rest of the swagger block when disabled.
       throw new Error("__swagger_disabled__");
     }
-    const allRoutes = router.getRoutes();
 
     // Collect model definitions for schema generation
     let modelDefs: Array<{ tableName: string; fields: Record<string, unknown> }> = [];
@@ -1852,7 +1851,14 @@ ${reset}
       // ORM not available, swagger will work without model schemas
     }
 
-    const getSpec = () => swagger.generate(allRoutes, modelDefs as any);
+    // Read router.getRoutes() LIVE on every call — never a captured snapshot
+    // (SWAG-NODE-BOOT-SNAPSHOT, ADR-0004). This used to close over a
+    // boot-time `allRoutes` array, so the spec regenerated per request but
+    // over a FROZEN route list: a route registered after boot (hot-reload, or
+    // DevAdmin.register running after this block — see the /__feedback
+    // exclusion above) never appeared. Python/PHP/Ruby always read the live
+    // route table inside their generate() call; this is that same shape.
+    const getSpec = () => swagger.generate(router.getRoutes(), modelDefs as any);
     const swaggerRoutes = swagger.createSwaggerRoutes(getSpec);
     for (const route of swaggerRoutes) {
       router.addRoute(route);

@@ -91,8 +91,14 @@ function scaffoldApp(): string {
   return root;
 }
 
-/** Boot the scaffolded app as a detached tsx child and wait until it answers. */
-async function bootApp(swaggerEnabled: boolean): Promise<{ base: string }> {
+/** Boot the scaffolded app as a detached tsx child and wait until it answers.
+ *  `debug` additionally turns on TINA4_DEBUG — dev mode, which registers
+ *  /__dev/* AND /__feedback/* (see feedback.ts's registerFeedbackRoutes,
+ *  called unconditionally from DevAdmin.register) and exposes the real
+ *  POST /__dev/api/reload hot-reload endpoint the boot-snapshot invariant
+ *  drives. Off by default so the existing enabled/disabled invariants keep
+ *  their pristine "no TINA4_DEBUG" premise. */
+async function bootApp(swaggerEnabled: boolean, debug = false): Promise<{ base: string; root: string }> {
   const root = scaffoldApp();
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
@@ -107,7 +113,7 @@ async function bootApp(swaggerEnabled: boolean): Promise<{ base: string }> {
   Object.assign(env, {
     PORT: String(port),
     TINA4_SWAGGER_ENABLED: swaggerEnabled ? "true" : "false",
-    TINA4_DEBUG: "false",
+    TINA4_DEBUG: debug ? "true" : "false",
     TINA4_NO_AI_PORT: "true",
     TINA4_NO_BROWSER: "true",
     TINA4_OVERRIDE_CLIENT: "true",
@@ -124,7 +130,7 @@ async function bootApp(swaggerEnabled: boolean): Promise<{ base: string }> {
     try {
       const res = await fetch(`${base}/api/items`);
       await res.arrayBuffer().catch(() => undefined);
-      if (res.status === 200) return { base };
+      if (res.status === 200) return { base, root };
     } catch {
       /* not up yet */
     }
@@ -438,5 +444,82 @@ describe("swagger contract (ADR-0004)", () => {
     // Distinct across the WHOLE served document too (real server, real routes).
     const ids = Object.values<any>(servedDoc.paths).flatMap((ops) => Object.values<any>(ops).map((op) => op.operationId));
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  // 11 ────────────────────────────────────────────────────────────────────────
+  it("spec reflects a route added after boot, past the boot-time snapshot [spec-reflects-a-route-added-after-boot]", async () => {
+    // TINA4_DEBUG=true wires up the real POST /__dev/api/reload hot-reload
+    // endpoint — the same mechanism the Rust CLI drives on a real file change.
+    const debugApp = await bootApp(true, true);
+
+    const before = await (await fetch(`${debugApp.base}/swagger/openapi.json`)).json();
+    expect(before.paths).not.toHaveProperty("/late-added");
+    expect(before.paths).toHaveProperty("/api/items");
+
+    // Drop a NEW route file exactly as a developer editing the project would,
+    // then fire the reload exactly as the Rust CLI does on a real fs change.
+    const lateDir = join(debugApp.root, "src", "routes", "late-added");
+    mkdirSync(lateDir, { recursive: true });
+    writeFileSync(
+      join(lateDir, "get.ts"),
+      "export default async function (_req: any, res: any) { return res.json({ late: true }); }\n",
+    );
+    const reloadStatus = await statusOf(
+      debugApp.base,
+      "/__dev/api/reload",
+      "POST",
+      JSON.stringify({ file: "late-added/get.ts", type: "reload" }),
+    );
+    expect(reloadStatus, "the real reload endpoint must accept the trigger").toBe(200);
+
+    // The served document must now reflect the route the reload just added —
+    // proving the spec re-reads the LIVE route table, not a snapshot frozen
+    // when the swagger routes were registered at boot.
+    const after = await (await fetch(`${debugApp.base}/swagger/openapi.json`)).json();
+    expect(after.paths, "a route added after boot must reach the document").toHaveProperty("/late-added");
+    expect(after.paths).toHaveProperty("/api/items");
+  }, 60_000);
+
+  // 12 ────────────────────────────────────────────────────────────────────────
+  it("internal feedback route is never in the spec, regardless of registration order [internal-feedback-route-is-never-in-the-spec]", async () => {
+    // TINA4_DEBUG=true genuinely registers /__feedback/* into the SAME router
+    // swagger reads (registerFeedbackRoutes, called unconditionally at the top
+    // of DevAdmin.register) — the real production wiring, not a stand-in.
+    const debugApp = await bootApp(true, true);
+
+    // Guard: the endpoint is really live, so an absence below is the exclusion
+    // RULE firing, not a vacuous "it was never registered" pass.
+    expect(await statusOf(debugApp.base, "/__feedback/widget.js"), "/__feedback must be a real, live route").toBe(200);
+
+    const doc = await (await fetch(`${debugApp.base}/swagger/openapi.json`)).json();
+    const keys = Object.keys(doc.paths);
+    expect(keys).not.toContain("/__feedback/widget.js");
+    expect(keys).not.toContain("/__feedback/api/turn");
+    expect(keys.filter((p) => p.startsWith("/__feedback"))).toEqual([]);
+
+    // The exclusion is surgical — the application's own routes still document.
+    expect(keys).toContain("/api/items");
+  }, 60_000);
+
+  // 13 ────────────────────────────────────────────────────────────────────────
+  it("secured op per-op shape is identical: security + 401 + summary/tags converge [secured-op-per-op-shape-is-identical]", () => {
+    const spec: any = generate([
+      route("POST", "/contract/shape-item"),                     // secured by default, undecorated
+      route("POST", "/contract/shape-public", { noAuth: true }), // explicitly public, undecorated
+    ]);
+
+    const secured = spec.paths["/contract/shape-item"].post;
+    expect(secured.security).toEqual([{ bearerAuth: [] }]);
+    expect(secured.responses["401"]).toEqual({ description: "Unauthorized" });
+    expect(secured.summary).toBe("POST /contract/shape-item");
+    expect(secured.tags).toEqual(["contract"]);
+    expect(secured.description, "an undecorated operation must not fabricate a description").toBeUndefined();
+
+    const publicOp = spec.paths["/contract/shape-public"].post;
+    expect(publicOp.security, "an explicitly-public op documents no security").toBeUndefined();
+    expect(publicOp.responses["401"], "an explicitly-public op documents no 401").toBeUndefined();
+    expect(publicOp.summary, "summary populates regardless of security").toBe("POST /contract/shape-public");
+    expect(publicOp.tags, "tags populate regardless of security").toEqual(["contract"]);
+    expect(publicOp.description).toBeUndefined();
   });
 });

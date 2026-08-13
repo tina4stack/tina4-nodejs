@@ -1,11 +1,13 @@
 import type { Tina4Request, Tina4Response, RouteDefinition } from "../../core/src/index.js";
 
 // The UI assets load from a CDN by default (a documented architecture decision —
-// we don't vendor ~1.4MB of swagger-ui-dist, to stay small). Air-gapped
-// deployments point TINA4_SWAGGER_UI_CDN at a self-hosted mirror (a base URL
-// serving swagger-ui.css + swagger-ui-bundle.js).
+// we don't vendor ~1.4MB of swagger-ui-dist, to stay small). jsdelivr
+// (SWAG-CDN-NO-SRI, ADR-0004) — the SAME default as the Python and Ruby
+// masters, so all four frameworks pull the UI bundle from one CDN rather than
+// splitting jsdelivr/unpkg. Air-gapped deployments point TINA4_SWAGGER_UI_CDN
+// at a self-hosted mirror (a base URL serving swagger-ui.css + swagger-ui-bundle.js).
 function swaggerUiCdn(): string {
-  return (process.env.TINA4_SWAGGER_UI_CDN ?? "https://unpkg.com/swagger-ui-dist@5").replace(/\/+$/, "");
+  return (process.env.TINA4_SWAGGER_UI_CDN ?? "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5").replace(/\/+$/, "");
 }
 
 const SWAGGER_UI_HTML = (specUrl: string) => `<!DOCTYPE html>
