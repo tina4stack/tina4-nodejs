@@ -444,7 +444,16 @@ export async function sessionAutoStart(
       const xfProto = rawReq.headers["x-forwarded-proto"];
       const forwardedProto = Array.isArray(xfProto) ? xfProto[0] : xfProto;
       const socketEncrypted = (rawReq.socket as { encrypted?: boolean })?.encrypted === true;
-      rawRes.setHeader("Set-Cookie", buildSessionCookie(newSid, ttl, undefined, forwardedProto, socketEncrypted));
+      // appendHeader, not setHeader (feature 131 fix, found while proving
+      // TC-DEC-02): setHeader REPLACES any existing Set-Cookie value wholesale,
+      // so a route that had already called response.cookie() of its own — on
+      // the SAME request that also needs a fresh session cookie (first visit
+      // to any route, or a session id rotation) — had its own cookie(s)
+      // silently discarded, live server included, not just under TestClient.
+      // appendHeader adds to whatever is already there (promoting a scalar to
+      // an array, extending an existing array) and behaves exactly like
+      // setHeader when nothing is set yet, so the common case is unchanged.
+      rawRes.appendHeader("Set-Cookie", buildSessionCookie(newSid, ttl, undefined, forwardedProto, socketEncrypted));
     }
     return origEnd(...args);
   } as typeof rawRes.end;

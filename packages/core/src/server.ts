@@ -826,6 +826,24 @@ function deployGallery(name) {
 // Allows handle() to route requests without requiring a reference to the server.
 let _dispatchFn: ((rawReq: IncomingMessage, rawRes: ServerResponse) => Promise<void>) | null = null;
 
+// The DispatchContext startServer() built for the currently-running server (if
+// any) — see getLiveDispatchContext() below. `null` until startServer() runs.
+let _liveDispatchContext: DispatchContext | null = null;
+
+/**
+ * The DispatchContext the currently-running server (if any) built at
+ * startServer() time — the FULL context (real ORM/Swagger/DevAdmin/CSRF
+ * wiring included), not the lighter one buildDispatchContext() makes on its
+ * own. `null` when startServer() has not run yet in this process.
+ *
+ * TestClient prefers this over a freshly-built context so a no-argument
+ * `new TestClient()` gets maximum fidelity to whatever server is actually
+ * live — mirroring Ruby's `RackApp.current` (feature 131, TC-DEC-01).
+ */
+export function getLiveDispatchContext(): DispatchContext | null {
+  return _liveDispatchContext;
+}
+
 // Lazily-resolved Database.resetRequestCaches binding (or null if the ORM is
 // not installed). Memoised so the dynamic import happens once, then every
 // request reuses the resolved function — see the request-scoped cache boundary
@@ -1388,6 +1406,33 @@ interface FallbackContext {
 }
 
 /**
+ * Everything one request's dispatch needs beyond req/res: the resolved
+ * router, middleware chain, filesystem roots and template engine a boot
+ * resolved once.
+ *
+ * Passed explicitly — never closed over — so the SAME dispatch function can
+ * be driven from TWO places: the live socket server (startServer() builds
+ * the full context, wired to real ORM/Swagger/DevAdmin/CSRF registrations)
+ * and the in-process TestClient (buildDispatchContext(), below, when no live
+ * server is running in this process, or when the caller wants an isolated
+ * router). Both run the identical runDispatch()/dispatchInner() — no stage
+ * is ever skipped for one caller and not the other (feature 131, TC-DEC-01
+ * — this was a closure trapped inside startServer() until now, which is
+ * exactly why TestClient could not call it and grew its own competing
+ * dispatch instead).
+ */
+export interface DispatchContext {
+  router: Router;
+  middleware: MiddlewareChain;
+  port: number;
+  staticDir: string;
+  srcPublicDir: string;
+  templatesDir: string;
+  frondEngine: { render(file: string, data: Record<string, unknown>): string } | null;
+  swaggerAssetsEnabled: boolean;
+}
+
+/**
  * Serve a template file for a GET (e.g. /hello -> src/templates/pages/hello.twig).
  *
  * Rendered through Frond so {% include %} / {% extends %} work, rather than a
@@ -1523,6 +1568,225 @@ const FALLBACK_STAGES: Array<(ctx: FallbackContext) => boolean | Promise<boolean
   serveStaticAsset,
   serveNotFound,
 ];
+
+/**
+ * Build a standalone DispatchContext bound to `router`, without booting a
+ * real server — no port bind, no route discovery, no ORM/Swagger/DevAdmin/
+ * CSRF wiring (those are startServer()'s job, and they mutate global/process
+ * state a lightweight caller should not trigger just by dispatching one
+ * request).
+ *
+ * For the in-process TestClient (and any other embedder) to reach the REAL
+ * pipeline when no `startServer()` has run yet in this process, or when the
+ * caller wants an ISOLATED router independent of whatever live server might
+ * be running — parity with the existing `new TestClient(router)`
+ * test-isolation contract (see testClientFrontController.test.ts, which
+ * builds a fresh Router precisely so it never races with concurrent
+ * TestClient suites on the shared defaultRouter).
+ *
+ * Best-effort, like startServer()'s own setup: Frond and @tina4/swagger are
+ * optional dependencies of @tina4/core, so a missing package degrades to
+ * `null` / `false` rather than throwing — a template route or a swagger
+ * asset request simply falls through the fallback chain the same way it
+ * would if those packages were never installed.
+ */
+export async function buildDispatchContext(router: Router, base?: string): Promise<DispatchContext> {
+  const root = base ? resolve(base) : process.cwd();
+  const staticDir = resolve(root, "public");
+  const srcPublicDir = resolve(root, "src/public");
+  const templatesDir = resolve(root, "src/templates");
+
+  let frondEngine: DispatchContext["frondEngine"] = null;
+  try {
+    const { Frond } = await import("../../frond/src/engine.js");
+    frondEngine = new Frond(templatesDir);
+  } catch {
+    // Frond not available — template-route fallback stays inert, same guard startServer() uses.
+  }
+
+  let swaggerAssetsEnabled = false;
+  try {
+    const swagger = await import("../../swagger/src/index.js");
+    swaggerAssetsEnabled = swagger.swaggerEnabled();
+  } catch {
+    // Swagger not available — bundled swagger assets stay ungated-but-absent, same as startServer().
+  }
+
+  return {
+    router,
+    middleware: new MiddlewareChain(),
+    port: 7148,
+    staticDir,
+    srcPublicDir,
+    templatesDir,
+    frondEngine,
+    swaggerAssetsEnabled,
+  };
+}
+
+/**
+ * Drive one request through PROLOGUE_STAGES -> REQUEST_STAGES -> route match
+ * -> ROUTE_STAGES (or FALLBACK_STAGES on a miss) -> ERROR_STAGES. This is the
+ * function every stage list in dispatchPipeline.ts describes; ctx supplies
+ * everything a boot resolved once (router, middleware, filesystem roots,
+ * Frond) so this function itself closes over nothing from a particular
+ * server instance.
+ */
+async function dispatchInner(
+  ctx: DispatchContext,
+  rawReq: IncomingMessage,
+  rawRes: ServerResponse,
+  requestId: string,
+): Promise<void> {
+  const req = createRequest(rawReq);
+  const res = createResponse(rawRes);
+
+  // PROLOGUE STAGES. Extracted to dispatchPipeline.ts - see PROLOGUE_STAGES
+  // there for the ordered list and why the order is behaviour, not taste.
+  // These four close over nothing but the raw req/res (never ctx), which is
+  // why they take no context object at all.
+  await resetRequestCaches();
+  headStripIntercept(rawReq, rawRes);
+  // Feature 40 (CE-DEC-01/02): gzip + ETag + conditional-GET for every
+  // dynamic response. Installed right after headStripIntercept so it runs
+  // (execution order is the REVERSE of installation for these monkey-patch
+  // interceptors) AFTER the dev-toolbar/feedback injection but BEFORE the
+  // HEAD body-strip - see compressionEtagIntercept's docblock.
+  compressionEtagIntercept(rawReq, rawRes);
+
+  // res.render() is handled natively by response.ts via Frond
+
+  try {
+    // sessionAutoStart is the one prologue stage INSIDE the try. It degrades
+    // on its own (ADR-0021), so the only thing that escapes it is a
+    // TINA4_SESSION_STRICT refusal - and that must become a 500 through the
+    // normal error renderer, like Python's raise becomes a 500 in the ASGI
+    // server. Outside the try it rejected `dispatch`, and nothing awaits the
+    // listener http.createServer() calls: an unhandled rejection that takes
+    // the whole worker down is not "refuse this request".
+    await sessionAutoStart(rawReq, rawRes, req);
+
+    // Run middleware chain
+    await ctx.middleware.run(req, res);
+    if (res.raw.writableEnded) return;
+
+    // Parse request body.
+    //
+    // A body that breaks a documented limit is the client's error, not the
+    // server's. PayloadTooLargeError already carried `statusCode = 413` and
+    // nothing read it, so an oversized upload answered 500 - which tells the
+    // caller to retry the exact request that will fail again.
+    try {
+      await req.parseBody();
+    } catch (err) {
+      const status = (err as { statusCode?: number })?.statusCode;
+      if (typeof status === "number" && status >= 400 && status < 500) {
+        if (!rawRes.writableEnded) {
+          rawRes.statusCode = status;
+          rawRes.setHeader("content-type", "application/json");
+          rawRes.end(JSON.stringify({ error: (err as Error).message }));
+        }
+        return;
+      }
+      throw err;
+    }
+
+    const pathname = req.path;
+
+    // Track request start time for dev inspector
+    const reqStartTime = DevAdmin.isEnabled() ? Date.now() : 0;
+
+    // Mutable ref so wrappedEnd can read the matched pattern after route matching
+    // A HOLDER, not a plain string: the end-wrapper below reads it at end()
+    // time, after route matching has assigned it.
+    const matchedPattern = { value: "" };
+
+    // Wrap res.raw.end to inject dev toolbar and capture requests
+    // Skip toolbar injection on the AI port (no-reload behaviour)
+    const isAiPortRequest = !!(rawReq as any)._tina4AiPort;
+
+    // AI port: block /__dev_reload so AI tools never trigger a browser reload.
+    if (blockAiPortReload(res, pathname, isAiPortRequest)) return;
+
+    // Wrap res.raw.end so the dev toolbar / feedback widget can be injected
+    // and the request captured for the inspector. Extracted - see
+    // wrapResponseEnd. matchedPattern is a HOLDER because the wrapper reads
+    // it at end() time, long after route matching has assigned it.
+    wrapResponseEnd({
+      req, res, pathname, router: ctx.router,
+      reqStartTime, requestId, matchedPattern, isAiPortRequest,
+    });
+
+    // Global middleware, split by what it depends on (ADR-0012). The
+    // PRE-match set runs before a route is even looked up, so CORS and
+    // anything else that must survive a short-circuit can set headers that
+    // outlive a 401/403; opt in with `static preMatch = true`.
+    const { pre: preMatchMiddleware, post: postMatchMiddleware } =
+      MiddlewareRunner.partitionByMatchPhase([
+        ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
+      ]);
+
+    if (await runGlobalMiddlewarePass(preMatchMiddleware, req, res)) return;
+
+    // Match route. ROUTES BEAT FILES (ADR-0010): static assets resolve in
+    // the not-found fallback below, only once no route has claimed the path.
+    // A file in public/ can arrive from a build step, an upload directory or
+    // a careless deploy, and it must never silently shadow a reviewed route.
+    const match = ctx.router.match(req.method ?? "GET", pathname);
+    if (match) {
+      matchedPattern.value = match.pattern;
+      await runMatchedRoute({
+        req, res, pathname, match, postMatchMiddleware,
+        allGlobalMiddleware: [...preMatchMiddleware, ...postMatchMiddleware],
+      });
+      return;
+    }
+
+    // NOT-FOUND FALLBACK STAGES. Nothing matched a route, so walk the
+    // fallback chain in order - see FALLBACK_STAGES. Each returns true when
+    // it has answered the request.
+    //
+    // ADR-0010 (routes beat files) is why this chain runs AFTER matching: a
+    // file dropped into public/ by a build step or a careless deploy must
+    // never shadow a reviewed route.
+    const fallback: FallbackContext = {
+      req, res, pathname, router: ctx.router, port: ctx.port, staticDir: ctx.staticDir, srcPublicDir: ctx.srcPublicDir,
+      templatesDir: ctx.templatesDir, frondEngine: ctx.frondEngine, swaggerAssetsEnabled: ctx.swaggerAssetsEnabled,
+    };
+    for (const stage of FALLBACK_STAGES) {
+      if (await stage(fallback)) return;
+    }
+  } catch (err) {
+    await renderDispatchError(err, req, res, ctx.templatesDir);
+  }
+}
+
+/**
+ * Dispatch one request through the REAL Tina4 pipeline (stamps the
+ * per-request correlation id, then hands off to dispatchInner). This is the
+ * exact function startServer() wires to every live socket connection AND to
+ * the module-level handle() — an in-process caller (TestClient) that builds
+ * its own DispatchContext (buildDispatchContext(), or the live one via
+ * getLiveDispatchContext()) runs the IDENTICAL function, so no stage is ever
+ * skipped for one caller and not the other (feature 131, TC-DEC-01).
+ */
+export async function runDispatch(
+  ctx: DispatchContext,
+  rawReq: IncomingMessage,
+  rawRes: ServerResponse,
+): Promise<void> {
+  // Feature 43: PER-REQUEST correlation id. Honour a sanitized inbound
+  // X-Request-ID so a client or upstream service can thread its own id
+  // through - a CR/LF, over-long or illegal-charset value is rejected (never
+  // echoed) - else generate one. Echo it on the response by stamping the raw
+  // response NOW, so every outcome (200/404/500/413, Tina4Response OR a raw
+  // rawRes.end) carries it. Then establish it in an AsyncLocalStorage so every
+  // log line for this request - across every await - carries it, and two
+  // requests interleaving on the one event loop never read each other's id.
+  const requestId = Log.sanitizeRequestId(rawReq.headers["x-request-id"]) ?? randomBytes(4).toString("hex");
+  if (!rawRes.headersSent) rawRes.setHeader("x-request-id", requestId);
+  return Log.runWithRequestId(requestId, () => dispatchInner(ctx, rawReq, rawRes, requestId));
+}
 
 export async function startServer(config?: Tina4Config): Promise<{
   close: () => void;
@@ -1870,146 +2134,22 @@ ${reset}
     }
   }
 
-  async function dispatch(rawReq: IncomingMessage, rawRes: ServerResponse): Promise<void> {
-    // Feature 43: PER-REQUEST correlation id. Honour a sanitized inbound
-    // X-Request-ID so a client or upstream service can thread its own id
-    // through - a CR/LF, over-long or illegal-charset value is rejected (never
-    // echoed) - else generate one. Echo it on the response by stamping the raw
-    // response NOW, so every outcome (200/404/500/413, Tina4Response OR a raw
-    // rawRes.end) carries it. Then establish it in an AsyncLocalStorage so every
-    // log line for this request - across every await - carries it, and two
-    // requests interleaving on the one event loop never read each other's id.
-    const requestId = Log.sanitizeRequestId(rawReq.headers["x-request-id"]) ?? randomBytes(4).toString("hex");
-    if (!rawRes.headersSent) rawRes.setHeader("x-request-id", requestId);
-    return Log.runWithRequestId(requestId, () => dispatchInner(rawReq, rawRes, requestId));
-  }
+  // The one DispatchContext this server instance dispatches every request
+  // through — router/middleware/filesystem roots/Frond, resolved above.
+  // runDispatch() (module-level, exported) is the SAME function TestClient
+  // calls for an in-process request; wiring both to one function is the
+  // fix for feature 131 TC-DEC-01 (Node used to re-implement the dispatch
+  // order in TestClient instead of calling this).
+  const dispatchCtx: DispatchContext = {
+    router, middleware, port, staticDir, srcPublicDir, templatesDir, frondEngine, swaggerAssetsEnabled,
+  };
+  const dispatch = (rawReq: IncomingMessage, rawRes: ServerResponse): Promise<void> =>
+    runDispatch(dispatchCtx, rawReq, rawRes);
 
-  async function dispatchInner(rawReq: IncomingMessage, rawRes: ServerResponse, requestId: string): Promise<void> {
-    const req = createRequest(rawReq);
-    const res = createResponse(rawRes);
-
-    // PROLOGUE STAGES. Extracted to dispatchPipeline.ts - see PROLOGUE_STAGES
-    // there for the ordered list and why the order is behaviour, not taste.
-    // These four close over nothing from startServer, which is why they went
-    // first: no context object is needed for them at all.
-    await resetRequestCaches();
-    headStripIntercept(rawReq, rawRes);
-    // Feature 40 (CE-DEC-01/02): gzip + ETag + conditional-GET for every
-    // dynamic response. Installed right after headStripIntercept so it runs
-    // (execution order is the REVERSE of installation for these monkey-patch
-    // interceptors) AFTER the dev-toolbar/feedback injection but BEFORE the
-    // HEAD body-strip - see compressionEtagIntercept's docblock.
-    compressionEtagIntercept(rawReq, rawRes);
-
-    // res.render() is handled natively by response.ts via Frond
-
-    try {
-      // sessionAutoStart is the one prologue stage INSIDE the try. It degrades
-      // on its own (ADR-0021), so the only thing that escapes it is a
-      // TINA4_SESSION_STRICT refusal - and that must become a 500 through the
-      // normal error renderer, like Python's raise becomes a 500 in the ASGI
-      // server. Outside the try it rejected `dispatch`, and nothing awaits the
-      // listener http.createServer() calls: an unhandled rejection that takes
-      // the whole worker down is not "refuse this request".
-      await sessionAutoStart(rawReq, rawRes, req);
-
-      // Run middleware chain
-      await middleware.run(req, res);
-      if (res.raw.writableEnded) return;
-
-      // Parse request body.
-      //
-      // A body that breaks a documented limit is the client's error, not the
-      // server's. PayloadTooLargeError already carried `statusCode = 413` and
-      // nothing read it, so an oversized upload answered 500 - which tells the
-      // caller to retry the exact request that will fail again.
-      try {
-        await req.parseBody();
-      } catch (err) {
-        const status = (err as { statusCode?: number })?.statusCode;
-        if (typeof status === "number" && status >= 400 && status < 500) {
-          if (!rawRes.writableEnded) {
-            rawRes.statusCode = status;
-            rawRes.setHeader("content-type", "application/json");
-            rawRes.end(JSON.stringify({ error: (err as Error).message }));
-          }
-          return;
-        }
-        throw err;
-      }
-
-      const pathname = req.path;
-
-      // Track request start time for dev inspector
-      const reqStartTime = DevAdmin.isEnabled() ? Date.now() : 0;
-
-      // Mutable ref so wrappedEnd can read the matched pattern after route matching
-      // A HOLDER, not a plain string: the end-wrapper below reads it at end()
-      // time, after route matching has assigned it.
-      const matchedPattern = { value: "" };
-
-      // Wrap res.raw.end to inject dev toolbar and capture requests
-      // Skip toolbar injection on the AI port (no-reload behaviour)
-      const isAiPortRequest = !!(rawReq as any)._tina4AiPort;
-
-      // AI port: block /__dev_reload so AI tools never trigger a browser reload.
-      if (blockAiPortReload(res, pathname, isAiPortRequest)) return;
-
-      // Wrap res.raw.end so the dev toolbar / feedback widget can be injected
-      // and the request captured for the inspector. Extracted - see
-      // wrapResponseEnd. matchedPattern is a HOLDER because the wrapper reads
-      // it at end() time, long after route matching has assigned it.
-      wrapResponseEnd({
-        req, res, pathname, router,
-        reqStartTime, requestId, matchedPattern, isAiPortRequest,
-      });
-
-      // Global middleware, split by what it depends on (ADR-0012). The
-      // PRE-match set runs before a route is even looked up, so CORS and
-      // anything else that must survive a short-circuit can set headers that
-      // outlive a 401/403; opt in with `static preMatch = true`.
-      const { pre: preMatchMiddleware, post: postMatchMiddleware } =
-        MiddlewareRunner.partitionByMatchPhase([
-          ...new Set([...Router.getClassMiddlewares(), ...MiddlewareRunner.getGlobal()]),
-        ]);
-
-      if (await runGlobalMiddlewarePass(preMatchMiddleware, req, res)) return;
-
-      // Match route. ROUTES BEAT FILES (ADR-0010): static assets resolve in
-      // the not-found fallback below, only once no route has claimed the path.
-      // A file in public/ can arrive from a build step, an upload directory or
-      // a careless deploy, and it must never silently shadow a reviewed route.
-      const match = router.match(req.method ?? "GET", pathname);
-      if (match) {
-        matchedPattern.value = match.pattern;
-        await runMatchedRoute({
-          req, res, pathname, match, postMatchMiddleware,
-          allGlobalMiddleware: [...preMatchMiddleware, ...postMatchMiddleware],
-        });
-        return;
-      }
-
-      // NOT-FOUND FALLBACK STAGES. Nothing matched a route, so walk the
-      // fallback chain in order - see FALLBACK_STAGES. Each returns true when
-      // it has answered the request.
-      //
-      // ADR-0010 (routes beat files) is why this chain runs AFTER matching: a
-      // file dropped into public/ by a build step or a careless deploy must
-      // never shadow a reviewed route.
-      const fallback: FallbackContext = {
-        req, res, pathname, router, port, staticDir, srcPublicDir,
-        templatesDir, frondEngine, swaggerAssetsEnabled,
-      };
-      for (const stage of FALLBACK_STAGES) {
-        if (await stage(fallback)) return;
-      }
-    } catch (err) {
-      await renderDispatchError(err, req, res, templatesDir);
-    }
-  }
-
-  // Assign to module-level so handle() can dispatch without a server reference
+  // Assign to module-level so handle() (and TestClient, via
+  // getLiveDispatchContext()) can dispatch without a server reference
   _dispatchFn = dispatch;
+  _liveDispatchContext = dispatchCtx;
 
   // Dual-port (debug + no TINA4_NO_AI_PORT): the MAIN port hot-reloads for the human
   // dev; the stable AI port (port+1000, created below) suppresses reload/toolbar so an
