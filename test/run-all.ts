@@ -56,9 +56,11 @@ function reapSandbox(): void {
   if (process.pid !== sandboxOwnerPid) return;
   try { rmSync(tmpSandbox, { recursive: true, force: true }); } catch { /* never fail a run over cleanup */ }
 }
-// An "exit" handler rather than a call before the single process.exit(): it
-// fires on that exit AND on a crash or an uncaught throw, so a runner that dies
-// early still takes its sandbox with it.
+// An "exit" handler rather than an inline call before the runner returns: it
+// fires on the normal exit AND on a crash or an uncaught throw, so a runner that
+// dies early still takes its sandbox with it. (It is also the only cleanup path
+// now that the runner sets process.exitCode instead of calling process.exit --
+// see the end of this file for why.)
 process.on("exit", reapSandbox);
 
 // Discover all test files.
@@ -317,4 +319,19 @@ if (gateOn && serviceSkips.length > 0) {
 }
 
 const gateFailed = gateOn && serviceSkips.length > 0;
-process.exit(totalFail > 0 || filesFailed > 0 || gateFailed ? 1 : 0);
+
+// Set the exit CODE and let the process exit on its own — do NOT call
+// process.exit() here. process.exit() tears the process down synchronously and
+// DISCARDS anything still sitting in an asynchronously-buffered stdout, and this
+// runner's stdout IS async-buffered whenever it is not a TTY: a backgrounded
+// run, a pipe (`npm test | tee`), or a CI log capture. The loop above is ~260
+// back-to-back execSync() calls, each of which blocks the event loop, so the
+// per-file PASS lines queue up faster than libuv can flush them to a pipe and a
+// large backlog builds by the tail of the run. process.exit() then threw that
+// backlog away — INCLUDING this Grand Total summary — so a piped/backgrounded
+// run stopped mid-list with no summary and exit 1, while the identical run in a
+// terminal (synchronous stdout) looked fine. Assigning process.exitCode lets the
+// event loop drain the buffered writes and exit with the right code on its own;
+// the runner holds no open handles (every child is reaped by execSync/spawnSync),
+// so it exits promptly once stdout has drained.
+process.exitCode = totalFail > 0 || filesFailed > 0 || gateFailed ? 1 : 0;

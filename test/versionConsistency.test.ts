@@ -1,32 +1,47 @@
-/**
- * Guard against release-bump drift: package.json is bumped at release, but
- * CLAUDE.md (the AI-facing doc assistants read as ground truth) has historically
- * lagged, so tools reported an outdated "latest version". Pure file check, no
- * deps. run-all.ts spawns this file and treats a non-zero exit as a failure.
- */
+/** Release guard: docs, published workspaces, and lockfile must match root. */
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const version = JSON.parse(readFileSync(join(root, "package.json"), "utf-8")).version as string;
-const claude = readFileSync(join(root, "CLAUDE.md"), "utf-8");
+const readJson = (path: string): any => JSON.parse(readFileSync(join(root, path), "utf-8"));
 
 let passed = 0;
 let failed = 0;
-function assert(label: string, condition: boolean) {
-  console.log((condition ? "  PASS " : "  FAIL ") + label);
-  if (condition) passed++;
-  else failed++;
+function assert(name: string, condition: boolean, detail = ""): void {
+  if (condition) {
+    console.log(`  PASS ${name}`);
+    passed++;
+  } else {
+    console.log(`  FAIL ${name}${detail ? `: ${detail}` : ""}`);
+    failed++;
+  }
 }
 
-// The two current-version markers in CLAUDE.md (the H1 title and the intro line).
-// Historical "(v3.13.42)"-style feature references are left alone on purpose.
-assert(`CLAUDE.md title shows (v${version})`, claude.includes(`tina4-nodejs (v${version})`));
-assert(`CLAUDE.md intro shows v${version}`, claude.includes(`Tina4 for Node.js/TypeScript v${version} -`));
+const rootPackage = readJson("package.json");
+const expected = rootPackage.version;
+const workspacePaths = ["packages/cli", "packages/core", "packages/frond", "packages/orm", "packages/swagger"];
 
-// The runner reads this exact "N passed, M failed" shape to aggregate the grand
-// total. Without it the file contributed nothing to the counts and was reported
-// as "PASS versionConsistency.test (0 passed)" — green, but proving nothing.
-console.log(`\n  Results: ${passed} passed, ${failed} failed`);
+assert("root package is the intended release", expected === "3.13.100", `got ${expected}`);
+const claude = readFileSync(join(root, "CLAUDE.md"), "utf-8");
+assert(`CLAUDE.md title shows (v${expected})`, claude.includes(`tina4-nodejs (v${expected})`));
+assert(`CLAUDE.md intro shows v${expected}`, claude.includes(`Tina4 for Node.js/TypeScript v${expected} -`));
+for (const workspace of workspacePaths) {
+  const actual = readJson(`${workspace}/package.json`).version;
+  assert(`${workspace} matches root`, actual === expected, `expected ${expected}, got ${actual}`);
+}
+
+const lock = readJson("package-lock.json");
+assert("package-lock root version matches", lock.version === expected, `expected ${expected}, got ${lock.version}`);
+assert(
+  "package-lock root package matches",
+  lock.packages?.[""]?.version === expected,
+  `expected ${expected}, got ${lock.packages?.[""]?.version}`,
+);
+for (const workspace of workspacePaths) {
+  const actual = lock.packages?.[workspace]?.version;
+  assert(`package-lock ${workspace} matches`, actual === expected, `expected ${expected}, got ${actual}`);
+}
+
+console.log(`\nResults: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

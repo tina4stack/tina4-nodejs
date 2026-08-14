@@ -299,6 +299,10 @@ const THOUSANDS_RE = /\B(?=(\d{3})+(?!\d))/g;
 const LIVE_RE = /^live\s+["']([^"']+)["']([\s\S]*)$/;
 const LIVE_WS_RE = /ws\s+["']([^"']+)["']/;
 const LIVE_SRC_RE = /src\s+["']([^"']+)["']/;
+const EXTENDS_RE = /\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/;
+// Global-flag twin of EXTENDS_RE purely for counting every occurrence (a
+// non-global RegExp's .exec()/.match() only ever reports the first match).
+const EXTENDS_RE_GLOBAL = /\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/g;
 
 /** Escape a value for a live-marker HTML attribute. Byte-identical order to
  * the Python master / PHP liveAttr / Ruby live_attr so the emitted marker
@@ -313,11 +317,16 @@ function liveAttr(value: unknown): string {
 
 // ── Caches (module level) ─────────────────────────────────────
 
-/** Cache for parsed filter chains: expr string -> [variable, filters] */
-const filterChainCache = new Map<string, [string, [string, unknown[]][]]>();
+/**
+ * Cache for parsed filter chains: expr string -> [variable, filters].
+ * Exported (like TEMPLATE_CACHE_MAX) so the ADR-0004 bound has something for
+ * a test to inspect directly — module-level state has no instance to read
+ * off, unlike `compiled`/`compiledStrings`/`fragmentCache`.
+ */
+export const filterChainCache = new Map<string, [string, [string, unknown[]][]]>();
 
-/** Cache for parsed dotted/bracket paths: expr string -> [parts, fromBracket] */
-const pathParseCache = new Map<string, [string[], boolean[]]>();
+/** Cache for parsed dotted/bracket paths: expr string -> [parts, fromBracket]. Exported for the same reason as filterChainCache. */
+export const pathParseCache = new Map<string, [string[], boolean[]]>();
 
 /**
  * Hard cap on the template caches — `compiled` and `compiledStrings`
@@ -331,6 +340,19 @@ const pathParseCache = new Map<string, [string[], boolean[]]>();
  * dynamically adds an entry per distinct string.
  */
 export const TEMPLATE_CACHE_MAX = 256;
+
+/**
+ * Hard cap on every per-expression memo cache — `filterChainCache` and
+ * `pathParseCache` (ADR-0004, parity with PHP's MEMO_CACHE_MAX and the
+ * Python master's `@lru_cache(maxsize=1024)` on the equivalent module-level
+ * parsers). Deliberately higher than TEMPLATE_CACHE_MAX: one entry here is a
+ * small parsed-path array, orders of magnitude smaller than a token list.
+ *
+ * Also reused for `fragmentCache` (the `{% cache %}` tag's runtime store):
+ * TEMPLATE_CACHE_MAX, not this one — a rendered fragment is a whole HTML
+ * string, the same order of magnitude as a compiled template.
+ */
+export const MEMO_CACHE_MAX = 1024;
 
 /**
  * Keep a memo cache bounded. Call immediately before inserting a new entry.
@@ -350,6 +372,29 @@ function capCache(cache: Map<string, unknown>, maxEntries: number): void {
   for (const key of cache.keys()) {
     cache.delete(key);
     if (--drop <= 0) break;
+  }
+}
+
+/**
+ * Drop every TTL-expired entry from the `{% cache %}` fragment store:
+ * key -> [html, expiresAtEpochMs].
+ *
+ * `capCache` bounds a cache by SIZE (insertion order, oldest first) but says
+ * nothing about STALENESS: a key that expired and is never visited again
+ * would otherwise sit in the Map, still counted against the cap, until
+ * something else finally evicts it. An app keying fragments on a dynamic
+ * value (a page id, a user id) can churn through many such keys, so
+ * staleness has to be swept on its own schedule, not just bounded by count.
+ *
+ * Called on every `{% cache %}` render (cheap: bounded by TEMPLATE_CACHE_MAX
+ * entries, so at most 256 comparisons) rather than only for the key being
+ * read, so an unrelated key's expiry is cleaned up as a side effect of ANY
+ * fragment-cache render, not just a future hit on that same key.
+ */
+function sweepExpiredCache(cache: Map<string, [string, number]>): void {
+  const now = Date.now();
+  for (const [key, [, expiresAt]] of cache) {
+    if (expiresAt <= now) cache.delete(key);
   }
 }
 
@@ -437,6 +482,30 @@ function stripTag(raw: string): [string, boolean, boolean] {
   return [inner.trim(), stripBefore, stripAfter];
 }
 
+/**
+ * Return this template's OWN `{% extends %}` parent name, or "".
+ *
+ * A template may extend at most one parent. Before 3.13.100 a SECOND
+ * `{% extends %}` tag anywhere in the source was silently invisible: only
+ * the first occurrence was ever matched, and the rest of the child's
+ * non-block content -- including the second extends tag -- was already
+ * discarded the same way ordinary non-block child content is discarded
+ * during inheritance. That hid what is almost always a mistake (a
+ * copy-paste, a bad merge) with zero signal. Throw clearly instead, the
+ * same policy 3.13.89 applied to an unknown tag.
+ */
+function extendsTarget(source: string): string {
+  const matches = source.match(EXTENDS_RE_GLOBAL);
+  if (matches && matches.length > 1) {
+    throw new Error(
+      `Frond: template has ${matches.length} "{% extends %}" tags -- ` +
+        "a template can extend only one parent",
+    );
+  }
+  const match = source.match(EXTENDS_RE);
+  return match ? match[1] : "";
+}
+
 // ── Expression Evaluator ───────────────────────────────────────
 
 function resolveVar(expr: string, context: Record<string, unknown>): unknown {
@@ -511,6 +580,7 @@ function resolveVar(expr: string, context: Record<string, unknown>): unknown {
       }
       if (current) { parts.push(current); fromBracket.push(false); }
     }
+    capCache(pathParseCache, MEMO_CACHE_MAX);
     pathParseCache.set(expr, [parts, fromBracket]);
   }
 
@@ -1202,6 +1272,7 @@ function parseFilterChain(expr: string): [string, [string, unknown[]][]] {
   }
 
   const result: [string, [string, unknown[]][]] = [variable, filters];
+  capCache(filterChainCache, MEMO_CACHE_MAX);
   filterChainCache.set(expr, result);
   return result;
 }
@@ -1790,31 +1861,24 @@ export class Frond {
   }
 
   /**
-   * Register a custom filter. The filter is persisted at class level
-   * so new instances created by hot-reload inherit it automatically;
-   * the live instance's local filter map also receives the addition
-   * immediately. Mirrors Python's _ClassOrInstanceMethod dual-call.
+   * Register a custom filter on this instance only. Use the static method
+   * for process-global registration. tina4: ADR-0052.
    */
   addFilter(name: string, fn: FilterFn): void {
-    Frond.classFilters.set(name, fn);
     this.filters[name] = fn;
   }
 
   /**
-   * Register a global variable available in all templates. Persisted
-   * at class level — see ``addFilter`` for the dual-call semantics.
+   * Register a global variable on this instance only.
    */
   addGlobal(name: string, value: unknown): void {
-    Frond.classGlobals.set(name, value);
     this.globals[name] = value;
   }
 
   /**
-   * Register a custom test. Persisted at class level — see
-   * ``addFilter`` for the dual-call semantics.
+   * Register a custom test on this instance only.
    */
   addTest(name: string, fn: TestFn): void {
-    Frond.classTests.set(name, fn);
     this.tests[name] = fn;
   }
 
@@ -1957,9 +2021,8 @@ export class Frond {
       context.__frond_tests__ = this.tests;
     }
 
-    const extendsMatch = source.match(/\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/);
-    if (extendsMatch) {
-      const parentName = extendsMatch[1];
+    const parentName = extendsTarget(source);
+    if (parentName) {
       const parentSource = this.load(parentName);
       const childBlocks = this.extractBlocks(source);
       return this.renderWithBlocks(parentSource, context, childBlocks);
@@ -1975,9 +2038,8 @@ export class Frond {
     }
 
     // Handle extends first
-    const extendsMatch = source.match(/\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/);
-    if (extendsMatch) {
-      const parentName = extendsMatch[1];
+    const parentName = extendsTarget(source);
+    if (parentName) {
       const parentSource = this.load(parentName);
       const childBlocks = this.extractBlocks(source);
       return this.renderWithBlocks(parentSource, context, childBlocks);
@@ -2032,15 +2094,117 @@ export class Frond {
     return blocks;
   }
 
+  /**
+   * Depth-aware block substitution against `source` (typically the
+   * fully-resolved root template).
+   *
+   * A single regex `.replace()` pass (the flat `pattern` this replaces in
+   * renderWithBlocks) pairs an OUTER block's open tag with the FIRST
+   * `{% endblock %}` found -- which, when the outer block wraps a NESTED
+   * `{% block %}`, is the nested block's own close tag, not the outer's.
+   * That silently truncates the outer block's captured content and drops
+   * everything after the inner endblock (the root-nested-block
+   * content-loss bug). This scans with an open/close depth counter
+   * instead (mirroring extractBlocks), so an outer block always captures
+   * its FULL body, nested child blocks included.
+   *
+   * The content chosen for each block -- the child override in `blocks`
+   * if present, else the block's own default body -- is then recursively
+   * substituted against the SAME `blocks` map before being tokenized and
+   * rendered, so a block nested inside another block resolves correctly
+   * regardless of which template in the inheritance chain declared the
+   * nesting (the root, an intermediate, however many levels deep).
+   *
+   * `{{ parent() }}` / `{{ super() }}` inside a block still render that
+   * block's OWN default content at this level (lazy, on first call).
+   */
+  private substituteBlocks(
+    source: string,
+    blocks: Record<string, string>,
+    context: Record<string, unknown>,
+  ): string {
+    const blockOpen = /\{%[-\s]*block\s+(\w+)\s*[-]?%\}/g;
+    const blockClose = /\{%[-\s]*endblock\s*[-]?%\}/g;
+    const engine = this;
+    const pieces: string[] = [];
+    let pos = 0;
+
+    while (pos < source.length) {
+      blockOpen.lastIndex = pos;
+      const mOpen = blockOpen.exec(source);
+      if (!mOpen) {
+        pieces.push(source.slice(pos));
+        break;
+      }
+
+      pieces.push(source.slice(pos, mOpen.index)); // untouched text before the tag
+
+      const name = mOpen[1];
+      const contentStart = mOpen.index + mOpen[0].length;
+      let depth = 1;
+      let scan = contentStart;
+      let closeMatch: RegExpExecArray | null = null;
+
+      while (depth > 0 && scan < source.length) {
+        blockOpen.lastIndex = scan;
+        blockClose.lastIndex = scan;
+        const nextOpen = blockOpen.exec(source);
+        const nextClose = blockClose.exec(source);
+
+        if (!nextClose) break; // malformed — no matching endblock
+
+        if (nextOpen && nextOpen.index < nextClose.index) {
+          depth++;
+          scan = nextOpen.index + nextOpen[0].length;
+        } else {
+          depth--;
+          if (depth === 0) {
+            closeMatch = nextClose;
+          } else {
+            scan = nextClose.index + nextClose[0].length;
+          }
+        }
+      }
+
+      if (!closeMatch) {
+        // Malformed template (no matching endblock) — keep the rest
+        // verbatim rather than lose it, the same leniency extractBlocks
+        // applies to this case.
+        pieces.push(source.slice(mOpen.index));
+        pos = source.length;
+        break;
+      }
+
+      const parentContent = source.slice(contentStart, closeMatch.index);
+      const blockSource = blocks[name] ?? parentContent;
+      const resolvedSource = engine.substituteBlocks(blockSource, blocks, context);
+
+      let renderedParent: SafeString | null = null;
+      const getParent = (): SafeString => {
+        if (renderedParent === null) {
+          renderedParent = new SafeString(
+            engine.renderTokens(tokenize(parentContent), context),
+          );
+        }
+        return renderedParent;
+      };
+
+      const blockCtx = { ...context, parent: getParent, super: getParent };
+      pieces.push(engine.renderTokens(tokenize(resolvedSource), blockCtx));
+      pos = closeMatch.index + closeMatch[0].length;
+    }
+
+    return pieces.join("");
+  }
+
   private renderWithBlocks(
     parentSource: string,
     context: Record<string, unknown>,
     childBlocks: Record<string, string>,
   ): string {
     // --- Multi-level extends: check if parent itself extends a grandparent ---
-    const extendsMatch = parentSource.trimStart().match(/\{%[-\s]*extends\s+["'](.+?)["']\s*[-]?%\}/);
-    if (extendsMatch) {
-      const grandparentName = extendsMatch[1];
+    const grandparentName = extendsTarget(parentSource);
+    if (grandparentName) {
       const grandparentSource = this.load(grandparentName);
 
       // Extract block defaults defined in the parent template
@@ -2071,27 +2235,10 @@ export class Frond {
     }
 
     // --- Leaf parent (no extends) — resolve blocks and render ---
-    const pattern = /\{%[-\s]*block\s+(\w+)\s*[-]?%\}([\s\S]*?)\{%[-\s]*endblock\s*[-]?%\}/g;
-    const engine = this;
-
-    const result = parentSource.replace(pattern, (_match, name: string, parentContent: string) => {
-      const blockSource = childBlocks[name] ?? parentContent;
-
-      // Make parent() and super() available inside child blocks
-      let renderedParent: SafeString | null = null;
-      const getParent = (): SafeString => {
-        if (renderedParent === null) {
-          renderedParent = new SafeString(
-            engine.renderTokens(tokenize(parentContent), context),
-          );
-        }
-        return renderedParent;
-      };
-
-      const blockCtx = { ...context, parent: getParent, super: getParent };
-      return this.renderTokens(tokenize(blockSource), blockCtx);
-    });
-
+    // First pass: depth-aware block substitution (handles a block nested
+    // inside another block at ANY level of the chain, including the root
+    // itself — see substituteBlocks).
+    const result = this.substituteBlocks(parentSource, childBlocks, context);
     return this.renderTokens(tokenize(result), context);
   }
 
@@ -3036,6 +3183,8 @@ export class Frond {
     const cacheKey = m ? m[1] : "default";
     const ttl = m && m[2] ? parseInt(m[2], 10) : 60;
 
+    sweepExpiredCache(this.fragmentCache);
+
     // Check cache
     const cached = this.fragmentCache.get(cacheKey);
     if (cached) {
@@ -3089,6 +3238,7 @@ export class Frond {
 
     // Render and cache
     const rendered = this.renderTokens([...bodyTokens], context);
+    capCache(this.fragmentCache as Map<string, unknown>, TEMPLATE_CACHE_MAX);
     this.fragmentCache.set(cacheKey, [rendered, Date.now() + ttl * 1000]);
     return [rendered, i];
   }
