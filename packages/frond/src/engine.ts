@@ -2101,6 +2101,109 @@ export class Frond {
     return blocks;
   }
 
+  /**
+   * Depth-aware block substitution against `source` (typically the
+   * fully-resolved root template).
+   *
+   * A single regex `.replace()` pass (the flat `pattern` this replaces in
+   * renderWithBlocks) pairs an OUTER block's open tag with the FIRST
+   * `{% endblock %}` found -- which, when the outer block wraps a NESTED
+   * `{% block %}`, is the nested block's own close tag, not the outer's.
+   * That silently truncates the outer block's captured content and drops
+   * everything after the inner endblock (the root-nested-block
+   * content-loss bug). This scans with an open/close depth counter
+   * instead (mirroring extractBlocks), so an outer block always captures
+   * its FULL body, nested child blocks included.
+   *
+   * The content chosen for each block -- the child override in `blocks`
+   * if present, else the block's own default body -- is then recursively
+   * substituted against the SAME `blocks` map before being tokenized and
+   * rendered, so a block nested inside another block resolves correctly
+   * regardless of which template in the inheritance chain declared the
+   * nesting (the root, an intermediate, however many levels deep).
+   *
+   * `{{ parent() }}` / `{{ super() }}` inside a block still render that
+   * block's OWN default content at this level (lazy, on first call).
+   */
+  private substituteBlocks(
+    source: string,
+    blocks: Record<string, string>,
+    context: Record<string, unknown>,
+  ): string {
+    const blockOpen = /\{%[-\s]*block\s+(\w+)\s*[-]?%\}/g;
+    const blockClose = /\{%[-\s]*endblock\s*[-]?%\}/g;
+    const engine = this;
+    const pieces: string[] = [];
+    let pos = 0;
+
+    while (pos < source.length) {
+      blockOpen.lastIndex = pos;
+      const mOpen = blockOpen.exec(source);
+      if (!mOpen) {
+        pieces.push(source.slice(pos));
+        break;
+      }
+
+      pieces.push(source.slice(pos, mOpen.index)); // untouched text before the tag
+
+      const name = mOpen[1];
+      const contentStart = mOpen.index + mOpen[0].length;
+      let depth = 1;
+      let scan = contentStart;
+      let closeMatch: RegExpExecArray | null = null;
+
+      while (depth > 0 && scan < source.length) {
+        blockOpen.lastIndex = scan;
+        blockClose.lastIndex = scan;
+        const nextOpen = blockOpen.exec(source);
+        const nextClose = blockClose.exec(source);
+
+        if (!nextClose) break; // malformed — no matching endblock
+
+        if (nextOpen && nextOpen.index < nextClose.index) {
+          depth++;
+          scan = nextOpen.index + nextOpen[0].length;
+        } else {
+          depth--;
+          if (depth === 0) {
+            closeMatch = nextClose;
+          } else {
+            scan = nextClose.index + nextClose[0].length;
+          }
+        }
+      }
+
+      if (!closeMatch) {
+        // Malformed template (no matching endblock) — keep the rest
+        // verbatim rather than lose it, the same leniency extractBlocks
+        // applies to this case.
+        pieces.push(source.slice(mOpen.index));
+        pos = source.length;
+        break;
+      }
+
+      const parentContent = source.slice(contentStart, closeMatch.index);
+      const blockSource = blocks[name] ?? parentContent;
+      const resolvedSource = engine.substituteBlocks(blockSource, blocks, context);
+
+      let renderedParent: SafeString | null = null;
+      const getParent = (): SafeString => {
+        if (renderedParent === null) {
+          renderedParent = new SafeString(
+            engine.renderTokens(tokenize(parentContent), context),
+          );
+        }
+        return renderedParent;
+      };
+
+      const blockCtx = { ...context, parent: getParent, super: getParent };
+      pieces.push(engine.renderTokens(tokenize(resolvedSource), blockCtx));
+      pos = closeMatch.index + closeMatch[0].length;
+    }
+
+    return pieces.join("");
+  }
+
   private renderWithBlocks(
     parentSource: string,
     context: Record<string, unknown>,
@@ -2139,27 +2242,10 @@ export class Frond {
     }
 
     // --- Leaf parent (no extends) — resolve blocks and render ---
-    const pattern = /\{%[-\s]*block\s+(\w+)\s*[-]?%\}([\s\S]*?)\{%[-\s]*endblock\s*[-]?%\}/g;
-    const engine = this;
-
-    const result = parentSource.replace(pattern, (_match, name: string, parentContent: string) => {
-      const blockSource = childBlocks[name] ?? parentContent;
-
-      // Make parent() and super() available inside child blocks
-      let renderedParent: SafeString | null = null;
-      const getParent = (): SafeString => {
-        if (renderedParent === null) {
-          renderedParent = new SafeString(
-            engine.renderTokens(tokenize(parentContent), context),
-          );
-        }
-        return renderedParent;
-      };
-
-      const blockCtx = { ...context, parent: getParent, super: getParent };
-      return this.renderTokens(tokenize(blockSource), blockCtx);
-    });
-
+    // First pass: depth-aware block substitution (handles a block nested
+    // inside another block at ANY level of the chain, including the root
+    // itself — see substituteBlocks).
+    const result = this.substituteBlocks(parentSource, childBlocks, context);
     return this.renderTokens(tokenize(result), context);
   }
 

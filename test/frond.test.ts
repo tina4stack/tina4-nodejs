@@ -436,6 +436,33 @@ writeFileSync(join(tmpDir, "leaf-4.html"), '{% extends "mid2-4.html" %}{% block 
   assert("4-level extends chain", r.includes("Leaf") && r.includes("<root>"));
 }
 
+// Regression (3.13.100): a {% block %} the ROOT template nests INSIDE
+// another {% block %} used to vanish, wrapper and all. The final
+// block-substitution pass against the resolved root source used a
+// non-depth-aware regex, so the OUTER block's open tag paired with the
+// FIRST {% endblock %} -- the NESTED block's own close tag -- truncating
+// the outer block and dropping everything after the inner endblock.
+// Before the fix this rendered "<section></section>". Mutation check:
+// reverting substituteBlocks to a flat regex .replace() reproduces exactly
+// that "<section></section>".
+writeFileSync(join(tmpDir, "root-nest.html"), '{% block body %}<section>{% block inner %}{% endblock %}</section>{% endblock %}');
+writeFileSync(join(tmpDir, "mid-nest.html"), '{% extends "root-nest.html" %}{% block inner %}MID{% endblock %}');
+writeFileSync(join(tmpDir, "leaf-nest.html"), '{% extends "mid-nest.html" %}{% block inner %}LEAF{% endblock %}');
+{
+  const r = engine.render("leaf-nest.html", {});
+  assert("Root-nested block survives final substitution", r === "<section>LEAF</section>");
+}
+
+// Same root-nesting shape, but a 3-level chain where the INTERMEDIATE
+// overrides the nested block and the leaf does NOT re-override it -- the
+// full structure (root's wrapper + mid's override) must reach the final
+// render untouched by the leaf.
+writeFileSync(join(tmpDir, "leaf-nest-noop.html"), '{% extends "mid-nest.html" %}{% block unrelated %}unused{% endblock %}');
+{
+  const r = engine.render("leaf-nest-noop.html", {});
+  assert("Root-nested block: intermediate override survives untouched leaf", r === "<section>MID</section>");
+}
+
 
 // ── Macros ──────────────────────────────────────────────────────
 console.log("\n--- Macros ---");
