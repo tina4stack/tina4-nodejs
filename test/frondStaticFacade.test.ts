@@ -30,6 +30,12 @@ console.log("=== Frond Static-Facade Tests ===\n");
 // clears the class-level user registry.
 Frond.clearRegistry();
 
+Frond.addFilter("class_filter", (value) => `class:${String(value)}`);
+assert(
+  "class registration is process global",
+  new Frond().renderString("{{ value | class_filter }}", { value: "value" }) === "class:value",
+);
+
 // ── Static addFilter is inherited by NEW instances ─────────────
 console.log("--- Static addFilter ---");
 
@@ -91,8 +97,8 @@ assert(
   f4.renderString("{% if n is negative %}neg{% else %}pos{% endif %}", { n: -3 }) === "neg",
 );
 
-// ── Instance addFilter ALSO writes to class registry ───────────
-console.log("\n--- Instance addFilter promotes to class registry ---");
+// ── Instance registrations stay local ─────────────────────────
+console.log("\n--- Instance registrations stay local ---");
 
 const f5 = new Frond();
 f5.addFilter("shout", (v) => String(v).toUpperCase() + "!");
@@ -101,11 +107,10 @@ assert(
   f5.renderString("{{ name | shout }}", { name: "hello" }) === "HELLO!",
 );
 
-// New instance created AFTER the instance addFilter call must also see it
 const f6 = new Frond();
 assert(
-  "Future instance inherits instance-registered filter",
-  f6.renderString("{{ name | shout }}", { name: "world" }) === "WORLD!",
+  "instance filter registration is instance local",
+  f6.renderString("{{ name | shout }}", { name: "world" }) === "world",
 );
 
 // Instance addGlobal — same promotion semantics
@@ -113,17 +118,17 @@ const f7 = new Frond();
 f7.addGlobal("BUILD", "abc123");
 const f8 = new Frond();
 assert(
-  "Future instance inherits instance-registered global",
-  f8.renderString("{{ BUILD }}", {}) === "abc123",
+  "instance global registration is instance local",
+  f8.renderString("{{ BUILD }}", {}) === "",
 );
 
 // Instance addTest — same promotion semantics
 const f9 = new Frond();
-f9.addTest("even", (v) => Number(v) % 2 === 0);
+f9.addTest("is_four_only", (v) => Number(v) === 4);
 const f10 = new Frond();
 assert(
-  "Future instance inherits instance-registered test",
-  f10.renderString("{% if n is even %}E{% else %}O{% endif %}", { n: 4 }) === "E",
+  "instance test registration is instance local",
+  f10.renderString("{% if n is is_four_only %}E{% else %}O{% endif %}", { n: 4 }) === "O",
 );
 
 // ── clearRegistry wipes class-level entries ────────────────────

@@ -1861,31 +1861,24 @@ export class Frond {
   }
 
   /**
-   * Register a custom filter. The filter is persisted at class level
-   * so new instances created by hot-reload inherit it automatically;
-   * the live instance's local filter map also receives the addition
-   * immediately. Mirrors Python's _ClassOrInstanceMethod dual-call.
+   * Register a custom filter on this instance only. Use the static method
+   * for process-global registration. tina4: ADR-0052.
    */
   addFilter(name: string, fn: FilterFn): void {
-    Frond.classFilters.set(name, fn);
     this.filters[name] = fn;
   }
 
   /**
-   * Register a global variable available in all templates. Persisted
-   * at class level — see ``addFilter`` for the dual-call semantics.
+   * Register a global variable on this instance only.
    */
   addGlobal(name: string, value: unknown): void {
-    Frond.classGlobals.set(name, value);
     this.globals[name] = value;
   }
 
   /**
-   * Register a custom test. Persisted at class level — see
-   * ``addFilter`` for the dual-call semantics.
+   * Register a custom test on this instance only.
    */
   addTest(name: string, fn: TestFn): void {
-    Frond.classTests.set(name, fn);
     this.tests[name] = fn;
   }
 
