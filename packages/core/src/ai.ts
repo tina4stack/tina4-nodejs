@@ -119,8 +119,9 @@ function skillsRef(): string {
  * MEASURED (2026-08-13): a real GitHub raw-content fetch occasionally drops a
  * request under load (transient DNS/TLS hiccup, not a missing file — every
  * URL here resolves fine on its own) while its siblings in the same batch
- * succeed. One retry pass over just the stragglers, still inside the same
- * child process, fixes that for real installer users too, not only the test.
+ * succeed. One retry pass over only transport failures and transient HTTP
+ * statuses, still inside the same child process, fixes that for real installer
+ * users too. Permanent 4xx responses are final answers and are not retried.
  *
  * Exported (like `writeOrMerge`/`markersFor`/`skillBlock` above) so
  * aiFetchRetry.test.ts can drive it directly against a real local server —
@@ -135,14 +136,16 @@ export function downloadSkillsSync(jobs: { url: string; dests: string[] }[]): Se
     const jobs = JSON.parse(process.argv[1]);
     const fs = require("node:fs");
     const path = require("node:path");
+    const transientStatuses = new Set([429, 500, 502, 503, 504]);
     async function fetchOne(job) {
       const resp = await fetch(job.url, { signal: AbortSignal.timeout(15000) });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      if (!resp.ok) return { ok: false, retry: transientStatuses.has(resp.status) };
       const buf = Buffer.from(await resp.arrayBuffer());
       for (const dest of job.dests) {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.writeFileSync(dest, buf);
       }
+      return { ok: true, retry: false };
     }
     (async () => {
       const ok = [];
@@ -151,9 +154,11 @@ export function downloadSkillsSync(jobs: { url: string; dests: string[] }[]): Se
         const failed = [];
         await Promise.all(pending.map(async (job) => {
           try {
-            await fetchOne(job);
-            ok.push(job.url);
+            const result = await fetchOne(job);
+            if (result.ok) ok.push(job.url);
+            else if (result.retry) failed.push(job);
           } catch {
+            // DNS, TLS, timeout and connection failures are transient.
             failed.push(job);
           }
         }));

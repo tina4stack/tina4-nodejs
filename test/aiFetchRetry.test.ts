@@ -31,12 +31,9 @@
  *     ride through) would exhaust Node's 2-attempt budget and never reach
  *     the 200. The positive case below uses "503, 200" instead — the
  *     sequence Node's real budget can recover from.
- *   - The retry pass fires on ANY failure, not just a transient HTTP status
- *     (fetchOne() throws generically on `!resp.ok`, so a permanent 404 is
- *     retried once too, unlike Python/PHP/Ruby which check a transient-code
- *     set and skip retrying a 4xx). The negative case asserts what is
- *     actually true for Node — fast (no backoff sleep) and never installed
- *     — rather than a borrowed "hits === 1" assertion that would not hold.
+ *   - The retry pass is status-aware: transport failures and transient HTTP
+ *     statuses retry, while a permanent 4xx is accepted as a final answer.
+ *     This matches Python/PHP/Ruby and avoids a request that cannot succeed.
  *
  * Run with: npx tsx test/aiFetchRetry.test.ts
  */
@@ -135,13 +132,8 @@ async function run() {
       `got: ${skillHits}`,
     );
 
-    // ── NEGATIVE: a persistent 404 — must not hang on a slow backoff sleep.
-    // Node's downloadSkillsSync retries ANY failure (not just a transient
-    // HTTP status) exactly once, with NO backoff delay at all, so a
-    // permanent 404 is hit twice here — that is Node's real, measured
-    // behaviour (see the file-header comment), not a Python/PHP/Ruby-style
-    // fail-fast-on-4xx contract. What IS true and worth locking in: it never
-    // installs, and it completes fast (no seconds-scale backoff sleep). ────
+    // ── NEGATIVE: a persistent 404 is a final answer, not a transient
+    // failure. It must not be retried or write a destination file. ─────────
     const missingDest = join(tmp, "missing", "SKILL.md");
     const start = Date.now();
     const okUrls2 = downloadSkillsSync([{ url: `${base}/missing`, dests: [missingDest] }]);
@@ -150,14 +142,14 @@ async function run() {
     assert("NEGATIVE: /missing URL is never reported as fetched", !okUrls2.has(`${base}/missing`));
     assert("NEGATIVE: no file was written for a 404", !existsSync(missingDest));
     assert(
-      "NEGATIVE: completes fast — no backoff sleep (well under a single second-scale delay)",
+      "NEGATIVE: completes fast — permanent 4xx has no retry/backoff",
       elapsedMs < 2000,
       `took ${elapsedMs}ms`,
     );
     const missingHits = await hits(base, "/missing");
     assert(
-      "NEGATIVE (measured Node behaviour): a persistent 404 IS retried once (2 hits) — Node's retry-on-any-failure design, unlike Python/PHP/Ruby's transient-status gate",
-      missingHits === 2,
+      "NEGATIVE: a persistent 404 is requested exactly once",
+      missingHits === 1,
       `got: ${missingHits}`,
     );
   } finally {
