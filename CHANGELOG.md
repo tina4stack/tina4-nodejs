@@ -6,6 +6,16 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.100 (unreleased)
+
+- Reject a second `{% extends %}` tag instead of replacing the first parent without warning.
+- Preserve nested root blocks through a depth-aware final substitution pass.
+- Bound template, fragment, and expression caches, with TTL sweeps for stale entries.
+- Retry transport and transient HTTP failures during AI skill downloads; do not retry permanent 4xx responses.
+- Keep the root package, five published workspaces, npm lockfile, and AI-facing guide on one version.
+
+## 3.13.99
+
 ### Breaking: `req.params` is route-params-only
 
 Client input now lives only in `req.query` and `req.body`; `req.params` holds route params
