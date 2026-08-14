@@ -17,7 +17,7 @@ import type { Router } from "./router.js";
 import type { RouteHandler, Tina4Request } from "./types.js";
 import { DevMailbox } from "./devMailbox.js";
 import { isTruthy } from "./dotenv.js";
-import { quickMetrics, fullAnalysis, fileDetail, MetricsEngineError } from "./metrics.js";
+import { fullAnalysis, fileDetail, MetricsEngineError } from "./metrics.js";
 import { registerFeedbackRoutes } from "./feedback.js";
 import { getDefaultDevServer, mcpEnabled, isRequestAllowed, isLoopback } from "./mcp.js";
 import { timingSafeEqual } from "node:crypto";
@@ -596,7 +596,6 @@ export class DevAdmin {
       { method: "GET", pattern: "/__dev/api/gallery", handler: handleGalleryList },
       { method: "POST", pattern: "/__dev/api/gallery/deploy", handler: handleGalleryDeploy(router) },
       // Metrics
-      { method: "GET", pattern: "/__dev/api/metrics", handler: (_req: any, res: any) => { res.json(quickMetrics()); } },
       // No fallback (ADR-0002): a missing or stale CLI is a 503 naming the
       // install command, never zeros that read as a healthy codebase.
       { method: "GET", pattern: "/__dev/api/metrics/full", handler: (_req: any, res: any) => {

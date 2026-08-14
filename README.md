@@ -69,6 +69,22 @@ export default class User {
 
 **2,897 tests. Zero dependencies. Full parity across Python, PHP, Ruby, and Node.js.**
 
+### AI Client
+
+```typescript
+import { Ai } from "tina4-nodejs";
+
+const reply = await Ai.chat([{ role: "user", content: "Summarise this text" }]);
+const text = await Ai.complete("Give me a title");
+const vector = await Ai.embed("semantic search text");
+
+for await (const delta of Ai.chat([{ role: "user", content: "Stream this" }], { stream: true })) {
+  process.stdout.write(delta);
+}
+```
+
+Configure `TINA4_AI_PROVIDER` as `local`, `openai`, or `anthropic`. Hosted providers require `TINA4_AI_KEY`; local OpenAI-compatible endpoints do not.
+
 ---
 
 ## CLI Reference

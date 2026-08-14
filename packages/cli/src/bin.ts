@@ -8,7 +8,6 @@ import { listRoutes } from "./commands/routes.js";
 import { runTests } from "./commands/test.js";
 import { generate, GENERATORS } from "./commands/generate.js";
 import { runSeeds } from "./commands/seed.js";
-import { runMetrics } from "./commands/metrics.js";
 import { queueCommand, QUEUE_SUBCOMMAND_NAMES } from "./commands/queue.js";
 import { buildImage } from "./commands/build.js";
 import { spawnSync } from "node:child_process";
@@ -363,11 +362,6 @@ export const COMMANDS: Record<string, CommandSpec> = {
     handler: async (a) => { await runSeeds(a[0]); },
     usage: "[file]",
     summary: "Run database seed files from src/seeds/",
-  },
-  metrics: {
-    handler: (a) => { process.exit(runMetrics(a)); },
-    usage: "[--top N] [--json] [--fail-on warn|error] [--path DIR]",
-    summary: "Rank top code-quality offenders",
   },
   console: {
     handler: async () => { await openConsole(); },

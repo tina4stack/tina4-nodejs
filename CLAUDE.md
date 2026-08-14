@@ -1,10 +1,10 @@
-# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.100)
+# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.101)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.13.100 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.13.101 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -1347,7 +1347,7 @@ npm test
 
 This executes `test/run-all.ts`, which ran **262 files** in the last lab verification:
 - `test/integration.ts` — Full integration test (creates a temp project, starts a real server, runs assertions)
-- `test/*.test.ts` — 267 files on disk covering all subsystems (ORM, routing, middleware, database drivers, sessions, queues, WebSocket, GraphQL, i18n, etc.). 259 are spawned by the runner under `tsx`, plus `integration.ts`; the 2 i18n suites are vitest and the runner drives them itself (so no invoker can miss them); the 6 `metrics*` files need the Rust CLI's native engine and are opted in with `TINA4_SKIP_METRICS=0`.
+- `test/*.test.ts` — all test files are discovered automatically. Plain suites run under `tsx`; Vitest suites are detected from their imports and run through Vitest. The metrics handoff suite runs normally and requires the native `tina4` CLI on PATH.
 - `test/_*.ts` are helpers, not suites, so the runner never collects them: `_serviceGate.ts` (the require-services gate), `_testSummary.ts`, and `_driverlessTree.ts` (builds a tree where a bare specifier genuinely cannot resolve).
 
 **Always run tests after making changes.** All tests must pass.

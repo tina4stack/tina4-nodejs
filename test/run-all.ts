@@ -83,32 +83,13 @@ const isVitestSuite = (f: string): boolean => {
   }
 };
 
-// Metrics is measured by the NATIVE engine in the tina4 Rust CLI (ADR-0002) and
-// has no in-framework fallback, so these files need that binary on PATH and
-// simply cannot run in CI. The engine is tested where it lives — tina4stack/tina4
-// src/metrics.rs, exercised by `cargo test` in its own pipeline — so skipping
-// them here loses no coverage; installing a second toolchain in four framework
-// pipelines to re-test one Rust binary would only duplicate it. Set
-// TINA4_SKIP_METRICS=0 to run them locally with the CLI installed.
-const METRICS_FILES = new Set([
-  "metrics.test.ts",
-  "metrics-cli.test.ts",
-  "metrics-nested-complexity.test.ts",
-  "metrics-offender-cap.test.ts",
-  "metricsCoverage.test.ts",
-  "metrics-dispatch-pipeline.test.ts",
-]);
-const skipMetrics = (process.env.TINA4_SKIP_METRICS ?? "1") !== "0";
-
 const allTestFiles = readdirSync(__dirname)
   .filter((f) => f.endsWith(".test.ts"))
   .sort();
 
 const VITEST_FILES = new Set(allTestFiles.filter(isVitestSuite));
 
-const testFiles = allTestFiles.filter(
-  (f) => !VITEST_FILES.has(f) && !(skipMetrics && METRICS_FILES.has(f))
-);
+const testFiles = allTestFiles.filter((file) => !VITEST_FILES.has(file));
 
 // Also include integration.ts
 const allFiles = ["integration.ts", ...testFiles];
