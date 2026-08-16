@@ -25,6 +25,9 @@ try {
   assert("full analysis names native engine", full.engine === "tina4-cli");
   assert("full analysis returns source files", full.files_analyzed >= 1);
   assert("full analysis preserves chart payload", Array.isArray(full.file_metrics) && !!full.dependency_graph);
+  const first = full.file_metrics[0];
+  assert("test-reference signal is named honestly", typeof first.has_referencing_test === "boolean");
+  assert("coverage-overclaiming field is absent", !("has_tests" in first));
 
   const detail = fileDetail(source);
   assert("file detail names native engine", detail.engine === "tina4-cli");

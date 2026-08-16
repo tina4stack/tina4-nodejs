@@ -15,7 +15,7 @@ export class MetricsEngineError extends Error {
 }
 const INSTALL_HINT = "update the native tina4 CLI: https://tina4.com/cli";
 const SUMMARY_KEYS = ["files_analyzed", "total_functions", "avg_complexity", "avg_maintainability"];
-const FILE_KEYS = ["path", "loc", "avg_complexity", "maintainability", "has_tests"];
+const FILE_KEYS = ["path", "loc", "avg_complexity", "maintainability", "has_referencing_test"];
 const FUNCTION_KEYS = ["name", "file", "line", "complexity", "loc"];
 
 function containsTypeScript(directory: string): boolean {
