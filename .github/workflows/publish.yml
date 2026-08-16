@@ -28,7 +28,18 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Verify tag matches source version
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          SOURCE_VERSION="$(node -p 'require("./package.json").version')"
+          test "$SOURCE_VERSION" = "$VERSION" || {
+            echo "::error::Tag $VERSION does not match package.json $SOURCE_VERSION"
+            exit 1
+          }
+          npx tsx test/versionConsistency.test.ts
+          echo "Building verified version $VERSION"
 
       - name: Build package
         run: npm run build
