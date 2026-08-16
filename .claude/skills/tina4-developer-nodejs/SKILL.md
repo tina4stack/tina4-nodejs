@@ -38,7 +38,7 @@ write-back. Cursor todos / chat checklists are **not** the plan.
 | 2. Plan | Write the checklist `[ ]`, Bugs section, Commit log | the plan file (outcome stated, work starts) |
 | 3. Delegate | Spawn a worker per task; the main session stays free | worker(s) running off the plan |
 | 4. Test-first | The worker writes REAL tests before any code | failing tests that pin the behaviour |
-| 5. Scaffold + Build | **Scaffold** with `tina4nodejs generate` → fill the `AI-FILL` placeholder → ground the custom ~20% with `tina4_context` | tests now green |
+| 5. Scaffold + Build | **Scaffold** with `tina4 generate` → fill the `AI-FILL` placeholder → ground the custom ~20% with `tina4_context` | tests now green |
 | 6. Verify + tick | Run it for real; **edit the plan file now** — `[x]` Scope/Tests + Commits line | plan file updated in the same turn |
 | 7. Report | Relay completions as a ✅/❌ table that matches the plan file | the status dashboard |
 
@@ -124,7 +124,7 @@ nothing (see **No Code Without Tests** below). The passing real test is the defi
 a checklist item.
 
 ### 5. Scaffold the boilerplate, then fill only the custom logic
-Only once the tests exist: **scaffold with `tina4nodejs generate <feature>`** (model, route, crud, service,
+Only once the tests exist: **scaffold with `tina4 generate <feature>`** (model, route, crud, service,
 queue, validator, seeder, websocket, listener, form, view, auth) — the boilerplate is generated
 deterministically, correct and **secure-by-default** (write routes are token-gated; pass `--public`
 to open them) — then **fill ONLY the `// ─── AI-FILL ───` placeholder** it leaves. An unfilled one
@@ -169,7 +169,7 @@ Climb in order; write new code only at the last rung. Tina4 ships **built-in fea
 
 1. **Does it need to exist?** Re-read the request and trace the actual code flow. The best change is often none.
 2. **Does Tina4 already do it?** Check built-ins first: CRUD → `auto_crud`/AutoCrud; DB → the ORM (`User.where(...)`, `User.find(...)`); Auth/JWT → `Auth`; validation → the Validator; email → the Messenger; queue → `Queue`; templates → Frond; sessions, i18n, WebSockets, GraphQL, realtime — all built in.
-3. **Can `tina4nodejs generate` scaffold it?** Prefer the generator over hand-writing boilerplate: `tina4nodejs generate <feature>` (model, route, crud, migration, service, queue, validator, seeder, websocket, listener, form, view, auth) emits correct, **secure-by-default** wiring (write routes token-gated; `--public` to open) and leaves a `// ─── AI-FILL ───` fill-spec placeholder — you fill only the custom logic. Routes land as method files (`get.ts`/`post.ts`); scaffolded `websocket`/`listener` modules have no file-based discovery, so `import` them from `app.ts`. Keep the stochastic model out of the boilerplate path.
+3. **Can `tina4 generate` scaffold it?** Prefer the generator over hand-writing boilerplate: `tina4 generate <feature>` (model, route, crud, migration, service, queue, validator, seeder, websocket, listener, form, view, auth) emits correct, **secure-by-default** wiring (write routes token-gated; `--public` to open) and leaves a `// ─── AI-FILL ───` fill-spec placeholder — you fill only the custom logic. Routes land as method files (`get.ts`/`post.ts`); scaffolded `websocket`/`listener` modules have no file-based discovery, so `import` them from `app.ts`. Keep the stochastic model out of the boilerplate path.
 4. **Does Node / the stdlib do it?** Use it before reaching further.
 5. **Is it already in THIS app?** Reuse the existing model/route/service — don't duplicate.
 6. **Adding an npm dependency? Stop.** Tina4 is zero-dependency — find the built-in.
@@ -207,7 +207,7 @@ you write against the live API index (below) and the reference files in this ski
 Tina4 reflects its own running code into a **live API index** — the source of truth for which classes
 and methods exist, and their exact signatures, in the version installed in *this* project. It never
 drifts the way training data or prose docs can. Three MCP tools expose it whenever the dev server is
-running (`tina4nodejs serve` with `TINA4_DEBUG=true`):
+running (`tina4 serve` with `TINA4_DEBUG=true`):
 
 - **`api_search("render template")`** — ranked search across framework + your own code; returns fqn, signature, file:line. Run it BEFORE assuming a method exists.
 - **`api_class("BaseModel")`** — every method on a class, with signatures. A bare name, an import path, or the full fqn all resolve.
@@ -237,7 +237,7 @@ the app.
 | # | Step | What you do | Gate before moving on |
 |---|------|-------------|-----------------------|
 | 1 | **Ground** | retrieve the current idiom — `tina4_context(request, "nodejs")`, then `code_search`/`api_search` for this project | real imports + shape in hand |
-| 2 | **Scaffold** | `tina4nodejs generate <feature>` for the boilerplate — secure-by-default | the ~80% is deterministic |
+| 2 | **Scaffold** | `tina4 generate <feature>` for the boilerplate — secure-by-default | the ~80% is deterministic |
 | 3 | **Write** | the custom ~20% only, using ONLY symbols the grounding showed | — |
 | 4 | **Validate** | check every symbol against the known vocabulary (`api_search` / the real framework exports) | are they all real? |
 | 5 | **Repair** | fix the deterministic-fixable — wrong module path, a decorator/helper used but not imported | — |
@@ -280,13 +280,13 @@ my-app/
 
 Create a project and run it:
 ```bash
-npx tina4nodejs init my-app     # scaffold a new project
+tina4 init nodejs my-app
 cd my-app
-npm install
-npx tina4nodejs serve           # ALWAYS use this — hot-reload, SCSS, Swagger, dev admin
+tina4 serve                     # ALWAYS use this — hot-reload, SCSS, Swagger, dev admin
 ```
 
-**IMPORTANT:** Run the app with `tina4nodejs serve`, not `npx tsx app.ts` directly. The CLI handles
+**IMPORTANT:** Run the app with `tina4 serve`, not `npx tina4nodejs serve`, `npm run dev`, or
+`npx tsx app.ts` directly. The unified client handles
 route/model auto-discovery wiring, file watching, hot reload, SCSS compilation, the debug overlay,
 and Swagger. Running `tsx app.ts` directly is for containers/CI where the entry point starts the
 server itself.
@@ -294,7 +294,7 @@ server itself.
 You get the API on **http://localhost:7148** (default port), Swagger docs at `/swagger`, and the dev
 admin panel at `/__dev/` automatically.
 
-Other CLI commands (`tina4nodejs <cmd>`): `serve`, `migrate`, `migrate:create <desc>`,
+Framework-specific fallback commands (`tina4nodejs <cmd>`): `migrate`, `migrate:create <desc>`,
 `migrate:status`, `migrate:rollback`, `routes`, `test [file]`, `seed [file]`,
 `generate model|route|crud|migration`, `metrics`, `console`, `ai`.
 
@@ -685,7 +685,7 @@ statement as a Scope item.** Translate it first:
 
 1. **Embellish with Tina4 principles** — restate the ask through the reuse ladder, convention
    over configuration, secure-by-default (writes need Bearer — don't reach for `.noAuth()`),
-   scaffold-then-fill (`tina4nodejs generate`), real tests, Tina4CSS + frond.js (or API + tina4-js),
+   scaffold-then-fill (`tina4 generate`), real tests, Tina4CSS + frond.js (or API + tina4-js),
    zero npm deps for core. Example: "add auth" → "public `POST /api/login` mints JWT via
    `Auth.getToken` / `Auth.checkPassword`; write routes stay Bearer-protected by default;
    login page uses Frond in `src/templates/`; real tests for success/401."
@@ -696,7 +696,7 @@ statement as a Scope item.** Translate it first:
 4. **MASTER.md stays the dashboard** — complex programmes are *many small feature plans*, not one
    novel-length plan.
 
-Bad: `- [ ] Build checkout`  
+Bad: `- [ ] Build checkout`
 Good:
 ```markdown
 ## Scope
