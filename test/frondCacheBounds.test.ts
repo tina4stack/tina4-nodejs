@@ -4,8 +4,8 @@
  *
  * `compiled`/`compiledStrings` were already bounded at TEMPLATE_CACHE_MAX
  * (see frondTemplateCache.test.ts). This file covers the two module-level
- * per-expression memos that were still plain unbounded Maps --
- * `filterChainCache` and `pathParseCache` -- plus the `{% cache %}`
+ * per-expression memos -- `filterChainCache`, `pathParseCache`, and the
+ * dispatcher `expressionFormCache` -- plus the `{% cache %}`
  * fragment store (`fragmentCache`), which was BOTH unbounded AND never
  * swept a TTL-expired entry: a key that expired and was never read again
  * sat in memory for the life of the worker.
@@ -20,6 +20,7 @@ import { Frond } from "../packages/frond/src/index.ts";
 import {
   TEMPLATE_CACHE_MAX,
   MEMO_CACHE_MAX,
+  expressionFormCache,
   filterChainCache,
   pathParseCache,
 } from "../packages/frond/src/engine.ts";
@@ -91,6 +92,20 @@ assert("MEMO_CACHE_MAX is a positive cap not smaller than TEMPLATE_CACHE_MAX", M
     pathParseCache.size <= MEMO_CACHE_MAX,
   );
   assert("every distinct dotted-path render stayed byte-correct across eviction", allCorrect);
+}
+
+// ── expressionFormCache (module-level) ──────────────────────────
+{
+  expressionFormCache.clear();
+  const distinct = MEMO_CACHE_MAX * 2 + 17;
+  const engine = new Frond();
+  for (let i = 0; i < distinct; i++) {
+    engine.renderString(`{{ frond_expr_${i} }}`, {});
+  }
+  assert(
+    `expressionFormCache bounded at ${MEMO_CACHE_MAX} across ${distinct} distinct expressions (got ${expressionFormCache.size})`,
+    expressionFormCache.size <= MEMO_CACHE_MAX,
+  );
 }
 
 // ── Negative control: the memo caps must not fire EARLY ─────────

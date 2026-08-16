@@ -342,8 +342,8 @@ export const pathParseCache = new Map<string, [string[], boolean[]]>();
 export const TEMPLATE_CACHE_MAX = 256;
 
 /**
- * Hard cap on every per-expression memo cache — `filterChainCache` and
- * `pathParseCache` (ADR-0004, parity with PHP's MEMO_CACHE_MAX and the
+ * Hard cap on every per-expression memo cache — `filterChainCache`,
+ * `pathParseCache`, and `expressionFormCache` (ADR-0004, parity with PHP's MEMO_CACHE_MAX and the
  * Python master's `@lru_cache(maxsize=1024)` on the equivalent module-level
  * parsers). Deliberately higher than TEMPLATE_CACHE_MAX: one entry here is a
  * small parsed-path array, orders of magnitude smaller than a token list.
@@ -750,76 +750,71 @@ function splitOutsideQuotes(expr: string, sep: string): string[] {
   return parts;
 }
 
-function evalExpr(expr: string, context: Record<string, unknown>): unknown {
-  expr = expr.trim();
+const EXPR_NOT_MATCHED = Symbol("frond-expression-not-matched");
 
-  // String literal early-return: if the entire expression is a single quoted
-  // string with no unescaped matching quotes inside, return its content.
-  if (expr.length >= 2) {
-    const q = expr[0];
-    if ((q === '"' || q === "'") && expr.endsWith(q) && !expr.slice(1, -1).includes(q)) {
-      return expr.slice(1, -1);
-    }
+type ExprResult = unknown | typeof EXPR_NOT_MATCHED;
+
+function parenthesizedInner(expr: string): string | null {
+  if (expr.length < 2 || expr[0] !== "(" || !expr.endsWith(")")) return null;
+  let depth = 0;
+  for (let index = 0; index < expr.length; index++) {
+    if (expr[index] === "(") depth++;
+    else if (expr[index] === ")") depth--;
+    if (depth === 0 && index < expr.length - 1) return null;
   }
+  return expr.slice(1, -1);
+}
 
-  // Parenthesized sub-expression: (expr) — strip parens and evaluate inner
-  if (expr.length >= 2 && expr[0] === "(" && expr.endsWith(")")) {
-    let depth = 0;
-    let matched = true;
-    for (let pi = 0; pi < expr.length; pi++) {
-      if (expr[pi] === "(") depth++;
-      else if (expr[pi] === ")") depth--;
-      if (depth === 0 && pi < expr.length - 1) {
-        matched = false;
-        break;
-      }
-    }
-    if (matched) {
-      return evalExpr(expr.slice(1, -1), context);
-    }
+function evalPrimary(expr: string, context: Record<string, unknown>): ExprResult {
+  const quote = expr[0];
+  if (expr.length >= 2 && (quote === '"' || quote === "'") &&
+      expr.endsWith(quote) && !expr.slice(1, -1).includes(quote)) {
+    return expr.slice(1, -1);
   }
+  const inner = parenthesizedInner(expr);
+  if (inner !== null) return evalExpr(inner, context);
+  return EXPR_NOT_MATCHED;
+}
 
-  // Ternary: condition ? true_val : false_val
-  // Match carefully to handle nested ternaries
+function evalTernaryExpression(expr: string, context: Record<string, unknown>): ExprResult {
   const ternaryIdx = findTernary(expr);
-  if (ternaryIdx !== -1) {
-    const condPart = expr.slice(0, ternaryIdx).trim();
-    const rest = expr.slice(ternaryIdx + 1);
-    const colonIdx = findColon(rest);
-    if (colonIdx !== -1) {
-      const truePart = rest.slice(0, colonIdx).trim();
-      const falsePart = rest.slice(colonIdx + 1).trim();
-      const cond = evalExpr(condPart, context);
-      return cond ? evalExpr(truePart, context) : evalExpr(falsePart, context);
-    }
-  }
+  if (ternaryIdx === -1) return EXPR_NOT_MATCHED;
+  const rest = expr.slice(ternaryIdx + 1);
+  const colonIdx = findColon(rest);
+  if (colonIdx === -1) return EXPR_NOT_MATCHED;
+  const condition = evalExpr(expr.slice(0, ternaryIdx).trim(), context);
+  const branch = condition ? rest.slice(0, colonIdx) : rest.slice(colonIdx + 1);
+  return evalExpr(branch.trim(), context);
+}
 
-  // Jinja2-style inline if: value if condition else other_value — quote-aware
+function evalInlineIfExpression(expr: string, context: Record<string, unknown>): ExprResult {
   const ifIdx = findOutsideQuotes(expr, " if ");
-  if (ifIdx >= 0) {
-    const elseIdx = findOutsideQuotes(expr, " else ");
-    if (elseIdx >= 0 && elseIdx > ifIdx) {
-      const valuePart = expr.slice(0, ifIdx).trim();
-      const condPart = expr.slice(ifIdx + 4, elseIdx).trim();
-      const elsePart = expr.slice(elseIdx + 6).trim();
-      const cond = evalExpr(condPart, context);
-      return cond ? evalExpr(valuePart, context) : evalExpr(elsePart, context);
-    }
-  }
+  if (ifIdx < 0) return EXPR_NOT_MATCHED;
+  const elseIdx = findOutsideQuotes(expr, " else ");
+  if (elseIdx < 0 || elseIdx <= ifIdx) return EXPR_NOT_MATCHED;
+  const condition = evalExpr(expr.slice(ifIdx + 4, elseIdx).trim(), context);
+  const branch = condition ? expr.slice(0, ifIdx) : expr.slice(elseIdx + 6);
+  return evalExpr(branch.trim(), context);
+}
 
-  // Null coalescing: value ?? "default"
+function evalCoalesceExpression(expr: string, context: Record<string, unknown>): ExprResult {
   const qqIdx = findOutsideQuotes(expr, "??");
-  if (qqIdx !== -1) {
-    const left = expr.slice(0, qqIdx).trim();
-    const right = expr.slice(qqIdx + 2).trim();
-    const val = evalExpr(left, context);
-    if (val === null || val === undefined) {
-      return evalExpr(right, context);
-    }
-    return val;
-  }
+  if (qqIdx === -1) return EXPR_NOT_MATCHED;
+  const value = evalExpr(expr.slice(0, qqIdx).trim(), context);
+  return value === null || value === undefined
+    ? evalExpr(expr.slice(qqIdx + 2).trim(), context)
+    : value;
+}
 
-  // String concatenation with ~
+function evalConditional(expr: string, context: Record<string, unknown>): ExprResult {
+  for (const evaluator of [evalTernaryExpression, evalInlineIfExpression, evalCoalesceExpression]) {
+    const result = evaluator(expr, context);
+    if (result !== EXPR_NOT_MATCHED) return result;
+  }
+  return EXPR_NOT_MATCHED;
+}
+
+function evalConcatOrComparison(expr: string, context: Record<string, unknown>): ExprResult {
   if (findOutsideQuotes(expr, "~") >= 0) {
     const parts = splitOutsideQuotes(expr, "~");
     if (parts.length > 1) {
@@ -829,19 +824,6 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
       }).join("");
     }
   }
-
-  // Comparison/logical operators -> evalComparison, the SAME evaluator {% if %}
-  // uses, so a condition means the same thing in a condition and in an output
-  // expression.
-  //
-  // The LEADING unary `not` needs its own check: every operator below is matched
-  // WITH surrounding spaces, so `not x` (nothing to its left) matched none of
-  // them, fell through to the variable-resolution tail, and was looked up as a
-  // variable literally named "not x" -- found nothing, rendered EMPTY.
-  // `{% if not x %}` and `x and not y` always worked; only the standalone
-  // `{{ not x }}` was dropped, and before booleans rendered lowercase a dropped
-  // expression and `false -> ''` looked identical, which is why it survived.
-  // Fixed in 3.13.87 alongside the boolean contract.
   if (expr.startsWith("not ")) {
     return evalComparison(expr, context);
   }
@@ -850,8 +832,20 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
       return evalComparison(expr, context);
     }
   }
+  return EXPR_NOT_MATCHED;
+}
 
-  // Arithmetic operators: +, -, *, //, /, %, ** (lowest to highest precedence)
+const ARITHMETIC_OPERATIONS: Record<string, (left: number, right: number) => number> = {
+  "+": (left, right) => left + right,
+  "-": (left, right) => left - right,
+  "*": (left, right) => left * right,
+  "//": (left, right) => right !== 0 ? Math.floor(left / right) : 0,
+  "/": (left, right) => right !== 0 ? left / right : 0,
+  "%": (left, right) => right !== 0 ? left % right : 0,
+  "**": (left, right) => left ** right,
+};
+
+function evalArithmeticExpression(expr: string, context: Record<string, unknown>): ExprResult {
   for (const op of [" + ", " - ", " * ", " // ", " / ", " % ", " ** "]) {
     const pos = findOutsideQuotes(expr, op);
     if (pos >= 0) {
@@ -864,35 +858,16 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
         let rNum = rVal != null ? Number(rVal) : 0;
         if (isNaN(lNum)) lNum = 0;
         if (isNaN(rNum)) rNum = 0;
-        const opS = op.trim();
-        // Preserve int type when both operands are int-like (except for / which returns float)
-        const bothInt = Number.isInteger(lNum) && Number.isInteger(rNum) && opS !== "/";
-        let result: number;
-        switch (opS) {
-          case "+": result = lNum + rNum; break;
-          case "-": result = lNum - rNum; break;
-          case "*": result = lNum * rNum; break;
-          case "//": result = rNum !== 0 ? Math.floor(lNum / rNum) : 0; break;
-          case "/": result = rNum !== 0 ? lNum / rNum : 0; break;
-          case "%": result = rNum !== 0 ? lNum % rNum : 0; break;
-          case "**": result = lNum ** rNum; break;
-          default: result = 0;
-        }
-        return bothInt && Number.isInteger(result) ? result : result;
+        return ARITHMETIC_OPERATIONS[op.trim()](lNum, rNum);
       } catch {
         return null;
       }
     }
   }
+  return EXPR_NOT_MATCHED;
+}
 
-  // Filter pipe: value | filter1 | filter2(args). In Twig `|` binds TIGHTER than
-  // concat (`~`), comparisons and arithmetic, but looser than member/function
-  // access — so it is resolved here, AFTER those operators have had a chance to
-  // split the expression. Handling it inside the expression evaluator (not only
-  // at the {{ }} output layer) makes filters work at any nesting depth: concat
-  // operands, ternary branches, and parenthesised sub-expressions. This fixes
-  // both the `|`-vs-`~` precedence bug and the "pipe inside parens returns empty"
-  // defect. (#171)
+function evalFilterExpression(expr: string, context: Record<string, unknown>): ExprResult {
   if (findOutsideQuotes(expr, "|") >= 0) {
     const [baseExpr, filters] = parseFilterChain(expr);
     if (filters.length > 0) {
@@ -919,43 +894,66 @@ function evalExpr(expr: string, context: Record<string, unknown>): unknown {
       return value;
     }
   }
+  return EXPR_NOT_MATCHED;
+}
 
-  // Function call: name("arg1", "arg2") — supports dotted names like user.t("key")
-  const fnMatch = expr.match(FN_CALL_RE);
-  if (fnMatch) {
-    const fnName = fnMatch[1];
-    const rawArgs = fnMatch[2] || "";
+function evaluateCallArgs(rawArgs: string, context: Record<string, unknown>): unknown[] {
+  return rawArgs.trim() ? splitArgs(rawArgs).map(arg => evalExpr(arg.trim(), context)) : [];
+}
 
-    // Dotted function name: resolve object, then call method
-    if (fnName.includes(".")) {
-      const lastDot = fnName.lastIndexOf(".");
-      const objPath = fnName.slice(0, lastDot);
-      const methodName = fnName.slice(lastDot + 1);
-      const obj = resolveVar(objPath, context);
-      if (obj && typeof obj === "object" && methodName in (obj as Record<string, unknown>)) {
-        const method = (obj as Record<string, unknown>)[methodName];
-        if (typeof method === "function") {
-          if (rawArgs.trim()) {
-            const parts = splitArgs(rawArgs);
-            const evalArgs = parts.map(a => evalExpr(a.trim(), context));
-            return method.apply(obj, evalArgs);
-          }
-          return method.call(obj);
-        }
-      }
-    } else {
-      const fn = context[fnName] ?? resolveVar(fnName, context);
-      if (typeof fn === "function") {
-        if (rawArgs.trim()) {
-          const parts = splitArgs(rawArgs);
-          const evalArgs = parts.map(a => evalExpr(a.trim(), context));
-          return fn(...evalArgs);
-        }
-        return fn();
-      }
+function evalDottedFunction(name: string, rawArgs: string, context: Record<string, unknown>): ExprResult {
+  const lastDot = name.lastIndexOf(".");
+  const owner = resolveVar(name.slice(0, lastDot), context);
+  const member = name.slice(lastDot + 1);
+  if (!owner || typeof owner !== "object" || !(member in (owner as Record<string, unknown>))) {
+    return EXPR_NOT_MATCHED;
+  }
+  const method = (owner as Record<string, unknown>)[member];
+  return typeof method === "function"
+    ? method.apply(owner, evaluateCallArgs(rawArgs, context))
+    : EXPR_NOT_MATCHED;
+}
+
+function evalFunctionExpression(expr: string, context: Record<string, unknown>): ExprResult {
+  const match = expr.match(FN_CALL_RE);
+  if (!match) return EXPR_NOT_MATCHED;
+  const name = match[1];
+  const rawArgs = match[2] || "";
+  if (name.includes(".")) return evalDottedFunction(name, rawArgs, context);
+  const fn = context[name] ?? resolveVar(name, context);
+  if (typeof fn === "function") return fn(...evaluateCallArgs(rawArgs, context));
+  return EXPR_NOT_MATCHED;
+}
+
+const EXPR_EVALUATORS = [
+  evalPrimary,
+  evalConditional,
+  evalConcatOrComparison,
+  evalArithmeticExpression,
+  evalFilterExpression,
+  evalFunctionExpression,
+] as const;
+/** Cached expression dispatcher branch; exported only for cache-bound verification. */
+export const expressionFormCache = new Map<string, number>();
+
+function evalExpr(expr: string, context: Record<string, unknown>): unknown {
+  expr = expr.trim();
+  const cachedForm = expressionFormCache.get(expr);
+  if (cachedForm !== undefined) {
+    if (cachedForm === -1) return resolveVar(expr, context);
+    const result = EXPR_EVALUATORS[cachedForm](expr, context);
+    return result === EXPR_NOT_MATCHED ? resolveVar(expr, context) : result;
+  }
+  for (let index = 0; index < EXPR_EVALUATORS.length; index++) {
+    const result = EXPR_EVALUATORS[index](expr, context);
+    if (result !== EXPR_NOT_MATCHED) {
+      capCache(expressionFormCache, MEMO_CACHE_MAX);
+      expressionFormCache.set(expr, index);
+      return result;
     }
   }
-
+  capCache(expressionFormCache, MEMO_CACHE_MAX);
+  expressionFormCache.set(expr, FN_CALL_RE.test(expr) ? EXPR_EVALUATORS.length - 1 : -1);
   return resolveVar(expr, context);
 }
 
