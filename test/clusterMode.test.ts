@@ -25,6 +25,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, openSync, closeSync, rmSync } from "node:fs";
+import { request } from "node:http";
 import { tmpdir, cpus } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -103,6 +104,23 @@ async function waitForBody(port: number, path: string, ms: number): Promise<stri
   return null;
 }
 
+/** Make one request on one new TCP connection; cluster schedules connections. */
+function requestOnFreshConnection(port: number, path: string): Promise<string> {
+  return new Promise((resolveBody, reject) => {
+    const req = request(
+      { hostname: "127.0.0.1", port, path, method: "GET", agent: false },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => { body += chunk; });
+        res.on("end", () => resolveBody(body));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 describe("cluster mode (TINA4_PRODUCTION=true)", () => {
   it("serves requests instead of killing its own workers", async () => {
     const probe = await startProductionServer(7851);
@@ -122,7 +140,7 @@ describe("cluster mode (TINA4_PRODUCTION=true)", () => {
 
     const pids = new Set<string>();
     for (let i = 0; i < 60; i++) {
-      const body = await fetch("http://127.0.0.1:7852/ping").then((r) => r.text());
+      const body = await requestOnFreshConnection(7852, "/ping");
       pids.add(body);
     }
 
