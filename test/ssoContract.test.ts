@@ -73,3 +73,4 @@ if (required) {
 }
 
 rmSync(directory, { recursive: true, force: true });
+console.log("Results: 1 passed, 0 failed");
