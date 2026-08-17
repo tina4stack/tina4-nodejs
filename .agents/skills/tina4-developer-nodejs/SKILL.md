@@ -3,8 +3,8 @@ name: tina4-developer-nodejs
 description: >
   Use whenever a developer is building a Node.js / TypeScript application with the Tina4 framework
   (the `tina4-nodejs` package). Trigger when the user wants to create file-based routes, define ORM
-  models (BaseModel), write Frond templates, set up JWT authentication, use the queue system,
-  configure databases, deploy with Docker, or any other backend app task in a tina4-nodejs project.
+  models (BaseModel), write Frond templates, set up JWT or OpenID Connect SSO, use GIS/PostGIS,
+  use the queue system, configure databases, deploy with Docker, or any other backend app task in a tina4-nodejs project.
   Also trigger when a project's structure matches a Tina4 Node app (src/routes/ with get.ts/post.ts
   method files, src/models/, src/templates/, an app.ts that calls startServer) or the user mentions
   building something with tina4-nodejs — even casually, like "add a login endpoint" or "create a
@@ -540,11 +540,11 @@ Read these when you need detailed patterns for a specific area:
 - **`references/routes-and-api.md`** — File-based routing, request/response, path/query params,
   middleware, Swagger metadata, CSRF, CORS, rate limiting. Read for any HTTP/API work.
 - **`references/data-and-orm.md`** — `BaseModel`, field definitions, CRUD, relationships, soft
-  delete, pagination, QueryBuilder, raw SQL, migrations, seeding, AutoCrud. Read for any data work.
+  delete, pagination, QueryBuilder, raw SQL, migrations, seeding, AutoCrud, GIS and PostGIS. Read for any data work.
 - **`references/templates-and-frontend.md`** — Frond templates, filters, includes/macros, inline
   SQL, live blocks, cache blocks, `response.render`. Read for server-rendered UI.
-- **`references/auth-and-services.md`** — JWT (`Auth`), sessions, queue, email (`Messenger`), events,
-  WebSocket, GraphQL, i18n, caching. Read for auth or background services.
+- **`references/auth-and-services.md`** — JWT (`Auth`), provider-neutral OpenID Connect SSO,
+  sessions, queue, email (`Messenger`), events, WebSocket, GraphQL, i18n, caching. Read for auth or background services.
 - **`references/realtime.md`** — the `realtime()` mount: WebRTC signalling relay, `/api/rtc/config`,
   ICE/TURN env, secured chat WebSocket (presence/typing/read receipts), message history, and file
   upload/download. Read for calls/chat/collaboration. Pairs with the frontend `tina4-js` skill's
