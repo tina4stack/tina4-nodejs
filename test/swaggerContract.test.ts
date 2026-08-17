@@ -509,7 +509,10 @@ describe("swagger contract (ADR-0004)", () => {
     ]);
 
     const secured = spec.paths["/contract/shape-item"].post;
-    expect(secured.security).toEqual([{ bearerAuth: [] }]);
+    const expectedSecurity = spec.components?.securitySchemes?.ssoSession
+      ? [{ bearerAuth: [] }, { ssoSession: [] }]
+      : [{ bearerAuth: [] }];
+    expect(secured.security).toEqual(expectedSecurity);
     expect(secured.responses["401"]).toEqual({ description: "Unauthorized" });
     expect(secured.summary).toBe("POST /contract/shape-item");
     expect(secured.tags).toEqual(["contract"]);
