@@ -2000,6 +2000,11 @@ ${reset}
     console.log(`\n  No routes directory found at ${routesDir}`);
   }
 
+  // Configuration-first OIDC mounts after app discovery so canonical-path
+  // collisions fail loudly rather than being overwritten.
+  const { Sso } = await import("./sso.js");
+  await Sso.mountConfigured(router);
+
   // Auto-attach CSRF when TINA4_CSRF is enabled — AFTER route discovery, BEFORE
   // listen. OFF by default: unset means no CSRF gate; TINA4_CSRF=true/1/yes/on
   // attaches CsrfMiddleware globally so every write is gated (CSRF-DEC-02).

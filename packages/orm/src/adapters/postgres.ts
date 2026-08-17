@@ -585,6 +585,8 @@ function fieldTypeToPostgres(def: FieldDefinition): string {
       return "TEXT";
     case "json":
       return "JSONB";
+    case "point":
+      return SQLTranslator.pointColumnType("postgres", def.srid ?? 4326);
     case "string":
       return def.maxLength ? `VARCHAR(${def.maxLength})` : "VARCHAR(255)";
     default:

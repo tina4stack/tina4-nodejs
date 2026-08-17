@@ -56,6 +56,8 @@ export type { ValidationError } from "./validation.js";
 export { BaseModel, snakeToCamel, camelToSnake } from "./baseModel.js";
 export { QueryBuilder } from "./queryBuilder.js";
 export { SQLTranslator, QueryCache } from "./sqlTranslator.js";
+export { Point, SpatialNotSupportedError, DEFAULT_SRID } from "./point.js";
+export type { GeoJsonPoint } from "./point.js";
 export {
   DEFAULT_DATABASE_CONNECT_TIMEOUT_SECONDS,
   CONNECT_TIMEOUT_TOLERANCE_MS,

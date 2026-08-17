@@ -92,6 +92,14 @@ function resolveSecuritySchemes(): Record<string, Record<string, unknown>> {
     const apiKeyIn = ["header", "query", "cookie"].includes(rawIn) ? rawIn : "header";
     schemes.apiKeyAuth = { type: "apiKey", name: apiKeyName, in: apiKeyIn };
   }
+  const ssoIssuer = (process.env.TINA4_SSO_ISSUER ?? "").replace(/\/$/, "");
+  if (ssoIssuer) {
+    schemes.oidc = {
+      type: "openIdConnect",
+      openIdConnectUrl: `${ssoIssuer}/.well-known/openid-configuration`,
+    };
+    schemes.ssoSession = { type: "apiKey", in: "cookie", name: "tina4_session" };
+  }
   // Registered schemes win (let an app override bearerAuth or add oauth2).
   for (const [name, def] of Object.entries(registeredSchemes)) {
     schemes[name] = def;
@@ -348,7 +356,9 @@ export function generate(
         if (!responses["401"]) responses["401"] = { description: "Unauthorized" };
       }
     } else if (routeRequiresAuth(route, method)) {
-      operation.security = sanitizeSecurity([{ [defaultScheme]: [] }], schemes);
+      const requirements = [{ [defaultScheme]: [] }];
+      if (defaultScheme === "bearerAuth" && schemes.ssoSession) requirements.push({ ssoSession: [] });
+      operation.security = sanitizeSecurity(requirements, schemes);
       const responses = operation.responses as Record<string, unknown>;
       if (!responses["401"]) responses["401"] = { description: "Unauthorized" };
     }

@@ -20,11 +20,14 @@
 import type { DatabaseAdapter } from "./types.js";
 import { getAdapter, adapterFetch, adapterFetchOne, probeTotal } from "./database.js";
 import { DatabaseResult } from "./databaseResult.js";
+import { Point, DEFAULT_SRID } from "./point.js";
+import { SQLTranslator } from "./sqlTranslator.js";
 
 export class QueryBuilder {
   private table: string;
   private db: DatabaseAdapter | undefined;
   private columns: string[] = ["*"];
+  private selectParams: unknown[] = [];
   private wheres: [string, string][] = [];
   private params: unknown[] = [];
   private joinClauses: string[] = [];
@@ -32,15 +35,18 @@ export class QueryBuilder {
   private havings: string[] = [];
   private havingParams: unknown[] = [];
   private orderByCols: string[] = [];
+  private orderByParams: unknown[] = [];
+  private primaryKey: string | undefined;
   private limitVal: number | undefined;
   private offsetVal: number | undefined;
 
   /**
    * Private constructor — use static factory methods.
    */
-  private constructor(table: string, db?: DatabaseAdapter) {
+  private constructor(table: string, db?: DatabaseAdapter, primaryKey?: string) {
     this.table = table;
     this.db = db;
+    this.primaryKey = primaryKey;
   }
 
   /**
@@ -50,8 +56,8 @@ export class QueryBuilder {
    * @param db - Optional database adapter.
    * @returns A new QueryBuilder instance.
    */
-  static fromTable(tableName: string, db?: DatabaseAdapter): QueryBuilder {
-    return new QueryBuilder(tableName, db);
+  static fromTable(tableName: string, db?: DatabaseAdapter, primaryKey?: string): QueryBuilder {
+    return new QueryBuilder(tableName, db, primaryKey);
   }
 
   /**
@@ -63,6 +69,7 @@ export class QueryBuilder {
   select(...cols: string[]): QueryBuilder {
     if (cols.length > 0) {
       this.columns = cols;
+      this.selectParams = [];
     }
     return this;
   }
@@ -152,6 +159,46 @@ export class QueryBuilder {
     return this;
   }
 
+  withinDistance(column: string, pointValue: unknown, radiusMetres: number, srid = DEFAULT_SRID): QueryBuilder {
+    const radius = Number(radiusMetres);
+    if (!Number.isFinite(radius) || radius < 0) throw new RangeError("Spatial radius must be finite and greater than or equal to zero");
+    const point = Point.parse(pointValue, srid);
+    return this.where(SQLTranslator.withinDistance(this.engine(), column, point.srid), [point.lon, point.lat, radius]);
+  }
+
+  intersects(column: string, geometry: unknown, srid = DEFAULT_SRID): QueryBuilder {
+    const [bound, form] = Point.geometryBinding(geometry, srid);
+    return this.where(SQLTranslator.intersects(this.engine(), column, form, srid), [bound]);
+  }
+
+  bbox(column: string, minLon: unknown, minLat: unknown, maxLon: unknown, maxLat: unknown, srid = DEFAULT_SRID): QueryBuilder {
+    const values = [minLon, minLat, maxLon, maxLat].map(Number);
+    if (!values.every(Number.isFinite)) throw new TypeError("Bounding-box coordinates must be finite numbers");
+    const [west, south, east, north] = values;
+    new Point(west, south, srid);
+    new Point(east, north, srid);
+    if (west > east || south > north) throw new RangeError("Bounding box must be ordered west, south, east, north");
+    return this.where(SQLTranslator.bbox(this.engine(), column, srid), values);
+  }
+
+  selectDistance(column: string, pointValue: unknown, alias = "distance", srid = DEFAULT_SRID): QueryBuilder {
+    const point = Point.parse(pointValue, srid);
+    this.columns.push(SQLTranslator.distanceAs(this.engine(), column, alias, point.srid));
+    this.selectParams.push(point.lon, point.lat);
+    return this;
+  }
+
+  orderByDistance(column: string, pointValue: unknown, direction: "ASC" | "DESC" = "ASC", srid = DEFAULT_SRID): QueryBuilder {
+    const order = direction.toUpperCase();
+    if (order !== "ASC" && order !== "DESC") throw new TypeError("Distance order direction must be ASC or DESC");
+    if (!this.primaryKey) throw new Error("Stable spatial ordering needs a primary key; use BaseModel.query() or pass one to fromTable()");
+    const point = Point.parse(pointValue, srid);
+    this.orderByCols.push(`${SQLTranslator.distance(this.engine(), column, point.srid)} ${order}`);
+    this.orderByParams.push(point.lon, point.lat);
+    this.orderByCols.push(`${SQLTranslator.spatialIdentifier(this.primaryKey, "primary key")} ASC`);
+    return this;
+  }
+
   /**
    * Set LIMIT and optional OFFSET.
    *
@@ -225,7 +272,7 @@ export class QueryBuilder {
   async get(): Promise<DatabaseResult> {
     this.ensureDb();
     const sql = this.toSql();
-    const allParams = [...this.params, ...this.havingParams];
+    const allParams = [...this.selectParams, ...this.params, ...this.havingParams, ...this.orderByParams];
 
     const queryParams = allParams.length > 0 ? allParams : undefined;
     const rows = await adapterFetch(
@@ -265,7 +312,7 @@ export class QueryBuilder {
   async first<T = Record<string, unknown>>(): Promise<T | null> {
     this.ensureDb();
     const sql = this.toSql();
-    const allParams = [...this.params, ...this.havingParams];
+    const allParams = [...this.selectParams, ...this.params, ...this.havingParams, ...this.orderByParams];
 
     return adapterFetchOne<T>(
       this.db!,
@@ -284,9 +331,18 @@ export class QueryBuilder {
 
     // Build a count query by replacing columns
     const original = this.columns;
+    const originalSelectParams = this.selectParams;
+    const originalOrder = this.orderByCols;
+    const originalOrderParams = this.orderByParams;
     this.columns = ["COUNT(*) as cnt"];
+    this.selectParams = [];
+    this.orderByCols = [];
+    this.orderByParams = [];
     const sql = this.toSql();
     this.columns = original;
+    this.selectParams = originalSelectParams;
+    this.orderByCols = originalOrder;
+    this.orderByParams = originalOrderParams;
 
     const allParams = [...this.params, ...this.havingParams];
 
@@ -543,5 +599,10 @@ export class QueryBuilder {
         throw new Error("QueryBuilder: No database adapter provided.");
       }
     }
+  }
+
+  private engine(): string {
+    this.ensureDb();
+    return this.db!.getDatabaseType();
   }
 }

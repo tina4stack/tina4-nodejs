@@ -11,6 +11,7 @@ import { SQLiteAdapter } from "./adapters/sqlite.js";
 import { QueryCache, SQLTranslator } from "./sqlTranslator.js";
 import { Log } from "../../core/src/index.js";
 import type { DatabaseAdapter, FieldDefinition, RelationshipDefinition } from "./types.js";
+import { Point, DEFAULT_SRID, SpatialNotSupportedError } from "./point.js";
 
 /**
  * Convert a snake_case name to camelCase.
@@ -40,6 +41,11 @@ export function toDbFieldValue(def: FieldDefinition | undefined, value: unknown)
   if (def?.type === "json" && value !== null && value !== undefined && typeof value !== "string") {
     return JSON.stringify(value);
   }
+  if (def?.type === "point" && value !== null && value !== undefined) {
+    const point = Point.parse(value, def.srid ?? DEFAULT_SRID);
+    if (point.srid !== (def.srid ?? DEFAULT_SRID)) throw new TypeError(`Point field expects SRID ${def.srid ?? DEFAULT_SRID}; received ${point.srid}`);
+    return point.ewkt;
+  }
   return value;
 }
 
@@ -58,6 +64,11 @@ export function fromDbFieldValue(def: FieldDefinition | undefined, value: unknow
     } catch {
       return value; // leave the raw string in place
     }
+  }
+  if (def?.type === "point" && value !== null && value !== undefined) {
+    const point = Point.parse(value, def.srid ?? DEFAULT_SRID);
+    if (point.srid !== (def.srid ?? DEFAULT_SRID)) throw new TypeError(`Point field expects SRID ${def.srid ?? DEFAULT_SRID}; received ${point.srid}`);
+    return point;
   }
   return value;
 }
@@ -231,7 +242,9 @@ export class BaseModel {
       // the same object (e.g. a json field `default: {}` — mutating a.meta must
       // not leak into b.meta). Parity with the Python master's per-instance
       // deepcopy and Ruby's Marshal round-trip.
-      if (dv !== null && typeof dv === "object") dv = structuredClone(dv);
+      if (def.type === "point" && dv !== null && dv !== undefined) {
+        dv = fromDbFieldValue(def, dv);
+      } else if (dv !== null && typeof dv === "object") dv = structuredClone(dv);
       this[name] = dv;
     }
 
@@ -356,7 +369,7 @@ export class BaseModel {
    * @returns A QueryBuilder instance bound to this model's table and database.
    */
   static query(): QueryBuilder {
-    return QueryBuilder.fromTable(this.tableName, this.getDb());
+    return QueryBuilder.fromTable(this.tableName, this.getDb(), this.getPkColumn());
   }
 
   /**
@@ -1019,7 +1032,7 @@ export class BaseModel {
     for (const key of Object.keys(ModelClass.fields)) {
       if (this[key] !== undefined) {
         const outKey = case_ === "snake" ? (ModelClass.fieldMapping[key] ?? key) : key;
-        result[outKey] = this[key];
+        result[outKey] = this[key] instanceof Point ? (this[key] as Point).geojson : this[key];
       }
     }
     // Include soft delete field
@@ -1100,6 +1113,21 @@ export class BaseModel {
     return result;
   }
 
+  toFeature(geometryField?: string, include?: string[]): Record<string, unknown> {
+    const ModelClass = this.constructor as typeof BaseModel;
+    const pointFields = Object.entries(ModelClass.fields).filter(([, def]) => def.type === "point").map(([name]) => name);
+    const field = geometryField ?? pointFields[0];
+    if (!field || !pointFields.includes(field)) throw new Error("toFeature() needs a declared point field");
+    const properties = this.toDict(include, "camel");
+    const geometry = properties[field] ?? null;
+    delete properties[field];
+    return { type: "Feature", geometry, properties };
+  }
+
+  static featureCollection(models: BaseModel[], geometryField?: string, include?: string[]): Record<string, unknown> {
+    return { type: "FeatureCollection", features: models.map((model) => model.toFeature(geometryField, include)) };
+  }
+
   /**
    * Convert to an associative object (alias for toDict).
    */
@@ -1159,7 +1187,10 @@ export class BaseModel {
    */
   static async createTable(): Promise<boolean> {
     const db = this.getDb();
-    if (await adapterTableExists(db, this.tableName)) return true;
+    const pointFields = Object.entries(this.fields).filter(([, def]) => def.type === "point");
+    const engine = db.getDatabaseType();
+    if (pointFields.length > 0) SQLTranslator.requireSpatial(engine, "PointField");
+    if (await adapterTableExists(db, this.tableName)) return this.createSpatialIndexes(db, pointFields);
 
     // Prefer the adapter's createTable — every adapter implements it and the
     // async variants (PostgreSQL/MySQL/MSSQL/Firebird) emit engine-aware DDL
@@ -1190,7 +1221,7 @@ export class BaseModel {
         mappedFields["is_deleted"] = { type: "integer", default: 0 };
       }
       await adapterCreateTable(db, this.tableName, mappedFields);
-      return true;
+      return this.createSpatialIndexes(db, pointFields);
     }
 
     // Fallback: build SQL manually (SQLite-only dialect — used only when an
@@ -1253,6 +1284,15 @@ export class BaseModel {
     } catch (e) {
       await adapterRollback(db);
       throw e;
+    }
+    return true;
+  }
+
+  private static async createSpatialIndexes(db: DatabaseAdapter, fields: Array<[string, FieldDefinition]>): Promise<boolean> {
+    for (const [fieldName, def] of fields) {
+      SQLTranslator.pointColumnType(db.getDatabaseType(), def.srid ?? DEFAULT_SRID);
+      if (def.spatialIndex === false) continue;
+      await adapterExecute(db, SQLTranslator.spatialIndex(db.getDatabaseType(), this.tableName, this.getDbColumn(fieldName)));
     }
     return true;
   }

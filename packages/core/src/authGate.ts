@@ -64,6 +64,12 @@ export function enforceRouteAuth(
 
   // Priority 3: Session token
   if (!resolvedToken) {
+    const sso = (req as any).session?.get?.("_tina4_sso") as Record<string, any> | undefined;
+    const identity = sso?.identity;
+    if (identity?.issuer && identity?.subject) {
+      req.user = identity;
+      return false;
+    }
     const sessionToken = (req as any).session?.get?.("token") as string | undefined;
     if (sessionToken && validToken(sessionToken)) {
       resolvedToken = sessionToken;

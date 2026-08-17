@@ -1,5 +1,28 @@
 # Data, ORM & Database (Node.js)
 
+## GIS and PostGIS
+
+Use `Point` for geographic points. Coordinates are always `[longitude, latitude]`, while radius
+and returned distance use metres.
+
+```typescript
+import { Point } from "tina4-nodejs/orm";
+
+site.location = new Point(18.4241, -33.9249);
+await site.save();
+
+const nearby = await ChargePoint.query()
+  .withinDistance("location", [18.42, -33.92], 5_000)
+  .selectDistance("location", [18.42, -33.92])
+  .orderByDistance("location", [18.42, -33.92])
+  .get();
+```
+
+Declare the field as `location: { type: "point", srid: 4326, spatialIndex: true }`. PostGIS stores
+`geography(Point,4326)` and creates a GiST index. Unsupported engines fail instead of storing fake
+spatial text. `Point.parse()` accepts coordinate pairs, WKT/EWKT, GeoJSON, or WKB/EWKB;
+`toFeature()` returns map-ready GeoJSON.
+
 ## Defining Models
 
 Drop a model file in `src/models/` and it's auto-registered (`src/orm/` is also scanned). A model
