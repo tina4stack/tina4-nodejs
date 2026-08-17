@@ -107,6 +107,8 @@ export { HtmlElement, htmlElement, addHtmlHelpers, Raw, SafeString } from "./htm
 export { renderErrorOverlay, isDebugMode } from "./errorOverlay.js";
 export { AI_TOOLS, isInstalled, showMenu, installSelected, installAll, generateContext } from "./ai.js";
 export type { AiTool } from "./ai.js";
+export { Sso, SSO, SsoError } from "./sso.js";
+export type { SsoOptions } from "./sso.js";
 export { Ai, AiError, AiConfigError, AiHTTPError, AiTimeoutError, AiParseError } from "./aiClient.js";
 export type { ChatResponse, AiMessage, AiChatOptions, AiEmbedOptions } from "./aiClient.js";
 export type { ImapMessage, ImapFullMessage, ImapAttachment } from "./messenger.js";
