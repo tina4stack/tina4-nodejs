@@ -20,7 +20,70 @@
 // ── SQL Translator ───────────────────────────────────────────
 
 import { DatabaseUrl } from "./databaseUrl.js";
+import { DEFAULT_SRID, SpatialNotSupportedError } from "./point.js";
 export class SQLTranslator {
+  private static readonly SPATIAL_ENGINES = new Set(["postgres", "postgresql"]);
+  private static readonly SPATIAL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+
+  static requireSpatial(engine: string, feature: string): string {
+    const name = String(engine || "unknown").toLowerCase();
+    if (!SQLTranslator.SPATIAL_ENGINES.has(name)) {
+      throw new SpatialNotSupportedError(
+        `${feature} is not supported on the '${name}' database engine. ` +
+        "Tina4 GIS support is PostGIS-first: use PostgreSQL with CREATE EXTENSION postgis. " +
+        "Tina4 will not replace a spatial query with an approximate coordinate query.",
+      );
+    }
+    return name;
+  }
+
+  static spatialIdentifier(name: string, what = "column"): string {
+    if (!SQLTranslator.SPATIAL_IDENTIFIER.test(name)) throw new TypeError(`Spatial ${what} is not a valid SQL identifier: ${name}`);
+    return name;
+  }
+
+  static pointColumnType(engine: string, srid = DEFAULT_SRID): string {
+    SQLTranslator.requireSpatial(engine, "PointField");
+    return `geography(Point,${srid})`;
+  }
+
+  static spatialIndex(engine: string, table: string, column: string): string {
+    SQLTranslator.requireSpatial(engine, "spatial index creation");
+    table = SQLTranslator.spatialIdentifier(table, "table");
+    column = SQLTranslator.spatialIdentifier(column);
+    return `CREATE INDEX IF NOT EXISTS ${table.replaceAll(".", "_")}_${column}_gist ON ${table} USING GIST (${column})`;
+  }
+
+  static pointLiteral(engine: string, srid = DEFAULT_SRID): string {
+    SQLTranslator.requireSpatial(engine, "spatial predicates");
+    return `ST_SetSRID(ST_MakePoint(?, ?), ${srid})::geography`;
+  }
+
+  static withinDistance(engine: string, column: string, srid = DEFAULT_SRID): string {
+    return `ST_DWithin(${SQLTranslator.spatialIdentifier(column)}, ${SQLTranslator.pointLiteral(engine, srid)}, ?)`;
+  }
+
+  static distance(engine: string, column: string, srid = DEFAULT_SRID): string {
+    return `ST_Distance(${SQLTranslator.spatialIdentifier(column)}, ${SQLTranslator.pointLiteral(engine, srid)})`;
+  }
+
+  static distanceAs(engine: string, column: string, alias: string, srid = DEFAULT_SRID): string {
+    return `${SQLTranslator.distance(engine, column, srid)} AS ${SQLTranslator.spatialIdentifier(alias, "result alias")}`;
+  }
+
+  static geometryLiteral(engine: string, form: "ewkt" | "geojson", srid = DEFAULT_SRID): string {
+    SQLTranslator.requireSpatial(engine, "spatial predicates");
+    return form === "ewkt" ? "ST_GeogFromText(?)" : `ST_SetSRID(ST_GeomFromGeoJSON(?), ${srid})::geography`;
+  }
+
+  static intersects(engine: string, column: string, form: "ewkt" | "geojson" = "ewkt", srid = DEFAULT_SRID): string {
+    return `ST_Intersects(${SQLTranslator.spatialIdentifier(column)}, ${SQLTranslator.geometryLiteral(engine, form, srid)})`;
+  }
+
+  static bbox(engine: string, column: string, srid = DEFAULT_SRID): string {
+    SQLTranslator.requireSpatial(engine, "bbox");
+    return `ST_Intersects(${SQLTranslator.spatialIdentifier(column)}, ST_MakeEnvelope(?, ?, ?, ?, ${srid})::geography)`;
+  }
   /**
    * Convert LIMIT/OFFSET to Firebird ROWS...TO syntax.
    *

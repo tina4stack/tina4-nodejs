@@ -1,4 +1,4 @@
-export type FieldType = "string" | "integer" | "number" | "numeric" | "decimal" | "boolean" | "datetime" | "text" | "json" | "foreignKey";
+export type FieldType = "string" | "integer" | "number" | "numeric" | "decimal" | "boolean" | "datetime" | "text" | "json" | "foreignKey" | "point";
 
 export interface FieldDefinition {
   type: FieldType;
@@ -24,6 +24,10 @@ export interface FieldDefinition {
   references?: string;
   /** For type "foreignKey": override the has-many property name on the referenced model */
   relatedName?: string;
+  /** For type "point": spatial reference id (default WGS 84 / 4326). */
+  srid?: number;
+  /** For type "point": create the provider's spatial index (default true). */
+  spatialIndex?: boolean;
 }
 
 export interface RelationshipDefinition {
