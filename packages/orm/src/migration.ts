@@ -297,7 +297,16 @@ const MIGRATION_TABLE = "tina4_migration";
  * sql_mode, so they are always correct there.
  */
 function mt(db: DatabaseAdapter): string {
-  return engineOf(db) === "mysql" ? `\`${MIGRATION_TABLE}\`` : `"${MIGRATION_TABLE}"`;
+  const engine = engineOf(db);
+
+  // Firebird: leave it UNQUOTED so it folds to the upper-case TINA4_MIGRATION
+  // that the PHP and Python masters create. A quoted lower-case identifier is a
+  // DIFFERENT, case-sensitive table there, so a quoted spelling cannot see a
+  // ledger written by another Tina4 language — while tableExists() matches
+  // case-insensitively and reports it present, so the INSERT fails alone.
+  if (engine === "firebird") return MIGRATION_TABLE;
+
+  return engine === "mysql" ? `\`${MIGRATION_TABLE}\`` : `"${MIGRATION_TABLE}"`;
 }
 
 /**
@@ -347,9 +356,9 @@ async function ensureMigrationTableOn(db: DatabaseAdapter): Promise<void> {
         id INTEGER NOT NULL PRIMARY KEY,
         migration_name VARCHAR(500) NOT NULL UNIQUE,
         description VARCHAR(500),
-        batch INTEGER NOT NULL DEFAULT 1,
+        batch INTEGER DEFAULT 1 NOT NULL,
         executed_at VARCHAR(50) NOT NULL,
-        passed INTEGER NOT NULL DEFAULT 1
+        passed INTEGER DEFAULT 1 NOT NULL
       )`);
     } else {
       // Engine-aware bookkeeping DDL (non-Firebird). Each engine spells an
@@ -517,11 +526,11 @@ async function recordApplied(
 
   if (isFirebirdAdapter(db)) {
     // Firebird: generate the id from the sequence.
-    const rows = await adapterQuery<{ NEXT_ID: number }>(db,
+    const rows = await adapterQuery<{ next_id: number }>(db,
       "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB$DATABASE",
     );
     insertCols.unshift("id");
-    values.unshift(rows[0]?.NEXT_ID ?? 1);
+    values.unshift(rows[0]?.next_id ?? 1);
   }
 
   const placeholders = insertCols.map(() => "?").join(", ");
