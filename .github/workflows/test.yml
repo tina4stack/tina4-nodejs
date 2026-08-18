@@ -452,3 +452,4 @@ jobs:
         run: |
           npx tsx test/firebirdCharset.test.ts
           npx tsx test/firebirdUrl.test.ts
+          npx tsx test/firebirdMigrationLedger.test.ts
