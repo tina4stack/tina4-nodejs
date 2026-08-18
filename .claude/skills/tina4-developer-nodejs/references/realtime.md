@@ -40,7 +40,7 @@ import { startServer } from "tina4-nodejs";
 import { initDatabase } from "tina4-nodejs/orm";
 import { realtime } from "tina4-nodejs/orm";
 
-await initDatabase(process.env.TINA4_DATABASE_URL!);   // bind the DB FIRST (see Footguns)
+await initDatabase({ url: process.env.TINA4_DATABASE_URL! });   // bind the DB FIRST (see Footguns)
 
 await realtime();                                             // calls only (default)
 await realtime({ features: ["calls", "chat"] });             // add persistent chat
@@ -323,7 +323,7 @@ seeds no data.
 - **Bind a database BEFORE `realtime({ features: ["chat" | "files"] })`.** `ensureChatTables()` runs at
   mount, but a failure (no DB bound) is **caught, logged as an ERROR, and boot continues** — `realtime`
   still returns the full path map and registers every route; the failure only resurfaces at query time.
-  Call `initDatabase(url)` / `bindDatabase(db)` first, then `await realtime(...)`.
+  Call `initDatabase({ url })` / `bindDatabase(db)` first, then `await realtime(...)`.
 - **`realtime()` is async — always `await` it.** Skipping the `await` risks the first chat/history/file
   request racing table creation.
 - **The signalling WS (`/ws/rtc/{room}`) is PUBLIC** — it's not `secured`, so anyone can join any room

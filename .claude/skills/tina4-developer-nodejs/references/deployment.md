@@ -5,7 +5,7 @@ Node Tina4 apps deploy via Docker built from the official **`node:22-alpine`** i
 build directly from `node:22-alpine`. The default listen port is **7148**.
 
 The container runs the app's own entry point (`app.ts`) with `tsx`, not `tina4nodejs serve` (the CLI
-is for local dev). `app.ts` must call `startServer()` (and `await initDatabase(url)` for non-SQLite).
+is for local dev). `app.ts` must call `startServer()` (and `await initDatabase({ url })` for non-SQLite).
 
 ## App Dockerfile
 
@@ -64,6 +64,8 @@ image:
 | PostgreSQL | `pg` |
 | MySQL / MariaDB | `mysql2` |
 | MSSQL | `tedious` |
+| Firebird | `node-firebird` |
+| ODBC | `odbc` |
 | MongoDB | `mongodb` |
 
 ```bash
@@ -71,7 +73,7 @@ npm install pg          # then rebuild the image; npm ci --production picks it u
 ```
 
 No extra Alpine system packages are needed for these pure-JS drivers. For a non-SQLite engine, make
-sure `app.ts` calls `await initDatabase(process.env.TINA4_DATABASE_URL!)` before `startServer()`.
+sure `app.ts` calls `await initDatabase({ url: process.env.TINA4_DATABASE_URL! })` before `startServer()`.
 
 ## Docker Compose
 
@@ -119,7 +121,7 @@ docker run -d \
 | `TINA4_SECRET` | JWT signing secret — **required** in production |
 | `TINA4_DATABASE_URL` | Database connection string |
 | `TINA4_DEBUG` | `false` in production (disables the debug overlay + dev admin) |
-| `TINA4_SESSION_BACKEND` | `file` / `redis` / `valkey` / `mongodb` / `database` |
+| `TINA4_SESSION_BACKEND` | `file` / `redis` / `valkey` / `mongodb` / `memcached` / `database` (aliases: `filesystem`, `mongo`, `memcache`, `db`) |
 
 ## Production Checklist
 
@@ -127,7 +129,7 @@ docker run -d \
 2. Mount a volume for `/app/data` (SQLite database, sessions, queue, mailbox).
 3. Set `TINA4_DEBUG=false`.
 4. Pass `TINA4_SECRET` via environment (not committed `.env`).
-5. `app.ts` calls `await initDatabase(...)` for any non-SQLite engine before `startServer()`.
+5. `app.ts` calls `await initDatabase({ url })` for any non-SQLite engine before `startServer()`.
 6. Health check hits `/health`.
 7. Configure a Docker restart policy (`unless-stopped` or `always`).
 8. Put a reverse proxy (nginx / Traefik) in front for SSL termination.

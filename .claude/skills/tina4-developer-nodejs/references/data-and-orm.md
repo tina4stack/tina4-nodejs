@@ -244,7 +244,7 @@ never string-concatenate values into SQL.
 ## Database Connection & Startup
 
 Set `TINA4_DATABASE_URL` in `.env`. **SQLite** initialises automatically the first time a model runs.
-For **any non-SQLite engine, call `await initDatabase(url)` at startup** (in `app.ts`) — the adapter
+For **any non-SQLite engine, call `await initDatabase({ url })` at startup** (in `app.ts`) — the adapter
 is created asynchronously:
 
 ```typescript
@@ -252,12 +252,12 @@ is created asynchronously:
 import { startServer } from "tina4-nodejs";
 import { initDatabase } from "tina4-nodejs/orm";
 
-await initDatabase(process.env.TINA4_DATABASE_URL!);   // required for postgres/mysql/mssql/firebird/mongodb
+await initDatabase({ url: process.env.TINA4_DATABASE_URL! });   // required for postgres/mysql/mssql/firebird/mongodb
 startServer();
 ```
 
 Non-SQLite drivers are optional peer dependencies — install the one you use: `pg`, `mysql2`,
-`tedious` (MSSQL), `mongodb`.
+`tedious` (MSSQL), `mongodb`, `node-firebird` (Firebird), `odbc` (ODBC).
 
 ## Migrations
 
@@ -466,11 +466,11 @@ try {
 Every ORM query needs a resolvable adapter (`baseModel.ts:309`): `static _db` (named connection) →
 the default set by `initDatabase()`/`bindDatabase()` → auto-discovery from `TINA4_DATABASE_URL`.
 **SQLite auto-initialises synchronously** on first use; **any other engine throws** until you
-`await initDatabase(url)` at startup.
+`await initDatabase({ url })` at startup.
 
 ```typescript
 // SAFE — SQLite is zero-setup; for postgres/mysql/mssql/mongodb, init at boot:
-await initDatabase(process.env.TINA4_DATABASE_URL!);   // required for non-SQLite engines
+await initDatabase({ url: process.env.TINA4_DATABASE_URL! });   // required for non-SQLite engines
 ```
 
 * **Breaks:** running an ORM query in a script/worker with a non-SQLite `TINA4_DATABASE_URL` but no
@@ -586,7 +586,7 @@ tina4-nodejs is **batteries-included** and, unlike most Node frameworks, effecti
 `dependencies`** (the CLI depends only on sibling `@tina4/*` packages). SQLite runs on Node's
 **built-in `node:sqlite`** (`DatabaseSync`, `adapters/sqlite.ts:1`) — which is why `engines.node`
 is **`>=22.0.0`** and there is no `better-sqlite3`. The only things you ever `npm install` are the
-**optional DB drivers** for a non-SQLite engine — `pg`, `mysql2`, `tedious` (MSSQL), `mongodb` —
+**optional DB drivers** for a non-SQLite engine — `pg`, `mysql2`, `tedious` (MSSQL), `mongodb`, `node-firebird` (Firebird), `odbc` (ODBC) —
 declared as `optionalDependencies` on `@tina4/orm`. Before you add a package, check whether it's
 already in the box. **Need → Tina4 built-in (verified export) — don't add the dep:**
 

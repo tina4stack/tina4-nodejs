@@ -296,7 +296,7 @@ admin panel at `/__dev/` automatically.
 
 Framework-specific fallback commands (`tina4nodejs <cmd>`): `migrate`, `migrate:create <desc>`,
 `migrate:status`, `migrate:rollback`, `routes`, `test [file]`, `seed [file]`,
-`generate model|route|crud|migration`, `metrics`, `console`, `ai`.
+`generate model|route|crud|migration`, `console`, `ai`. (`metrics` is Rust-CLI-only — see below.)
 
 ## Lazy means less code, not a flimsier path
 
@@ -508,7 +508,7 @@ change behaviour).
   `tina4 --version`.
 - **If behind:** tell the user what changed — point them at the release notes on
   https://tina4.com — and offer the upgrade: `npm install tina4-nodejs@latest`.
-- The `tina4` CLI self-updates with `tina4 update`; `tina4 doctor` checks your toolchain.
+- The Rust `tina4` CLI (external — installed via the Homebrew tap / installer script, not `tina4nodejs`) self-updates with `tina4 update` and offers `tina4 doctor` for toolchain checks. `tina4nodejs` handles framework-owned commands (`serve`, `migrate`, `generate`, `console`, `ai`, `test`, `queue`); metrics/update/doctor come from the external client.
 
 ### Lean, green, and grounded - keep app complexity down as a habit
 
@@ -577,7 +577,7 @@ mongodb://user:password@localhost:27017/mydb
 ```
 
 SQLite is initialised automatically from `TINA4_DATABASE_URL` the first time a model runs. For **any
-non-SQLite engine you MUST call `await initDatabase(url)` at startup** (in `app.ts`) before the ORM
+non-SQLite engine you MUST call `await initDatabase({ url })` at startup** (in `app.ts`) before the ORM
 is used — the adapter is async to create.
 
 ## Testing
@@ -818,7 +818,7 @@ it's probably too complex — simplify.
 > fail a commit or CI on a complexity regression). Keep the `tina4` binary itself current with
 > **`tina4 update`** (self-updates to the latest release).
 
-The dev admin panel (`/__dev/` → Metrics, or `tina4nodejs metrics`) shows a live code-health view:
+The dev admin panel (`/__dev/` → Metrics, or the Rust `tina4 metrics` client — external, NOT `tina4nodejs metrics`) shows a live code-health view:
 bubble size = lines of code, color = complexity (green healthy → red too complex), D badge =
 documented, T badge = tested.
 
