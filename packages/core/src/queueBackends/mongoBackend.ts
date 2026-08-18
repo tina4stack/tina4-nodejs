@@ -343,17 +343,67 @@ export class MongoBackend implements QueueBackend {
             process.stdout.write("__OK__");
           }
           else if (operation === "retry") {
-            // Explicit manual re-queue (always re-enqueues). data = JSON
-            // { id, delaySeconds }.
+            // Explicit manual re-queue. Serves BOTH Queue.retry(id) (revive
+            // a dead-letter job) AND job.retry() (manual re-queue of a live
+            // reserved/pending job) so the Mongo backend matches
+            // LiteBackend's dual behaviour.
+            //
+            // 1) DL revival (Queue.retry(id) after fail exhausted retries).
+            //    Pre-3.13.105 this branch was BROKEN: the search filter was
+            //    { queue: queueName, id, status: "failed" } -- three separate
+            //    reasons it could never match. dead_letter() inserts under
+            //    queueName + ".dead_letter" (not queueName), carries
+            //    status "dead" (not "failed"), and the original under
+            //    queueName was already acked to "completed" by the time the
+            //    DL was written. Now we look up in the DL namespace by id,
+            //    delete the DL doc first (so an interrupted retry never
+            //    leaves both a DL and a fresh pending doc), and upsert the
+            //    original back to pending -- re-hydrating if the original
+            //    was purged (housekeeping) so a retry always works.
+            // 2) Live-doc manual re-queue (job.retry() on a job the caller
+            //    just popped and wants back in pending). The live-doc path
+            //    is preserved from before 3.13.105.
+            //
+            // Returns __OK__ when either path acted; __NOT_FOUND__ when
+            // neither the DL nor the live doc existed, so Queue.retry(id)
+            // can now report the pre-3.13.105 blanket-true as false for
+            // unknown ids. data = JSON { id, delaySeconds }.
             const info = JSON.parse(data);
+            const dlTopic = queueName + ".dead_letter";
+            const now = new Date().toISOString();
             const avail = info.delaySeconds > 0
               ? new Date(Date.now() + info.delaySeconds * 1000).toISOString()
-              : new Date().toISOString();
-            await col.updateOne(
-              { queue: queueName, id: info.id },
-              { $set: { status: "pending", availableAt: avail, reservedAt: null }, $inc: { attempts: 1 } },
-            );
-            process.stdout.write("__OK__");
+              : now;
+            const dlDoc = await col.findOne({ queue: dlTopic, id: info.id });
+            if (dlDoc !== null) {
+              await col.deleteOne({ _id: dlDoc._id });
+              const payload = dlDoc.payload ?? {};
+              const priority = dlDoc.priority ?? 0;
+              await col.updateOne(
+                { queue: queueName, id: info.id },
+                {
+                  $set: {
+                    status: "pending",
+                    availableAt: avail,
+                    reservedAt: null,
+                    error: null,
+                    payload,
+                    priority,
+                    id: info.id,
+                    createdAt: dlDoc.createdAt ?? now,
+                  },
+                  $inc: { attempts: 1 },
+                },
+                { upsert: true },
+              );
+              process.stdout.write("__OK__");
+            } else {
+              const result = await col.updateOne(
+                { queue: queueName, id: info.id },
+                { $set: { status: "pending", availableAt: avail, reservedAt: null }, $inc: { attempts: 1 } },
+              );
+              process.stdout.write(result.matchedCount > 0 ? "__OK__" : "__NOT_FOUND__");
+            }
           }
           else if (operation === "deadLetters") {
             const docs = await col.find({ queue: queueName + ".dead_letter" }).toArray();
@@ -398,10 +448,20 @@ export class MongoBackend implements QueueBackend {
             process.stdout.write(String(revived));
           }
           else if (operation === "purge") {
-            // Delete docs by status (default: all for the topic). data = JSON { status }.
+            // Delete docs by status (default: every doc for the topic).
+            // Pre-3.13.105 this filtered by { queue: queueName, status } for
+            // EVERY status -- correct for pending/reserved/completed, wrong
+            // for the dead-letter states (dead/failed/dead_letter) which
+            // live under queueName + ".dead_letter" and carry status "dead".
+            // A purge("dead") therefore deleted nothing and returned 0.
+            // data = JSON { status }.
             const info = data ? JSON.parse(data) : {};
-            const filter = { queue: queueName };
-            if (info.status) filter.status = info.status;
+            const isDead = info.status && ["dead", "failed", "dead_letter"].includes(info.status);
+            const filter = isDead
+              ? { queue: queueName + ".dead_letter" }
+              : (info.status
+                ? { queue: queueName, status: info.status }
+                : { queue: queueName });
             const res = await col.deleteMany(filter);
             process.stdout.write(String(res.deletedCount || 0));
           }
@@ -513,9 +573,15 @@ export class MongoBackend implements QueueBackend {
     this.execSync("fail", queue, JSON.stringify({ id, error, maxRetries, retryBackoff }));
   }
 
-  /** Explicit manual re-queue (always re-enqueues regardless of the retry limit). */
-  retry(queue: string, id: string, delaySeconds: number = 0): void {
-    this.execSync("retry", queue, JSON.stringify({ id, delaySeconds }));
+  /**
+   * Revive a specific dead-letter job by id. Returns true if the DL was found
+   * and revived, false otherwise (parity with LiteBackend.retry(queue, id)
+   * and Python's mongo_backend.retry_job()). Pre-3.13.105 this returned void
+   * and Queue.retry(id) reported success for every call, even for unknown ids.
+   */
+  retry(queue: string, id: string, delaySeconds: number = 0): boolean {
+    const out = this.execSync("retry", queue, JSON.stringify({ id, delaySeconds }));
+    return out.includes("__OK__");
   }
 
   /** Jobs that exceeded max retries (the `<queue>.dead_letter` collection topic). */

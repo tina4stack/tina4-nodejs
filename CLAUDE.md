@@ -309,6 +309,20 @@ queue.consume(topic?, id?, pollInterval=1000): AsyncGenerator<QueueJob>
 // Usage: for await (const job of queue.consume("emails")) { ... }
 ```
 
+**size / failed / deadLetters — three surfaces, one distinction (3.13.105 parity).**
+- `queue.size(status)` — `"pending"` counts jobs waiting to be popped AND retryable-
+  but-attempted ones (they live in the pending queue under the auto-retry lifecycle).
+  `"reserved"` counts in-flight jobs against the visibility timeout. `"completed"`
+  counts finished jobs. `"failed"` / `"dead"` / `"dead_letter"` are ALIASES — all
+  three count the dead-letter store (== `queue.deadLetters().length`).
+- `queue.failed()` — retryable-but-attempted jobs (0 < attempts < maxRetries) that
+  live in the pending queue and are still being auto-retried. They are counted under
+  `size("pending")`, NOT `size("failed")`. Use this to LIST them; use
+  `size("pending")` to include them in a total.
+- `queue.deadLetters()` — terminal failures (attempts >= maxRetries). Same set that
+  `size("failed")` / `size("dead")` / `size("dead_letter")` count. Returns wrapped
+  `Job` objects so callers can iterate uniformly and call `.retry()` on each.
+
 ### @tina4/swagger (`packages/swagger/`)
 Auto-generates OpenAPI 3.0.3 docs.
 

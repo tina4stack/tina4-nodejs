@@ -144,7 +144,13 @@ export interface QueueBackendInterface {
   // persistent-connection rewrite lands.
   complete?(queue: string, id: string): void;
   fail?(queue: string, id: string, error: string, maxRetries: number, retryBackoff: number): void;
-  retry?(queue: string, id: string, delaySeconds?: number): void;
+  /**
+   * Explicit manual re-queue: returns true if the id was found and revived,
+   * false otherwise (parity with Python's backend.retry_job()). A backend may
+   * legacy-return void; callers coerce a void return to true so nothing that
+   * used to be reported as success silently flips to failure.
+   */
+  retry?(queue: string, id: string, delaySeconds?: number): boolean | void;
   deadLetters?(queue: string, maxRetries?: number): QueueJob[];
   failed?(queue: string, maxRetries?: number): QueueJob[];
   retryFailed?(queue: string, maxRetries?: number): number;
@@ -400,7 +406,19 @@ export class Queue {
   }
 
   /**
-   * Count jobs filtered by status. Defaults to "pending".
+   * Count jobs by status. Defaults to "pending".
+   *
+   * ``"pending"`` counts jobs waiting to be popped -- INCLUDES retryable-
+   * but-attempted ones, because they live in the pending queue under the
+   * auto-retry lifecycle (see failed()).
+   * ``"reserved"`` counts jobs a consumer has popped but not yet
+   * completed/failed (in-flight against the visibility timeout).
+   * ``"completed"`` counts jobs the consumer has finished successfully.
+   * ``"failed"``, ``"dead"``, ``"dead_letter"`` are ALIASES that all count
+   * the dead-letter store -- jobs whose attempts >= maxRetries and that
+   * have given up. Use deadLetters() to list them. Retryable-but-attempted
+   * jobs are NOT counted by size("failed"); use failed() to list them or
+   * size("pending") to include them in a total.
    */
   size(status: string = "pending"): number {
     const q = this.topic;
@@ -455,13 +473,21 @@ export class Queue {
   /**
    * Get jobs that failed at least once but are still being retried
    * (0 < attempts < maxRetries). These live in the pending queue under the
-   * auto-retry lifecycle; dead-lettered jobs are returned by deadLetters().
+   * auto-retry lifecycle (fail() re-queues them with an incremented attempts
+   * count and a retryBackoff delay) so pop() picks them up again. They are
+   * NOT counted by size("failed") -- that alias counts the dead-letter store,
+   * matching deadLetters(). To include retryable-failed jobs in a total, use
+   * size("pending"). Terminal failures are returned by deadLetters().
    */
   failed(): QueueJob[] {
-    if (this.externalBackend?.failed) {
-      return this.externalBackend.failed(this.topic, this._maxRetries);
-    }
-    return this.liteBackend.failed(this.topic, this._maxRetries);
+    const raw = this.externalBackend?.failed
+      ? this.externalBackend.failed(this.topic, this._maxRetries)
+      : this.liteBackend.failed(this.topic, this._maxRetries);
+    // Wrap so callers get the full Job lifecycle (parity with deadLetters()
+    // and Python's failed()).
+    return raw.map((data) =>
+      createJob({ ...(data as JobData), topic: (data as JobData).topic ?? this.topic }, this),
+    );
   }
 
   /**
@@ -473,21 +499,31 @@ export class Queue {
    */
   retry(jobId?: string, delaySeconds?: number): boolean {
     if (jobId) {
-      // Retry a specific job by ID
+      // Retry a specific job by ID. Honour whatever the external backend
+      // returns (a boolean) so an unknown id reports false; only coerce a
+      // legacy void return to true to preserve the pre-3.13.105 contract on
+      // a backend that hasn't been updated (LiteBackend already returns bool).
       if (this.externalBackend?.retry) {
-        this.externalBackend.retry(this.topic, jobId, delaySeconds);
-        return true;
+        const result = this.externalBackend.retry(this.topic, jobId, delaySeconds);
+        return result === undefined ? true : Boolean(result);
       }
       return this.liteBackend.retry(this.topic, jobId, delaySeconds);
     }
-    // Retry all dead-letter jobs
+    // Retry ALL dead-letter jobs -- an explicit for...of iterates every
+    // entry rather than a reducer like .some() that would short-circuit on
+    // the first truthy result (PY-12-04 parity: Python's generator-inside-
+    // any() had exactly that bug pre-3.13.105 and left the remaining
+    // dead letters silently in the store).
     const deadJobs = this.deadLetters();
     if (deadJobs.length === 0) return false;
     let retried = false;
     for (const job of deadJobs) {
       if (this.externalBackend?.retry) {
-        this.externalBackend.retry(this.topic, job.id, delaySeconds);
-        retried = true;
+        const result = this.externalBackend.retry(this.topic, job.id, delaySeconds);
+        // A modern backend returns bool; a legacy backend returns void which
+        // we optimistically treat as revived (parity with the pre-3.13.105
+        // pathway that never had a way to know otherwise).
+        if (result === undefined || Boolean(result)) retried = true;
       } else if (this.liteBackend.retry(this.topic, job.id, delaySeconds)) {
         retried = true;
       }
@@ -496,13 +532,34 @@ export class Queue {
   }
 
   /**
-   * Get dead letter jobs — failed jobs that exceeded max retries.
+   * Get jobs that exceeded max_retries -- terminal failures.
+   *
+   * Same set counted by size("failed") / size("dead") / size("dead_letter")
+   * (three aliases for the dead-letter store). To LIST retryable-but-
+   * attempted jobs (attempts > 0 AND attempts < maxRetries) that are still
+   * being auto-retried, use failed() -- those live in the pending queue and
+   * are NOT dead letters.
+   *
+   * Returns Job objects with the failure reason on ``.error`` (not raw dicts)
+   * so callers can iterate uniformly with the rest of the queue API and, in
+   * particular, call ``.retry()`` on each to manually revive it:
+   *
+   *     for (const job of queue.deadLetters()) {
+   *       Log.warn(`revived ${job.id}: ${job.error}`);
+   *       job.retry();
+   *     }
    */
   deadLetters(maxRetries?: number): QueueJob[] {
-    if (this.externalBackend?.deadLetters) {
-      return this.externalBackend.deadLetters(this.topic, maxRetries ?? this._maxRetries);
-    }
-    return this.liteBackend.deadLetters(this.topic, maxRetries ?? this._maxRetries);
+    const raw = this.externalBackend?.deadLetters
+      ? this.externalBackend.deadLetters(this.topic, maxRetries ?? this._maxRetries)
+      : this.liteBackend.deadLetters(this.topic, maxRetries ?? this._maxRetries);
+    // Wrap so ``job.retry()`` / ``job.fail()`` / ``job.complete()`` work
+    // uniformly (parity with pop() and the Python master). Preserves the
+    // job's own topic so the lifecycle methods route back to THIS queue's
+    // backend even on a job that dead-lettered on a different topic.
+    return raw.map((data) =>
+      createJob({ ...(data as JobData), topic: (data as JobData).topic ?? this.topic }, this),
+    );
   }
 
   /**

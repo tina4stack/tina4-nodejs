@@ -677,11 +677,27 @@ export class LiteBackend {
    * Explicit re-queue requested by the caller (job.retry()).
    *
    * Always re-enqueues regardless of the retry limit — manual override,
-   * distinct from the automatic failJob() path.
+   * distinct from the automatic failJob() path. Cleans up BOTH the
+   * reservation record AND any dead-letter file for this id, so a caller
+   * that iterates deadLetters() and calls .retry() on each doesn't leave
+   * the failed/ directory carrying duplicates (PY-12-05, 3.13.105).
+   * Aligns with retry(queue, jobId) which had always unlinked the
+   * dead-letter file -- two spellings of the same intent that previously
+   * diverged.
    */
   retryJob(queue: string, job: QueueJob, delaySeconds?: number): void {
     // Clear the reservation — the consumer acknowledged (with an explicit retry).
     this.clearReservation(queue, job.id);
+    // Drop any dead-letter file for this id BEFORE the re-queue -- if this
+    // job came from deadLetters() it lives in failed/ and would otherwise
+    // stay on disk while a fresh pending file appears in the queue dir, so
+    // the next deadLetters() call reports the job again and a consumer
+    // processes it twice.
+    try {
+      unlinkSync(join(this.ensureFailedDir(queue), `${job.id}.queue-data`));
+    } catch {
+      // ENOENT is fine (the job never dead-lettered or was already cleared).
+    }
     job.attempts = (job.attempts || 0) + 1;
     job.error = undefined;
     this.requeue(queue, job, delaySeconds ?? 0, undefined);
