@@ -6,9 +6,12 @@ interface RateLimitEntry {
   timestamps: number[];
 }
 
+/** Browser applications routinely make hundreds of asset/API requests during an active minute. */
+export const DEFAULT_RATE_LIMIT = 1000;
+
 /** Configuration for the rate limiter */
 export interface RateLimiterConfig {
-  /** Maximum number of requests per window. Default: 100 (or TINA4_RATE_LIMIT env) */
+  /** Maximum number of requests per window. Default: 1000 (or TINA4_RATE_LIMIT env) */
   limit?: number;
   /** Window duration in seconds. Default: 60 (or TINA4_RATE_WINDOW env) */
   windowSeconds?: number;
@@ -30,7 +33,7 @@ export interface RateLimiterConfig {
  */
 export function rateLimiter(config?: RateLimiterConfig): Middleware {
   const limit = config?.limit
-    ?? (process.env.TINA4_RATE_LIMIT ? parseInt(process.env.TINA4_RATE_LIMIT, 10) : 100);
+    ?? (process.env.TINA4_RATE_LIMIT ? parseInt(process.env.TINA4_RATE_LIMIT, 10) : DEFAULT_RATE_LIMIT);
   const windowSeconds = config?.windowSeconds
     ?? (process.env.TINA4_RATE_WINDOW ? parseInt(process.env.TINA4_RATE_WINDOW, 10) : 60);
   const cleanupIntervalMs = config?.cleanupIntervalMs ?? 60_000;

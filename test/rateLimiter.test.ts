@@ -3,6 +3,7 @@
  * Run with: npx tsx test/rateLimiter.test.ts
  */
 import { startServer } from "../packages/core/src/index.ts";
+import { DEFAULT_RATE_LIMIT } from "../packages/core/src/rateLimiter.ts";
 import http from "node:http";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -52,9 +53,12 @@ export default async function(req: any, res: any) {
 }
 `);
 
+assert("default allows 1000 requests per minute", DEFAULT_RATE_LIMIT === 1000);
+
 // Set a very low rate limit for testing
 process.env.TINA4_RATE_LIMIT = "5";
 process.env.TINA4_RATE_WINDOW = "60";
+process.env.TINA4_DEBUG = "true";
 
 console.log("=== Rate Limiter Tests ===\n");
 
@@ -90,6 +94,7 @@ assert("X-RateLimit-Remaining is 0", limited.headers["x-ratelimit-remaining"] ==
 server.close();
 delete process.env.TINA4_RATE_LIMIT;
 delete process.env.TINA4_RATE_WINDOW;
+delete process.env.TINA4_DEBUG;
 rmSync(TEST_DIR, { recursive: true });
 
 // Summary
