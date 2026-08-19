@@ -106,7 +106,7 @@ const ok   = Auth.checkPassword("mypassword", hash);  // true
 
 tina4-nodejs is **secure by default**: `POST`/`PUT`/`PATCH`/`DELETE` require a valid Bearer token;
 `GET`/`HEAD`/`OPTIONS` are public. The write default and 401 are enforced in source
-(`packages/core/src/router.ts:185` sets `secure` to `true` for write methods; `authGate.ts:74`
+(`packages/core/src/router.ts:206-208` computes `secureDefault` for write methods; `authGate.ts:81`
 writes the `401 {"error":"Unauthorized"}` when no valid token resolves). Get these wrong and you
 either ship an unauthenticated write or fight phantom 401s.
 

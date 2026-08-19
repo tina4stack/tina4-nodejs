@@ -1385,15 +1385,28 @@ export class BaseModel {
   /**
    * Invalidate every cached query that touches this model's table.
    *
-   * Tag-scoped, NOT a wholesale flush: a cached JOIN on another model that reads
-   * this table is busted too (it carries this table's tag), while a query that
-   * never touches this table is left intact. Called after every ORM write
-   * (save/delete/forceDelete/restore) so a read-after-write never serves a
-   * stale/deleted row (CACHE-DEC-01).
+   * Tag-scoped in the ORM layer (a cached JOIN on another model that reads
+   * this table is busted too because it carries this table's tag; a query
+   * that never touches this table is left intact), then cascaded to the
+   * DB layer on this model's bound connection so an out-of-band write /
+   * deliberate refresh / race-with-another-process cannot leave stale rows
+   * in db.fetch()'s persistent cache. Called after every ORM write
+   * (save/delete/forceDelete/restore) so a read-after-write never serves
+   * a stale/deleted row (CACHE-DEC-01). PY-06-22 (3.13.105) added the
+   * DB-layer cascade -- previously the two cache layers disagreed under
+   * TINA4_AUTO_CACHING=true + TINA4_DB_CACHE=true.
    */
   static clearCache(): void {
     const ModelClass = this as unknown as typeof BaseModel;
     modelQueryCache.clearTag((ModelClass.tableName ?? "").toLowerCase());
+    try {
+      const db: any = ModelClass.getDb();
+      if (typeof db?.cacheClear === "function") db.cacheClear();
+    } catch {
+      // A resolvable DB is not guaranteed at every clearCache() call site
+      // (module-import time in odd bootstraps, tests that mutate bindings);
+      // never let a cache-clear crash a save/delete.
+    }
   }
 
   /**

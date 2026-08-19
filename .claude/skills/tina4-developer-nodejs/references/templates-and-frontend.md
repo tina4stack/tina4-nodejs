@@ -66,9 +66,10 @@ engine from `tina4-nodejs/frond`.
 {{ value | default("N/A") }}       → Default if null
 {{ html | raw }}                   → No auto-escaping
 {{ price | number_format(2) }}     → 1,234.56
-{{ date | date("Y-m-d") }}         → Formatted date
+{{ date | date("%Y-%m-%d") }}      → Formatted date (strftime tokens, not Twig `Y-m-d`)
 {{ text | slug }}                  → url-friendly-slug
-{{ created | timeago }}            → "3 hours ago"
+{# no `timeago` filter — compute in the route and pass the label into the template, or add it via
+   `Frond.addFilter("timeago", (t) => ...)` at app boot. #}
 ```
 
 Filter names are **snake_case** and must render identically across all Tina4 frameworks (see the
