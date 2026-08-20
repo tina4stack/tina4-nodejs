@@ -1211,6 +1211,30 @@ function asHtmlString(chunk: unknown): string | null {
 }
 
 /**
+ * Whether this response's body can still have HTML spliced into it.
+ *
+ * `text/html` is NOT enough on its own. A static-file response (static.ts) gzips
+ * itself and sets Content-Encoding BEFORE it calls `res.raw.end()` - and that
+ * `end()` is the intercepted one below, so the chunk arriving there is
+ * COMPRESSED BYTES, not markup. Reading them back as UTF-8 to inject a toolbar
+ * replaces every byte outside ASCII with U+FFFD, and the browser is handed a
+ * gzip stream whose header is `1f ef bf bd` instead of `1f 8b`. Chrome answers
+ * ERR_CONTENT_DECODING_FAILED and the page does not load at all.
+ *
+ * That is not a corner case: in dev mode it corrupted EVERY static .html file
+ * over the 1024-byte compression threshold, which is most real pages, so
+ * `tina4 serve` served an unloadable page while curl (which asks for no
+ * encoding by default) looked perfectly healthy.
+ *
+ * dispatchPipeline.ts already guards the sibling half of this - it refuses to
+ * gzip a body some earlier stage has already encoded - with the same test. This
+ * is the other half: do not TEXT-EDIT a body some earlier stage has encoded.
+ */
+function isInjectableHtml(res: Tina4Response): boolean {
+  return isHtmlResponse(res) && !res.raw.getHeader("content-encoding");
+}
+
+/**
  * Inject the dev toolbar (dev mode only) and the feedback widget into an HTML body.
  *
  * The feedback injector re-checks the whitelist, path and html marker itself,
@@ -1269,7 +1293,11 @@ function wrapResponseEnd(ctx: ResponseWrapContext): void {
       );
     }
 
-    if (isHtmlResponse(res)) {
+    // An ENCODED body is passed straight through, untouched and with its
+    // Content-Length intact: the length static.ts set describes the compressed
+    // bytes and is correct, and there is nothing here we could inject into
+    // without destroying them. See isInjectableHtml.
+    if (isInjectableHtml(res)) {
       const html = asHtmlString(chunk);
       if (html !== null) chunk = injectIntoHtml(ctx, devToolbar, html);
       // Dropped for ANY html response, not only one carrying a body: that is
