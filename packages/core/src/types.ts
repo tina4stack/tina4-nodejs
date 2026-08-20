@@ -161,6 +161,10 @@ export interface RouteDefinition {
   cached?: boolean;
   /** Opt out of secure-by-default auth on write routes */
   noAuth?: boolean;
+  /** RBAC role guard groups (Feature 138): OR within a group, AND across groups */
+  requiredRoles?: string[][];
+  /** RBAC permission guard groups (Feature 138) */
+  requiredPerms?: string[][];
 }
 
 export interface RouteMeta {

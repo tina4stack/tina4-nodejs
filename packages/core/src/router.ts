@@ -69,6 +69,8 @@ interface MatchResult {
   secure?: boolean;
   cached?: boolean;
   noAuth?: boolean;
+  requiredRoles?: string[][];
+  requiredPerms?: string[][];
 }
 
 interface CompiledRoute {
@@ -86,6 +88,9 @@ interface CompiledRoute {
   cacheStore?: Map<string, { data: unknown; expires: number }>;
   cacheTtl?: number;
   template?: string;
+  /** RBAC guard groups (Feature 138): OR within a group, AND across groups. */
+  requiredRoles?: string[][];
+  requiredPerms?: string[][];
 }
 
 /**
@@ -123,6 +128,33 @@ export class RouteRef {
   /** Opt out of secure-by-default auth (for public write routes). */
   noAuth(): this {
     this.route.noAuth = true;
+    return this;
+  }
+
+  /**
+   * RBAC: require ONE of the named roles (OR). Reads the verified JWT `roles`
+   * claim. Chain .role()/.can() for AND. Implies auth. Feature 138 / ADR-0058.
+   */
+  role(...names: string[]): this {
+    const clean = names.filter((n) => n !== "");
+    if (clean.length > 0) {
+      (this.route.requiredRoles ??= []).push(clean);
+      this.route.secure = true;
+    }
+    return this;
+  }
+
+  /**
+   * RBAC: require ONE of the named permissions (OR). Reads the verified JWT
+   * `permissions` claim; granted-side wildcards (`posts.*`, `*`) satisfy a
+   * concrete requirement. Chain for AND. Implies auth. Feature 138.
+   */
+  can(...permissions: string[]): this {
+    const clean = permissions.filter((p) => p !== "");
+    if (clean.length > 0) {
+      (this.route.requiredPerms ??= []).push(clean);
+      this.route.secure = true;
+    }
     return this;
   }
 
@@ -220,6 +252,8 @@ export class Router {
       cached: definition.cached,
       noAuth: definition.noAuth,
       template: definition.template,
+      requiredRoles: definition.requiredRoles,
+      requiredPerms: definition.requiredPerms,
     };
     routes.push(compiled);
     return new RouteRef(compiled);
@@ -393,6 +427,8 @@ export class Router {
           secure: route.secure,
           cached: route.cached,
           noAuth: route.noAuth,
+          requiredRoles: route.requiredRoles,
+          requiredPerms: route.requiredPerms,
         };
       }
     }
@@ -417,6 +453,8 @@ export class Router {
           secure: route.secure,
           cached: route.cached,
           noAuth: route.noAuth,
+          requiredRoles: route.requiredRoles,
+          requiredPerms: route.requiredPerms,
         });
       }
     }

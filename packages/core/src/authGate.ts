@@ -16,6 +16,9 @@ import type { Tina4Request, Tina4Response } from "./types.js";
 export interface AuthGateRoute {
   secure?: boolean;
   noAuth?: boolean;
+  /** RBAC guard groups (Feature 138): OR within a group, AND across groups. */
+  requiredRoles?: string[][];
+  requiredPerms?: string[][];
 }
 
 /**
@@ -68,7 +71,8 @@ export function enforceRouteAuth(
     const identity = sso?.identity;
     if (identity?.issuer && identity?.subject) {
       req.user = identity;
-      return false;
+      // RBAC guards apply to the SSO identity too (Feature 138).
+      return rbacForbidden(match, identity, res);
     }
     const sessionToken = (req as any).session?.get?.("token") as string | undefined;
     if (sessionToken && validToken(sessionToken)) {
@@ -93,5 +97,61 @@ export function enforceRouteAuth(
     }
   }
 
+  // ── RBAC guards (Feature 138): authorization AFTER authentication ──
+  // Auth has passed (401 ruled out above). If the route carries role/permission
+  // guards, the verified payload must satisfy them, else 403.
+  return rbacForbidden(match, req.user, res);
+}
+
+/** Read a claim as a list of strings; coerce a legacy singular string. */
+function rbacClaimList(subject: Record<string, unknown>, key: string, legacy?: string): string[] {
+  const coerce = (v: unknown): string[] => {
+    if (typeof v === "string") return v === "" ? [] : [v];
+    if (Array.isArray(v)) return v.map((x) => String(x)).filter((x) => x !== "");
+    return [];
+  };
+  let out = coerce(subject[key]);
+  if (out.length === 0 && legacy) out = coerce(subject[legacy]);
+  return out;
+}
+
+/**
+ * True if any GRANTED permission satisfies the concrete REQUIRED one.
+ * `*` grants everything; `posts.*` grants `posts.<...>` on the dot boundary.
+ */
+function rbacPermGranted(granted: string[], required: string): boolean {
+  return granted.some(
+    (g) => g === "*" || g === required || (g.endsWith(".*") && required.startsWith(g.slice(0, -1))),
+  );
+}
+
+/**
+ * Write a 403 and return `true` when a route's RBAC guards are not satisfied by
+ * the verified payload; return `false` (no write) when authorised or unguarded.
+ * AND across guard groups, OR within a group. Feature 138 / ADR-0058.
+ */
+function rbacForbidden(match: AuthGateRoute, payload: unknown, res: Tina4Response): boolean {
+  const requiredRoles = match.requiredRoles ?? [];
+  const requiredPerms = match.requiredPerms ?? [];
+  if (requiredRoles.length === 0 && requiredPerms.length === 0) {
+    return false;
+  }
+  const subject =
+    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+
+  const roles = rbacClaimList(subject, "roles", "role");
+  for (const group of requiredRoles) {
+    if (!group.some((r) => roles.includes(r))) return writeForbidden(res);
+  }
+  const perms = rbacClaimList(subject, "permissions");
+  for (const group of requiredPerms) {
+    if (!group.some((p) => rbacPermGranted(perms, p))) return writeForbidden(res);
+  }
   return false;
+}
+
+function writeForbidden(res: Tina4Response): boolean {
+  res.raw.writeHead(403, { "Content-Type": "application/json" });
+  res.raw.end(JSON.stringify({ error: "Forbidden" }));
+  return true;
 }
