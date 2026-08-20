@@ -98,7 +98,7 @@ try {
     (await request(PORT, "/rbac/can_delete", bearer({ sub: "u", permissions: ["posts.delete"] }))) === 200);
   assert("missing permission is forbidden 403",
     (await request(PORT, "/rbac/can_delete", bearer({ sub: "u", permissions: ["posts.read"] }))) === 403);
-  assert("a role does not satisfy a permission guard",
+  assert("role alone does not satisfy a permission guard",
     (await request(PORT, "/rbac/can_delete", bearer({ sub: "u", roles: ["admin"] }))) === 403);
 
   // ── rbac-wildcard-grant ──────────────────────────────────────
