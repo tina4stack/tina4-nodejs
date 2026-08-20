@@ -6,6 +6,19 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## Unreleased
+
+Bug fix (dev mode only, no production impact). `tina4 serve` served every static
+`.html` file over the 1024-byte gzip threshold **corrupt**, and browsers refused
+the page outright with `ERR_CONTENT_DECODING_FAILED`. `static.ts` gzips an
+eligible file and sets `Content-Encoding` before calling `res.raw.end()`, but
+that `end()` is the dev-toolbar wrapper, which saw `text/html`, read the gzip
+bytes back as UTF-8 to splice the toolbar in, and turned the `1f 8b 08` magic
+into `1f ef bf bd 08`. The wrapper now leaves an already-encoded body alone,
+matching the guard `dispatchPipeline.ts` already applies to the sibling
+double-gzip case. It hid because curl sends no `Accept-Encoding` by default and
+so never took the broken path — only a browser did.
+
 ## 3.13.107
 
 Feature: RBAC role and permission guards (parity across all four frameworks).
