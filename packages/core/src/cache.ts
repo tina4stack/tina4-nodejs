@@ -1629,6 +1629,14 @@ export function _getResponseBackend(config?: ResponseCacheConfig): Promise<Cache
  */
 const SHARED_CACHE_DIRECTIVES = ["public", "s-maxage", "must-revalidate"];
 
+/**
+ * Response directives that forbid storing the response here (RFC 9111 s3):
+ * `no-store` forbids storage in any cache, `private` and `no-cache` in a shared
+ * one. Before this was honoured a handler had no way to keep a response out of
+ * the cache — setting the correct standard header did nothing.
+ */
+const NO_STORE_DIRECTIVES = ["no-store", "private", "no-cache"];
+
 /** Case-insensitive request header lookup. */
 function requestHeader(req: { headers?: Record<string, unknown> }, name: string): string | undefined {
   const headers = req?.headers;
@@ -1650,22 +1658,67 @@ function varyFields(raw: unknown): string[] {
 }
 
 /**
- * May a SHARED cache store this response? (RFC 9111 s3, s4.1)
+ * The lower-cased Cache-Control directive NAMES on a header value, as a set.
  *
- * s3 — "if the cache is shared: the Authorization header field is not present
- * in the request ... or a response directive is present that explicitly allows
- * shared caching". The key is method + URL only, and on Node the cache answers
- * BEFORE the auth gate, so without this an anonymous caller was served an
- * authenticated caller's body with a 200.
+ * Parsed as comma-separated tokens with any `=value` stripped, rather than by
+ * substring search, so `no-cache="Set-Cookie"` is recognised as `no-cache` and
+ * a directive name never matches as a fragment of a longer one.
+ */
+function cacheControlTokens(raw: unknown): Set<string> {
+  const text = Array.isArray(raw) ? raw.join(",") : String(raw ?? "");
+  const tokens = new Set<string>();
+  for (const token of text.split(",")) {
+    const name = token.split("=")[0].trim().toLowerCase();
+    if (name !== "") tokens.add(name);
+  }
+  return tokens;
+}
+
+/** Does the response Cache-Control carry a directive that lets a SHARED cache store it? */
+function sharedCacheAllowed(cacheControl: unknown): boolean {
+  const directives = cacheControlTokens(cacheControl);
+  return SHARED_CACHE_DIRECTIVES.some((directive) => directives.has(directive));
+}
+
+/** Is a Set-Cookie response header present? Any non-empty value (it may be an array). */
+function hasSetCookie(raw: unknown): boolean {
+  if (raw === undefined || raw === null) return false;
+  if (Array.isArray(raw)) return raw.length > 0;
+  return String(raw) !== "";
+}
+
+/**
+ * May a SHARED cache store this response? (RFC 9111 s3, s4.1)
  *
  * s4.1 — a stored response whose Vary contains "*" "always fails to match", so
  * storing one is pointless.
+ *
+ * s3 — a shared cache may store a response only when it is not marked
+ * un-storable and is not built for one specific caller:
+ *
+ * - `no-store`/`private`/`no-cache` on the response forbid storing it here, so a
+ *   handler can always opt a body out of the cache with the standard header.
+ * - The key is method + URL only, and on Node the cache answers BEFORE the auth
+ *   gate, so a response built for one caller replays to whoever asks for that URL
+ *   next. Authorization marks such a caller — and so does a session Cookie on the
+ *   request (Tina4's own session mechanism IS a cookie), and a Set-Cookie on the
+ *   response (it installs a per-caller session). All three are storable only when
+ *   the response opts in with an explicit shared-cache directive, which keeps a
+ *   genuinely public page cacheable for cookie-bearing browsers.
  */
-function mayStore(req: { headers?: Record<string, unknown> }, vary: string[], cacheControl: unknown): boolean {
+function mayStore(
+  req: { headers?: Record<string, unknown> },
+  vary: string[],
+  cacheControl: unknown,
+  setCookie: unknown,
+): boolean {
   if (vary.includes("*")) return false;
-  if (requestHeader(req, "authorization") === undefined) return true;
-  const cc = String(cacheControl ?? "").toLowerCase();
-  return SHARED_CACHE_DIRECTIVES.some((directive) => cc.includes(directive));
+  const directives = cacheControlTokens(cacheControl);
+  if (NO_STORE_DIRECTIVES.some((directive) => directives.has(directive))) return false;
+  if (requestHeader(req, "authorization") !== undefined) return sharedCacheAllowed(cacheControl);
+  if (requestHeader(req, "cookie") !== undefined) return sharedCacheAllowed(cacheControl);
+  if (hasSetCookie(setCookie)) return sharedCacheAllowed(cacheControl);
+  return true;
 }
 
 /**
@@ -1722,7 +1775,7 @@ export function responseCache(config?: ResponseCacheConfig): Middleware {
     res.raw.end = function (chunk?: any, ...args: any[]) {
       const vary = varyFields(res.raw.getHeader("Vary"));
       if (!captured && allowedCodes.has(res.raw.statusCode)
-          && mayStore(req as any, vary, res.raw.getHeader("Cache-Control"))) {
+          && mayStore(req as any, vary, res.raw.getHeader("Cache-Control"), res.raw.getHeader("Set-Cookie"))) {
         captured = true;
         const body = typeof chunk === "string" ? chunk : chunk?.toString() ?? "";
         const contentType = String(res.raw.getHeader("Content-Type") ?? "application/octet-stream");
