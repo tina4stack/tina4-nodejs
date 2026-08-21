@@ -382,7 +382,7 @@ async function stringMiddlewareTests() {
     raw: {
       writableEnded: false, statusCode: 200,
       end(_chunk: any) { return this; },
-      getHeader: (n: string) => h1[n.toLowerCase()] || "application/json",
+      getHeader: (n: string) => h1[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
     },
     header: (n: string, v: string) => { h1[n.toLowerCase()] = v; },
   } as unknown as Tina4Response;
@@ -404,7 +404,7 @@ async function stringMiddlewareTests() {
       raw: {
         writableEnded: false, statusCode: 200,
         end(_chunk: any) { return this; },
-        getHeader: (n: string) => h2[n.toLowerCase()] || "application/json",
+        getHeader: (n: string) => h2[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
       },
       header: (n: string, v: string) => { h2[n.toLowerCase()] = v; },
     },

@@ -183,6 +183,132 @@ async function main() {
       second.handlerRan, `handlerRan=${second.handlerRan} body=${second.body}`);
   }
 
+  // --- s3: no-store / private / no-cache opt a response out --------------
+  for (const directive of ["no-store", "private", "no-cache"]) {
+    _resetBackend();
+    await clearCache();
+    const mw = responseCache({ ttl: 60 });
+
+    await roundTrip(mw, `/api/secret/${directive}`, {
+      body: '{"token":"ALICE-SECRET"}',
+      responseHeaders: { "Cache-Control": directive },
+    });
+    const second = await roundTrip(mw, `/api/secret/${directive}`, { body: '{"token":"recomputed"}' });
+
+    assert(`response_cache_does_not_store_a_response_refusing_storage (${directive})`,
+      second.handlerRan && !String(second.body).includes("ALICE-SECRET"),
+      `handlerRan=${second.handlerRan} body=${second.body}`);
+  }
+
+  {
+    // The directive is a token, not a substring: no-cache="Set-Cookie" is no-cache.
+    _resetBackend();
+    await clearCache();
+    const mw = responseCache({ ttl: 60 });
+
+    await roundTrip(mw, "/api/qualified", {
+      body: '{"token":"ALICE-SECRET"}',
+      responseHeaders: { "Cache-Control": 'no-cache="Set-Cookie"' },
+    });
+    const second = await roundTrip(mw, "/api/qualified", { body: '{"token":"recomputed"}' });
+
+    assert("response_cache_reads_the_directive_as_a_token_not_a_substring",
+      second.handlerRan && !String(second.body).includes("ALICE-SECRET"),
+      `handlerRan=${second.handlerRan} body=${second.body}`);
+  }
+
+  // --- s3: a session cookie identifies a caller, like Authorization ------
+  {
+    // One session's response must not be replayed to another session or to anon.
+    _resetBackend();
+    await clearCache();
+    const mw = responseCache({ ttl: 60 });
+
+    await roundTrip(mw, "/api/me", {
+      headers: { cookie: "session=ALICE" },
+      body: '{"user":"ALICE","cart_total":"R 1499.00"}',
+    });
+    const bob = await roundTrip(mw, "/api/me", {
+      headers: { cookie: "session=BOB" }, body: '{"user":"BOB"}',
+    });
+    const anon = await roundTrip(mw, "/api/me", { body: '{"user":"anon"}' });
+
+    assert("response_cache_does_not_replay_one_sessions_response_to_another",
+      !bob.body.includes("ALICE") && !anon.body.includes("ALICE"),
+      `bob=${bob.body} anon=${anon.body}`);
+    assert("response_cache_does_not_replay_one_sessions_response_to_another (handler must run)",
+      bob.handlerRan && anon.handlerRan);
+  }
+
+  {
+    // A response that SETS a session cookie is per-caller: must not be stored.
+    _resetBackend();
+    await clearCache();
+    const mw = responseCache({ ttl: 60 });
+
+    await roundTrip(mw, "/api/login-landing", {
+      body: '{"welcome":"ALICE"}',
+      responseHeaders: { "Set-Cookie": "session=ALICE; Path=/; HttpOnly" },
+    });
+    const second = await roundTrip(mw, "/api/login-landing", { body: '{"welcome":"recomputed"}' });
+
+    assert("response_cache_does_not_store_a_response_that_sets_set_cookie",
+      second.handlerRan && !String(second.body).includes("ALICE"),
+      `handlerRan=${second.handlerRan} body=${second.body}`);
+  }
+
+  {
+    // Set-Cookie as an ARRAY of header values still counts as present.
+    _resetBackend();
+    await clearCache();
+    const mw = responseCache({ ttl: 60 });
+
+    await roundTrip(mw, "/api/login-multi", {
+      body: '{"welcome":"ALICE"}',
+      responseHeaders: { "Set-Cookie": ["session=ALICE; Path=/", "csrf=xyz; Path=/"] as any },
+    });
+    const second = await roundTrip(mw, "/api/login-multi", { body: '{"welcome":"recomputed"}' });
+
+    assert("response_cache_treats_a_set_cookie_array_as_present",
+      second.handlerRan && !String(second.body).includes("ALICE"),
+      `handlerRan=${second.handlerRan} body=${second.body}`);
+  }
+
+  {
+    // CONTROL: a cookie-bearing request marked public STILL hits the cache.
+    _resetBackend();
+    await clearCache();
+    const mw = responseCache({ ttl: 60 });
+
+    await roundTrip(mw, "/api/products", {
+      headers: { cookie: "session=ALICE" },
+      body: '{"products":[]}',
+      responseHeaders: { "Cache-Control": "public, max-age=60" },
+    });
+    const second = await roundTrip(mw, "/api/products", {
+      headers: { cookie: "session=BOB" }, body: '{"products":["recomputed"]}',
+    });
+
+    assert("response_cache_still_caches_a_cookie_request_marked_public",
+      !second.handlerRan && String(second.body) === '{"products":[]}',
+      `handlerRan=${second.handlerRan} body=${second.body}`);
+  }
+
+  {
+    // CONTROL: cookieless public traffic keeps its hit rate (X-Cache: HIT).
+    _resetBackend();
+    await clearCache();
+    const mw = responseCache({ ttl: 60 });
+
+    await roundTrip(mw, "/api/anon", { body: '{"public":true}' });
+    const second = await roundTrip(mw, "/api/anon", { body: '{"public":"recomputed"}' });
+
+    assert("response_cache_leaves_cookieless_traffic_unaffected",
+      !second.handlerRan && String(second.body) === '{"public":true}'
+        && second.headers["x-cache"] === "HIT",
+      `handlerRan=${second.handlerRan} body=${second.body} headers=${JSON.stringify(second.headers)}`);
+  }
+
   // --- backend name validation -------------------------------------------
   {
     let threw = "";

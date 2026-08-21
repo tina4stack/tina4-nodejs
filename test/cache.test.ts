@@ -81,7 +81,7 @@ async function main() {
       raw: {
         writableEnded: false, statusCode: 200,
         end(_c: any) { return this; },
-        getHeader: (n: string) => h[n.toLowerCase()] || "application/json",
+        getHeader: (n: string) => h[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
       },
       header: (n: string, v: string) => { h[n.toLowerCase()] = v; },
     } as unknown as Tina4Response;
@@ -126,7 +126,7 @@ async function main() {
       raw: {
         writableEnded: false, statusCode: 200,
         end(_c: any) { return this; },
-        getHeader: (n: string) => h1[n.toLowerCase()] || "application/json",
+        getHeader: (n: string) => h1[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
       },
       header: (n: string, v: string) => { h1[n.toLowerCase()] = v; },
     } as unknown as Tina4Response;
@@ -147,7 +147,7 @@ async function main() {
         raw: {
           writableEnded: false, statusCode: 200,
           end(_c: any) { return this; },
-          getHeader: (n: string) => h2[n.toLowerCase()] || "application/json",
+          getHeader: (n: string) => h2[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
         },
         header: (n: string, v: string) => { h2[n.toLowerCase()] = v; },
       },
@@ -208,7 +208,7 @@ async function main() {
       writableEnded: false,
       statusCode: 200,
       end: function (chunk: any, ...args: any[]) { return this; },
-      getHeader: (name: string) => headers[name.toLowerCase()] || "application/json",
+      getHeader: (name: string) => headers[name.toLowerCase()] ?? (name.toLowerCase() === "content-type" ? "application/json" : undefined),
     },
     header: (name: string, value: string) => { headers[name.toLowerCase()] = value; },
   } as unknown as Tina4Response;
@@ -238,7 +238,7 @@ async function main() {
       raw: {
         writableEnded: false, statusCode: 200,
         end(_c: any) { return this; },
-        getHeader: (n: string) => h200a[n.toLowerCase()] || "application/json",
+        getHeader: (n: string) => h200a[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
       },
       header: (n: string, v: string) => { h200a[n.toLowerCase()] = v; },
     } as unknown as Tina4Response;
@@ -255,7 +255,7 @@ async function main() {
         raw: {
           writableEnded: false, statusCode: 200,
           end(_c: any) { return this; },
-          getHeader: (n: string) => h200b[n.toLowerCase()] || "application/json",
+          getHeader: (n: string) => h200b[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
         },
         header: (n: string, v: string) => { h200b[n.toLowerCase()] = v; },
       },
@@ -272,7 +272,7 @@ async function main() {
       raw: {
         writableEnded: false, statusCode: 201,
         end(_c: any) { return this; },
-        getHeader: (n: string) => h201a[n.toLowerCase()] || "application/json",
+        getHeader: (n: string) => h201a[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
       },
       header: (n: string, v: string) => { h201a[n.toLowerCase()] = v; },
     } as unknown as Tina4Response;
@@ -290,7 +290,7 @@ async function main() {
         raw: {
           writableEnded: false, statusCode: 200,
           end(_c: any) { return this; },
-          getHeader: (n: string) => h201b[n.toLowerCase()] || "application/json",
+          getHeader: (n: string) => h201b[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
         },
         header: (n: string, v: string) => { h201b[n.toLowerCase()] = v; },
       },
@@ -321,7 +321,7 @@ async function main() {
       raw: {
         writableEnded: false, statusCode: 200,
         end(_c: any) { return this; },
-        getHeader: (n: string) => ha[n.toLowerCase()] || "application/json",
+        getHeader: (n: string) => ha[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
       },
       header: (n: string, v: string) => { ha[n.toLowerCase()] = v; },
     } as unknown as Tina4Response;
@@ -339,7 +339,7 @@ async function main() {
         raw: {
           writableEnded: false, statusCode: 200,
           end(_c: any) { return this; },
-          getHeader: (n: string) => hb[n.toLowerCase()] || "application/json",
+          getHeader: (n: string) => hb[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
         },
         header: (n: string, v: string) => { hb[n.toLowerCase()] = v; },
       },
@@ -375,7 +375,7 @@ async function main() {
       raw: {
         writableEnded: false, statusCode: 200,
         end(_c: any) { return this; },
-        getHeader: (n: string) => ha[n.toLowerCase()] || "application/json",
+        getHeader: (n: string) => ha[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
       },
       header: (n: string, v: string) => { ha[n.toLowerCase()] = v; },
     } as unknown as Tina4Response;
@@ -394,7 +394,7 @@ async function main() {
         raw: {
           writableEnded: false, statusCode: 200,
           end(_c: any) { return this; },
-          getHeader: (n: string) => hb[n.toLowerCase()] || "application/json",
+          getHeader: (n: string) => hb[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
         },
         header: (n: string, v: string) => { hb[n.toLowerCase()] = v; },
       },
@@ -656,7 +656,7 @@ async function main() {
       raw: {
         writableEnded: false, statusCode: 200,
         end(_c: any) { return this; },
-        getHeader: (n: string) => ha[n.toLowerCase()] || "application/json",
+        getHeader: (n: string) => ha[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
       },
       header: (n: string, v: string) => { ha[n.toLowerCase()] = v; },
     } as unknown as Tina4Response;
@@ -674,7 +674,7 @@ async function main() {
         raw: {
           writableEnded: false, statusCode: 200,
           end(_c: any) { return this; },
-          getHeader: (n: string) => hb[n.toLowerCase()] || "application/json",
+          getHeader: (n: string) => hb[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
         },
         header: (n: string, v: string) => { hb[n.toLowerCase()] = v; },
       },
@@ -702,7 +702,7 @@ async function main() {
       raw: {
         writableEnded: false, statusCode: 404,
         end(_c: any) { return this; },
-        getHeader: (n: string) => ha[n.toLowerCase()] || "application/json",
+        getHeader: (n: string) => ha[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
       },
       header: (n: string, v: string) => { ha[n.toLowerCase()] = v; },
     } as unknown as Tina4Response;
@@ -720,7 +720,7 @@ async function main() {
         raw: {
           writableEnded: false, statusCode: 404,
           end(_c: any) { return this; },
-          getHeader: (n: string) => hb[n.toLowerCase()] || "application/json",
+          getHeader: (n: string) => hb[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
         },
         header: (n: string, v: string) => { hb[n.toLowerCase()] = v; },
       },
@@ -753,7 +753,7 @@ async function main() {
       raw: {
         writableEnded: false, statusCode: 200,
         end(_chunk: any) { return this; },
-        getHeader: (n: string) => headersA[n.toLowerCase()] || "application/json",
+        getHeader: (n: string) => headersA[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
       },
       header: (n: string, v: string) => { headersA[n.toLowerCase()] = v; },
     } as unknown as Tina4Response;
@@ -777,7 +777,7 @@ async function main() {
         raw: {
           writableEnded: false, statusCode: 200,
           end(_chunk: any) { return this; },
-          getHeader: (n: string) => headersB[n.toLowerCase()] || "application/json",
+          getHeader: (n: string) => headersB[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
         },
         header: (n: string, v: string) => { headersB[n.toLowerCase()] = v; },
       },
@@ -821,7 +821,7 @@ async function main() {
         raw: {
           writableEnded: false, statusCode: 200,
           end(_chunk: any) { return this; },
-          getHeader: (n: string) => hP[n.toLowerCase()] || "application/json",
+          getHeader: (n: string) => hP[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
         },
         header: (n: string, v: string) => { hP[n.toLowerCase()] = v; },
       } as unknown as Tina4Response;
@@ -843,7 +843,7 @@ async function main() {
           raw: {
             writableEnded: false, statusCode: 200,
             end(_chunk: any) { return this; },
-            getHeader: (n: string) => hC[n.toLowerCase()] || "application/json",
+            getHeader: (n: string) => hC[n.toLowerCase()] ?? (n.toLowerCase() === "content-type" ? "application/json" : undefined),
           },
           header: (n: string, v: string) => { hC[n.toLowerCase()] = v; },
         },
