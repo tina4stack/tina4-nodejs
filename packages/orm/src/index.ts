@@ -97,6 +97,28 @@ export type { MongoConfig } from "./adapters/mongodb.js";
 export { OdbcAdapter } from "./adapters/odbc.js";
 export type { OdbcConfig } from "./adapters/odbc.js";
 
+// Graph data layer (Feature 139) — URL-selected graph databases, shaped like Database.
+// The engine adapters (e.g. UltipaGraphAdapter) are deliberately NOT re-exported:
+// they import their optional driver, so the factory loads them lazily and the core
+// surface below stays driver-free (the zero-dependency-core rule, ADR-0059).
+export { GraphDatabase } from "./graph/graphDatabase.js";
+export type { GraphCredentials } from "./graph/graphDatabase.js";
+export { GraphUrl } from "./graph/graphUrl.js";
+export type { GraphEngine } from "./graph/graphUrl.js";
+export { GraphNode, GraphEdge, GraphResult } from "./graph/shapes.js";
+export { GraphError, GraphConnectTimeout } from "./graph/errors.js";
+export type {
+  GraphAdapter,
+  GraphDirection,
+  NeighborOptions,
+  TraverseOptions,
+} from "./graph/graphAdapter.js";
+export {
+  resolveGraphConnectTimeout,
+  GRAPH_CONNECT_TIMEOUT_VARIABLE,
+  DEFAULT_GRAPH_CONNECT_TIMEOUT_SECONDS,
+} from "./graph/connectTimeout.js";
+
 // Realtime collaboration mount (calls + chat + files) — parity with the Python master.
 export {
   realtime,
