@@ -20,6 +20,7 @@
     "node-firebird": "^2.14.3",
     "odbc": "^2.4.9",
     "pg": "^8.20.0",
-    "tedious": "^19.2.1"
+    "tedious": "^19.2.1",
+    "tina4-ultipa": "^0.1.0"
   }
 }
