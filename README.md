@@ -5,7 +5,7 @@
 <h3 align="center">The Intelligent Native Application 4ramework</h3>
 <p align="center">Zero dependencies. One import, everything works.</p>
 <p align="center">
-  <a href="https://www.npmjs.com/package/@tina4/core"><img src="https://img.shields.io/npm/v/@tina4/core?color=7b1fa2&label=npm" alt="npm"></a>
+  <a href="https://github.com/tina4stack/tina4-nodejs/releases"><img src="https://img.shields.io/github/v/tag/tina4stack/tina4-nodejs?color=7b1fa2&label=version&sort=semver" alt="version"></a>
   <a href="https://github.com/tina4stack/tina4-nodejs/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/tina4stack/tina4-nodejs/test.yml?label=tests" alt="Tests"></a>
   <img src="https://img.shields.io/badge/dependencies-0-brightgreen" alt="Zero Deps">
   <a href="https://tina4.com"><img src="https://img.shields.io/badge/docs-tina4.com-7b1fa2" alt="Docs"></a>
