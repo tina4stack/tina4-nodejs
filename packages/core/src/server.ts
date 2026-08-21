@@ -495,6 +495,8 @@ interface DevToolbarContext {
   matchedPattern: string;
   requestId: string;
   routeCount: number;
+  /** When false, the toolbar sets data-reload="0" and its JS suppresses the reloader (AI/stable port). */
+  reload?: boolean;
 }
 
 function injectDevToolbar(html: string, ctx: DevToolbarContext): string {
@@ -1250,6 +1252,10 @@ function injectIntoHtml(ctx: ResponseWrapContext, devToolbar: boolean, html: str
     matchedPattern: ctx.matchedPattern.value || ctx.pathname,
     requestId: ctx.requestId,
     routeCount: ctx.router.getRoutes().length,
+    // Suppress the live reloader on the AI/stable port (data-reload="0"); the
+    // toolbar JS early-returns when data-reload !== "1". Mirrors PHP's
+    // suppressReload flag.
+    reload: !ctx.isAiPortRequest,
   };
   return injectFeedbackWidget(ctx.req, injectDevToolbar(html, toolbarCtx));
 }
