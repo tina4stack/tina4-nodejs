@@ -1,15 +1,23 @@
 /**
- * Contract suite for the graph data layer (Feature 139) — against a REAL engine.
+ * Contract suite for the graph data layer (Feature 139) — against REAL engines.
  *
- * No mocks. Every live case runs a real connection and real round-trips against a
- * provisioned graph engine. Ultipa community edition is the first engine; the URL
- * comes from TINA4_TEST_ULTIPA_URL (the suite skips the live cases when it is unset
- * or unreachable, exactly like the relational live-database tests). Case names
- * match tina4-documentation/plan/v3/fixtures/graph_contract.json.
+ * No mocks. Every live case runs a real connection and real round-trips, and is
+ * PARAMETERISED over every provisioned engine (provider substitutability, exactly
+ * like the relational engine matrix): Ultipa, Neo4j, Memgraph, ArangoDB. Each
+ * engine's URL comes from its own TINA4_TEST_<ENGINE>_URL; an engine whose URL is
+ * unset / unreachable / whose driver is absent is skipped. Case names match
+ * tina4-documentation/plan/v3/fixtures/graph_contract.json.
  *
- * Ultipa note: edge ids need EDGE_ID enabled on the graph
- * (`ALTER GRAPH <g> SET EDGE_ID ENABLED`) — a one-time per-graph setting the lab
- * provisions.
+ * Only the raw-query dialect and the cleanup differ per engine (GQL vs Cypher vs
+ * AQL) — the portable node/edge/traverse surface is identical everywhere, which is
+ * the whole point of the layer.
+ *
+ * Notes per engine:
+ * - Ultipa: edge ids need EDGE_ID enabled on the graph
+ *   (`ALTER GRAPH <g> SET EDGE_ID ENABLED`) — a one-time per-graph setting the lab
+ *   provisions.
+ * - Bolt (Neo4j/Memgraph): `id(n)` is an integer; the driver runs with
+ *   disableLosslessIntegers so it comes back as a native number.
  */
 import net from "node:net";
 
@@ -25,9 +33,57 @@ import {
 import { ENGINE_ADAPTERS } from "../packages/orm/src/graph/graphDatabase.ts";
 import type { GraphAdapter } from "../packages/orm/src/index.ts";
 
-const ULTIPA_URL = process.env.TINA4_TEST_ULTIPA_URL;
 // Unique per run so concurrent runs never collide; cleaned before AND after.
 const LABEL = `T4GraphContractTest_${Date.now().toString(36)}`;
+
+const CYPHER_RAW = `MATCH (n:\`${LABEL}\`) WHERE n.name = $nm RETURN n.name AS name`;
+const CYPHER_CLEAN = `MATCH (n:\`${LABEL}\`) DETACH DELETE n`;
+
+interface EngineConfig {
+  env: string;
+  driver: string;
+  adapterClass: string;
+  raw: string;
+  rawParams: Record<string, unknown>;
+  clean: string;
+}
+
+// Per engine: URL env var, driver npm package, expected adapter class, the raw
+// read (native dialect) that finds a node by name, and the cleanup statement.
+const ENGINES: Record<string, EngineConfig> = {
+  ultipa: {
+    env: "TINA4_TEST_ULTIPA_URL",
+    driver: "tina4-ultipa",
+    adapterClass: "UltipaGraphAdapter",
+    raw: CYPHER_RAW,
+    rawParams: { nm: "Bob" },
+    clean: CYPHER_CLEAN,
+  },
+  neo4j: {
+    env: "TINA4_TEST_NEO4J_URL",
+    driver: "neo4j-driver",
+    adapterClass: "BoltGraphAdapter",
+    raw: CYPHER_RAW,
+    rawParams: { nm: "Bob" },
+    clean: CYPHER_CLEAN,
+  },
+  memgraph: {
+    env: "TINA4_TEST_MEMGRAPH_URL",
+    driver: "neo4j-driver",
+    adapterClass: "BoltGraphAdapter",
+    raw: CYPHER_RAW,
+    rawParams: { nm: "Bob" },
+    clean: CYPHER_CLEAN,
+  },
+  arango: {
+    env: "TINA4_TEST_ARANGO_URL",
+    driver: "arangojs",
+    adapterClass: "ArangoGraphAdapter",
+    raw: "FOR n IN tina4_nodes FILTER n.name == @nm RETURN {name: n.name}",
+    rawParams: { nm: "Bob" },
+    clean: `FOR n IN tina4_nodes FILTER '${LABEL}' IN n._labels REMOVE n IN tina4_nodes`,
+  },
+};
 
 let passed = 0;
 let failed = 0;
@@ -54,10 +110,11 @@ async function reachable(url: string): Promise<boolean> {
   try {
     const u = new URL(url);
     host = u.hostname;
-    port = u.port ? parseInt(u.port, 10) : 60061;
+    port = u.port ? parseInt(u.port, 10) : 0;
   } catch {
     return false;
   }
+  if (!port) return false;
   return new Promise((resolve) => {
     const socket = net.connect({ host, port, timeout: 2000 });
     const done = (result: boolean) => {
@@ -70,12 +127,12 @@ async function reachable(url: string): Promise<boolean> {
   });
 }
 
-async function driverInstalled(): Promise<boolean> {
+async function driverInstalled(pkg: string): Promise<boolean> {
   try {
-    // Variable specifier: same reason as the adapter — keep tsc from resolving
-    // an optional package that is only present when the engine is used.
-    const pkg = "tina4-ultipa";
-    await import(pkg);
+    // Variable specifier: keep tsc/tsx from resolving an optional package that is
+    // only present when the engine is used.
+    const specifier = pkg;
+    await import(specifier);
     return true;
   } catch {
     return false;
@@ -93,6 +150,14 @@ function testConnectByUrl(): void {
   ok(
     "graph-connect-by-url: neo4j scheme selects the bolt engine",
     new GraphUrl("neo4j://h/db").engine === "bolt",
+  );
+  ok(
+    "graph-connect-by-url: memgraph scheme selects the bolt engine",
+    new GraphUrl("memgraph://h/db").engine === "bolt",
+  );
+  ok(
+    "graph-connect-by-url: arango scheme selects the arango engine",
+    new GraphUrl("arango://h/db").engine === "arango",
   );
   let rejected = false;
   try {
@@ -140,12 +205,12 @@ async function testDriverOptional(): Promise<void> {
   }
 }
 
-// graph-connect-timeout: an unreachable host throws GraphConnectTimeout within
-// the bound, naming host and port. Needs the driver (constructs the client) but
+// graph-connect-timeout: an unreachable host throws GraphConnectTimeout within the
+// bound, naming host and port. Needs the ultipa driver (constructs the client) but
 // no live engine (10.255.255.1 is a black hole — a handshake that never completes).
-async function testConnectTimeout(hasDriver: boolean): Promise<void> {
+async function testConnectTimeout(hasUltipaDriver: boolean): Promise<void> {
   const name = "graph-connect-timeout: an unreachable host times out within the bound, naming host and port";
-  if (!hasDriver) {
+  if (!hasUltipaDriver) {
     skip(name, "tina4-ultipa package absent (needed to construct the client)");
     return;
   }
@@ -173,41 +238,42 @@ async function testConnectTimeout(hasDriver: boolean): Promise<void> {
   }
 }
 
-// ── the portable core + raw pass-through, against LIVE Ultipa ────────────────
+// ── the portable core + raw pass-through, per LIVE engine ────────────────────
 
-async function cleanLabel(graph: GraphAdapter): Promise<void> {
-  await graph.execute(`MATCH (n:\`${LABEL}\`) DETACH DELETE n`);
-}
+async function runLive(engine: string, cfg: EngineConfig, graph: GraphAdapter): Promise<void> {
+  const tag = `[${engine}] `;
+  const clean = () => graph.execute(cfg.clean);
 
-async function runLive(graph: GraphAdapter): Promise<void> {
-  // graph-connect-by-url (live): the factory returns a connected Ultipa adapter.
+  // graph-connect-by-url (live): the factory returns the right connected adapter.
   ok(
-    "graph-connect-by-url: create() returns a live UltipaGraphAdapter",
-    graph.constructor.name === "UltipaGraphAdapter",
+    `${tag}graph-connect-by-url: create() returns a live ${cfg.adapterClass}`,
+    graph.constructor.name === cfg.adapterClass,
+    graph.constructor.name,
   );
 
   // graph-add-node
   {
-    await cleanLabel(graph);
+    await clean();
     const node = await graph.addNode(LABEL, { name: "Ada", age: 36 });
     ok(
-      "graph-add-node: addNode returns a node with an id, labels and properties",
+      `${tag}graph-add-node: addNode returns a node with an id, labels and properties`,
       node instanceof GraphNode
         && !!node.id
         && node.labels.includes(LABEL)
-        && node.properties.name === "Ada",
+        && node.properties.name === "Ada"
+        && Number(node.properties.age) === 36,
       JSON.stringify(node?.toDict()),
     );
   }
 
   // graph-add-edge
   {
-    await cleanLabel(graph);
+    await clean();
     const a = await graph.addNode(LABEL, { name: "Ada" });
     const b = await graph.addNode(LABEL, { name: "Bob" });
     const edge = await graph.addEdge(a!.id, b!.id, "KNOWS", { since: 2020 });
     ok(
-      "graph-add-edge: addEdge links two nodes with a type and properties",
+      `${tag}graph-add-edge: addEdge links two nodes with a type and properties`,
       edge instanceof GraphEdge
         && !!edge.id
         && edge.type === "KNOWS"
@@ -220,27 +286,29 @@ async function runLive(graph: GraphAdapter): Promise<void> {
 
   // graph-get-node (round-trip + miss → null)
   {
-    await cleanLabel(graph);
+    await clean();
     const a = await graph.addNode(LABEL, { name: "Ada", age: 36 });
     const got = await graph.getNode(a!.id);
     const roundTrip = got !== null && got.properties.name === "Ada" && Number(got.properties.age) === 36;
-    const miss = await graph.getNode("no-such-id");
+    const tmp = await graph.addNode(LABEL, { x: 1 });
+    await graph.deleteNode(tmp!.id);
+    const miss = await graph.getNode(tmp!.id);
     ok(
-      "graph-get-node: getNode round-trips the stored properties",
+      `${tag}graph-get-node: getNode round-trips the stored properties`,
       roundTrip,
       JSON.stringify(got?.toDict()),
     );
-    ok("graph-get-node: getNode of a missing id returns null, not an error", miss === null, String(miss));
+    ok(`${tag}graph-get-node: getNode of a missing id returns null, not an error`, miss === null, String(miss));
   }
 
   // graph-update-delete-node
   {
-    await cleanLabel(graph);
+    await clean();
     const a = await graph.addNode(LABEL, { name: "Ada", age: 36 });
     await graph.updateNode(a!.id, { name: "Ada Lovelace", city: "London" });
     const updated = await graph.getNode(a!.id);
     ok(
-      "graph-update-delete-node: updateNode merges properties, verified by re-read",
+      `${tag}graph-update-delete-node: updateNode merges properties, verified by re-read`,
       updated !== null
         && updated.properties.name === "Ada Lovelace"
         && updated.properties.city === "London"
@@ -250,7 +318,7 @@ async function runLive(graph: GraphAdapter): Promise<void> {
     await graph.deleteNode(a!.id);
     const afterDelete = await graph.getNode(a!.id);
     ok(
-      "graph-update-delete-node: deleteNode removes the node, verified by re-read",
+      `${tag}graph-update-delete-node: deleteNode removes the node, verified by re-read`,
       afterDelete === null,
       String(afterDelete),
     );
@@ -258,7 +326,7 @@ async function runLive(graph: GraphAdapter): Promise<void> {
 
   // graph-neighbors
   {
-    await cleanLabel(graph);
+    await clean();
     const a = await graph.addNode(LABEL, { name: "Ada" });
     const b = await graph.addNode(LABEL, { name: "Bob" });
     await graph.addEdge(a!.id, b!.id, "KNOWS", {});
@@ -267,19 +335,19 @@ async function runLive(graph: GraphAdapter): Promise<void> {
     );
     const unmatched = await graph.neighbors(a!.id, { edgeType: "NOPE" });
     ok(
-      "graph-neighbors: neighbors returns the connected nodes for a direction and edge type",
+      `${tag}graph-neighbors: neighbors returns the connected nodes for a direction and edge type`,
       out.has(b!.id) && !out.has(a!.id),
       `out=${[...out].join(",")}`,
     );
     ok(
-      "graph-neighbors: an unmatched edge-type filter returns empty, not an error",
+      `${tag}graph-neighbors: an unmatched edge-type filter returns empty, not an error`,
       Array.isArray(unmatched) && unmatched.length === 0,
     );
   }
 
   // graph-traverse-depth
   {
-    await cleanLabel(graph);
+    await clean();
     const a = await graph.addNode(LABEL, { name: "A" });
     const b = await graph.addNode(LABEL, { name: "B" });
     const c = await graph.addNode(LABEL, { name: "C" });
@@ -289,7 +357,7 @@ async function runLive(graph: GraphAdapter): Promise<void> {
       (await graph.traverse(a!.id, { depth: 2, direction: "out", edgeType: "KNOWS" })).map((n) => n.id),
     );
     ok(
-      "graph-traverse-depth: traverse to depth 2 returns the reachable set",
+      `${tag}graph-traverse-depth: traverse to depth 2 returns the reachable set`,
       reached.has(b!.id) && reached.has(c!.id),
       `reached=${[...reached].join(",")}`,
     );
@@ -297,14 +365,11 @@ async function runLive(graph: GraphAdapter): Promise<void> {
 
   // graph-raw-query (bound params)
   {
-    await cleanLabel(graph);
+    await clean();
     await graph.addNode(LABEL, { name: "Bob" });
-    const result = await graph.query(
-      `MATCH (n:\`${LABEL}\`) WHERE n.name = $nm RETURN n.name AS name`,
-      { nm: "Bob" },
-    );
+    const result = await graph.query(cfg.raw, cfg.rawParams);
     ok(
-      "graph-raw-query: a native-dialect query round-trips through query() with bound params",
+      `${tag}graph-raw-query: a native-dialect query round-trips through query() with bound params`,
       result instanceof GraphResult && result.length >= 1 && result.records[0].name === "Bob",
       JSON.stringify(result?.records),
     );
@@ -314,12 +379,12 @@ async function runLive(graph: GraphAdapter): Promise<void> {
   {
     let threw = false;
     try {
-      await graph.execute("THIS IS NOT GQL");
+      await graph.execute("THIS IS NOT A VALID STATEMENT");
     } catch (err) {
       threw = err instanceof GraphError;
     }
     ok(
-      "graph-write-fails-loud: a bad raw statement raises and records the cause on getError()",
+      `${tag}graph-write-fails-loud: a bad raw statement raises and records the cause on getError()`,
       threw && graph.getError() !== null,
       `error=${graph.getError()}`,
     );
@@ -329,29 +394,37 @@ async function runLive(graph: GraphAdapter): Promise<void> {
 // ── driver-run ───────────────────────────────────────────────────────────────
 
 (async () => {
-  const hasDriver = await driverInstalled();
+  const hasUltipaDriver = await driverInstalled("tina4-ultipa");
 
   testConnectByUrl();
   await testDriverOptional();
-  await testConnectTimeout(hasDriver);
+  await testConnectTimeout(hasUltipaDriver);
 
-  if (!ULTIPA_URL) {
-    skip("graph-live cases", "TINA4_TEST_ULTIPA_URL not set (needs a live Ultipa)");
-  } else if (!(await reachable(ULTIPA_URL))) {
-    skip("graph-live cases", "TINA4_TEST_ULTIPA_URL not reachable");
-  } else if (!hasDriver) {
-    skip("graph-live cases", "tina4-ultipa package absent");
-  } else {
-    const graph = await GraphDatabase.create(ULTIPA_URL);
+  for (const [engine, cfg] of Object.entries(ENGINES)) {
+    const url = process.env[cfg.env];
+    const liveName = `graph-live cases [${engine}]`;
+    if (!url) {
+      skip(liveName, `${cfg.env} not set`);
+      continue;
+    }
+    if (!(await reachable(url))) {
+      skip(liveName, `${cfg.env} not reachable`);
+      continue;
+    }
+    if (!(await driverInstalled(cfg.driver))) {
+      skip(liveName, `${cfg.driver} package absent`);
+      continue;
+    }
+    const graph = await GraphDatabase.create(url);
     try {
-      await runLive(graph);
+      await runLive(engine, cfg, graph);
     } catch (err) {
-      ok("graph-live cases", false, `threw: ${(err as Error).message}`);
+      ok(liveName, false, `threw: ${(err as Error).message}`);
     } finally {
       try {
-        await cleanLabel(graph);
+        await graph.execute(cfg.clean);
       } catch { /* best effort */ }
-      graph.close();
+      await graph.close();
     }
   }
 

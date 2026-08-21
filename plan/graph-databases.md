@@ -21,10 +21,21 @@ from the PROVEN Python reference (`tina4-python/tina4_python/graph/`), idiomatic
 - [x] Declare `tina4-ultipa` as an optionalDependency of `@tina4/orm` (parity with pg/mysql2/…)
 - [x] `test/graph.test.ts` — 11 contract cases, no mocks, live-gated on TINA4_TEST_ULTIPA_URL
 
+## Scope — Bolt (Neo4j/Memgraph) + ArangoDB adapters (2026-08-21)
+- [x] Read the PROVEN Python reference (adapters/bolt.py, adapters/arango.py) + parametrised tests/test_graph.py
+- [x] `packages/orm/src/graph/adapters/bolt.ts` — BoltGraphAdapter (Cypher over neo4j-driver; Neo4j AND Memgraph)
+- [x] `packages/orm/src/graph/adapters/arango.ts` — ArangoGraphAdapter (AQL over arangojs; lazy collection ensure)
+- [x] Register engine `bolt` → BoltGraphAdapter, engine `arango` → ArangoGraphAdapter in ENGINE_ADAPTERS
+- [x] Declare `neo4j-driver` + `arangojs` as optionalDependencies of `@tina4/orm`
+- [x] Rewrite `test/graph.test.ts` to the PROVIDER MATRIX — parametrised over every engine whose TINA4_TEST_<ENGINE>_URL is set (ultipa/neo4j/memgraph/arango), per-engine raw dialect + cleanup, same 11 case names
+- [x] Lab-proven no-mock against live Neo4j + Memgraph + ArangoDB; tsc typecheck exit 0
+
 ## Parity
 | Feature | Python | PHP | Ruby | Node |
 |---------|--------|-----|------|------|
 | graph data layer (Feature 139, Ultipa) | ✅ | ❌ BUILD | ❌ BUILD | ✅ |
+| graph — Bolt (Neo4j/Memgraph) | ✅ | ❌ BUILD | ❌ BUILD | ✅ |
+| graph — ArangoDB | ✅ | ❌ BUILD | ❌ BUILD | ✅ |
 
 ## Tests (written first, real — no mocks, positive + negative). Lab: live Ultipa `ultipa://…@192.168.88.99:60071/default`, EDGE_ID enabled.
 - [x] graph-connect-by-url (scheme→adapter; unknown scheme rejected)
@@ -42,6 +53,33 @@ from the PROVEN Python reference (`tina4-python/tina4_python/graph/`), idiomatic
 Lab result (2026-08-21, live Ultipa, tina4-ultipa@0.1.0 installed): **18 passed, 0 failed, 0 skipped**
 (11 cases; several carry positive+negative assertions). `tsc -p tsconfig.typecheck.json` exit 0.
 
+### Bolt + Arango matrix run (2026-08-21, lab 192.168.88.99)
+Drivers on lab work checkout (`npm i --no-save`): neo4j-driver@6.2.0, arangojs@10.4.0, tina4-ultipa@0.1.0.
+Engines: Neo4j `bolt://…@:7687`, Memgraph `bolt://:7688` (no auth), ArangoDB `arango://root@:8529/_system`.
+
+| Engine | Live cases | Result |
+|--------|-----------|--------|
+| Neo4j    | 11 (12 assertions) | ✅ all pass |
+| Memgraph | 11 (12 assertions) | ✅ all pass |
+| ArangoDB | 11 (12 assertions) | ✅ all pass |
+| Ultipa   | — | SKIP (no TINA4_TEST_ULTIPA_URL for this run; proven separately above) |
+
+Full run: **44 passed, 0 failed, 1 skipped** (the skip is ultipa-live, env-gated).
+`tsc -p tsconfig.typecheck.json` exit 0.
+
+### Deltas vs the Python reference (Bolt/Arango)
+- Bolt driver configured with `disableLosslessIntegers: true` so `id(n)` + integer
+  props return native JS numbers (Python's neo4j driver returns ints natively). The
+  neutral GraphNode.id is a string, so a Cypher `WHERE id(n) = $id` is fed
+  `Number(id)` back (a non-numeric id → -1, matches nothing → clean null miss).
+- neo4j-driver is imported via `(await import(pkg)).default ?? mod` (CJS/ESM interop);
+  the Cypher statements are byte-for-byte the Python master's.
+- Arango collections are ensured LAZILY on first query (Node adapter constructor is
+  sync and the driver opens no socket in it), vs Python ensuring them in `__init__`.
+  Raw AQL is passed as `db.query({ query, bindVars })` per arangojs.
+- `neo4j-driver` + `arangojs` added to `@tina4/orm` optionalDependencies.
+  package-lock.json intentionally NOT touched (maintainer regenerates it).
+
 ## Bugs
 - (none)
 
@@ -51,4 +89,4 @@ Lab result (2026-08-21, live Ultipa, tina4-ultipa@0.1.0 installed): **18 passed,
 - Driver-optional is proven by a deterministic monkeypatch of the exported `ENGINE_ADAPTERS` registry (mirrors Python swapping `_ENGINE_ADAPTERS["ultipa"]`), so the assertion holds whether or not the real driver is installed.
 - `tina4-ultipa` added to `@tina4/orm` optionalDependencies. package-lock.json intentionally NOT touched (hand-maintained) — needs a maintainer regen to include it.
 
-## Status: Complete (Node). PHP/Ruby still owed for full Feature-139 parity.
+## Status: Complete (Node — Ultipa + Bolt/Neo4j/Memgraph + ArangoDB). PHP/Ruby still owed for full Feature-139 parity.

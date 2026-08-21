@@ -15,8 +15,10 @@
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external"
   },
   "optionalDependencies": {
+    "arangojs": "^10.1.1",
     "mongodb": "^6.0.0",
     "mysql2": "^3.22.5",
+    "neo4j-driver": "^5.28.1",
     "node-firebird": "^2.14.3",
     "odbc": "^2.4.9",
     "pg": "^8.20.0",

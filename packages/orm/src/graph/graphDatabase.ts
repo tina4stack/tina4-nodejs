@@ -39,6 +39,19 @@ export const ENGINE_ADAPTERS: Partial<Record<GraphEngine, AdapterRegistration>> 
     package: "tina4-ultipa",
     installCommand: "npm install tina4-ultipa",
   },
+  bolt: {
+    // Neo4j AND Memgraph — both speak Bolt/Cypher over the neo4j-driver package.
+    load: () => import("./adapters/bolt.js") as Promise<Record<string, unknown>>,
+    className: "BoltGraphAdapter",
+    package: "neo4j-driver",
+    installCommand: "npm install neo4j-driver",
+  },
+  arango: {
+    load: () => import("./adapters/arango.js") as Promise<Record<string, unknown>>,
+    className: "ArangoGraphAdapter",
+    package: "arangojs",
+    installCommand: "npm install arangojs",
+  },
 };
 
 type AdapterConstructor = new (
