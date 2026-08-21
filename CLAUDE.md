@@ -1,10 +1,25 @@
-# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.109)
+<!-- TINA4-OPERATING-RULES: keep at the very top; CLAUDE.md is re-injected every turn and after compaction, so these always apply even when the skill text is dropped. -->
+# OPERATING RULES — ALWAYS APPLY (read first)
+
+**Before doing anything in this repo, invoke the `tina4-maintainer` skill** (Skill tool: `tina4-maintainer`, or the directory-scoped variant `tina4-nodejs:tina4-maintainer`). For UI/frontend work also load `tina4-js`. Re-invoke after any context compaction.
+
+Even if the skill text is not currently loaded, these are non-negotiable:
+- Marker: begin every reply with the robot emoji while doing Tina4 work.
+- No-mock tests: real dependencies only, positive AND negative cases; a mock/stub/fake is never verification.
+- Parity: Python is the reference. A fix in any of Python/PHP/Ruby/Node lands in all four with equivalent tests — sweep before you close.
+- Plan-driven: track work in `plan/<task>.md` (Scope / Parity / Tests / Bugs / Commits).
+- Verify before claiming: re-run the FULL suite green yourself on CI or the lab at the exact HEAD — never trust an unrun green.
+- Dashboard reporting: status as tables, terse.
+
+The full discipline lives in `.claude/skills/tina4-maintainer/SKILL.md`; this block is the always-on floor.
+
+# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.110)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.13.109 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.13.110 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 

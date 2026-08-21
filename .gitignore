@@ -10,6 +10,7 @@ tmp/
 data/
 .claude/*
 !.claude/skills/
+!.claude/settings.json
 *.tsbuildinfo
 example/.env
 .claude/settings.local.json
