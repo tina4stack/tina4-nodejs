@@ -349,6 +349,34 @@ console.log("\n-- DEC-04: toolbar escaping --");
   );
 }
 
+// ── #115: CSP-clean toolbar (no inline style/onclick/script on injected bar) ──
+console.log("\n-- #115: CSP-clean toolbar --");
+{
+  currentPeer = "127.0.0.1";
+  // The toolbar rides EVERY text/html response (including this 404): a plain GET
+  // with Accept: text/html returns the HTML error page + injected toolbar.
+  const res = await get(peerPort, "/some-html-page", { Accept: "text/html" });
+  const html = res.raw;
+  // Isolate the injected toolbar fragment from its external-stylesheet link so
+  // the surrounding error page's own markup can't mask an inline attribute in
+  // the toolbar itself.
+  const marker = '<link rel="stylesheet" href="/__dev/toolbar.css">';
+  const idx = html.indexOf(marker);
+  const frag = idx >= 0 ? html.slice(idx) : "";
+  const scripts = [...frag.matchAll(/<script\b([^>]*)>/g)];
+  const everyScriptHasSrc = scripts.length > 0 && scripts.every((m) => m[1].includes(" src="));
+  assert(
+    "injected toolbar has no inline style onclick or inline script",
+    html.includes("tina4-dev-toolbar") &&
+      idx >= 0 &&
+      frag.includes('<script src="/__dev/toolbar.js"></script>') &&
+      !frag.includes("style=") &&
+      !frag.includes("onclick=") &&
+      everyScriptHasSrc,
+    `toolbar=${html.includes("tina4-dev-toolbar")} link=${idx >= 0} style=${frag.includes("style=")} onclick=${frag.includes("onclick=")} scripts=${scripts.length}`,
+  );
+}
+
 // ── DEC-05: mcp/call tool-execution gate (remote unauth ⇒ 404, tool NOT run) ──
 console.log("\n-- DEC-05: mcp/call gate --");
 {
