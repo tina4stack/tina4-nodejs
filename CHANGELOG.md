@@ -6,6 +6,52 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.114
+
+Feature: the tool loop closes. `Ai.chat` now sends tool declarations and
+carries tool-result turns back on the next turn, provider-neutrally.
+ADR-0061.
+
+### AI tool loop (send + return path, provider-neutral)
+
+- `Ai.chat(messages, { tools: [{name, description, parameters}] })` declares
+  the tools the model may call. `parameters` is a JSON Schema object,
+  passed through unchanged. Translated per provider on the outbound body:
+  OpenAI/local as `[{type:'function', function:{name, description, parameters}}]`;
+  Anthropic as `[{name, description, input_schema}]` (`parameters` renamed).
+- `Ai.chat(messages, { toolChoice })` picks how the model chooses a tool.
+  Four values — `'auto' | 'none' | 'required' | {name: 'x'}` — translated
+  per ADR-0061's table. `'none'` on Anthropic (which has no "none" mode)
+  omits the tools list entirely; the model cannot call what it cannot see.
+- `Ai.chat` accepts a tool-result turn in either provider's form:
+  * OpenAI-style: `{ role: 'tool', tool_call_id, content }`.
+  * Anthropic-style (a user turn): `{ role: 'user', content:
+    [{ type: 'tool_result', tool_use_id, content }] }`.
+  Whichever the caller sends, the client normalises to the current
+  provider's expected shape. An agent loop written against the Tina4
+  surface never has to fork on `TINA4_AI_PROVIDER`. Malformed tools /
+  tool-result parts raise `AiConfigError` before any request is sent.
+- Streaming aggregator (ADR-0060) is unchanged; the receive side now
+  composes with the send side into a full agent-loop round trip.
+
+### Types
+
+- New `AiToolDeclaration` and `AiToolChoice` type exports on `@tina4/core`
+  (renamed the tool-declaration type off the `AiTool` name to keep clear
+  of the existing AI-coding-tool installer type on the same package).
+- `ContentPart` extends with `{ type: 'tool_result', tool_use_id, content }`.
+- `AiMessage` is now a discriminated union: the three chat roles carry
+  string or parts content; the new `tool` role carries `tool_call_id` +
+  string content.
+
+### Tests
+
+- `test/aiClientContract.test.ts` extended with 14 new invariant cases
+  (13 required by the fixture; one extra negative-validation lock-in),
+  driven against a real `http.createServer` fixture that echoes tool
+  bodies and streams full OpenAI + Anthropic agent-loop round trips.
+  35 / 35 pass, real sockets, no mocks.
+
 ## 3.13.113
 
 Feature: typed streaming events, multimodal AI content, and reusable

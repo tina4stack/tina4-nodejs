@@ -22,16 +22,47 @@ export interface ChatResponse {
 /**
  * A multimodal content part. `text` carries plain UTF-8 prose; `image`
  * carries a `data:<media_type>;base64,<payload>` URI or an https:// URL
- * (the client translates to each provider's shape). ADR-0060.
+ * (the client translates to each provider's shape, ADR-0060). `tool_result`
+ * carries the Anthropic-style return of a locally-executed tool call
+ * (ADR-0061); the client translates it to OpenAI's `{role: "tool", ...}`
+ * turn on non-Anthropic providers.
  */
 export type ContentPart =
   | { type: "text"; text: string }
-  | { type: "image"; source: string };
+  | { type: "image"; source: string }
+  | { type: "tool_result"; tool_use_id: string; content: string };
 
 /** The value a caller may pass for `message.content`. ADR-0060. */
 export type AiMessageContent = string | ContentPart[];
 
-export interface AiMessage { role: "system" | "user" | "assistant"; content: AiMessageContent }
+/**
+ * One conversation turn. The three "chat" roles carry a string OR a
+ * content-parts array (ADR-0060). The `tool` role is the OpenAI-style
+ * return of a tool call (ADR-0061); the client translates it to the
+ * Anthropic user-turn form when the current provider is Anthropic.
+ */
+export type AiMessage =
+  | { role: "system" | "user" | "assistant"; content: AiMessageContent }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+/**
+ * A tool declaration the model may call (named `AiToolDeclaration` to
+ * stay out of the way of {@link ./ai.ts}'s existing `AiTool` interface
+ * for AI-coding-tool context installation). `parameters` is a JSON
+ * Schema object; it is passed to the provider unchanged (ADR-0061
+ * `parameters-passthrough`).
+ */
+export interface AiToolDeclaration { name: string; description: string; parameters: Record<string, unknown> }
+
+/**
+ * How the model picks a tool. Four Tina4 values that span the useful cases
+ * across providers (ADR-0061 wire-translation table):
+ *   'auto'       — model may call any tool or answer with text
+ *   'none'       — model must not call a tool (Anthropic omits `tools`)
+ *   'required'   — model must call some tool
+ *   {name: 'x'}  — model must call tool 'x'
+ */
+export type AiToolChoice = "auto" | "none" | "required" | { name: string };
 
 /**
  * One event yielded by `Ai.chat(stream: true)`. The four variants
@@ -57,6 +88,14 @@ export interface AiChatOptions {
   stream?: boolean;
   timeout?: number;
   provider?: "local" | "openai" | "anthropic";
+  /** Tools the model may call. ADR-0061 — translated per provider. */
+  tools?: AiToolDeclaration[];
+  /**
+   * How the model picks a tool. ADR-0061 — translated per provider. If
+   * `'none'` on Anthropic (which has no "none" mode), `tools` is omitted
+   * from the outbound body entirely.
+   */
+  toolChoice?: AiToolChoice;
 }
 export interface AiEmbedOptions { model?: string; timeout?: number; provider?: "local" | "openai" | "anthropic" }
 
@@ -76,6 +115,8 @@ export class Ai {
   static chat(messages: AiMessage[], options?: AiChatOptions & { stream?: false }): Promise<ChatResponse>;
   static chat(messages: AiMessage[], options: AiChatOptions = {}): Promise<ChatResponse> | AsyncGenerator<AiEvent> {
     this.validateMessages(messages);
+    if (options.tools !== undefined) this.validateTools(options.tools);
+    if (options.toolChoice !== undefined) this.validateToolChoice(options.toolChoice);
     const config = this.config("chat", options);
     const body = this.chatBody(config, messages, options);
     const headers = this.headers(config);
@@ -108,15 +149,31 @@ export class Ai {
 
   /**
    * Validate role + content shape. Content may be a string OR a non-empty
-   * list of {type:'text'|'image', ...} parts (ADR-0060). Malformed parts
-   * fail fast with AiConfigError, never reaching the wire.
+   * list of {type:'text'|'image'|'tool_result', ...} parts (ADR-0060 +
+   * ADR-0061). The `tool` role is the OpenAI-style tool-result turn
+   * (ADR-0061). Malformed parts fail fast with AiConfigError, never
+   * reaching the wire.
    */
   private static validateMessages(messages: AiMessage[]): void {
     if (!Array.isArray(messages) || messages.length === 0) {
       throw new AiConfigError("AI messages must contain supported roles and string content");
     }
-    for (const message of messages) {
-      if (!message || !["system", "user", "assistant"].includes(message.role)) {
+    for (const raw of messages) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        throw new AiConfigError("AI messages must contain supported roles and string content");
+      }
+      const message = raw as Record<string, unknown>;
+      const role = message.role;
+      if (role === "tool") {
+        if (typeof message.tool_call_id !== "string" || message.tool_call_id.length === 0) {
+          throw new AiConfigError("AI tool message requires a non-empty string 'tool_call_id'");
+        }
+        if (typeof message.content !== "string") {
+          throw new AiConfigError("AI tool message requires a string 'content'");
+        }
+        continue;
+      }
+      if (role !== "system" && role !== "user" && role !== "assistant") {
         throw new AiConfigError("AI messages must contain supported roles and string content");
       }
       this.validateContent(message.content);
@@ -148,10 +205,65 @@ export class Ai {
         if (record.source.startsWith("data:") && !/^data:[^;,\s]+;base64,[A-Za-z0-9+/=]+$/.test(record.source)) {
           throw new AiConfigError("AI image data URI must be data:<media_type>;base64,<payload>");
         }
+      } else if (partType === "tool_result") {
+        if (typeof record.tool_use_id !== "string" || record.tool_use_id.length === 0) {
+          throw new AiConfigError("AI tool_result part requires a non-empty string 'tool_use_id'");
+        }
+        if (typeof record.content !== "string") {
+          throw new AiConfigError("AI tool_result part requires a string 'content'");
+        }
       } else {
         throw new AiConfigError(`AI content part has unknown type '${String(partType)}'`);
       }
     }
+  }
+
+  /**
+   * Validate the outbound tool declarations (ADR-0061). Each tool needs a
+   * non-empty `name`, a string `description`, and a JSON-Schema-shaped
+   * `parameters` object. Malformed tools fail fast with AiConfigError,
+   * never reaching the wire.
+   */
+  private static validateTools(tools: unknown): void {
+    if (!Array.isArray(tools) || tools.length === 0) {
+      throw new AiConfigError("AI tools must be a non-empty list of {name, description, parameters}");
+    }
+    for (const tool of tools) {
+      if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
+        throw new AiConfigError("AI tool must be an object with name, description, parameters");
+      }
+      const record = tool as Record<string, unknown>;
+      if (typeof record.name !== "string" || record.name.length === 0) {
+        throw new AiConfigError("AI tool requires a non-empty string 'name'");
+      }
+      if (typeof record.description !== "string") {
+        throw new AiConfigError("AI tool requires a string 'description'");
+      }
+      if (!record.parameters || typeof record.parameters !== "object" || Array.isArray(record.parameters)) {
+        throw new AiConfigError("AI tool requires a JSON-Schema object 'parameters'");
+      }
+    }
+  }
+
+  /**
+   * Validate the outbound tool_choice value (ADR-0061). The four accepted
+   * shapes are 'auto', 'none', 'required', and {name: 'x'}.
+   */
+  private static validateToolChoice(choice: unknown): void {
+    if (typeof choice === "string") {
+      if (choice !== "auto" && choice !== "none" && choice !== "required") {
+        throw new AiConfigError("AI toolChoice string must be 'auto', 'none', or 'required'");
+      }
+      return;
+    }
+    if (choice && typeof choice === "object" && !Array.isArray(choice)) {
+      const record = choice as Record<string, unknown>;
+      if (typeof record.name !== "string" || record.name.length === 0) {
+        throw new AiConfigError("AI toolChoice object requires a non-empty string 'name'");
+      }
+      return;
+    }
+    throw new AiConfigError("AI toolChoice must be 'auto'|'none'|'required' or {name: string}");
   }
 
   private static number(name: string, fallback: number, minimum: number): number {
@@ -199,27 +311,108 @@ export class Ai {
 
   /**
    * Build the provider-specific request body from a Tina4-shaped message
-   * list. Multimodal parts are translated per provider (ADR-0060):
-   *   - OpenAI/local: {type:'image_url', image_url:{url}}
-   *   - Anthropic:    {type:'image', source:{type:'base64'|'url', ...}}
+   * list plus optional tool declarations (ADR-0060 + ADR-0061).
+   *
+   * Content parts translate per provider:
+   *   - OpenAI/local: image → {type:'image_url', image_url:{url}}
+   *   - Anthropic:    image → {type:'image', source:{type:'base64'|'url', ...}}
    * String content is preserved verbatim in the OpenAI/local shape and
    * likewise for Anthropic (both accept a bare string).
+   *
+   * Tool-result turns are normalised to the current provider's expected
+   * shape (either the OpenAI `{role:"tool", tool_call_id, content}` turn or
+   * the Anthropic `{role:"user", content:[{type:"tool_result", ...}]}`
+   * turn), so an agent-loop written against Tina4 never has to fork on
+   * TINA4_AI_PROVIDER (ADR-0061 wire translation).
    */
   private static chatBody(config: Config, messages: AiMessage[], options: AiChatOptions): Record<string, unknown> {
-    const translate = (list: AiMessage[]): Array<Record<string, unknown>> =>
-      list.map((message) => ({ role: message.role, content: this.translateContent(message.content, config.provider) }));
-    const body: Record<string, unknown> = { model: config.model, messages: translate(messages), stream: options.stream ?? false };
+    const normalized = this.normalizeMessagesForProvider(messages, config.provider);
+    const body: Record<string, unknown> = { model: config.model, messages: normalized, stream: options.stream ?? false };
     if (options.temperature !== undefined) body.temperature = options.temperature;
     if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
     if (config.provider === "anthropic") {
-      const systemParts = messages
-        .filter((message) => message.role === "system")
-        .map((message) => (typeof message.content === "string" ? message.content : this.contentToPlainText(message.content)));
-      body.messages = translate(messages.filter((message) => message.role !== "system"));
+      const systemParts: string[] = [];
+      for (const message of messages) {
+        if (message.role !== "system") continue;
+        const content = message.content;                                        // narrowed away from tool variant
+        systemParts.push(typeof content === "string" ? content : this.contentToPlainText(content));
+      }
+      body.messages = normalized.filter((message) => message.role !== "system");
       body.max_tokens = options.maxTokens ?? 1024;
       if (systemParts.length) body.system = systemParts.join("\n\n");
     }
+    this.applyTools(body, config.provider, options);
     return body;
+  }
+
+  /**
+   * Normalise the Tina4-shaped messages into the provider's on-wire shape.
+   * The `tool` role and the `tool_result` content part are translated
+   * between the OpenAI and Anthropic forms so either input works against
+   * either provider (ADR-0061 return-path table).
+   */
+  private static normalizeMessagesForProvider(messages: AiMessage[], provider: Config["provider"]): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = [];
+    for (const message of messages) {
+      if (message.role === "tool") {
+        // OpenAI-style tool-result turn. Passthrough on OpenAI/local;
+        // translate to Anthropic's user-turn form on Anthropic.
+        if (provider === "anthropic") {
+          out.push({
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: message.tool_call_id, content: message.content }],
+          });
+        } else {
+          out.push({ role: "tool", tool_call_id: message.tool_call_id, content: message.content });
+        }
+        continue;
+      }
+      if (Array.isArray(message.content) && message.content.some((part) => part.type === "tool_result")) {
+        // Anthropic-style tool-result turn inside a user message.
+        // Passthrough on Anthropic; on OpenAI/local, split each tool_result
+        // part into its own {role:'tool', ...} turn.
+        if (provider === "anthropic") {
+          out.push({ role: message.role, content: this.translateContent(message.content, provider) });
+        } else {
+          for (const part of message.content) {
+            if (part.type === "tool_result") {
+              out.push({ role: "tool", tool_call_id: part.tool_use_id, content: part.content });
+            }
+          }
+        }
+        continue;
+      }
+      out.push({ role: message.role, content: this.translateContent(message.content, provider) });
+    }
+    return out;
+  }
+
+  /**
+   * Attach the outbound `tools` and `tool_choice` (ADR-0061 outbound
+   * translation tables) to the body in place. When toolChoice is 'none'
+   * on Anthropic (Anthropic has no "none" mode) the tools list is omitted
+   * entirely — the model cannot call what it cannot see.
+   */
+  private static applyTools(body: Record<string, unknown>, provider: Config["provider"], options: AiChatOptions): void {
+    const choice = options.toolChoice;
+    const suppressToolsForAnthropic = provider === "anthropic" && choice === "none";
+    if (options.tools !== undefined && !suppressToolsForAnthropic) {
+      body.tools = options.tools.map((tool) =>
+        provider === "anthropic"
+          ? { name: tool.name, description: tool.description, input_schema: tool.parameters }
+          : { type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } },
+      );
+    }
+    if (choice === undefined) return;
+    if (provider === "anthropic") {
+      if (choice === "none") return;                                            // omit tools + tool_choice
+      if (choice === "auto") body.tool_choice = { type: "auto" };
+      else if (choice === "required") body.tool_choice = { type: "any" };
+      else body.tool_choice = { type: "tool", name: choice.name };
+    } else {
+      if (typeof choice === "string") body.tool_choice = choice;                 // 'auto' | 'none' | 'required'
+      else body.tool_choice = { type: "function", function: { name: choice.name } };
+    }
   }
 
   /**
@@ -232,6 +425,7 @@ export class Ai {
     if (provider === "anthropic") {
       return content.map((part) => {
         if (part.type === "text") return { type: "text", text: part.text };
+        if (part.type === "tool_result") return { type: "tool_result", tool_use_id: part.tool_use_id, content: part.content };
         if (part.source.startsWith("data:")) {
           const parsed = this.parseDataUri(part.source);
           return { type: "image", source: { type: "base64", media_type: parsed.mediaType, data: parsed.data } };
@@ -241,6 +435,13 @@ export class Ai {
     }
     return content.map((part) => {
       if (part.type === "text") return { type: "text", text: part.text };
+      if (part.type === "tool_result") {
+        // Reached only when a non-tool_result part sits next to a
+        // tool_result in a user message on OpenAI/local; the tool_result
+        // parts are split out by normalizeMessagesForProvider(), so this
+        // branch is a safe no-op fallback.
+        return { type: "text", text: part.content };
+      }
       return { type: "image_url", image_url: { url: part.source } };
     });
   }

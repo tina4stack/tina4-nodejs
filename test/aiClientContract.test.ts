@@ -1,7 +1,7 @@
-/** ADR-0053 + ADR-0060 app-facing AI client contract over a real HTTP socket. */
+/** ADR-0053 + ADR-0060 + ADR-0061 app-facing AI client contract over a real HTTP socket. */
 import http from "node:http";
 import net from "node:net";
-import { Ai, AiConfigError, AiHTTPError, AiParseError, AiTimeoutError, type AiEvent } from "@tina4/core";
+import { Ai, AiConfigError, AiHTTPError, AiParseError, AiTimeoutError, type AiEvent, type AiMessage } from "@tina4/core";
 
 type Captured = { path: string; body: Record<string, unknown>; authorization?: string; xApiKey?: string };
 const requests: Captured[] = [];
@@ -59,6 +59,41 @@ const server = http.createServer((req, res) => {
     if (path === "/stream-partial") {
       res.writeHead(200, { "content-type": "text/event-stream" });
       return res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: "first" } }] })}\n\n`);
+    }
+    // ── ADR-0061: tool-loop fixture endpoints ─────────────────────────
+    // /agent-openai: first call streams a tool_call; second call streams
+    // final text_delta. Distinguishes turns by looking for a tool result
+    // in the incoming messages.
+    if (path === "/agent-openai") {
+      const openAiMessages = (body.messages ?? []) as Array<Record<string, unknown>>;
+      const hasToolResult = openAiMessages.some((message) => message.role === "tool");
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (!hasToolResult) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_loop", function: { name: "get_weather", arguments: "{\"city\":\"Paris\"}" } }] } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n`);
+      } else {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "It's 20C in Paris" } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      }
+      return res.end("data: [DONE]\n\n");
+    }
+    if (path === "/agent-anthropic") {
+      const anthropicMessages = (body.messages ?? []) as Array<Record<string, unknown>>;
+      const hasToolResult = anthropicMessages.some((message) => {
+        if (!Array.isArray(message.content)) return false;
+        return (message.content as Array<Record<string, unknown>>).some((part) => part.type === "tool_result");
+      });
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (!hasToolResult) {
+        res.write(`data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_loop", name: "get_weather" } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"city\":\"Paris\"}" } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 4 } })}\n\n`);
+      } else {
+        res.write(`data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "It's 20C in Paris" } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 6 } })}\n\n`);
+      }
+      return res.end(`data: ${JSON.stringify({ type: "message_stop" })}\n\n`);
     }
     if (path === "/retry" && counts[path] === 1) return json(429, { error: "later" }, { "retry-after": "0" });
     if (path === "/retry") return json(200, { model: "retry-model", choices: [{ message: { content: "recovered" }, finish_reason: "stop" }], usage: {} });
@@ -259,6 +294,183 @@ try {
   const connectStarted = performance.now();
   const connectTimedOut = await throwsType(() => Ai.chat([{ role: "user", content: "hello" }], { timeout: 1 }), AiTimeoutError);
   assert("ai_timeouts_are_distinct_and_bounded", !!timedOut && timedOut.message.includes("total") && performance.now() - started < 500 && !!connectTimedOut && connectTimedOut.message.includes("connection") && performance.now() - connectStarted < 500 && !!invalidTimeout);
+
+  // ── ADR-0061: tool declaration outbound shape ─────────────────────
+  const weatherTool = {
+    name: "get_weather",
+    description: "Get the current weather for a city.",
+    parameters: {
+      type: "object",
+      properties: { city: { type: "string", description: "The city name" } },
+      required: ["city"],
+    },
+  };
+
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: "weather?" }], { tools: [weatherTool] });
+  const openaiToolsBody = requests.at(-1)?.body.tools as Array<Record<string, unknown>>;
+  assert("ai_tools_openai_body_shape",
+    Array.isArray(openaiToolsBody)
+    && openaiToolsBody.length === 1
+    && openaiToolsBody[0].type === "function"
+    && JSON.stringify(openaiToolsBody[0].function) === JSON.stringify({ name: weatherTool.name, description: weatherTool.description, parameters: weatherTool.parameters }));
+
+  reset(); Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/anthropic" });
+  await Ai.chat([{ role: "user", content: "weather?" }], { tools: [weatherTool] });
+  const anthropicToolsBody = requests.at(-1)?.body.tools as Array<Record<string, unknown>>;
+  assert("ai_tools_anthropic_body_shape",
+    Array.isArray(anthropicToolsBody)
+    && anthropicToolsBody.length === 1
+    && anthropicToolsBody[0].name === weatherTool.name
+    && anthropicToolsBody[0].description === weatherTool.description
+    && JSON.stringify(anthropicToolsBody[0].input_schema) === JSON.stringify(weatherTool.parameters)
+    && !("parameters" in anthropicToolsBody[0])
+    && !("type" in anthropicToolsBody[0]));
+
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: "weather?" }], { tools: [weatherTool] });
+  Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/anthropic" });
+  await Ai.chat([{ role: "user", content: "weather?" }], { tools: [weatherTool] });
+  const passthroughOpenAi = requests[0]?.body.tools as Array<Record<string, unknown>>;
+  const passthroughAnthropic = requests[1]?.body.tools as Array<Record<string, unknown>>;
+  assert("ai_tools_parameters_passthrough_jsonschema",
+    JSON.stringify((passthroughOpenAi[0].function as Record<string, unknown>).parameters) === JSON.stringify(weatherTool.parameters)
+    && JSON.stringify(passthroughAnthropic[0].input_schema) === JSON.stringify(weatherTool.parameters));
+
+  // ── ADR-0061: tool_choice mode translation ────────────────────────
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: "x" }], { tools: [weatherTool], toolChoice: "auto" });
+  Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/anthropic" });
+  await Ai.chat([{ role: "user", content: "x" }], { tools: [weatherTool], toolChoice: "auto" });
+  assert("ai_tool_choice_auto",
+    requests[0]?.body.tool_choice === "auto"
+    && JSON.stringify(requests[1]?.body.tool_choice) === JSON.stringify({ type: "auto" }));
+
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: "x" }], { tools: [weatherTool], toolChoice: "none" });
+  Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/anthropic" });
+  await Ai.chat([{ role: "user", content: "x" }], { tools: [weatherTool], toolChoice: "none" });
+  assert("ai_tool_choice_none",
+    requests[0]?.body.tool_choice === "none"
+    && Array.isArray(requests[0]?.body.tools)
+    && !("tool_choice" in (requests[1]?.body ?? {}))
+    && !("tools" in (requests[1]?.body ?? {})));
+
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: "x" }], { tools: [weatherTool], toolChoice: "required" });
+  Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/anthropic" });
+  await Ai.chat([{ role: "user", content: "x" }], { tools: [weatherTool], toolChoice: "required" });
+  assert("ai_tool_choice_required",
+    requests[0]?.body.tool_choice === "required"
+    && JSON.stringify(requests[1]?.body.tool_choice) === JSON.stringify({ type: "any" }));
+
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: "x" }], { tools: [weatherTool], toolChoice: { name: "get_weather" } });
+  Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/anthropic" });
+  await Ai.chat([{ role: "user", content: "x" }], { tools: [weatherTool], toolChoice: { name: "get_weather" } });
+  assert("ai_tool_choice_named",
+    JSON.stringify(requests[0]?.body.tool_choice) === JSON.stringify({ type: "function", function: { name: "get_weather" } })
+    && JSON.stringify(requests[1]?.body.tool_choice) === JSON.stringify({ type: "tool", name: "get_weather" }));
+
+  // ── ADR-0061: tool_result message-shape (both directions) ─────────
+  const openAiToolTurn: AiMessage = { role: "tool", tool_call_id: "call_loop", content: "20C" };
+  const anthropicToolTurn: AiMessage = { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_loop", content: "20C" }] };
+
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: "weather?" }, { role: "assistant", content: "calling" }, openAiToolTurn], {});
+  const openAiPassthrough = requests.at(-1)?.body.messages as Array<Record<string, unknown>>;
+  const openAiPassthroughTool = openAiPassthrough[openAiPassthrough.length - 1];
+  assert("ai_tool_result_openai_form_passthrough",
+    openAiPassthroughTool.role === "tool"
+    && openAiPassthroughTool.tool_call_id === "call_loop"
+    && openAiPassthroughTool.content === "20C");
+
+  reset(); Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/anthropic" });
+  await Ai.chat([{ role: "user", content: "weather?" }, { role: "assistant", content: "calling" }, anthropicToolTurn], {});
+  const anthropicPassthrough = requests.at(-1)?.body.messages as Array<Record<string, unknown>>;
+  const anthropicPassthroughTool = anthropicPassthrough[anthropicPassthrough.length - 1];
+  const anthropicPassthroughParts = anthropicPassthroughTool.content as Array<Record<string, unknown>>;
+  assert("ai_tool_result_anthropic_form_passthrough",
+    anthropicPassthroughTool.role === "user"
+    && Array.isArray(anthropicPassthroughParts)
+    && anthropicPassthroughParts.length === 1
+    && anthropicPassthroughParts[0].type === "tool_result"
+    && anthropicPassthroughParts[0].tool_use_id === "toolu_loop"
+    && anthropicPassthroughParts[0].content === "20C");
+
+  reset(); Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/anthropic" });
+  await Ai.chat([{ role: "user", content: "weather?" }, { role: "assistant", content: "calling" }, openAiToolTurn], {});
+  const openAiToAnthropic = requests.at(-1)?.body.messages as Array<Record<string, unknown>>;
+  const openAiToAnthropicLast = openAiToAnthropic[openAiToAnthropic.length - 1];
+  const openAiToAnthropicParts = openAiToAnthropicLast.content as Array<Record<string, unknown>>;
+  assert("ai_tool_result_openai_to_anthropic_translation",
+    openAiToAnthropicLast.role === "user"
+    && Array.isArray(openAiToAnthropicParts)
+    && openAiToAnthropicParts.length === 1
+    && openAiToAnthropicParts[0].type === "tool_result"
+    && openAiToAnthropicParts[0].tool_use_id === "call_loop"
+    && openAiToAnthropicParts[0].content === "20C");
+
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: "weather?" }, { role: "assistant", content: "calling" }, anthropicToolTurn], {});
+  const anthropicToOpenAi = requests.at(-1)?.body.messages as Array<Record<string, unknown>>;
+  const anthropicToOpenAiLast = anthropicToOpenAi[anthropicToOpenAi.length - 1];
+  assert("ai_tool_result_anthropic_to_openai_translation",
+    anthropicToOpenAiLast.role === "tool"
+    && anthropicToOpenAiLast.tool_call_id === "toolu_loop"
+    && anthropicToOpenAiLast.content === "20C");
+
+  // ── ADR-0061: full agent-loop round trips (both providers) ────────
+  reset(); process.env.TINA4_AI_URL = base + "/agent-openai";
+  {
+    const conversation: AiMessage[] = [{ role: "user", content: "What's the weather in Paris?" }];
+    let toolCallId = "";
+    let toolCallArgs: Record<string, unknown> = {};
+    for await (const event of Ai.chat(conversation, { tools: [weatherTool], toolChoice: "auto", stream: true })) {
+      if (event.type === "tool_call") { toolCallId = event.id; toolCallArgs = event.args; }
+    }
+    conversation.push({ role: "tool", tool_call_id: toolCallId, content: "20C" });
+    const finalTexts: string[] = [];
+    for await (const event of Ai.chat(conversation, { tools: [weatherTool], stream: true })) {
+      if (event.type === "text_delta") finalTexts.push(event.text);
+    }
+    assert("ai_agent_loop_openai_round_trip",
+      toolCallId === "call_loop"
+      && JSON.stringify(toolCallArgs) === JSON.stringify({ city: "Paris" })
+      && finalTexts.join("") === "It's 20C in Paris"
+      && counts["/agent-openai"] === 2);
+  }
+
+  reset(); Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/agent-anthropic" });
+  {
+    const conversation: AiMessage[] = [{ role: "user", content: "What's the weather in Paris?" }];
+    let toolCallId = "";
+    let toolCallArgs: Record<string, unknown> = {};
+    for await (const event of Ai.chat(conversation, { tools: [weatherTool], toolChoice: "auto", stream: true })) {
+      if (event.type === "tool_call") { toolCallId = event.id; toolCallArgs = event.args; }
+    }
+    conversation.push({ role: "user", content: [{ type: "tool_result", tool_use_id: toolCallId, content: "20C" }] });
+    const finalTexts: string[] = [];
+    for await (const event of Ai.chat(conversation, { tools: [weatherTool], stream: true })) {
+      if (event.type === "text_delta") finalTexts.push(event.text);
+    }
+    assert("ai_agent_loop_anthropic_round_trip",
+      toolCallId === "toolu_loop"
+      && JSON.stringify(toolCallArgs) === JSON.stringify({ city: "Paris" })
+      && finalTexts.join("") === "It's 20C in Paris"
+      && counts["/agent-anthropic"] === 2);
+  }
+
+  // ── ADR-0061: negative validation before wire ─────────────────────
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  const badToolMissingName = await throwsType(() => Ai.chat([{ role: "user", content: "x" }], { tools: [{ name: "", description: "d", parameters: {} }] }), AiConfigError);
+  const badToolMissingParams = await throwsType(() => Ai.chat([{ role: "user", content: "x" }], { tools: [{ name: "n", description: "d" } as never] }), AiConfigError);
+  const badChoiceString = await throwsType(() => Ai.chat([{ role: "user", content: "x" }], { toolChoice: "always" as never }), AiConfigError);
+  const badChoiceObject = await throwsType(() => Ai.chat([{ role: "user", content: "x" }], { toolChoice: { foo: "bar" } as never }), AiConfigError);
+  const badToolMessage = await throwsType(() => Ai.chat([{ role: "tool", tool_call_id: "", content: "x" } as AiMessage]), AiConfigError);
+  const badToolResultPart = await throwsType(() => Ai.chat([{ role: "user", content: [{ type: "tool_result", tool_use_id: "", content: "x" }] }]), AiConfigError);
+  assert("ai_tool_negative_validation_before_wire",
+    !!badToolMissingName && !!badToolMissingParams && !!badChoiceString && !!badChoiceObject && !!badToolMessage && !!badToolResultPart && requests.length === 0);
 
   reset(); process.env.TINA4_AI_URL = base + "/malformed";
   assert("ai_zero_runtime_dependencies_real_socket", !!await throwsType(() => Ai.chat([{ role: "user", content: "hello" }]), AiParseError));

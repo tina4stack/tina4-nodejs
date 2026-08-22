@@ -110,7 +110,7 @@ export type { AiTool } from "./ai.js";
 export { Sso, SSO, SsoError } from "./sso.js";
 export type { SsoOptions } from "./sso.js";
 export { Ai, AiError, AiConfigError, AiHTTPError, AiTimeoutError, AiParseError } from "./aiClient.js";
-export type { ChatResponse, AiMessage, AiChatOptions, AiEmbedOptions, AiEvent, ContentPart, AiMessageContent } from "./aiClient.js";
+export type { ChatResponse, AiMessage, AiChatOptions, AiEmbedOptions, AiEvent, ContentPart, AiMessageContent, AiToolDeclaration, AiToolChoice } from "./aiClient.js";
 export type { ImapMessage, ImapFullMessage, ImapAttachment } from "./messenger.js";
 export { LiteBackend } from "./queueBackends/liteBackend.js";
 export { RabbitMQBackend, parseAmqpUrl } from "./queueBackends/rabbitmqBackend.js";
