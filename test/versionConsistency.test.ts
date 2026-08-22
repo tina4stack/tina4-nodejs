@@ -22,7 +22,7 @@ const rootPackage = readJson("package.json");
 const expected = rootPackage.version;
 const workspacePaths = ["packages/cli", "packages/core", "packages/frond", "packages/orm", "packages/swagger"];
 
-assert("root package is the intended release", expected === "3.13.112", `got ${expected}`);
+assert("root package is the intended release", expected === "3.13.113", `got ${expected}`);
 const claude = readFileSync(join(root, "CLAUDE.md"), "utf-8");
 assert(`CLAUDE.md title shows (v${expected})`, claude.includes(`tina4-nodejs (v${expected})`));
 assert(`CLAUDE.md intro shows v${expected}`, claude.includes(`Tina4 for Node.js/TypeScript v${expected} -`));

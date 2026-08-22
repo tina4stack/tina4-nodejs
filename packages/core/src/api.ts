@@ -30,6 +30,43 @@ export interface ApiResult {
 }
 
 /**
+ * Options for the streaming primitives ({@link Api.streamBytes},
+ * {@link Api.streamLines}, {@link Api.streamSse}). All fields optional.
+ * `timeout` bounds the WHOLE stream (headers + body), matching
+ * `TINA4_API_TIMEOUT`; `connectTimeout` bounds only the connection +
+ * headers-arrival phase, matching `TINA4_API_CONNECT_TIMEOUT`.
+ */
+export interface StreamOptions {
+    method?: string;
+    body?: unknown;
+    headers?: Record<string, string>;
+    contentType?: string;
+    timeout?: number;
+    connectTimeout?: number;
+}
+
+/**
+ * One SSE event yielded by {@link Api.streamSse}. `data` is always present
+ * (multi-line `data:` fields are concatenated with `\n`). `event`, `id`,
+ * `retry` are set only when the corresponding SSE field appeared. `retry`
+ * is a number (milliseconds) per the SSE spec.
+ */
+export interface SseEvent {
+    data: string;
+    event?: string;
+    id?: string;
+    retry?: number;
+}
+
+/** Raised by the streaming primitives on a non-2xx status. */
+export class ApiStreamError extends Error {
+    constructor(message: string, public readonly status: number | null = null) {
+        super(message);
+        this.name = "ApiStreamError";
+    }
+}
+
+/**
  * Result of {@link Api.download}. There is no `body` field — the response
  * body went to disk. `path` is the destination on success and `null` on any
  * error (missing dest, HTTP error status, transport failure); the file is not
@@ -269,6 +306,104 @@ function buildMultipartBody(
     parts.push(Buffer.from(crlf, "utf-8"));
     parts.push(Buffer.from(delimiter + "--" + crlf, "utf-8"));
     return Buffer.concat(parts);
+}
+
+/**
+ * Split an async byte iterable into UTF-8 lines. Handles LF and CRLF; a
+ * multibyte codepoint that lands across a chunk boundary buffers across the
+ * split (TextDecoder({stream: true})). A trailing line without a terminator
+ * yields on EOF.
+ *
+ * Exported so {@link Api} instance methods AND `Ai.chat` streaming share
+ * one framer — ADR-0060's "no duplicate framing code" rule.
+ */
+export async function* parseLineStream(chunks: AsyncIterable<Uint8Array>): AsyncGenerator<string> {
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    for await (const chunk of chunks) {
+        buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+        let idx: number;
+        while ((idx = buffer.indexOf("\n")) >= 0) {
+            let line = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 1);
+            if (line.endsWith("\r")) {
+                line = line.slice(0, -1);
+            }
+            yield line;
+        }
+    }
+    buffer += decoder.decode();
+    if (buffer.length > 0) {
+        if (buffer.endsWith("\r")) {
+            buffer = buffer.slice(0, -1);
+        }
+        yield buffer;
+    }
+}
+
+/**
+ * Parse SSE (Server-Sent Events) framing from a line iterable. Yields
+ * one {@link SseEvent} per event boundary (blank line) or on EOF for a
+ * final trailing event. `:` comment lines are ignored. Fields are
+ * `data` (multi-line concatenated with `\n`), `event`, `id`, `retry`.
+ *
+ * Follows the WHATWG SSE parsing algorithm closely enough for every LLM
+ * provider (OpenAI, Anthropic, local): one leading space after the colon
+ * is stripped, unknown fields are ignored, malformed `retry:` values are
+ * ignored.
+ */
+export async function* parseSseStream(lines: AsyncIterable<string>): AsyncGenerator<SseEvent> {
+    let dataParts: string[] = [];
+    let event: string | undefined;
+    let id: string | undefined;
+    let retry: number | undefined;
+    let has = false;
+    const emit = (): SseEvent | null => {
+        if (!has) return null;
+        const ev: SseEvent = { data: dataParts.join("\n") };
+        if (event !== undefined) ev.event = event;
+        if (id !== undefined) ev.id = id;
+        if (retry !== undefined) ev.retry = retry;
+        return ev;
+    };
+    const reset = (): void => { dataParts = []; event = undefined; id = undefined; retry = undefined; has = false; };
+    for await (const line of lines) {
+        if (line === "") {
+            const ev = emit();
+            if (ev) yield ev;
+            reset();
+            continue;
+        }
+        if (line.startsWith(":")) continue;
+        const colon = line.indexOf(":");
+        const field = colon < 0 ? line : line.slice(0, colon);
+        let value = colon < 0 ? "" : line.slice(colon + 1);
+        if (value.startsWith(" ")) value = value.slice(1);
+        switch (field) {
+            case "data":
+                dataParts.push(value);
+                has = true;
+                break;
+            case "event":
+                event = value;
+                has = true;
+                break;
+            case "id":
+                id = value;
+                has = true;
+                break;
+            case "retry": {
+                const parsed = Number(value);
+                if (Number.isFinite(parsed) && parsed >= 0) {
+                    retry = parsed;
+                    has = true;
+                }
+                break;
+            }
+        }
+    }
+    const trailing = emit();
+    if (trailing) yield trailing;
 }
 
 /** Outcome of a single network exchange (after any redirects are followed). */
@@ -605,7 +740,141 @@ export class Api {
         return { http_code: code, headers: respHeaders, error: null, path: destPath };
     }
 
+    /**
+     * Stream a response body as raw bytes. Yields the chunks the transport
+     * delivers, in order, never buffered whole. Ends cleanly on EOF and
+     * throws on a transport failure or a non-2xx status (body drained
+     * first). No JSON decoding, no line splitting, no framing —
+     * {@link streamLines} and {@link streamSse} build on this primitive.
+     *
+     * Closing the iterator before EOF (a `break` out of a `for await`)
+     * destroys the underlying socket, so a caller who takes only the
+     * first few chunks never leaks the connection.
+     *
+     * `opts.timeout` bounds the whole stream duration (default
+     * `TINA4_API_TIMEOUT` or the client `timeout`); `opts.connectTimeout`
+     * bounds just the connect + headers phase (default
+     * `TINA4_API_CONNECT_TIMEOUT` or 10s).
+     */
+    async *streamBytes(path: string, opts: StreamOptions = {}): AsyncGenerator<Uint8Array> {
+        const url = this.buildUrl(path);
+        const method = (opts.method ?? "GET").toUpperCase();
+        const contentType = opts.contentType ?? "application/json";
+        const { headers, data } = this.buildRequest(method, contentType, opts.body, opts.headers);
+        const totalSec = this.streamSeconds(opts.timeout, "TINA4_API_TIMEOUT", this.timeout);
+        const connectSec = this.streamSeconds(opts.connectTimeout, "TINA4_API_CONNECT_TIMEOUT", 10);
+        const opened = await this.openStreamRequest(method, url, headers, data, connectSec);
+        const res = opened.res;
+        const status = res.statusCode ?? 0;
+        this.storeCookies(res.headers["set-cookie"]);
+        if (status < 200 || status >= 300) {
+            res.resume();
+            throw new ApiStreamError(`stream failed with HTTP ${status}`, status);
+        }
+        let totalTimer: NodeJS.Timeout | null = null;
+        if (totalSec > 0) {
+            totalTimer = setTimeout(() => {
+                res.destroy(new ApiStreamError(`stream total timeout after ${totalSec}s`, null));
+            }, totalSec * 1000);
+        }
+        try {
+            for await (const chunk of res) {
+                yield chunk as Uint8Array;
+            }
+        } finally {
+            if (totalTimer) clearTimeout(totalTimer);
+            if (!res.destroyed) res.destroy();
+        }
+    }
+
+    /**
+     * Stream the response body as UTF-8 lines. Splits on LF or CRLF;
+     * buffers a multibyte codepoint that lands across a chunk boundary;
+     * yields a trailing line without a terminator on EOF. Built on
+     * {@link streamBytes} plus the shared {@link parseLineStream}.
+     */
+    async *streamLines(path: string, opts: StreamOptions = {}): AsyncGenerator<string> {
+        yield* parseLineStream(this.streamBytes(path, opts));
+    }
+
+    /**
+     * Stream the response as SSE (Server-Sent Events). Yields one
+     * {@link SseEvent} per event boundary (blank line) or on EOF for a
+     * trailing event. `data:[DONE]` is delivered as an ordinary event
+     * with `data === "[DONE]"` and the iterator ends on the next EOF.
+     * Built on {@link streamLines} plus the shared {@link parseSseStream}.
+     */
+    async *streamSse(path: string, opts: StreamOptions = {}): AsyncGenerator<SseEvent> {
+        yield* parseSseStream(this.streamLines(path, opts));
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────
+
+    /**
+     * Resolve a stream duration from (in order): explicit `opts` field,
+     * the named env var, then the fallback. Zero disables. A non-numeric
+     * or negative env value warns via a fallback rather than throwing —
+     * a bad env var must not brick every streaming call.
+     */
+    private streamSeconds(explicit: number | undefined, envName: string, fallback: number): number {
+        if (explicit !== undefined) {
+            return Number.isFinite(explicit) && explicit >= 0 ? Number(explicit) : fallback;
+        }
+        const raw = process.env[envName];
+        if (raw === undefined) return fallback;
+        const n = Number(raw);
+        return Number.isFinite(n) && n >= 0 ? n : fallback;
+    }
+
+    /**
+     * Open a streaming HTTP request. Returns the raw
+     * {@link http.IncomingMessage} once headers arrive. Redirects are NOT
+     * followed on streams (a caller who needs a redirect should do a
+     * regular GET first). Connect phase is bounded by `connectSec`;
+     * body-phase timeout is applied by the caller (streamBytes) via
+     * `res.destroy()`.
+     */
+    private openStreamRequest(
+        method: string,
+        url: string,
+        headers: Record<string, string>,
+        data: Buffer | undefined,
+        connectSec: number,
+    ): Promise<{ res: http.IncomingMessage }> {
+        return new Promise((resolve, reject) => {
+            let parsed: URL;
+            try {
+                parsed = new URL(url);
+            } catch (err) {
+                reject(err instanceof Error ? err : new Error(String(err)));
+                return;
+            }
+            const isHttps = parsed.protocol === "https:";
+            const protocolModule = isHttps ? https : http;
+            const options: http.RequestOptions = {
+                hostname: parsed.hostname,
+                port: parsed.port || (isHttps ? 443 : 80),
+                path: parsed.pathname + parsed.search,
+                method,
+                headers,
+                timeout: connectSec > 0 ? connectSec * 1000 : undefined,
+            };
+            if (isHttps && this.ignoreSsl) {
+                (options as https.RequestOptions).rejectUnauthorized = false;
+            }
+            const req = protocolModule.request(options, (res) => {
+                resolve({ res });
+            });
+            req.on("timeout", () => {
+                req.destroy(new ApiStreamError(`stream connect timeout after ${connectSec}s`, null));
+            });
+            req.on("error", (err) => {
+                reject(err);
+            });
+            if (data) req.write(data);
+            req.end();
+        });
+    }
 
     private buildUrl(path: string): string {
         if (path.startsWith("http://") || path.startsWith("https://")) {

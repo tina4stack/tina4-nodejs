@@ -1,6 +1,7 @@
-/** Zero-dependency app-facing AI client (ADR-0053). */
+/** Zero-dependency app-facing AI client (ADR-0053 + ADR-0060). */
 import http, { type IncomingMessage } from "node:http";
 import https from "node:https";
+import { parseLineStream, parseSseStream, type SseEvent } from "./api.js";
 
 export class AiError extends Error {}
 export class AiConfigError extends AiError {}
@@ -17,7 +18,38 @@ export interface ChatResponse {
   finishReason: string | null;
   raw: Record<string, unknown>;
 }
-export interface AiMessage { role: "system" | "user" | "assistant"; content: string }
+
+/**
+ * A multimodal content part. `text` carries plain UTF-8 prose; `image`
+ * carries a `data:<media_type>;base64,<payload>` URI or an https:// URL
+ * (the client translates to each provider's shape). ADR-0060.
+ */
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image"; source: string };
+
+/** The value a caller may pass for `message.content`. ADR-0060. */
+export type AiMessageContent = string | ContentPart[];
+
+export interface AiMessage { role: "system" | "user" | "assistant"; content: AiMessageContent }
+
+/**
+ * One event yielded by `Ai.chat(stream: true)`. The four variants
+ * discriminated by `type`. Text deltas arrive per chunk (typewriter UX);
+ * `tool_call` fires once per call, aggregated from provider fragments;
+ * `done` fires exactly once after all deltas; `error` replaces `done` on
+ * mid-stream failure. ADR-0060.
+ */
+export type AiEvent =
+  | { type: "text_delta"; text: string }
+  | { type: "tool_call"; id: string; name: string; args: Record<string, unknown> }
+  | {
+      type: "done";
+      finishReason: string;
+      usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+    }
+  | { type: "error"; message: string; code?: string };
+
 export interface AiChatOptions {
   model?: string;
   temperature?: number;
@@ -40,9 +72,9 @@ interface Config {
 interface OpenResponse { response: IncomingMessage; cleanup: () => void }
 
 export class Ai {
-  static chat(messages: AiMessage[], options: AiChatOptions & { stream: true }): AsyncGenerator<string>;
+  static chat(messages: AiMessage[], options: AiChatOptions & { stream: true }): AsyncGenerator<AiEvent>;
   static chat(messages: AiMessage[], options?: AiChatOptions & { stream?: false }): Promise<ChatResponse>;
-  static chat(messages: AiMessage[], options: AiChatOptions = {}): Promise<ChatResponse> | AsyncGenerator<string> {
+  static chat(messages: AiMessage[], options: AiChatOptions = {}): Promise<ChatResponse> | AsyncGenerator<AiEvent> {
     this.validateMessages(messages);
     const config = this.config("chat", options);
     const body = this.chatBody(config, messages, options);
@@ -74,9 +106,51 @@ export class Ai {
     }
   }
 
+  /**
+   * Validate role + content shape. Content may be a string OR a non-empty
+   * list of {type:'text'|'image', ...} parts (ADR-0060). Malformed parts
+   * fail fast with AiConfigError, never reaching the wire.
+   */
   private static validateMessages(messages: AiMessage[]): void {
-    if (!Array.isArray(messages) || messages.length === 0 || !messages.every((message) => message && ["system", "user", "assistant"].includes(message.role) && typeof message.content === "string")) {
+    if (!Array.isArray(messages) || messages.length === 0) {
       throw new AiConfigError("AI messages must contain supported roles and string content");
+    }
+    for (const message of messages) {
+      if (!message || !["system", "user", "assistant"].includes(message.role)) {
+        throw new AiConfigError("AI messages must contain supported roles and string content");
+      }
+      this.validateContent(message.content);
+    }
+  }
+
+  private static validateContent(content: unknown): void {
+    if (typeof content === "string") return;
+    if (!Array.isArray(content) || content.length === 0) {
+      throw new AiConfigError("AI message content must be a string or a non-empty list of parts");
+    }
+    for (const part of content) {
+      if (!part || typeof part !== "object" || Array.isArray(part)) {
+        throw new AiConfigError("AI content part must be an object with type and text/source");
+      }
+      const record = part as Record<string, unknown>;
+      const partType = record.type;
+      if (partType === "text") {
+        if (typeof record.text !== "string") {
+          throw new AiConfigError("AI text content part requires a string 'text' field");
+        }
+      } else if (partType === "image") {
+        if (typeof record.source !== "string" || record.source.length === 0) {
+          throw new AiConfigError("AI image content part requires a non-empty string 'source' field");
+        }
+        if (!record.source.startsWith("data:") && !record.source.startsWith("https://")) {
+          throw new AiConfigError("AI image source must be a data: URI or an https:// URL");
+        }
+        if (record.source.startsWith("data:") && !/^data:[^;,\s]+;base64,[A-Za-z0-9+/=]+$/.test(record.source)) {
+          throw new AiConfigError("AI image data URI must be data:<media_type>;base64,<payload>");
+        }
+      } else {
+        throw new AiConfigError(`AI content part has unknown type '${String(partType)}'`);
+      }
     }
   }
 
@@ -123,17 +197,62 @@ export class Ai {
     return headers;
   }
 
+  /**
+   * Build the provider-specific request body from a Tina4-shaped message
+   * list. Multimodal parts are translated per provider (ADR-0060):
+   *   - OpenAI/local: {type:'image_url', image_url:{url}}
+   *   - Anthropic:    {type:'image', source:{type:'base64'|'url', ...}}
+   * String content is preserved verbatim in the OpenAI/local shape and
+   * likewise for Anthropic (both accept a bare string).
+   */
   private static chatBody(config: Config, messages: AiMessage[], options: AiChatOptions): Record<string, unknown> {
-    const body: Record<string, unknown> = { model: config.model, messages, stream: options.stream ?? false };
+    const translate = (list: AiMessage[]): Array<Record<string, unknown>> =>
+      list.map((message) => ({ role: message.role, content: this.translateContent(message.content, config.provider) }));
+    const body: Record<string, unknown> = { model: config.model, messages: translate(messages), stream: options.stream ?? false };
     if (options.temperature !== undefined) body.temperature = options.temperature;
     if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
     if (config.provider === "anthropic") {
-      const system = messages.filter((message) => message.role === "system").map((message) => message.content);
-      body.messages = messages.filter((message) => message.role !== "system");
+      const systemParts = messages
+        .filter((message) => message.role === "system")
+        .map((message) => (typeof message.content === "string" ? message.content : this.contentToPlainText(message.content)));
+      body.messages = translate(messages.filter((message) => message.role !== "system"));
       body.max_tokens = options.maxTokens ?? 1024;
-      if (system.length) body.system = system.join("\n\n");
+      if (systemParts.length) body.system = systemParts.join("\n\n");
     }
     return body;
+  }
+
+  /**
+   * Translate one message content value into the provider's on-wire shape.
+   * A plain string is passed through (both providers accept a string
+   * content). A parts array becomes provider-native content blocks.
+   */
+  private static translateContent(content: AiMessageContent, provider: Config["provider"]): unknown {
+    if (typeof content === "string") return content;
+    if (provider === "anthropic") {
+      return content.map((part) => {
+        if (part.type === "text") return { type: "text", text: part.text };
+        if (part.source.startsWith("data:")) {
+          const parsed = this.parseDataUri(part.source);
+          return { type: "image", source: { type: "base64", media_type: parsed.mediaType, data: parsed.data } };
+        }
+        return { type: "image", source: { type: "url", url: part.source } };
+      });
+    }
+    return content.map((part) => {
+      if (part.type === "text") return { type: "text", text: part.text };
+      return { type: "image_url", image_url: { url: part.source } };
+    });
+  }
+
+  private static parseDataUri(source: string): { mediaType: string; data: string } {
+    const match = /^data:([^;,\s]+);base64,([A-Za-z0-9+/=]+)$/.exec(source);
+    if (!match) throw new AiConfigError("AI image data URI must be data:<media_type>;base64,<payload>");
+    return { mediaType: match[1], data: match[2] };
+  }
+
+  private static contentToPlainText(parts: ContentPart[]): string {
+    return parts.filter((part): part is { type: "text"; text: string } => part.type === "text").map((part) => part.text).join("\n\n");
   }
 
   private static open(config: Config, deadline: number, headers: Record<string, string>, body: Record<string, unknown>): Promise<OpenResponse> {
@@ -226,36 +345,13 @@ export class Ai {
     return this.normalizeChat(config.provider, await this.requestJson(config, headers, body));
   }
 
-  private static streamDelta(provider: Config["provider"], data: string): { completed: boolean; text?: string } {
-    if (data === "[DONE]") return { completed: true };
-    let event: Record<string, unknown>;
-    try { event = JSON.parse(data) as Record<string, unknown>; } catch { throw new AiParseError("AI provider returned malformed stream data"); }
-    const text = provider === "anthropic"
-      ? (event.type === "content_block_delta" ? (event.delta as Record<string, unknown>)?.text : undefined)
-      : (((event.choices as Array<Record<string, unknown>>)?.[0]?.delta as Record<string, unknown>)?.content);
-    if (text !== undefined && text !== null && typeof text !== "string") throw new AiParseError("AI provider returned malformed stream data");
-    return { completed: false, text: text as string | undefined };
-  }
-
-  private static async *streamData(response: IncomingMessage): AsyncGenerator<string> {
-    let buffer = "";
-    for await (const chunk of response) {
-      buffer += Buffer.from(chunk).toString("utf8");
-      let newline: number;
-      while ((newline = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);
-        if (line.startsWith("data:")) yield line.slice(5).trim();
-      }
-    }
-  }
-
-  private static streamError(error: unknown): AiError {
-    if (error instanceof AiError) return error;
-    if (error instanceof Error && error.name === "AbortError") return new AiTimeoutError("AI total request timeout expired");
-    return new AiHTTPError(`AI transport failed (${error instanceof Error ? error.name : "Error"})`);
-  }
-
-  private static async *streamRequest(config: Config, headers: Record<string, string>, body: Record<string, unknown>): AsyncGenerator<string> {
+  /**
+   * Stream the response through the shared {@link parseSseStream} framer
+   * (ADR-0060 rule 5). Translates each SSE data payload into 0..N
+   * {@link AiEvent}s: text_delta per chunk, tool_call aggregated per
+   * index / block, exactly one done (or error) at the end.
+   */
+  private static async *streamRequest(config: Config, headers: Record<string, string>, body: Record<string, unknown>): AsyncGenerator<AiEvent> {
     const deadline = performance.now() + config.totalTimeout * 1000;
     let yielded = false;
     for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
@@ -268,21 +364,245 @@ export class Ai {
           if ((status === 429 || status >= 500) && attempt < config.maxRetries) { await this.retryDelay(opened.response.headers, deadline); opened.cleanup(); opened = null; continue; }
           throw new AiHTTPError(`AI provider returned HTTP ${status}`, status);
         }
-        let completed = false;
-        for await (const data of this.streamData(opened.response)) {
-          const delta = this.streamDelta(config.provider, data);
-          if (delta.completed) { completed = true; break; }
-          if (delta.text === undefined) continue;
-          yielded = true; yield delta.text;
+        const response = opened.response;
+        const chunks = this.responseChunks(response);
+        const events = parseSseStream(parseLineStream(chunks));
+        const aggregator = new AggregateState(config.provider);
+        let done = false;
+        try {
+          for await (const sseEvent of events) {
+            for (const emitted of aggregator.consume(sseEvent)) {
+              yielded = true;
+              yield emitted;
+              if (emitted.type === "done" || emitted.type === "error") { done = true; break; }
+            }
+            if (done) break;
+          }
+        } catch (error) {
+          if (yielded) {
+            yielded = true;
+            yield { type: "error", message: error instanceof AiParseError ? "AI provider returned malformed stream data" : `AI transport failed (${error instanceof Error ? error.name : "Error"})` };
+            opened.cleanup(); opened = null;
+            return;
+          }
+          throw error;
         }
         opened.cleanup(); opened = null;
-        if (completed) return;
-        throw new AiParseError("AI provider stream ended before [DONE]");
+        if (done) return;
+        // Stream ended without a terminator — treat as mid-stream failure.
+        if (yielded) { yield { type: "error", message: "AI provider stream ended before completion" }; return; }
+        throw new AiParseError("AI provider stream ended before completion");
       } catch (error) {
         opened?.cleanup();
         const failure = this.streamError(error);
-        if (failure instanceof AiParseError || (failure instanceof AiHTTPError && failure.status !== null) || yielded || attempt >= config.maxRetries) throw failure;
+        if (yielded) {
+          yield { type: "error", message: failure.message };
+          return;
+        }
+        if (failure instanceof AiParseError || (failure instanceof AiHTTPError && failure.status !== null) || attempt >= config.maxRetries) throw failure;
       }
     }
+  }
+
+  private static async *responseChunks(response: IncomingMessage): AsyncGenerator<Uint8Array> {
+    for await (const chunk of response) {
+      yield chunk as Uint8Array;
+    }
+  }
+
+  private static streamError(error: unknown): AiError {
+    if (error instanceof AiError) return error;
+    if (error instanceof Error && error.name === "AbortError") return new AiTimeoutError("AI total request timeout expired");
+    return new AiHTTPError(`AI transport failed (${error instanceof Error ? error.name : "Error"})`);
+  }
+}
+
+/**
+ * Per-stream aggregation state. Encapsulates the buffering rules for
+ * OpenAI-style `tool_calls[i].function.arguments` fragments and
+ * Anthropic-style `content_block_delta` + `input_json_delta` fragments.
+ * ADR-0060 "tool_call aggregated" invariant.
+ */
+class AggregateState {
+  private toolBuffers = new Map<string, { id: string; name: string; args: string }>();
+  private lastFinishReason: string | null = null;
+  private lastUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null;
+  private doneEmitted = false;
+
+  constructor(private readonly provider: Config["provider"]) {}
+
+  *consume(event: SseEvent): Iterable<AiEvent> {
+    const data = event.data;
+    if (data === "[DONE]") {
+      if (this.doneEmitted) return;
+      yield* this.flushRemainingToolCalls();
+      this.doneEmitted = true;
+      yield {
+        type: "done",
+        finishReason: this.lastFinishReason ?? "stop",
+        ...(this.lastUsage ? { usage: this.lastUsage } : {}),
+      };
+      return;
+    }
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(data) as Record<string, unknown>;
+    } catch {
+      throw new AiParseError("AI provider returned malformed stream data");
+    }
+    if (this.provider === "anthropic") {
+      yield* this.consumeAnthropic(payload);
+    } else {
+      yield* this.consumeOpenAi(payload);
+    }
+  }
+
+  private *consumeOpenAi(payload: Record<string, unknown>): Iterable<AiEvent> {
+    const choices = payload.choices as Array<Record<string, unknown>> | undefined;
+    if (!Array.isArray(choices) || choices.length === 0) return;
+    const choice = choices[0];
+    const delta = (choice.delta ?? {}) as Record<string, unknown>;
+    const content = delta.content;
+    if (typeof content === "string" && content.length > 0) {
+      yield { type: "text_delta", text: content };
+    }
+    const toolCalls = delta.tool_calls as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(toolCalls)) {
+      for (const call of toolCalls) {
+        const index = typeof call.index === "number" ? String(call.index) : String(this.toolBuffers.size);
+        const idFromCall = typeof call.id === "string" ? call.id : "";
+        const fn = (call.function ?? {}) as Record<string, unknown>;
+        const nameFromCall = typeof fn.name === "string" ? fn.name : "";
+        const argsFragment = typeof fn.arguments === "string" ? fn.arguments : "";
+        const existing = this.toolBuffers.get(index) ?? { id: "", name: "", args: "" };
+        if (idFromCall) existing.id = idFromCall;
+        if (nameFromCall) existing.name = nameFromCall;
+        existing.args += argsFragment;
+        this.toolBuffers.set(index, existing);
+        if (existing.name && existing.args) {
+          try {
+            const parsed = JSON.parse(existing.args) as unknown;
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              this.toolBuffers.delete(index);
+              yield { type: "tool_call", id: existing.id || `call_${index}`, name: existing.name, args: parsed as Record<string, unknown> };
+            }
+          } catch {
+            /* args not complete yet — keep buffering */
+          }
+        }
+      }
+    }
+    if (typeof choice.finish_reason === "string" && choice.finish_reason.length > 0) {
+      this.lastFinishReason = choice.finish_reason;
+    }
+    const usage = payload.usage as Record<string, unknown> | undefined;
+    if (usage && typeof usage === "object") {
+      const promptTokens = Number(usage.prompt_tokens ?? 0);
+      const completionTokens = Number(usage.completion_tokens ?? 0);
+      const totalTokens = Number(usage.total_tokens ?? promptTokens + completionTokens);
+      if (Number.isFinite(promptTokens) && Number.isFinite(completionTokens)) {
+        this.lastUsage = { promptTokens, completionTokens, totalTokens };
+      }
+    }
+  }
+
+  private *consumeAnthropic(payload: Record<string, unknown>): Iterable<AiEvent> {
+    const type = payload.type;
+    if (type === "content_block_start") {
+      const block = (payload.content_block ?? {}) as Record<string, unknown>;
+      if (block.type === "tool_use") {
+        const index = String(payload.index ?? this.toolBuffers.size);
+        const id = typeof block.id === "string" ? block.id : `call_${index}`;
+        const name = typeof block.name === "string" ? block.name : "";
+        this.toolBuffers.set(index, { id, name, args: "" });
+      }
+      return;
+    }
+    if (type === "content_block_delta") {
+      const index = String(payload.index ?? 0);
+      const delta = (payload.delta ?? {}) as Record<string, unknown>;
+      if (delta.type === "text_delta" && typeof delta.text === "string" && delta.text.length > 0) {
+        yield { type: "text_delta", text: delta.text };
+        return;
+      }
+      if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+        const existing = this.toolBuffers.get(index);
+        if (existing) existing.args += delta.partial_json;
+      }
+      return;
+    }
+    if (type === "content_block_stop") {
+      const index = String(payload.index ?? 0);
+      const existing = this.toolBuffers.get(index);
+      if (existing && existing.name) {
+        this.toolBuffers.delete(index);
+        try {
+          const parsed = existing.args ? JSON.parse(existing.args) : {};
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            yield { type: "tool_call", id: existing.id, name: existing.name, args: parsed as Record<string, unknown> };
+            return;
+          }
+          throw new Error();
+        } catch {
+          throw new AiParseError("AI provider returned malformed tool-call JSON");
+        }
+      }
+      return;
+    }
+    if (type === "message_delta") {
+      const delta = (payload.delta ?? {}) as Record<string, unknown>;
+      if (typeof delta.stop_reason === "string" && delta.stop_reason.length > 0) {
+        this.lastFinishReason = delta.stop_reason;
+      }
+      const usage = (payload.usage ?? {}) as Record<string, unknown>;
+      if (usage.output_tokens !== undefined || usage.input_tokens !== undefined) {
+        const promptTokens = Number(usage.input_tokens ?? this.lastUsage?.promptTokens ?? 0);
+        const completionTokens = Number(usage.output_tokens ?? this.lastUsage?.completionTokens ?? 0);
+        this.lastUsage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+      }
+      return;
+    }
+    if (type === "message_stop") {
+      if (this.doneEmitted) return;
+      this.doneEmitted = true;
+      yield {
+        type: "done",
+        finishReason: this.lastFinishReason ?? "end_turn",
+        ...(this.lastUsage ? { usage: this.lastUsage } : {}),
+      };
+      return;
+    }
+    if (type === "message_start") {
+      const message = (payload.message ?? {}) as Record<string, unknown>;
+      const usage = (message.usage ?? {}) as Record<string, unknown>;
+      if (usage.input_tokens !== undefined || usage.output_tokens !== undefined) {
+        const promptTokens = Number(usage.input_tokens ?? 0);
+        const completionTokens = Number(usage.output_tokens ?? 0);
+        this.lastUsage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+      }
+      return;
+    }
+    if (type === "error") {
+      const err = (payload.error ?? {}) as Record<string, unknown>;
+      throw new AiParseError(typeof err.message === "string" ? err.message : "AI provider signalled a stream error");
+    }
+  }
+
+  private *flushRemainingToolCalls(): Iterable<AiEvent> {
+    for (const [index, buffered] of this.toolBuffers) {
+      if (buffered.name && buffered.args) {
+        try {
+          const parsed = JSON.parse(buffered.args) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            yield { type: "tool_call", id: buffered.id || `call_${index}`, name: buffered.name, args: parsed as Record<string, unknown> };
+            continue;
+          }
+        } catch {
+          /* fall through to error */
+        }
+        throw new AiParseError("AI provider returned malformed tool-call JSON");
+      }
+    }
+    this.toolBuffers.clear();
   }
 }

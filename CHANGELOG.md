@@ -6,6 +6,64 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.113
+
+Feature: typed streaming events, multimodal AI content, and reusable
+`Api.stream*` primitives. ADR-0060.
+
+### Api streaming primitives (new)
+
+- `Api.streamBytes(path, opts?)` yields the raw response body chunks in
+  transport order, ending on EOF and throwing on transport failure or
+  non-2xx status. No JSON decoding, no framing.
+- `Api.streamLines(path, opts?)` yields UTF-8 lines split on LF or CRLF,
+  buffers a multibyte codepoint across chunk boundaries, and yields a
+  trailing line without a terminator on EOF.
+- `Api.streamSse(path, opts?)` yields `SseEvent {data, event?, id?, retry?}`
+  records with the WHATWG SSE parsing rules — multi-line `data:` fields
+  concatenated with `\n`, `:` comment lines ignored, blank lines act as
+  boundaries. `data:[DONE]` is delivered as an ordinary event.
+- New `StreamOptions` (`method`, `body`, `headers`, `contentType`,
+  `timeout`, `connectTimeout`), new `ApiStreamError` type, and exported
+  helper functions `parseLineStream` / `parseSseStream` so `Ai.chat`
+  streaming shares one framer per language.
+- Env vars: `TINA4_API_TIMEOUT` bounds total stream duration,
+  `TINA4_API_CONNECT_TIMEOUT` bounds just the connect + headers phase.
+  Explicit `opts` fields win. Closing the iterator early destroys the
+  socket promptly — no leaked connections.
+
+### Ai.chat streaming — typed events (BREAKING)
+
+- `Ai.chat(stream: true)` now returns `AsyncGenerator<AiEvent>` where
+  `AiEvent` is `{type: 'text_delta', text}` | `{type: 'tool_call', id,
+  name, args}` | `{type: 'done', finishReason, usage?}` | `{type: 'error',
+  message, code?}`. Text deltas arrive per chunk (typewriter UX);
+  tool_calls are aggregated per index / content block and emitted once
+  when the args JSON parses cleanly; done fires exactly once after all
+  deltas; error replaces done on mid-stream failure.
+- OpenAI-style `tool_calls[i].function.arguments` fragments are buffered
+  per index; Anthropic-style `input_json_delta` under a `content_block_start`
+  tool_use block are buffered until `content_block_stop`.
+- The stream framer is `Api.parseSseStream` — the same symbol that
+  `Api.streamSse` uses, so a fix to SSE handling lands in one place.
+- Migration: `for await (const chunk of stream)` becomes
+  `for await (const event of stream) if (event.type === 'text_delta') ...`.
+  Pre-1.0 API, no shim (ADR-0060 rule 7).
+
+### Ai.chat multimodal content
+
+- `message.content` accepts `string` OR `ContentPart[]` where each part
+  is `{type: 'text', text}` or `{type: 'image', source}`. `source` is
+  either a `data:<media_type>;base64,<payload>` URI or an `https://`
+  URL.
+- Providers get their native shape: OpenAI/local emit
+  `{type: 'image_url', image_url: {url}}`; Anthropic emits
+  `{type: 'image', source: {type: 'base64', media_type, data}}` for data
+  URIs and `{type: 'image', source: {type: 'url', url}}` for https.
+- Malformed parts (unknown `type`, missing `text`/`source`, wrong scheme,
+  empty part list) raise `AiConfigError` before any request goes on the
+  wire.
+
 ## Unreleased
 
 Bug fix (dev mode only, no production impact). `tina4 serve` served every static

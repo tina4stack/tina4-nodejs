@@ -1,7 +1,7 @@
-/** ADR-0053 app-facing AI client contract over a real HTTP socket. */
+/** ADR-0053 + ADR-0060 app-facing AI client contract over a real HTTP socket. */
 import http from "node:http";
 import net from "node:net";
-import { Ai, AiConfigError, AiHTTPError, AiParseError, AiTimeoutError } from "@tina4/core";
+import { Ai, AiConfigError, AiHTTPError, AiParseError, AiTimeoutError, type AiEvent } from "@tina4/core";
 
 type Captured = { path: string; body: Record<string, unknown>; authorization?: string; xApiKey?: string };
 const requests: Captured[] = [];
@@ -37,7 +37,24 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(`data: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hello " } })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "world" } })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } })}\n\n`);
+      return res.end(`data: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+    }
+    if (path === "/stream-openai-tool") {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_abc", function: { name: "get_weather", arguments: "{\"city\":" } }] } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "\"Sydney\",\"unit\":\"c\"}" } }] } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 } })}\n\n`);
       return res.end("data: [DONE]\n\n");
+    }
+    if (path === "/stream-anthropic-tool") {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tool_xyz", name: "get_weather" } })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"city\":" } })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "\"Sydney\"}" } })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 6 } })}\n\n`);
+      return res.end(`data: ${JSON.stringify({ type: "message_stop" })}\n\n`);
     }
     if (path === "/stream-partial") {
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -82,7 +99,8 @@ function reset(): void {
   requests.length = 0;
   for (const key of Object.keys(counts)) delete counts[key];
 }
-async function collect(stream: AsyncIterable<string>): Promise<string[]> { const out: string[] = []; for await (const part of stream) out.push(part); return out; }
+async function collectEvents(stream: AsyncIterable<AiEvent>): Promise<AiEvent[]> { const out: AiEvent[] = []; for await (const event of stream) out.push(event); return out; }
+function textFrom(events: AiEvent[]): string[] { return events.filter((event): event is Extract<AiEvent, { type: "text_delta" }> => event.type === "text_delta").map((event) => event.text); }
 
 try {
   reset(); process.env.TINA4_AI_URL = base + "/openai";
@@ -104,13 +122,120 @@ try {
   reset(); process.env.TINA4_EMBED_URL = base + "/embeddings";
   assert("ai_embedding_cardinality", JSON.stringify(await Ai.embed("one")) === JSON.stringify([0, 0.25, 0.5]) && JSON.stringify(await Ai.embed(["one", "two"])) === JSON.stringify([[0, 0.25, 0.5], [1, 0.25, 0.5]]));
 
+  // ── ADR-0060: typed AiEvent stream ────────────────────────────────
   reset(); process.env.TINA4_AI_URL = base + "/stream-openai";
-  const streamOpenai = await collect(Ai.chat([{ role: "user", content: "hello" }], { stream: true }));
+  const eventsOpenai = await collectEvents(Ai.chat([{ role: "user", content: "hello" }], { stream: true }));
   Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/stream-anthropic" });
-  const streamAnthropic = await collect(Ai.chat([{ role: "user", content: "hello" }], { stream: true }));
-  Object.assign(process.env, { TINA4_AI_PROVIDER: "local", TINA4_AI_MAX_RETRIES: "1", TINA4_AI_URL: base + "/stream-partial" }); delete process.env.TINA4_AI_KEY;
-  const partialError = await throwsType(() => collect(Ai.chat([{ role: "user", content: "hello" }], { stream: true })), AiParseError);
-  assert("ai_stream_is_ordered_deltas", JSON.stringify(streamOpenai) === JSON.stringify(["hello ", "world"]) && JSON.stringify(streamAnthropic) === JSON.stringify(["hello ", "world"]) && !!partialError && counts["/stream-partial"] === 1);
+  const eventsAnthropic = await collectEvents(Ai.chat([{ role: "user", content: "hello" }], { stream: true }));
+  const doneEventsOpenai = eventsOpenai.filter((event) => event.type === "done");
+  const doneEventsAnthropic = eventsAnthropic.filter((event) => event.type === "done");
+  const lastOpenai = eventsOpenai.at(-1);
+  const lastAnthropic = eventsAnthropic.at(-1);
+  assert("ai_stream_text_deltas_order",
+    JSON.stringify(textFrom(eventsOpenai)) === JSON.stringify(["hello ", "world"])
+    && JSON.stringify(textFrom(eventsAnthropic)) === JSON.stringify(["hello ", "world"])
+    && lastOpenai?.type === "done"
+    && lastAnthropic?.type === "done");
+  assert("ai_stream_done_fires_once", doneEventsOpenai.length === 1 && doneEventsAnthropic.length === 1 && (doneEventsOpenai[0] as Extract<AiEvent, {type: "done"}>).finishReason === "stop" && (doneEventsAnthropic[0] as Extract<AiEvent, {type: "done"}>).finishReason === "end_turn");
+
+  reset(); process.env.TINA4_AI_URL = base + "/stream-openai-tool";
+  const openAiToolEvents = await collectEvents(Ai.chat([{ role: "user", content: "call it" }], { stream: true }));
+  const openAiToolCall = openAiToolEvents.find((event) => event.type === "tool_call") as Extract<AiEvent, { type: "tool_call" }> | undefined;
+  const openAiDone = openAiToolEvents.find((event) => event.type === "done") as Extract<AiEvent, { type: "done" }> | undefined;
+  assert("ai_stream_tool_call_aggregated_openai",
+    !!openAiToolCall
+    && openAiToolCall.id === "call_abc"
+    && openAiToolCall.name === "get_weather"
+    && JSON.stringify(openAiToolCall.args) === JSON.stringify({ city: "Sydney", unit: "c" })
+    && !!openAiDone
+    && openAiDone.finishReason === "tool_calls"
+    && openAiDone.usage?.totalTokens === 14
+    && openAiToolEvents.indexOf(openAiToolCall) < openAiToolEvents.indexOf(openAiDone));
+
+  reset(); Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/stream-anthropic-tool" });
+  const anthropicToolEvents = await collectEvents(Ai.chat([{ role: "user", content: "call it" }], { stream: true }));
+  const anthropicToolCall = anthropicToolEvents.find((event) => event.type === "tool_call") as Extract<AiEvent, { type: "tool_call" }> | undefined;
+  const anthropicDone = anthropicToolEvents.find((event) => event.type === "done") as Extract<AiEvent, { type: "done" }> | undefined;
+  assert("ai_stream_tool_call_aggregated_anthropic",
+    !!anthropicToolCall
+    && anthropicToolCall.id === "tool_xyz"
+    && anthropicToolCall.name === "get_weather"
+    && JSON.stringify(anthropicToolCall.args) === JSON.stringify({ city: "Sydney" })
+    && !!anthropicDone
+    && anthropicDone.finishReason === "tool_use");
+
+  reset(); Object.assign(process.env, { TINA4_AI_PROVIDER: "local", TINA4_AI_MAX_RETRIES: "1", TINA4_AI_URL: base + "/stream-partial" }); delete process.env.TINA4_AI_KEY;
+  const partialEvents = await collectEvents(Ai.chat([{ role: "user", content: "hello" }], { stream: true }));
+  const partialTexts = textFrom(partialEvents);
+  const partialLast = partialEvents.at(-1);
+  const partialDoneCount = partialEvents.filter((event) => event.type === "done").length;
+  assert("ai_stream_error_instead_of_done_on_midstream_failure",
+    partialTexts.length === 1
+    && partialTexts[0] === "first"
+    && partialLast?.type === "error"
+    && partialDoneCount === 0
+    && counts["/stream-partial"] === 1);
+  assert("ai_stream_no_retry_after_first_event", counts["/stream-partial"] === 1);
+
+  // ── ADR-0060: multimodal content parts ────────────────────────────
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: [{ type: "text", text: "describe" }] }]);
+  const textPartMessages = requests.at(-1)?.body.messages as Array<Record<string, unknown>>;
+  assert("ai_multimodal_text_part",
+    Array.isArray(textPartMessages)
+    && JSON.stringify(textPartMessages[0].content) === JSON.stringify([{ type: "text", text: "describe" }]));
+
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: [{ type: "text", text: "describe" }, { type: "image", source: "data:image/png;base64,AAAA" }] }]);
+  const dataUriMessages = requests.at(-1)?.body.messages as Array<Record<string, unknown>>;
+  const dataUriParts = dataUriMessages[0].content as Array<Record<string, unknown>>;
+  assert("ai_multimodal_image_data_uri",
+    dataUriParts.length === 2
+    && dataUriParts[0].type === "text"
+    && dataUriParts[1].type === "image_url"
+    && JSON.stringify(dataUriParts[1].image_url) === JSON.stringify({ url: "data:image/png;base64,AAAA" }));
+
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: [{ type: "image", source: "https://example.com/cat.png" }] }]);
+  const urlMessages = requests.at(-1)?.body.messages as Array<Record<string, unknown>>;
+  const urlParts = urlMessages[0].content as Array<Record<string, unknown>>;
+  assert("ai_multimodal_image_url",
+    urlParts.length === 1
+    && urlParts[0].type === "image_url"
+    && JSON.stringify(urlParts[0].image_url) === JSON.stringify({ url: "https://example.com/cat.png" }));
+
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  const badPartUnknown = await throwsType(() => Ai.chat([{ role: "user", content: [{ type: "audio" as "text", text: "no" }] }]), AiConfigError);
+  const badPartMissingSource = await throwsType(() => Ai.chat([{ role: "user", content: [{ type: "image" as "image", source: "" }] }]), AiConfigError);
+  const badPartWrongScheme = await throwsType(() => Ai.chat([{ role: "user", content: [{ type: "image", source: "ftp://nope" }] }]), AiConfigError);
+  const badPartWrongDataUri = await throwsType(() => Ai.chat([{ role: "user", content: [{ type: "image", source: "data:image/png,rawbytes" }] }]), AiConfigError);
+  const emptyParts = await throwsType(() => Ai.chat([{ role: "user", content: [] as never }]), AiConfigError);
+  assert("ai_multimodal_malformed_part_fails_config",
+    !!badPartUnknown && !!badPartMissingSource && !!badPartWrongScheme && !!badPartWrongDataUri && !!emptyParts && requests.length === 0);
+
+  reset(); process.env.TINA4_AI_URL = base + "/openai";
+  await Ai.chat([{ role: "user", content: [{ type: "text", text: "look" }, { type: "image", source: "data:image/jpeg;base64,ZZZZ" }] }]);
+  const openaiShape = requests.at(-1)?.body.messages as Array<Record<string, unknown>>;
+  const openaiParts = openaiShape[0].content as Array<Record<string, unknown>>;
+  assert("ai_multimodal_openai_body_shape",
+    openaiParts[0].type === "text"
+    && (openaiParts[0] as { text: string }).text === "look"
+    && openaiParts[1].type === "image_url"
+    && JSON.stringify(openaiParts[1].image_url) === JSON.stringify({ url: "data:image/jpeg;base64,ZZZZ" }));
+
+  reset(); Object.assign(process.env, { TINA4_AI_PROVIDER: "anthropic", TINA4_AI_KEY: "hosted-key", TINA4_AI_URL: base + "/anthropic" });
+  await Ai.chat([
+    { role: "user", content: [{ type: "text", text: "look" }, { type: "image", source: "data:image/png;base64,BBBB" }, { type: "image", source: "https://example.com/photo.jpg" }] },
+  ]);
+  const anthropicShape = requests.at(-1)?.body.messages as Array<Record<string, unknown>>;
+  const anthropicParts = anthropicShape[0].content as Array<Record<string, unknown>>;
+  assert("ai_multimodal_anthropic_body_shape",
+    anthropicParts.length === 3
+    && anthropicParts[0].type === "text"
+    && anthropicParts[1].type === "image"
+    && JSON.stringify((anthropicParts[1] as { source: unknown }).source) === JSON.stringify({ type: "base64", media_type: "image/png", data: "BBBB" })
+    && anthropicParts[2].type === "image"
+    && JSON.stringify((anthropicParts[2] as { source: unknown }).source) === JSON.stringify({ type: "url", url: "https://example.com/photo.jpg" }));
 
   reset(); process.env.TINA4_AI_URL = base + "/openai";
   await Ai.chat([{ role: "user", content: "hello" }], { model: "call-model", temperature: 0.2, maxTokens: 9 });
