@@ -6,6 +6,40 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.115
+
+Targeted bug fix in the dispatch layer plus the shared skill update.
+No AI/streaming changes in this release.
+
+### #56 — bundler-renamed handler args mapped to the wrong object
+
+A route handler declared as `async (req2, res) =>` (or any bundler-
+renamed / minified first parameter name — `_a`, `$0`, `a`) had its
+first argument silently bound to the Response, so every POST body
+read as empty. The arg mapper only matched the literal names `req`
+and `request`; any other first-arg name fell through to `return res`.
+
+- Arg-mapping logic is now the exported `resolveHandlerArgs()` helper
+  in `packages/core/src/server.ts` with a positional-fallback branch.
+- Positional fallback: any name not resolved as a route param, `req`
+  or `request`, or `res` or `response` binds by position — first
+  unmatched name gets the request, the rest get the response.
+- By-name resolution still wins over positional; route params still
+  take priority.
+- Regression test `test/bugfix-56-bundler-arg-mapping.test.ts` covers
+  named, bundler-renamed, minified, route-param-priority, zero-arity,
+  three-unmatched, and res-alias cases. No mocks — the helper
+  receives real request/response identities and equality checks tell
+  which one bound where.
+
+### Skill: full-stack project layout
+
+- `.claude/skills/tina4-developer-nodejs/SKILL.md` gains a Project
+  layout section that codifies the full-stack paradigm — never
+  pollute the root with source, split into `backend/` and `frontend/`
+  with per-side `plan/` folders, ask the backend framework before
+  scaffolding. See tina4-nodejs#59.
+
 ## 3.13.114
 
 Feature: the tool loop closes. `Ai.chat` now sends tool declarations and
