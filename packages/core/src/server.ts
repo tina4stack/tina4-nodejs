@@ -999,24 +999,49 @@ async function runGlobalMiddlewarePass(
  * or nothing - and each parameter is resolved by its name: a path param wins,
  * then `request`/`req`, then the response.
  */
+/**
+ * Resolve a handler's argument list to `[reqOrParam, resOrParam, ...]` values.
+ *
+ * By-name path preserved (route-param names, `req`/`request`, `res`/`response`)
+ * so existing code keeps its DX. Any remaining unmatched name falls back to
+ * POSITIONAL binding: first unmatched -> request, rest -> response. That makes
+ * dispatch bundler-safe by construction: Bun `--compile` and terser/esbuild
+ * identifier-mangling rename `(req, res)` to `(req2, r$0)` — the by-name path
+ * misses, the positional fallback catches, and the handler still receives the
+ * request as its first argument. Fixes #56.
+ *
+ * Exported so the regression test can pin the behaviour directly, without a
+ * live HTTP server.
+ */
+export function resolveHandlerArgs(
+  handler: unknown,
+  req: Tina4Request,
+  res: Tina4Response,
+  routeParams: Record<string, unknown>,
+): unknown[] {
+  const fnStr = (handler as { toString(): string }).toString();
+  const argMatch = fnStr.match(/^(?:async\s*)?(?:function\s*\w*)?\s*\(([^)]*)\)/);
+  const argNames = argMatch?.[1]?.split(",").map((a: string) => a.trim().replace(/[:=].*/, "")) ?? [];
+  const filteredArgs = argNames.filter((n: string) => n.length > 0);
+  if (filteredArgs.length === 0) return [];
+
+  let unmatchedPos = 0;
+  return filteredArgs.map((name: string) => {
+    if (name in routeParams) return routeParams[name];
+    if (name === "request" || name === "req") return req;
+    if (name === "response" || name === "res") return res;
+    return (unmatchedPos++ === 0) ? req : res;
+  });
+}
+
 async function invokeRouteHandler(
   match: { handler: unknown },
   req: Tina4Request,
   res: Tina4Response,
 ): Promise<unknown> {
   const routeParams = req.params || {};
-  const fnStr = (match.handler as { toString(): string }).toString();
-  const argMatch = fnStr.match(/^(?:async\s*)?(?:function\s*\w*)?\s*\(([^)]*)\)/);
-  const argNames = argMatch?.[1]?.split(",").map((a: string) => a.trim().replace(/[:=].*/, "")) ?? [];
-  const filteredArgs = argNames.filter((n: string) => n.length > 0);
-
-  if (filteredArgs.length === 0) return await (match.handler as any)();
-
-  const args = filteredArgs.map((name: string) => {
-    if (name in routeParams) return routeParams[name];
-    if (name === "request" || name === "req") return req;
-    return res;
-  });
+  const args = resolveHandlerArgs(match.handler, req, res, routeParams);
+  if (args.length === 0) return await (match.handler as any)();
   return await (match.handler as any)(...args);
 }
 
