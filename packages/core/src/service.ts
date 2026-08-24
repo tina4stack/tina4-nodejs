@@ -5,6 +5,7 @@
 import { readdirSync, statSync, watchFile, unwatchFile } from "node:fs";
 import { join, extname } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Log } from "./logger.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -40,6 +41,7 @@ interface RegisteredService {
   context: ServiceContext;
   timerId: ReturnType<typeof setInterval> | null;
   retries: number;
+  instance?: Tina4Service;
 }
 
 const registry = new Map<string, RegisteredService>();
@@ -266,11 +268,10 @@ export class ServiceRunner {
   ): void {
     const merged: ServiceOptions = { daemon: true, ...options };
     this.register(name, service.asHandler(), merged);
-    // Stash the instance on the registry entry so future stop() calls
-    // can route to service.stop().
+    // Stash the instance so stop() can route to service.stop().
     const entry = registry.get(name);
     if (entry) {
-      (entry as unknown as Record<string, unknown>).instance = service;
+      entry.instance = service;
     }
   }
 
@@ -362,6 +363,17 @@ export class ServiceRunner {
       : Array.from(registry.values());
 
     for (const svc of targets) {
+      const instance = svc.instance;
+      if (instance && typeof instance.stop === "function") {
+        try {
+          instance.stop();
+        } catch (err) {
+          Log.error("Error stopping service instance", {
+            name: svc.name,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
       svc.context.running = false;
       if (svc.timerId) {
         clearInterval(svc.timerId);
