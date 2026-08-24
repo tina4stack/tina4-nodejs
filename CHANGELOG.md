@@ -6,6 +6,54 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.116
+
+External PR bundled + version-contract test hardening. Bundles
+Michael Coetzee's ServiceRunner.stop() cooperative-instance-stop
+port and the parseCliManifest helper against stdout pollution.
+
+### #58 ServiceRunner.stop() cooperates with class-based services
+
+Port of tina4-python #118 by @MichaelC8E. Before this, `stop()` only
+flipped `context.running = false` on the ServiceContext. A
+`Tina4Service` subclass whose `run()` loops on `shouldStop()` never
+exited because `shouldStop()` reads a different flag on the instance,
+which the runner never touched. The registry entry already stashed
+the instance (via `registerService()`), so the fix routes through it.
+
+- `packages/core/src/service.ts`: `stop()` iterates registered
+  services and calls `instance.stop()` before flipping
+  `context.running`. Wrapped in try/catch so one misbehaving
+  instance can not strand its siblings.
+- `test/service.test.ts`: real subclass loops on `shouldStop()`,
+  registered via `ServiceRunner.registerService()`, then
+  `ServiceRunner.stop("name")` asserts the loop exited before
+  the join. Michael's local run: 56 passed, 0 failed.
+
+Merged as ead390c76 on v3. CI green on the PR: test suite (11m54s),
+firebird, image boots, snyk. Parity with tina4-python #118,
+tina4-php d990d620, tina4-ruby c7ad16e landing in the same version.
+
+### Version-contract test hardening
+
+- `test/_parseCliManifest.ts`: exported helper that locates the
+  first `{` in child stdout before JSON.parse, and throws a
+  descriptive Error carrying a 400-char stdout slice when the
+  payload is missing or malformed. The `_` prefix is the runner's
+  convention for helpers that are NOT collected as suites.
+- `test/commandsManifest.test.ts`: subprocess env sets
+  `NODE_NO_WARNINGS=1` so a runtime deprecation warning cannot leak
+  to stdout; both JSON.parse call sites (handler and subprocess)
+  route through parseCliManifest so a parse failure surfaces the
+  actual stdout instead of a bare SyntaxError.
+- `test/parseCliManifest.test.ts`: 4 regression cases (2 positive,
+  2 negative). Positive proves noise-prefixed stdout still parses.
+  Negative proves no-JSON and malformed-JSON throw with the
+  context and the actual stdout slice in the message.
+
+Parity: sibling Python / PHP / Ruby fixes landing alongside for the
+same defect class.
+
 ## 3.13.115
 
 Targeted bug fix in the dispatch layer plus the shared skill update.
