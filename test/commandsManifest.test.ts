@@ -30,6 +30,7 @@ import {
   type CommandManifest,
 } from "../packages/cli/src/bin.ts";
 import { GENERATORS } from "../packages/cli/src/commands/generate.ts";
+import { parseCliManifest } from "./_parseCliManifest.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const binPath = resolve(here, "../packages/cli/src/bin.ts");
@@ -144,7 +145,11 @@ assert("build declares a Docker-oriented summary",
 console.log("\n--- runCommands handler (real, in-process) ---");
 const jsonOut = captureLog(() => runCommands(["--json"]));
 let handlerManifest: CommandManifest | null = null;
-try { handlerManifest = JSON.parse(jsonOut) as CommandManifest; } catch { /* stays null */ }
+try {
+  handlerManifest = parseCliManifest(jsonOut, "commandsManifest handler") as CommandManifest;
+} catch (err) {
+  console.error(`    parseCliManifest error: ${err instanceof Error ? err.message : String(err)}`);
+}
 assert("`commands --json` handler prints valid JSON", handlerManifest !== null);
 assert("`commands --json` handler output equals buildCommandManifest()",
   JSON.stringify(handlerManifest) === JSON.stringify(manifest));
@@ -164,7 +169,7 @@ try {
   // A genuinely fresh, empty project dir — nothing to bootstrap from.
   assert("temp dir starts empty", readdirSync(tmpDir).length === 0);
 
-  const env = { ...process.env };
+  const env = { ...process.env, NODE_NO_WARNINGS: "1" };
   delete env.TINA4_DATABASE_URL; // no DB configured at all
 
   let stdout = "";
@@ -187,7 +192,11 @@ try {
   assert("subprocess exited 0", exitCode === 0, `exit ${exitCode}`);
 
   let subManifest: CommandManifest | null = null;
-  try { subManifest = JSON.parse(stdout) as CommandManifest; } catch { /* stays null */ }
+  try {
+    subManifest = parseCliManifest(stdout, "commandsManifest subprocess") as CommandManifest;
+  } catch (err) {
+    console.error(`    parseCliManifest error: ${err instanceof Error ? err.message : String(err)}`);
+  }
   assert("subprocess printed valid JSON", subManifest !== null);
   assert("subprocess framework is 'nodejs'", subManifest?.framework === "nodejs");
   assert("subprocess version is non-empty", (subManifest?.version ?? "").trim().length > 0);
