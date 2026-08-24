@@ -4,6 +4,7 @@
  */
 import {
   ServiceRunner,
+  Tina4Service,
   matchCronField,
   matchesCron,
 } from "../packages/core/src/index.ts";
@@ -316,6 +317,97 @@ assert("daemon service is running", ServiceRunner.isRunning("daemon-svc"));
 ServiceRunner.stop("daemon-svc");
 await sleep(100);
 assert("daemon service stopped via context.running", !ServiceRunner.isRunning("daemon-svc"));
+
+// ─── Class-based stop (f-svc-01 / Python #118) ───────────────────────────────
+//
+// registerService stashes the Tina4Service on the registry entry so stop()
+// can flip shouldStop(). Stock stop() only sets context.running, which
+// asHandler() never reads.
+
+console.log("\n--- Class-based service stop ---");
+
+ServiceRunner.clear();
+
+class CountingService extends Tina4Service {
+  count = 0;
+  exited = false;
+  async run() {
+    while (!this.shouldStop()) {
+      this.count += 1;
+      await sleep(5);
+    }
+    this.exited = true;
+  }
+}
+
+const classService = new CountingService();
+ServiceRunner.registerService("class_service", classService);
+ServiceRunner.start("class_service");
+await sleep(50);
+assert("class service looped before stop", classService.count > 0);
+
+const classCountAtStop = classService.count;
+ServiceRunner.stop("class_service");
+await sleep(80);
+assert(
+  "class service counter frozen after stop",
+  classService.count === classCountAtStop,
+  `expected ${classCountAtStop}, got ${classService.count}`,
+);
+assert("class service run() exited after stop", classService.exited);
+
+console.log("\n--- Class-based stop: raising instance.stop() ---");
+
+ServiceRunner.clear();
+
+class BoomService extends Tina4Service {
+  count = 0;
+  async run() {
+    while (!this.shouldStop()) {
+      this.count += 1;
+      await sleep(5);
+    }
+  }
+  override stop(): void {
+    super.stop();
+    throw new Error("Boom in service A stop");
+  }
+}
+
+class SiblingService extends Tina4Service {
+  count = 0;
+  async run() {
+    while (!this.shouldStop()) {
+      this.count += 1;
+      await sleep(5);
+    }
+  }
+}
+
+const boomService = new BoomService();
+const siblingService = new SiblingService();
+ServiceRunner.registerService("boom", boomService);
+ServiceRunner.registerService("sibling", siblingService);
+ServiceRunner.start();
+await sleep(50);
+assert("boom service looped before stop", boomService.count > 0);
+assert("sibling service looped before stop", siblingService.count > 0);
+
+let stopThrew = false;
+try {
+  ServiceRunner.stop();
+} catch {
+  stopThrew = true;
+}
+assert("stop() does not throw when instance.stop() raises", !stopThrew);
+
+const siblingCountAtStop = siblingService.count;
+await sleep(50);
+assert(
+  "sibling counter frozen after sibling of raising stop()",
+  siblingService.count === siblingCountAtStop,
+  `expected ${siblingCountAtStop}, got ${siblingService.count}`,
+);
 
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
