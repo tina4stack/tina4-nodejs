@@ -103,6 +103,7 @@ called out in the JSDoc on top of `_missing.ts`.
 
 ## Commits
 
-- (hash description — one line per landed change; recorded on push below)
+- f316e16 core: import-hint fallback on @tina4/core (Feature A, 3.13.117)
+- 2fb6028 cli: generate resolution transparency + reserved-word pluralise (Feature B, 3.13.117)
 
-## Status: In Progress
+## Status: Complete (pending owner confirmation)
