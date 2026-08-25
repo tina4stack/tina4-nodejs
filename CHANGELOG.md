@@ -6,6 +6,64 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.117
+
+Agent-experience release. Two paired features (import-hint fallback +
+generate-resolution transparency) attack the same defect class: the
+framework silently transforming input, then failing downstream with a
+message that never names the transformation. See ADR-0062.
+
+### Import-hint fallback on @tina4/core (weaker parity, browsable list)
+
+- `packages/core/package.json` gains an `exports` map with named
+  subpaths (`./router`, `./orm`, `./frond`, ...) plus a wildcard tail
+  `"./*": "./dist/_missing.js"` that catches unknown subpaths.
+- New `packages/core/src/_missing.ts` throws with a browsable list of
+  the real subpaths from the same package's exports (parsed at throw
+  time from `package.json` next to the module).
+- Node's ESM wildcard resolver does NOT pass the requested subpath to
+  the target file, so the hint cannot say "did you mean 'router'?"
+  the way Python, PHP and Ruby can. It lists the real subpaths so the
+  reader can pick. ADR-0062 documents this as an accepted asymmetry.
+  TypeScript users get a compile-time "Cannot find module" from tsc
+  regardless.
+- Only @tina4/core carries the wildcard for this release. Extending
+  to @tina4/orm, @tina4/swagger, @tina4/frond, @tina4/cli is a
+  follow-up.
+- 17 real-subprocess assertions cover positive-happy, negative-hint,
+  negative-no-match, masking-gate, and typecheck parity.
+
+### Generate-command resolution transparency
+
+- `tina4nodejs generate model|route|migration|middleware --json`
+  emits a versioned envelope on stdout, matching the `generate_v1`
+  contract advertised in `commands --json`.
+- `--dry-run` computes resolution WITHOUT writing files. Composable
+  with `--json`.
+- Bare invocation prints a human-readable resolution block to stderr
+  naming every transformation, path and warning; files are written
+  as before.
+- Introduced `SQL_RESERVED_TABLE_NAMES` and `pluralizeReserved` in
+  `packages/cli/src/commands/generate.ts` mirroring the Python master.
+  `generate model Order` now surfaces the "auto-pluralized"
+  transformation and names the `--table X --quote` override flag
+  (parsed; the quoted-identifier ORM mode it opts into is tracked at
+  tina4-python#123 for a follow-up).
+- `commands --json` gains `"resolution_contract": {"version": "1",
+  "envelope": "generate_v1"}` in `packages/cli/src/bin.ts`.
+- 47 real-subprocess + in-process assertions.
+
+Side-fix surfaced by the new reserved-word policy:
+
+- `generate auth` had two hard-coded `SELECT ... FROM user WHERE ...`
+  literals in the register/login templates. With `user` now on the
+  reserved list, the generated `User` model's `tableName` becomes
+  `users` and the SQL 500'd. Both literals fixed to `FROM users`;
+  the coemits test suite catches this end-to-end.
+
+Parity: tina4-python, tina4-php, tina4-ruby ship the same two
+features in 3.13.117 through their language-native mechanisms.
+
 ## 3.13.116
 
 External PR bundled + version-contract test hardening. Bundles
