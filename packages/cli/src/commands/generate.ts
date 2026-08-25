@@ -55,18 +55,25 @@ const FIELD_TYPE_MAP: Record<string, { orm: string; sql: string; defaultVal: str
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function ensureDir(dir: string): void {
+  if (__resolution.dryRun) return; // dry-run creates NO directories
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
 }
 
 function writeFileSafe(path: string, content: string): void {
+  if (__resolution.dryRun) {
+    // Dry-run: record what WOULD have been written, but touch no disk state
+    // and print no per-file line to stdout (that would leak into --json).
+    return;
+  }
   if (existsSync(path)) {
-    console.log(`  File already exists: ${path}`);
+    if (!__resolution.jsonMode) console.log(`  File already exists: ${path}`);
     return;
   }
   writeFileSync(path, content, "utf-8");
-  console.log(`  Created ${path}`);
+  __resolution.actionsTaken.push(`wrote ${path}`);
+  if (!__resolution.jsonMode) console.log(`  Created ${path}`);
 }
 
 export function toSnake(name: string): string {
@@ -76,8 +83,207 @@ export function toSnake(name: string): string {
     .toLowerCase();
 }
 
+// Table names that collide with SQL reserved words. `CREATE TABLE order (...)`
+// is a syntax error on every engine, and the ORM interpolates table names into
+// SQL unquoted (and hands the raw name to driver insert/update/delete), so the
+// safe fix is to never GENERATE one. The plural form is not reserved and reads
+// naturally as a table name. Mirrors the Python master's SQL_RESERVED_TABLE_NAMES
+// at tina4-python/tina4_python/cli/__init__.py.
+export const SQL_RESERVED_TABLE_NAMES: ReadonlySet<string> = new Set([
+  "order", "group", "user", "table", "select", "from", "where", "index",
+  "key", "values", "column", "constraint", "check", "default", "primary",
+  "foreign", "references", "unique", "join", "union", "having", "limit",
+  "offset", "desc", "asc", "case", "when", "then", "else", "end", "and",
+  "or", "not", "null", "insert", "update", "delete", "create", "drop",
+  "alter", "grant", "revoke", "commit", "rollback", "view", "trigger",
+  "procedure", "function", "database", "schema", "session", "set", "into",
+  "as", "on", "by", "inner", "outer", "left", "right", "full", "natural",
+  "using", "with", "distinct", "between", "exists", "like", "in", "is",
+  "all", "any", "cross", "add", "row", "rows", "range", "current", "to",
+]);
+
+/** Simple English plural, used to escape a reserved-word table name. */
+export function pluralizeReserved(name: string): string {
+  if (name.endsWith("y") && !/[aeiouy]y$/i.test(name)) return name.slice(0, -1) + "ies";
+  if (/(s|x|z|ch|sh)$/.test(name)) return name + "es";
+  return name + "s";
+}
+
+/**
+ * Class name -> table name (singular by default), with a resolution side effect:
+ * a name that collides with a SQL reserved word is pluralised (Order -> orders)
+ * AND recorded on the current run's resolution as a `reserved_word_pluralize`
+ * transformation. Every generator routes through here so the model, migration,
+ * routes and tests all agree on the same table name.
+ */
 export function toTableName(name: string): string {
-  return toSnake(name);
+  const raw = toSnake(name);
+  if (SQL_RESERVED_TABLE_NAMES.has(raw)) {
+    const safe = pluralizeReserved(raw);
+    recordTransformation({
+      kind: "reserved_word_pluralize",
+      from: raw,
+      to: safe,
+      reason: `SQL reserved word '${raw}' would break CREATE TABLE`,
+      override: `--table ${raw} --quote (requires quoted-identifier mode, not yet implemented)`,
+    });
+    return safe;
+  }
+  return raw;
+}
+
+// ── Resolution surface — the machine-readable envelope every generator ─
+// populates so `--json` can print it and a human run can print the same
+// facts to stderr. See the JSDoc on `printResolution` below for the envelope
+// shape (kept stable under `resolution_contract` in `commands --json`).
+
+/** One transformation the resolver made — visible to the caller so an AI
+ * agent (or human) knows exactly why the output differs from the input. */
+export interface ResolutionTransformation {
+  kind: string;
+  from?: string;
+  to?: string;
+  reason?: string;
+  override?: string;
+}
+
+export interface ResolutionInput {
+  name: string;
+  fields: string | null;
+}
+
+export interface ResolutionBody {
+  class_name?: string;
+  table_name?: string;
+  file_path?: string;
+  migration_path?: string;
+  routes?: string[];
+  test_paths?: string[];
+  transformations: ResolutionTransformation[];
+}
+
+export interface ResolutionEnvelope {
+  command: "generate";
+  target: string;
+  input: ResolutionInput;
+  resolution: ResolutionBody;
+  actions_taken: string[];
+  dry_run: boolean;
+}
+
+/**
+ * A stable version tag on the JSON envelope. `commands --json` echoes this in
+ * `resolution_contract.envelope` so the tina4 client (or any consumer) can
+ * discover the exact contract this framework speaks. Bump when a breaking
+ * key rename / removal lands; keep unchanged when new OPTIONAL keys are added.
+ */
+export const RESOLUTION_ENVELOPE_VERSION = "generate_v1";
+
+/**
+ * Per-run mutable resolution state. Reset by `resetResolution()` on every
+ * top-level `generate()` call so a sub-generator (crud -> model + route +
+ * migration + form + view + test) contributes to ONE envelope, not many.
+ */
+const __resolution: {
+  target: string;
+  input: ResolutionInput;
+  body: ResolutionBody;
+  actionsTaken: string[];
+  dryRun: boolean;
+  jsonMode: boolean;
+} = {
+  target: "",
+  input: { name: "", fields: null },
+  body: { transformations: [] },
+  actionsTaken: [],
+  dryRun: false,
+  jsonMode: false,
+};
+
+function resetResolution(target: string, input: ResolutionInput, opts: { dryRun: boolean; jsonMode: boolean }): void {
+  __resolution.target = target;
+  __resolution.input = input;
+  __resolution.body = { transformations: [] };
+  __resolution.actionsTaken = [];
+  __resolution.dryRun = opts.dryRun;
+  __resolution.jsonMode = opts.jsonMode;
+}
+
+function recordTransformation(t: ResolutionTransformation): void {
+  __resolution.body.transformations.push(t);
+}
+
+/** Read-only snapshot of the current resolution — exported for tests that
+ * want to inspect it in-process (the CLI itself uses only the envelope). */
+export function currentResolution(): ResolutionEnvelope {
+  return {
+    command: "generate",
+    target: __resolution.target,
+    input: { ...__resolution.input },
+    resolution: {
+      ...__resolution.body,
+      transformations: [...__resolution.body.transformations],
+    },
+    actions_taken: [...__resolution.actionsTaken],
+    dry_run: __resolution.dryRun,
+  };
+}
+
+function setResolutionField<K extends keyof ResolutionBody>(key: K, value: ResolutionBody[K]): void {
+  __resolution.body[key] = value;
+}
+
+function pushRoute(routePattern: string): void {
+  if (!__resolution.body.routes) __resolution.body.routes = [];
+  __resolution.body.routes.push(routePattern);
+}
+
+function pushTestPath(path: string): void {
+  if (!__resolution.body.test_paths) __resolution.body.test_paths = [];
+  __resolution.body.test_paths.push(path);
+}
+
+/**
+ * Emit the resolution — as JSON on STDOUT for `--json`, otherwise as a human
+ * block on STDERR (stderr so a caller piping stdout for other output isn't
+ * polluted). Called from `generate()` BEFORE the files are written on the
+ * human path so an operator sees WHY the tool made its choices before disk
+ * changes; the JSON path prints after collection so the envelope carries the
+ * completed `actions_taken`.
+ */
+function printResolution(): void {
+  if (__resolution.jsonMode) {
+    process.stdout.write(JSON.stringify(currentResolution(), null, 2) + "\n");
+    return;
+  }
+  // Human block on STDERR, so `command | jq …` on stdout works cleanly.
+  const b = __resolution.body;
+  const lines: string[] = [];
+  lines.push("");
+  lines.push(`Generated ${__resolution.target} ${__resolution.input.name}`);
+  if (b.class_name || b.file_path) {
+    const where = b.file_path ? `  (in ${b.file_path})` : "";
+    lines.push(`  class      ${b.class_name ?? __resolution.input.name}${where}`);
+  }
+  if (b.table_name) {
+    const t = b.transformations.find((x) => x.kind === "reserved_word_pluralize");
+    const note = t ? `  (auto-pluralized: '${t.from}' is a SQL reserved word)` : "";
+    lines.push(`  table      ${b.table_name}${note}`);
+  }
+  if (b.routes && b.routes.length) {
+    lines.push(`  routes     ${b.routes.join(", ")}`);
+  }
+  if (b.migration_path) {
+    lines.push(`  migration  ${b.migration_path}`);
+  }
+  const reserved = b.transformations.find((t) => t.kind === "reserved_word_pluralize");
+  if (reserved && reserved.from && reserved.override) {
+    lines.push("");
+    lines.push(`  To keep the raw name '${reserved.from}' as the table:`);
+    lines.push(`    tina4nodejs generate ${__resolution.target} ${__resolution.input.name} ${reserved.override}`);
+  }
+  lines.push("");
+  process.stderr.write(lines.join("\n"));
 }
 
 function toPlural(name: string): string {
@@ -135,6 +341,8 @@ export function parseCliArgs(args: string[]): { flags: Record<string, string | b
   const booleanFlags = new Set([
     "no-browser", "no-reload", "production", "managed", "all", "clear",
     "public", "no-migration",
+    // Resolution transparency (Feature B, 3.13.117): both accept NO value.
+    "json", "dry-run",
   ]);
 
   const flags: Record<string, string | boolean> = {};
@@ -278,6 +486,8 @@ export async function generate(what: string, name: string, extraArgs: string[] =
     console.error('  Options:    --fields "name:string,price:float"  --model ModelName');
     console.error("              --public                 open a route's writes (default: secure)");
     console.error('              --every 5m | --cron "…"   service schedule');
+    console.error("              --json                    emit machine-readable resolution envelope on stdout");
+    console.error("              --dry-run                 report resolution without writing any files");
     process.exit(1);
   }
 
@@ -290,6 +500,15 @@ export async function generate(what: string, name: string, extraArgs: string[] =
 
   const { flags } = parseCliArgs(extraArgs);
 
+  // Feature B (3.13.117): resolution transparency. `--json` emits a stable
+  // envelope on STDOUT (see `RESOLUTION_ENVELOPE_VERSION` / `commands --json`
+  // -> `resolution_contract`); the human path prints the same facts to STDERR.
+  // `--dry-run` short-circuits every file write so an agent can preview the
+  // resolution and then rerun without the flag to commit.
+  const jsonMode = Boolean(flags.json);
+  const dryRun = Boolean(flags["dry-run"]);
+  resetResolution(what, { name, fields: (flags.fields as string) ?? null }, { dryRun, jsonMode });
+
   // Dispatch from the single-source-of-truth GENERATORS registry (also feeds
   // `bin.ts` help + the `commands --json` manifest subcommands).
   const spec = GENERATORS[what];
@@ -300,6 +519,10 @@ export async function generate(what: string, name: string, extraArgs: string[] =
     console.error(`  Available: ${GENERATOR_LIST}`);
     process.exit(1);
   }
+
+  // Emit the resolution AFTER dispatch so `actions_taken` reflects the real
+  // writes (or the empty list under `--dry-run`).
+  printResolution();
 }
 
 // ── Model ───────────────────────────────────────────────────────────
@@ -310,6 +533,18 @@ function generateModel(name: string, flags: Record<string, string | boolean>, em
   const dir = resolve("src/models");
   ensureDir(dir);
   const path = join(dir, `${name}.ts`);
+
+  // Populate the resolution — the top-level `generate()` prints this AFTER
+  // dispatch (as JSON on stdout for `--json`, or as a human block on stderr).
+  // Fields set here are relative paths (portable across cwd) — path.resolve
+  // above uses cwd, then we express the file path relative to it for the
+  // envelope, matching the Python master's `src/models/Order.ts` string.
+  setResolutionField("class_name", name);
+  setResolutionField("table_name", table);
+  setResolutionField("file_path", `src/models/${name}.ts`);
+  // Matches the real path emitted by emitModelTest() so the envelope never
+  // lies about where a generated test lands.
+  pushTestPath(`tests/${table}_model.test.ts`);
 
   // Build field definitions
   const fieldLines: string[] = [
@@ -372,6 +607,15 @@ function generateRoute(name: string, flags: Record<string, string | boolean>, em
   const idDir = join(base, "[id]");
   ensureDir(base);
   ensureDir(idDir);
+
+  // Populate the resolution — routes AND file paths always safe to add; only
+  // set the primary file_path when THIS is the top-level target so a `generate
+  // model` running us as a sub-step doesn't overwrite the model's file_path.
+  pushRoute(`/api/${routePath}`);
+  pushRoute(`/api/${routePath}/{id}`);
+  if (__resolution.target === "route") {
+    setResolutionField("file_path", `src/routes/api/${routePath}/get.ts`);
+  }
 
   const table = model ? toTableName(model) : "";
   // Model import path is RELATIVE to the route file's directory. Files directly
@@ -649,16 +893,30 @@ function generateMigration(
   const dir = resolve("migrations");
   ensureDir(dir);
 
-  // Determine table name
+  // Determine table name. When called from `generateModel` (tableOverride set),
+  // the model already ran toTableName() and recorded any reserved-word
+  // pluralisation — reuse that resolved name so the two files agree. When
+  // called directly (`generate migration create_order`), strip the prefix and
+  // route through toTableName() so a reserved word is caught HERE too.
   let table: string;
   if (tableOverride) {
     table = tableOverride;
   } else {
-    table = name
+    const raw = name
       .replace(/^create_/, "")
       .replace(/^add_/, "")
       .replace(/^drop_/, "");
-    table = toSnake(table);
+    // toTableName also records a `reserved_word_pluralize` transformation
+    // on the resolution when the raw form collides with a SQL reserved word.
+    table = toTableName(raw);
+  }
+  // Only set table_name / migration_path when THIS is the top-level target.
+  // A migration produced by generateModel is a side effect of `generate model`,
+  // and the model already populated `table_name` / `file_path` for that
+  // resolution — overwriting them here would lie about what the caller asked
+  // for. `migration_path` is always safe to record either way.
+  if (__resolution.target === "migration") {
+    setResolutionField("table_name", table);
   }
 
   // Build SQL columns from fields
@@ -667,6 +925,15 @@ function generateMigration(
 
   const fileName = `${ts}_${name}.sql`;
   const path = join(dir, fileName);
+  // Record on the resolution — always safe (a `generate model` run overwrites
+  // this with each nested migration; the last write wins, which is the one
+  // the operator actually gets on disk).
+  setResolutionField("migration_path", `migrations/${fileName}`);
+  if (__resolution.target === "migration") {
+    setResolutionField("file_path", `migrations/${fileName}`);
+    // Matches emitMigrationTest's real write path.
+    pushTestPath(`tests/${table}_migration.test.ts`);
+  }
 
   let upSql: string;
   let downSql: string;
@@ -718,6 +985,14 @@ function generateMiddleware(name: string, _flags: Record<string, string | boolea
   const dir = resolve("src/middleware");
   ensureDir(dir);
   const path = join(dir, `${snake}.ts`);
+
+  // Populate the resolution for --json/--dry-run visibility.
+  if (__resolution.target === "middleware") {
+    setResolutionField("class_name", name);
+    setResolutionField("file_path", `src/middleware/${snake}.ts`);
+    // Matches emitMiddlewareTest's real write path.
+    pushTestPath(`tests/${snake}.test.ts`);
+  }
 
   const content = `import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
@@ -1084,7 +1359,7 @@ export default async function (req: Tina4Request, res: Tina4Response) {
     return;
   }
 
-  const existing = await User.selectOne("SELECT * FROM user WHERE email = ?", [email]);
+  const existing = await User.selectOne("SELECT * FROM users WHERE email = ?", [email]);
   if (existing) {
     res.json({ error: "Email already registered" }, 409);
     return;
@@ -1117,7 +1392,7 @@ export default async function (req: Tina4Request, res: Tina4Response) {
     return;
   }
 
-  const user = await User.selectOne("SELECT * FROM user WHERE email = ?", [email]);
+  const user = await User.selectOne("SELECT * FROM users WHERE email = ?", [email]);
   if (!user || !checkPassword(password, user.toObject().password as string)) {
     res.json({ error: "Invalid credentials" }, 401);
     return;

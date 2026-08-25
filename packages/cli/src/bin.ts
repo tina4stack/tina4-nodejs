@@ -6,7 +6,7 @@ import { migrateStatus } from "./commands/migrateStatus.js";
 import { migrateRollback } from "./commands/migrateRollback.js";
 import { listRoutes } from "./commands/routes.js";
 import { runTests } from "./commands/test.js";
-import { generate, GENERATORS } from "./commands/generate.js";
+import { generate, GENERATORS, RESOLUTION_ENVELOPE_VERSION } from "./commands/generate.js";
 import { runSeeds } from "./commands/seed.js";
 import { queueCommand, QUEUE_SUBCOMMAND_NAMES } from "./commands/queue.js";
 import { buildImage } from "./commands/build.js";
@@ -85,10 +85,24 @@ export interface CommandManifestEntry {
   delegated?: boolean;
 }
 
+/**
+ * A stable, machine-readable pointer to the `generate` resolution envelope
+ * this framework speaks. Consumers (the tina4 client, an AI agent, a
+ * downstream tool) MUST NOT hard-code an envelope shape — instead they read
+ * `resolution_contract.envelope` from this manifest and follow its version.
+ * `version` bumps on any breaking key rename or removal; `envelope` is the
+ * name of the schema (currently `generate_v1`).
+ */
+export interface ResolutionContract {
+  version: string;
+  envelope: string;
+}
+
 export interface CommandManifest {
   framework: string;
   version: string;
   commands: CommandManifestEntry[];
+  resolution_contract: ResolutionContract;
 }
 
 /**
@@ -120,7 +134,15 @@ export function buildCommandManifest(): CommandManifest {
     if (spec.args && spec.args.length) entry.args = [...spec.args];
     commands.push(entry);
   }
-  return { framework: "nodejs", version: readCliVersion(), commands };
+  return {
+    framework: "nodejs",
+    version: readCliVersion(),
+    commands,
+    // Feature B (3.13.117): declare the resolution envelope this framework
+    // emits for `generate <what> --json`. Consumers read this to know which
+    // schema to parse — never hard-code the shape.
+    resolution_contract: { version: "1", envelope: RESOLUTION_ENVELOPE_VERSION },
+  };
 }
 
 /**

@@ -80,7 +80,10 @@ assert("numbers preserved", toSnake("Item2") === "item2");
 // ── toTableName ─────────────────────────────────────────────────────
 console.log("\n--- toTableName ---");
 assert("CamelCase to snake", toTableName("ProductCategory") === "product_category");
-assert("simple name", toTableName("User") === "user");
+// `user` is a SQL reserved word — the framework auto-pluralises to `users`
+// (Feature B, 3.13.117). Same policy in the Python master.
+assert("reserved word auto-pluralised (User -> users)", toTableName("User") === "users");
+assert("non-reserved simple name (Product -> product)", toTableName("Product") === "product");
 assert("already lower", toTableName("orders") === "orders");
 
 // ── toPascal ────────────────────────────────────────────────────────
