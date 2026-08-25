@@ -5,13 +5,34 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "../../types/core/src/index.d.ts",
+  "//": "Every named subpath below points at the same bundled ./dist/index.js because esbuild bundles all sources into ONE file — the bundle re-exports every module's public API. The named list gives an AI-agent (or human) a browsable set of well-known modules; `./*` at the END is the last-resort finder that routes anything else to _missing.js and throws a helpful error naming the real subpaths (see packages/core/src/_missing.ts and ADR-0062 for the Node parity gap vs. Python/PHP/Ruby's targeted did-you-mean).",
   "exports": {
     ".": {
       "import": "./dist/index.js",
       "types": "../../types/core/src/index.d.ts"
-    }
+    },
+    "./router":     { "import": "./dist/index.js", "types": "../../types/core/src/router.d.ts" },
+    "./api":        { "import": "./dist/index.js", "types": "../../types/core/src/api.d.ts" },
+    "./auth":       { "import": "./dist/index.js", "types": "../../types/core/src/auth.d.ts" },
+    "./cache":      { "import": "./dist/index.js", "types": "../../types/core/src/cache.d.ts" },
+    "./queue":      { "import": "./dist/index.js", "types": "../../types/core/src/queue.d.ts" },
+    "./messenger":  { "import": "./dist/index.js", "types": "../../types/core/src/messenger.d.ts" },
+    "./validator":  { "import": "./dist/index.js", "types": "../../types/core/src/validator.d.ts" },
+    "./session":    { "import": "./dist/index.js", "types": "../../types/core/src/session.d.ts" },
+    "./events":     { "import": "./dist/index.js", "types": "../../types/core/src/events.d.ts" },
+    "./middleware": { "import": "./dist/index.js", "types": "../../types/core/src/middleware.d.ts" },
+    "./logger":     { "import": "./dist/index.js", "types": "../../types/core/src/logger.d.ts" },
+    "./websocket":  { "import": "./dist/index.js", "types": "../../types/core/src/websocket.d.ts" },
+    "./i18n":       { "import": "./dist/index.js", "types": "../../types/core/src/i18n.d.ts" },
+    "./health":     { "import": "./dist/index.js", "types": "../../types/core/src/health.d.ts" },
+    "./service":    { "import": "./dist/index.js", "types": "../../types/core/src/service.d.ts" },
+    "./graphql":    { "import": "./dist/index.js", "types": "../../types/core/src/graphql.d.ts" },
+    "./mqtt":       { "import": "./dist/index.js", "types": "../../types/core/src/mqtt.d.ts" },
+    "./sso":        { "import": "./dist/index.js", "types": "../../types/core/src/sso.d.ts" },
+    "./server":     { "import": "./dist/index.js", "types": "../../types/core/src/server.d.ts" },
+    "./*":          "./dist/_missing.js"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external"
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external && esbuild src/_missing.ts --bundle --platform=node --format=esm --outfile=dist/_missing.js --packages=external"
   }
 }
