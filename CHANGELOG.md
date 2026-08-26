@@ -6,6 +6,27 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.119
+
+Version-parity bump. No Node framework code changes; the version
+aligns with:
+
+- tina4-php 3.13.119 which ships @MichaelC8E's skill-repair PR
+  (tina4-php#205), @cwvermaak-codeinfinity's Messenger AUTH/STARTTLS
+  negotiation fix (tina4-php#204), and my ImportHelper autoload
+  non-throw fix (regression from 3.13.117 where the last-resort
+  spl_autoload_register callback threw and broke class_exists()).
+- tina4-ruby 3.13.119 which ships @MichaelC8E's skill-repair PR
+  (tina4-ruby#44) and my CLAUDE.md footer bump.
+- tina4-python 3.13.119 as a version-parity bump.
+
+Node has no equivalent ImportHelper autoload defect (the exports
+wildcard on @tina4/core throws only when the missing module is
+imported, not from an autoload callback that class_exists() might
+trigger) and no equivalent skill-file corruption from the same
+cp1252 round-trip (the Node skill repair from @MichaelC8E landed in
+3.13.118 as PR #60 / 2b3f9a277).
+
 ## 3.13.118
 
 Skill repair by @MichaelC8E (#60, merged as 2b3f9a277) plus a
