@@ -6,6 +6,52 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.118
+
+Skill repair by @MichaelC8E (#60, merged as 2b3f9a277) plus a
+version-parity bump alongside the tina4-python regression fix
+landing in this same version.
+
+### Skill file repairs (#60)
+
+Three defects fixed across the three skill trees this repo carries
+(`.claude/skills/`, `.agents/skills/`, `.cursor/skills/`):
+
+- The Codex and Cursor copies of `tina4-maintainer` were UTF-8-with-BOM
+  with both em dashes replaced by the cp1252 round-trip
+  `c3 a2 e2 82 ac e2 80 9d`. Corruption sat inside the `description`
+  frontmatter (the text that decides when a skill triggers), and the
+  BOM sat in front of the opening `---` (which some frontmatter
+  parsers reject outright). All eight tracked copies across the
+  language ports were byte-identical, so every diff-based check
+  reported them clean.
+- Two shared files had gone stale against canonical in tina4-python.
+  `.claude/skills/tina4-js/SKILL.md` was 88 lines behind and missing
+  the entire "Which flow? IIFE spike vs scaffold" section.
+  `.claude/skills/tina4-maintainer/references/subsystems.md` still
+  claimed `websocket` is NOT a top-level `tina4_python` export (it
+  IS; the subpackage is a callable module forwarding to
+  `core.router.websocket`).
+- The Codex and Cursor copies of `tina4-developer-nodejs` were
+  around 60 lines behind `.claude`, and shipped none of the seven
+  `references/` files their own SKILL.md cites. Every Codex and
+  Cursor user was reading a skill that pointed at documents which
+  were not there, including a broken image embed.
+
+### Version-parity
+
+- Framework code unchanged in Node for 3.13.118. The version bump
+  matches the tina4-python 3.13.118 regression fix
+  (`_import_helper.py` pre-import defect fixed by Michael's
+  tina4-python#124 -> 79c9ecdf0) so all four backends carry the
+  same version.
+- tina4-php and tina4-ruby also bump to 3.13.118 as parity. Their
+  parallel skill-repair PRs (@MichaelC8E's tina4-php#205 and
+  tina4-ruby#44) sit in the runner queue behind the tina4stack
+  Actions backlog and will land in 3.13.119.
+- tina4-php#204 (@cwvermaak-codeinfinity's Messenger AUTH/STARTTLS
+  negotiation fix) is also queued and will ship in 3.13.119.
+
 ## 3.13.117
 
 Agent-experience release. Two paired features (import-hint fallback +

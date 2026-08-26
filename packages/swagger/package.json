@@ -1,6 +1,6 @@
 {
   "name": "@tina4/swagger",
-  "version": "3.13.117",
+  "version": "3.13.118",
   "description": "Tina4 Swagger — auto-generated OpenAPI docs",
   "type": "module",
   "main": "./dist/index.js",
