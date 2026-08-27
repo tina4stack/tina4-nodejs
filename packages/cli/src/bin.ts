@@ -345,10 +345,13 @@ export const COMMANDS: Record<string, CommandSpec> = {
     summary: "Run pending SQL migrations",
   },
   "migrate:create": {
-    handler: async (a) => { await createMigration(a.join(" ") || undefined); },
+    // Pass the full argv through so `migrate:create "add users" --json --dry-run`
+    // reaches the same envelope machinery as `generate migration ...` (ADR-0063).
+    // The delegation itself lives in commands/migrateCreate.ts.
+    handler: async (a) => { await createMigration(a); },
     usage: "<desc>",
     args: ["description"],
-    summary: "Create a new migration file",
+    summary: "Create a new migration file (delegates to generate migration)",
   },
   "migrate:status": {
     handler: async (a) => { await migrateStatus(a[0]); },

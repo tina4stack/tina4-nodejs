@@ -454,6 +454,10 @@ export function parseCliArgs(args: string[]): { flags: Record<string, string | b
   const booleanFlags = new Set([
     "no-browser", "no-reload", "production", "managed", "all", "clear",
     "public", "no-migration",
+    // Suppress the co-emitted migration test (used by the migrate:create
+    // delegation — a plain migrate:create is "just a migration, no test",
+    // matching its pre-3.13.121 UX now that it routes through generate migration).
+    "no-test",
     // Resolution transparency (Feature B, 3.13.117): both accept NO value.
     "json", "dry-run",
   ]);
@@ -573,7 +577,7 @@ export const GENERATORS: Record<string, GeneratorSpec> = {
   model:      { handler: generateModel,                     usage: '<Name> [--fields "name:string,price:float"]', summary: "ORM model + matching migration" },
   route:      { handler: generateRoute,                     usage: "<name> [--model Name] [--public]",            summary: "CRUD route file, secure by default (--public opens writes)" },
   crud:       { handler: generateCrud,                      usage: '<Name> [--fields "..."] [--public]',          summary: "Model + migration + routes + form + view + test" },
-  migration:  { handler: (n, f) => generateMigration(n, f), usage: "<description>",                                summary: "Timestamped migration file (UP/DOWN)" },
+  migration:  { handler: (n, f) => generateMigration(n, f, undefined, undefined, !f["no-test"]), usage: "<description>",                                summary: "Timestamped migration file (UP/DOWN)" },
   middleware: { handler: generateMiddleware,                usage: "<Name>",                                       summary: "Middleware with before/after hooks" },
   test:       { handler: generateTest,                      usage: "<name> [--model Name]",                        summary: "Test file" },
   form:       { handler: generateForm,                      usage: '<Name> [--fields "..."]',                      summary: "Form template with inputs matching model fields" },
@@ -1129,7 +1133,7 @@ function generateCrud(name: string, flags: Record<string, string | boolean>): vo
 
 // ── Migration ───────────────────────────────────────────────────────
 
-function generateMigration(
+export function generateMigration(
   name: string,
   flags: Record<string, string | boolean>,
   fieldsOverride?: Array<[string, string]>,

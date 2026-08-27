@@ -268,9 +268,22 @@ tina4nodejs migrate:status                         # show applied + pending
 tina4nodejs migrate:rollback                       # roll back the last batch
 ```
 
+Two CLI paths, one generator (3.13.121, ADR-0063). Both
+`tina4nodejs migrate:create <desc>` and `tina4nodejs generate migration <desc>`
+produce the same migration file pair through the same generator, so an agent or
+script never has to know which spelling the user typed to know what came out —
+same `generate_v1_1` envelope on `--json`, same `--dry-run` support, same
+`edit_hints[]` / `next[]`, same file naming (`<ts>_<desc>.sql` + `.down.sql`).
+`migrate:create` is the shorter, human-friendly front door (it sanitises a
+free-text description into a filename-safe slug and suppresses the co-emitted
+migration test); `generate migration` composes with `--fields "name:string,..."`
+for schema-aware `create_X` generation and co-emits a test on `create_X` names
+by default. Neither has been deprecated.
+
 Migration files are versioned SQL in **`migrations/`** at the project root — not `src/migrations/`.
 The runner defaults to `resolve("migrations")` (`packages/orm/src/migration.ts`), the CLI scaffolds
-into `migrations/` (`packages/cli/src/commands/migrateCreate.ts`), and `startServer()` auto-applies
+into `migrations/` (`packages/cli/src/commands/migrateCreate.ts` — a thin delegation to
+`packages/cli/src/commands/generate.ts::generateMigration()`), and `startServer()` auto-applies
 `migrations/` at boot (see the auto-migrate footgun below). Write standard SQL:
 
 ```sql
