@@ -185,12 +185,31 @@ console.log("--- 1. positive: both CLIs emit the same generate_v1_1 envelope sha
         Array.isArray(mcRes.transformations) && Array.isArray(gmRes.transformations),
         `mc=${typeof mcRes.transformations} gm=${typeof gmRes.transformations}`);
 
-      // edit_hints[]: SQL carries no `// tina4:edit` markers — both are absent or empty.
-      const emptyOrAbsent = (v: unknown) =>
-        v === undefined || (Array.isArray(v) && v.length === 0);
-      assert("both envelopes: resolution.edit_hints is absent or empty (SQL has no markers)",
-        emptyOrAbsent(mcRes.edit_hints) && emptyOrAbsent(gmRes.edit_hints),
+      // edit_hints[]: since 3.13.121 (ADR-0063) the scanner recognises SQL
+      // `-- tina4:edit` markers too, and the migration up/down templates now
+      // bake them in. Both CLIs delegate to the SAME generator, so both
+      // envelopes must carry non-empty edit_hints[] pointing at the
+      // migrations/*.sql (and *.down.sql) files. A drift here would mean
+      // migrate:create stopped delegating (regression).
+      const nonEmptySqlHints = (v: unknown) =>
+        Array.isArray(v)
+          && v.length >= 1
+          && (v as EditHintShape[]).every((h) => typeof h?.file === "string" && h.file.startsWith("migrations/") && h.file.endsWith(".sql"));
+      assert("both envelopes: resolution.edit_hints is a non-empty array of migrations/*.sql hints",
+        nonEmptySqlHints(mcRes.edit_hints) && nonEmptySqlHints(gmRes.edit_hints),
         `mc=${JSON.stringify(mcRes.edit_hints)} gm=${JSON.stringify(gmRes.edit_hints)}`);
+      // Delegation contract: both routes produce IDENTICAL edit_hints[] modulo
+      // the generated file's timestamp path (the mkdtemp dirs differ but the
+      // relative migrations/<ts>_create_users.sql path shape is the same).
+      const stripTs = (hints: EditHintShape[]) =>
+        JSON.stringify(hints.map((h) => ({
+          file: h.file.replace(/migrations\/\d+_/, "migrations/<ts>_"),
+          line: h.line,
+          label: h.label,
+        })));
+      assert("both envelopes: resolution.edit_hints[] shape is identical (path timestamps stripped)",
+        stripTs(mcRes.edit_hints as EditHintShape[]) === stripTs(gmRes.edit_hints as EditHintShape[]),
+        `mc=${stripTs(mcRes.edit_hints as EditHintShape[])} gm=${stripTs(gmRes.edit_hints as EditHintShape[])}`);
 
       // next[]: curated per-verb next-steps — must be identical (same verb).
       assert("both envelopes: resolution.next is a non-empty array",
@@ -439,3 +458,6 @@ console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1
 console.log(`${"=".repeat(50)}\n`);
 
 process.exit(fail > 0 ? 1 : 0);
+
+// ── Local type helpers ───────────────────────────────────────────────────
+interface EditHintShape { file: string; line: number; label: string; }

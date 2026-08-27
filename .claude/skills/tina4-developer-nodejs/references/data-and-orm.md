@@ -280,6 +280,18 @@ migration test); `generate migration` composes with `--fields "name:string,..."`
 for schema-aware `create_X` generation and co-emits a test on `create_X` names
 by default. Neither has been deprecated.
 
+**Twig (form, view) and SQL (migration) templates participate in `edit_hints[]`
+from 3.13.121 (ADR-0063).** The scanner in `packages/cli/src/commands/generate.ts`
+now matches four comment styles — `//`, `#`, `--`, and `{# ... #}` — so a
+`{# tina4:edit <label> #}` marker baked into a form or view Twig template and a
+`-- tina4:edit <label>` marker baked into a migration up + down SQL file each
+show up as an `edit_hints[]` entry (`{file, line, label}`) in the envelope,
+alongside the existing `//` markers in TS/JS routes and models. Ports PHP's
+language-agnostic regex to JS/TS; parity with tina4-ruby's `# / --` scanner and
+tina4-php's four-style scanner. Before 3.13.121 those three verbs returned
+`edit_hints: []` even though they are exactly the verbs an operator most needs
+an actionable pointer for (Twig/SQL is flat content — no fill-spec dance).
+
 Migration files are versioned SQL in **`migrations/`** at the project root — not `src/migrations/`.
 The runner defaults to `resolve("migrations")` (`packages/orm/src/migration.ts`), the CLI scaffolds
 into `migrations/` (`packages/cli/src/commands/migrateCreate.ts` — a thin delegation to

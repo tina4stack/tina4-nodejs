@@ -75,8 +75,13 @@ function runGenerate(cwd: string, args: string[]): { stdout: string; stderr: str
  * Line-anchored marker regex — the SAME shape the scanner uses in
  * packages/cli/src/commands/generate.ts. Used only by the mutation-gate to
  * prove the scanner would notice a marker being stripped.
+ *
+ * Multi-style since 3.13.121 (ADR-0063): matches `//` (TS/JS), `--` (SQL),
+ * `{# ... #}` (Twig), and `#` (Python/Ruby-style). Composite verbs (crud,
+ * auth) emit routes AND a migration, so the envelope now carries both TS
+ * and SQL hints; a `//`-only regex here would falsely FAIL the SQL entries.
  */
-const MARKER_RX = /^\s*\/\/\s*tina4:edit\s+(.+?)\s*$/;
+const MARKER_RX = /^\s*(?:\/\/|--|\{#|#)\s*tina4:edit\s+(.+?)(?:\s*#\})?\s*$/;
 
 console.log("=== `generate` resolution envelope v1.1 (ADR-0063) ===\n");
 
@@ -310,13 +315,18 @@ console.log("\n--- 4. marker-match: each edit_hint file:line is a real `// tina4
   }
 }
 
-// ── 5. Empty arrays are legal — a template-less verb still returns valid JSON ──
-//     `migration` writes an SQL file only (marker syntax is TS/JS specific);
-//     its edit_hints[] is absent or empty, its next[] is populated. The
-//     envelope must still parse and carry the required v1 shape.
-console.log("\n--- 5. empty-arrays: a template-less verb (migration) returns a valid envelope ---");
+// ── 5. `migration` carries SQL-style edit_hints[] since 3.13.121 ──
+//     Before 3.13.121 SQL templates carried no markers — the scanner was
+//     TS/JS-only, so a `generate migration` returned an empty/absent
+//     `edit_hints[]`. 3.13.121 (ADR-0063) extends the scanner to also
+//     recognise `-- tina4:edit` (SQL) and `{# tina4:edit ... #}` (Twig),
+//     and bakes markers into the migration up + down templates. This
+//     assertion flipped from "empty is legal" to "non-empty is required"
+//     — the migration writes edit_hints[] entries pointing at real
+//     `-- tina4:edit` lines in the .sql + .down.sql files.
+console.log("\n--- 5. migration edit_hints[] now populated (SQL scanner, ADR-0063 v1.1) ---");
 {
-  const tmpDir = mkdtempSync(join(tmpdir(), "tina4-genv11-empty-"));
+  const tmpDir = mkdtempSync(join(tmpdir(), "tina4-genv11-mig-"));
   try {
     const r = runGenerate(tmpDir, ["migration", "add_price_column", "--json", "--dry-run"]);
     assert("subprocess exited 0", r.exitCode === 0,
@@ -332,12 +342,19 @@ console.log("\n--- 5. empty-arrays: a template-less verb (migration) returns a v
       assert("envelope.target === 'migration'", env.target === "migration");
       const resObj = env.resolution as Record<string, unknown>;
 
-      // edit_hints[] is absent OR empty — both are legal (SQL carries no markers)
+      // edit_hints[] is now REQUIRED to be non-empty (SQL markers are baked in)
       const hintsField = resObj.edit_hints;
-      const hintsOk = hintsField === undefined
-        || (Array.isArray(hintsField) && (hintsField as unknown[]).length === 0);
-      assert("edit_hints[] is absent or empty (SQL has no markers)",
-        hintsOk, `got ${JSON.stringify(hintsField)}`);
+      assert("migration: edit_hints[] is a non-empty array (SQL markers now scanned)",
+        Array.isArray(hintsField) && (hintsField as unknown[]).length >= 1,
+        `got ${JSON.stringify(hintsField)}`);
+
+      // Every entry points at a `migrations/*.sql` file with a real
+      // `-- tina4:edit` label. Any TS/JS hint here would be a regression
+      // (migration writes no TS).
+      const hints = (hintsField as EditHintShape[]) ?? [];
+      const allSql = hints.every((h) => h.file.startsWith("migrations/") && h.file.endsWith(".sql"));
+      assert("migration: every hint points at a migrations/*.sql file",
+        allSql, `got files: ${hints.map((h) => h.file).join(", ")}`);
 
       // next[] IS populated for migration (curated per verb)
       assert("next[] is populated for migration",

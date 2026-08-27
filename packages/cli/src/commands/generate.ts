@@ -306,24 +306,41 @@ function toRelPath(absPath: string): string {
   return sep === "/" ? rel : rel.split(sep).join("/");
 }
 
-// Line-anchored `// tina4:edit LABEL` marker regex.
+// Line-anchored `tina4:edit LABEL` marker regex (multi-style, ADR-0063 v1.1).
 //
-// Line-anchored (`^\s*//`) so the marker must be at the START of a code line
-// (after optional whitespace) — a marker embedded inside a template string
-// literal never falsely matches. LABEL is captured greedily until end of
-// line, then trimmed on push.
-const TINA4_EDIT_MARKER = /^\s*\/\/\s*tina4:edit\s+(.+?)\s*$/;
+// Line-anchored (`^\s*<comment-lead>`) so the marker must be at the START of
+// a code line (after optional whitespace) — a marker embedded inside a
+// template string literal never falsely matches. LABEL is captured greedily
+// until end of line (or the closing `#}` for a Twig comment), then trimmed
+// on push. Four comment styles are recognised, one regex per style — bundled
+// into one alternation so the scanner is O(lines):
+//
+//   // tina4:edit LABEL            TS/JS/C/Java/Rust  (existing)
+//   #  tina4:edit LABEL            Python/Ruby/shell  (parity)
+//   -- tina4:edit LABEL            SQL migrations
+//   {# tina4:edit LABEL #}         Twig / Frond templates
+//
+// Ports the same shape PHP uses in `bin/tina4php::collectEditHintsFromContent`
+// (`~(?://|--|\{#)\s*tina4:edit\s+(.+?)(?:\s*#\})?\s*$~`). The `#` bare-
+// comment style is added on top so a Ruby/Python-style template (none exist
+// today, but the scanner is now language-agnostic) is covered too.
+const TINA4_EDIT_MARKER = /^\s*(?:\/\/|--|\{#|#)\s*tina4:edit\s+(.+?)(?:\s*#\})?\s*$/;
 
 /**
- * Scan `content` for `// tina4:edit …` markers and record one EditHint per
- * match against the given absolute path. Called from every `writeFileSafe`
- * — including under `--dry-run` — so the envelope promises the same hints in
- * preview and post-write. Files whose extension is not TS/JS are skipped
- * (the marker syntax is TS/JS specific — `.sql` and `.twig` templates never
- * carry markers).
+ * Scan `content` for `tina4:edit …` markers (any of the 4 comment styles)
+ * and record one EditHint per match against the given absolute path. Called
+ * from every `writeFileSafe` — including under `--dry-run` — so the envelope
+ * promises the same hints in preview and post-write.
+ *
+ * File-extension gate keeps the scan cheap: only text/code files where a
+ * marker could reasonably live are opened. TS/JS + SQL + Twig cover every
+ * template the generator emits today; expanded here (from TS/JS-only in
+ * 3.13.120) so `generate form`, `generate view` and `generate migration`
+ * carry `edit_hints[]` rather than returning `[]` (parity with PHP, whose
+ * regex has always been language-agnostic).
  */
 function captureEditHints(absPath: string, content: string): void {
-  if (!/\.(ts|tsx|js|mjs|cjs|jsx)$/.test(absPath)) return;
+  if (!/\.(ts|tsx|js|mjs|cjs|jsx|sql|twig|html\.twig)$/.test(absPath)) return;
   const relPath = toRelPath(absPath);
   const lines = content.split("\n");
   for (let i = 0; i < lines.length; i++) {
@@ -1189,6 +1206,15 @@ export function generateMigration(
   let upSql: string;
   let downSql: string;
 
+  // ADR-0063 (scaffolding envelope v1.1): `-- tina4:edit <label>` markers
+  // sit above each SQL block so an operator (or an AI agent) can grep to
+  // the genuine first-edit spot. Wording mirrors Ruby's `generate_migration`
+  // + PHP's `sqlEditHintMarker` calls for cross-language parity. The create-
+  // branch marker sits INSIDE the column-list parentheses but OUTSIDE
+  // `colLines.join(",\n")` so its trailing `,` does not become part of the
+  // parsed label (the migration runner's splitStatements strips `--` line
+  // comments, so a comma-less marker line inside a DDL body is still
+  // syntactically inert on every engine).
   if (isCreate) {
     const colLines = ["    id INTEGER PRIMARY KEY AUTOINCREMENT"];
     for (const [fname, ftype] of fields) {
@@ -1198,11 +1224,20 @@ export function generateMigration(
     }
     colLines.push("    created_at TEXT DEFAULT CURRENT_TIMESTAMP");
 
-    upSql = `CREATE TABLE IF NOT EXISTS ${table} (\n${colLines.join(",\n")}\n);`;
-    downSql = `DROP TABLE IF EXISTS ${table};`;
+    upSql =
+      `CREATE TABLE IF NOT EXISTS ${table} (\n` +
+      `    -- tina4:edit  add columns beyond id + created_at\n` +
+      `${colLines.join(",\n")}\n);`;
+    downSql =
+      `-- tina4:edit  mirror the CREATE's added columns in the rollback\n` +
+      `DROP TABLE IF EXISTS ${table};`;
   } else {
-    upSql = `-- Write your UP migration SQL here\n-- Example: ALTER TABLE ${table} ADD COLUMN new_col TEXT DEFAULT '';`;
-    downSql = `-- Write your DOWN rollback SQL here\n-- Example: ALTER TABLE ${table} DROP COLUMN new_col;`;
+    upSql =
+      `-- tina4:edit  write your UP migration SQL here\n` +
+      `-- Example: ALTER TABLE ${table} ADD COLUMN new_col TEXT DEFAULT '';`;
+    downSql =
+      `-- tina4:edit  write your DOWN rollback SQL here\n` +
+      `-- Example: ALTER TABLE ${table} DROP COLUMN new_col;`;
   }
 
   const now = isoNow();
@@ -1474,12 +1509,18 @@ function generateForm(name: string, flags: Record<string, string | boolean>): vo
     }
   }
 
+  // ADR-0063 (scaffolding envelope v1.1): `{# tina4:edit <label> #}` is the
+  // Twig-comment partner of `// tina4:edit` in TS/JS. Baked at a genuine
+  // first-edit spot so an operator (or an AI agent) can grep to a real
+  // customisation point instead of scanning the whole file. Marker wording
+  // mirrors Ruby's `generate_form` for cross-language parity.
   const content =
     `{% extends "base.twig" %}\n` +
     `{% block title %}${name} {% if item.id %}Edit{% else %}Create{% endif %}{% endblock %}\n` +
     `{% block content %}\n` +
     `<div class="container mt-4">\n` +
     `    <h1>{% if item.id %}Edit ${name}{% else %}Create ${name}{% endif %}</h1>\n` +
+    `    {# tina4:edit  restyle the form beyond the scaffolded defaults #}\n` +
     `    <form method="post" action="/api/${routeName}{% if item.id %}/{{ item.id }}{% endif %}">\n` +
     `        {{ form_token() }}\n` +
     fieldHtml +
@@ -1511,11 +1552,16 @@ function generateView(name: string, flags: Record<string, string | boolean>): vo
   const th = cols.map((c) => `                <th>${c.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase())}</th>`).join("\n");
   const td = cols.map((c) => `                <td>{{ item.${c} }}</td>`).join("\n");
 
+  // ADR-0063 (scaffolding envelope v1.1): `{# tina4:edit <label> #}` markers
+  // sit at each template's genuine first-edit spot (list = customise the
+  // table; detail = extend the record's view). Wording mirrors Ruby's
+  // `generate_view` for cross-language parity.
   const listContent =
     `{% extends "base.twig" %}\n` +
     `{% block title %}${name}s{% endblock %}\n` +
     `{% block content %}\n` +
     `<div class="container mt-4">\n` +
+    `    {# tina4:edit  add sort / filter / pagination controls to the list #}\n` +
     `    <div class="d-flex justify-content-between align-items-center mb-3">\n` +
     `        <h1>${name}s</h1>\n` +
     `        <a href="/${routeName}/create" class="btn btn-primary">Add ${name}</a>\n` +
@@ -1557,6 +1603,7 @@ function generateView(name: string, flags: Record<string, string | boolean>): vo
     `{% block title %}${name} Detail{% endblock %}\n` +
     `{% block content %}\n` +
     `<div class="container mt-4">\n` +
+    `    {# tina4:edit  extend the detail view with related records or actions #}\n` +
     `    <div class="d-flex justify-content-between align-items-center mb-3">\n` +
     `        <h1>${name} #{{ item.id }}</h1>\n` +
     `        <div>\n` +
