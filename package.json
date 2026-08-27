@@ -79,6 +79,7 @@
     "test": "tsx test/run-all.ts && npm run test:i18n",
     "test:i18n": "vitest run test/i18n.test.ts test/i18n-leaf-alias.test.ts",
     "typecheck": "tsc -p tsconfig.typecheck.json",
+    "release:precheck": "tsx test/versionConsistency.test.ts",
     "prepublishOnly": "npm run build",
     "prepare": "npm run build",
     "build:types": "tsc -p tsconfig.types.json"
