@@ -138,10 +138,14 @@ export function buildCommandManifest(): CommandManifest {
     framework: "nodejs",
     version: readCliVersion(),
     commands,
-    // Feature B (3.13.117): declare the resolution envelope this framework
-    // emits for `generate <what> --json`. Consumers read this to know which
-    // schema to parse — never hard-code the shape.
-    resolution_contract: { version: "1", envelope: RESOLUTION_ENVELOPE_VERSION },
+    // Declare the resolution envelope this framework emits for
+    // `generate <what> --json`. Consumers read this to know which schema to
+    // parse — never hard-code the shape.
+    //   3.13.117: `generate_v1` at version "1"
+    //   3.13.120: `generate_v1_1` at version "1.1" — additive superset
+    //             (adds edit_hints[] + next[]; surfaces existing test_paths[]
+    //             in the human block). ADR-0063.
+    resolution_contract: { version: "1.1", envelope: RESOLUTION_ENVELOPE_VERSION },
   };
 }
 

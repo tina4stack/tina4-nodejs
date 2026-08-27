@@ -33,7 +33,7 @@
  *   tina4nodejs generate listener user.created
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 // ── Field type mapping ──────────────────────────────────────────────
 const FIELD_TYPE_MAP: Record<string, { orm: string; sql: string; defaultVal: string }> = {
@@ -62,9 +62,15 @@ function ensureDir(dir: string): void {
 }
 
 function writeFileSafe(path: string, content: string): void {
+  // ALWAYS scan the intended content for `// tina4:edit` markers, regardless
+  // of dry-run. The envelope's edit_hints[] MUST promise the same hints in
+  // preview (--dry-run) and post-write so an agent can rely on them before
+  // committing to disk.
+  captureEditHints(path, content);
+
   if (__resolution.dryRun) {
-    // Dry-run: record what WOULD have been written, but touch no disk state
-    // and print no per-file line to stdout (that would leak into --json).
+    // Dry-run: touch no disk state and print no per-file line to stdout
+    // (that would leak into --json).
     return;
   }
   if (existsSync(path)) {
@@ -152,6 +158,18 @@ export interface ResolutionInput {
   fields: string | null;
 }
 
+/**
+ * One `// tina4:edit …` marker found in a written (or would-be-written)
+ * template file. `file` is repo-relative POSIX (matches the rest of the
+ * envelope's paths); `line` is 1-based; `label` is the short imperative label
+ * that followed the marker on the same line.
+ */
+export interface EditHint {
+  file: string;
+  line: number;
+  label: string;
+}
+
 export interface ResolutionBody {
   class_name?: string;
   table_name?: string;
@@ -159,6 +177,8 @@ export interface ResolutionBody {
   migration_path?: string;
   routes?: string[];
   test_paths?: string[];
+  edit_hints?: EditHint[];
+  next?: string[];
   transformations: ResolutionTransformation[];
 }
 
@@ -176,8 +196,15 @@ export interface ResolutionEnvelope {
  * `resolution_contract.envelope` so the tina4 client (or any consumer) can
  * discover the exact contract this framework speaks. Bump when a breaking
  * key rename / removal lands; keep unchanged when new OPTIONAL keys are added.
+ *
+ * `generate_v1_1` (ADR-0063, 3.13.120) is a PURELY ADDITIVE superset of
+ * `generate_v1`: every v1 field is preserved, and two new optional arrays
+ * appear — `resolution.edit_hints[]` (one entry per `// tina4:edit` marker
+ * baked into a template) and `resolution.next[]` (curated per-verb actionable
+ * next steps). `resolution.test_paths[]` was already in v1; v1.1 surfaces it
+ * in the human stderr block too.
  */
-export const RESOLUTION_ENVELOPE_VERSION = "generate_v1";
+export const RESOLUTION_ENVELOPE_VERSION = "generate_v1_1";
 
 /**
  * Per-run mutable resolution state. Reset by `resetResolution()` on every
@@ -216,14 +243,27 @@ function recordTransformation(t: ResolutionTransformation): void {
 /** Read-only snapshot of the current resolution — exported for tests that
  * want to inspect it in-process (the CLI itself uses only the envelope). */
 export function currentResolution(): ResolutionEnvelope {
+  const body: ResolutionBody = {
+    ...__resolution.body,
+    transformations: [...__resolution.body.transformations],
+  };
+  if (__resolution.body.edit_hints) {
+    body.edit_hints = __resolution.body.edit_hints.map((h) => ({ ...h }));
+  }
+  if (__resolution.body.next) {
+    body.next = [...__resolution.body.next];
+  }
+  if (__resolution.body.test_paths) {
+    body.test_paths = [...__resolution.body.test_paths];
+  }
+  if (__resolution.body.routes) {
+    body.routes = [...__resolution.body.routes];
+  }
   return {
     command: "generate",
     target: __resolution.target,
     input: { ...__resolution.input },
-    resolution: {
-      ...__resolution.body,
-      transformations: [...__resolution.body.transformations],
-    },
+    resolution: body,
     actions_taken: [...__resolution.actionsTaken],
     dry_run: __resolution.dryRun,
   };
@@ -241,6 +281,57 @@ function pushRoute(routePattern: string): void {
 function pushTestPath(path: string): void {
   if (!__resolution.body.test_paths) __resolution.body.test_paths = [];
   __resolution.body.test_paths.push(path);
+}
+
+function pushEditHint(hint: EditHint): void {
+  if (!__resolution.body.edit_hints) __resolution.body.edit_hints = [];
+  __resolution.body.edit_hints.push(hint);
+}
+
+function setNextSteps(steps: string[]): void {
+  if (steps.length === 0) return;
+  __resolution.body.next = [...steps];
+}
+
+/**
+ * Convert an absolute path to a repo-relative POSIX path. Every other
+ * envelope path (file_path, migration_path, test_paths) is repo-relative
+ * POSIX ("src/models/Order.ts"), so edit_hints follow the same convention —
+ * one path style across the whole envelope, portable across Windows.
+ */
+function toRelPath(absPath: string): string {
+  const cwd = process.cwd();
+  const rel = relative(cwd, absPath);
+  if (!rel) return absPath;
+  return sep === "/" ? rel : rel.split(sep).join("/");
+}
+
+// Line-anchored `// tina4:edit LABEL` marker regex.
+//
+// Line-anchored (`^\s*//`) so the marker must be at the START of a code line
+// (after optional whitespace) — a marker embedded inside a template string
+// literal never falsely matches. LABEL is captured greedily until end of
+// line, then trimmed on push.
+const TINA4_EDIT_MARKER = /^\s*\/\/\s*tina4:edit\s+(.+?)\s*$/;
+
+/**
+ * Scan `content` for `// tina4:edit …` markers and record one EditHint per
+ * match against the given absolute path. Called from every `writeFileSafe`
+ * — including under `--dry-run` — so the envelope promises the same hints in
+ * preview and post-write. Files whose extension is not TS/JS are skipped
+ * (the marker syntax is TS/JS specific — `.sql` and `.twig` templates never
+ * carry markers).
+ */
+function captureEditHints(absPath: string, content: string): void {
+  if (!/\.(ts|tsx|js|mjs|cjs|jsx)$/.test(absPath)) return;
+  const relPath = toRelPath(absPath);
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const match = TINA4_EDIT_MARKER.exec(lines[i]);
+    if (match) {
+      pushEditHint({ file: relPath, line: i + 1, label: match[1].trim() });
+    }
+  }
 }
 
 /**
@@ -281,6 +372,28 @@ function printResolution(): void {
     lines.push("");
     lines.push(`  To keep the raw name '${reserved.from}' as the table:`);
     lines.push(`    tina4nodejs generate ${__resolution.target} ${__resolution.input.name} ${reserved.override}`);
+  }
+  // v1.1 (ADR-0063): surface the already-populated test_paths[], and the two
+  // new arrays (edit_hints, next) when either is non-empty. Sections stay
+  // absent when the corresponding array is empty — a listener/service
+  // scaffold prints exactly what a model scaffold prints, minus what does
+  // not apply.
+  if (b.test_paths && b.test_paths.length > 0) {
+    lines.push("");
+    lines.push("  Tests:");
+    for (const testPath of b.test_paths) lines.push(`    ${testPath}`);
+  }
+  if (b.edit_hints && b.edit_hints.length > 0) {
+    lines.push("");
+    lines.push("  Edit these lines:");
+    for (const hint of b.edit_hints) {
+      lines.push(`    ${hint.file}:${hint.line}  ${hint.label}`);
+    }
+  }
+  if (b.next && b.next.length > 0) {
+    lines.push("");
+    lines.push("  Next:");
+    for (const step of b.next) lines.push(`    ${step}`);
   }
   lines.push("");
   process.stderr.write(lines.join("\n"));
@@ -477,6 +590,105 @@ export const GENERATORS: Record<string, GeneratorSpec> = {
 /** Comma-separated generator names for usage/error output — derived, never a hand-kept list. */
 const GENERATOR_LIST = Object.keys(GENERATORS).join(", ");
 
+/**
+ * Curated per-verb next steps — populates `resolution.next[]` (envelope) and
+ * the "Next:" block on stderr (human). Grounded on the real code paths a
+ * developer takes after each generator. Cap of 5 (short, actionable).
+ *
+ * The context carries the RESOLVED name and table (the reserved-word
+ * pluraliser has already run at dispatch time), so a step references the
+ * same table/route the generated files bind to. `name` is the CLI positional
+ * as-typed; `table` is `toTableName(name)`.
+ */
+interface NextContext { name: string; table: string; }
+const NEXT_STEPS: Record<string, (c: NextContext) => string[]> = {
+  model: ({ name, table }) => [
+    `Edit src/models/${name}.ts to add fields beyond the default 'name'`,
+    `Apply the migration:   npx tina4nodejs migrate`,
+    `Run its test:          npx tsx tests/${table}_model.test.ts`,
+    `Add CRUD scaffolding:  npx tina4nodejs generate crud ${name}`,
+  ],
+  route: ({ name, table }) => [
+    `Fill the AI-FILL stubs in src/routes/api/${name.replace(/^\//, "")}/`,
+    `Run its test:   npx tsx tests/${table}.test.ts`,
+    `Serve and try:  npx tina4nodejs serve  ->  curl http://localhost:7148/api/${name.replace(/^\//, "")}`,
+  ],
+  crud: ({ name, table }) => [
+    `Apply the migration:   npx tina4nodejs migrate`,
+    `Serve and try:         npx tina4nodejs serve  ->  visit /swagger`,
+    `Run the gate test:     npx tsx tests/${toPlural(table)}.test.ts`,
+    `Change fields: edit src/models/${name}.ts then re-run generate crud`,
+  ],
+  migration: () => [
+    `Apply pending migrations:  npx tina4nodejs migrate`,
+    `Check status:              npx tina4nodejs migrate:status`,
+    `Roll back the batch:       npx tina4nodejs migrate:rollback`,
+  ],
+  middleware: ({ name }) => [
+    `Wire it: router.middleware(before${name}, after${name}) — or bind per-route`,
+    `Run its test:  npx tsx tests/${toSnake(name)}.test.ts`,
+  ],
+  test: ({ name }) => [
+    `Fill the TODOs in tests/${toSnake(name)}.test.ts`,
+    `Run it:  npx tsx tests/${toSnake(name)}.test.ts`,
+  ],
+  form: ({ name, table }) => [
+    `Render from a route:  res.render("forms/${table}.twig", { item })`,
+    `Add the POST route:   npx tina4nodejs generate route ${toPlural(table)} --model ${name}`,
+  ],
+  view: ({ table }) => [
+    `Wire routes to render list -> ${toPlural(table)}.twig, detail -> ${table}.twig`,
+    `Customize the templates in src/templates/pages/`,
+  ],
+  auth: () => [
+    `Apply the migration:  npx tina4nodejs migrate`,
+    `Run the auth test:    npx tsx tests/auth.test.ts`,
+    `Try register:  curl -X POST http://localhost:7148/api/auth/register -d '{"email":"a@b.c","password":"secret12"}' -H 'content-type: application/json'`,
+    `Login:         curl -X POST http://localhost:7148/api/auth/login    -d '{"email":"a@b.c","password":"secret12"}' -H 'content-type: application/json'`,
+  ],
+  service: ({ name }) => [
+    `Wire ServiceRunner in app.ts: await ServiceRunner.discover("src/services"); ServiceRunner.start();`,
+    `Fill the task body in src/services/${toSnake(name)}.ts`,
+    `Run its test:  npx tsx tests/${toSnake(name)}.test.ts`,
+  ],
+  queue: ({ name }) => {
+    const slug = toSnake(name.replace(/[^0-9a-zA-Z]+/g, "_")).replace(/^_+|_+$/g, "") || "topic";
+    return [
+      `Fill handle${toPascal(name)}() in src/services/${slug}_consumer.ts`,
+      `Produce a job:  publish${toPascal(name)}({ ... })`,
+      `Run the worker: npx tina4nodejs queue work ${name}`,
+      `Run its test:   npx tsx tests/${slug}.test.ts`,
+    ];
+  },
+  validator: ({ name }) => [
+    `Add rules in src/validators/${toSnake(name)}.ts (.email/.minLength/.integer/.inList/.pattern)`,
+    `Run its test:  npx tsx tests/${toSnake(name)}.test.ts`,
+  ],
+  seeder: ({ name, table }) => [
+    `Override any fields that need a specific shape in src/seeds/${table}_seeder.ts`,
+    `Seed the table:  npx tina4nodejs seed`,
+    `Run its test:    npx tsx tests/${table}_seeder.test.ts`,
+  ],
+  websocket: ({ name }) => {
+    const raw = name.trim();
+    const slugRaw = toSnake(raw.replace(/^\/+|\/+$/g, "").replace(/[^0-9a-zA-Z]+/g, "_")).replace(/^_+|_+$/g, "") || "ws";
+    const base = slugRaw.startsWith("ws_") ? slugRaw.slice(3) : slugRaw;
+    return [
+      `Import once in app.ts to register:  import "./src/routes/ws_${base}.js";`,
+      `Fill the "message" branch in src/routes/ws_${base}.ts`,
+      `Run its test:  npx tsx tests/ws_${base}.test.ts`,
+    ];
+  },
+  listener: ({ name }) => {
+    const slug = toSnake(name.replace(/[^0-9a-zA-Z]+/g, "_")).replace(/^_+|_+$/g, "") || "event";
+    return [
+      `Import once in app.ts to register:  import "./src/listeners/${slug}.js";`,
+      `Fill the reaction in src/listeners/${slug}.ts`,
+      `Run its test:  npx tsx tests/${slug}.test.ts`,
+    ];
+  },
+};
+
 // ── Main entry point ────────────────────────────────────────────────
 
 export async function generate(what: string, name: string, extraArgs: string[] = []): Promise<void> {
@@ -491,8 +703,17 @@ export async function generate(what: string, name: string, extraArgs: string[] =
     process.exit(1);
   }
 
-  // Auth doesn't require a name
+  // Auth doesn't require a name.
   const noNameGenerators = new Set(["auth"]);
+  // bin.ts always passes argv[1] as `name`. For a no-name generator that means
+  // `generate auth --json` arrives here as name="--json", extraArgs=[]. Rescue
+  // the flag: shift a leading `--foo` name into extraArgs so parseCliArgs
+  // actually sees it. Fixes `--json` (and any other flag) being silently
+  // eaten by the no-name verbs.
+  if (noNameGenerators.has(what) && name.startsWith("--")) {
+    extraArgs = [name, ...extraArgs];
+    name = "";
+  }
   if (!noNameGenerators.has(what) && !name) {
     console.error(`  Usage: tina4nodejs generate ${what} <name> [options]`);
     process.exit(1);
@@ -518,6 +739,21 @@ export async function generate(what: string, name: string, extraArgs: string[] =
     console.error(`  Unknown generator: ${what}`);
     console.error(`  Available: ${GENERATOR_LIST}`);
     process.exit(1);
+  }
+
+  // v1.1 (ADR-0063): populate `resolution.next[]` from the per-verb curator
+  // AFTER dispatch, so the table name reflects any reserved-word pluralisation
+  // that fired during the run (Order -> orders). Prefer the resolution's own
+  // table_name (already set by generateModel/generateMigration) so we do NOT
+  // re-invoke toTableName() — that would record a DUPLICATE
+  // reserved_word_pluralize transformation on the envelope.
+  const nextFn = NEXT_STEPS[what];
+  if (nextFn) {
+    const resolvedTable = __resolution.body.table_name
+      ?? (name
+        ? (SQL_RESERVED_TABLE_NAMES.has(toSnake(name)) ? pluralizeReserved(toSnake(name)) : toSnake(name))
+        : "");
+    setNextSteps(nextFn({ name: name || "", table: resolvedTable }));
   }
 
   // Emit the resolution AFTER dispatch so `actions_taken` reflects the real
@@ -549,6 +785,7 @@ function generateModel(name: string, flags: Record<string, string | boolean>, em
   // Build field definitions
   const fieldLines: string[] = [
     `    id: { type: "integer" as const, primaryKey: true, autoIncrement: true },`,
+    `    // tina4:edit add or change fields for this model (string,int,float,bool,text,datetime)`,
   ];
   for (const [fname, ftype] of fields) {
     const info = FIELD_TYPE_MAP[ftype] || FIELD_TYPE_MAP.string;
@@ -637,6 +874,7 @@ ${modelImportBase}
 export const meta = { summary: "List all ${routePath}", tags: ["${routePath}"] };
 
 export default async function (req: Tina4Request, res: Tina4Response) {
+  // tina4:edit tune pagination defaults or add filter/sort parsing here
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 20;
   const offset = (page - 1) * limit;
@@ -674,6 +912,7 @@ ${modelImportBase}${secureOptOut(isPublic)}export const meta = { summary: "Creat
 
 // ${writeDoc}
 export default async function (req: Tina4Request, res: Tina4Response) {
+  // tina4:edit validate the body before persist (Validator or hand-checks)
 ${extend("validate / business rules before persist",
   `e.g. reject invalid input; ground: tina4_context("validate before create", "nodejs")`)}  const item = new ${model}(req.body as Record<string, unknown>);
   // save() returns false on failure rather than throwing - check it, or a failed
@@ -695,6 +934,7 @@ ${secureOptOut(isPublic)}export const meta = { summary: "Create a new ${singular
 
 // ${writeDoc}
 export default async function (req: Tina4Request, res: Tina4Response) {
+  // tina4:edit fill the create handler (see AI-FILL fill-spec below)
 ${aiFill(`create_${singular}`, {
   intent: `validate the body and persist a new ${singular}`,
   given: "req.body -> the posted fields",
@@ -761,6 +1001,7 @@ export default async function (req: Tina4Request, res: Tina4Response) {
     res.json({ error: "Not found" }, 404);
     return;
   }
+  // tina4:edit guard which fields may be updated and who may update this row
 ${extend("guard which fields / who may update",
   `e.g. enforce ownership; ground: tina4_context("authorize update", "nodejs")`)}  Object.assign(item, req.body as Record<string, unknown>);
   // save() returns false on failure rather than throwing - check it, or a failed
@@ -782,6 +1023,7 @@ ${secureOptOut(isPublic)}export const meta = { summary: "Update a ${singular} by
 
 // ${writeDoc}
 export default async function (req: Tina4Request, res: Tina4Response) {
+  // tina4:edit fill the update handler (see AI-FILL fill-spec below)
 ${aiFill(`update_${singular}`, {
   intent: `load, mutate and save an existing ${singular}`,
   given: "req.params.id -> id; req.body -> changed fields",
@@ -855,7 +1097,10 @@ function generateCrud(name: string, flags: Record<string, string | boolean>): vo
   const routeName = toPlural(table);
   const isPublic = Boolean(flags.public);
 
-  console.log(`\n  Generating CRUD for ${name}...\n`);
+  // Human-only banners; suppressed under --json to keep stdout parseable
+  // (a console.log during --json produced invalid JSON). writeFileSafe already
+  // gates its own "Created …" lines the same way.
+  if (!__resolution.jsonMode) console.log(`\n  Generating CRUD for ${name}...\n`);
 
   // 1. Model + migration (its own model test is suppressed — the gate test
   //    below is CRUD's single, broader co-emitted test).
@@ -875,9 +1120,11 @@ function generateCrud(name: string, flags: Record<string, string | boolean>): vo
   // 5. Test — real secure-by-default boot-gate (reads public, writes gated).
   generateTest(routeName, { model: name, "secure-writes": true, public: isPublic });
 
-  console.log(`\n  CRUD generation complete for ${name}.`);
-  console.log("  Run: tina4nodejs migrate");
-  console.log("  Visit: /swagger to see the API docs");
+  if (!__resolution.jsonMode) {
+    console.log(`\n  CRUD generation complete for ${name}.`);
+    console.log("  Run: tina4nodejs migrate");
+    console.log("  Visit: /swagger to see the API docs");
+  }
 }
 
 // ── Migration ───────────────────────────────────────────────────────
@@ -1008,6 +1255,7 @@ export async function before${name}(
   res: Tina4Response,
   next: () => Promise<void>,
 ): Promise<void> {
+  // tina4:edit replace the Authorization check with the real pre-request rule
   const auth = req.headers["authorization"];
   if (!auth) {
     res.json({ error: "Unauthorized" }, 401);
@@ -1021,7 +1269,7 @@ export async function after${name}(
   res: Tina4Response,
   next: () => Promise<void>,
 ): Promise<void> {
-  // Post-processing logic here (logging, header injection, etc.)
+  // tina4:edit add post-processing (logging, header injection, telemetry)
   await next();
 }
 `;
@@ -1113,35 +1361,35 @@ process.exit(fail > 0 ? 1 : 0);
 const list${model}s = tests(
   assertTrue([]),
 )(function list${model}s() {
-  // TODO: implement list test
+  // tina4:edit assert against a real GET /api/${toSnake(name)} response (rows, count)
   return true;
 });
 
 const get${model} = tests(
   assertTrue([]),
 )(function get${model}() {
-  // TODO: implement get test
+  // tina4:edit assert against GET /api/${toSnake(name)}/{id} for one seeded row
   return true;
 });
 
 const create${model} = tests(
   assertTrue([]),
 )(function create${model}() {
-  // TODO: implement create test
+  // tina4:edit POST a valid + an invalid body, assert 201 vs 400
   return true;
 });
 
 const update${model} = tests(
   assertTrue([]),
 )(function update${model}() {
-  // TODO: implement update test
+  // tina4:edit PUT changed fields, assert the row was persisted
   return true;
 });
 
 const delete${model} = tests(
   assertTrue([]),
 )(function delete${model}() {
-  // TODO: implement delete test
+  // tina4:edit DELETE the id, assert 200 then GET returns 404
   return true;
 });
 
@@ -1158,7 +1406,7 @@ void [list${model}s, get${model}, create${model}, update${model}, delete${model}
 const test${titleName} = tests(
   assertTrue([]),
 )(function test${titleName}() {
-  // TODO: implement test
+  // tina4:edit assert against the real behaviour under test (no mocks)
   return true;
 });
 
@@ -1322,7 +1570,8 @@ function generateView(name: string, flags: Record<string, string | boolean>): vo
 // ── Auth (login/register stay PUBLIC) ───────────────────────────────
 
 function generateAuth(_flags: Record<string, string | boolean>): void {
-  console.log("\n  Generating authentication scaffolding...\n");
+  // Human-only banners; suppressed under --json to keep stdout parseable.
+  if (!__resolution.jsonMode) console.log("\n  Generating authentication scaffolding...\n");
 
   // 1. User model + migration (model test suppressed — the auth test below is
   //    the composite, broader co-emitted test).
@@ -1352,6 +1601,7 @@ export const secure = false;
 export const meta = { summary: "Register a new user", tags: ["auth"] };
 
 export default async function (req: Tina4Request, res: Tina4Response) {
+  // tina4:edit add password-strength / email-format / captcha rules before mint
   const { email, password } = (req.body ?? {}) as { email?: string; password?: string };
 
   if (!email || !password) {
@@ -1385,6 +1635,7 @@ export const secure = false;
 export const meta = { summary: "Login and receive JWT token", tags: ["auth"] };
 
 export default async function (req: Tina4Request, res: Tina4Response) {
+  // tina4:edit add rate-limit / lock-after-N-failures / 2FA before password check
   const { email, password } = (req.body ?? {}) as { email?: string; password?: string };
 
   if (!email || !password) {
@@ -1399,6 +1650,7 @@ export default async function (req: Tina4Request, res: Tina4Response) {
   }
 
   const data = user.toObject();
+  // tina4:edit set token TTL (getToken(payload, secret, expiresInMinutes)) and add scopes if needed
   const token = getToken({ userId: data.id, email: data.email, role: data.role });
   res.json({ token });
 }
@@ -1482,11 +1734,13 @@ export default async function (req: Tina4Request, res: Tina4Response) {
   // 5. Auth test — real register / login / me end-to-end (no mocks).
   emitAuthTest();
 
-  console.log("\n  Authentication scaffolding complete.");
-  console.log("  Run: tina4nodejs migrate");
-  console.log("  POST /api/auth/register  — create account (public)");
-  console.log("  POST /api/auth/login     — get JWT token (public)");
-  console.log("  GET  /api/auth/me        — get profile (requires token)");
+  if (!__resolution.jsonMode) {
+    console.log("\n  Authentication scaffolding complete.");
+    console.log("  Run: tina4nodejs migrate");
+    console.log("  POST /api/auth/register  — create account (public)");
+    console.log("  POST /api/auth/login     — get JWT token (public)");
+    console.log("  GET  /api/auth/me        — get profile (requires token)");
+  }
 }
 
 // ── Service (scheduled background task — ServiceRunner) ──────────────
@@ -1537,6 +1791,7 @@ function generateService(name: string, flags: Record<string, string | boolean>):
  */
 
 export async function ${camel}Task(context: ServiceContext): Promise<void> {
+  // tina4:edit replace the AI-FILL stub below with the scheduled work
 ${body}}
 
 // Discovered by ServiceRunner.discover("src/services") — it reads name/handler
@@ -1593,6 +1848,7 @@ export function publish${pascal}(payload: Record<string, unknown>): string {
 
 /** Process ONE ${topic} job payload. */
 export async function handle${pascal}(payload: unknown): Promise<void> {
+  // tina4:edit implement the per-job handler; return to ack, throw to nack
 ${body}}
 
 /** Long-running ${topic} worker — consume() yields jobs; ack/nack each. */
@@ -1655,6 +1911,7 @@ function generateValidator(name: string, _flags: Record<string, string | boolean
  */
 export function validate${toPascal(name)}(data: Record<string, unknown>): Validator {
   const validator = new Validator(data);
+  // tina4:edit add rules for this payload (.email/.minLength/.integer/.inList/.pattern)
 ${rules}  validator.required("name");   // starter rule (matches the model's default field)
   return validator;
 }
@@ -1695,6 +1952,7 @@ import ${name} from "../models/${name}.js";
  * specific shape below. Each callable receives a FakeData instance.
  */
 export function fieldOverrides(fake: FakeData): Record<string, unknown> {
+  // tina4:edit override any fields that need a specific shape (seedOrm auto-fills the rest)
 ${overrides}  void fake;   // available for overrides above
   return {};
 }
@@ -1763,6 +2021,7 @@ export async function ${handlerName}(
   data: string,
 ): Promise<void> {
   if (event === "open") {
+    // tina4:edit customize the welcome frame (or drop it)
     connection.sendJson({ type: "welcome" });
     return;
   }
@@ -1770,6 +2029,7 @@ export async function ${handlerName}(
     return;
   }
   // event === "message"
+  // tina4:edit handle the inbound "message" frame (broadcast, echo, route, etc.)
 ${body}}
 
 websocket("${wsPath}", ${handlerName});
@@ -1814,6 +2074,7 @@ function generateListener(name: string, _flags: Record<string, string | boolean>
  * Fires when something calls Events.emit("${event}", ...args).
  */
 export function ${handlerName}(...args: unknown[]): void {
+  // tina4:edit implement the reaction to '${event}' (email, ORM write, follow-up emit)
 ${body}}
 
 Events.on("${event}", ${handlerName});

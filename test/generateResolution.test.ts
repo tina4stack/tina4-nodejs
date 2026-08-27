@@ -92,11 +92,16 @@ console.log("\n--- manifest declares the resolution contract ---");
 const manifest = buildCommandManifest();
 assert("manifest has resolution_contract object",
   typeof manifest.resolution_contract === "object" && manifest.resolution_contract !== null);
-assert("resolution_contract.version === '1'",
-  manifest.resolution_contract?.version === "1",
+// 3.13.120 bumped the contract from "1" (generate_v1) to "1.1" (generate_v1_1)
+// (ADR-0063). Additive: v1 keys preserved, edit_hints[] + next[] added.
+assert("resolution_contract.version === '1.1'",
+  manifest.resolution_contract?.version === "1.1",
   `got ${manifest.resolution_contract?.version}`);
 assert(`resolution_contract.envelope === '${RESOLUTION_ENVELOPE_VERSION}'`,
   manifest.resolution_contract?.envelope === RESOLUTION_ENVELOPE_VERSION,
+  `got ${manifest.resolution_contract?.envelope}`);
+assert("resolution_contract.envelope === 'generate_v1_1'",
+  manifest.resolution_contract?.envelope === "generate_v1_1",
   `got ${manifest.resolution_contract?.envelope}`);
 
 // ── envelope-shape: --json --dry-run emits a valid, complete envelope ───
