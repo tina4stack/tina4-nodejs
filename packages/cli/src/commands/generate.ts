@@ -782,6 +782,53 @@ export async function generate(what: string, name: string, extraArgs: string[] =
   printResolution();
 }
 
+/**
+ * Programmatic entry point for in-process consumers (MCP tools, tests, hosted
+ * agents) — does everything `generate()` does EXCEPT print.
+ *
+ * Reset the resolution → dispatch to the requested generator → populate `next[]`
+ * → return the envelope. Files still land on disk (unless `--dry-run` is passed
+ * in `extraArgs`); only the human "Created …" per-file log and the
+ * `printResolution()` output are suppressed (via `jsonMode: true`, the same
+ * suppression `--json` uses on the CLI).
+ *
+ * Used by the MCP `migration_create` tool (packages/core/src/mcp.ts) so the
+ * ADR-0063 `generate_v1_1` envelope drives every surface (CLI, MCP, tests)
+ * without a subprocess round-trip.
+ */
+export async function generateProgrammatic(
+  what: string,
+  name: string,
+  extraArgs: string[] = [],
+): Promise<ResolutionEnvelope> {
+  const spec = GENERATORS[what];
+  if (!spec) throw new Error(`Unknown generator: ${what} (available: ${GENERATOR_LIST})`);
+
+  const { flags } = parseCliArgs(extraArgs);
+  const dryRun = Boolean(flags["dry-run"]);
+  // jsonMode:true suppresses writeFileSafe's per-file console.log so nothing
+  // leaks to stdout (which the JSON-RPC caller would parse as tool output).
+  // Files are still written — jsonMode gates PRINTS only, not disk writes.
+  resetResolution(what, { name, fields: (flags.fields as string) ?? null }, { dryRun, jsonMode: true });
+
+  spec.handler(name, flags);
+
+  // v1.1 (ADR-0063): populate `resolution.next[]` from the per-verb curator —
+  // same logic `generate()` runs, using the RESOLVED table_name when the
+  // dispatched handler recorded one (avoids a duplicate reserved_word
+  // transformation on the envelope).
+  const nextFn = NEXT_STEPS[what];
+  if (nextFn) {
+    const resolvedTable = __resolution.body.table_name
+      ?? (name
+        ? (SQL_RESERVED_TABLE_NAMES.has(toSnake(name)) ? pluralizeReserved(toSnake(name)) : toSnake(name))
+        : "");
+    setNextSteps(nextFn({ name: name || "", table: resolvedTable }));
+  }
+
+  return currentResolution();
+}
+
 // ── Model ───────────────────────────────────────────────────────────
 
 function generateModel(name: string, flags: Record<string, string | boolean>, emitTest = true): void {

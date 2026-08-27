@@ -1452,19 +1452,70 @@ export function registerDevTools(server: McpServer): void {
 
   server.registerTool(
     "migration_create",
-    (args) => {
-      const desc = (args.description as string).replace(/\s+/g, "_").toLowerCase();
-      const migrationsDir = path.join(projectRoot, "migrations");
-      if (!fs.existsSync(migrationsDir)) {
-        fs.mkdirSync(migrationsDir, { recursive: true });
+    async (args) => {
+      // 3.13.121 (ADR-0063): delegate to the CLI's canonical `generate migration`
+      // so the MCP surface emits the SAME `generate_v1_1` envelope (edit_hints[]
+      // + next[]) and the SAME `YYYYMMDDHHMMSS_<slug>.sql` + `.down.sql` file
+      // pair a user gets from `tina4 migrate:create` / `tina4 generate
+      // migration`. Before this the MCP tool wrote a single sequential
+      // `000001_x.sql` with no envelope — two shapes for one operation.
+      //
+      // Dynamic in-process import (parity with migration_status / migration_run
+      // above, which reach `../../orm/src/index.js`) so there is no compile-
+      // time cycle between @tina4/core and @tina4/cli.
+      try {
+        const rawDesc = String(args.description ?? "").trim();
+        if (!rawDesc) return { ok: false, error: "description is required" };
+
+        // Sanitise like the CLI's `migrate:create` front door: lowercase,
+        // non-alphanumeric → "_", trim underscores. `generate migration`
+        // takes its name verbatim by design; the MCP tool is the human-facing
+        // front door, so we sanitise here too.
+        const slug = rawDesc.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+        if (!slug) return { ok: false, error: "description sanitised to an empty slug" };
+
+        // Duplicate-slug guard (parity with PHP + Python MCPs): a `..._<slug>.sql`
+        // that already lives in migrations/ means an earlier `migration_create`
+        // ran for the same request. Surface a clear conflict rather than layering
+        // a second timestamp for the same intent (which would confuse migrate:run).
+        const migrationsDir = path.join(projectRoot, "migrations");
+        if (fs.existsSync(migrationsDir)) {
+          const upSuffix = `_${slug}.sql`;
+          const downSuffix = `_${slug}.down.sql`;
+          const existing = fs.readdirSync(migrationsDir).filter((f) =>
+            (f.endsWith(upSuffix) && !f.endsWith(downSuffix)) || f.endsWith(downSuffix),
+          );
+          if (existing.length > 0) {
+            return {
+              ok: false,
+              error: `A migration with slug "${slug}" already exists`,
+              existing,
+            };
+          }
+        }
+
+        // The generator writes files RELATIVE to process.cwd(). The MCP tool
+        // may be invoked from anywhere, so pin cwd to the resolved projectRoot
+        // for the duration of the call.
+        const originalCwd = process.cwd();
+        try {
+          process.chdir(projectRoot);
+          const gen = await import("../../cli/src/commands/generate.js");
+          // --no-test keeps parity with the CLI's `migrate:create` front door
+          // (a plain migration, no co-emitted test); an operator who wants a
+          // test uses `generate migration` directly.
+          const envelope = await gen.generateProgrammatic("migration", slug, ["--no-test"]);
+          const migrationPath = envelope.resolution?.migration_path;
+          const created = migrationPath ? path.basename(migrationPath) : "";
+          return { ok: true, created, resolution: envelope };
+        } finally {
+          process.chdir(originalCwd);
+        }
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
       }
-      const existing = fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql"));
-      const nextNum = String(existing.length + 1).padStart(6, "0");
-      const filename = `${nextNum}_${desc}.sql`;
-      fs.writeFileSync(path.join(migrationsDir, filename), `-- Migration: ${args.description}\n`, "utf-8");
-      return { created: filename };
     },
-    "Create a new migration file",
+    "Create a new migration file (delegates to `generate migration` — emits the ADR-0063 generate_v1_1 envelope + timestamped filename)",
     schemaFromParams([{ name: "description", type: "string" }]),
   );
 

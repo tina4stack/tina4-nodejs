@@ -268,17 +268,34 @@ tina4nodejs migrate:status                         # show applied + pending
 tina4nodejs migrate:rollback                       # roll back the last batch
 ```
 
-Two CLI paths, one generator (3.13.121, ADR-0063). Both
-`tina4nodejs migrate:create <desc>` and `tina4nodejs generate migration <desc>`
-produce the same migration file pair through the same generator, so an agent or
-script never has to know which spelling the user typed to know what came out —
-same `generate_v1_1` envelope on `--json`, same `--dry-run` support, same
-`edit_hints[]` / `next[]`, same file naming (`<ts>_<desc>.sql` + `.down.sql`).
-`migrate:create` is the shorter, human-friendly front door (it sanitises a
-free-text description into a filename-safe slug and suppresses the co-emitted
-migration test); `generate migration` composes with `--fields "name:string,..."`
-for schema-aware `create_X` generation and co-emits a test on `create_X` names
-by default. Neither has been deprecated.
+**Three surfaces, one generator (3.13.121, ADR-0063).** All three of
+`tina4nodejs migrate:create <desc>` (CLI), `tina4nodejs generate migration <desc>`
+(CLI), and the `migration_create` MCP tool (via `/__dev/mcp`) produce the same
+migration file pair through the same `generateMigration()` in
+`packages/cli/src/commands/generate.ts`, so an agent or script never has to know
+which spelling the user typed to know what came out — same `generate_v1_1`
+envelope, same `edit_hints[]` / `next[]`, same file naming
+(`<ts>_<desc>.sql` + `.down.sql` under `migrations/`, timestamp not sequential),
+same schema-awareness on `create_X` names, same `-- tina4:edit` markers baked
+into both files.
+
+- `migrate:create` — the shorter, human-friendly CLI front door. Sanitises a
+  free-text description into a filename-safe slug and suppresses the
+  co-emitted migration test (`--no-test` under the hood). Prints the envelope
+  on `--json`, previews on `--dry-run`.
+- `generate migration` — composes with `--fields "name:string,..."` for
+  schema-aware `create_X` generation, co-emits a test on `create_X` names by
+  default (opt out with `--no-test`). Prints the envelope on `--json`,
+  previews on `--dry-run`.
+- **MCP `migration_create`** — the same generator, driven by `/__dev/mcp`.
+  Returns `{ok, created, resolution}`: `created` is the timestamped `.sql`
+  filename that landed on disk (`YYYYMMDDHHMMSS_<slug>.sql`, never the old
+  6-digit `000001_<slug>.sql`) and `resolution` is the full `generate_v1_1`
+  envelope an agent can steer with. A duplicate slug returns
+  `{ok: false, error, existing[]}` rather than layering a second timestamp
+  for the same intent.
+
+None of the three has been deprecated — pick the surface your caller lives on.
 
 **Twig (form, view) and SQL (migration) templates participate in `edit_hints[]`
 from 3.13.121 (ADR-0063).** The scanner in `packages/cli/src/commands/generate.ts`
