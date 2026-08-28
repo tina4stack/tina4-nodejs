@@ -158,6 +158,45 @@ console.log("--- 1. positive: envelope carries edit_hints[] + next[] under --jso
   }
 }
 
+// ── 1b. A LOGIC-shaped generator is wired too: queue carries the fill points ──
+console.log("\n--- 1b. generate queue carries edit_hints[] + next[] (AI fill points) ---");
+{
+  const tmpDir = mkdtempSync(join(tmpdir(), "tina4-genv11-queue-"));
+  try {
+    const r = runGenerate(tmpDir, ["queue", "order-emails", "--json", "--dry-run"]);
+    assert("queue subprocess exited 0", r.exitCode === 0,
+      `exit=${r.exitCode} stderr=${r.stderr.slice(0, 400)}`);
+
+    let env: Record<string, unknown> | null = null;
+    try { env = JSON.parse(r.stdout) as Record<string, unknown>; } catch { /* asserted below */ }
+    assert("queue stdout is valid JSON", env !== null);
+
+    if (env !== null) {
+      assert("queue target === 'queue'", env.target === "queue");
+      assert("queue dry_run === true", env.dry_run === true);
+      const resObj = env.resolution as Record<string, unknown>;
+      assert("queue file_path is the consumer",
+        resObj.file_path === "src/services/order_emails_consumer.ts",
+        `got ${String(resObj.file_path)}`);
+
+      const hints = (resObj.edit_hints as EditHintShape[]) ?? [];
+      assert("queue edit_hints has the handler fill point", hints.length >= 1,
+        `got ${hints.length} hints`);
+      assert("queue hint points at the consumer file",
+        hints.some((h) => h.file === "src/services/order_emails_consumer.ts"),
+        `got files: ${hints.map((h) => h.file).join(", ")}`);
+
+      const next = (resObj.next as string[]) ?? [];
+      assert("queue next[] is non-empty", next.length >= 1, `got ${JSON.stringify(next)}`);
+      assert("queue next[] names the produce helper",
+        next.some((s) => s.includes("publishOrderEmails")),
+        `got ${JSON.stringify(next)}`);
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 // ── 2. Manifest: `commands --json` returns resolution_contract.version "1.1" ──
 console.log("\n--- 2. manifest declares resolution_contract.version === '1.1' ---");
 {
