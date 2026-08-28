@@ -1,6 +1,6 @@
 {
   "name": "tina4-nodejs",
-  "version": "3.13.121",
+  "version": "3.13.122",
   "type": "module",
   "description": "Tina4 for Node.js/TypeScript - native TypeScript conventions and shared Tina4 contracts",
   "keywords": [
