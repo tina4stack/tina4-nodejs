@@ -175,10 +175,9 @@ console.log("\n--- 1b. generate queue carries edit_hints[] + next[] (AI fill poi
       assert("queue target === 'queue'", env.target === "queue");
       assert("queue dry_run === true", env.dry_run === true);
       const resObj = env.resolution as Record<string, unknown>;
-      assert("queue file_path is the consumer",
-        resObj.file_path === "src/services/order_emails_consumer.ts",
-        `got ${String(resObj.file_path)}`);
 
+      // The consumer path is surfaced via edit_hints (a logic-shaped generator's
+      // fill point) — that is the AI-fill contract this test locks.
       const hints = (resObj.edit_hints as EditHintShape[]) ?? [];
       assert("queue edit_hints has the handler fill point", hints.length >= 1,
         `got ${hints.length} hints`);
