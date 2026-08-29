@@ -177,6 +177,10 @@ export class MssqlAdapter implements DatabaseAdapter {
     // so ONE portable migration applies here. Both are DDL-only, so DML is
     // untouched. Mirrors the Python master's mssql.py::_translate_sql.
     translated = SQLTranslator.autoIncrementSyntax(translated, "mssql");
+    // MSSQL has BIT, not a boolean type, so bare TRUE/FALSE must become 1/0
+    // (a TRUE/FALSE inside a string literal is data and is left untouched).
+    // Mirrors the Python master's mssql.py::_translate_sql.
+    translated = SQLTranslator.booleanToInt(translated);
     translated = SQLTranslator.ddlTypes(translated, "mssql");
     return translated;
   }
