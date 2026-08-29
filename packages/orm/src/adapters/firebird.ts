@@ -395,6 +395,13 @@ export class FirebirdAdapter implements DatabaseAdapter {
     let translated = SQLTranslator.limitToRows(sql);
     translated = SQLTranslator.booleanToInt(translated);
     translated = SQLTranslator.ilikeToLike(translated);
+    // DDL: strip AUTOINCREMENT (Firebird uses generators) and rewrite the
+    // SQLite-canonical column TYPES so ONE portable migration applies here —
+    // TEXT -> BLOB SUB_TYPE TEXT, REAL -> DOUBLE PRECISION, IF NOT EXISTS
+    // dropped. Both are DDL-only, so DML is untouched. Mirrors the Python
+    // master's firebird.py::_translate_sql.
+    translated = SQLTranslator.autoIncrementSyntax(translated, "firebird");
+    translated = SQLTranslator.ddlTypes(translated, "firebird");
     return translated;
   }
 

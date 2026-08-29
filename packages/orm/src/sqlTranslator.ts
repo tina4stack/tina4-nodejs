@@ -270,6 +270,51 @@ export class SQLTranslator {
   }
 
   /**
+   * Translate SQLite-canonical DDL column TYPES + CREATE-TABLE options to the
+   * target engine.
+   *
+   * ONLY acts on `CREATE TABLE` / `ALTER TABLE` statements, so a query or INSERT
+   * that happens to contain the word `TEXT` (a column name, a string literal) is
+   * never rewritten. Complements `autoIncrementSyntax` (which maps the id
+   * keyword) so ONE portable migration — and every `Model.createTable()` DDL,
+   * which is also SQLite-canonical — applies on every engine instead of failing
+   * on Firebird/MSSQL.
+   *
+   *   * Firebird has no `TEXT` (-607), no `REAL`, and no `CREATE TABLE IF NOT
+   *     EXISTS`.
+   *   * MSSQL has no `CREATE TABLE IF NOT EXISTS` and its `TIMESTAMP` is a
+   *     rowversion, not a datetime — a `created_at TIMESTAMP` there is wrong.
+   *   * MySQL's `TIMESTAMP` carries auto-update / 2038 surprises, so a datetime
+   *     column maps to `DATETIME` (matching the adapters' createTableAsync).
+   */
+  static ddlTypes(sql: string, engine: string): string {
+    // Gate to DDL only, tolerating leading `-- ...` comment lines / blank lines
+    // that a migration file carries before its CREATE TABLE. A SELECT or INSERT
+    // that merely mentions a type keyword is never rewritten.
+    const head = sql.replace(/^(?:\s*--[^\n]*\n)+/, "");
+    if (!/^\s*(?:CREATE\s+TABLE|ALTER\s+TABLE)\b/i.test(head)) return sql;
+    switch ((engine ?? "").toLowerCase()) {
+      case "firebird":
+        return sql
+          .replace(/\bIF\s+NOT\s+EXISTS\b/gi, "")
+          // Map bare TEXT -> BLOB SUB_TYPE TEXT, but leave an existing
+          // "BLOB SUB_TYPE TEXT" intact (it already contains the word TEXT).
+          .replace(/\bBLOB\s+SUB_TYPE\s+TEXT\b/gi, "\x00FBTEXT\x00")
+          .replace(/\bTEXT\b/gi, "BLOB SUB_TYPE TEXT")
+          .replaceAll("\x00FBTEXT\x00", "BLOB SUB_TYPE TEXT")
+          .replace(/\bREAL\b/gi, "DOUBLE PRECISION");
+      case "mssql":
+        return sql
+          .replace(/\bIF\s+NOT\s+EXISTS\b/gi, "")
+          .replace(/\bTIMESTAMP\b/gi, "DATETIME2");
+      case "mysql":
+        return sql.replace(/\bTIMESTAMP\b/gi, "DATETIME");
+      default:
+        return sql;
+    }
+  }
+
+  /**
    * Convert ? placeholders to engine-specific style.
    *
    * ? → %s (MySQL, PostgreSQL)

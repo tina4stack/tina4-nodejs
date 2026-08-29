@@ -37,8 +37,8 @@ import { join, relative, resolve, sep } from "node:path";
 
 // ── Field type mapping ──────────────────────────────────────────────
 const FIELD_TYPE_MAP: Record<string, { orm: string; sql: string; defaultVal: string }> = {
-  string:   { orm: '"string"',   sql: "TEXT",    defaultVal: "''" },
-  str:      { orm: '"string"',   sql: "TEXT",    defaultVal: "''" },
+  string:   { orm: '"string"',   sql: "VARCHAR(255)", defaultVal: "''" },
+  str:      { orm: '"string"',   sql: "VARCHAR(255)", defaultVal: "''" },
   int:      { orm: '"integer"',  sql: "INTEGER", defaultVal: "0" },
   integer:  { orm: '"integer"',  sql: "INTEGER", defaultVal: "0" },
   float:    { orm: '"number"',   sql: "REAL",    defaultVal: "0" },
@@ -48,7 +48,7 @@ const FIELD_TYPE_MAP: Record<string, { orm: string; sql: string; defaultVal: str
   bool:     { orm: '"boolean"',  sql: "INTEGER", defaultVal: "0" },
   boolean:  { orm: '"boolean"',  sql: "INTEGER", defaultVal: "0" },
   text:     { orm: '"string"',   sql: "TEXT",    defaultVal: "''" },
-  datetime: { orm: '"datetime"', sql: "TEXT",    defaultVal: "NULL" },
+  datetime: { orm: '"datetime"', sql: "TIMESTAMP", defaultVal: "NULL" },
   blob:     { orm: '"string"',   sql: "BLOB",    defaultVal: "NULL" },
 };
 
@@ -1269,7 +1269,7 @@ export function generateMigration(
       const defaultClause = info.defaultVal !== "NULL" ? ` DEFAULT ${info.defaultVal}` : "";
       colLines.push(`    ${fname} ${info.sql}${defaultClause}`);
     }
-    colLines.push("    created_at TEXT DEFAULT CURRENT_TIMESTAMP");
+    colLines.push("    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
 
     upSql =
       `CREATE TABLE IF NOT EXISTS ${table} (\n` +

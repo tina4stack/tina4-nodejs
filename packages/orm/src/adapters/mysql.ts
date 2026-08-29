@@ -148,6 +148,12 @@ export class MysqlAdapter implements DatabaseAdapter {
     let translated = SQLTranslator.concatPipesToFunc(sql);
     // MySQL uses LOWER() LIKE instead of ILIKE
     translated = SQLTranslator.ilikeToLike(translated);
+    // DDL: AUTOINCREMENT -> AUTO_INCREMENT and TIMESTAMP -> DATETIME (MySQL's
+    // TIMESTAMP carries auto-update / 2038 surprises) so ONE portable migration
+    // applies here. Both are DDL-only, so DML is untouched. Mirrors the Python
+    // master's mysql.py::_translate_sql.
+    translated = SQLTranslator.autoIncrementSyntax(translated, "mysql");
+    translated = SQLTranslator.ddlTypes(translated, "mysql");
     return translated;
   }
 

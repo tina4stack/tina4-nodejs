@@ -172,6 +172,12 @@ export class MssqlAdapter implements DatabaseAdapter {
     let translated = SQLTranslator.limitToTop(sql);
     translated = SQLTranslator.concatPipesToFunc(translated);
     translated = SQLTranslator.ilikeToLike(translated);
+    // DDL: AUTOINCREMENT -> IDENTITY(1,1), drop IF NOT EXISTS (unsupported), and
+    // TIMESTAMP -> DATETIME2 (MSSQL's TIMESTAMP is a rowversion, not a datetime)
+    // so ONE portable migration applies here. Both are DDL-only, so DML is
+    // untouched. Mirrors the Python master's mssql.py::_translate_sql.
+    translated = SQLTranslator.autoIncrementSyntax(translated, "mssql");
+    translated = SQLTranslator.ddlTypes(translated, "mssql");
     return translated;
   }
 
