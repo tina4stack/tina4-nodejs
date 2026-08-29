@@ -22,7 +22,10 @@ import { resolve, join } from "node:path";
 
 // ── Word Banks ───────────────────────────────────────────────────
 
-const FIRST_NAMES = [
+// Exported (not via the barrel) so seeding tests can build the disjoint
+// product-vs-person vocabulary check, mirroring the Python master's
+// `_FIRST_NAMES` import. Internal-but-importable, like Python's underscore name.
+export const FIRST_NAMES = [
   "Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Henry",
   "Ivy", "Jack", "Kate", "Leo", "Mia", "Noah", "Olivia", "Pete",
   "Quinn", "Rose", "Sam", "Tina", "Uma", "Vince", "Wendy", "Xander",
@@ -32,7 +35,7 @@ const FIRST_NAMES = [
   "Zara", "Amber", "Blake", "Clara",
 ];
 
-const LAST_NAMES = [
+export const LAST_NAMES = [
   "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller",
   "Davis", "Rodriguez", "Martinez", "Hernandez", "Lopez", "Wilson",
   "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee",
@@ -86,6 +89,27 @@ const JOB_TITLES = [
 const CURRENCIES = [
   "USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "CNY",
   "SEK", "NZD", "MXN", "SGD", "HKD", "NOK", "ZAR", "INR",
+];
+
+// Product-name vocabulary (adjective + noun). Seeds a generic `name` column on
+// a product-ish table with "Wireless Keyboard" instead of a person name.
+// Exported (not via the barrel) so seeding tests can assert product-vs-person
+// disjointness — mirrors the Python master's `_PRODUCT_ADJECTIVES`. The two
+// vocabularies are disjoint from FIRST_NAMES by construction, so the FIRST word
+// of a generated value tells which generator ran.
+export const PRODUCT_ADJECTIVES = [
+  "Wireless", "Organic", "Premium", "Classic", "Eco", "Smart", "Portable",
+  "Deluxe", "Compact", "Rustic", "Handcrafted", "Vintage", "Modern",
+  "Ergonomic", "Stainless", "Bamboo", "Recycled", "Artisan", "Professional",
+  "Ultra", "Insulated", "Lightweight", "Adjustable", "Foldable",
+];
+
+export const PRODUCT_NOUNS = [
+  "Keyboard", "Coffee Beans", "Backpack", "Water Bottle", "Desk Lamp",
+  "Headphones", "Notebook", "Sneakers", "Sunglasses", "Wallet", "Mug",
+  "Chair", "Blender", "Speaker", "Charger", "Umbrella", "Toothbrush",
+  "Jacket", "Watch", "Kettle", "Picture Frame", "Planter", "Cutlery Set",
+  "Yoga Mat", "Phone Case",
 ];
 
 // ── Seeded PRNG (mulberry32) ─────────────────────────────────────
@@ -191,6 +215,17 @@ export class FakeData {
 
   jobTitle(): string {
     return this.pick(JOB_TITLES);
+  }
+
+  /**
+   * A plausible product name, e.g. "Wireless Keyboard" or "Organic Coffee
+   * Beans" — an adjective + noun from the product vocabulary. Deterministic
+   * under a seed like every other generator (draws from the same instance
+   * PRNG). Used to seed a generic `name` column on a product-ish table instead
+   * of a person name (see the ORM FakeData `forField` heuristic).
+   */
+  product(): string {
+    return `${this.pick(PRODUCT_ADJECTIVES)} ${this.pick(PRODUCT_NOUNS)}`;
   }
 
   paragraph(sentences = 4): string {

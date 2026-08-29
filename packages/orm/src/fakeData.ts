@@ -5,6 +5,26 @@
 import { FakeData as CoreFakeData } from "../../core/src/fakeData.js";
 import type { FieldDefinition } from "./types.js";
 
+// A table/model whose name contains any of these gets product names on its
+// generic `name`/`full_name` column instead of a person name. Mirrors the
+// Python master's `_PRODUCT_TABLE_HINTS`.
+const PRODUCT_TABLE_HINTS = [
+  "product", "item", "catalog", "inventory", "goods", "merchandise",
+  "sku", "listing", "stock", "ware",
+] as const;
+
+/**
+ * True when the table/model name looks like a product catalogue, so a generic
+ * `name` column should seed a product name, not a person name. With NO table
+ * context (undefined/null/empty) this is false, so the person-name default is
+ * kept — back-compat. Exported (not via the barrel) so seeding tests can assert
+ * it directly, mirroring the Python master's `_is_product_table`.
+ */
+export function isProductTable(table?: string | null): boolean {
+  const t = (table ?? "").toLowerCase();
+  return PRODUCT_TABLE_HINTS.some((hint) => t.includes(hint));
+}
+
 /**
  * ORM-aware FakeData — wraps the core FakeData and adds forField()
  * which generates appropriate fake data based on an ORM FieldDefinition.
@@ -32,8 +52,11 @@ export class FakeData extends CoreFakeData {
    *
    * @param fieldDef - An ORM FieldDefinition object
    * @param columnName - Optional column name for heuristic matching (e.g. "email", "phone")
+   * @param table - Optional table/model name. A generic `name`/`full_name`
+   *   column on a product-ish table (see {@link isProductTable}) gets a
+   *   product name; with no table context it stays a person name (back-compat).
    */
-  forField(fieldDef: FieldDefinition, columnName?: string): unknown {
+  forField(fieldDef: FieldDefinition, columnName?: string, table?: string): unknown {
     // Auto-increment primary keys should not be generated
     if (fieldDef.primaryKey && fieldDef.autoIncrement) {
       return undefined;
@@ -53,7 +76,9 @@ export class FakeData extends CoreFakeData {
 
     if (col.includes("email")) return this.email();
     if (col.includes("phone") || col.includes("mobile") || col.includes("tel")) return this.phone();
-    if (col === "name" || col === "full_name" || col === "fullname") return this.name();
+    if (col === "name" || col === "full_name" || col === "fullname") {
+      return isProductTable(table) ? this.product() : this.name();
+    }
     if (col === "first_name" || col === "firstname") return this.firstName();
     if (col === "last_name" || col === "lastname" || col === "surname") return this.lastName();
     if (col.includes("address")) return this.address();

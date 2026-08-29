@@ -143,8 +143,10 @@ export async function autoFieldMap(
     }
     const fieldType = sqlTypeToFieldType(sqlType);
     // Bind the type + name per column; forField applies the name heuristics
-    // (email/phone/name/...) before falling back to the type.
-    fieldMap[name] = () => fake.forField({ type: fieldType }, name);
+    // (email/phone/name/...) before falling back to the type. The TABLE name is
+    // threaded so a generic `name` column on a product-ish table seeds a
+    // product name, not a person name (parity with the Python auto_field_map).
+    fieldMap[name] = () => fake.forField({ type: fieldType }, name, table);
   }
   return fieldMap;
 }
@@ -427,7 +429,10 @@ export async function seedOrm(
         } else if (pools[name] && pools[name].length > 0) {
           attrs[name] = fake.choice(pools[name]);
         } else {
-          attrs[name] = fake.forField(def, name);
+          // Thread the MODEL name so a generic `name` column on a product-ish
+          // model seeds a product name, not a person name (Python seed_orm
+          // passes orm_class.__name__; modelName is name ?? tableName).
+          attrs[name] = fake.forField(def, name, modelName);
         }
       }
       validateTypes(fields, attrs, modelName);
