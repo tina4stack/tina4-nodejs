@@ -22,9 +22,19 @@
  * out on every request that landed elsewhere - an outage that looks exactly like
  * success. Case 3 is that guard, kept.
  *
- * NO MOCKS. Real PostgreSQL 16, real MySQL 8, real SQLite files, and every
- * round trip verified OUT OF BAND through a connection this test owns rather
- * than through the handler that wrote it.
+ * NO MOCKS. Real PostgreSQL 16, real MySQL 8, real SQLite files, and - when the
+ * lab exports TINA4_TEST_FIREBIRD_URL - a real Firebird 5, every round trip
+ * verified OUT OF BAND through a connection this test owns rather than through
+ * the handler that wrote it.
+ *
+ * FIREBIRD EARNS ITS PLACE in the list, not just fills it out: it is the one
+ * engine with NO TEXT type (its payload column is VARCHAR(8191)) AND the one
+ * that folds unquoted identifiers to UPPER, so it is the only engine that
+ * exercises BOTH the per-engine CREATE TABLE branch and the case-insensitive
+ * column() read path - the two places databaseHandler.ts special-cases it. It
+ * is gated on TINA4_TEST_FIREBIRD_URL: unset in CI (which provisions no
+ * Firebird), set on the lab. So CI still runs sqlite+postgres+mysql and the lab
+ * runs all four - the ran.length >= 3 floor below holds either way.
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -79,6 +89,11 @@ const PG_URL = `postgres://${process.env.TINA4_TEST_PG_USERNAME ?? "tina4"}:`
 const MYSQL_URL = `mysql://${process.env.TINA4_TEST_MYSQL_USERNAME ?? "root"}:`
   + `${process.env.TINA4_TEST_MYSQL_PASSWORD ?? "tina4"}@127.0.0.1:3306/`
   + `${process.env.TINA4_TEST_MYSQL_DB ?? "tina4_test"}`;
+// Firebird carries its whole target in ONE URL (the lab exports it), not a
+// host/port pair like PG/MySQL, so the reachability probe parses host + port
+// straight out of it below. Unset off the lab -> the Firebird engine row is
+// never added, and the loop sees exactly sqlite+postgres+mysql.
+const FB_URL = process.env.TINA4_TEST_FIREBIRD_URL;
 
 const originalUrl = process.env.TINA4_DATABASE_URL;
 const originalCwd = process.cwd();
@@ -96,6 +111,14 @@ async function main(): Promise<void> {
         Number(process.env.TINA4_TEST_PG_PORT ?? 55432))],
       ["mysql", MYSQL_URL, () => reachable("127.0.0.1", 3306)],
     ];
+    // Firebird only when the lab exports its URL. Its whole target lives in the
+    // one URL, so the reachability probe parses host+port straight out of it.
+    if (FB_URL) {
+      const fb = FB_URL.match(/^firebird:\/\/(?:[^@]*@)?([^:/]+):(\d+)/);
+      const fbHost = fb?.[1] ?? "127.0.0.1";
+      const fbPort = Number(fb?.[2] ?? 3050);
+      engines.push(["firebird", FB_URL, () => reachable(fbHost, fbPort)]);
+    }
 
     const broken: string[] = [];
     const ran: string[] = [];

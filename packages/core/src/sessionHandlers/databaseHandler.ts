@@ -140,8 +140,10 @@ const CREATE_TABLE: Record<string, string> = {
   // A VARCHAR rather than BLOB SUB_TYPE TEXT on purpose: node-firebird hands a
   // blob back as a reader function rather than a string, which the read path
   // here would not understand. The cost is a session payload ceiling of 8191
-  // characters on this engine alone. Still unverified: the node-firebird DRIVER
-  // path end to end - this measurement was taken at the SQL level via isql.
+  // characters on this engine alone. VERIFIED end to end through the
+  // node-firebird DRIVER against the lab's live Firebird 5.0.4: a nested payload
+  // written by one handler and read back by a fresh one round-tripped intact
+  // through this VARCHAR column - not just the isql-level SQL measured above.
   firebird: `
       EXECUTE BLOCK AS BEGIN
         IF (NOT EXISTS(SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'TINA4_SESSION')) THEN
