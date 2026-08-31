@@ -6,6 +6,7 @@ import { migrateStatus } from "./commands/migrateStatus.js";
 import { migrateRollback } from "./commands/migrateRollback.js";
 import { listRoutes } from "./commands/routes.js";
 import { runTests } from "./commands/test.js";
+import { runLint } from "./commands/lint.js";
 import { generate, GENERATORS, RESOLUTION_ENVELOPE_VERSION } from "./commands/generate.js";
 import { runSeeds } from "./commands/seed.js";
 import { queueCommand, QUEUE_SUBCOMMAND_NAMES } from "./commands/queue.js";
@@ -369,6 +370,11 @@ export const COMMANDS: Record<string, CommandSpec> = {
     handler: async (a) => { await runTests(a[0]); },
     usage: "[file]",
     summary: "Run project tests",
+  },
+  lint: {
+    handler: (a) => { runLint(a); },
+    usage: "[--fix] [--no-install]",
+    summary: "Lint the project (eslint, installed dev-only on demand; else tsc/node --check baseline)",
   },
   queue: {
     handler: async (a) => { await queueCommand(a); },

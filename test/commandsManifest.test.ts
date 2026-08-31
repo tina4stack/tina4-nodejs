@@ -36,7 +36,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const binPath = resolve(here, "../packages/cli/src/bin.ts");
 
 // The command set the tina4 client must be able to discover truthfully.
-const KNOWN_COMMANDS = ["migrate", "migrate:create", "seed", "test", "routes", "generate", "commands",
+const KNOWN_COMMANDS = ["migrate", "migrate:create", "seed", "test", "lint", "routes", "generate", "commands",
   "queue", "build"];
 
 let pass = 0;
