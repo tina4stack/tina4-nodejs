@@ -19,14 +19,15 @@
  *     scaffolded eslint.config.js is asserted, and eslint (not the baseline) is
  *     shown to have run.
  *
- * FINDING baked into the probes (verified against a live eslint 10): the minimal
- * `[js.configs.recommended]` flat config the command scaffolds lints `.js`
- * files but REPORTS `.ts` files "File ignored because no matching configuration
- * was supplied" (a warning, exit 0) — it has no TypeScript parser. So the
- * "eslint ran and flagged something" probe is a `.js` file (`no-unused-vars`),
- * which the baseline (tsc/node --check) would NOT flag — that is what proves
- * eslint, not the baseline, ran. TypeScript linting stays with the `tsc`
- * baseline. See the command's report for the parity note.
+ * The scaffolded flat config is `[js.configs.recommended,
+ * ...tseslint.configs.recommended]`, so eslint lints BOTH `.js` AND `.ts`
+ * (typescript-eslint brings the TS parser + rules; its `typescript` peer
+ * auto-installs). The "eslint ran and flagged something" probe is therefore a
+ * `.ts` file with an unused variable — a REAL `@typescript-eslint/no-unused-vars`
+ * finding on VALID TypeScript that the `tsc` baseline (no noUnusedLocals) would
+ * pass, so exit 1 proves eslint itself linted the TypeScript (verified against a
+ * live eslint 10 + typescript-eslint 8), closing the .ts parity gap with the
+ * Python master's ruff.
  *
  * Run with: npx tsx test/cliLint.test.ts   (TINA4_NO_BROWSER=true)
  */
@@ -225,14 +226,15 @@ try {
   }
 
   if (npmPresent) {
-    // 5a. A clean project: eslint gets added dev-only, a flat config is
-    //     scaffolded, and the clean file passes.
+    // 5a. A clean TS project: eslint + @eslint/js + typescript-eslint get added
+    //     dev-only, a flat config that lints .js AND .ts is scaffolded, and the
+    //     clean .ts file passes.
     {
       const dir = join(outsideTmp, "install_clean");
       mkdirSync(join(dir, "src"), { recursive: true });
       writeFileSync(join(dir, "package.json"), PKG_MODULE("lintprobe-clean"));
       writeFileSync(join(dir, "tsconfig.json"), TSCONFIG);
-      writeFileSync(join(dir, "src", "ok.js"), "export const ok = 1;\n"); // eslint-clean
+      writeFileSync(join(dir, "src", "ok.ts"), "export const ok: number = 1;\n"); // eslint-clean TS
       ok("no eslint before the run", !existsSync(join(dir, "node_modules", "eslint")));
 
       const r = runLintCli(dir);
@@ -241,34 +243,42 @@ try {
       const devDeps = manifest.devDependencies ?? {};
       ok("eslint added to devDependencies (dev-only)", "eslint" in devDeps, JSON.stringify(devDeps));
       ok("@eslint/js added to devDependencies", "@eslint/js" in devDeps, JSON.stringify(devDeps));
+      ok("typescript-eslint added to devDependencies", "typescript-eslint" in devDeps, JSON.stringify(devDeps));
       ok("eslint is NOT a runtime dependency", !("eslint" in (manifest.dependencies ?? {})));
       ok("eslint.config.js scaffolded", existsSync(join(dir, "eslint.config.js")));
-      ok(
-        "scaffold is @eslint/js recommended",
-        /@eslint\/js/.test(readFileSync(join(dir, "eslint.config.js"), "utf-8")),
-      );
+      {
+        const cfg = readFileSync(join(dir, "eslint.config.js"), "utf-8");
+        ok("scaffold pulls @eslint/js recommended", /@eslint\/js/.test(cfg), cfg);
+        ok("scaffold pulls typescript-eslint recommended", /typescript-eslint/.test(cfg), cfg);
+      }
       ok("eslint is now installed in the project", existsSync(join(dir, "node_modules", "eslint")));
-      ok("clean project passes after install (exit 0) [eslint]", r.code === 0, `exit ${r.code}: ${r.out}`);
+      ok("clean .ts project passes after install (exit 0) [eslint]", r.code === 0, `exit ${r.code}: ${r.out}`);
       ok("eslint ran (summary names it)", /\[eslint\]/.test(r.out), r.out);
     }
 
-    // 5b. A file with a real eslint finding (unused var) that is VALID syntax:
-    //     the baseline (tsc/node --check) would pass it, so exit 1 proves eslint
-    //     itself ran and flagged it.
+    // 5b. THE gap-closer: a real eslint finding in a VALID-syntax `.ts` file.
+    //     `const unused = 1;` is valid TypeScript that the tsc baseline (no
+    //     noUnusedLocals) PASSES, so exit 1 + @typescript-eslint/no-unused-vars
+    //     proves eslint itself linted the TypeScript — not tsc, not the baseline.
     {
       const dir = join(outsideTmp, "install_finding");
       mkdirSync(join(dir, "src"), { recursive: true });
       writeFileSync(join(dir, "package.json"), PKG_MODULE("lintprobe-finding"));
       writeFileSync(join(dir, "tsconfig.json"), TSCONFIG);
-      writeFileSync(join(dir, "src", "smelly.js"), "const unused = 1;\n"); // no-unused-vars, valid JS
+      writeFileSync(join(dir, "src", "smelly.ts"), "const unused = 1;\n"); // valid TS, eslint flags it
 
       const r = runLintCli(dir);
 
       const devDeps = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8")).devDependencies ?? {};
       ok("eslint added to devDependencies (finding case)", "eslint" in devDeps, JSON.stringify(devDeps));
-      ok("installed eslint flags the unused var (exit 1)", r.code === 1, `exit ${r.code}: ${r.out}`);
+      ok("typescript-eslint added to devDependencies (finding case)", "typescript-eslint" in devDeps, JSON.stringify(devDeps));
+      ok("installed eslint flags the unused var in a .ts file (exit 1)", r.code === 1, `exit ${r.code}: ${r.out}`);
       ok("failure summary names eslint (not the baseline)", /\[eslint\]/.test(r.out), r.out);
-      ok("no-unused-vars is reported", /no-unused-vars/.test(r.out), r.out);
+      ok(
+        "the TS-specific rule fired (@typescript-eslint/no-unused-vars)",
+        /@typescript-eslint\/no-unused-vars/.test(r.out),
+        r.out,
+      );
     }
   } else {
     ok("install path exercised", false, "npm unavailable — cannot run the real integration");

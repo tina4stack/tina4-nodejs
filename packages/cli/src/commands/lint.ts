@@ -9,11 +9,12 @@
  *     runs `eslint --fix` (safe autofixes). eslint reports syntax too, so it is
  *     the whole pass when present.
  *   • eslint absent (and NOT `--no-install`): silently `npm i -D eslint
- *     @eslint/js` into the PROJECT (dev-only, never the app's runtime deps), and
- *     scaffold a minimal flat config at `eslint.config.js` when none exists, then
- *     run eslint. A one-line `  · installing eslint...` notice is printed. If npm
- *     is missing or the install fails, a one-line notice is printed and the
- *     command falls through to the baseline.
+ *     @eslint/js typescript-eslint` into the PROJECT (dev-only, never the app's
+ *     runtime deps — typescript-eslint pulls its own `typescript` peer), and
+ *     scaffold a minimal flat config at `eslint.config.js` when none exists that
+ *     lints BOTH `.js` and `.ts`, then run eslint. A one-line `  · installing
+ *     eslint...` notice is printed. If npm is missing or the install fails, a
+ *     one-line notice is printed and the command falls through to the baseline.
  *   • Baseline (zero new dependency): `tsc --noEmit` when a `tsconfig.json`
  *     exists (the type+syntax check every tina4-nodejs project already owns,
  *     forced to emit nothing); otherwise stdlib `node --check` over `.js`/`.mjs`/
@@ -122,10 +123,15 @@ const ESLINT_FLAT_CONFIGS = [
 // `.js` flat config is ESM and loads as written.
 const ESLINT_SCAFFOLD_FILE = "eslint.config.js";
 
-// The minimal flat config we scaffold — eslint's own recommended rule set, zero
-// project-specific choices. IDENTICAL content across the shared design.
+// The minimal flat config we scaffold — eslint's own recommended rule set PLUS
+// typescript-eslint's recommended (the non-type-checked / syntactic preset, so no
+// tsconfig or parserOptions.project wiring is needed) so BOTH `.js` and `.ts` are
+// linted. Without the typescript-eslint half, eslint reports every `.ts` file
+// "File ignored" and a TS project lints vacuously. IDENTICAL content across the
+// shared design.
 const ESLINT_SCAFFOLD = `import js from "@eslint/js";
-export default [js.configs.recommended];
+import tseslint from "typescript-eslint";
+export default [js.configs.recommended, ...tseslint.configs.recommended];
 `;
 
 /** Absolute path of an eslint flat config in `cwd`, or null when none exists. */
@@ -187,6 +193,16 @@ function resolveEslintBin(cwd: string): string | null {
 }
 
 /**
+ * True when `pkg` is installed directly under the project's node_modules (a
+ * `package.json` at `node_modules/<pkg>/`). Direct filesystem check, immune to
+ * the module-resolver cache — the scaffold imports `@eslint/js` and
+ * `typescript-eslint`, so it must not be written until both are on disk.
+ */
+function hasPackage(cwd: string, pkg: string): boolean {
+  return existsSync(join(cwd, "node_modules", ...pkg.split("/"), "package.json"));
+}
+
+/**
  * Absolute path of `npm` on PATH, or null. Scanned directly (no `which` shell-out)
  * so it behaves the same on every platform — mirrors bin.ts's findClient().
  */
@@ -237,8 +253,8 @@ export function runLint(args: string[]): void {
       console.log("  · npm not found — using the zero-dependency baseline.");
     } else {
       if (!eslintBin) {
-        console.log("  · installing eslint (npm i -D eslint @eslint/js)...");
-        const rc = spawnSync(npm, ["install", "-D", "eslint", "@eslint/js"], {
+        console.log("  · installing eslint (npm i -D eslint @eslint/js typescript-eslint)...");
+        const rc = spawnSync(npm, ["install", "-D", "eslint", "@eslint/js", "typescript-eslint"], {
           cwd,
           stdio: "inherit",
         }).status;
@@ -248,12 +264,18 @@ export function runLint(args: string[]): void {
           console.log("  · could not install eslint — using the zero-dependency baseline.");
         }
       }
-      if (eslintBin && !eslintConfig) {
+      // Scaffold ONLY once all three the config imports are on disk (eslint bin +
+      // @eslint/js + typescript-eslint), so a partial/failed install never leaves
+      // an eslint.config.js that cannot load.
+      if (
+        eslintBin && !eslintConfig &&
+        hasPackage(cwd, "@eslint/js") && hasPackage(cwd, "typescript-eslint")
+      ) {
         const scaffold = join(cwd, ESLINT_SCAFFOLD_FILE);
         try {
           writeFileSync(scaffold, ESLINT_SCAFFOLD, "utf-8");
           eslintConfig = scaffold;
-          console.log(`  · scaffolded ${ESLINT_SCAFFOLD_FILE} (@eslint/js recommended).`);
+          console.log(`  · scaffolded ${ESLINT_SCAFFOLD_FILE} (@eslint/js + typescript-eslint recommended).`);
         } catch (err) {
           console.log(
             `  · could not scaffold ${ESLINT_SCAFFOLD_FILE} (${err instanceof Error ? err.message : String(err)}).`,
