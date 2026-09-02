@@ -131,7 +131,7 @@ export function toTableName(name: string): string {
       from: raw,
       to: safe,
       reason: `SQL reserved word '${raw}' would break CREATE TABLE`,
-      override: `--table ${raw} --quote (requires quoted-identifier mode, not yet implemented)`,
+      override: `--table-name <name> (table names interpolate unquoted; forcing a reserved name is yours to quote in raw SQL)`,
     });
     return safe;
   }
@@ -450,10 +450,11 @@ function printResolution(): void {
     lines.push(`  migration  ${b.migration_path}`);
   }
   const reserved = b.transformations.find((t) => t.kind === "reserved_word_pluralize");
-  if (reserved && reserved.from && reserved.override) {
+  if (reserved && reserved.from) {
     lines.push("");
-    lines.push(`  To keep the raw name '${reserved.from}' as the table:`);
-    lines.push(`    tina4nodejs generate ${__resolution.target} ${__resolution.input.name} ${reserved.override}`);
+    lines.push(`  To set the table name yourself:`);
+    lines.push(`    tina4nodejs generate ${__resolution.target} ${__resolution.input.name} --table-name <name>`);
+    lines.push(`  Tina4 interpolates table names unquoted; if you force the reserved '${reserved.from}', you own the quoting in raw SQL.`);
   }
   // v1.1 (ADR-0063): surface the already-populated test_paths[], and the two
   // new arrays (edit_hints, next) when either is non-empty. Sections stay

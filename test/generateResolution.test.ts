@@ -155,10 +155,10 @@ console.log("\n--- 1. envelope-shape: model + --json + --dry-run (reserved word)
       assert("transformation.reason mentions 'SQL reserved word'",
         typeof t?.reason === "string" && (t?.reason as string).includes("SQL reserved word"),
         `got ${t?.reason}`);
-      assert("transformation.override names --table and --quote as the opt-out",
+      assert("transformation.override points at --table-name, never --quote (#123)",
         typeof t?.override === "string"
-          && (t?.override as string).includes("--table")
-          && (t?.override as string).includes("--quote"),
+          && (t?.override as string).includes("--table-name")
+          && !(t?.override as string).includes("--quote"),
         `got ${t?.override}`);
     }
   } finally {
@@ -232,9 +232,9 @@ console.log("\n--- 4. human-writes: bare `generate model Order` writes files + p
     assert("stderr flags 'SQL reserved word' for the pluralisation",
       r.stderr.includes("SQL reserved word"),
       `stderr=${r.stderr.slice(0, 400)}`);
-    assert("stderr includes the '--table order --quote' opt-out hint",
-      r.stderr.includes("--table order")
-        && r.stderr.includes("--quote"),
+    assert("stderr points at --table-name, never --quote (#123)",
+      r.stderr.includes("--table-name")
+        && !r.stderr.includes("--quote"),
       `stderr=${r.stderr.slice(0, 400)}`);
 
     // Bare (no --json) MUST NOT emit JSON on stdout — a downstream `| jq` would
