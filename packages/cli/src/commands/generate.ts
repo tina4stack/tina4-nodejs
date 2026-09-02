@@ -138,6 +138,71 @@ export function toTableName(name: string): string {
   return raw;
 }
 
+/**
+ * The table name a generator uses (issue #123) — honours `--table-name` and
+ * speaks up instead of renaming SILENTLY. Mirrors the Python master's
+ * `_resolve_table` (tina4-python/tina4_python/cli/__init__.py).
+ *
+ * `announce` prints the note/warning; it is TRUE only for `generateModel` (where
+ * the table is born). Composite generators (crud) let the model sub-call
+ * announce, and generators that target an EXISTING table (route/seeder/form/view/
+ * migration) still honour `--table-name` but stay quiet so the note is not
+ * repeated — the note prints exactly once per `generate`.
+ *
+ *  • `--table-name <name>` wins verbatim. If that name is ITSELF a reserved word,
+ *    warn loudly (when announcing): Tina4 interpolates table names UNQUOTED, so
+ *    the ORM's generated SQL will fail on it — quoting it in raw SQL + migrations
+ *    is now the developer's job (we do NOT silently quote; identifier quoting is a
+ *    global storage invariant, not a local fix).
+ *  • Otherwise fall back to `toTableName` (snake + reserved-word pluralise). When
+ *    that auto-pluralises a reserved-word class name (`Order` -> `orders`), print a
+ *    one-line NOTE (when announcing) naming the rename and the `--table-name`
+ *    escape hatch, so the developer is informed rather than surprised.
+ *
+ * The note/warning goes to STDERR (console.error) so a `generate … --json` run
+ * keeps its stdout envelope pristine for a downstream `| jq`. `toTableName`'s
+ * `reserved_word_pluralize` envelope transformation is UNCHANGED (this ADDS the
+ * announce path; it does not touch the envelope contract).
+ */
+export function resolveTable(
+  name: string,
+  flags: Record<string, string | boolean> | undefined,
+  opts: { announce?: boolean } = {},
+): string {
+  const announce = opts.announce ?? false;
+  const override = (flags ?? {})["table-name"];
+
+  // `--table-name <name>` wins verbatim. A bare `--table-name` (no value) parses
+  // to `true` — ignore it, exactly like the Python master (falls through to the
+  // pluralise path), rather than letting the boolean become the table name.
+  if (typeof override === "string" && override) {
+    if (announce && SQL_RESERVED_TABLE_NAMES.has(toSnake(override))) {
+      console.error(
+        `  ! table_name '${override}' is a SQL reserved word. Tina4 interpolates ` +
+          `table names UNQUOTED, so the ORM's generated SQL will fail on it -- ` +
+          `quote it yourself in raw SQL and migrations.`,
+      );
+    }
+    return override;
+  }
+
+  const bare = toSnake(name);
+  if (!SQL_RESERVED_TABLE_NAMES.has(bare)) {
+    return bare; // non-reserved: singular, silent, no envelope transformation
+  }
+
+  // Reserved: pluralise via toTableName (which records the envelope
+  // transformation), then announce the rename so it is never a surprise.
+  const table = toTableName(name);
+  if (announce) {
+    console.error(
+      `  · '${bare}' is a SQL reserved word; using table_name '${table}' ` +
+        `(Tina4 interpolates table names unquoted). Override with --table-name <name>.`,
+    );
+  }
+  return table;
+}
+
 // ── Resolution surface — the machine-readable envelope every generator ─
 // populates so `--json` can print it and a human run can print the same
 // facts to stderr. See the JSDoc on `printResolution` below for the envelope
@@ -591,7 +656,7 @@ export interface GeneratorSpec {
 }
 
 export const GENERATORS: Record<string, GeneratorSpec> = {
-  model:      { handler: generateModel,                     usage: '<Name> [--fields "name:string,price:float"]', summary: "ORM model + matching migration" },
+  model:      { handler: generateModel,                     usage: '<Name> [--fields "name:string,price:float"] [--table-name <name>]', summary: "ORM model + matching migration" },
   route:      { handler: generateRoute,                     usage: "<name> [--model Name] [--public]",            summary: "CRUD route file, secure by default (--public opens writes)" },
   crud:       { handler: generateCrud,                      usage: '<Name> [--fields "..."] [--public]',          summary: "Model + migration + routes + form + view + test" },
   migration:  { handler: (n, f) => generateMigration(n, f, undefined, undefined, !f["no-test"]), usage: "<description>",                                summary: "Timestamped migration file (UP/DOWN)" },
@@ -717,6 +782,7 @@ export async function generate(what: string, name: string, extraArgs: string[] =
     console.error("  Usage: tina4nodejs generate <what> <name> [options]");
     console.error(`  Generators: ${GENERATOR_LIST}`);
     console.error('  Options:    --fields "name:string,price:float"  --model ModelName');
+    console.error("              --table-name <name>       force the model's table name (else derived; reserved words auto-pluralise)");
     console.error("              --public                 open a route's writes (default: secure)");
     console.error('              --every 5m | --cron "…"   service schedule');
     console.error("              --json                    emit machine-readable resolution envelope on stdout");
@@ -833,7 +899,9 @@ export async function generateProgrammatic(
 
 function generateModel(name: string, flags: Record<string, string | boolean>, emitTest = true): void {
   const fields = fieldsOrDefault((flags.fields as string) || "");
-  const table = toTableName(name);
+  // The table is BORN here — announce=true, so a reserved-word rename (Order ->
+  // orders) or a forced-reserved --table-name is said out loud, not silent (#123).
+  const table = resolveTable(name, flags, { announce: true });
   const dir = resolve("src/models");
   ensureDir(dir);
   const path = join(dir, `${name}.ts`);
@@ -922,7 +990,8 @@ function generateRoute(name: string, flags: Record<string, string | boolean>, em
     setResolutionField("file_path", `src/routes/api/${routePath}/get.ts`);
   }
 
-  const table = model ? toTableName(model) : "";
+  // Route targets an EXISTING table — honour --table-name, stay quiet (announce=false).
+  const table = model ? resolveTable(model, flags, { announce: false }) : "";
   // Model import path is RELATIVE to the route file's directory. Files directly
   // under src/routes/api/<name>/ are 3 levels above src/models/; the [id]/ files
   // are one deeper (4 levels).
@@ -1161,7 +1230,9 @@ ${aiFill(`delete_${singular}`, {
 // ── CRUD ────────────────────────────────────────────────────────────
 
 function generateCrud(name: string, flags: Record<string, string | boolean>): void {
-  const table = toTableName(name);
+  // Composite: quiet here (announce=false); the generateModel sub-call below is
+  // the one that announces, so the reserved-word note prints exactly once.
+  const table = resolveTable(name, flags, { announce: false });
   const routeName = toPlural(table);
   const isPublic = Boolean(flags.public);
 
@@ -1221,9 +1292,11 @@ export function generateMigration(
       .replace(/^create_/, "")
       .replace(/^add_/, "")
       .replace(/^drop_/, "");
-    // toTableName also records a `reserved_word_pluralize` transformation
-    // on the resolution when the raw form collides with a SQL reserved word.
-    table = toTableName(raw);
+    // resolveTable honours --table-name and (via toTableName) records the
+    // `reserved_word_pluralize` transformation when the raw form collides with a
+    // SQL reserved word. Quiet (announce=false): a direct migration targets an
+    // existing table, so it does not repeat the model's note.
+    table = resolveTable(raw, flags, { announce: false });
   }
   // Only set table_name / migration_path when THIS is the top-level target.
   // A migration produced by generateModel is a side effect of `generate model`,
@@ -1508,7 +1581,7 @@ void test${titleName};
 
 function generateForm(name: string, flags: Record<string, string | boolean>): void {
   const fields = fieldsOrDefault((flags.fields as string) || "");
-  const table = toTableName(name);
+  const table = resolveTable(name, flags, { announce: false });
   const routeName = toPlural(table);
 
   const inputTypes: Record<string, string> = {
@@ -1586,7 +1659,7 @@ function generateForm(name: string, flags: Record<string, string | boolean>): vo
 
 function generateView(name: string, flags: Record<string, string | boolean>): void {
   const fields = fieldsOrDefault((flags.fields as string) || "");
-  const table = toTableName(name);
+  const table = resolveTable(name, flags, { announce: false });
   const routeName = toPlural(table);
 
   const cols = fields.map(([f]) => f);
@@ -2025,8 +2098,8 @@ ${rules}  validator.required("name");   // starter rule (matches the model's def
 // overrides may be static values OR (fake) => value callables) and
 // packages/cli/src/commands/seed.ts (runs each src/seeds/*.ts as a script).
 
-function generateSeeder(name: string, _flags: Record<string, string | boolean>): void {
-  const table = toTableName(name);
+function generateSeeder(name: string, flags: Record<string, string | boolean>): void {
+  const table = resolveTable(name, flags, { announce: false });
   const dir = resolve("src/seeds");
   ensureDir(dir);
   const path = join(dir, `${table}_seeder.ts`);
