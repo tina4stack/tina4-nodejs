@@ -24,7 +24,7 @@ jobs:
       # `node:sqlite` (Node 22 experimental, Node 24 stable).
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
