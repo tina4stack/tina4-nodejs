@@ -1280,7 +1280,9 @@ function injectIntoHtml(ctx: ResponseWrapContext, devToolbar: boolean, html: str
     // Suppress the live reloader on the AI/stable port (data-reload="0"); the
     // toolbar JS early-returns when data-reload !== "1". Mirrors PHP's
     // suppressReload flag.
-    reload: !ctx.isAiPortRequest,
+    // Also suppress on the dev-admin dashboard (any /__dev page): its SPA reloads
+    // itself gently, so the toolbar's full-page reloader must not fire there.
+    reload: !ctx.isAiPortRequest && !ctx.pathname.startsWith("/__dev"),
   };
   return injectFeedbackWidget(ctx.req, injectDevToolbar(html, toolbarCtx));
 }
