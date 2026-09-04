@@ -1847,6 +1847,98 @@ export async function runDispatch(
   return Log.runWithRequestId(requestId, () => dispatchInner(ctx, rawReq, rawRes, requestId));
 }
 
+/**
+ * Sibling loopback addresses to ALSO listen on, so `localhost` reaches this
+ * server whether the OS resolves it to IPv4 (127.0.0.1) or IPv6 (::1).
+ *
+ * `localhost` resolves to `::1` (IPv6) FIRST on Windows, so a server bound only
+ * to `127.0.0.1` — or `0.0.0.0`, the IPv4 wildcard, which does NOT cover IPv6 —
+ * refuses the browser with ERR_CONNECTION_REFUSED even though it is serving,
+ * because nothing listens on `::1`. Binding the sibling family closes that gap.
+ *
+ * Returns only the families a direct bind of `host` does not already cover, as
+ * UNBRACKETED addresses (Node's net/http take a bare "::1"). A host that is
+ * neither loopback nor a wildcard yields an empty list — an explicit LAN
+ * address is bound exactly as asked. Mirrors PHP `Server::loopbackBindHosts`.
+ */
+export function loopbackBindHosts(host: string): string[] {
+  const normalized = host.trim().replace(/^\[|\]$/g, "").toLowerCase();
+  switch (normalized) {
+    case "localhost":
+      return ["127.0.0.1", "::1"];
+    case "127.0.0.1":
+    case "0.0.0.0":
+      return ["::1"];
+    case "::1":
+    case "::":
+      return ["127.0.0.1"];
+    default:
+      return [];
+  }
+}
+
+/**
+ * Best-effort extra listeners on the SAME port for the sibling loopback family
+ * (see loopbackBindHosts), each REUSING the primary `dispatch` handler so a
+ * request on `::1` is served identically to one on `127.0.0.1`.
+ *
+ * CRITICAL Node gotcha: a listen failure is an ASYNCHRONOUS `'error'` EVENT,
+ * never a thrown exception, so every sibling attaches an `'error'` handler
+ * BEFORE it can fire. A sibling is pure convenience — the primary is the source
+ * of truth — so ANY bind error is swallowed and that sibling skipped:
+ * EADDRINUSE (the family the primary already answers, e.g. the `localhost`
+ * case), EADDRNOTAVAIL / EAFNOSUPPORT (no IPv6 loopback here) are the expected
+ * ones and stay silent; anything else is logged at debug. It never rejects,
+ * never bubbles to `uncaughtException`, and never fails the primary startup.
+ * The handler stays attached for the life of the socket, so a late error on a
+ * kept sibling is swallowed too and cannot crash the process.
+ *
+ * Resolves to the siblings that actually reached `'listening'`, so the shutdown
+ * path closes exactly those.
+ */
+function startLoopbackSiblings(
+  port: number,
+  host: string,
+  dispatch: (req: IncomingMessage, res: ServerResponse) => Promise<void>,
+): Promise<ReturnType<typeof createServer>[]> {
+  const siblingHosts = loopbackBindHosts(host);
+  if (siblingHosts.length === 0) return Promise.resolve([]);
+
+  return Promise.all(
+    siblingHosts.map(
+      (siblingHost) =>
+        new Promise<ReturnType<typeof createServer> | null>((resolveSibling) => {
+          const sibling = createServer(dispatch);
+          let settled = false;
+          sibling.on("error", (err: NodeJS.ErrnoException) => {
+            const expected =
+              err.code === "EADDRINUSE" ||
+              err.code === "EADDRNOTAVAIL" ||
+              err.code === "EAFNOSUPPORT";
+            if (!expected) {
+              Log.debug(
+                `Loopback sibling ${siblingHost}:${port} not bound ` +
+                  `(${err.code ?? err.message}) — skipped, primary already serves`,
+              );
+            }
+            if (!settled) {
+              settled = true;
+              resolveSibling(null);
+            }
+            // Already kept/settled: swallow so a late error never reaches
+            // uncaughtException and never disturbs the primary listener.
+          });
+          sibling.listen(port, siblingHost, () => {
+            settled = true;
+            resolveSibling(sibling);
+          });
+        }),
+    ),
+  ).then((results) =>
+    results.filter((s): s is ReturnType<typeof createServer> => s !== null),
+  );
+}
+
 export async function startServer(config?: Tina4Config): Promise<{
   close: () => void;
   router: Router;
@@ -2269,11 +2361,21 @@ ${reset}
   });
 
   return new Promise((resolvePromise) => {
-    server.listen(port, host, () => {
+    server.listen(port, host, async () => {
       // Record THIS process as the Tina4 dev server on this port, so a later
       // `tina4 serve` can identify it as reclaimable (TAKEOVER-DEC-01). Only the
       // single dev process needs it; takeover is dev-gated off in cluster/prod.
       if (!cluster.isWorker) writePidfile(port);
+
+      // Dual-stack loopback: ALSO listen on the sibling loopback family on the
+      // SAME port, so `localhost` is reachable whether the OS resolves it to
+      // IPv4 or IPv6 (the Windows `localhost` -> `::1` gap). Best-effort and
+      // async-error-guarded — a sibling that cannot bind is skipped and never
+      // fails the primary startup (see startLoopbackSiblings). Parity with PHP
+      // PR #206 / Python / Ruby. Awaited so it is settled before the caller's
+      // promise resolves (a client can then rely on both families being up).
+      const siblingServers = await startLoopbackSiblings(port, host, dispatch);
+
       const displayHost = host === "0.0.0.0" ? "localhost" : host;
       const isDebug = isTruthy(process.env.TINA4_DEBUG);
       const logLevel = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
@@ -2400,18 +2502,30 @@ ${reset}
 
       const closeListeners = (): Promise<void> =>
         new Promise((done) => {
-          let pending = aiServer ? 2 : 1;
+          let pending = 1 + (aiServer ? 1 : 0) + siblingServers.length;
           const one = (): void => {
             if (--pending === 0) done();
           };
           server.close(one);
           if (aiServer) aiServer.close(one);
+          // Sibling loopback listeners share this port and are drained too. Each
+          // reached 'listening' (startLoopbackSiblings filters), so close(one)
+          // fires its callback; a throw only if it is already gone, in which
+          // case count it as closed so the counter still settles.
+          for (const sibling of siblingServers) {
+            try {
+              sibling.close(one);
+            } catch {
+              one();
+            }
+          }
           // A keep-alive socket with no request on it still counts as an open
           // connection, so close() would sit on it until the client wandered
           // off. Without this a fully drained server still burns the whole
           // shutdown budget.
           server.closeIdleConnections();
           aiServer?.closeIdleConnections();
+          for (const sibling of siblingServers) sibling.closeIdleConnections();
         });
 
       const gracefulShutdown = async (signal: string): Promise<void> => {
@@ -2458,6 +2572,7 @@ ${reset}
           );
           server.closeAllConnections();
           aiServer?.closeAllConnections();
+          for (const sibling of siblingServers) sibling.closeAllConnections();
         }
 
         try {
@@ -2506,6 +2621,15 @@ ${reset}
           stopAllBackgroundTasks();
           if (aiServer) aiServer.close();
           server.close();
+          // Sibling loopback listeners share the port — close them alongside the
+          // primary (guarded: a sibling already gone must not throw out of close()).
+          for (const sibling of siblingServers) {
+            try {
+              sibling.close();
+            } catch {
+              /* already not running */
+            }
+          }
           // Close database if ORM was initialized
           import("../../orm/src/index.js").then((orm) => orm.closeDatabase()).catch(() => {});
         },
