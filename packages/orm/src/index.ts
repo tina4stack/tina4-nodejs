@@ -13,6 +13,8 @@ export { REQUIRED_ADAPTER_CAPABILITIES, NOT_REQUIRED_ON_ADAPTER } from "./types.
 
 export { DatabaseResult } from "./databaseResult.js";
 export type { ColumnInfoResult } from "./databaseResult.js";
+export { ModelCollection } from "./modelCollection.js";
+export type { PaginateEnvelope } from "./modelCollection.js";
 export { Database, initDatabase, getAdapter, setAdapter, bindDatabase, createAdapterFromUrl, closeDatabase, parseDatabaseUrl, setNamedAdapter, getNamedAdapter, resolveDbPool, stripTrailingSemicolons, wrapWithCache, resetRequestCaches } from "./database.js";
 export {
   adapterFetch, adapterQuery, adapterFetchOne, adapterExecute, adapterInsert,

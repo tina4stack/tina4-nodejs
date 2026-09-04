@@ -3,8 +3,9 @@ import {
   adapterQuery, adapterFetch, adapterExecute, adapterFetchOne,
   adapterStartTransaction, adapterCommit, adapterRollback,
   adapterTableExists, adapterCreateTable, extractLastInsertId,
-  DEFAULT_ROW_CAP,
+  probeTotal, DEFAULT_ROW_CAP,
 } from "./database.js";
+import { ModelCollection } from "./modelCollection.js";
 import { validate as validateFields } from "./validation.js";
 import { QueryBuilder } from "./queryBuilder.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -452,6 +453,43 @@ export class BaseModel {
   }
 
   /**
+   * Shared read tail for the collection-returning finders (where / all / select
+   * / find filter-form / withTrashed). Runs the SAME two calls `db.fetch()`
+   * makes — the page fetch AND the COUNT probe over the SAME base SQL — hydrates
+   * the rows into model instances, and returns a ModelCollection carrying the
+   * total (ADR-0064).
+   *
+   * The total is FREE: `probeTotal` is the exact `COUNT(*)` probe `db.fetch()`
+   * already runs; the ORM used to discard it. ZERO extra queries beyond that one
+   * probe. `sql` MUST NOT carry its own LIMIT/OFFSET — `adapterFetch` applies
+   * limit/offset to the page, and the probe wraps the un-limited SQL so it counts
+   * the WHOLE filtered set, not the page.
+   */
+  protected static async _collect<T extends BaseModel>(
+    this: typeof BaseModel & (new (data?: Record<string, unknown>) => T),
+    sql: string,
+    params: unknown[] | undefined,
+    limit: number,
+    offset: number,
+    include?: string[],
+  ): Promise<ModelCollection<T>> {
+    const db = this.getDb();
+    const rows = await adapterFetch(db, sql, params, limit, offset);
+    const data: Record<string, unknown>[] = Array.isArray(rows)
+      ? (rows as Record<string, unknown>[])
+      : ((rows as { data?: Record<string, unknown>[] })?.data ?? []);
+    // The total comes from the fetch COUNT probe — NOT data.length (that is only
+    // the page). probeTotal returns undefined only for an unbounded read
+    // (limit <= 0), where the page IS the whole set, so data.length is right.
+    const total = (await probeTotal(db, sql, params, limit)) ?? data.length;
+    const instances = data.map((row) => new this(row) as T);
+    if (include) {
+      await (this as typeof BaseModel)._eagerLoad(instances as BaseModel[], include);
+    }
+    return new ModelCollection<T>(instances, total, limit, offset);
+  }
+
+  /**
    * Find a record by primary key.
    * @param id Primary key value.
    * @param include Optional array of relationship names to eager-load.
@@ -531,7 +569,7 @@ export class BaseModel {
     offset?: number,
     orderBy?: string,
     include?: string[],
-  ): Promise<T[]>;
+  ): Promise<ModelCollection<T>>;
   static async find<T extends BaseModel>(
     this: new (data?: Record<string, unknown>) => T,
     filter?: Record<string, unknown> | number | string,
@@ -539,7 +577,7 @@ export class BaseModel {
     offset = 0,
     orderBy?: string,
     include?: string[],
-  ): Promise<T[] | T | null> {
+  ): Promise<ModelCollection<T> | T | null> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
 
     // Scalar PK lookup routes to findById. A number or a string (but NOT a
@@ -555,7 +593,6 @@ export class BaseModel {
 
     // Array form — coerce `limit` back to a number for the list path.
     const lim = typeof limit === "number" ? limit : 100;
-    const db = ModelClass.getDb();
     const conditions: string[] = [];
     const params: unknown[] = [];
 
@@ -579,18 +616,7 @@ export class BaseModel {
       sql += ` ORDER BY ${orderBy}`;
     }
 
-    const rows = await adapterFetch(db, sql, params, lim, offset);
-    const data = (rows as any)?.data ?? rows;
-    const instances = (Array.isArray(data) ? data : []).map((row: Record<string, unknown>) => {
-      const inst = new this(row) as T;
-      return inst;
-    });
-
-    if (include) {
-      await ModelClass._eagerLoad(instances as BaseModel[], include);
-    }
-
-    return instances;
+    return ModelClass._collect<T>(sql, params, lim, offset, include);
   }
 
   /**
@@ -671,9 +697,8 @@ export class BaseModel {
     offset: number = 0,
     include?: string[],
     orderBy?: string,
-  ): Promise<T[]> {
+  ): Promise<ModelCollection<T>> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
-    const db = ModelClass.getDb();
 
     const conditions: string[] = [];
     if (ModelClass.softDelete) {
@@ -685,18 +710,14 @@ export class BaseModel {
 
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const orderClause = orderBy ? ` ORDER BY ${orderBy}` : "";
-    const sql = `SELECT * FROM "${ModelClass.tableName}"${whereClause}${orderClause}`
-      + ` LIMIT ${limit} OFFSET ${offset}`;
+    // No LIMIT/OFFSET embedded: _collect's adapterFetch applies them to the page
+    // and the COUNT probe wraps the un-limited SQL so the total is the whole set.
+    const sql = `SELECT * FROM "${ModelClass.tableName}"${whereClause}${orderClause}`;
 
     // No bind parameters: the only conditions left are the framework's own
     // softDelete / tableFilter literals. A caller-supplied filter belongs on
     // where(), which binds its params properly.
-    const rows = await adapterQuery(db, sql, []);
-    const instances = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
-    if (include) {
-      await ModelClass._eagerLoad(instances, include);
-    }
-    return instances;
+    return ModelClass._collect<T>(sql, [], limit, offset, include);
   }
 
   /**
@@ -718,9 +739,8 @@ export class BaseModel {
     offset: number = 0,
     include?: string[],
     orderBy?: string,
-  ): Promise<T[]> {
+  ): Promise<ModelCollection<T>> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
-    const db = ModelClass.getDb();
 
     const parts: string[] = [];
     if (ModelClass.softDelete) {
@@ -732,14 +752,11 @@ export class BaseModel {
     parts.push(`(${conditions})`);
 
     const orderClause = orderBy ? ` ORDER BY ${orderBy}` : "";
-    const sql = `SELECT * FROM "${ModelClass.tableName}" WHERE ${parts.join(" AND ")}${orderClause} LIMIT ${limit} OFFSET ${offset}`;
+    // No LIMIT/OFFSET embedded — _collect applies them to the page and probes
+    // the total (ADR-0064). orderBy affects the page only; COUNT is order-free.
+    const sql = `SELECT * FROM "${ModelClass.tableName}" WHERE ${parts.join(" AND ")}${orderClause}`;
 
-    const rows = await adapterQuery(db, sql, params);
-    const instances = rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
-    if (include) {
-      await ModelClass._eagerLoad(instances, include);
-    }
-    return instances;
+    return ModelClass._collect<T>(sql, params, limit, offset, include);
   }
 
   /**
@@ -1418,17 +1435,14 @@ export class BaseModel {
     params?: unknown[],
     limit: number = DEFAULT_ROW_CAP,
     offset: number = 0,
-  ): Promise<T[]> {
+  ): Promise<ModelCollection<T>> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
-    const db = ModelClass.getDb();
-    // Skip appending when the caller's SQL already carries its own LIMIT --
-    // a second one is a syntax error on every engine. SQLTranslator.appendLimit
-    // scrubs literals/comments first (a substring search here used to drop the
-    // row cap on `WHERE label != 'LIMIT'`) and appends on a new line so the
-    // clause is never swallowed by a trailing `--` comment.
-    const paged = SQLTranslator.appendLimit(sql, limit, offset);
-    const rows = await adapterQuery(db, paged, params);
-    return rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
+    // _collect runs the page fetch — the adapter applies limit/offset via
+    // SQLTranslator.appendLimit, which scrubs literals/comments and skips when
+    // the caller's SQL already carries its own LIMIT (a second one is a syntax
+    // error on every engine) — AND the COUNT probe over the raw SQL, so the
+    // ModelCollection carries the total for the filter (ADR-0064).
+    return ModelClass._collect<T>(sql, params, limit, offset);
   }
 
   static async selectOne<T extends BaseModel>(
@@ -1518,9 +1532,8 @@ export class BaseModel {
     params?: unknown[],
     limit: number = DEFAULT_ROW_CAP,
     offset: number = 0,
-  ): Promise<T[]> {
+  ): Promise<ModelCollection<T>> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
-    const db = ModelClass.getDb();
 
     const parts: string[] = [];
     if (ModelClass.tableFilter) {
@@ -1534,15 +1547,11 @@ export class BaseModel {
     if (parts.length > 0) {
       sql += ` WHERE ${parts.join(" AND ")}`;
     }
-    if (limit !== undefined) {
-      sql += ` LIMIT ${limit}`;
-    }
-    if (offset !== undefined) {
-      sql += ` OFFSET ${offset}`;
-    }
 
-    const rows = await adapterQuery(db, sql, params);
-    return rows.map((row) => new ModelClass(row as Record<string, unknown>) as T);
+    // No LIMIT/OFFSET embedded — _collect applies them to the page and probes
+    // the total. No is_deleted filter here, so soft-deleted rows are INCLUDED in
+    // both the page and the total (ADR-0064).
+    return ModelClass._collect<T>(sql, params, limit, offset);
   }
 
   /**
