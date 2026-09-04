@@ -3175,6 +3175,51 @@ export class Frond {
     }
   }
 
+  /**
+   * Collect the body tokens of a {% <openTag> %}...{% end<openTag> %} block,
+   * starting from the token after the opening tag (start + 1). Nested same-tag
+   * blocks are kept in the body and balanced by depth; the matching closing tag is
+   * consumed but NOT included. Returns [bodyTokens, indexAfterClosingTag].
+   *
+   * canNest guards the open-tag count: handleSetBlock passes it so the inline
+   * {% set x = 1 %} form (which has no {% endset %}) never opens a nested block —
+   * only the block form {% set x %} nests. Omitted, every openTag occurrence nests.
+   */
+  private collectBlockBody(
+    tokens: Token[],
+    start: number,
+    openTag: string,
+    closeTag: string,
+    canNest?: (tagContent: string) => boolean,
+  ): [Token[], number] {
+    const bodyTokens: Token[] = [];
+    let i = start + 1;
+    let depth = 0;
+    while (i < tokens.length) {
+      if (tokens[i][0] === "BLOCK") {
+        const [tagContent] = stripTag(tokens[i][1]);
+        const tag = tagContent.split(/\s+/)[0] || "";
+        if (tag === openTag && (canNest ? canNest(tagContent) : true)) {
+          depth++;
+          bodyTokens.push(tokens[i]);
+        } else if (tag === closeTag) {
+          if (depth === 0) {
+            i++;
+            break;
+          }
+          depth--;
+          bodyTokens.push(tokens[i]);
+        } else {
+          bodyTokens.push(tokens[i]);
+        }
+      } else {
+        bodyTokens.push(tokens[i]);
+      }
+      i++;
+    }
+    return [bodyTokens, i];
+  }
+
   private handleCache(tokens: Token[], start: number, context: Record<string, unknown>): [string, number] {
     const [content] = stripTag(tokens[start][1]);
     const m = content.match(/^cache\s+["'](.+?)["']\s*(\d+)?/);
@@ -3208,31 +3253,7 @@ export class Frond {
     }
 
     // Collect body tokens
-    const bodyTokens: Token[] = [];
-    let i = start + 1;
-    let depth = 0;
-    while (i < tokens.length) {
-      if (tokens[i][0] === "BLOCK") {
-        const [tagContent] = stripTag(tokens[i][1]);
-        const tag = tagContent.split(/\s+/)[0] || "";
-        if (tag === "cache") {
-          depth++;
-          bodyTokens.push(tokens[i]);
-        } else if (tag === "endcache") {
-          if (depth === 0) {
-            i++;
-            break;
-          }
-          depth--;
-          bodyTokens.push(tokens[i]);
-        } else {
-          bodyTokens.push(tokens[i]);
-        }
-      } else {
-        bodyTokens.push(tokens[i]);
-      }
-      i++;
-    }
+    const [bodyTokens, i] = this.collectBlockBody(tokens, start, "cache", "endcache");
 
     // Render and cache
     const rendered = this.renderTokens([...bodyTokens], context);
@@ -3422,31 +3443,10 @@ export class Frond {
     const [content] = stripTag(tokens[start][1]);
     const name = (content.split(/\s+/)[1] || "").trim();
 
-    const bodyTokens: Token[] = [];
-    let i = start + 1;
-    let depth = 0;
-    while (i < tokens.length) {
-      if (tokens[i][0] === "BLOCK") {
-        const [tagContent] = stripTag(tokens[i][1]);
-        const tag = tagContent.split(/\s+/)[0] || "";
-        if (tag === "set" && !tagContent.includes("=")) {
-          depth++;
-          bodyTokens.push(tokens[i]);
-        } else if (tag === "endset") {
-          if (depth === 0) {
-            i++;
-            break;
-          }
-          depth--;
-          bodyTokens.push(tokens[i]);
-        } else {
-          bodyTokens.push(tokens[i]);
-        }
-      } else {
-        bodyTokens.push(tokens[i]);
-      }
-      i++;
-    }
+    const [bodyTokens, i] = this.collectBlockBody(
+      tokens, start, "set", "endset",
+      (tagContent) => !tagContent.includes("="),
+    );
 
     if (name) {
       context[name] = new SafeString(this.renderTokens([...bodyTokens], context));
@@ -3455,31 +3455,7 @@ export class Frond {
   }
 
   private handleSpaceless(tokens: Token[], start: number, context: Record<string, unknown>): [string, number] {
-    const bodyTokens: Token[] = [];
-    let i = start + 1;
-    let depth = 0;
-    while (i < tokens.length) {
-      if (tokens[i][0] === "BLOCK") {
-        const [tagContent] = stripTag(tokens[i][1]);
-        const tag = tagContent.split(/\s+/)[0] || "";
-        if (tag === "spaceless") {
-          depth++;
-          bodyTokens.push(tokens[i]);
-        } else if (tag === "endspaceless") {
-          if (depth === 0) {
-            i++;
-            break;
-          }
-          depth--;
-          bodyTokens.push(tokens[i]);
-        } else {
-          bodyTokens.push(tokens[i]);
-        }
-      } else {
-        bodyTokens.push(tokens[i]);
-      }
-      i++;
-    }
+    const [bodyTokens, i] = this.collectBlockBody(tokens, start, "spaceless", "endspaceless");
 
     let rendered = this.renderTokens([...bodyTokens], context);
     rendered = rendered.replace(/>\s+</g, "><");
@@ -3491,31 +3467,7 @@ export class Frond {
     const modeMatch = content.match(/^autoescape\s+(false|true)/);
     const autoEscapeOn = !(modeMatch && modeMatch[1] === "false");
 
-    const bodyTokens: Token[] = [];
-    let i = start + 1;
-    let depth = 0;
-    while (i < tokens.length) {
-      if (tokens[i][0] === "BLOCK") {
-        const [tagContent] = stripTag(tokens[i][1]);
-        const tag = tagContent.split(/\s+/)[0] || "";
-        if (tag === "autoescape") {
-          depth++;
-          bodyTokens.push(tokens[i]);
-        } else if (tag === "endautoescape") {
-          if (depth === 0) {
-            i++;
-            break;
-          }
-          depth--;
-          bodyTokens.push(tokens[i]);
-        } else {
-          bodyTokens.push(tokens[i]);
-        }
-      } else {
-        bodyTokens.push(tokens[i]);
-      }
-      i++;
-    }
+    const [bodyTokens, i] = this.collectBlockBody(tokens, start, "autoescape", "endautoescape");
 
     if (!autoEscapeOn) {
       const oldAutoEscape = this._autoEscape;
