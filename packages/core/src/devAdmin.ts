@@ -576,9 +576,6 @@ export class DevAdmin {
       { method: "POST", pattern: "/__dev/api/websockets/disconnect", handler: handleWebsocketsDisconnect },
       // Tools
       { method: "POST", pattern: "/__dev/api/tool", handler: handleTool },
-      // Chat — proxies to Rust agent /chat (SSE passthrough). Forwards
-      // active_file and any other body keys verbatim. See proxyToSupervisor.
-      { method: "POST", pattern: "/__dev/api/chat", handler: handleChat },
       // Threads — proxies to Rust agent /threads. Mirrors Python's
       // _api_threads + _api_threads_sub.
       { method: "GET",  pattern: "/__dev/api/threads", handler: handleThreads },
@@ -658,8 +655,6 @@ export class DevAdmin {
       { method: "GET", pattern: "/__dev/api/supervise/diff", handler: handleSuperviseStub },
       { method: "POST", pattern: "/__dev/api/supervise/commit", handler: handleSuperviseStub },
       { method: "POST", pattern: "/__dev/api/supervise/cancel", handler: handleSuperviseStub },
-      // Execute — proxies to the framework_port+2000 Rust agent (SSE passthrough)
-      { method: "POST", pattern: "/__dev/api/execute", handler: handleExecute },
       // Framework-grounding MCP token config — self-contained (.env upsert)
       { method: "GET", pattern: "/__dev/api/grounding/status", handler: handleGroundingStatus },
       { method: "POST", pattern: "/__dev/api/grounding/token", handler: handleGroundingToken },
@@ -1638,16 +1633,6 @@ async function proxyToSupervisor(
   }
 }
 
-// -- Chat handler --
-//
-// Proxies POST /__dev/api/chat → Rust agent `POST /chat`. The SPA's Chat
-// view POSTs `{message, settings?, thread_id?, active_file?, files?}` and
-// expects an SSE stream of `event: status / message / done` chunks.
-// active_file (and any other body keys) are forwarded verbatim.
-const handleChat: RouteHandler = async (req, res) => {
-  await proxyToSupervisor(req, res, "/chat");
-};
-
 // -- Framework-grounding (mcp.tina4.com) token config --
 //
 // TINA4_MCP_TOKEN grounds the coder against mcp.tina4.com's tina4_context.
@@ -2136,37 +2121,6 @@ const handleSuperviseStub: RouteHandler = (_req, res) => {
     },
     501,
   );
-};
-
-const handleExecute: RouteHandler = async (req, res) => {
-  // Proxy to framework_port+2000 Rust agent (SSE passthrough).
-  const port = parseInt(process.env.TINA4_PORT ?? process.env.PORT ?? "7148", 10);
-  const agentUrl = `http://127.0.0.1:${port + 2000}/execute`;
-  try {
-    const upstream = await fetch(agentUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(req.body ?? {}),
-    });
-    if (!upstream.body) {
-      res.json({ error: "agent returned no body" }, 502);
-      return;
-    }
-    res.raw.writeHead(upstream.status || 200, {
-      "Content-Type": upstream.headers.get("content-type") || "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    });
-    const reader = upstream.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) res.raw.write(Buffer.from(value));
-    }
-    res.raw.end();
-  } catch (e) {
-    res.json({ error: `agent unreachable at ${agentUrl}: ${(e as Error).message}` }, 502);
-  }
 };
 
 // --- file-browser noise filter + git decoration (mirrors PHP/Python dev-admin) ---

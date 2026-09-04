@@ -351,6 +351,45 @@ function mockRes(): any {
   };
 }
 
+// --- Agent chat/execute proxy removed; MCP grounding + editor/metrics kept ---
+// The dev-admin agentic chat panel and its two server proxies to the CLI Rust
+// agent (POST /__dev/api/chat, POST /__dev/api/execute) were removed in
+// 3.13.132. These endpoints must be GONE from the real route table (an actual
+// request 404s because no route matches), while the MCP grounding surface AI
+// coders rely on and the editor/metrics endpoints that become the landing view
+// must REMAIN. Real DevAdmin.register on a real Router — no mocks; the route
+// table IS the behavioural truth (the router 404s anything absent from it).
+console.log("\n--- agent chat/execute proxy removed ---");
+{
+  const prevDebug = process.env.TINA4_DEBUG;
+  const prevMcp = process.env.TINA4_MCP;
+  // Explicit TINA4_MCP enables the (separately gated) /mcp routes on any host,
+  // so the KEEP assertions below are deterministic regardless of test host.
+  process.env.TINA4_DEBUG = "true";
+  process.env.TINA4_MCP = "true";
+  const agentRouter = new Router();
+  DevAdmin.register(agentRouter);
+  const has = (method: string, pattern: string) =>
+    agentRouter.getRoutes().some((r) => r.method === method && r.pattern === pattern);
+
+  // REMOVED — the agentic chat panel's server proxies to the Rust agent.
+  assert("POST /__dev/api/chat is removed (agent chat endpoint gone)", !has("POST", "/__dev/api/chat"));
+  assert("POST /__dev/api/execute is removed (agent execute proxy gone)", !has("POST", "/__dev/api/execute"));
+
+  // KEPT — MCP grounding config + tool bridge AI coders depend on.
+  assert("GET /__dev/api/grounding/status kept", has("GET", "/__dev/api/grounding/status"));
+  assert("POST /__dev/api/grounding/token kept", has("POST", "/__dev/api/grounding/token"));
+  assert("GET /__dev/api/mcp/tools kept", has("GET", "/__dev/api/mcp/tools"));
+  assert("POST /__dev/api/mcp/call kept", has("POST", "/__dev/api/mcp/call"));
+
+  // KEPT — editor + metrics endpoints that become the dev-admin landing view.
+  assert("GET /__dev/api/file (editor) kept", has("GET", "/__dev/api/file"));
+  assert("GET /__dev/api/metrics/full (metrics) kept", has("GET", "/__dev/api/metrics/full"));
+
+  if (prevDebug === undefined) delete process.env.TINA4_DEBUG; else process.env.TINA4_DEBUG = prevDebug;
+  if (prevMcp === undefined) delete process.env.TINA4_MCP; else process.env.TINA4_MCP = prevMcp;
+}
+
 // --- handleStatus ---
 console.log("\n--- handleStatus endpoint ---");
 
@@ -632,12 +671,13 @@ if (mtimeHandler && reloadHandler) {
   assert("file updated to latest reload", g2.result.file === "b.ts");
 }
 
-// ── Supervisor proxy (chat + threads) ──────────────────────
+// ── Supervisor proxy (threads) ─────────────────────────────
 // Spins up a local HTTP stub on a random port, points
-// TINA4_SUPERVISOR_URL at it, and asserts our /__dev/api/chat and
-// /__dev/api/threads* handlers forward correctly. Mirrors Python's
-// proxy parity (tina4_python.dev_admin._api_chat / _api_threads).
-console.log("\n--- supervisor proxy (chat + threads) ---");
+// TINA4_SUPERVISOR_URL at it, and asserts our /__dev/api/threads*
+// handlers forward correctly. Mirrors Python's proxy parity
+// (tina4_python.dev_admin._api_threads). The /__dev/api/chat proxy was
+// removed in 3.13.132 (dev-admin agent chat panel dropped).
+console.log("\n--- supervisor proxy (threads) ---");
 {
   const { createServer } = await import("node:http");
 
@@ -649,7 +689,6 @@ console.log("\n--- supervisor proxy (chat + threads) ---");
   };
 
   // Tiny stub for the Rust agent. Routes responses based on path:
-  //   /chat            → SSE stream of two events
   //   /threads (GET)   → JSON list
   //   /threads (POST)  → JSON echo
   //   /threads/<id>    → JSON echo (handles PATCH/GET)
@@ -668,17 +707,6 @@ console.log("\n--- supervisor proxy (chat + threads) ---");
 
       const url = new URL(req.url ?? "/", "http://x");
       const path = url.pathname;
-
-      if (path === "/chat") {
-        res.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-        });
-        res.write("event: status\ndata: {\"ok\":true}\n\n");
-        res.write("event: done\ndata: {}\n\n");
-        res.end();
-        return;
-      }
 
       if (path === "/threads" && req.method === "GET") {
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -711,13 +739,11 @@ console.log("\n--- supervisor proxy (chat + threads) ---");
   // Re-register routes so any cached env reads (there are none here, but
   // safety) settle. The existing `router` already has handlers wired —
   // supervisorBaseUrl() reads process.env on every call.
-  const chatHandler = findHandler("POST", "/__dev/api/chat");
   const threadsListHandler = findHandler("GET", "/__dev/api/threads");
   const threadsCreateHandler = findHandler("POST", "/__dev/api/threads");
   const threadsPatchHandler = findHandler("PATCH", "/__dev/api/threads/{id}");
   const threadsMessagesHandler = findHandler("GET", "/__dev/api/threads/{id}/messages");
 
-  assert("chat handler registered", chatHandler !== undefined);
   assert("threads GET handler registered", threadsListHandler !== undefined);
   assert("threads POST handler registered", threadsCreateHandler !== undefined);
   assert("threads PATCH handler registered", threadsPatchHandler !== undefined);
@@ -777,27 +803,7 @@ console.log("\n--- supervisor proxy (chat + threads) ---");
     captured.length >= 1 && process.env.TINA4_SUPERVISOR_URL === `http://127.0.0.1:${stubPort}`,
   );
 
-  // 3. forwards active_file in chat POST (SSE response)
-  captured.length = 0;
-  {
-    const res = streamingRes();
-    await chatHandler!(reqWith({
-      url: "/__dev/api/chat",
-      method: "POST",
-      body: { message: "hello", active_file: "src/routes/home.ts", thread_id: "t1" },
-    }), res);
-    const chatCall = captured.find((c) => c.url === "/chat" && c.method === "POST");
-    assert("chat POST reached the stub", chatCall !== undefined);
-    let forwardedBody: any = {};
-    try { forwardedBody = JSON.parse(chatCall?.body ?? "{}"); } catch { /* leave default */ }
-    assert("active_file forwarded verbatim", forwardedBody.active_file === "src/routes/home.ts");
-    assert("message forwarded verbatim", forwardedBody.message === "hello");
-    assert("thread_id forwarded verbatim", forwardedBody.thread_id === "t1");
-    assert("chat content-type is JSON to upstream", chatCall?.contentType.includes("application/json") ?? false);
-    assert("chat response streamed back as SSE", res.streamed.includes("event: status") && res.streamed.includes("event: done"));
-  }
-
-  // 4. patches threads on upstream
+  // 3. patches threads on upstream
   captured.length = 0;
   {
     const res = streamingRes();
@@ -818,7 +824,7 @@ console.log("\n--- supervisor proxy (chat + threads) ---");
     );
   }
 
-  // 5. threads messages history (sub-path forwarding)
+  // 4. threads messages history (sub-path forwarding)
   captured.length = 0;
   {
     const res = streamingRes();
@@ -830,7 +836,7 @@ console.log("\n--- supervisor proxy (chat + threads) ---");
     assert("messages sub-path forwarded verbatim", msgCall !== undefined);
   }
 
-  // 6. threads POST create rejects unsupported methods? GET/POST/PATCH all supported here.
+  // 5. threads POST create rejects unsupported methods? GET/POST/PATCH all supported here.
   //    The list+create handler enforces GET/POST only — sanity-check that.
   {
     const res = streamingRes();
