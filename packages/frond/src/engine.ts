@@ -167,83 +167,56 @@ function jsonSafe(value: unknown): SafeString {
  * Output is a plain string; callers wrap it in <pre> and mark it safe so
  * the template engine doesn't double-escape.
  */
-function inspectValue(value: unknown, seen: WeakSet<object> = new WeakSet(), depth = 0): string {
-  // Primitives
-  if (value === null) return "null";
-  if (value === undefined) return "undefined";
-  if (typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (typeof value === "bigint") return `${value.toString()}n`;
-  if (typeof value === "symbol") return value.toString();
-  if (typeof value === "function") {
-    const name = value.name || "(anonymous)";
-    return `[Function: ${name}]`;
+function inspectPrimitive(value: unknown): { handled: boolean; output: string } {
+  if (value === null) return { handled: true, output: "null" };
+  if (value === undefined) return { handled: true, output: "undefined" };
+  if (typeof value === "string") return { handled: true, output: JSON.stringify(value) };
+  if (typeof value === "number" || typeof value === "boolean") return { handled: true, output: String(value) };
+  if (typeof value === "bigint") return { handled: true, output: `${value.toString()}n` };
+  if (typeof value === "symbol") return { handled: true, output: value.toString() };
+  if (typeof value === "function") return { handled: true, output: `[Function: ${value.name || "(anonymous)"}]` };
+  return { handled: false, output: "" };
+}
+
+function inspectCollection(obj: object, seen: WeakSet<object>, depth: number): string | null {
+  if (obj instanceof Map) {
+    if (obj.size === 0) return "Map(0) {}";
+    const entries = [...obj].map(([key, value]) => `${inspectValue(key, seen, depth + 1)} => ${inspectValue(value, seen, depth + 1)}`);
+    return `Map(${obj.size}) { ${entries.join(", ")} }`;
   }
+  if (obj instanceof Set) {
+    if (obj.size === 0) return "Set(0) {}";
+    return `Set(${obj.size}) { ${[...obj].map((value) => inspectValue(value, seen, depth + 1)).join(", ")} }`;
+  }
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return "[]";
+    return `[${obj.map((value) => inspectValue(value, seen, depth + 1)).join(", ")}]`;
+  }
+  return null;
+}
 
-  // value is now object (including arrays, Date, Map, Set, etc.)
+function inspectObject(obj: object, seen: WeakSet<object>, depth: number): string {
+  if (obj instanceof Date) return `Date(${obj.toISOString()})`;
+  if (obj instanceof RegExp) return obj.toString();
+  if (obj instanceof Error) return `${obj.constructor.name}(${JSON.stringify(obj.message)})`;
+  const collection = inspectCollection(obj, seen, depth);
+  if (collection !== null) return collection;
+  const keys = Object.keys(obj);
+  const className = obj.constructor && obj.constructor.name !== "Object" ? `${obj.constructor.name} ` : "";
+  if (keys.length === 0) return `${className}{}`;
+  const props = keys.map((key) => `${key}: ${inspectValue((obj as Record<string, unknown>)[key], seen, depth + 1)}`);
+  return `${className}{ ${props.join(", ")} }`;
+}
+
+function inspectValue(value: unknown, seen: WeakSet<object> = new WeakSet(), depth = 0): string {
+  const primitive = inspectPrimitive(value);
+  if (primitive.handled) return primitive.output;
   const obj = value as object;
-
-  // Cycle detection
   if (seen.has(obj)) return "[Circular]";
   seen.add(obj);
-
-  // Depth cap — prevents runaway recursion on enormous graphs
   if (depth > 8) return "[...]";
-
   try {
-    // Date
-    if (obj instanceof Date) {
-      return `Date(${obj.toISOString()})`;
-    }
-
-    // RegExp
-    if (obj instanceof RegExp) {
-      return obj.toString();
-    }
-
-    // Error
-    if (obj instanceof Error) {
-      return `${obj.constructor.name}(${JSON.stringify(obj.message)})`;
-    }
-
-    // Map
-    if (obj instanceof Map) {
-      if (obj.size === 0) return "Map(0) {}";
-      const entries: string[] = [];
-      for (const [k, v] of obj) {
-        entries.push(`${inspectValue(k, seen, depth + 1)} => ${inspectValue(v, seen, depth + 1)}`);
-      }
-      return `Map(${obj.size}) { ${entries.join(", ")} }`;
-    }
-
-    // Set
-    if (obj instanceof Set) {
-      if (obj.size === 0) return "Set(0) {}";
-      const items: string[] = [];
-      for (const v of obj) {
-        items.push(inspectValue(v, seen, depth + 1));
-      }
-      return `Set(${obj.size}) { ${items.join(", ")} }`;
-    }
-
-    // Array
-    if (Array.isArray(obj)) {
-      if (obj.length === 0) return "[]";
-      const items = obj.map((v) => inspectValue(v, seen, depth + 1));
-      return `[${items.join(", ")}]`;
-    }
-
-    // Plain object or class instance
-    const keys = Object.keys(obj);
-    const className = obj.constructor && obj.constructor.name !== "Object"
-      ? `${obj.constructor.name} `
-      : "";
-    if (keys.length === 0) return `${className}{}`;
-    const props = keys.map((k) => {
-      const v = (obj as Record<string, unknown>)[k];
-      return `${k}: ${inspectValue(v, seen, depth + 1)}`;
-    });
-    return `${className}{ ${props.join(", ")} }`;
+    return inspectObject(obj, seen, depth);
   } finally {
     seen.delete(obj);
   }
