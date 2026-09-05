@@ -259,7 +259,11 @@ export class Push {
           TTL: String(this.options.ttl ?? 60),
           ...(this.options.urgency ? { Urgency: this.options.urgency } : {}),
         },
-        body,
+        // Node's fetch accepts Buffer at runtime, while the DOM declaration
+        // used by the published type build narrows BodyInit to ArrayBuffer
+        // backed views. Keep the binary payload intact and make that boundary
+        // explicit rather than converting the encrypted bytes to text.
+        body: body as unknown as BodyInit,
       });
     } catch (error) {
       throw new PushError(`Web Push request failed: ${String(error)}`);
