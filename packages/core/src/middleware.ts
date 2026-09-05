@@ -964,6 +964,41 @@ export class SecurityHeadersMiddleware {
   }
 }
 
+function csrfMethodIsSafe(method: string | undefined): boolean {
+  const normalized = (method ?? "GET").toUpperCase();
+  return normalized === "GET" || normalized === "HEAD" || normalized === "OPTIONS";
+}
+
+function csrfRouteSkips(req: Tina4Request): boolean {
+  const route = (req as any)._route ?? (req as any).route;
+  return Boolean(route?.noAuth);
+}
+
+function csrfBearerIsValid(req: Tina4Request, secret: string): boolean {
+  const authHeader = req.headers.authorization ?? "";
+  if (!authHeader.startsWith("Bearer ")) return false;
+  const bearerToken = authHeader.slice(7).trim();
+  return Boolean(bearerToken && validToken(bearerToken, secret));
+}
+
+function csrfRequestToken(req: Tina4Request): { token: string; fromQuery: boolean } {
+  const query = (req as any).query ?? {};
+  if (query.formToken) return { token: "", fromQuery: true };
+  const body = (req as any).body;
+  if (body && typeof body === "object" && body.formToken) return { token: String(body.formToken), fromQuery: false };
+  return { token: String(req.headers["x-form-token"] ?? ""), fromQuery: false };
+}
+
+function csrfSessionMatches(req: Tina4Request, payload: Record<string, unknown>): boolean {
+  const tokenSessionId = payload.session_id as string | undefined;
+  if (!tokenSessionId) return true;
+  const session = (req as any).session;
+  if (!session) return true;
+  let currentSessionId = session.session_id ?? session.sessionId ?? session.id;
+  if (typeof currentSessionId === "function") currentSessionId = undefined;
+  return !currentSessionId || tokenSessionId === currentSessionId;
+}
+
 /**
  * Class-based CSRF middleware using the before/after convention.
  * Validates form tokens on state-changing requests (POST, PUT, PATCH, DELETE).
@@ -1012,17 +1047,7 @@ export class CsrfMiddleware {
       return [req, res];
     }
 
-    // Skip safe HTTP methods
-    const method = (req.method ?? "GET").toUpperCase();
-    if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
-      return [req, res];
-    }
-
-    // Skip routes marked noAuth
-    const route = (req as any)._route ?? (req as any).route;
-    if (route?.noAuth) {
-      return [req, res];
-    }
+    if (csrfMethodIsSafe(req.method) || csrfRouteSkips(req)) return [req, res];
 
     // Resolve the signing secret ONCE, fail-closed — IDENTICAL to the validator
     // (auth.ts validToken: `secret ?? process.env.TINA4_SECRET ?? ""`). Blank
@@ -1039,33 +1064,18 @@ export class CsrfMiddleware {
 
     // Skip requests with a valid Bearer token (API clients). Pass the resolved
     // secret so the Bearer check uses the SAME key as the form-token check.
-    const authHeader = req.headers.authorization ?? "";
-    if (authHeader.startsWith("Bearer ")) {
-      const bearerToken = authHeader.slice(7).trim();
-      if (bearerToken && validToken(bearerToken, secret)) {
-        return [req, res];
-      }
-    }
+    if (csrfBearerIsValid(req, secret)) return [req, res];
 
     // Reject if token is in query string (security risk — a URL leaks through
     // logs, referers and history).
-    const query = (req as any).query ?? {};
-    if (query.formToken) {
+    const requestToken = csrfRequestToken(req);
+    if (requestToken.fromQuery) {
       console.warn("[Tina4 CSRF] Token found in query string — rejected for security");
       return reject("Form token must not be sent in the URL query string");
     }
 
     // Extract token: body first, then header
-    let token: string | undefined;
-    const body = (req as any).body;
-    if (body && typeof body === "object" && body.formToken) {
-      token = String(body.formToken);
-    }
-
-    if (!token) {
-      token = (req.headers["x-form-token"] as string) ?? "";
-    }
-
+    const token = requestToken.token;
     if (!token) {
       return reject("Invalid or missing form token");
     }
@@ -1086,21 +1096,7 @@ export class CsrfMiddleware {
 
     // Session binding — if token has session_id, verify it matches the request
     // session. A token minted for one session cannot be replayed against another.
-    const tokenSessionId = payload.session_id as string | undefined;
-    if (tokenSessionId) {
-      const session = (req as any).session;
-      let currentSessionId: string | undefined;
-      if (session) {
-        currentSessionId = session.session_id ?? session.sessionId ?? session.id;
-        if (typeof currentSessionId === "function") {
-          currentSessionId = undefined;
-        }
-      }
-
-      if (currentSessionId && tokenSessionId !== currentSessionId) {
-        return reject("Invalid or missing form token");
-      }
-    }
+    if (!csrfSessionMatches(req, payload)) return reject("Invalid or missing form token");
 
     return [req, res];
   }
