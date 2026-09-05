@@ -13,6 +13,43 @@ const PRODUCT_TABLE_HINTS = [
   "sku", "listing", "stock", "ware",
 ] as const;
 
+const COLUMN_HEURISTICS: Array<[RegExp, string]> = [
+  [/email/, "email"],
+  [/(phone|mobile|tel)/, "phone"],
+  [/^(name|full_name|fullname)$/, "name"],
+  [/^(first_name|firstname)$/, "firstName"],
+  [/^(last_name|lastname|surname)$/, "lastName"],
+  [/address/, "address"],
+  [/city/, "city"],
+  [/country/, "country"],
+  [/(zip|postal)/, "zipCode"],
+  [/(company|org)/, "company"],
+  [/(job|title|position)/, "jobTitle"],
+  [/(url|website|link)/, "url"],
+  [/(color|colour)/, "colorHex"],
+  [/(uuid|guid)/, "uuid"],
+  [/^(ip|ip_address|ipaddress)$/, "ipAddress"],
+  [/currency/, "currency"],
+];
+
+const HEURISTIC_METHODS: Record<string, string> = {
+  email: "email",
+  phone: "phone",
+  firstName: "firstName",
+  lastName: "lastName",
+  address: "address",
+  city: "city",
+  country: "country",
+  zipCode: "zipCode",
+  company: "company",
+  jobTitle: "jobTitle",
+  url: "url",
+  colorHex: "colorHex",
+  uuid: "uuid",
+  ipAddress: "ipAddress",
+  currency: "currency",
+};
+
 /**
  * True when the table/model name looks like a product catalogue, so a generic
  * `name` column should seed a product name, not a person name. With NO table
@@ -46,6 +83,39 @@ export class FakeData extends CoreFakeData {
     return new Date(startMs + offset * 86400000);
   }
 
+  private heuristicValue(key: string, table?: string): unknown {
+    if (key === "name") return isProductTable(table) ? this.product() : this.name();
+    const methodName = HEURISTIC_METHODS[key];
+    const method = methodName
+      ? (this as unknown as Record<string, unknown>)[methodName]
+      : undefined;
+    return typeof method === "function" ? method.call(this) : undefined;
+  }
+
+  private stringValue(fieldDef: FieldDefinition): string {
+    const maxLen = fieldDef.maxLength ?? 50;
+    const minLen = fieldDef.minLength ?? 3;
+    let value = this.sentence(Math.max(2, Math.ceil(maxLen / 6)));
+    if (value.length > maxLen) value = value.slice(0, maxLen);
+    if (value.length < minLen) {
+      while (value.length < minLen) value += " " + this.word();
+      value = value.slice(0, maxLen);
+    }
+    return value;
+  }
+
+  private typedValue(fieldDef: FieldDefinition): unknown {
+    if (fieldDef.type === "string") return this.stringValue(fieldDef);
+    if (fieldDef.type === "text") return this.paragraph(3);
+    if (fieldDef.type === "integer") return this.integer(fieldDef.min ?? 0, fieldDef.max ?? 10000);
+    if (fieldDef.type === "number" || fieldDef.type === "numeric") {
+      return this.numeric(fieldDef.min ?? 0, fieldDef.max ?? 10000, 2);
+    }
+    if (fieldDef.type === "boolean") return this.boolean();
+    if (fieldDef.type === "datetime") return this.datetime().toISOString();
+    return this.sentence(4);
+  }
+
   /**
    * Generate a fake value appropriate for an ORM field definition.
    * Respects min/max, minLength/maxLength, and type constraints.
@@ -71,67 +141,9 @@ export class FakeData extends CoreFakeData {
       return fieldDef.default;
     }
 
-    // Heuristic: use column name to pick a smarter generator
     const col = (columnName ?? "").toLowerCase();
-
-    if (col.includes("email")) return this.email();
-    if (col.includes("phone") || col.includes("mobile") || col.includes("tel")) return this.phone();
-    if (col === "name" || col === "full_name" || col === "fullname") {
-      return isProductTable(table) ? this.product() : this.name();
-    }
-    if (col === "first_name" || col === "firstname") return this.firstName();
-    if (col === "last_name" || col === "lastname" || col === "surname") return this.lastName();
-    if (col.includes("address")) return this.address();
-    if (col.includes("city")) return this.city();
-    if (col.includes("country")) return this.country();
-    if (col.includes("zip") || col.includes("postal")) return this.zipCode();
-    if (col.includes("company") || col.includes("org")) return this.company();
-    if (col.includes("job") || col.includes("title") || col.includes("position")) return this.jobTitle();
-    if (col.includes("url") || col.includes("website") || col.includes("link")) return this.url();
-    if (col.includes("color") || col.includes("colour")) return this.colorHex();
-    if (col.includes("uuid") || col === "guid") return this.uuid();
-    if (col === "ip" || col === "ip_address" || col === "ipaddress") return this.ipAddress();
-    if (col.includes("currency")) return this.currency();
-
-    // Fall back to type-based generation
-    switch (fieldDef.type) {
-      case "string": {
-        const maxLen = fieldDef.maxLength ?? 50;
-        const minLen = fieldDef.minLength ?? 3;
-        // Generate a sentence and trim to fit
-        let value = this.sentence(Math.max(2, Math.ceil(maxLen / 6)));
-        if (value.length > maxLen) value = value.slice(0, maxLen);
-        if (value.length < minLen) {
-          while (value.length < minLen) value += " " + this.word();
-          value = value.slice(0, maxLen);
-        }
-        return value;
-      }
-
-      case "text":
-        return this.paragraph(3);
-
-      case "integer": {
-        const min = (fieldDef.min as number) ?? 0;
-        const max = (fieldDef.max as number) ?? 10000;
-        return this.integer(min, max);
-      }
-
-      case "number":
-      case "numeric": {
-        const min = (fieldDef.min as number) ?? 0;
-        const max = (fieldDef.max as number) ?? 10000;
-        return this.numeric(min, max, 2);
-      }
-
-      case "boolean":
-        return this.boolean();
-
-      case "datetime":
-        return this.datetime().toISOString();
-
-      default:
-        return this.sentence(4);
-    }
+    const heuristic = COLUMN_HEURISTICS.find(([pattern]) => pattern.test(col));
+    if (heuristic) return this.heuristicValue(heuristic[1], table);
+    return this.typedValue(fieldDef);
   }
 }
