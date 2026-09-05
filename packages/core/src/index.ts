@@ -109,6 +109,8 @@ export { AI_TOOLS, isInstalled, showMenu, installSelected, installAll, generateC
 export type { AiTool } from "./ai.js";
 export { Sso, SSO, SsoError } from "./sso.js";
 export type { SsoOptions } from "./sso.js";
+export { Push, PushError, generateVapidKeys } from "./push.js";
+export type { PushOptions, PushSubscription, PushResult, PushPayload } from "./push.js";
 export { Ai, AiError, AiConfigError, AiHTTPError, AiTimeoutError, AiParseError } from "./aiClient.js";
 export type { ChatResponse, AiMessage, AiChatOptions, AiEmbedOptions, AiEvent, ContentPart, AiMessageContent, AiToolDeclaration, AiToolChoice } from "./aiClient.js";
 export type { ImapMessage, ImapFullMessage, ImapAttachment } from "./messenger.js";
