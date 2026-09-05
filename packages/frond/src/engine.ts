@@ -288,6 +288,32 @@ const FILTER_WITH_ARGS_RE = /^(\w+)\s*\(([\s\S]*)\)$/;
 const FILTER_COMPARISON_RE = /^(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)$/;
 const TITLE_WORD_RE = /\b\w/g;
 const STRIP_TAGS_RE = /<[^>]+>/g;
+const FAST_FILTERS: Record<string, (value: unknown) => unknown> = {
+  upper: (value) => String(value).toUpperCase(),
+  lower: (value) => String(value).toLowerCase(),
+  trim: (value) => String(value).trim(),
+  length: (value) => Array.isArray(value) ? value.length
+    : typeof value === "string" ? value.length
+    : typeof value === "object" && value !== null ? Object.keys(value).length : 0,
+  capitalize: (value) => { const s = String(value); return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase(); },
+  title: (value) => String(value).replace(TITLE_WORD_RE, c => c.toUpperCase()),
+  string: (value) => String(value),
+  int: (value) => value ? parseInt(String(value), 10) || 0 : 0,
+  float: (value) => value ? parseFloat(String(value)) || 0.0 : 0.0,
+  abs: (value) => typeof value === "number" ? Math.abs(value) : value,
+  striptags: (value) => String(value).replace(STRIP_TAGS_RE, ""),
+  first: (value) => Array.isArray(value) ? value[0] ?? null : null,
+  last: (value) => Array.isArray(value) ? value[value.length - 1] ?? null : null,
+  keys: (value) => typeof value === "object" && value !== null && !Array.isArray(value) ? Object.keys(value) : [],
+  values: (value) => typeof value === "object" && value !== null && !Array.isArray(value) ? Object.values(value) : [],
+  json_encode: (value) => jsonSafe(value),
+  dump: (value) => renderDump(value),
+  nl2br: (value) => new SafeString(htmlEscape(String(value)).replace(/\n/g, "<br />\n")),
+  unique: (value) => Array.isArray(value) ? [...new Set(value)] : value,
+  sort: (value) => Array.isArray(value) ? [...value].sort() : value,
+  reverse: (value) => Array.isArray(value) ? [...value].reverse() : String(value).split("").reverse().join(""),
+  filter: (value) => Array.isArray(value) ? value.filter(Boolean) : value,
+};
 // printf-style conversions: %%, plus %[flags][width][.precision]type for the
 // common types. Matches PHP sprintf / Python % / Ruby format so the `format`
 // filter renders e.g. `{{ '%.2f' | format(n) }}` as "3.14" across all engines.
@@ -2590,6 +2616,16 @@ export class Frond {
     return value;
   }
 
+  /**
+   * Apply the no-argument filters that are common enough to avoid generic
+   * dispatch. Keeping this table separate from evalVarInner makes the
+   * expression pipeline easier to audit without changing filter order.
+   */
+  private applyFastFilter(name: string, value: unknown): { handled: boolean; value: unknown } {
+    const handler = FAST_FILTERS[name];
+    return handler ? { handled: true, value: handler(value) } : { handled: false, value };
+  }
+
   private evalVarInner(expr: string, context: Record<string, unknown>): unknown {
     const [varName, filters] = parseFilterChain(expr);
 
@@ -2675,39 +2711,10 @@ export class Frond {
 
       // Inline fast-path for common no-arg filters — avoids generic dispatch
       if (args.length === 0) {
-        switch (fname) {
-          case "upper":      value = String(value).toUpperCase(); continue;
-          case "lower":      value = String(value).toLowerCase(); continue;
-          case "trim":       value = String(value).trim(); continue;
-          case "length":
-            if (Array.isArray(value)) { value = value.length; }
-            else if (typeof value === "string") { value = value.length; }
-            else if (typeof value === "object" && value !== null) { value = Object.keys(value).length; }
-            else { value = 0; }
-            continue;
-          case "capitalize": { const s = String(value); value = s.charAt(0).toUpperCase() + s.slice(1).toLowerCase(); continue; }
-          case "title":      value = String(value).replace(TITLE_WORD_RE, c => c.toUpperCase()); continue;
-          case "string":     value = String(value); continue;
-          case "int":        value = value ? parseInt(String(value), 10) || 0 : 0; continue;
-          case "float":      value = value ? parseFloat(String(value)) || 0.0 : 0.0; continue;
-          case "abs":        value = typeof value === "number" ? Math.abs(value) : value; continue;
-          case "striptags":  value = String(value).replace(STRIP_TAGS_RE, ""); continue;
-          case "first":      value = Array.isArray(value) ? value[0] ?? null : null; continue;
-          case "last":       value = Array.isArray(value) ? value[value.length - 1] ?? null : null; continue;
-          case "keys":       value = (typeof value === "object" && value !== null && !Array.isArray(value)) ? Object.keys(value) : []; continue;
-          case "values":     value = (typeof value === "object" && value !== null && !Array.isArray(value)) ? Object.values(value) : []; continue;
-          case "json_encode": value = jsonSafe(value); continue;
-          case "dump":
-            // Delegates to renderDump(), which is gated on TINA4_DEBUG.
-            // In production this emits an empty SafeString (no leaked state).
-            value = renderDump(value);
-            continue;
-          case "nl2br":      value = new SafeString(htmlEscape(String(value)).replace(/\n/g, "<br />\n")); continue;
-          case "unique":     value = Array.isArray(value) ? [...new Set(value)] : value; continue;
-          case "sort":       value = Array.isArray(value) ? [...value].sort() : value; continue;
-          case "reverse":    value = Array.isArray(value) ? [...value].reverse() : String(value).split("").reverse().join(""); continue;
-          case "filter":     value = Array.isArray(value) ? value.filter(Boolean) : value; continue;
-          // Not a fast-path filter — fall through to generic dispatch
+        const fast = this.applyFastFilter(fname, value);
+        if (fast.handled) {
+          value = fast.value;
+          continue;
         }
       }
 
