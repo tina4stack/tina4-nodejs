@@ -177,6 +177,22 @@ interface SendOptions {
   headers?: Record<string, string>;
 }
 
+type SmtpSocket = net.Socket | tls.TLSSocket;
+
+interface MailRecipients {
+  toList: string[];
+  ccList: string[];
+  bccList: string[];
+  allRecipients: string[];
+}
+
+class SmtpCommandError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SmtpCommandError";
+  }
+}
+
 // ── SMTP helpers ─────────────────────────────────────────────
 
 /**
@@ -474,6 +490,121 @@ export class Messenger {
     return this.devMailbox;
   }
 
+  private prepareRecipients(options: SendOptions, redirect = false): MailRecipients {
+    let toList = Array.isArray(options.to) ? options.to : [options.to];
+    let ccList = Array.isArray(options.cc) ? options.cc : (options.cc ? [options.cc] : []);
+    let bccList = Array.isArray(options.bcc) ? options.bcc : (options.bcc ? [options.bcc] : []);
+    let allRecipients = [...toList, ...ccList, ...bccList];
+    const redirectTo = redirect ? parseMailRedirectList(process.env.TINA4_MAIL_REDIRECT_TO) : [];
+    if (redirectTo.length > 0) {
+      const originalTo = allRecipients.join(", ");
+      toList = redirectTo;
+      ccList = [];
+      bccList = [];
+      allRecipients = [...toList];
+      options.headers = { ...(options.headers ?? {}), "X-Tina4-Original-To": originalTo };
+    }
+    return { toList, ccList, bccList, allRecipients };
+  }
+
+  private async connectSmtpSocket(): Promise<SmtpSocket> {
+    if (this.port === 465) {
+      const socket = tls.connect({ host: this.host, port: this.port, rejectUnauthorized: tlsRejectUnauthorized() });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("secureConnect", resolve);
+        socket.once("error", reject);
+      });
+      return socket;
+    }
+    const socket = net.createConnection({ host: this.host, port: this.port });
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    return socket;
+  }
+
+  private async requireSmtpResponse(socket: SmtpSocket, command: string, expected: number, failure: string): Promise<{ code: number; text: string }> {
+    const response = command === "" ? await readResponse(socket) : await sendCommand(socket, command);
+    if (response.code !== expected) throw new SmtpCommandError(`${failure}: ${response.text}`);
+    return response;
+  }
+
+  private async openSmtpSession(): Promise<SmtpSocket> {
+    let socket = await this.connectSmtpSocket();
+    try {
+      await this.requireSmtpResponse(socket, "", 220, "SMTP greeting failed");
+      const ehlo = await this.requireSmtpResponse(socket, `EHLO ${this.host}`, 250, "EHLO failed");
+      if (this.useTls && this.port !== 465 && ehlo.text.includes("STARTTLS")) {
+        await this.requireSmtpResponse(socket, "STARTTLS", 220, "STARTTLS failed");
+        const plainSocket = socket as net.Socket;
+        const secureSocket = tls.connect({ socket: plainSocket, host: this.host, rejectUnauthorized: tlsRejectUnauthorized() });
+        await new Promise<void>((resolve, reject) => {
+          secureSocket.once("secureConnect", resolve);
+          secureSocket.once("error", reject);
+        });
+        socket = secureSocket;
+        await this.requireSmtpResponse(socket, `EHLO ${this.host}`, 250, "EHLO after STARTTLS failed");
+      }
+      return socket;
+    } catch (error) {
+      socket.destroy();
+      throw error;
+    }
+  }
+
+  private async authenticateSmtp(socket: SmtpSocket): Promise<void> {
+    if (!this.username || !this.password) return;
+    await this.requireSmtpResponse(socket, "AUTH LOGIN", 334, "AUTH LOGIN failed");
+    await this.requireSmtpResponse(socket, Buffer.from(this.username).toString("base64"), 334, "AUTH username failed");
+    await this.requireSmtpResponse(socket, Buffer.from(this.password).toString("base64"), 235, "AUTH password failed");
+  }
+
+  private async sendSmtpEnvelope(socket: SmtpSocket, recipients: string[]): Promise<void> {
+    await this.requireSmtpResponse(socket, `MAIL FROM:<${this.fromAddress}>`, 250, "MAIL FROM failed");
+    for (const recipient of recipients) {
+      const response = await sendCommand(socket, `RCPT TO:<${recipient}>`);
+      if (response.code !== 250 && response.code !== 251) throw new SmtpCommandError(`RCPT TO <${recipient}> failed: ${response.text}`);
+    }
+  }
+
+  private async sendSmtpMessage(socket: SmtpSocket, options: SendOptions, recipients: MailRecipients, messageId: string): Promise<void> {
+    await this.requireSmtpResponse(socket, "DATA", 354, "DATA failed");
+    const mimeMessage = buildMimeMessage({
+      from: this.fromAddress,
+      fromName: this.fromName,
+      to: recipients.toList,
+      cc: recipients.ccList,
+      subject: options.subject,
+      body: options.body,
+      html: options.html ?? false,
+      text: options.text,
+      replyTo: options.replyTo,
+      attachments: options.attachments,
+      headers: options.headers,
+      messageId,
+    });
+    await this.requireSmtpResponse(socket, mimeMessage + "\r\n.", 250, "Message delivery failed");
+    await sendCommand(socket, "QUIT");
+  }
+
+  private async sendSmtp(options: SendOptions, recipients: MailRecipients, messageId: string): Promise<SendResult> {
+    let socket: SmtpSocket | null = null;
+    try {
+      socket = await this.openSmtpSession();
+      await this.authenticateSmtp(socket);
+      await this.sendSmtpEnvelope(socket, recipients.allRecipients);
+      await this.sendSmtpMessage(socket, options, recipients, messageId);
+      socket.destroy();
+      return { success: true, message: "Email sent successfully", id: messageId };
+    } catch (err) {
+      socket?.destroy();
+      if (err instanceof SmtpCommandError) return { success: false, message: err.message, id: null };
+      const errMsg = err instanceof Error ? err.message : String(err);
+      return { success: false, message: `SMTP error: ${errMsg}`, id: null };
+    }
+  }
+
   async send(
     to: string | string[],
     subject: string,
@@ -487,40 +618,22 @@ export class Messenger {
     headers?: Record<string, string>,
   ): Promise<SendResult> {
     const options: SendOptions = { to, subject, body, html, text, cc, bcc, replyTo, attachments, headers };
-    let toList = Array.isArray(options.to) ? options.to : [options.to];
-    let ccList = Array.isArray(options.cc) ? options.cc : (options.cc ? [options.cc] : []);
-    let bccList = Array.isArray(options.bcc) ? options.bcc : (options.bcc ? [options.bcc] : []);
-    let allRecipients = [...toList, ...ccList, ...bccList];
+    const capturedRecipients = this.prepareRecipients(options);
 
     // Dev capture is a BRANCH here, not a different object returned by the factory.
     // createMessenger() used to hand back a DevMailbox, which has capture() and no
     // send(), so the documented call threw TypeError (nodejs#41).
     if (this.shouldCapture()) {
       return this.getDevMailbox().capture(
-        to, subject, body, html, text, ccList, bccList, replyTo,
+        to, subject, body, html, text, capturedRecipients.ccList, capturedRecipients.bccList, replyTo,
         attachments, this.fromAddress || undefined,
       );
     }
-
-    // TINA4_MAIL_REDIRECT_TO (MAIL-DEC-01): on the REAL-SEND path only — capture
-    // already returned above, so this never touches the capture branch. When the
-    // list is non-empty, replace every recipient with the redirect list (so ONLY
-    // the dev list receives the mail, never the real recipients) and preserve the
-    // original recipients in X-Tina4-Original-To. Subject/body/attachments are
-    // untouched, and send()'s return shape is unchanged.
-    const redirectTo = parseMailRedirectList(process.env.TINA4_MAIL_REDIRECT_TO);
-    if (redirectTo.length > 0) {
-      const originalTo = allRecipients.join(", ");
-      toList = redirectTo;
-      ccList = [];
-      bccList = [];
-      allRecipients = [...toList];
-      options.headers = { ...(options.headers ?? {}), "X-Tina4-Original-To": originalTo };
-    }
+    const recipients = this.prepareRecipients(options, true);
 
     const messageId = `${randomUUID()}@${this.host}`;
 
-    if (allRecipients.length === 0) {
+    if (recipients.allRecipients.length === 0) {
       return { success: false, message: "No recipients specified", id: null };
     }
 
@@ -528,141 +641,7 @@ export class Messenger {
       return { success: false, message: "No from address configured", id: null };
     }
 
-    try {
-      // Connect
-      let socket: net.Socket | tls.TLSSocket;
-
-      if (this.port === 465) {
-        // Implicit TLS (SMTPS)
-        socket = tls.connect({ host: this.host, port: this.port, rejectUnauthorized: tlsRejectUnauthorized() });
-        await new Promise<void>((resolve, reject) => {
-          socket.once("secureConnect", resolve);
-          socket.once("error", reject);
-        });
-      } else {
-        socket = net.createConnection({ host: this.host, port: this.port });
-        await new Promise<void>((resolve, reject) => {
-          socket.once("connect", resolve);
-          socket.once("error", reject);
-        });
-      }
-
-      // Read greeting
-      const greeting = await readResponse(socket);
-      if (greeting.code !== 220) {
-        socket.destroy();
-        return { success: false, message: `SMTP greeting failed: ${greeting.text}`, id: null };
-      }
-
-      // EHLO
-      const ehlo = await sendCommand(socket, `EHLO ${this.host}`);
-      if (ehlo.code !== 250) {
-        socket.destroy();
-        return { success: false, message: `EHLO failed: ${ehlo.text}`, id: null };
-      }
-
-      // STARTTLS upgrade (for port 587 or when useTls is true and not already TLS)
-      if (this.useTls && this.port !== 465 && ehlo.text.includes("STARTTLS")) {
-        const starttls = await sendCommand(socket, "STARTTLS");
-        if (starttls.code !== 220) {
-          socket.destroy();
-          return { success: false, message: `STARTTLS failed: ${starttls.text}`, id: null };
-        }
-
-        // Upgrade to TLS
-        const plainSocket = socket as net.Socket;
-        socket = tls.connect(
-          { socket: plainSocket, host: this.host, rejectUnauthorized: tlsRejectUnauthorized() },
-        );
-        await new Promise<void>((resolve, reject) => {
-          (socket as tls.TLSSocket).once("secureConnect", resolve);
-          (socket as tls.TLSSocket).once("error", reject);
-        });
-
-        // Re-EHLO after TLS upgrade
-        const ehlo2 = await sendCommand(socket, `EHLO ${this.host}`);
-        if (ehlo2.code !== 250) {
-          socket.destroy();
-          return { success: false, message: `EHLO after STARTTLS failed: ${ehlo2.text}`, id: null };
-        }
-      }
-
-      // AUTH LOGIN
-      if (this.username && this.password) {
-        const auth = await sendCommand(socket, "AUTH LOGIN");
-        if (auth.code !== 334) {
-          socket.destroy();
-          return { success: false, message: `AUTH LOGIN failed: ${auth.text}`, id: null };
-        }
-
-        const userResp = await sendCommand(socket, Buffer.from(this.username).toString("base64"));
-        if (userResp.code !== 334) {
-          socket.destroy();
-          return { success: false, message: `AUTH username failed: ${userResp.text}`, id: null };
-        }
-
-        const passResp = await sendCommand(socket, Buffer.from(this.password).toString("base64"));
-        if (passResp.code !== 235) {
-          socket.destroy();
-          return { success: false, message: `AUTH password failed: ${passResp.text}`, id: null };
-        }
-      }
-
-      // MAIL FROM
-      const mailFrom = await sendCommand(socket, `MAIL FROM:<${this.fromAddress}>`);
-      if (mailFrom.code !== 250) {
-        socket.destroy();
-        return { success: false, message: `MAIL FROM failed: ${mailFrom.text}`, id: null };
-      }
-
-      // RCPT TO for all recipients
-      for (const recipient of allRecipients) {
-        const rcpt = await sendCommand(socket, `RCPT TO:<${recipient}>`);
-        if (rcpt.code !== 250 && rcpt.code !== 251) {
-          socket.destroy();
-          return { success: false, message: `RCPT TO <${recipient}> failed: ${rcpt.text}`, id: null };
-        }
-      }
-
-      // DATA
-      const dataCmd = await sendCommand(socket, "DATA");
-      if (dataCmd.code !== 354) {
-        socket.destroy();
-        return { success: false, message: `DATA failed: ${dataCmd.text}`, id: null };
-      }
-
-      // Build and send the MIME message
-      const mimeMessage = buildMimeMessage({
-        from: this.fromAddress,
-        fromName: this.fromName,
-        to: toList,
-        cc: ccList,
-        subject: options.subject,
-        body: options.body,
-        html: options.html ?? false,
-        text: options.text,
-        replyTo: options.replyTo,
-        attachments: options.attachments,
-        headers: options.headers,
-        messageId,
-      });
-
-      // Send message body, terminate with <CRLF>.<CRLF>
-      const endData = await sendCommand(socket, mimeMessage + "\r\n.");
-      if (endData.code !== 250) {
-        socket.destroy();
-        return { success: false, message: `Message delivery failed: ${endData.text}`, id: null };
-      }
-
-      // QUIT
-      await sendCommand(socket, "QUIT");
-      socket.destroy();
-
-      return { success: true, message: "Email sent successfully", id: messageId };
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      return { success: false, message: `SMTP error: ${errMsg}`, id: null };
-    }
+    return this.sendSmtp(options, recipients, messageId);
   }
 
   /**
