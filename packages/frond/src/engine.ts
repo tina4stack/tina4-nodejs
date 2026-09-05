@@ -2405,6 +2405,46 @@ export class Frond {
     return this._allowedTags.has(tag);
   }
 
+  private applyFilterValue(
+    value: unknown,
+    fname: string,
+    args: unknown[],
+    context: Record<string, unknown>,
+  ): unknown {
+    const [realFname, tailPath] = splitFilterNameAndPath(fname);
+    if (tailPath) {
+      let applied = false;
+      if (realFname === "first") {
+        value = Array.isArray(value) ? value[0] ?? null : null;
+        applied = true;
+      } else if (realFname === "last") {
+        value = Array.isArray(value) ? value[value.length - 1] ?? null : null;
+        applied = true;
+      } else if (this.filters[realFname]) {
+        value = this.filters[realFname](value, ...args);
+        applied = true;
+      }
+      if (applied) return evalExpr("__frondFilterTmp." + tailPath, { __frondFilterTmp: value });
+    }
+
+    const fn = this.filters[fname];
+    if (fn) return fn(value, ...args);
+    const comparison = fname.match(FILTER_COMPARISON_RE);
+    if (!comparison) return evalExpr(fname, context);
+    const comparisonFn = this.filters[comparison[1]];
+    if (comparisonFn) value = comparisonFn(value, ...args);
+    const right = evalExpr(comparison[3].trim(), context);
+    switch (comparison[2]) {
+      case "!=": return value !== right;
+      case "==": return value === right;
+      case ">=": return (value as number) >= (right as number);
+      case "<=": return (value as number) <= (right as number);
+      case ">": return (value as number) > (right as number);
+      case "<": return (value as number) < (right as number);
+      default: return value;
+    }
+  }
+
   /**
    * Consume a denied tag WITHOUT running it, returning the index past its body.
    *
@@ -2463,50 +2503,8 @@ export class Frond {
       // unchanged) — same gate as evalVarInner. applyFilters is reached by the
       // folded filter pipe in evalExpr (`x|f ~ y`, #171), so without this gate a
       // non-allow-listed filter would run in sandbox mode.
-      if (this._sandbox && this._allowedFilters !== null && !this._allowedFilters.has(fname)) continue;
-
-      const [realFname, tailPath] = splitFilterNameAndPath(fname);
-      if (tailPath) {
-        let applied = false;
-        if (realFname === "first") {
-          value = Array.isArray(value) ? value[0] ?? null : null;
-          applied = true;
-        } else if (realFname === "last") {
-          value = Array.isArray(value) ? value[value.length - 1] ?? null : null;
-          applied = true;
-        } else if (this.filters[realFname]) {
-          value = this.filters[realFname](value, ...args);
-          applied = true;
-        }
-        if (applied) {
-          value = evalExpr("__frondFilterTmp." + tailPath, { __frondFilterTmp: value });
-          continue;
-        }
-      }
-
-      const fn = this.filters[fname];
-      if (fn) {
-        value = fn(value, ...args);
-      } else {
-        // The filter name may carry a trailing comparison operator, e.g.
-        // "length != 1" — apply the real filter, then evaluate the comparison.
-        const m = fname.match(FILTER_COMPARISON_RE);
-        if (m) {
-          const fn2 = this.filters[m[1]];
-          if (fn2) value = fn2(value, ...args);
-          const right = evalExpr(m[3].trim(), context);
-          switch (m[2]) {
-            case "!=": value = value !== right; break;
-            case "==": value = value === right; break;
-            case ">=": value = (value as number) >= (right as number); break;
-            case "<=": value = (value as number) <= (right as number); break;
-            case ">":  value = (value as number) > (right as number); break;
-            case "<":  value = (value as number) < (right as number); break;
-          }
-        } else {
-          value = evalExpr(fname, context);
-        }
-      }
+      if (!this.filterPermitted(fname)) continue;
+      value = this.applyFilterValue(value, fname, args, context);
     }
     return value;
   }
@@ -2541,63 +2539,8 @@ export class Frond {
       // unchanged) — same gate as evalVarInner. evalVarRaw is reached by a
       // ternary condition (`x|f ? a : b`), evalComparison, and set, none of
       // which gated filters before, so a non-allow-listed filter could run.
-      if (this._sandbox && this._allowedFilters !== null && !this._allowedFilters.has(fname)) continue;
-
-      // Filter + property-access chain: `first.groupSummary` — apply
-      // the filter, then traverse the path on the result via a
-      // synthetic context so evalExpr's dotted resolution does the
-      // work. Parity with tina4-python + tina4-php. `first` and
-      // `last` are inlined because they're in the fast-path switch
-      // rather than `this.filters`.
-      const [realFname, tailPath] = splitFilterNameAndPath(fname);
-      if (tailPath) {
-        let applied = false;
-        if (realFname === "first") {
-          value = Array.isArray(value) ? value[0] ?? null : null;
-          applied = true;
-        } else if (realFname === "last") {
-          value = Array.isArray(value) ? value[value.length - 1] ?? null : null;
-          applied = true;
-        } else if (this.filters[realFname]) {
-          value = this.filters[realFname](value, ...args);
-          applied = true;
-        }
-        if (applied) {
-          value = evalExpr("__frondFilterTmp." + tailPath,
-                           { __frondFilterTmp: value });
-          continue;
-        }
-      }
-
-      const fn = this.filters[fname];
-      if (fn) {
-        value = fn(value, ...args);
-      } else {
-        // The filter name may include a trailing comparison operator,
-        // e.g. "length != 1".  Extract the real filter name and the
-        // comparison suffix, apply the filter, then evaluate the comparison.
-        const m = fname.match(FILTER_COMPARISON_RE);
-        if (m) {
-          const realFilter = m[1];
-          const op = m[2];
-          const rightExpr = m[3].trim();
-          const fn2 = this.filters[realFilter];
-          if (fn2) {
-            value = fn2(value, ...args);
-          }
-          const right = evalExpr(rightExpr, context);
-          switch (op) {
-            case "!=": value = value !== right; break;
-            case "==": value = value === right; break;
-            case ">=": value = (value as number) >= (right as number); break;
-            case "<=": value = (value as number) <= (right as number); break;
-            case ">":  value = (value as number) > (right as number); break;
-            case "<":  value = (value as number) < (right as number); break;
-          }
-        } else {
-          value = evalExpr(fname, context);
-        }
-      }
+      if (!this.filterPermitted(fname)) continue;
+      value = this.applyFilterValue(value, fname, args, context);
     }
     return value;
   }
@@ -2610,6 +2553,30 @@ export class Frond {
   private applyFastFilter(name: string, value: unknown): { handled: boolean; value: unknown } {
     const handler = FAST_FILTERS[name];
     return handler ? { handled: true, value: handler(value) } : { handled: false, value };
+  }
+
+  private applyRenderedFilter(value: unknown, fname: string, args: unknown[]): unknown {
+    const [realFname, tailPath] = splitFilterNameAndPath(fname);
+    if (tailPath) {
+      let applied = false;
+      if (realFname === "first") {
+        value = Array.isArray(value) ? value[0] ?? null : null;
+        applied = true;
+      } else if (realFname === "last") {
+        value = Array.isArray(value) ? value[value.length - 1] ?? null : null;
+        applied = true;
+      } else if (this.filters[realFname]) {
+        value = this.filters[realFname](value, ...args);
+        applied = true;
+      }
+      if (applied) return evalExpr("__frondFilterTmp." + tailPath, { __frondFilterTmp: value });
+    }
+    if (args.length === 0) {
+      const fast = this.applyFastFilter(fname, value);
+      if (fast.handled) return fast.value;
+    }
+    const fn = this.filters[fname];
+    return fn ? fn(value, ...args) : value;
   }
 
   private evalVarInner(expr: string, context: Record<string, unknown>): unknown {
@@ -2665,49 +2632,7 @@ export class Frond {
         }
       }
 
-      // Filter + property-access chain: `first.groupSummary` — apply
-      // the filter, then traverse the path on the result via evalExpr.
-      // Done BEFORE the inline fast-path so `items|first.name` works
-      // whether or not `first` is in the fast-path list.
-      //
-      // We inline `first` and `last` here because they're defined by
-      // the fast-path switch below, not in `this.filters` — without
-      // this explicit branch, the chain would fall through and we'd
-      // return the unfiltered array. All other registered filters
-      // route through `this.filters[realFname]`.
-      const [realFname, tailPath] = splitFilterNameAndPath(fname);
-      if (tailPath) {
-        let applied = false;
-        if (realFname === "first") {
-          value = Array.isArray(value) ? value[0] ?? null : null;
-          applied = true;
-        } else if (realFname === "last") {
-          value = Array.isArray(value) ? value[value.length - 1] ?? null : null;
-          applied = true;
-        } else if (this.filters[realFname]) {
-          value = this.filters[realFname](value, ...args);
-          applied = true;
-        }
-        if (applied) {
-          value = evalExpr("__frondFilterTmp." + tailPath,
-                           { __frondFilterTmp: value });
-          continue;
-        }
-      }
-
-      // Inline fast-path for common no-arg filters — avoids generic dispatch
-      if (args.length === 0) {
-        const fast = this.applyFastFilter(fname, value);
-        if (fast.handled) {
-          value = fast.value;
-          continue;
-        }
-      }
-
-      const fn = this.filters[fname];
-      if (fn) {
-        value = fn(value, ...args);
-      }
+      value = this.applyRenderedFilter(value, fname, args);
     }
 
     // SafeString instances are already rendered/safe
