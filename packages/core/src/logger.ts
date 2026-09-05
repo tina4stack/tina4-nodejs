@@ -676,6 +676,71 @@ function isProduction(): boolean {
   return !isTruthy(process.env.TINA4_DEBUG);
 }
 
+function resolveConfiguredLevel(
+  explicit: string | undefined,
+  envName: string,
+  explicitSetting: string,
+  fallback: LogLevel,
+): LogLevel {
+  const raw = explicit ?? process.env[envName];
+  return raw === undefined ? fallback : parseLevel(raw, explicit === undefined ? envName : explicitSetting);
+}
+
+function resolveFormat(explicit: string | undefined): "text" | "json" {
+  const raw = explicit ?? process.env.TINA4_LOG_FORMAT;
+  if (raw === undefined) return isTruthy(process.env.TINA4_DEBUG) ? "text" : "json";
+  const format = raw.trim().toLowerCase();
+  if (format === "text" || format === "json") return format;
+  throw new LogConfigurationError(`TINA4_LOG_FORMAT=${JSON.stringify(raw)} is not valid`, {
+    setting: "TINA4_LOG_FORMAT",
+    value: raw,
+    accepted: ["text", "json"],
+  });
+}
+
+function resolveOutput(explicit: string | undefined): "stdout" | "file" | "both" {
+  const raw = explicit ?? process.env.TINA4_LOG_OUTPUT;
+  if (raw === undefined) return isProduction() ? "stdout" : "both";
+  const output = raw.trim().toLowerCase();
+  if (output === "stdout" || output === "file" || output === "both") return output;
+  throw new LogConfigurationError(`TINA4_LOG_OUTPUT=${JSON.stringify(raw)} is not valid`, {
+    setting: "TINA4_LOG_OUTPUT",
+    value: raw,
+    accepted: ["stdout", "file", "both"],
+  });
+}
+
+interface ResolvedLogPaths {
+  logDir: string;
+  logFile: string | null;
+  layout: "directory" | "single";
+}
+
+function resolveLogPaths(options: ConfigureOptions): ResolvedLogPaths {
+  const dirRaw = options.logDir ?? process.env.TINA4_LOG_DIR ?? DEFAULT_LOG_DIR;
+  if (dirRaw === "") {
+    throw new LogConfigurationError("logDir must not be empty", { setting: "TINA4_LOG_DIR", value: dirRaw });
+  }
+  const fileRaw = options.logFile ?? process.env.TINA4_LOG_FILE ?? "";
+  if (dirRaw.includes("\0") || fileRaw.includes("\0")) {
+    throw new LogConfigurationError("log path must not contain a NUL byte", {
+      setting: dirRaw.includes("\0") ? "TINA4_LOG_DIR" : "TINA4_LOG_FILE",
+    });
+  }
+
+  let dirCandidate = dirRaw;
+  let fileCandidate = fileRaw;
+  if (!fileCandidate && targetIsFile(dirCandidate)) {
+    fileCandidate = basename(dirCandidate);
+    dirCandidate = dirname(dirCandidate);
+  }
+
+  const logDir = (isAbsolute(dirCandidate) ? dirCandidate : join(process.cwd(), dirCandidate)).replace(/\/$/, "");
+  if (!fileCandidate) return { logDir, logFile: null, layout: "directory" };
+  const logFile = isAbsolute(fileCandidate) ? fileCandidate : join(logDir, fileCandidate);
+  return { logDir, logFile, layout: "single" };
+}
+
 /**
  * Resolve one fully-validated configuration snapshot from explicit options,
  * then environment, then default (ADR-0041) — WITHOUT touching the
@@ -686,54 +751,10 @@ function isProduction(): boolean {
 function resolveSnapshot(options: ConfigureOptions): Omit<Snapshot, "mainSink" | "errorSink"> {
   checkRemovedSettings();
 
-  const level = options.level !== undefined
-    ? parseLevel(options.level, "level")
-    : process.env.TINA4_LOG_LEVEL !== undefined
-      ? parseLevel(process.env.TINA4_LOG_LEVEL, "TINA4_LOG_LEVEL")
-      : DEFAULT_LEVEL;
-
-  const fileLevel = options.fileLevel !== undefined
-    ? parseLevel(options.fileLevel, "fileLevel")
-    : process.env.TINA4_LOG_FILE_LEVEL !== undefined
-      ? parseLevel(process.env.TINA4_LOG_FILE_LEVEL, "TINA4_LOG_FILE_LEVEL")
-      : DEFAULT_FILE_LEVEL;
-
-  // Format is DEBUG-DERIVED (Decision 3): explicit TINA4_LOG_FORMAT wins;
-  // otherwise truthy TINA4_DEBUG selects text, else json.
-  let format: "text" | "json";
-  const explicitFormat = options.format ?? process.env.TINA4_LOG_FORMAT;
-  if (explicitFormat !== undefined) {
-    const f = explicitFormat.trim().toLowerCase();
-    if (f !== "text" && f !== "json") {
-      throw new LogConfigurationError(`TINA4_LOG_FORMAT=${JSON.stringify(explicitFormat)} is not valid`, {
-        setting: "TINA4_LOG_FORMAT",
-        value: explicitFormat,
-        accepted: ["text", "json"],
-      });
-    }
-    format = f;
-  } else {
-    format = isTruthy(process.env.TINA4_DEBUG) ? "text" : "json";
-  }
-
-  // Output: an explicit value (stdout/file/both) ALWAYS wins, full stop —
-  // naming a file (below) never itself enables the file sink (LOG-C08).
-  let outputSelector: "stdout" | "file" | "both";
-  const explicitOutput = options.output ?? process.env.TINA4_LOG_OUTPUT;
-  if (explicitOutput !== undefined) {
-    const o = explicitOutput.trim().toLowerCase();
-    if (o !== "stdout" && o !== "file" && o !== "both") {
-      throw new LogConfigurationError(`TINA4_LOG_OUTPUT=${JSON.stringify(explicitOutput)} is not valid`, {
-        setting: "TINA4_LOG_OUTPUT",
-        value: explicitOutput,
-        accepted: ["stdout", "file", "both"],
-      });
-    }
-    outputSelector = o;
-  } else {
-    // Unset: dev/prod-aware default — file only in development.
-    outputSelector = isProduction() ? "stdout" : "both";
-  }
+  const level = resolveConfiguredLevel(options.level, "TINA4_LOG_LEVEL", "level", DEFAULT_LEVEL);
+  const fileLevel = resolveConfiguredLevel(options.fileLevel, "TINA4_LOG_FILE_LEVEL", "fileLevel", DEFAULT_FILE_LEVEL);
+  const format = resolveFormat(options.format);
+  const outputSelector = resolveOutput(options.output);
   const stdoutEnabled = outputSelector !== "file";
   const fileEnabled = outputSelector !== "stdout";
 
@@ -741,42 +762,7 @@ function resolveSnapshot(options: ConfigureOptions): Omit<Snapshot, "mainSink" |
   const rotateKeep = resolveRotateKeep(options.rotateKeep, DEFAULT_ROTATE_KEEP);
   const strict = resolveBool(options.strict, "TINA4_LOG_STRICT", false);
   const callerCapture = resolveBool(options.caller, "TINA4_LOG_FUNC", false);
-
-  const dirRaw = options.logDir ?? process.env.TINA4_LOG_DIR ?? DEFAULT_LOG_DIR;
-  if (dirRaw === "") {
-    throw new LogConfigurationError("logDir must not be empty", { setting: "TINA4_LOG_DIR", value: dirRaw });
-  }
-  const fileRaw = options.logFile ?? process.env.TINA4_LOG_FILE ?? "";
-  // A NUL byte can never be part of a real path (the underlying syscalls
-  // reject it), but that would otherwise only surface at OPEN time -- and
-  // only when the file sink ends up enabled. Reject it here, unconditionally,
-  // so a malformed path fails CONFIGURATION regardless of whether output
-  // happens to resolve to a sink that would ever touch the filesystem.
-  if (dirRaw.includes("\0") || fileRaw.includes("\0")) {
-    throw new LogConfigurationError("log path must not contain a NUL byte", {
-      setting: dirRaw.includes("\0") ? "TINA4_LOG_DIR" : "TINA4_LOG_FILE",
-    });
-  }
-
-  const projectRoot = process.cwd();
-  let dirCandidate = dirRaw;
-  let fileCandidate = fileRaw;
-  if (!fileCandidate && targetIsFile(dirCandidate)) {
-    fileCandidate = basename(dirCandidate);
-    dirCandidate = dirname(dirCandidate);
-  }
-
-  const resolvedLogDir = (isAbsolute(dirCandidate) ? dirCandidate : join(projectRoot, dirCandidate)).replace(/\/$/, "");
-
-  let resolvedLogFile: string | null;
-  let layout: "directory" | "single";
-  if (fileCandidate) {
-    resolvedLogFile = isAbsolute(fileCandidate) ? fileCandidate : join(resolvedLogDir, fileCandidate);
-    layout = "single";
-  } else {
-    resolvedLogFile = null;
-    layout = "directory";
-  }
+  const paths = resolveLogPaths(options);
 
   return {
     level,
@@ -785,9 +771,9 @@ function resolveSnapshot(options: ConfigureOptions): Omit<Snapshot, "mainSink" |
     stdoutEnabled,
     fileEnabled,
     outputSelector,
-    logDir: resolvedLogDir,
-    logFile: resolvedLogFile,
-    layout,
+    logDir: paths.logDir,
+    logFile: paths.logFile,
+    layout: paths.layout,
     rotateSize,
     rotateKeep,
     strict,
