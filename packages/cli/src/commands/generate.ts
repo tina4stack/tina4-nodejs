@@ -416,22 +416,7 @@ function captureEditHints(absPath: string, content: string): void {
   }
 }
 
-/**
- * Emit the resolution — as JSON on STDOUT for `--json`, otherwise as a human
- * block on STDERR (stderr so a caller piping stdout for other output isn't
- * polluted). Called from `generate()` BEFORE the files are written on the
- * human path so an operator sees WHY the tool made its choices before disk
- * changes; the JSON path prints after collection so the envelope carries the
- * completed `actions_taken`.
- */
-function printResolution(): void {
-  if (__resolution.jsonMode) {
-    process.stdout.write(JSON.stringify(currentResolution(), null, 2) + "\n");
-    return;
-  }
-  // Human block on STDERR, so `command | jq …` on stdout works cleanly.
-  const b = __resolution.body;
-  const lines: string[] = [];
+function addResolutionSummary(lines: string[], b: ResolutionBody): void {
   lines.push("");
   lines.push(`Generated ${__resolution.target} ${__resolution.input.name}`);
   if (b.class_name || b.file_path) {
@@ -449,13 +434,18 @@ function printResolution(): void {
   if (b.migration_path) {
     lines.push(`  migration  ${b.migration_path}`);
   }
+}
+
+function addReservedWordGuidance(lines: string[], b: ResolutionBody): void {
   const reserved = b.transformations.find((t) => t.kind === "reserved_word_pluralize");
-  if (reserved && reserved.from) {
-    lines.push("");
-    lines.push(`  To set the table name yourself:`);
-    lines.push(`    tina4nodejs generate ${__resolution.target} ${__resolution.input.name} --table-name <name>`);
-    lines.push(`  Tina4 interpolates table names unquoted; if you force the reserved '${reserved.from}', you own the quoting in raw SQL.`);
-  }
+  if (!reserved?.from) return;
+  lines.push("");
+  lines.push(`  To set the table name yourself:`);
+  lines.push(`    tina4nodejs generate ${__resolution.target} ${__resolution.input.name} --table-name <name>`);
+  lines.push(`  Tina4 interpolates table names unquoted; if you force the reserved '${reserved.from}', you own the quoting in raw SQL.`);
+}
+
+function addResolutionLists(lines: string[], b: ResolutionBody): void {
   // v1.1 (ADR-0063): surface the already-populated test_paths[], and the two
   // new arrays (edit_hints, next) when either is non-empty. Sections stay
   // absent when the corresponding array is empty — a listener/service
@@ -478,6 +468,27 @@ function printResolution(): void {
     lines.push("  Next:");
     for (const step of b.next) lines.push(`    ${step}`);
   }
+}
+
+/**
+ * Emit the resolution — as JSON on STDOUT for `--json`, otherwise as a human
+ * block on STDERR (stderr so a caller piping stdout for other output isn't
+ * polluted). Called from `generate()` BEFORE the files are written on the
+ * human path so an operator sees WHY the tool made its choices before disk
+ * changes; the JSON path prints after collection so the envelope carries the
+ * completed `actions_taken`.
+ */
+function printResolution(): void {
+  if (__resolution.jsonMode) {
+    process.stdout.write(JSON.stringify(currentResolution(), null, 2) + "\n");
+    return;
+  }
+  // Human block on STDERR, so `command | jq …` on stdout works cleanly.
+  const lines: string[] = [];
+  const b = __resolution.body;
+  addResolutionSummary(lines, b);
+  addReservedWordGuidance(lines, b);
+  addResolutionLists(lines, b);
   lines.push("");
   process.stderr.write(lines.join("\n"));
 }
