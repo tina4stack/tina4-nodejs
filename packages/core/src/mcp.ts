@@ -989,77 +989,49 @@ function agentBackup(projectRoot: string, target: string): string | null {
  * - Uses spawnSync with 5-second timeout so a hung subprocess never
  *   blocks the MCP server.
  */
-function verifyNodeSyntax(absPath: string, relPath: string): string | null {
-  if (!relPath.startsWith("src/")) {
-    return null;
-  }
+function syntaxCheckTarget(relPath: string): { ext: string } | null {
+  if (!relPath.startsWith("src/")) return null;
   const ext = path.extname(relPath).toLowerCase();
-  if (![".js", ".ts", ".mjs", ".cjs"].includes(ext)) {
-    return null;
-  }
-  const base = path.basename(relPath);
-  if (/\.(test|spec)\.(ts|js|mjs|cjs)$/.test(base)) {
-    return null;
-  }
+  if (![".js", ".ts", ".mjs", ".cjs"].includes(ext)) return null;
+  if (/\.(test|spec)\.(ts|js|mjs|cjs)$/.test(path.basename(relPath))) return null;
+  return { ext };
+}
 
-  let cmd: string;
-  let args: string[];
-  if (ext === ".ts") {
-    cmd = "npx";
-    args = ["--no-install", "tsc", "--noEmit", "--allowJs", "--skipLibCheck", absPath];
-  } else {
-    cmd = "node";
-    args = ["--check", absPath];
-  }
+function syntaxCheckCommand(absPath: string, ext: string): { cmd: string; args: string[] } {
+  return ext === ".ts"
+    ? { cmd: "npx", args: ["--no-install", "tsc", "--noEmit", "--allowJs", "--skipLibCheck", absPath] }
+    : { cmd: "node", args: ["--check", absPath] };
+}
 
-  let proc;
+function syntaxCheckOutput(absPath: string, relPath: string, ext: string, proc: any): string | null {
+  if (ext === ".ts" && (proc.error || proc.status === null || proc.status === 127)) return null;
+  if (proc.error) return `verification subprocess failed: ${proc.error.message}`;
+  if (proc.status === 0) return null;
+  const raw = (ext === ".ts"
+    ? (proc.stdout || "") + (proc.stderr || "")
+    : (proc.stderr || "") + (proc.stdout || "")).trim();
+  if (ext === ".ts" && raw.includes("This is not the tsc command")) return null;
+  if (!raw) return `syntax check failed (exit ${proc.status}, no output)`;
+  const lines = raw.split(/\r?\n/).map((line: string) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return `syntax check failed (exit ${proc.status})`;
+  const stripPath = (line: string): string => line.replace(absPath, relPath);
+  return stripPath(lines.find((line: string) => /error|SyntaxError|TS\d+/i.test(line)) || lines[0]);
+}
+
+function verifyNodeSyntax(absPath: string, relPath: string): string | null {
+  const target = syntaxCheckTarget(relPath);
+  if (!target) return null;
+  const { cmd, args } = syntaxCheckCommand(absPath, target.ext);
   try {
-    proc = spawnSync(cmd, args, {
+    const proc = spawnSync(cmd, args, {
       encoding: "utf-8",
       timeout: 5000,
       cwd: path.dirname(path.dirname(absPath)),
     });
+    return syntaxCheckOutput(absPath, relPath, target.ext, proc);
   } catch (e) {
     return `verification subprocess failed: ${(e as Error).message}`;
   }
-
-  // npx may fail to find tsc — gracefully return null instead of blocking.
-  if (ext === ".ts" && (proc.error || proc.status === null || proc.status === 127)) {
-    return null;
-  }
-  if (proc.error) {
-    return `verification subprocess failed: ${proc.error.message}`;
-  }
-  if (proc.status === 0) {
-    return null;
-  }
-
-  // Errors land on stderr for `node --check`, stdout for tsc.
-  const raw = (ext === ".ts" ? (proc.stdout || "") + (proc.stderr || "") : (proc.stderr || "") + (proc.stdout || "")).trim();
-  // npx placeholder when tsc isn't installed locally — bail silently
-  // rather than block the write with a meaningless banner.
-  if (ext === ".ts" && raw.includes("This is not the tsc command")) {
-    return null;
-  }
-  if (!raw) {
-    return `syntax check failed (exit ${proc.status}, no output)`;
-  }
-  const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  if (lines.length === 0) {
-    return `syntax check failed (exit ${proc.status})`;
-  }
-  // Strip the absolute path prefix from the first meaningful line so the
-  // LLM sees a stable, project-relative error message.
-  const stripPath = (line: string): string => line.replace(absPath, relPath);
-  // For tsc: the first line is usually "src/foo.ts(3,5): error TS1109: ...".
-  // For node --check: the first line is the file path; the actual error is
-  // a later "SyntaxError: ..." line. Pick the most informative line.
-  for (const line of lines) {
-    if (/error|SyntaxError|TS\d+/i.test(line)) {
-      return stripPath(line);
-    }
-  }
-  return stripPath(lines[0]);
 }
 
 /** Latest resolved KV cache stats snapshot (the async API resolves into this). */
