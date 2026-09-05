@@ -663,130 +663,152 @@ class AggregateState {
     if (!Array.isArray(choices) || choices.length === 0) return;
     const choice = choices[0];
     const delta = (choice.delta ?? {}) as Record<string, unknown>;
-    const content = delta.content;
-    if (typeof content === "string" && content.length > 0) {
-      yield { type: "text_delta", text: content };
-    }
-    const toolCalls = delta.tool_calls as Array<Record<string, unknown>> | undefined;
-    if (Array.isArray(toolCalls)) {
-      for (const call of toolCalls) {
-        const index = typeof call.index === "number" ? String(call.index) : String(this.toolBuffers.size);
-        const idFromCall = typeof call.id === "string" ? call.id : "";
-        const fn = (call.function ?? {}) as Record<string, unknown>;
-        const nameFromCall = typeof fn.name === "string" ? fn.name : "";
-        const argsFragment = typeof fn.arguments === "string" ? fn.arguments : "";
-        const existing = this.toolBuffers.get(index) ?? { id: "", name: "", args: "" };
-        if (idFromCall) existing.id = idFromCall;
-        if (nameFromCall) existing.name = nameFromCall;
-        existing.args += argsFragment;
-        this.toolBuffers.set(index, existing);
-        if (existing.name && existing.args) {
-          try {
-            const parsed = JSON.parse(existing.args) as unknown;
-            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-              this.toolBuffers.delete(index);
-              yield { type: "tool_call", id: existing.id || `call_${index}`, name: existing.name, args: parsed as Record<string, unknown> };
-            }
-          } catch {
-            /* args not complete yet — keep buffering */
-          }
-        }
-      }
-    }
-    if (typeof choice.finish_reason === "string" && choice.finish_reason.length > 0) {
-      this.lastFinishReason = choice.finish_reason;
-    }
-    const usage = payload.usage as Record<string, unknown> | undefined;
-    if (usage && typeof usage === "object") {
-      const promptTokens = Number(usage.prompt_tokens ?? 0);
-      const completionTokens = Number(usage.completion_tokens ?? 0);
-      const totalTokens = Number(usage.total_tokens ?? promptTokens + completionTokens);
-      if (Number.isFinite(promptTokens) && Number.isFinite(completionTokens)) {
-        this.lastUsage = { promptTokens, completionTokens, totalTokens };
-      }
-    }
+    yield* this.consumeOpenAiContent(delta);
+    yield* this.consumeOpenAiTools(delta);
+    this.updateOpenAiFinishReason(choice);
+    this.updateOpenAiUsage(payload);
   }
 
   private *consumeAnthropic(payload: Record<string, unknown>): Iterable<AiEvent> {
-    const type = payload.type;
-    if (type === "content_block_start") {
-      const block = (payload.content_block ?? {}) as Record<string, unknown>;
-      if (block.type === "tool_use") {
-        const index = String(payload.index ?? this.toolBuffers.size);
-        const id = typeof block.id === "string" ? block.id : `call_${index}`;
-        const name = typeof block.name === "string" ? block.name : "";
-        this.toolBuffers.set(index, { id, name, args: "" });
+    switch (payload.type) {
+      case "content_block_start":
+        this.consumeAnthropicBlockStart(payload);
+        return;
+      case "content_block_delta":
+        yield* this.consumeAnthropicBlockDelta(payload);
+        return;
+      case "content_block_stop":
+        yield* this.consumeAnthropicBlockStop(payload);
+        return;
+      case "message_delta":
+        this.consumeAnthropicMessageDelta(payload);
+        return;
+      case "message_stop":
+        yield* this.consumeAnthropicMessageStop();
+        return;
+      case "message_start":
+        this.consumeAnthropicMessageStart(payload);
+        return;
+      case "error":
+        this.consumeAnthropicError(payload);
+        return;
+    }
+  }
+
+  private *consumeOpenAiContent(delta: Record<string, unknown>): Iterable<AiEvent> {
+    const content = delta.content;
+    if (typeof content === "string" && content.length > 0) yield { type: "text_delta", text: content };
+  }
+
+  private *consumeOpenAiTools(delta: Record<string, unknown>): Iterable<AiEvent> {
+    const toolCalls = delta.tool_calls as Array<Record<string, unknown>> | undefined;
+    if (!Array.isArray(toolCalls)) return;
+    for (const call of toolCalls) yield* this.consumeOpenAiTool(call);
+  }
+
+  private *consumeOpenAiTool(call: Record<string, unknown>): Iterable<AiEvent> {
+    const index = typeof call.index === "number" ? String(call.index) : String(this.toolBuffers.size);
+    const idFromCall = typeof call.id === "string" ? call.id : "";
+    const fn = (call.function ?? {}) as Record<string, unknown>;
+    const nameFromCall = typeof fn.name === "string" ? fn.name : "";
+    const argsFragment = typeof fn.arguments === "string" ? fn.arguments : "";
+    const existing = this.toolBuffers.get(index) ?? { id: "", name: "", args: "" };
+    if (idFromCall) existing.id = idFromCall;
+    if (nameFromCall) existing.name = nameFromCall;
+    existing.args += argsFragment;
+    this.toolBuffers.set(index, existing);
+    if (!existing.name || !existing.args) return;
+    try {
+      const parsed = JSON.parse(existing.args) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        this.toolBuffers.delete(index);
+        yield { type: "tool_call", id: existing.id || `call_${index}`, name: existing.name, args: parsed as Record<string, unknown> };
       }
+    } catch {
+      /* args not complete yet — keep buffering */
+    }
+  }
+
+  private updateOpenAiFinishReason(choice: Record<string, unknown>): void {
+    if (typeof choice.finish_reason === "string" && choice.finish_reason.length > 0) this.lastFinishReason = choice.finish_reason;
+  }
+
+  private updateOpenAiUsage(payload: Record<string, unknown>): void {
+    const usage = payload.usage as Record<string, unknown> | undefined;
+    if (!usage || typeof usage !== "object") return;
+    const promptTokens = Number(usage.prompt_tokens ?? 0);
+    const completionTokens = Number(usage.completion_tokens ?? 0);
+    const totalTokens = Number(usage.total_tokens ?? promptTokens + completionTokens);
+    if (Number.isFinite(promptTokens) && Number.isFinite(completionTokens)) this.lastUsage = { promptTokens, completionTokens, totalTokens };
+  }
+
+  private consumeAnthropicBlockStart(payload: Record<string, unknown>): void {
+    const block = (payload.content_block ?? {}) as Record<string, unknown>;
+    if (block.type !== "tool_use") return;
+    const index = String(payload.index ?? this.toolBuffers.size);
+    const id = typeof block.id === "string" ? block.id : `call_${index}`;
+    const name = typeof block.name === "string" ? block.name : "";
+    this.toolBuffers.set(index, { id, name, args: "" });
+  }
+
+  private *consumeAnthropicBlockDelta(payload: Record<string, unknown>): Iterable<AiEvent> {
+    const index = String(payload.index ?? 0);
+    const delta = (payload.delta ?? {}) as Record<string, unknown>;
+    if (delta.type === "text_delta" && typeof delta.text === "string" && delta.text.length > 0) {
+      yield { type: "text_delta", text: delta.text };
       return;
     }
-    if (type === "content_block_delta") {
-      const index = String(payload.index ?? 0);
-      const delta = (payload.delta ?? {}) as Record<string, unknown>;
-      if (delta.type === "text_delta" && typeof delta.text === "string" && delta.text.length > 0) {
-        yield { type: "text_delta", text: delta.text };
+    if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+      const existing = this.toolBuffers.get(index);
+      if (existing) existing.args += delta.partial_json;
+    }
+  }
+
+  private *consumeAnthropicBlockStop(payload: Record<string, unknown>): Iterable<AiEvent> {
+    const index = String(payload.index ?? 0);
+    const existing = this.toolBuffers.get(index);
+    if (!existing || !existing.name) return;
+    this.toolBuffers.delete(index);
+    try {
+      const parsed = existing.args ? JSON.parse(existing.args) : {};
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        yield { type: "tool_call", id: existing.id, name: existing.name, args: parsed as Record<string, unknown> };
         return;
       }
-      if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
-        const existing = this.toolBuffers.get(index);
-        if (existing) existing.args += delta.partial_json;
-      }
-      return;
+      throw new Error();
+    } catch {
+      throw new AiParseError("AI provider returned malformed tool-call JSON");
     }
-    if (type === "content_block_stop") {
-      const index = String(payload.index ?? 0);
-      const existing = this.toolBuffers.get(index);
-      if (existing && existing.name) {
-        this.toolBuffers.delete(index);
-        try {
-          const parsed = existing.args ? JSON.parse(existing.args) : {};
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            yield { type: "tool_call", id: existing.id, name: existing.name, args: parsed as Record<string, unknown> };
-            return;
-          }
-          throw new Error();
-        } catch {
-          throw new AiParseError("AI provider returned malformed tool-call JSON");
-        }
-      }
-      return;
-    }
-    if (type === "message_delta") {
-      const delta = (payload.delta ?? {}) as Record<string, unknown>;
-      if (typeof delta.stop_reason === "string" && delta.stop_reason.length > 0) {
-        this.lastFinishReason = delta.stop_reason;
-      }
-      const usage = (payload.usage ?? {}) as Record<string, unknown>;
-      if (usage.output_tokens !== undefined || usage.input_tokens !== undefined) {
-        const promptTokens = Number(usage.input_tokens ?? this.lastUsage?.promptTokens ?? 0);
-        const completionTokens = Number(usage.output_tokens ?? this.lastUsage?.completionTokens ?? 0);
-        this.lastUsage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
-      }
-      return;
-    }
-    if (type === "message_stop") {
-      if (this.doneEmitted) return;
-      this.doneEmitted = true;
-      yield {
-        type: "done",
-        finishReason: this.lastFinishReason ?? "end_turn",
-        ...(this.lastUsage ? { usage: this.lastUsage } : {}),
-      };
-      return;
-    }
-    if (type === "message_start") {
-      const message = (payload.message ?? {}) as Record<string, unknown>;
-      const usage = (message.usage ?? {}) as Record<string, unknown>;
-      if (usage.input_tokens !== undefined || usage.output_tokens !== undefined) {
-        const promptTokens = Number(usage.input_tokens ?? 0);
-        const completionTokens = Number(usage.output_tokens ?? 0);
-        this.lastUsage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
-      }
-      return;
-    }
-    if (type === "error") {
-      const err = (payload.error ?? {}) as Record<string, unknown>;
-      throw new AiParseError(typeof err.message === "string" ? err.message : "AI provider signalled a stream error");
-    }
+  }
+
+  private consumeAnthropicMessageDelta(payload: Record<string, unknown>): void {
+    const delta = (payload.delta ?? {}) as Record<string, unknown>;
+    if (typeof delta.stop_reason === "string" && delta.stop_reason.length > 0) this.lastFinishReason = delta.stop_reason;
+    const usage = (payload.usage ?? {}) as Record<string, unknown>;
+    if (usage.output_tokens === undefined && usage.input_tokens === undefined) return;
+    const promptTokens = Number(usage.input_tokens ?? this.lastUsage?.promptTokens ?? 0);
+    const completionTokens = Number(usage.output_tokens ?? this.lastUsage?.completionTokens ?? 0);
+    this.lastUsage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+  }
+
+  private *consumeAnthropicMessageStop(): Iterable<AiEvent> {
+    if (this.doneEmitted) return;
+    this.doneEmitted = true;
+    yield { type: "done", finishReason: this.lastFinishReason ?? "end_turn", ...(this.lastUsage ? { usage: this.lastUsage } : {}) };
+  }
+
+  private consumeAnthropicMessageStart(payload: Record<string, unknown>): void {
+    const message = (payload.message ?? {}) as Record<string, unknown>;
+    const usage = (message.usage ?? {}) as Record<string, unknown>;
+    if (usage.input_tokens === undefined && usage.output_tokens === undefined) return;
+    const promptTokens = Number(usage.input_tokens ?? 0);
+    const completionTokens = Number(usage.output_tokens ?? 0);
+    this.lastUsage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+  }
+
+  private consumeAnthropicError(payload: Record<string, unknown>): void {
+    const err = (payload.error ?? {}) as Record<string, unknown>;
+    throw new AiParseError(typeof err.message === "string" ? err.message : "AI provider signalled a stream error");
   }
 
   private *flushRemainingToolCalls(): Iterable<AiEvent> {
