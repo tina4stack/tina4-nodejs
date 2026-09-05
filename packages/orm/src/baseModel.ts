@@ -783,204 +783,26 @@ export class BaseModel {
     const ModelClass = this.constructor as typeof BaseModel;
 
     const db = ModelClass.getDb();
-    const pk = ModelClass.getPkField();
-    const pkCol = ModelClass.getPkColumn();
+    const pk = primaryKeyFields(ModelClass)[0];
+    const pkCol = ModelClass.getDbColumn(pk);
     const pkValue = this[pk];
     const pkField = (ModelClass.fields as Record<string, FieldDefinition>)[pk];
     this._relCache = {}; // Clear relationship cache on save
 
-    // v3.13.11 (issue #50.2): for non-auto-increment PKs (user-supplied
-    // string IDs like "GC-100"), decide INSERT vs UPDATE on row
-    // existence, not on whether the PK is set. Pre-v3.13.11 a
-    // natural-key save() always chose UPDATE → matched zero rows →
-    // silently returned success without inserting anything.
-    //
-    // Auto-increment behaviour is unchanged: pkValue is null/undefined
-    // → INSERT, pkValue is set → UPDATE.
-    let isUpdate = false;
-    if (pkValue !== undefined && pkValue !== null) {
-      if (pkField?.autoIncrement) {
-        isUpdate = true;
-      } else {
-        try {
-          // This asked exists(pkValue), which tests only the FIRST key column.
-          // On a composite key that is true for any row sharing that column, so
-          // inserting a genuinely NEW row was decided to be an UPDATE and
-          // silently OVERWROTE a different row: saving (acme, a2) rewrote
-          // (acme, a1). The check has to name the whole key, like the write
-          // that follows it.
-          const probe = this.pkWhere();
-          if (ModelClass.getPkFields().length > 1 && probe.sql) {
-            const found = await db.fetch(
-              `SELECT 1 AS present FROM ${ModelClass.tableName} WHERE ${probe.sql}`,
-              probe.params,
-              1,
-            );
-            isUpdate = (found as unknown as { length: number }).length > 0;
-          } else {
-            isUpdate = await ModelClass.exists(pkValue);
-          }
-        } catch {
-          // If we can't tell (e.g. table doesn't exist yet), fall back
-          // to INSERT so the user sees the real driver error rather
-          // than a silent no-op.
-          isUpdate = false;
-        }
-      }
-    }
-
-    // ── Canonical #2: validate() is enforced. An invalid model never reaches
-    // the driver — fail loud (log + lastError), return false. Feature 19: on an
-    // UPDATE the partial-update mode (isUpdate) is passed so an unset field is
-    // not spuriously "required" (the persisted row already carries it), while a
-    // field that IS present stays held to its type/length/pattern/range rules.
-    const errors = this.validate(isUpdate);
-    if (errors.length > 0) {
-      this.lastError = errors.join("; ");
-      Log.error(
-        `${ModelClass.name}.save() refused: validation failed for table ` +
-          `'${ModelClass.tableName}' — ${this.lastError}`,
-      );
-      return false;
-    }
+    const isUpdate = await resolveSaveMode(this, ModelClass, db, pk, pkValue, pkField);
+    if (!validateBeforeSave(this, ModelClass, isUpdate)) return false;
 
     await adapterStartTransaction(db);
     try {
       if (isUpdate) {
-        // Update — keyed on the WHOLE primary key (see pkWhere).
-        const updateFields = Object.entries(ModelClass.fields).filter(
-          ([name, def]) => !def.primaryKey && this[name] !== undefined,
-        );
-        if (updateFields.length === 0) { await adapterCommit(db); return this; }
-
-        const setClause = updateFields.map(([k]) => `"${ModelClass.getDbColumn(k)}" = ?`).join(", ");
-        // The key params come from pkWhere() below; appending pkValue here too
-        // would bind the first key column twice and shift every placeholder.
-        const values = [...updateFields.map(([k, def]) => toDbFieldValue(def, this[k]))];
-
-        // Keyed on the WHOLE primary key: one column of a composite key matches
-        // every row sharing that value.
-        const uw = this.pkWhere();
-        values.push(...uw.params);
-        await adapterExecute(db, `UPDATE "${ModelClass.tableName}" SET ${setClause} WHERE ${uw.sql}`, values);
+        await executeModelUpdate(this, ModelClass, db);
       } else {
-        // Insert
-        //
-        // #165: an INSERT must OMIT a column the caller never assigned so a
-        // `NOT NULL DEFAULT <x>` column gets its DB default instead of an
-        // explicit NULL that violates the constraint. In TS an unset column is
-        // `undefined` (the constructor only seeds a field that declares a
-        // non-null ORM default — everything else stays `undefined`), so the
-        // `this[name] !== undefined` filter already drops unset columns; a
-        // value the caller set to `null` IS included and written as an explicit
-        // NULL (parity with Python's _assigned_fields split — JS distinguishes
-        // undefined-unset from null-explicit natively). A resolved non-null ORM
-        // default is still written (no regression).
-        const insertFields = Object.entries(ModelClass.fields).filter(
-          ([name, def]) => !(def.primaryKey && def.autoIncrement) && this[name] !== undefined,
-        );
-
-        // For auto-increment PKs on engines that need it (PostgreSQL),
-        // RETURNING the PK column lets us read the engine-assigned id back.
-        // SQLite ignores the RETURNING clause harmlessly (it supports it
-        // since 3.35) and we still prefer its lastInsertRowid; for other
-        // engines extractLastInsertId() reads rows[0].id.
-        const wantReturning = pkField?.autoIncrement && db.constructor.name !== "SQLiteAdapter";
-        const returningClause = wantReturning ? ` RETURNING "${pkCol}"` : "";
-
-        let insertSql: string;
-        let values: unknown[];
-        if (insertFields.length === 0) {
-          // #165: every insertable column was left unset — let the DB apply ALL
-          // its column defaults rather than emitting an empty column list
-          // (`() VALUES ()` is invalid on SQLite/PostgreSQL/Firebird/MSSQL, which
-          // spell the all-defaults insert `DEFAULT VALUES`; only MySQL uses the
-          // empty-parens form). Mirrors the Python master's engine split.
-          insertSql =
-            (db.constructor.name === "MysqlAdapter"
-              ? `INSERT INTO "${ModelClass.tableName}" () VALUES ()`
-              : `INSERT INTO "${ModelClass.tableName}" DEFAULT VALUES`) + returningClause;
-          values = [];
-        } else {
-          const columns = insertFields.map(([k]) => `"${ModelClass.getDbColumn(k)}"`).join(", ");
-          const placeholders = insertFields.map(() => "?").join(", ");
-          values = insertFields.map(([k, def]) => toDbFieldValue(def, this[k]));
-          insertSql =
-            `INSERT INTO "${ModelClass.tableName}" (${columns}) VALUES (${placeholders})` +
-            returningClause;
-        }
-
-        const result = await adapterExecute(db, insertSql, values);
-
-        // v3.13.11 (issue #50.2): only adopt the engine-assigned ID
-        // for auto-increment PKs. A natural-key PK was already set by
-        // the caller; don't overwrite it with the driver's last_id.
-        if (pkField?.autoIncrement) {
-          // RETURNING result: pg puts it in rows[0][pkCol]; normalise here.
-          // string is allowed for a non-integer PK surfaced by lastInsertId()
-          // (e.g. a PostgreSQL UUID PK) — #256.
-          let newId: number | bigint | string | null = extractLastInsertId(result);
-          if (newId === null && result && typeof result === "object") {
-            const rows = (result as any).rows;
-            if (Array.isArray(rows) && rows[0]) {
-              newId = rows[0][pkCol] ?? rows[0].id ?? null;
-            }
-          }
-          if (newId === null) {
-            // Fall back to the adapter's tracked last id (MySQL/MSSQL).
-            newId = db.lastInsertId();
-          }
-          if (newId !== null && newId !== undefined) {
-            this[pk] = newId;
-          }
-        }
+        await executeModelInsert(this, ModelClass, db, pk, pkCol, pkField);
       }
       await adapterCommit(db);
-    } catch (e: any) {
+    } catch (e: unknown) {
       await adapterRollback(db);
-      // ── Canonical #1: fail loud, never silent. Keep the false return
-      // contract, but capture the REAL cause (prefer the adapter's
-      // getError()/getLastError() when present, falling back to the exception
-      // text) on this.lastError so it survives, and log it with model/table
-      // context. ──
-      const adapterErr =
-        typeof (db as any).getError === "function" ? (db as any).getError() :
-        typeof (db as any).getLastError === "function" ? (db as any).getLastError() :
-        null;
-      let cause = adapterErr || e?.message || String(e);
-      // ── DX hint (v3.13.60 parity with the Python master): turn a bare driver
-      // error into an actionable fix for the two commonest ORM write footguns.
-      // Matched case-insensitively (SQLite via node:sqlite: "no such table" /
-      // "no such column: is_deleted" / "has no column named is_deleted";
-      // Postgres/MySQL: "does not exist" / "doesn't exist" / "unknown column").
-      // Any OTHER error keeps its raw cause untouched so an unrelated failure
-      // (NOT NULL, duplicate PK) is never masked. ──
-      const low = cause.toLowerCase();
-      if (
-        ModelClass.softDelete && low.includes("is_deleted") &&
-        (low.includes("no such column") || low.includes("has no column") ||
-          low.includes("does not exist") || low.includes("doesn't exist") ||
-          low.includes("unknown column"))
-      ) {
-        cause +=
-          " — softDelete=true needs an is_deleted column; declare it " +
-          "(is_deleted: { type: 'integer', default: 0 }), boot the server so " +
-          "syncModels() adds it, or run a migration";
-      } else if (
-        low.includes("no such table") ||
-        ((low.includes("does not exist") || low.includes("doesn't exist")) &&
-          !low.includes("column"))
-      ) {
-        cause +=
-          ` — table '${ModelClass.tableName}' does not exist; call ` +
-          `${ModelClass.name}.createTable() or run a migration`;
-      }
-      this.lastError = cause;
-      Log.error(
-        `${ModelClass.name}.save() failed for table ` +
-          `'${ModelClass.tableName}': ${this.lastError}`,
-      );
-      return false;
+      return saveDatabaseFailure(this, ModelClass, db, e);
     }
     // Success — clear any previously-recorded error.
     this.lastError = null;
@@ -1741,6 +1563,124 @@ export class BaseModel {
   clearRelCache(): void {
     this._relCache = {};
   }
+}
+
+function savePrimaryKeyWhere(instance: BaseModel, model: typeof BaseModel): { sql: string; params: unknown[] } {
+  const params: unknown[] = [];
+  const clauses = primaryKeyFields(model).map((field) => {
+    params.push(instance[field]);
+    return `${model.getDbColumn(field)} = ?`;
+  });
+  return { sql: clauses.join(" AND "), params };
+}
+
+async function resolveSaveMode(
+  instance: BaseModel,
+  model: typeof BaseModel,
+  db: DatabaseAdapter,
+  pk: string,
+  pkValue: unknown,
+  pkField: FieldDefinition | undefined,
+): Promise<boolean> {
+  if (pkValue === undefined || pkValue === null || pkField?.autoIncrement) return pkValue !== undefined && pkValue !== null;
+  try {
+    const where = savePrimaryKeyWhere(instance, model);
+    if (primaryKeyFields(model).length > 1) {
+      const found = await db.fetch(`SELECT 1 AS present FROM ${model.tableName} WHERE ${where.sql}`, where.params, 1);
+      return (found as unknown as { length: number }).length > 0;
+    }
+    return await model.exists(pkValue);
+  } catch {
+    return false;
+  }
+}
+
+function validateBeforeSave(instance: BaseModel, model: typeof BaseModel, isUpdate: boolean): boolean {
+  const errors = instance.validate(isUpdate);
+  if (errors.length === 0) return true;
+  instance.lastError = errors.join("; ");
+  Log.error(`${model.name}.save() refused: validation failed for table '${model.tableName}' — ${instance.lastError}`);
+  return false;
+}
+
+async function executeModelUpdate(instance: BaseModel, model: typeof BaseModel, db: DatabaseAdapter): Promise<void> {
+  const fields = Object.entries(model.fields).filter(([name, def]) => !def.primaryKey && instance[name] !== undefined);
+  if (fields.length === 0) return;
+  const setClause = fields.map(([name]) => `"${model.getDbColumn(name)}" = ?`).join(", ");
+  const values = fields.map(([name, def]) => toDbFieldValue(def, instance[name]));
+  const where = savePrimaryKeyWhere(instance, model);
+  values.push(...where.params);
+  await adapterExecute(db, `UPDATE "${model.tableName}" SET ${setClause} WHERE ${where.sql}`, values);
+}
+
+function buildInsertStatement(
+  instance: BaseModel,
+  model: typeof BaseModel,
+  db: DatabaseAdapter,
+  pkField: FieldDefinition | undefined,
+  pkCol: string,
+): { sql: string; values: unknown[] } {
+  const fields = Object.entries(model.fields).filter(
+    ([name, def]) => !(def.primaryKey && def.autoIncrement) && instance[name] !== undefined,
+  );
+  const returning = pkField?.autoIncrement && db.constructor.name !== "SQLiteAdapter" ? ` RETURNING "${pkCol}"` : "";
+  if (fields.length === 0) {
+    const emptyInsert = db.constructor.name === "MysqlAdapter"
+      ? `INSERT INTO "${model.tableName}" () VALUES ()`
+      : `INSERT INTO "${model.tableName}" DEFAULT VALUES`;
+    return { sql: emptyInsert + returning, values: [] };
+  }
+  const columns = fields.map(([name]) => `"${model.getDbColumn(name)}"`).join(", ");
+  const placeholders = fields.map(() => "?").join(", ");
+  const values = fields.map(([name, def]) => toDbFieldValue(def, instance[name]));
+  return { sql: `INSERT INTO "${model.tableName}" (${columns}) VALUES (${placeholders})${returning}`, values };
+}
+
+function applyInsertedId(
+  instance: BaseModel,
+  db: DatabaseAdapter,
+  result: unknown,
+  pk: string,
+  pkCol: string,
+): void {
+  let newId: number | bigint | string | null = extractLastInsertId(result);
+  if (newId === null && result && typeof result === "object") {
+    const rows = (result as { rows?: Array<Record<string, unknown>> }).rows;
+    if (Array.isArray(rows) && rows[0]) newId = (rows[0][pkCol] ?? rows[0].id ?? null) as typeof newId;
+  }
+  if (newId === null) newId = db.lastInsertId();
+  if (newId !== null && newId !== undefined) instance[pk] = newId;
+}
+
+async function executeModelInsert(
+  instance: BaseModel,
+  model: typeof BaseModel,
+  db: DatabaseAdapter,
+  pk: string,
+  pkCol: string,
+  pkField: FieldDefinition | undefined,
+): Promise<void> {
+  const statement = buildInsertStatement(instance, model, db, pkField, pkCol);
+  const result = await adapterExecute(db, statement.sql, statement.values);
+  if (pkField?.autoIncrement) applyInsertedId(instance, db, result, pk, pkCol);
+}
+
+function saveDatabaseFailure(instance: BaseModel, model: typeof BaseModel, db: DatabaseAdapter, error: unknown): false {
+  const adapter = db as any;
+  const adapterError = typeof adapter.getError === "function" ? adapter.getError() :
+    typeof adapter.getLastError === "function" ? adapter.getLastError() : null;
+  let cause = String(adapterError || (error instanceof Error ? error.message : error));
+  const low = cause.toLowerCase();
+  if (model.softDelete && low.includes("is_deleted") &&
+      ["no such column", "has no column", "does not exist", "doesn't exist", "unknown column"].some((part) => low.includes(part))) {
+    cause += " — softDelete=true needs an is_deleted column; declare it (is_deleted: { type: 'integer', default: 0 }), boot the server so syncModels() adds it, or run a migration";
+  } else if (low.includes("no such table") ||
+      ((low.includes("does not exist") || low.includes("doesn't exist")) && !low.includes("column"))) {
+    cause += ` — table '${model.tableName}' does not exist; call ${model.name}.createTable() or run a migration`;
+  }
+  instance.lastError = cause;
+  Log.error(`${model.name}.save() failed for table '${model.tableName}': ${instance.lastError}`);
+  return false;
 }
 
 function serializeModelFields(instance: BaseModel, model: typeof BaseModel, case_: "camel" | "snake"): Record<string, unknown> {
