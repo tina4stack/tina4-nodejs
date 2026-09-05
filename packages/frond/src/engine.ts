@@ -3130,69 +3130,70 @@ export class Frond {
     }
     const name = m[1];
     const rest = (m[2] || "").trim();
-    const parts = rest.split(/\s+/).filter(Boolean);
-    const mode = parts[0] || "";
-
-    const sm = rest.match(LIVE_SRC_RE);
-    const src = sm ? sm[1] : null;
-    if (src && (src.startsWith("http://") || src.startsWith("https://") || src.startsWith("//"))) {
-      throw new Error("live: src must be a same-origin path, not an absolute URL");
-    }
-
-    let interval: number | null = null;
-    let wsPath: string | null = null;
-    if (mode === "poll") {
-      if (!parts[1] || !/^\d+$/.test(parts[1])) {
-        throw new Error('live: poll requires seconds, e.g. {% live "x" poll 5 %}');
-      }
-      interval = parseInt(parts[1], 10);
-    } else if (mode === "sse") {
-      // no extra config
-    } else if (mode === "ws") {
-      const wm = rest.match(LIVE_WS_RE);
-      if (!wm) {
-        throw new Error('live: ws requires a path, e.g. {% live "x" ws "/ws/x" %}');
-      }
-      wsPath = wm[1];
-    } else {
-      throw new Error(`live: unknown transport "${mode}" (use poll N, sse, or ws "path")`);
-    }
-
-    // Collect body tokens up to {% endlive %}. Nested live is unsupported.
-    const bodyTokens: Token[] = [];
-    let i = start + 1;
-    while (i < tokens.length) {
-      if (tokens[i][0] === "BLOCK") {
-        const [tagContent] = stripTag(tokens[i][1]);
-        const tag = tagContent.split(/\s+/)[0] || "";
-        if (tag === "live") throw new Error("live: nested live blocks are not supported");
-        if (tag === "endlive") {
-          i++;
-          break;
-        }
-        bodyTokens.push(tokens[i]);
-      } else {
-        bodyTokens.push(tokens[i]);
-      }
-      i++;
-    }
+    const options = this.parseLiveOptions(rest);
+    const [bodyTokens, i] = this.collectLiveBody(tokens, start);
 
     // Register the raw body source so the auto endpoint can re-render it.
     Frond.liveFragments.set(name, bodyTokens.map((t) => t[1]).join(""));
 
-    const endpoint = src || `/__frond/live/${name}`;
-    const attrs = [`data-frond-live="${liveAttr(name)}"`, `id="live-${liveAttr(name)}"`];
-    if (mode === "poll") {
-      attrs.push('data-mode="poll"', `data-interval="${interval}"`, `data-src="${liveAttr(endpoint)}"`);
-    } else if (mode === "sse") {
-      attrs.push('data-mode="sse"', `data-src="${liveAttr(endpoint)}"`);
-    } else if (mode === "ws") {
-      Frond.liveWsPaths.set(name, wsPath as string);
-      attrs.push('data-mode="ws"', `data-ws="${liveAttr(wsPath)}"`);
-    }
+    const attrs = this.liveAttributes(name, options);
 
     const firstPaint = this.renderTokens([...bodyTokens], context);
     return [`<div ${attrs.join(" ")}>${firstPaint}</div>`, i];
+  }
+
+  private parseLiveOptions(rest: string): { mode: string; src: string | null; interval: number | null; wsPath: string | null } {
+    const parts = rest.split(/\s+/).filter(Boolean);
+    const mode = parts[0] || "";
+    const sourceMatch = rest.match(LIVE_SRC_RE);
+    const src = sourceMatch ? sourceMatch[1] : null;
+    if (src && /^(?:https?:)?\/\//.test(src)) {
+      throw new Error("live: src must be a same-origin path, not an absolute URL");
+    }
+    if (mode === "poll") {
+      if (!parts[1] || !/^\d+$/.test(parts[1])) {
+        throw new Error('live: poll requires seconds, e.g. {% live "x" poll 5 %}');
+      }
+      return { mode, src, interval: parseInt(parts[1], 10), wsPath: null };
+    }
+    if (mode === "sse") return { mode, src, interval: null, wsPath: null };
+    if (mode === "ws") {
+      const wsMatch = rest.match(LIVE_WS_RE);
+      if (!wsMatch) throw new Error('live: ws requires a path, e.g. {% live "x" ws "/ws/x" %}');
+      return { mode, src, interval: null, wsPath: wsMatch[1] };
+    }
+    throw new Error(`live: unknown transport "${mode}" (use poll N, sse, or ws "path")`);
+  }
+
+  private collectLiveBody(tokens: Token[], start: number): [Token[], number] {
+    const body: Token[] = [];
+    let i = start + 1;
+    while (i < tokens.length) {
+      if (tokens[i][0] !== "BLOCK") {
+        body.push(tokens[i++]);
+        continue;
+      }
+      const [tagContent] = stripTag(tokens[i][1]);
+      const tag = tagContent.split(/\s+/)[0] || "";
+      if (tag === "live") throw new Error("live: nested live blocks are not supported");
+      if (tag === "endlive") return [body, i + 1];
+      body.push(tokens[i++]);
+    }
+    return [body, i];
+  }
+
+  private liveAttributes(name: string, options: { mode: string; src: string | null; interval: number | null; wsPath: string | null }): string[] {
+    const endpoint = options.src || `/__frond/live/${name}`;
+    const attrs = [`data-frond-live="${liveAttr(name)}"`, `id="live-${liveAttr(name)}"`];
+    if (options.mode === "poll") {
+      attrs.push('data-mode="poll"', `data-interval="${options.interval}"`, `data-src="${liveAttr(endpoint)}"`);
+    } else if (options.mode === "sse") {
+      attrs.push('data-mode="sse"', `data-src="${liveAttr(endpoint)}"`);
+    } else {
+      Frond.liveWsPaths.set(name, options.wsPath as string);
+      attrs.push('data-mode="ws"', `data-ws="${liveAttr(options.wsPath)}"`);
+    }
+    return attrs;
   }
 
   // ── Live-block class API (mirrors Python master + PHP/Ruby facades) ──
