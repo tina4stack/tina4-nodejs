@@ -274,6 +274,12 @@ function renderDump(value: unknown): SafeString {
 
 type TokenType = "TEXT" | "VAR" | "BLOCK" | "COMMENT";
 type Token = [TokenType, string];
+
+type MacroDefinition = {
+  name: string;
+  params: Array<[string, string | null]>;
+  bodyTokens: Token[];
+};
 type BlockHandlerResult = { next: number; output?: string };
 type BlockHandler = (
   tokens: Token[],
@@ -3026,49 +3032,8 @@ export class Frond {
     const namespace: Record<string, unknown> = {};
 
     const source = this.load(filename);
-    const tokens = tokenize(source);
-
-    let i = 0;
-    while (i < tokens.length) {
-      const [ttype, raw] = tokens[i];
-      if (ttype === "BLOCK") {
-        const [tagContent] = stripTag(raw);
-        if ((tagContent.split(/\s+/)[0] || "") === "macro") {
-          const macroM = tagContent.match(/^macro\s+(\w+)\s*\(([^)]*)\)/);
-          if (macroM) {
-            const macroName = macroM[1];
-            const params = Frond.parseMacroParams(macroM[2]);
-
-            const bodyTokens: Token[] = [];
-            i++;
-            while (i < tokens.length) {
-              if (tokens[i][0] === "BLOCK" && tokens[i][1].includes("endmacro")) {
-                i++;
-                break;
-              }
-              bodyTokens.push(tokens[i]);
-              i++;
-            }
-
-            // Own copies per macro — avoids closure-over-loop-variable sharing.
-            const capturedBody = [...bodyTokens];
-            const capturedParams = [...params];
-            const capturedCtx = { ...context };
-            const engine = this;
-
-            namespace[macroName] = (...args: unknown[]) => {
-              const macroCtx: Record<string, unknown> = { ...capturedCtx };
-              for (let pi = 0; pi < capturedParams.length; pi++) {
-                const [pname, pdefault] = capturedParams[pi];
-                macroCtx[pname] = pi < args.length ? args[pi] : pdefault;
-              }
-              return new SafeString(engine.renderTokens([...capturedBody], macroCtx));
-            };
-            continue;
-          }
-        }
-      }
-      i++;
+    for (const definition of this.collectMacroDefinitions(tokenize(source))) {
+      namespace[definition.name] = this.createMacro(definition, context);
     }
 
     context[alias] = namespace;
@@ -3082,51 +3047,66 @@ export class Frond {
     const names = m[2].split(",").map(n => n.trim()).filter(Boolean);
 
     const source = this.load(filename);
-    const tokens = tokenize(source);
+    for (const definition of this.collectMacroDefinitions(tokenize(source))) {
+      if (names.includes(definition.name)) {
+        // Add each selected macro before capturing the next one, preserving the
+        // historical ability for a later macro to call an earlier macro.
+        context[definition.name] = this.createMacro(definition, context);
+      }
+    }
+  }
 
+  private collectMacroDefinitions(tokens: Token[]): MacroDefinition[] {
+    const definitions: MacroDefinition[] = [];
     let i = 0;
     while (i < tokens.length) {
-      const [ttype, raw] = tokens[i];
-      if (ttype === "BLOCK") {
-        const [tagContent] = stripTag(raw);
-        const tag = tagContent.split(/\s+/)[0] || "";
-        if (tag === "macro") {
-          const macroM = tagContent.match(/^macro\s+(\w+)\s*\(([^)]*)\)/);
-          if (macroM && names.includes(macroM[1])) {
-            const macroName = macroM[1];
-            const paramNames = Frond.parseMacroParams(macroM[2]);
-
-            const bodyTokens: Token[] = [];
-            i++;
-            while (i < tokens.length) {
-              if (tokens[i][0] === "BLOCK" && tokens[i][1].includes("endmacro")) {
-                i++;
-                break;
-              }
-              bodyTokens.push(tokens[i]);
-              i++;
-            }
-
-            // Create closure with its own copy of captured values
-            const capturedBody = [...bodyTokens];
-            const capturedParams = [...paramNames];
-            const capturedCtx = { ...context };
-            const engine = this;
-
-            context[macroName] = (...args: unknown[]) => {
-              const macroCtx: Record<string, unknown> = { ...capturedCtx };
-              for (let pi = 0; pi < capturedParams.length; pi++) {
-                const [pname, pdefault] = capturedParams[pi];
-                macroCtx[pname] = pi < args.length ? args[pi] : pdefault;
-              }
-              return new SafeString(engine.renderTokens([...capturedBody], macroCtx));
-            };
-            continue;
-          }
-        }
+      if (tokens[i][0] !== "BLOCK") {
+        i++;
+        continue;
       }
+      const [tagContent] = stripTag(tokens[i][1]);
+      if ((tagContent.split(/\s+/)[0] || "") !== "macro") {
+        i++;
+        continue;
+      }
+      const macroMatch = tagContent.match(/^macro\s+(\w+)\s*\(([^)]*)\)/);
+      if (!macroMatch) {
+        i++;
+        continue;
+      }
+
+      const bodyTokens: Token[] = [];
       i++;
+      while (i < tokens.length) {
+        if (tokens[i][0] === "BLOCK" && tokens[i][1].includes("endmacro")) {
+          i++;
+          break;
+        }
+        bodyTokens.push(tokens[i]);
+        i++;
+      }
+      definitions.push({
+        name: macroMatch[1],
+        params: Frond.parseMacroParams(macroMatch[2]),
+        bodyTokens,
+      });
     }
+    return definitions;
+  }
+
+  private createMacro(definition: MacroDefinition, context: Record<string, unknown>): (...args: unknown[]) => SafeString {
+    const capturedBody = [...definition.bodyTokens];
+    const capturedParams = [...definition.params];
+    const capturedCtx = { ...context };
+    const engine = this;
+    return (...args: unknown[]) => {
+      const macroCtx: Record<string, unknown> = { ...capturedCtx };
+      for (let pi = 0; pi < capturedParams.length; pi++) {
+        const [pname, pdefault] = capturedParams[pi];
+        macroCtx[pname] = pi < args.length ? args[pi] : pdefault;
+      }
+      return new SafeString(engine.renderTokens([...capturedBody], macroCtx));
+    };
   }
 
   /**

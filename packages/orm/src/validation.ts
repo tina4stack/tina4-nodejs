@@ -5,6 +5,86 @@ export interface ValidationError {
   message: string;
 }
 
+function error(field: string, message: string): ValidationError {
+  return { field, message };
+}
+
+function validateString(
+  name: string,
+  value: string,
+  def: FieldDefinition,
+  pattern: RegExp | undefined,
+): ValidationError[] {
+  const errors: ValidationError[] = [];
+  if (def.minLength !== undefined && value.length < def.minLength) {
+    errors.push(error(name, `must be at least ${def.minLength} characters`));
+  }
+  if (def.maxLength !== undefined && value.length > def.maxLength) {
+    errors.push(error(name, `must be at most ${def.maxLength} characters`));
+  }
+  if (pattern && !pattern.test(value)) {
+    errors.push(error(name, "does not match the required format"));
+  }
+  return errors;
+}
+
+function validateNumber(name: string, value: unknown, def: FieldDefinition): ValidationError[] {
+  const num = typeof value === "string" ? Number(value) : value;
+  if (typeof num !== "number" || isNaN(num)) return [error(name, "must be a number")];
+
+  const errors: ValidationError[] = [];
+  if (def.type === "integer" && !Number.isInteger(num)) {
+    errors.push(error(name, "must be an integer"));
+  }
+  if (def.min !== undefined && num < def.min) {
+    errors.push(error(name, `must be at least ${def.min}`));
+  }
+  if (def.max !== undefined && num > def.max) {
+    errors.push(error(name, `must be at most ${def.max}`));
+  }
+  return errors;
+}
+
+function validateField(
+  name: string,
+  value: unknown,
+  def: FieldDefinition,
+  pattern: RegExp | undefined,
+): ValidationError[] {
+  if (def.type === "string" || def.type === "text") {
+    return typeof value === "string"
+      ? validateString(name, value, def, pattern)
+      : [error(name, "must be a string")];
+  }
+
+  if (def.type === "integer" || def.type === "number" || def.type === "numeric") {
+    return validateNumber(name, value, def);
+  }
+
+  switch (def.type) {
+    case "boolean":
+      return typeof value === "boolean" || value === 0 || value === 1 || value === "true" || value === "false"
+        ? []
+        : [error(name, "must be a boolean")];
+    case "datetime":
+      return typeof value === "string" && isNaN(Date.parse(value))
+        ? [error(name, "must be a valid date/time")]
+        : [];
+    case "json":
+      return value !== null && typeof value !== "object" && typeof value !== "string"
+        ? [error(name, "must be a JSON object or array")]
+        : [];
+    case "foreignKey": {
+      const fkNum = typeof value === "string" ? Number(value) : value;
+      return typeof fkNum !== "number" || isNaN(fkNum) || !Number.isInteger(fkNum)
+        ? [error(name, "must be a valid foreign key (integer)")]
+        : [];
+    }
+    default:
+      return [];
+  }
+}
+
 export function validate(
   data: Record<string, unknown>,
   fields: Record<string, FieldDefinition>,
@@ -28,92 +108,14 @@ export function validate(
 
     // Required check (skip on update if field not provided)
     if (def.required && !isUpdate && (value === undefined || value === null || value === "")) {
-      errors.push({ field: name, message: "is required" });
+      errors.push(error(name, "is required"));
       continue;
     }
 
     // Skip further validation if value not provided
     if (value === undefined || value === null) continue;
 
-    // Type checks
-    switch (def.type) {
-      case "string":
-      case "text":
-        if (typeof value !== "string") {
-          errors.push({ field: name, message: "must be a string" });
-        } else {
-          if (def.minLength !== undefined && value.length < def.minLength) {
-            errors.push({ field: name, message: `must be at least ${def.minLength} characters` });
-          }
-          if (def.maxLength !== undefined && value.length > def.maxLength) {
-            errors.push({ field: name, message: `must be at most ${def.maxLength} characters` });
-          }
-          const regex = compiledPatterns.get(name);
-          if (regex && !regex.test(value)) {
-            // Feature 19 (VALID-TWO-MESSAGES): one canonical wording per rule
-            // across BOTH validators. The request Validator says "does not match
-            // the required format"; the ORM validator must say the same so a
-            // client keying on the message matches either surface.
-            errors.push({ field: name, message: `does not match the required format` });
-          }
-        }
-        break;
-
-      case "integer":
-      case "number":
-      case "numeric": {
-        const num = typeof value === "string" ? Number(value) : value;
-        if (typeof num !== "number" || isNaN(num)) {
-          errors.push({ field: name, message: "must be a number" });
-        } else {
-          if (def.type === "integer" && !Number.isInteger(num)) {
-            errors.push({ field: name, message: "must be an integer" });
-          }
-          if (def.min !== undefined && num < def.min) {
-            errors.push({ field: name, message: `must be at least ${def.min}` });
-          }
-          if (def.max !== undefined && num > def.max) {
-            errors.push({ field: name, message: `must be at most ${def.max}` });
-          }
-        }
-        break;
-      }
-
-      case "boolean":
-        if (typeof value !== "boolean" && value !== 0 && value !== 1 && value !== "true" && value !== "false") {
-          errors.push({ field: name, message: "must be a boolean" });
-        }
-        break;
-
-      case "datetime":
-        if (typeof value === "string" && isNaN(Date.parse(value))) {
-          errors.push({ field: name, message: "must be a valid date/time" });
-        }
-        break;
-
-      case "json":
-        // A JSON column holds an object/array (or a pre-serialised JSON
-        // string); reject a bare scalar. A value that can't be JSON-encoded
-        // (a circular reference, a BigInt) fails loud at save time.
-        if (value !== null && typeof value !== "object" && typeof value !== "string") {
-          errors.push({ field: name, message: "must be a JSON object or array" });
-        }
-        break;
-
-      case "foreignKey": {
-        // Outlier D: previously there was no foreignKey case, so ANY value
-        // passed validation silently. A foreign key references another model's
-        // primary key — by default an auto-increment integer — so validate it
-        // as an integer (a numeric string like "12" is coerced and accepted).
-        // This catches the common bug of assigning a whole object / array /
-        // non-numeric string to an *_id column before it reaches the driver.
-        const fkNum = typeof value === "string" ? Number(value) : value;
-        if (typeof fkNum !== "number" || isNaN(fkNum) || !Number.isInteger(fkNum)) {
-          errors.push({ field: name, message: "must be a valid foreign key (integer)" });
-        }
-        break;
-      }
-    }
+    errors.push(...validateField(name, value, def, compiledPatterns.get(name)));
   }
 
   return errors;
