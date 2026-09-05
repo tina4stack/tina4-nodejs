@@ -183,158 +183,113 @@ function requireWriteFilter(filter: Record<string, unknown> | undefined, operati
   }
 }
 
+function parseSelect(sql: string, params: unknown[]): MongoOperation | null {
+  const match = sql.match(/^SELECT\s+(.*?)\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.*?))?(?:\s+ORDER\s+BY\s+(.*?))?(?:\s+LIMIT\s+(\d+))?(?:\s+OFFSET\s+(\d+))?$/is);
+  if (!match) return null;
+  const [, cols, collection, whereClause, orderBy, limitStr, skipStr] = match;
+  const projection: Record<string, unknown> = {};
+  if (cols && cols.trim() !== "*") {
+    for (const col of cols.split(",")) {
+      const name = col.trim().replace(/^["']|["']$/g, "");
+      if (name && name !== "*") projection[name] = 1;
+    }
+  }
+  const filter = whereClause ? parseWhereClause(whereClause.trim(), params).filter : {};
+  const sort: Record<string, 1 | -1> = {};
+  if (orderBy) {
+    for (const part of orderBy.split(",")) {
+      const trimmed = part.trim();
+      const desc = /DESC$/i.test(trimmed);
+      const col = trimmed.replace(/\s+(ASC|DESC)$/i, "").replace(/^["']|["']$/g, "").trim();
+      sort[col] = desc ? -1 : 1;
+    }
+  }
+  return {
+    type: "find",
+    collection,
+    filter,
+    projection: Object.keys(projection).length > 0 ? projection : undefined,
+    limit: limitStr ? parseInt(limitStr, 10) : undefined,
+    skip: skipStr ? parseInt(skipStr, 10) : undefined,
+    sort: orderBy ? sort : undefined,
+  };
+}
+
+function parseInsert(sql: string, params: unknown[]): MongoOperation | null {
+  const match = sql.match(/^INSERT\s+INTO\s+["']?(\w+)["']?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)$/is);
+  if (!match) return null;
+  const [, collection, colsStr, valsStr] = match;
+  const cols = colsStr.split(",").map((column) => column.trim().replace(/^["']|["']$/g, ""));
+  const values = valsStr.split(",").map((value) => value.trim());
+  const document: Record<string, unknown> = {};
+  let paramIndex = 0;
+  for (let index = 0; index < cols.length; index++) {
+    const value = values[index];
+    if (value === "?") document[cols[index]] = params[paramIndex++];
+    else if (/^'.*'$/.test(value)) document[cols[index]] = value.slice(1, -1);
+    else if (/^-?\d+(\.\d+)?$/.test(value)) document[cols[index]] = Number(value);
+    else document[cols[index]] = value;
+  }
+  return { type: "insertOne", collection, document };
+}
+
+function parseSetClause(setClause: string, params: unknown[]): { document: Record<string, unknown>; consumed: number } {
+  const document: Record<string, unknown> = {};
+  let consumed = 0;
+  for (const part of setClause.split(",")) {
+    const trimmed = part.trim();
+    const parameter = trimmed.match(/^["']?(\w+)["']?\s*=\s*\?$/);
+    if (parameter) {
+      document[parameter[1]] = params[consumed++];
+      continue;
+    }
+    const literal = trimmed.match(/^["']?(\w+)["']?\s*=\s*(?:'([^']*)'|(-?\d+(?:\.\d+)?))$/);
+    if (literal) document[literal[1]] = literal[2] !== undefined ? literal[2] : Number(literal[3]);
+  }
+  return { document, consumed };
+}
+
+function parseUpdate(sql: string, params: unknown[]): MongoOperation | null {
+  const match = sql.match(/^UPDATE\s+["']?(\w+)["']?\s+SET\s+(.*?)(?:\s+WHERE\s+(.+))?$/is);
+  if (!match) return null;
+  const [, collection, setClause, whereClause] = match;
+  const set = parseSetClause(setClause, params);
+  const matchAll = isMatchAllWhere(whereClause?.trim());
+  const filter = whereClause ? parseWhereClause(whereClause.trim(), params, set.consumed).filter : {};
+  return { type: "updateMany", collection, filter, update: { $set: set.document }, matchAll };
+}
+
+function parseDelete(sql: string, params: unknown[]): MongoOperation | null {
+  const match = sql.match(/^DELETE\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.+))?$/is);
+  if (!match) return null;
+  const [, collection, whereClause] = match;
+  const matchAll = isMatchAllWhere(whereClause?.trim());
+  const filter = whereClause ? parseWhereClause(whereClause.trim(), params).filter : {};
+  return { type: "deleteMany", collection, filter, matchAll };
+}
+
+function parseCreate(sql: string): MongoOperation | null {
+  const match = sql.match(/^CREATE\s+(?:TABLE|COLLECTION)\s+(?:IF\s+NOT\s+EXISTS\s+)?["']?(\w+)["']?/i);
+  return match ? { type: "raw", collection: match[1] } : null;
+}
+
+function parseCount(sql: string, params: unknown[]): MongoOperation | null {
+  const match = sql.match(/^SELECT\s+COUNT\(\*\)\s+AS\s+(\w+)\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.+))?$/is);
+  if (!match) return null;
+  const [, alias, collection, whereClause] = match;
+  const filter = whereClause ? parseWhereClause(whereClause.trim(), params).filter : {};
+  return { type: "aggregate", collection, pipeline: [{ $match: filter }, { $count: alias }] };
+}
+
 /** Parse a SQL string into a MongoOperation. Returns null if parsing is not supported. */
 function parseSql(sql: string, params: unknown[] = []): MongoOperation | null {
-  const s = sql.trim();
-
-  // ---- SELECT ----
-  const selectMatch = s.match(
-    /^SELECT\s+(.*?)\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.*?))?(?:\s+ORDER\s+BY\s+(.*?))?(?:\s+LIMIT\s+(\d+))?(?:\s+OFFSET\s+(\d+))?$/is,
-  );
-  if (selectMatch) {
-    const [, cols, collection, whereClause, orderBy, limitStr, skipStr] = selectMatch;
-
-    // Projection
-    let projection: Record<string, unknown> | undefined;
-    if (cols && cols.trim() !== "*") {
-      projection = {};
-      for (const col of cols.split(",")) {
-        const name = col.trim().replace(/^["']|["']$/g, "");
-        if (name && name !== "*") projection[name] = 1;
-      }
-    }
-
-    // Filter
-    let filter: Record<string, unknown> = {};
-    if (whereClause) {
-      const parsed = parseWhereClause(whereClause.trim(), params);
-      filter = parsed.filter;
-    }
-
-    // Sort
-    let sort: Record<string, 1 | -1> | undefined;
-    if (orderBy) {
-      sort = {};
-      for (const part of orderBy.split(",")) {
-        const t = part.trim();
-        const desc = /DESC$/i.test(t);
-        const col = t.replace(/\s+(ASC|DESC)$/i, "").replace(/^["']|["']$/g, "").trim();
-        sort[col] = desc ? -1 : 1;
-      }
-    }
-
-    return {
-      type: "find",
-      collection,
-      filter,
-      projection: projection && Object.keys(projection).length > 0 ? projection : undefined,
-      limit: limitStr ? parseInt(limitStr, 10) : undefined,
-      skip: skipStr ? parseInt(skipStr, 10) : undefined,
-      sort,
-    };
-  }
-
-  // ---- INSERT ----
-  const insertMatch = s.match(
-    /^INSERT\s+INTO\s+["']?(\w+)["']?\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)$/is,
-  );
-  if (insertMatch) {
-    const [, collection, colsStr, valsStr] = insertMatch;
-    const cols = colsStr.split(",").map((c) => c.trim().replace(/^["']|["']$/g, ""));
-    const valPlaceholders = valsStr.split(",").map((v) => v.trim());
-    let paramIndex = 0;
-    const doc: Record<string, unknown> = {};
-    for (let i = 0; i < cols.length; i++) {
-      if (valPlaceholders[i] === "?") {
-        doc[cols[i]] = params[paramIndex++];
-      } else if (/^'.*'$/.test(valPlaceholders[i])) {
-        doc[cols[i]] = valPlaceholders[i].slice(1, -1);
-      } else if (/^-?\d+(\.\d+)?$/.test(valPlaceholders[i])) {
-        doc[cols[i]] = Number(valPlaceholders[i]);
-      } else {
-        doc[cols[i]] = valPlaceholders[i];
-      }
-    }
-    return { type: "insertOne", collection, document: doc };
-  }
-
-  // ---- UPDATE ----
-  // WHERE is OPTIONAL in the grammar so a filterless UPDATE ("UPDATE t SET x=1")
-  // is RECOGNISED as an updateMany with an empty filter and reaches the
-  // fail-closed guard -- rather than failing the regex, returning null, and
-  // being silently acknowledged as a no-op (a silent wrong result).
-  const updateMatch = s.match(
-    /^UPDATE\s+["']?(\w+)["']?\s+SET\s+(.*?)(?:\s+WHERE\s+(.+))?$/is,
-  );
-  if (updateMatch) {
-    const [, collection, setClause, whereClause] = updateMatch;
-
-    // Parse SET clause
-    const setDoc: Record<string, unknown> = {};
-    let setParamIndex = 0;
-    for (const setPart of setClause.split(",")) {
-      const m = setPart.trim().match(/^["']?(\w+)["']?\s*=\s*\?$/);
-      if (m) {
-        setDoc[m[1]] = params[setParamIndex++];
-      } else {
-        const mLit = setPart.trim().match(/^["']?(\w+)["']?\s*=\s*(?:'([^']*)'|(-?\d+(?:\.\d+)?))$/);
-        if (mLit) {
-          setDoc[mLit[1]] = mLit[2] !== undefined ? mLit[2] : Number(mLit[3]);
-        }
-      }
-    }
-
-    // Parse WHERE clause (params start after SET params). No WHERE -> empty
-    // filter, which the write guard refuses; an explicit 1=1 tautology -> an
-    // empty filter that IS an intentional match-all (matchAll bypasses the guard).
-    const matchAll = isMatchAllWhere(whereClause?.trim());
-    const filter = whereClause
-      ? parseWhereClause(whereClause.trim(), params, setParamIndex).filter
-      : {};
-
-    return { type: "updateMany", collection, filter, update: { $set: setDoc }, matchAll };
-  }
-
-  // ---- DELETE ----
-  const deleteMatch = s.match(
-    /^DELETE\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.+))?$/is,
-  );
-  if (deleteMatch) {
-    const [, collection, whereClause] = deleteMatch;
-    // An explicit 1=1 tautology (truncate()'s WHERE) is an intentional match-all;
-    // a blank/absent WHERE is the mass-delete footgun the executor guard refuses.
-    const matchAll = isMatchAllWhere(whereClause?.trim());
-    const filter = whereClause
-      ? parseWhereClause(whereClause.trim(), params).filter
-      : {};
-    return { type: "deleteMany", collection, filter, matchAll };
-  }
-
-  // ---- CREATE TABLE (treated as createCollection) ----
-  const createTableMatch = s.match(/^CREATE\s+(?:TABLE|COLLECTION)\s+(?:IF\s+NOT\s+EXISTS\s+)?["']?(\w+)["']?/i);
-  if (createTableMatch) {
-    // We handle this in createTable(); signal it as a "raw" skip
-    return { type: "raw", collection: createTableMatch[1] };
-  }
-
-  // ---- SELECT COUNT(*) ----
-  const countMatch = s.match(/^SELECT\s+COUNT\(\*\)\s+AS\s+(\w+)\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.+))?$/is);
-  if (countMatch) {
-    const [, alias, collection, whereClause] = countMatch;
-    const filter = whereClause
-      ? parseWhereClause(whereClause.trim(), params).filter
-      : {};
-    return {
-      type: "aggregate",
-      collection,
-      pipeline: [
-        { $match: filter },
-        { $count: alias },
-      ],
-    };
-  }
-
-  return null;
+  const statement = sql.trim();
+  return parseSelect(statement, params)
+    ?? parseInsert(statement, params)
+    ?? parseUpdate(statement, params)
+    ?? parseDelete(statement, params)
+    ?? parseCreate(statement)
+    ?? parseCount(statement, params);
 }
 
 export class MongodbAdapter implements DatabaseAdapter {
