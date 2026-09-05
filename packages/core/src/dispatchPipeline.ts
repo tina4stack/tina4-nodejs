@@ -206,6 +206,69 @@ function etagMatchesInm(ifNoneMatch: string, etag: string): boolean {
   });
 }
 
+function maybeCompressResponse(body: Buffer, rawReq: IncomingMessage, rawRes: ServerResponse): Buffer {
+  const acceptEncoding = String(rawReq.headers["accept-encoding"] ?? "");
+  const contentTypeHeader = rawRes.getHeader("content-type");
+  const contentType = typeof contentTypeHeader === "string" ? contentTypeHeader : "";
+  const alreadyEncoded = !!rawRes.getHeader("content-encoding");
+  if (alreadyEncoded || body.length <= 1024 || !acceptEncoding.includes("gzip") || !isCompressibleContentType(contentType)) {
+    return body;
+  }
+  const compressed = gzipSync(body, { level: 6 });
+  rawRes.setHeader("Content-Encoding", "gzip");
+  rawRes.setHeader("Vary", "Accept-Encoding");
+  return compressed;
+}
+
+function responseIsNotModified(rawReq: IncomingMessage, rawRes: ServerResponse, etag: string): boolean {
+  const ifNoneMatch = String(rawReq.headers["if-none-match"] ?? "");
+  if (ifNoneMatch) return etagMatchesInm(ifNoneMatch, etag);
+  const lastModifiedHeader = rawRes.getHeader("last-modified");
+  if (typeof lastModifiedHeader !== "string") return false;
+  const ifModifiedSince = String(rawReq.headers["if-modified-since"] ?? "");
+  if (!ifModifiedSince) return false;
+  const modified = Date.parse(lastModifiedHeader);
+  const since = Date.parse(ifModifiedSince);
+  return !Number.isNaN(modified) && !Number.isNaN(since) && modified <= since;
+}
+
+function clearNotModifiedHeaders(rawRes: ServerResponse): void {
+  rawRes.statusCode = 304;
+  rawRes.removeHeader("Content-Type");
+  rawRes.removeHeader("Content-Encoding");
+  rawRes.removeHeader("Vary");
+  rawRes.removeHeader("Content-Length");
+}
+
+function applyResponseValidator(rawReq: IncomingMessage, rawRes: ServerResponse, body: Buffer): boolean {
+  if ((rawRes.statusCode || 200) !== 200 || body.length === 0) return false;
+  let etag = rawRes.getHeader("etag");
+  if (!etag) {
+    etag = `"${createHash("md5").update(body).digest("hex").slice(0, 16)}"`;
+    rawRes.setHeader("ETag", etag);
+  }
+  if (!responseIsNotModified(rawReq, rawRes, String(etag))) return false;
+  clearNotModifiedHeaders(rawRes);
+  return true;
+}
+
+function endBufferedResponse(
+  rawReq: IncomingMessage,
+  rawRes: ServerResponse,
+  body: Buffer,
+  realCb: ((...args: any[]) => void) | undefined,
+  origEnd: (...args: any[]) => any,
+): any {
+  const finalBody = maybeCompressResponse(body, rawReq, rawRes);
+  if (applyResponseValidator(rawReq, rawRes, finalBody)) {
+    return typeof realCb === "function" ? origEnd(realCb) : origEnd();
+  }
+  if (!rawRes.headersSent && (rawRes.statusCode || 200) !== 304) {
+    rawRes.setHeader("Content-Length", finalBody.length);
+  }
+  return typeof realCb === "function" ? origEnd(finalBody, realCb) : origEnd(finalBody);
+}
+
 /**
  * Gzip-compress + attach an ETag, and answer a matching conditional GET with
  * a 304 that PRESERVES whichever validators the 200 would have carried
@@ -276,74 +339,9 @@ export function compressionEtagIntercept(rawReq: IncomingMessage, rawRes: Server
 
     const buf = toBuffer(chunk, typeof encodingOrCb === "string" ? encodingOrCb : undefined);
     if (buf) chunks.push(buf);
-    let body = chunks.length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0);
     const realCb = typeof encodingOrCb === "function" ? encodingOrCb : cb;
-    const statusCode = rawRes.statusCode || 200;
-
-    // Compression: body > 1024 bytes AND Accept-Encoding offers gzip AND the
-    // content type is compressible. Applies to ANY response (matches every
-    // route, not status-gated), same as the Python master.
-    //
-    // REAL BUG (found 2026-08-13, tina4cssServed.test.ts): a static-file
-    // response (static.ts) already gzips itself and sets Content-Encoding
-    // before calling res.raw.end() — but that end() is THIS intercepted one,
-    // so without the guard below it gzipped an already-gzipped body a second
-    // time. The client's one layer of automatic decompression then handed
-    // back a still-gzipped blob instead of the real bytes. Skip compression
-    // here whenever an earlier stage already set Content-Encoding.
-    const acceptEncoding = String(rawReq.headers["accept-encoding"] ?? "");
-    const contentTypeHeader = rawRes.getHeader("content-type");
-    const contentType = typeof contentTypeHeader === "string" ? contentTypeHeader : "";
-    const alreadyEncoded = !!rawRes.getHeader("content-encoding");
-    if (!alreadyEncoded && body.length > 1024 && acceptEncoding.includes("gzip") && isCompressibleContentType(contentType)) {
-      body = gzipSync(body, { level: 6 });
-      rawRes.setHeader("Content-Encoding", "gzip");
-      rawRes.setHeader("Vary", "Accept-Encoding");
-    }
-
-    if (statusCode === 200 && body.length > 0) {
-      // ETag: a strong md5 hash (first 16 hex chars) over the FINAL
-      // (post-compression) body, UNLESS a validator is already set — a
-      // static-file response (static.ts) pins its own weak size+mtime ETag
-      // before this ever runs (CE-DEC-02), so this never overwrites it with
-      // a content hash.
-      let etag = rawRes.getHeader("etag");
-      if (!etag) {
-        etag = `"${createHash("md5").update(body).digest("hex").slice(0, 16)}"`;
-        rawRes.setHeader("ETag", etag);
-      }
-
-      // Conditional GET -> 304, preserving whichever validators are set.
-      // If-None-Match takes precedence over If-Modified-Since (RFC 9110 S13.1.3).
-      const ifNoneMatch = String(rawReq.headers["if-none-match"] ?? "");
-      const lastModifiedHeader = rawRes.getHeader("last-modified");
-      const lastModified = typeof lastModifiedHeader === "string" ? lastModifiedHeader : "";
-      let notModified = false;
-      if (ifNoneMatch) {
-        notModified = etagMatchesInm(ifNoneMatch, String(etag));
-      } else if (lastModified) {
-        const ifModifiedSince = String(rawReq.headers["if-modified-since"] ?? "");
-        if (ifModifiedSince) {
-          const modified = Date.parse(lastModified);
-          const since = Date.parse(ifModifiedSince);
-          notModified = !Number.isNaN(modified) && !Number.isNaN(since) && modified <= since;
-        }
-      }
-
-      if (notModified) {
-        rawRes.statusCode = 304;
-        rawRes.removeHeader("Content-Type");
-        rawRes.removeHeader("Content-Encoding");
-        rawRes.removeHeader("Vary");
-        rawRes.removeHeader("Content-Length");
-        return typeof realCb === "function" ? origEnd(realCb) : origEnd();
-      }
-    }
-
-    if (!rawRes.headersSent && statusCode !== 304) {
-      rawRes.setHeader("Content-Length", body.length);
-    }
-    return typeof realCb === "function" ? origEnd(body, realCb) : origEnd(body);
+    const body = chunks.length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0);
+    return endBufferedResponse(rawReq, rawRes, body, realCb, origEnd);
   }) as typeof rawRes.end;
 }
 
