@@ -990,6 +990,10 @@ Only use documented Frond/Twig features — no assumptions about Jinja2/Twig ext
 feature works in one language but not Node.js, that's a **framework bug** — report it, don't work
 around it silently.
 
+### Web Push (Feature 140)
+
+Use `references/web-push.md` for the provider-neutral Web Push contract. Treat it as a standalone outbound integration, not WebSocket or Server-Sent Events. Keep it configuration-first, fail loudly on partial VAPID configuration, and use Node's built-in crypto and fetch without adding a Web Push package.
+
 ## Communication Style
 
 - **Lead with working code** — explanation after, not before.
