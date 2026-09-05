@@ -2785,6 +2785,44 @@ export class Frond {
     return ["", i];
   }
 
+  private collectForTokens(tokens: Token[], start: number): { bodyTokens: Token[]; elseTokens: Token[]; next: number } {
+    const bodyTokens: Token[] = [];
+    const elseTokens: Token[] = [];
+    let inElse = false;
+    let forDepth = 0;
+    let ifDepth = 0;
+    let i = start + 1;
+    while (i < tokens.length) {
+      const token = tokens[i];
+      if (token[0] !== "BLOCK") {
+        (inElse ? elseTokens : bodyTokens).push(token);
+        i++;
+        continue;
+      }
+      const [tagContent] = stripTag(token[1]);
+      const tag = tagContent.split(/\s+/)[0] || "";
+      if (tag === "for") forDepth++;
+      else if (tag === "endfor" && forDepth > 0) forDepth--;
+      else if (tag === "endfor") return { bodyTokens, elseTokens, next: i + 1 };
+      else if (tag === "if") ifDepth++;
+      else if (tag === "endif") ifDepth--;
+      else if (tag === "else" && forDepth === 0 && ifDepth === 0) {
+        inElse = true;
+        i++;
+        continue;
+      }
+      (inElse ? elseTokens : bodyTokens).push(token);
+      i++;
+    }
+    return { bodyTokens, elseTokens, next: i };
+  }
+
+  private forItems(iterable: unknown): { items: unknown[]; isDict: boolean } {
+    const isDict = typeof iterable === "object" && iterable !== null && !Array.isArray(iterable);
+    if (isDict) return { items: Object.entries(iterable as Record<string, unknown>), isDict: true };
+    return { items: Array.isArray(iterable) ? iterable : [], isDict: false };
+  }
+
   private handleFor(tokens: Token[], start: number, context: Record<string, unknown>): [string, number] {
     const [content] = stripTag(tokens[start][1]);
     const forMatch = content.match(/^for\s+(\w+)(?:\s*,\s*(\w+))?\s+in\s+(.+)/);
@@ -2792,131 +2830,60 @@ export class Frond {
 
     const var1 = forMatch[1];
     const var2 = forMatch[2] || null;
-    const iterableExpr = forMatch[3].trim();
-
-    // Collect body and else tokens
-    const bodyTokens: Token[] = [];
-    const elseTokens: Token[] = [];
-    let inElse = false;
-    let forDepth = 0;
-    let ifDepth = 0;
-    let i = start + 1;
-
-    while (i < tokens.length) {
-      const [ttype, raw] = tokens[i];
-      if (ttype === "BLOCK") {
-        const [tagContent] = stripTag(raw);
-        const tag = tagContent.split(/\s+/)[0] || "";
-
-        if (tag === "for") {
-          forDepth++;
-          (inElse ? elseTokens : bodyTokens).push(tokens[i]);
-        } else if (tag === "endfor" && forDepth > 0) {
-          forDepth--;
-          (inElse ? elseTokens : bodyTokens).push(tokens[i]);
-        } else if (tag === "endfor" && forDepth === 0) {
-          i++;
-          break;
-        } else if (tag === "if") {
-          ifDepth++;
-          (inElse ? elseTokens : bodyTokens).push(tokens[i]);
-        } else if (tag === "endif") {
-          ifDepth--;
-          (inElse ? elseTokens : bodyTokens).push(tokens[i]);
-        } else if (tag === "else" && forDepth === 0 && ifDepth === 0) {
-          inElse = true;
-        } else {
-          (inElse ? elseTokens : bodyTokens).push(tokens[i]);
-        }
-      } else {
-        (inElse ? elseTokens : bodyTokens).push(tokens[i]);
-      }
-      i++;
-    }
+    const { bodyTokens, elseTokens, next: i } = this.collectForTokens(tokens, start);
 
     // Evaluate iterable
-    const iterable = evalExpr(iterableExpr, context);
+    const iterable = evalExpr(forMatch[3].trim(), context);
+    const { items, isDict } = this.forItems(iterable);
+    if (items.length === 0) return [elseTokens.length ? this.renderTokens([...elseTokens], context) : "", i];
 
-    if (!iterable || (Array.isArray(iterable) && iterable.length === 0) ||
-        (typeof iterable === "object" && !Array.isArray(iterable) && Object.keys(iterable as object).length === 0)) {
-      if (elseTokens.length > 0) {
-        return [this.renderTokens([...elseTokens], context), i];
-      }
-      return ["", i];
-    }
-
-    // Iterate
     const output: string[] = [];
-    const isDict = typeof iterable === "object" && !Array.isArray(iterable);
-    const items = isDict
-      ? Object.entries(iterable as Record<string, unknown>)
-      : Array.isArray(iterable) ? iterable : [];
-    const total = items.length;
 
     // Reusable loop object — mutated each iteration to avoid allocation
-    const loopObj = {
+    const loopObj: Record<string, unknown> = {
       index: 0,
       index0: 0,
       first: false,
       last: false,
-      length: total,
+      length: items.length,
       revindex: 0,
       revindex0: 0,
       even: false,
       odd: false,
     };
 
-    for (let idx = 0; idx < total; idx++) {
+    for (let idx = 0; idx < items.length; idx++) {
       const item = items[idx];
-
-      // Update loop object in-place
       loopObj.index = idx + 1;
       loopObj.index0 = idx;
       loopObj.first = idx === 0;
-      loopObj.last = idx === total - 1;
-      loopObj.revindex = total - idx;
-      loopObj.revindex0 = total - idx - 1;
+      loopObj.last = idx === items.length - 1;
+      loopObj.revindex = items.length - idx;
+      loopObj.revindex0 = items.length - idx - 1;
       loopObj.even = (idx + 1) % 2 === 0;
       loopObj.odd = (idx + 1) % 2 !== 0;
-
-      // Lazy overlay context: reads from local overrides first, then parent
       const locals: Record<string, unknown> = { loop: loopObj };
-
       if (isDict) {
         const [key, value] = item as [string, unknown];
         locals[var1] = key;
         if (var2) locals[var2] = value;
+      } else if (var2) {
+        locals[var1] = idx;
+        locals[var2] = item;
       } else {
-        if (var2) {
-          locals[var1] = idx;
-          locals[var2] = item;
-        } else {
-          locals[var1] = item;
-        }
+        locals[var1] = item;
       }
-
       const loopCtx = new Proxy(locals, {
-        get(target, prop: string) {
-          if (prop in target) return target[prop];
-          return (context as Record<string, unknown>)[prop];
-        },
-        set(target, prop: string, value) {
-          target[prop] = value;
-          return true;
-        },
-        has(target, prop: string) {
-          return prop in target || prop in context;
-        },
-        ownKeys() {
-          return [...new Set([...Object.keys(locals), ...Object.keys(context)])];
-        },
+        get(target, prop: string) { return prop in target ? target[prop] : context[prop]; },
+        set(target, prop: string, value) { target[prop] = value; return true; },
+        has(target, prop: string) { return prop in target || prop in context; },
+        ownKeys() { return [...new Set([...Object.keys(locals), ...Object.keys(context)])]; },
         getOwnPropertyDescriptor(target, prop: string) {
           if (prop in target) return { configurable: true, enumerable: true, value: target[prop] };
-          if (prop in context) return { configurable: true, enumerable: true, value: (context as Record<string, unknown>)[prop] };
+          if (prop in context) return { configurable: true, enumerable: true, value: context[prop] };
           return undefined;
         },
       }) as Record<string, unknown>;
-
       output.push(this.renderTokens([...bodyTokens], loopCtx));
     }
 
