@@ -185,37 +185,51 @@ export class Ai {
     if (!Array.isArray(content) || content.length === 0) {
       throw new AiConfigError("AI message content must be a string or a non-empty list of parts");
     }
-    for (const part of content) {
-      if (!part || typeof part !== "object" || Array.isArray(part)) {
-        throw new AiConfigError("AI content part must be an object with type and text/source");
-      }
-      const record = part as Record<string, unknown>;
-      const partType = record.type;
-      if (partType === "text") {
-        if (typeof record.text !== "string") {
-          throw new AiConfigError("AI text content part requires a string 'text' field");
-        }
-      } else if (partType === "image") {
-        if (typeof record.source !== "string" || record.source.length === 0) {
-          throw new AiConfigError("AI image content part requires a non-empty string 'source' field");
-        }
-        if (!record.source.startsWith("data:") && !record.source.startsWith("https://")) {
-          throw new AiConfigError("AI image source must be a data: URI or an https:// URL");
-        }
-        if (record.source.startsWith("data:") && !/^data:[^;,\s]+;base64,[A-Za-z0-9+/=]+$/.test(record.source)) {
-          throw new AiConfigError("AI image data URI must be data:<media_type>;base64,<payload>");
-        }
-      } else if (partType === "tool_result") {
-        if (typeof record.tool_use_id !== "string" || record.tool_use_id.length === 0) {
-          throw new AiConfigError("AI tool_result part requires a non-empty string 'tool_use_id'");
-        }
-        if (typeof record.content !== "string") {
-          throw new AiConfigError("AI tool_result part requires a string 'content'");
-        }
-      } else {
-        throw new AiConfigError(`AI content part has unknown type '${String(partType)}'`);
-      }
+    for (const part of content) this.validateContentPart(part);
+  }
+
+  private static validateContentPart(part: unknown): void {
+    if (!part || typeof part !== "object" || Array.isArray(part)) {
+      throw new AiConfigError("AI content part must be an object with type and text/source");
     }
+    const record = part as Record<string, unknown>;
+    switch (record.type) {
+      case "text":
+        this.validateTextPart(record);
+        return;
+      case "image":
+        this.validateImagePart(record);
+        return;
+      case "tool_result":
+        this.validateToolResultPart(record);
+        return;
+      default:
+        throw new AiConfigError(`AI content part has unknown type '${String(record.type)}'`);
+    }
+  }
+
+  private static validateTextPart(record: Record<string, unknown>): void {
+    if (typeof record.text !== "string") throw new AiConfigError("AI text content part requires a string 'text' field");
+  }
+
+  private static validateImagePart(record: Record<string, unknown>): void {
+    const source = record.source;
+    if (typeof source !== "string" || source.length === 0) {
+      throw new AiConfigError("AI image content part requires a non-empty string 'source' field");
+    }
+    if (!source.startsWith("data:") && !source.startsWith("https://")) {
+      throw new AiConfigError("AI image source must be a data: URI or an https:// URL");
+    }
+    if (source.startsWith("data:") && !/^data:[^;,\s]+;base64,[A-Za-z0-9+/=]+$/.test(source)) {
+      throw new AiConfigError("AI image data URI must be data:<media_type>;base64,<payload>");
+    }
+  }
+
+  private static validateToolResultPart(record: Record<string, unknown>): void {
+    if (typeof record.tool_use_id !== "string" || record.tool_use_id.length === 0) {
+      throw new AiConfigError("AI tool_result part requires a non-empty string 'tool_use_id'");
+    }
+    if (typeof record.content !== "string") throw new AiConfigError("AI tool_result part requires a string 'content'");
   }
 
   /**
