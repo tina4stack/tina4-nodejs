@@ -88,6 +88,7 @@ const BLOCK_TAG_ENDS: Record<string, string> = {
   spaceless: "endspaceless",
 };
 
+
 /**
  * Serialize a value to compact JSON text that is always valid JSON.
  *
@@ -273,6 +274,13 @@ function renderDump(value: unknown): SafeString {
 
 type TokenType = "TEXT" | "VAR" | "BLOCK" | "COMMENT";
 type Token = [TokenType, string];
+type BlockHandlerResult = { next: number; output?: string };
+type BlockHandler = (
+  tokens: Token[],
+  start: number,
+  content: string,
+  context: Record<string, unknown>,
+) => BlockHandlerResult;
 
 // ── Pre-compiled Regexes (module level) ────────────────────────
 
@@ -1781,6 +1789,7 @@ export class Frond {
   private _allowedVars: Set<string> | null;
   private fragmentCache: Map<string, [string, number]>;
   private _autoEscape: boolean;
+  private readonly blockHandlers: Record<string, BlockHandler>;
   /**
    * Token pre-compilation cache for file templates.
    *
@@ -1812,6 +1821,47 @@ export class Frond {
     this._allowedVars = null;
     this.fragmentCache = new Map();
     this._autoEscape = true;
+    this.blockHandlers = {
+      if: (tokens, start, _content, context) => {
+        const [output, next] = this.handleIf(tokens, start, context);
+        return { output, next };
+      },
+      for: (tokens, start, _content, context) => {
+        const [output, next] = this.handleFor(tokens, start, context);
+        return { output, next };
+      },
+      set: (tokens, start, content, context) => {
+        if (!content.includes("=")) return { next: this.handleSetBlock(tokens, start, context) };
+        this.handleSet(content, context);
+        return { next: start + 1 };
+      },
+      include: (_tokens, start, content, context) => ({ output: this.handleInclude(content, context), next: start + 1 }),
+      macro: (tokens, start, _content, context) => ({ next: this.handleMacro(tokens, start, context) }),
+      import: (_tokens, start, content, context) => {
+        this.handleImportAs(content, context);
+        return { next: start + 1 };
+      },
+      from: (_tokens, start, content, context) => {
+        this.handleFromImport(content, context);
+        return { next: start + 1 };
+      },
+      cache: (tokens, start, _content, context) => {
+        const [output, next] = this.handleCache(tokens, start, context);
+        return { output, next };
+      },
+      live: (tokens, start, _content, context) => {
+        const [output, next] = this.handleLive(tokens, start, context);
+        return { output, next };
+      },
+      spaceless: (tokens, start, _content, context) => {
+        const [output, next] = this.handleSpaceless(tokens, start, context);
+        return { output, next };
+      },
+      autoescape: (tokens, start, _content, context) => {
+        const [output, next] = this.handleAutoescape(tokens, start, context);
+        return { output, next };
+      },
+    };
 
     // Built-in global functions
     this.globals.formToken = (descriptor?: string) => _generateFormToken(descriptor || "");
@@ -2231,6 +2281,25 @@ export class Frond {
     return this.renderTokens(tokenize(result), context);
   }
 
+  private dispatchBlock(
+    tokens: Token[],
+    start: number,
+    content: string,
+    tag: string,
+    context: Record<string, unknown>,
+  ): BlockHandlerResult {
+    if (!this.tagPermitted(tag)) return { next: this.skipDeniedTag(tokens, start, tag, content) };
+    const handler = this.blockHandlers[tag];
+    if (handler) return handler(tokens, start, content, context);
+    if (tag === "block" || tag === "endblock" || tag === "extends") return { next: start + 1 };
+    if (tag !== "" && !TERMINATOR_TAGS.has(tag)) {
+      throw new Error(
+        `Frond: unknown tag "${tag}" -- known tags are: ${[...KNOWN_TAGS].sort().join(", ")}`,
+      );
+    }
+    return { next: start + 1 };
+  }
+
   private renderTokens(tokens: Token[], context: Record<string, unknown>): string {
     // Expose this instance's filter engine to the module-level evalExpr so a
     // filter pipe resolves at any expression depth with the right (custom)
@@ -2276,75 +2345,21 @@ export class Frond {
           tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(LEADING_WS_RE, "")];
         }
 
-        if (!this.tagPermitted(tag)) {
-          // ONE sandbox gate for the whole tag vocabulary. Previously only if, for,
-          // set and include were checked, so every other tag ignored the allow-list
-          // -- {% autoescape false %} could switch escaping off from inside a
-          // sandbox whose tags were restricted to something else entirely.
-          i = this.skipDeniedTag(tokens, i, tag, content);
-        } else if (tag === "if") {
-          const [result, skip] = this.handleIf(tokens, i, context);
+        // Keep the two hottest block types on the direct path. The dispatcher
+        // remains responsible for sandboxed/rare tags, while ordinary loops and
+        // conditionals avoid an extra handler lookup on every iteration.
+        if (tag === "if" && this.tagPermitted(tag)) {
+          const [result, next] = this.handleIf(tokens, i, context);
           output.push(result);
-          i = skip;
-        } else if (tag === "for") {
-          const [result, skip] = this.handleFor(tokens, i, context);
+          i = next;
+        } else if (tag === "for" && this.tagPermitted(tag)) {
+          const [result, next] = this.handleFor(tokens, i, context);
           output.push(result);
-          i = skip;
-        } else if (tag === "set") {
-          // An assignment has an "="; without one this is the BLOCK form,
-          // {% set name %}...{% endset %}, which captures its rendered body. A
-          // bare includes() is exact here, not a shortcut: the block form's tag
-          // content is only ever "set <name>", so an "=" anywhere -- even inside
-          // a quoted value like {% set m = "a = b" %} -- means assignment.
-          if (!content.includes("=")) {
-            i = this.handleSetBlock(tokens, i, context);
-          } else {
-            this.handleSet(content, context);
-            i++;
-          }
-        } else if (tag === "include") {
-          const result = this.handleInclude(content, context);
-          output.push(result);
-          i++;
-        } else if (tag === "macro") {
-          const skip = this.handleMacro(tokens, i, context);
-          i = skip;
-        } else if (tag === "import") {
-          this.handleImportAs(content, context);
-          i++;
-        } else if (tag === "from") {
-          this.handleFromImport(content, context);
-          i++;
-        } else if (tag === "cache") {
-          const [result, skip] = this.handleCache(tokens, i, context);
-          output.push(result);
-          i = skip;
-        } else if (tag === "live") {
-          const [result, skip] = this.handleLive(tokens, i, context);
-          output.push(result);
-          i = skip;
-        } else if (tag === "spaceless") {
-          const [result, skip] = this.handleSpaceless(tokens, i, context);
-          output.push(result);
-          i = skip;
-        } else if (tag === "autoescape") {
-          const [result, skip] = this.handleAutoescape(tokens, i, context);
-          output.push(result);
-          i = skip;
-        } else if (tag === "block" || tag === "endblock" || tag === "extends") {
-          i++; // Already handled
+          i = next;
         } else {
-          i++;
-          if (tag !== "" && !TERMINATOR_TAGS.has(tag)) {
-            throw new Error(
-              `Frond: unknown tag "${tag}" -- known tags are: ${[...KNOWN_TAGS].sort().join(", ")}`,
-            );
-          }
-          // An empty tag ({%  %}) or a stray terminator (an {% endif %} with
-          // no {% if %}): no output.
-          // Malformed, but it has always rendered nothing, and nothing is the
-          // safe answer -- unlike an unknown tag it cannot expose content that
-          // was meant to be gated.
+          const block = this.dispatchBlock(tokens, i, content, tag, context);
+          if (block.output !== undefined) output.push(block.output);
+          i = block.next;
         }
 
         if (stripA && i < tokens.length && tokens[i][0] === "TEXT") {
