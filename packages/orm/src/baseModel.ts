@@ -1713,167 +1713,9 @@ export class BaseModel {
     // Post._processForeignKeys() never ran. _applyFkRegistry() then merges the
     // registered hasMany entries onto each model.
     BaseModel._processAllForeignKeys();
-
-    // Group includes: top-level and nested
-    const topLevel: Record<string, string[]> = {};
-    for (const inc of include) {
-      const parts = inc.split(".", 2);
-      const relName = parts[0];
-      if (!topLevel[relName]) {
-        topLevel[relName] = [];
-      }
-      if (parts.length > 1) {
-        topLevel[relName].push(parts[1]);
-      }
-    }
-
+    const topLevel = groupIncludedRelations(include);
     for (const [relName, nested] of Object.entries(topLevel)) {
-      // Find the relationship definition.
-      //
-      // Include names are resolved case-insensitively against each candidate
-      // relation. Accepted forms (for a relation to model "Post" on table "posts"):
-      //   - the model name           → "Post" / "post"
-      //   - the auto/related key     → "post" (singular) or "posts" (when
-      //                                 TINA4_ORM_PLURAL_TABLE_NAMES is enabled)
-      //   - the table name           → "posts"
-      // All matching is lower-cased so "Post", "post" and "posts" all resolve.
-      const want = relName.toLowerCase();
-      let relDef: RelationshipDefinition | undefined;
-      let relType: "hasOne" | "hasMany" | "belongsTo" | null = null;
-
-      const matchesModel = (r: RelationshipDefinition): boolean => {
-        const base = r.model.toLowerCase();
-        const related = BaseModel._modelRegistry[r.model];
-        const table = related?.tableName?.toLowerCase();
-        // Outlier F: an FK-auto-wired has-many carries its derived key
-        // (declaring class lowercased + "s", or relatedName) — match it so
-        // include: ["posts"] resolves to the wired relation regardless of the
-        // related table name.
-        const rel = r.relatedName?.toLowerCase();
-        return (
-          base === want ||
-          base + "s" === want ||
-          (rel !== undefined && rel === want) ||
-          (table !== undefined && table === want)
-        );
-      };
-
-      if (ModelClass.hasOne) {
-        relDef = ModelClass.hasOne.find(matchesModel);
-        if (relDef) relType = "hasOne";
-      }
-      if (!relDef && ModelClass.hasMany) {
-        relDef = ModelClass.hasMany.find(matchesModel);
-        if (relDef) relType = "hasMany";
-      }
-      if (!relDef && ModelClass.belongsTo) {
-        relDef = ModelClass.belongsTo.find(matchesModel);
-        if (relDef) relType = "belongsTo";
-      }
-
-      if (!relDef || !relType) {
-        // Don't silently skip — a typo'd or unknown include name is almost
-        // always a developer mistake. Surface it so it's visible.
-        Log.warning(
-          `eager-load: include "${relName}" did not match any relationship on ` +
-            `${ModelClass.name} (table "${ModelClass.tableName}"). ` +
-            `Accepted forms are the related model name, its singular/plural ` +
-            `key, or the related table name (case-insensitive).`,
-        );
-        continue;
-      }
-
-      const relatedClass = BaseModel._modelRegistry[relDef.model];
-      if (!relatedClass) continue;
-
-      const db = relatedClass.getDb();
-      const fk = relDef.foreignKey;
-
-      if (relType === "hasOne" || relType === "hasMany") {
-        const pk = ModelClass.getPkField();
-        const pkValues = instances
-          .map((inst) => inst[pk])
-          .filter((v) => v !== undefined && v !== null);
-        if (pkValues.length === 0) continue;
-
-        // REL-EAGER-UNBOUNDED: chunk the parent PKs so the IN list stays bounded
-        // (each chunk is one query). adapterQuery is uncapped, so no row cap.
-        const related: BaseModel[] = [];
-        for (const pkChunk of _chunk(pkValues, EAGER_IN_CHUNK)) {
-          const placeholders = pkChunk.map(() => "?").join(",");
-          let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${fk}" IN (${placeholders})`;
-          if (relatedClass.softDelete) {
-            sql += ` AND is_deleted = 0`;
-          }
-          const rows = await adapterQuery(db, sql, pkChunk);
-          for (const row of rows) related.push(new relatedClass(row as Record<string, unknown>));
-        }
-
-        // Eager load nested
-        if (nested.length > 0 && related.length > 0) {
-          await relatedClass._eagerLoad(related, nested);
-        }
-
-        // Group by FK — fk is a DB column name, resolve to JS property name on the related model
-        const relatedReverseMap = relatedClass.getReverseMapping();
-        const fkProp = relatedReverseMap[fk] ?? fk;
-        const grouped: Record<string, BaseModel[]> = {};
-        for (const record of related) {
-          const fkVal = _joinKey(record[fkProp]);
-          if (!grouped[fkVal]) grouped[fkVal] = [];
-          grouped[fkVal].push(record);
-        }
-
-        for (const inst of instances) {
-          const pkVal = _joinKey(inst[pk]);
-          const records = grouped[pkVal] || [];
-          if (relType === "hasOne") {
-            inst._relCache[relName] = records[0] ?? null;
-          } else {
-            inst._relCache[relName] = records;
-          }
-        }
-      } else if (relType === "belongsTo") {
-        // fk is a DB column name on the current model — resolve to JS property name
-        const ownerReverseMap = ModelClass.getReverseMapping();
-        const fkProp = ownerReverseMap[fk] ?? fk;
-        const fkValues = [...new Set(
-          instances
-            .map((inst) => inst[fkProp])
-            .filter((v) => v !== undefined && v !== null),
-        )];
-        if (fkValues.length === 0) continue;
-
-        const relatedPk = relatedClass.getPkField();
-        const relatedPkCol = relatedClass.getPkColumn();
-        // REL-EAGER-UNBOUNDED: chunk the FK values so the IN list stays bounded.
-        const related: BaseModel[] = [];
-        for (const fkChunk of _chunk(fkValues, EAGER_IN_CHUNK)) {
-          const placeholders = fkChunk.map(() => "?").join(",");
-          let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${relatedPkCol}" IN (${placeholders})`;
-          if (relatedClass.softDelete) {
-            sql += ` AND is_deleted = 0`;
-          }
-          const rows = await adapterQuery(db, sql, fkChunk);
-          for (const row of rows) related.push(new relatedClass(row as Record<string, unknown>));
-        }
-
-        if (nested.length > 0 && related.length > 0) {
-          await relatedClass._eagerLoad(related, nested);
-        }
-
-        const lookup: Record<string, BaseModel> = {};
-        for (const record of related) {
-          lookup[_joinKey(record[relatedPk])] = record;
-        }
-
-        for (const inst of instances) {
-          const fkVal = inst[fkProp];
-          inst._relCache[relName] = fkVal !== undefined && fkVal !== null
-            ? lookup[_joinKey(fkVal)] ?? null
-            : null;
-        }
-      }
+      await eagerLoadRelation(instances, ModelClass, relName, nested);
     }
   }
 
@@ -1977,6 +1819,132 @@ function serializeLoadedRelations(instance: BaseModel, model: typeof BaseModel, 
     const key = _pluralRelKeys() ? base + "s" : base;
     if (instance[key] !== undefined) result[key] = instance[key];
   }
+}
+
+type EagerRelation = {
+  definition: RelationshipDefinition;
+  type: "hasOne" | "hasMany" | "belongsTo";
+};
+
+function findEagerRelation(model: typeof BaseModel, name: string): EagerRelation | undefined {
+  const want = name.toLowerCase();
+  const matches = (relation: RelationshipDefinition): boolean => {
+    const base = relation.model.toLowerCase();
+    const related = BaseModel._modelRegistry[relation.model];
+    const table = related?.tableName?.toLowerCase();
+    const relatedName = relation.relatedName?.toLowerCase();
+    return base === want || base + "s" === want || relatedName === want || table === want;
+  };
+  const candidates: Array<[RelationshipDefinition[] | undefined, EagerRelation["type"]]> = [
+    [model.hasOne, "hasOne"],
+    [model.hasMany, "hasMany"],
+    [model.belongsTo, "belongsTo"],
+  ];
+  for (const [relations, type] of candidates) {
+    const definition = relations?.find(matches);
+    if (definition) return { definition, type };
+  }
+  return undefined;
+}
+
+function relationshipCache(instance: BaseModel): Record<string, unknown> {
+  return (instance as unknown as { _relCache: Record<string, unknown> })._relCache;
+}
+
+function reverseMappedColumn(model: typeof BaseModel, column: string): string {
+  return model.getReverseMapping()[column] ?? column;
+}
+
+async function eagerQueryRelated(
+  relatedClass: typeof BaseModel,
+  column: string,
+  values: unknown[],
+): Promise<BaseModel[]> {
+  const db = (relatedClass as unknown as { getDb(): DatabaseAdapter }).getDb();
+  const related: BaseModel[] = [];
+  for (const chunk of _chunk(values, EAGER_IN_CHUNK)) {
+    const placeholders = chunk.map(() => "?").join(",");
+    let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${column}" IN (${placeholders})`;
+    if (relatedClass.softDelete) sql += " AND is_deleted = 0";
+    const rows = await adapterQuery(db, sql, chunk);
+    for (const row of rows) related.push(new relatedClass(row as Record<string, unknown>));
+  }
+  return related;
+}
+
+async function eagerLoadHasRelation(
+  instances: BaseModel[],
+  model: typeof BaseModel,
+  relatedClass: typeof BaseModel,
+  relationName: string,
+  nested: string[],
+  relation: RelationshipDefinition,
+  type: "hasOne" | "hasMany",
+): Promise<void> {
+  const pk = primaryKeyFields(model)[0];
+  const values = instances.map((instance) => instance[pk]).filter((value) => value !== undefined && value !== null);
+  if (values.length === 0) return;
+  const related = await eagerQueryRelated(relatedClass, relation.foreignKey, values);
+  if (nested.length > 0 && related.length > 0) await relatedClass._eagerLoad(related, nested);
+  const fkProp = reverseMappedColumn(relatedClass, relation.foreignKey);
+  const grouped: Record<string, BaseModel[]> = {};
+  for (const record of related) {
+    const key = _joinKey(record[fkProp]);
+    (grouped[key] ??= []).push(record);
+  }
+  for (const instance of instances) {
+    const records = grouped[_joinKey(instance[pk])] ?? [];
+    relationshipCache(instance)[relationName] = type === "hasOne" ? records[0] ?? null : records;
+  }
+}
+
+async function eagerLoadBelongsToRelation(
+  instances: BaseModel[],
+  model: typeof BaseModel,
+  relatedClass: typeof BaseModel,
+  relationName: string,
+  nested: string[],
+  relation: RelationshipDefinition,
+): Promise<void> {
+  const fkProp = reverseMappedColumn(model, relation.foreignKey);
+  const values = [...new Set(instances.map((instance) => instance[fkProp]).filter((value) => value !== undefined && value !== null))];
+  if (values.length === 0) return;
+  const relatedPk = primaryKeyFields(relatedClass)[0];
+  const relatedPkColumn = relatedClass.getDbColumn(relatedPk);
+  const related = await eagerQueryRelated(relatedClass, relatedPkColumn, values);
+  if (nested.length > 0 && related.length > 0) await relatedClass._eagerLoad(related, nested);
+  const lookup: Record<string, BaseModel> = {};
+  for (const record of related) lookup[_joinKey(record[relatedPk])] = record;
+  for (const instance of instances) {
+    const value = instance[fkProp];
+    relationshipCache(instance)[relationName] = value !== undefined && value !== null
+      ? lookup[_joinKey(value)] ?? null
+      : null;
+  }
+}
+
+async function eagerLoadRelation(
+  instances: BaseModel[],
+  model: typeof BaseModel,
+  relationName: string,
+  nested: string[],
+): Promise<void> {
+  const found = findEagerRelation(model, relationName);
+  if (!found) {
+    Log.warning(
+      `eager-load: include "${relationName}" did not match any relationship on ${model.name} ` +
+      `(table "${model.tableName}"). Accepted forms are the related model name, its ` +
+      `singular/plural key, or the related table name (case-insensitive).`,
+    );
+    return;
+  }
+  const relatedClass = BaseModel._modelRegistry[found.definition.model];
+  if (!relatedClass) return;
+  if (found.type === "belongsTo") {
+    await eagerLoadBelongsToRelation(instances, model, relatedClass, relationName, nested, found.definition);
+    return;
+  }
+  await eagerLoadHasRelation(instances, model, relatedClass, relationName, nested, found.definition, found.type);
 }
 
 /** Whether the adapter can emit engine-specific CREATE TABLE DDL. */
