@@ -1440,6 +1440,55 @@ function numberFormat(
   return decPart ? `${formatted}${decimalPoint}${decPart}` : formatted;
 }
 
+function formatInteger(type: string, arg: unknown): string {
+  const integer = Math.trunc(Number(arg) || 0);
+  if (type === "d" || type === "i") return String(integer);
+  if (type === "x") return integer.toString(16);
+  if (type === "X") return integer.toString(16).toUpperCase();
+  if (type === "o") return integer.toString(8);
+  return integer.toString(2);
+}
+
+function formatDecimal(type: string, precision: number | undefined, arg: unknown): string {
+  const places = precision !== undefined ? precision : 6;
+  if (type === "f" || type === "F") return Number(arg).toFixed(places);
+  if (type === "e" || type === "E") {
+    const out = Number(arg).toExponential(places);
+    return type === "E" ? out.toUpperCase() : out;
+  }
+  return String(Number(arg));
+}
+
+function formatValue(type: string, precision: number | undefined, arg: unknown): string {
+  if (type === "s") return String(arg ?? "");
+  if ("dixXob".includes(type)) return formatInteger(type, arg);
+  if ("fFeEgG".includes(type)) return formatDecimal(type, precision, arg);
+  return String(arg ?? "");
+}
+
+function padFormattedValue(value: string, flags: string | undefined, width: string | undefined): string {
+  if (!width) return value;
+  const targetWidth = parseInt(width, 10);
+  if (value.length >= targetWidth) return value;
+  const padFlags = flags || "";
+  return padFlags.includes("-")
+    ? value.padEnd(targetWidth, " ")
+    : value.padStart(targetWidth, padFlags.includes("0") ? "0" : " ");
+}
+
+function formatMatch(
+  match: string,
+  flags: string | undefined,
+  width: string | undefined,
+  prec: string | undefined,
+  type: string,
+  arg: unknown,
+): string {
+  if (match === "%%") return "%";
+  const precision = prec !== undefined ? parseInt(prec, 10) : undefined;
+  return padFormattedValue(formatValue(type, precision, arg), flags, width);
+}
+
 const BUILTIN_FILTERS: Record<string, FilterFn> = {
   upper: (v) => String(v).toUpperCase(),
   lower: (v) => String(v).toLowerCase(),
@@ -1585,37 +1634,7 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   url_encode: (v) => encodeURIComponent(String(v)),
   format: (v, ...args) => {
     let idx = 0;
-    return String(v).replace(FORMAT_RE, (m, flags, width, prec, type) => {
-      if (m === "%%") return "%";
-      const arg = args[idx++];
-      const p = prec !== undefined ? parseInt(String(prec), 10) : undefined;
-      let out: string;
-      switch (type) {
-        case "s": out = String(arg ?? ""); break;
-        case "d": case "i": out = String(Math.trunc(Number(arg) || 0)); break;
-        case "f": case "F": out = Number(arg).toFixed(p !== undefined ? p : 6); break;
-        case "e": case "E": {
-          out = Number(arg).toExponential(p !== undefined ? p : 6);
-          if (type === "E") out = out.toUpperCase();
-          break;
-        }
-        case "g": case "G": out = String(Number(arg)); break;
-        case "x": out = Math.trunc(Number(arg) || 0).toString(16); break;
-        case "X": out = Math.trunc(Number(arg) || 0).toString(16).toUpperCase(); break;
-        case "o": out = Math.trunc(Number(arg) || 0).toString(8); break;
-        case "b": out = Math.trunc(Number(arg) || 0).toString(2); break;
-        default:  out = String(arg ?? "");
-      }
-      if (width) {
-        const w = parseInt(String(width), 10);
-        if (out.length < w) {
-          const f = String(flags || "");
-          if (f.includes("-")) out = out.padEnd(w, " ");
-          else out = out.padStart(w, f.includes("0") ? "0" : " ");
-        }
-      }
-      return out;
-    });
+    return String(v).replace(FORMAT_RE, (m, flags, width, prec, type) => formatMatch(m, flags, width, prec, type, args[idx++]));
   },
   dump: (v) => JSON.stringify(v),
   formToken: (v?: unknown) => _generateFormToken(v != null ? String(v) : ""),
