@@ -534,159 +534,124 @@ function extendsTarget(source: string): string {
 
 // ── Expression Evaluator ───────────────────────────────────────
 
+function parsePath(expr: string): [string[], boolean[]] {
+  const cachedPath = pathParseCache.get(expr);
+  if (cachedPath) return cachedPath;
+
+  const parts: string[] = [];
+  const fromBracket: boolean[] = [];
+  let current = "";
+  let depth = 0;
+  let inQuote: string | null = null;
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i];
+    if (inQuote) {
+      current += ch;
+      if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inQuote = ch; current += ch; continue; }
+    if (ch === '(') { depth++; current += ch; continue; }
+    if (ch === ')') { depth--; current += ch; continue; }
+    if (ch === '.' && depth === 0) {
+      if (current) { parts.push(current); fromBracket.push(false); }
+      current = "";
+      continue;
+    }
+    if (ch === '[' && depth === 0) {
+      if (current) { parts.push(current); fromBracket.push(false); }
+      current = "";
+      const end = expr.indexOf(']', i + 1);
+      if (end !== -1) {
+        parts.push(expr.slice(i + 1, end));
+        fromBracket.push(true);
+        i = end;
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current) { parts.push(current); fromBracket.push(false); }
+  const parsed: [string[], boolean[]] = [parts, fromBracket];
+  capCache(pathParseCache, MEMO_CACHE_MAX);
+  pathParseCache.set(expr, parsed);
+  return parsed;
+}
+
+function resolveMethodPart(value: unknown, part: string, context: Record<string, unknown>): { matched: boolean; value: unknown } {
+  const methodMatch = part.match(METHOD_CALL_RE);
+  if (!methodMatch || typeof value !== "object" || value === null) return { matched: false, value };
+  const methodName = methodMatch[1];
+  const rawArgs = methodMatch[2] || "";
+  const fn = (value as Record<string, unknown>)[methodName];
+  if (typeof fn !== "function") return { matched: false, value };
+  const args = rawArgs.trim() ? splitArgs(rawArgs).map(a => evalExpr(a.trim(), context)) : [];
+  return { matched: true, value: fn.apply(value, args) };
+}
+
+function resolvePathKey(part: string, isBracket: boolean, context: Record<string, unknown>): string | number {
+  const isQuotedPart = (part.startsWith('"') && part.endsWith('"')) ||
+                       (part.startsWith("'") && part.endsWith("'"));
+  if (isQuotedPart) return part.slice(1, -1);
+  const asNum = parseInt(part, 10);
+  if (!isNaN(asNum) && String(asNum) === part) return asNum;
+  if (isBracket) {
+    const resolved = evalExpr(part, context);
+    return resolved !== undefined ? String(resolved) : part;
+  }
+  return part;
+}
+
+function resolvePathPart(value: unknown, key: string | number): { found: boolean; value: unknown } {
+  if (typeof value !== "object" || value === null) return { found: false, value: null };
+  if (Array.isArray(value) && typeof key === "number") return { found: true, value: value[key] };
+  if (!(key in (value as Record<string, unknown>))) return { found: false, value: null };
+  const member = (value as Record<string, unknown>)[key as string];
+  return { found: true, value: typeof member === "function" ? member.call(value) : member };
+}
+
 function resolveVar(expr: string, context: Record<string, unknown>): unknown {
   expr = expr.trim();
-
-  // String literal
-  if ((expr.startsWith('"') && expr.endsWith('"')) ||
-      (expr.startsWith("'") && expr.endsWith("'"))) {
-    return expr.slice(1, -1);
-  }
-
-  // Numeric literal
-  if (NUMERIC_RE.test(expr)) {
-    return expr.includes(".") ? parseFloat(expr) : parseInt(expr, 10);
-  }
-
-  // Boolean/null literals
+  if ((expr.startsWith('"') && expr.endsWith('"')) || (expr.startsWith("'") && expr.endsWith("'"))) return expr.slice(1, -1);
+  if (NUMERIC_RE.test(expr)) return expr.includes(".") ? parseFloat(expr) : parseInt(expr, 10);
   if (expr === "true") return true;
   if (expr === "false") return false;
   if (expr === "null" || expr === "none" || expr === "None") return null;
-
-  // Array literal [...]
   if (expr.startsWith("[") && expr.endsWith("]")) {
     const inner = expr.slice(1, -1).trim();
-    if (inner === "") return [];
-    const items = splitArgs(inner);
-    return items.map(item => evalExpr(item.trim(), context));
+    return inner === "" ? [] : splitArgs(inner).map(item => evalExpr(item.trim(), context));
   }
 
-  // Dotted path with bracket access — split on . and [...] but not . inside parentheses
-  // Track which parts came from bracket access (need variable resolution)
-  let parts: string[];
-  let fromBracket: boolean[];
-
-  const cachedPath = pathParseCache.get(expr);
-  if (cachedPath) {
-    [parts, fromBracket] = cachedPath;
-  } else {
-    parts = [];
-    fromBracket = [];
-    {
-      let current = "";
-      let depth = 0;
-      let inQuote: string | null = null;
-      for (let i = 0; i < expr.length; i++) {
-        const ch = expr[i];
-        if (inQuote) {
-          current += ch;
-          if (ch === inQuote) inQuote = null;
-          continue;
-        }
-        if (ch === '"' || ch === "'") { inQuote = ch; current += ch; continue; }
-        if (ch === '(') { depth++; current += ch; continue; }
-        if (ch === ')') { depth--; current += ch; continue; }
-        if (ch === '.' && depth === 0) {
-          if (current) { parts.push(current); fromBracket.push(false); }
-          current = "";
-          continue;
-        }
-        if (ch === '[' && depth === 0) {
-          if (current) { parts.push(current); fromBracket.push(false); }
-          current = "";
-          const end = expr.indexOf(']', i + 1);
-          if (end !== -1) {
-            parts.push(expr.slice(i + 1, end));
-            fromBracket.push(true);
-            i = end;
-          }
-          continue;
-        }
-        current += ch;
-      }
-      if (current) { parts.push(current); fromBracket.push(false); }
-    }
-    capCache(pathParseCache, MEMO_CACHE_MAX);
-    pathParseCache.set(expr, [parts, fromBracket]);
-  }
-
+  const [parts, fromBracket] = parsePath(expr);
   let value: unknown = context;
   for (let pi = 0; pi < parts.length; pi++) {
     const part = parts[pi];
     const isBracket = fromBracket[pi];
     if (value === null || value === undefined) return null;
 
-    // Check for method call: name(args)
-    const methodMatch = part.match(METHOD_CALL_RE);
-    if (methodMatch) {
-      const methodName = methodMatch[1];
-      const rawArgs = methodMatch[2] || "";
-      if (typeof value === "object" && value !== null && methodName in (value as Record<string, unknown>)) {
-        const fn = (value as Record<string, unknown>)[methodName];
-        if (typeof fn === "function") {
-          if (rawArgs.trim()) {
-            const argParts = splitArgs(rawArgs);
-            const evalArgs = argParts.map(a => evalExpr(a.trim(), context));
-            value = fn.apply(value, evalArgs);
-          } else {
-            value = fn.call(value);
-          }
-          continue;
-        }
-      }
-      return null;
-    }
-
-    // Slice syntax: value[1:5], value[:10], value[start:end]
-    const isQuotedPart = (part.startsWith('"') && part.endsWith('"')) ||
-                         (part.startsWith("'") && part.endsWith("'"));
-    if (isBracket && part.includes(":") && !isQuotedPart) {
-      const sliceParts = part.split(":", 2);
-      const sStart = sliceParts[0].trim() ? parseInt(String(evalExpr(sliceParts[0].trim(), context)), 10) : undefined;
-      const sEnd = sliceParts[1].trim() ? parseInt(String(evalExpr(sliceParts[1].trim(), context)), 10) : undefined;
-      if (Array.isArray(value)) {
-        value = (value as unknown[]).slice(sStart ?? 0, sEnd);
-      } else if (typeof value === "string") {
-        value = (value as string).slice(sStart ?? 0, sEnd);
-      } else {
-        return null;
-      }
+    const method = resolveMethodPart(value, part, context);
+    if (part.match(METHOD_CALL_RE)) {
+      if (!method.matched) return null;
+      value = method.value;
       continue;
     }
 
-    let key: string | number;
-    // Check if this part came from bracket access and needs variable resolution
-    if (isQuotedPart) {
-      // Quoted string literal — strip quotes
-      key = part.slice(1, -1);
-    } else {
-      const asNum = parseInt(part, 10);
-      if (!isNaN(asNum) && String(asNum) === part) {
-        key = asNum;
-      } else if (isBracket) {
-        // Only resolve as a variable from context for bracket-derived parts
-        const resolved = evalExpr(part, context);
-        key = resolved !== undefined ? String(resolved) : part;
-      } else {
-        // Dot-derived parts or root — use the part name directly as the key
-        key = part;
-      }
+    const isQuotedPart = (part.startsWith('"') && part.endsWith('"')) ||
+                         (part.startsWith("'") && part.endsWith("'"));
+    if (isBracket && part.includes(":") && !isQuotedPart) {
+      const [rawStart, rawEnd] = part.split(":", 2);
+      const start = rawStart.trim() ? parseInt(String(evalExpr(rawStart.trim(), context)), 10) : undefined;
+      const end = rawEnd.trim() ? parseInt(String(evalExpr(rawEnd.trim(), context)), 10) : undefined;
+      if (Array.isArray(value)) value = value.slice(start ?? 0, end);
+      else if (typeof value === "string") value = value.slice(start ?? 0, end);
+      else return null;
+      continue;
     }
 
-    if (typeof value === "object" && value !== null) {
-      if (Array.isArray(value) && typeof key === "number") {
-        value = (value as unknown[])[key];
-      } else if (key in (value as Record<string, unknown>)) {
-        const v = (value as Record<string, unknown>)[key as string];
-        value = typeof v === "function" ? v.call(value) : v;
-      } else {
-        return null;
-      }
-    } else {
-      return null;
-    }
+    const result = resolvePathPart(value, resolvePathKey(part, isBracket, context));
+    if (!result.found) return null;
+    value = result.value;
   }
-
   return value;
 }
 

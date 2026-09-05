@@ -35,6 +35,9 @@ assert("Simple variable", engine.renderString("Hello {{ name }}", { name: "World
 assert("Dotted path", engine.renderString("{{ user.name }}", { user: { name: "Alice" } }) === "Alice");
 assert("Array access", engine.renderString("{{ items[0] }}", { items: ["a", "b", "c"] }) === "a");
 assert("Nested access", engine.renderString("{{ users[0].name }}", { users: [{ name: "Bob" }] }) === "Bob");
+assert("Bracket variable access", engine.renderString("{{ users[index].name }}", { users: [{ name: "Bob" }], index: 0 }) === "Bob");
+assert("Path slice access", engine.renderString('{{ items[1:3] | join(",") }}', { items: [10, 20, 30, 40] }) === "20,30");
+assert("Path method access", engine.renderString('{{ user.greet("!") }}', { user: { greet: (suffix: string) => `hi${suffix}` } }) === "hi!");
 assert("Undefined variable", engine.renderString("{{ missing }}", {}) === "");
 assert("Null variable", engine.renderString("{{ val }}", { val: null }) === "");
 assert("Boolean true", engine.renderString("{{ val }}", { val: true }) === "true");
