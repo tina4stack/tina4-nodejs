@@ -2150,119 +2150,8 @@ export async function startServer(config?: Tina4Config): Promise<{
     console.log(`\n  \x1b[36mCSRF\x1b[0m protection enabled (TINA4_CSRF)`);
   }
 
-  // Initialize ORM if models directory exists (check src/orm/ first, then src/models/)
-  const hasOrmDir = existsSync(ormDir);
-  const hasModelsDir = existsSync(modelsDir);
-  if (hasOrmDir || hasModelsDir) {
-    try {
-      const orm = await import("../../orm/src/index.js");
-      const dbConfig = config?.database ?? {};
-      await orm.initDatabase({
-        type: dbConfig.type ?? "sqlite",
-        path: dbConfig.path ?? "./data/tina4.db",
-      });
-
-      // Discover from src/orm/ (primary) and src/models/ (fallback), merge results
-      let models = hasOrmDir ? await orm.discoverModels(ormDir) : [];
-      if (hasModelsDir) {
-        const extraModels = await orm.discoverModels(modelsDir);
-        // Only add models not already discovered (src/orm/ takes priority)
-        const existingTables = new Set(models.map((m: any) => m.definition.tableName));
-        for (const m of extraModels) {
-          if (!existingTables.has(m.definition.tableName)) {
-            models.push(m);
-          }
-        }
-      }
-      if (models.length > 0) {
-        console.log(`\n  Models discovered:`);
-        await orm.syncModels(models);
-        for (const { definition } of models) {
-          console.log(`    \x1b[35m${definition.tableName}\x1b[0m (${Object.keys(definition.fields).length} fields)`);
-        }
-
-        // Generate auto-CRUD routes ONLY for models that explicitly opted in via
-        // `static autoCrud = true` (the documented opt-in gate; default false). The
-        // server previously generated the 5 CRUD endpoints for every discovered model
-        // regardless of the flag, contradicting the documented contract. (Python's
-        // AutoCrud is opt-in too — via an explicit AutoCrud.register/discover call.)
-        const crudModels = orm.crudEligibleModels(models);
-        const crudRoutes = crudModels.length > 0 ? orm.generateCrudRoutes(crudModels) : [];
-        for (const route of crudRoutes) {
-          // Only add if no file-based route already handles this
-          const existing = router.match(route.method, route.pattern.replace(/\{(\w+)\}/g, "test").replace(/\[(\w+)\]/g, "test"));
-          if (!existing) {
-            router.addRoute(route);
-          }
-        }
-
-        if (crudRoutes.length > 0) {
-          console.log(`\n  Auto-CRUD endpoints:`);
-          for (const route of crudRoutes) {
-            console.log(`    \x1b[33m${route.method.padEnd(7)}\x1b[0m ${route.pattern}`);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn(`\n  ORM not available (install @tina4/orm to enable):`, err);
-    }
-
-    // Auto-run pending migrations on startup — AFTER initDatabase()/model sync,
-    // BEFORE the server listens. Non-breaking: a failure is logged and boot
-    // continues (the helper never throws). Gated on a migrations/ dir + the
-    // TINA4_AUTO_MIGRATE flag (default on) + a resolvable DB adapter.
-    await autoMigrateOnStartup("migrations", base);
-  }
-
-  // Initialize Swagger — gated on TINA4_SWAGGER_ENABLED (default: enabled
-  // in debug mode, off in production). Loading the swagger module also
-  // pulls in route discovery for the generator, so skip the import entirely
-  // when disabled.
-  try {
-    const swagger = await import("../../swagger/src/index.js");
-    // Single source of truth for BOTH the gated routes and the bundled
-    // public/swagger assets (which static serving would otherwise expose).
-    swaggerAssetsEnabled = swagger.swaggerEnabled();
-    if (!swaggerAssetsEnabled) {
-      // Skip the rest of the swagger block when disabled.
-      throw new Error("__swagger_disabled__");
-    }
-
-    // Collect model definitions for schema generation
-    let modelDefs: Array<{ tableName: string; fields: Record<string, unknown> }> = [];
-    try {
-      const orm = await import("../../orm/src/index.js");
-      const allModelDirs = [ormDir, modelsDir].filter((d) => existsSync(d));
-      const seenTables = new Set<string>();
-      for (const dir of allModelDirs) {
-        const discovered = await orm.discoverModels(dir);
-        for (const m of discovered) {
-          if (!seenTables.has(m.definition.tableName)) {
-            modelDefs.push(m.definition);
-            seenTables.add(m.definition.tableName);
-          }
-        }
-      }
-    } catch {
-      // ORM not available, swagger will work without model schemas
-    }
-
-    // Read router.getRoutes() LIVE on every call — never a captured snapshot
-    // (SWAG-NODE-BOOT-SNAPSHOT, ADR-0004). This used to close over a
-    // boot-time `allRoutes` array, so the spec regenerated per request but
-    // over a FROZEN route list: a route registered after boot (hot-reload, or
-    // DevAdmin.register running after this block — see the /__feedback
-    // exclusion above) never appeared. Python/PHP/Ruby always read the live
-    // route table inside their generate() call; this is that same shape.
-    const getSpec = () => swagger.generate(router.getRoutes(), modelDefs as any);
-    const swaggerRoutes = swagger.createSwaggerRoutes(getSpec);
-    for (const route of swaggerRoutes) {
-      router.addRoute(route);
-    }
-  } catch {
-    // Swagger not available
-  }
-
+  await initializeOrm(config, router, base, ormDir, modelsDir);
+  swaggerAssetsEnabled = await configureSwagger(router, ormDir, modelsDir);
   // Register dev admin dashboard routes
   if (DevAdmin.isEnabled()) {
     DevAdmin.register(router);
@@ -2624,4 +2513,130 @@ ${reset}
       });
     });
   });
+}
+async function initializeOrm(
+  config: Tina4Config | undefined,
+  router: Router,
+  base: string,
+  ormDir: string,
+  modelsDir: string,
+): Promise<void> {
+    // Initialize ORM if models directory exists (check src/orm/ first, then src/models/)
+    const hasOrmDir = existsSync(ormDir);
+    const hasModelsDir = existsSync(modelsDir);
+    if (hasOrmDir || hasModelsDir) {
+      try {
+        const orm = await import("../../orm/src/index.js");
+        const dbConfig = config?.database ?? {};
+        await orm.initDatabase({
+          type: dbConfig.type ?? "sqlite",
+          path: dbConfig.path ?? "./data/tina4.db",
+        });
+
+        // Discover from src/orm/ (primary) and src/models/ (fallback), merge results
+        let models = hasOrmDir ? await orm.discoverModels(ormDir) : [];
+        if (hasModelsDir) {
+          const extraModels = await orm.discoverModels(modelsDir);
+          // Only add models not already discovered (src/orm/ takes priority)
+          const existingTables = new Set(models.map((m: any) => m.definition.tableName));
+          for (const m of extraModels) {
+            if (!existingTables.has(m.definition.tableName)) {
+              models.push(m);
+            }
+          }
+        }
+        if (models.length > 0) {
+          console.log(`\n  Models discovered:`);
+          await orm.syncModels(models);
+          for (const { definition } of models) {
+            console.log(`    \x1b[35m${definition.tableName}\x1b[0m (${Object.keys(definition.fields).length} fields)`);
+          }
+
+          // Generate auto-CRUD routes ONLY for models that explicitly opted in via
+          // `static autoCrud = true` (the documented opt-in gate; default false). The
+          // server previously generated the 5 CRUD endpoints for every discovered model
+          // regardless of the flag, contradicting the documented contract. (Python's
+          // AutoCrud is opt-in too — via an explicit AutoCrud.register/discover call.)
+          const crudModels = orm.crudEligibleModels(models);
+          const crudRoutes = crudModels.length > 0 ? orm.generateCrudRoutes(crudModels) : [];
+          for (const route of crudRoutes) {
+            // Only add if no file-based route already handles this
+            const existing = router.match(route.method, route.pattern.replace(/\{(\w+)\}/g, "test").replace(/\[(\w+)\]/g, "test"));
+            if (!existing) {
+              router.addRoute(route);
+            }
+          }
+
+          if (crudRoutes.length > 0) {
+            console.log(`\n  Auto-CRUD endpoints:`);
+            for (const route of crudRoutes) {
+              console.log(`    \x1b[33m${route.method.padEnd(7)}\x1b[0m ${route.pattern}`);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`\n  ORM not available (install @tina4/orm to enable):`, err);
+      }
+
+      // Auto-run pending migrations on startup — AFTER initDatabase()/model sync,
+      // BEFORE the server listens. Non-breaking: a failure is logged and boot
+      // continues (the helper never throws). Gated on a migrations/ dir + the
+      // TINA4_AUTO_MIGRATE flag (default on) + a resolvable DB adapter.
+      await autoMigrateOnStartup("migrations", base);
+    }
+
+}
+
+async function configureSwagger(router: Router, ormDir: string, modelsDir: string): Promise<boolean> {
+  let enabled = false;
+    // Initialize Swagger — gated on TINA4_SWAGGER_ENABLED (default: enabled
+    // in debug mode, off in production). Loading the swagger module also
+    // pulls in route discovery for the generator, so skip the import entirely
+    // when disabled.
+    try {
+      const swagger = await import("../../swagger/src/index.js");
+      // Single source of truth for BOTH the gated routes and the bundled
+      // public/swagger assets (which static serving would otherwise expose).
+      enabled = swagger.swaggerEnabled();
+      if (!swaggerAssetsEnabled) {
+        // Skip the rest of the swagger block when disabled.
+        throw new Error("__swagger_disabled__");
+      }
+
+      // Collect model definitions for schema generation
+      let modelDefs: Array<{ tableName: string; fields: Record<string, unknown> }> = [];
+      try {
+        const orm = await import("../../orm/src/index.js");
+        const allModelDirs = [ormDir, modelsDir].filter((d) => existsSync(d));
+        const seenTables = new Set<string>();
+        for (const dir of allModelDirs) {
+          const discovered = await orm.discoverModels(dir);
+          for (const m of discovered) {
+            if (!seenTables.has(m.definition.tableName)) {
+              modelDefs.push(m.definition);
+              seenTables.add(m.definition.tableName);
+            }
+          }
+        }
+      } catch {
+        // ORM not available, swagger will work without model schemas
+      }
+
+      // Read router.getRoutes() LIVE on every call — never a captured snapshot
+      // (SWAG-NODE-BOOT-SNAPSHOT, ADR-0004). This used to close over a
+      // boot-time `allRoutes` array, so the spec regenerated per request but
+      // over a FROZEN route list: a route registered after boot (hot-reload, or
+      // DevAdmin.register running after this block — see the /__feedback
+      // exclusion above) never appeared. Python/PHP/Ruby always read the live
+      // route table inside their generate() call; this is that same shape.
+      const getSpec = () => swagger.generate(router.getRoutes(), modelDefs as any);
+      const swaggerRoutes = swagger.createSwaggerRoutes(getSpec);
+      for (const route of swaggerRoutes) {
+        router.addRoute(route);
+      }
+    } catch {
+      // Swagger not available
+      }
+
+  return enabled;
 }
