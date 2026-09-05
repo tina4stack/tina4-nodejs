@@ -1209,99 +1209,16 @@ export class BaseModel {
     if (pointFields.length > 0) SQLTranslator.requireSpatial(engine, "PointField");
     if (await adapterTableExists(db, this.tableName)) return this.createSpatialIndexes(db, pointFields);
 
-    // Prefer the adapter's createTable — every adapter implements it and the
-    // async variants (PostgreSQL/MySQL/MSSQL/Firebird) emit engine-aware DDL
-    // (datetime → TIMESTAMP, boolean → native BOOLEAN, auto-increment → SERIAL
-    // etc. on PG). Remap field keys to DB column names if fieldMapping exists.
-    if (typeof db.createTable === "function" || typeof (db as any).createTableAsync === "function") {
-      const mappedFields: Record<string, FieldDefinition> = {};
-      for (const [fieldName, def] of Object.entries(this.fields)) {
-        const dbCol = this.getDbColumn(fieldName);
-        // A callable default (e.g. `default: () => new Date()`) is resolved per-row
-        // in the constructor; it must NOT reach the adapter DDL builder, where it
-        // stringifies to an invalid `DEFAULT () => ...` and silently fails table
-        // creation. Drop the default key so no adapter emits it (parity with Python #61).
-        if (typeof def.default === "function") {
-          const { default: _callableDefault, ...rest } = def;
-          mappedFields[dbCol] = rest;
-        } else {
-          mappedFields[dbCol] = def;
-        }
-      }
-      // SOFTDEL-DEC-02: a softDelete model needs an is_deleted flag column, but
-      // createTable() built the schema from DECLARED fields only — so a
-      // softDelete = true model that never declared is_deleted produced a table
-      // with NO such column, and every soft-delete read/write then errored on
-      // the missing column. syncModels() adds it on boot; createTable() must too.
-      // Inject it (INTEGER 0/1, default 0) unless the model already declares it.
-      if (this.softDelete && !("is_deleted" in mappedFields)) {
-        mappedFields["is_deleted"] = { type: "integer", default: 0 };
-      }
+    if (hasAdapterCreateTable(db)) {
+      const mappedFields = mappedCreateTableFields(this);
+      addSoftDeleteField(this, mappedFields);
       await adapterCreateTable(db, this.tableName, mappedFields);
       return this.createSpatialIndexes(db, pointFields);
     }
 
     // Fallback: build SQL manually (SQLite-only dialect — used only when an
     // adapter lacks createTable, which none currently do).
-    const typeMap: Record<string, string> = {
-      integer: "INTEGER",
-      string: "TEXT",
-      text: "TEXT",
-      number: "REAL",
-      numeric: "REAL",
-      boolean: "INTEGER",
-      datetime: "TEXT",
-    };
-
-    const colDefs: string[] = [];
-    for (const [fieldName, def] of Object.entries(this.fields)) {
-      const dbCol = this.getDbColumn(fieldName);
-      const sqlType = typeMap[def.type] || "TEXT";
-      const parts = [`"${dbCol}" ${sqlType}`];
-      // A COMPOSITE key is declared ONCE, at table level (below). An inline
-      // PRIMARY KEY per column is invalid DDL - SQLite, PostgreSQL and MySQL
-      // all reject two of them in one table.
-      if (def.primaryKey && this.getPkFields().length === 1) parts.push("PRIMARY KEY");
-      if (def.autoIncrement) parts.push("AUTOINCREMENT");
-      if (def.required && !def.primaryKey) parts.push("NOT NULL");
-      // A callable default (e.g. `default: () => new Date()`) is resolved per-row
-      // in the constructor above; it must NOT be emitted into the CREATE TABLE
-      // DDL, where String(fn) stringifies to `DEFAULT () => ...` — invalid SQL
-      // that silently fails table creation (parity with Python #61).
-      if (def.default !== undefined && typeof def.default !== "function") {
-        const dv = typeof def.default === "string" ? `'${def.default}'` : String(def.default);
-        parts.push(`DEFAULT ${dv}`);
-      }
-      colDefs.push(parts.join(" "));
-    }
-
-    // SOFTDEL-DEC-02 (fallback path): inject the is_deleted flag column for a
-    // softDelete model that did not declare it, mirroring the adapter path above.
-    if (this.softDelete) {
-      const dbCols = Object.keys(this.fields).map((f) => this.getDbColumn(f));
-      if (!dbCols.includes("is_deleted")) {
-        colDefs.push(`"is_deleted" INTEGER DEFAULT 0`);
-      }
-    }
-
-    // A COMPOSITE key is declared ONCE, at table level; the per-column inline
-    // form above is suppressed for it, because two inline primary keys is
-    // invalid DDL on every engine.
-    const pkFields = this.getPkFields();
-    if (pkFields.length > 1) {
-      const pkCols = pkFields.map((f) => this.getDbColumn(f));
-      colDefs.push(`PRIMARY KEY (${pkCols.join(", ")})`);
-    }
-
-    const sql = `CREATE TABLE IF NOT EXISTS "${this.tableName}" (${colDefs.join(", ")})`;
-    await adapterStartTransaction(db);
-    try {
-      await adapterExecute(db, sql);
-      await adapterCommit(db);
-    } catch (e) {
-      await adapterRollback(db);
-      throw e;
-    }
+    await createFallbackTable(db, this);
     return true;
   }
 
@@ -2060,5 +1977,95 @@ export class BaseModel {
    */
   clearRelCache(): void {
     this._relCache = {};
+  }
+}
+
+/** Whether the adapter can emit engine-specific CREATE TABLE DDL. */
+function hasAdapterCreateTable(db: DatabaseAdapter): boolean {
+  return typeof db.createTable === "function" || typeof (db as any).createTableAsync === "function";
+}
+
+/**
+ * Map model fields to adapter column names while removing callable defaults.
+ * Callable defaults are resolved per row by the model constructor and must not
+ * be stringified into adapter DDL.
+ */
+function mappedCreateTableFields(model: typeof BaseModel): Record<string, FieldDefinition> {
+  const mapped: Record<string, FieldDefinition> = {};
+  for (const [fieldName, def] of Object.entries(model.fields)) {
+    const dbCol = model.getDbColumn(fieldName);
+    if (typeof def.default === "function") {
+      const { default: _callableDefault, ...rest } = def;
+      mapped[dbCol] = rest;
+    } else {
+      mapped[dbCol] = def;
+    }
+  }
+  return mapped;
+}
+
+/** Add the implicit soft-delete column when a model has not declared it. */
+function addSoftDeleteField(model: typeof BaseModel, fields: Record<string, FieldDefinition>): void {
+  if (model.softDelete && !("is_deleted" in fields)) {
+    fields.is_deleted = { type: "integer", default: 0 };
+  }
+}
+
+function primaryKeyFields(model: typeof BaseModel): string[] {
+  const keys = Object.entries(model.fields)
+    .filter(([, def]) => def.primaryKey)
+    .map(([name]) => name);
+  return keys.length > 0 ? keys : ["id"];
+}
+
+const FALLBACK_COLUMN_TYPES: Record<string, string> = {
+  integer: "INTEGER",
+  string: "TEXT",
+  text: "TEXT",
+  number: "REAL",
+  numeric: "REAL",
+  boolean: "INTEGER",
+  datetime: "TEXT",
+};
+
+function fallbackColumnDefinition(model: typeof BaseModel, fieldName: string, def: FieldDefinition): string {
+  const dbCol = model.getDbColumn(fieldName);
+  const parts = [`"${dbCol}" ${FALLBACK_COLUMN_TYPES[def.type] || "TEXT"}`];
+  if (def.primaryKey && primaryKeyFields(model).length === 1) parts.push("PRIMARY KEY");
+  if (def.autoIncrement) parts.push("AUTOINCREMENT");
+  if (def.required && !def.primaryKey) parts.push("NOT NULL");
+  if (def.default !== undefined && typeof def.default !== "function") {
+    const value = typeof def.default === "string" ? `'${def.default}'` : String(def.default);
+    parts.push(`DEFAULT ${value}`);
+  }
+  return parts.join(" ");
+}
+
+function fallbackPrimaryKeyDefinition(model: typeof BaseModel): string | undefined {
+  const pkFields = primaryKeyFields(model);
+  if (pkFields.length <= 1) return undefined;
+  const pkCols = pkFields.map((fieldName) => model.getDbColumn(fieldName));
+  return `PRIMARY KEY (${pkCols.join(", ")})`;
+}
+
+function fallbackColumnDefinitions(model: typeof BaseModel): string[] {
+  const definitions = Object.entries(model.fields).map(([fieldName, def]) => fallbackColumnDefinition(model, fieldName, def));
+  const dbCols = Object.keys(model.fields).map((fieldName) => model.getDbColumn(fieldName));
+  if (model.softDelete && !dbCols.includes("is_deleted")) definitions.push('"is_deleted" INTEGER DEFAULT 0');
+  const primaryKey = fallbackPrimaryKeyDefinition(model);
+  if (primaryKey) definitions.push(primaryKey);
+  return definitions;
+}
+
+async function createFallbackTable(db: DatabaseAdapter, model: typeof BaseModel): Promise<void> {
+  const definitions = fallbackColumnDefinitions(model);
+  const sql = `CREATE TABLE IF NOT EXISTS "${model.tableName}" (${definitions.join(", ")})`;
+  await adapterStartTransaction(db);
+  try {
+    await adapterExecute(db, sql);
+    await adapterCommit(db);
+  } catch (e) {
+    await adapterRollback(db);
+    throw e;
   }
 }
