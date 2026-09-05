@@ -157,16 +157,85 @@ function sanitizeSecurity(
   });
 }
 
+/**
+ * Shared, mutable state threaded through the per-route builders. Bundled so
+ * `generate()` reads as a flat orchestrator and each helper keeps a single
+ * responsibility (parity with the Python/PHP decomposition of `generate`).
+ */
+interface BuildContext {
+  models: ModelDefinition[];
+  tableToSchema: Map<string, string>;
+  schemes: Record<string, Record<string, unknown>>;
+  defaultScheme: string;
+  includePrefixes: string[];
+  excludePrefixes: string[];
+  refSchemas: Set<string>;
+  usedTags: string[];
+  seenIds: Set<string>;
+}
+
 export function generate(
   routes: RouteDefinition[],
   models: ModelDefinition[] = []
 ): OpenAPISpec {
+  const schemes = resolveSecuritySchemes();
+  const spec: OpenAPISpec = {
+    openapi: resolveOpenApiVersion(),
+    info: buildInfo(),
+    servers: resolveServers(),
+    paths: {},
+    components: {
+      schemas: {},
+      // Configurable security schemes (v3.13.42): bearerFormat via env, optional
+      // apiKey scheme, plus any programmatically-registered schemes (which may
+      // override bearerAuth — e.g. an oauth2 scheme with scopes).
+      securitySchemes: schemes,
+    },
+  };
+
+  // Generate schemas from models, keyed by the model CLASS name ('Item'), which
+  // is the type name a generated client wants — never the tableName ('items').
+  // `tableToSchema` maps a path-inferred tableName back to that schema key so a
+  // POST/PUT request body $ref resolves to the same 'Item' entry.
+  const tableToSchema = new Map<string, string>();
+  buildComponentSchemas(models, spec, tableToSchema);
+
+  const ctx: BuildContext = {
+    models,
+    tableToSchema,
+    schemes,
+    // Default scheme secured routes use when no explicit meta.security is set.
+    defaultScheme: process.env.TINA4_SWAGGER_DEFAULT_SCHEME ?? "bearerAuth",
+    // Path filters (comma-separated raw-path prefixes).
+    includePrefixes: csv(process.env.TINA4_SWAGGER_INCLUDE),
+    excludePrefixes: csv(process.env.TINA4_SWAGGER_EXCLUDE),
+    // Reusable custom schemas referenced by routes via meta.requestSchema/responseSchemas.
+    refSchemas: new Set<string>(),
+    usedTags: [],
+    seenIds: new Set<string>(),
+  };
+
+  // Generate paths from routes
+  for (const route of routes) {
+    buildOperation(route, spec, ctx);
+  }
+
+  buildRefSchemas(spec, ctx.refSchemas);
+  buildTags(spec, ctx.usedTags);
+
+  return spec;
+}
+
+/**
+ * The `info` block: title/version/description, plus optional contact and
+ * license. The app's version defaults to 1.0.0 — NOT the framework's (Node
+ * shipped 0.0.1) — and description to the empty string, not a canned sentence;
+ * both are the settled cross-framework defaults (parity with the Python master),
+ * with TINA4_SWAGGER_VERSION / _DESCRIPTION still overriding.
+ */
+function buildInfo(): OpenAPISpecInfo {
   const info: OpenAPISpecInfo = {
     title: process.env.TINA4_SWAGGER_TITLE ?? "Tina4 API",
-    // The app's version, defaulting to 1.0.0 — NOT the framework's (Node shipped
-    // 0.0.1). description defaults to the empty string, not a canned sentence.
-    // Both are the settled cross-framework defaults (parity with the Python
-    // master); TINA4_SWAGGER_VERSION / _DESCRIPTION still override.
     version: process.env.TINA4_SWAGGER_VERSION ?? "1.0.0",
     description: process.env.TINA4_SWAGGER_DESCRIPTION ?? "",
   };
@@ -190,183 +259,220 @@ export function generate(
     info.license = url ? { name, url } : { name };
   }
 
-  const schemes = resolveSecuritySchemes();
-  const spec: OpenAPISpec = {
-    openapi: resolveOpenApiVersion(),
-    info,
-    servers: resolveServers(),
-    paths: {},
-    components: {
-      schemas: {},
-      // Configurable security schemes (v3.13.42): bearerFormat via env, optional
-      // apiKey scheme, plus any programmatically-registered schemes (which may
-      // override bearerAuth — e.g. an oauth2 scheme with scopes).
-      securitySchemes: schemes,
-    },
-  };
+  return info;
+}
 
-  // Default scheme secured routes use when no explicit meta.security is set.
-  const defaultScheme = process.env.TINA4_SWAGGER_DEFAULT_SCHEME ?? "bearerAuth";
-
-  // Path filters (comma-separated raw-path prefixes).
-  const includePrefixes = csv(process.env.TINA4_SWAGGER_INCLUDE);
-  const excludePrefixes = csv(process.env.TINA4_SWAGGER_EXCLUDE);
-
-  // Reusable custom schemas referenced by routes via meta.requestSchema/responseSchemas.
-  const refSchemas = new Set<string>();
-
-  // Generate schemas from models, keyed by the model CLASS name ('Item'), which
-  // is the type name a generated client wants — never the tableName ('items').
-  // `tableToSchema` maps a path-inferred tableName back to that schema key so a
-  // POST/PUT request body $ref resolves to the same 'Item' entry.
-  const tableToSchema = new Map<string, string>();
+/**
+ * Populate `components.schemas` from ORM models (keyed by the class name) and
+ * record the tableName -> schema-key map used to resolve request-body $refs.
+ */
+function buildComponentSchemas(
+  models: ModelDefinition[],
+  spec: OpenAPISpec,
+  tableToSchema: Map<string, string>
+): void {
   for (const model of models) {
     const schemaKey = schemaNameForModel(model);
     tableToSchema.set(model.tableName, schemaKey);
     spec.components!.schemas![schemaKey] = modelToSchema(model);
   }
+}
 
-  const usedTags: string[] = [];
-  const seenIds = new Set<string>();
+/**
+ * Build ONE path operation for a route and attach it to `spec.paths`, honouring
+ * the include/exclude filter and delegating each part of the operation to a
+ * focused sub-builder (parameters, request body, response schemas, security).
+ */
+function buildOperation(route: RouteDefinition, spec: OpenAPISpec, ctx: BuildContext): void {
+  if (!isIncludedPath(route.pattern, ctx.includePrefixes, ctx.excludePrefixes)) return;
+  const openApiPath = patternToOpenAPI(route.pattern);
+  const method = route.method.toLowerCase();
 
-  // Generate paths from routes
-  for (const route of routes) {
-    if (!isIncludedPath(route.pattern, includePrefixes, excludePrefixes)) continue;
-    const openApiPath = patternToOpenAPI(route.pattern);
-    const method = route.method.toLowerCase();
+  if (!spec.paths[openApiPath]) {
+    spec.paths[openApiPath] = {};
+  }
 
-    if (!spec.paths[openApiPath]) {
-      spec.paths[openApiPath] = {};
+  const tags = route.meta?.tags ?? inferTags(route.pattern);
+  for (const t of tags) {
+    if (!ctx.usedTags.includes(t)) ctx.usedTags.push(t);
+  }
+
+  const operation: Record<string, unknown> = {
+    operationId: uniqueOperationId(method, openApiPath, ctx.seenIds),
+    summary: route.meta?.summary ?? `${route.method} ${route.pattern}`,
+    tags,
+    responses: route.meta?.responses ?? {
+      "200": { description: "Successful response" },
+    },
+  };
+
+  if (route.meta?.description) operation.description = route.meta.description;
+  if (route.meta?.deprecated) operation.deprecated = true;
+
+  const parameters = operationParameters(route, method, ctx.models);
+  if (parameters.length > 0) operation.parameters = parameters;
+
+  operationRequestBody(route, method, operation, ctx);
+  operationResponseSchemas(route, operation, ctx.refSchemas);
+  operationSecurity(route, method, operation, ctx.schemes, ctx.defaultScheme);
+
+  spec.paths[openApiPath][method] = operation;
+}
+
+/**
+ * The operation's parameters: path parameters (each typed token mapped to its
+ * JSON Schema fragment via PARAM_TYPE_SCHEMA — int -> integer, uuid ->
+ * string+format, slug -> string+pattern, ...; an unknown token degrades to
+ * string rather than dropping the parameter), followed by the page/limit/sort
+ * query parameters a GET list endpoint over a known model gets.
+ */
+function operationParameters(
+  route: RouteDefinition,
+  method: string,
+  models: ModelDefinition[]
+): Array<Record<string, unknown>> {
+  let parameters: Array<Record<string, unknown>> = [];
+
+  const pathParams = extractPathParams(route.pattern);
+  if (pathParams.length > 0) {
+    parameters = pathParams.map(({ name, schema }) => ({
+      name,
+      in: "path",
+      required: true,
+      schema,
+    }));
+  }
+
+  // Add query parameters for GET list endpoints
+  if (method === "get" && !route.pattern.includes("[id]") && !route.pattern.includes("[...")) {
+    const modelName = inferModelFromPath(route.pattern);
+    if (modelName && models.some((m) => m.tableName === modelName)) {
+      parameters = [
+        ...parameters,
+        { name: "page", in: "query", schema: { type: "integer", default: 1 } },
+        { name: "limit", in: "query", schema: { type: "integer", default: 20 } },
+        { name: "sort", in: "query", schema: { type: "string" }, description: "Sort fields (prefix with - for descending)" },
+      ];
     }
+  }
 
-    const tags = route.meta?.tags ?? inferTags(route.pattern);
-    for (const t of tags) {
-      if (!usedTags.includes(t)) usedTags.push(t);
-    }
+  return parameters;
+}
 
-    const operation: Record<string, unknown> = {
-      operationId: uniqueOperationId(method, openApiPath, seenIds),
-      summary: route.meta?.summary ?? `${route.method} ${route.pattern}`,
-      tags,
-      responses: route.meta?.responses ?? {
-        "200": { description: "Successful response" },
-      },
+/** A media-type object: the schema, plus meta.example only when one was given.
+ *  Key order (schema, then example) matches the emitted document. */
+function mediaWithExample(schema: unknown, example: unknown): Record<string, unknown> {
+  const media: Record<string, unknown> = { schema };
+  if (example !== undefined) media.example = example;
+  return media;
+}
+
+/**
+ * Attach the request body (and, for a path-inferred model write, its 200
+ * response schema). A registered custom schema $ref (meta.requestSchema) wins,
+ * else the inferred-from-model body (POST/PUT to a resource), else an
+ * example-only body.
+ */
+function operationRequestBody(
+  route: RouteDefinition,
+  method: string,
+  operation: Record<string, unknown>,
+  ctx: BuildContext
+): void {
+  const reqSchemaRef = parseRequestSchema(route.meta?.requestSchema);
+  if (reqSchemaRef && (method === "post" || method === "put" || method === "patch")) {
+    ctx.refSchemas.add(reqSchemaRef.name);
+    const media = mediaWithExample({ $ref: `#/components/schemas/${reqSchemaRef.name}` }, route.meta?.example);
+    operation.requestBody = {
+      content: { [reqSchemaRef.contentType]: media },
     };
-
-    if (route.meta?.description) operation.description = route.meta.description;
-    if (route.meta?.deprecated) operation.deprecated = true;
-
-    // Add path parameters. Each typed token maps to its JSON Schema fragment
-    // (int -> integer, uuid -> string+format, slug -> string+pattern, ...) via
-    // PARAM_TYPE_SCHEMA below, mirroring the Python master's _PARAM_TYPE_SCHEMA
-    // and the router's accepted token set. An unknown token degrades to string
-    // rather than dropping the parameter, and the token never reaches the key.
-    const pathParams = extractPathParams(route.pattern);
-    if (pathParams.length > 0) {
-      operation.parameters = pathParams.map(({ name, schema }) => ({
-        name,
-        in: "path",
-        required: true,
-        schema,
-      }));
-    }
-
-    // Add query parameters for GET list endpoints
-    if (method === "get" && !route.pattern.includes("[id]") && !route.pattern.includes("[...")) {
-      const modelName = inferModelFromPath(route.pattern);
-      if (modelName && models.some((m) => m.tableName === modelName)) {
-        operation.parameters = [
-          ...(operation.parameters as unknown[] ?? []),
-          { name: "page", in: "query", schema: { type: "integer", default: 1 } },
-          { name: "limit", in: "query", schema: { type: "integer", default: 20 } },
-          { name: "sort", in: "query", schema: { type: "string" }, description: "Sort fields (prefix with - for descending)" },
-        ];
-      }
-    }
-
-    // Request body — a registered custom schema $ref (meta.requestSchema) wins,
-    // else the inferred-from-model body (POST/PUT to a resource), else an
-    // example-only body.
-    const reqSchemaRef = parseRequestSchema(route.meta?.requestSchema);
-    if (reqSchemaRef && (method === "post" || method === "put" || method === "patch")) {
-      refSchemas.add(reqSchemaRef.name);
-      const media: Record<string, unknown> = {
-        schema: { $ref: `#/components/schemas/${reqSchemaRef.name}` },
-      };
-      if (route.meta?.example !== undefined) media.example = route.meta.example;
+  } else if (method === "post" || method === "put") {
+    const modelName = inferModelFromPath(route.pattern);
+    const schemaKey = modelName ? ctx.tableToSchema.get(modelName) : undefined;
+    if (schemaKey) {
+      const sref = `#/components/schemas/${schemaKey}`;
       operation.requestBody = {
-        content: { [reqSchemaRef.contentType]: media },
+        required: true,
+        content: { "application/json": mediaWithExample({ $ref: sref }, route.meta?.example) },
       };
-    } else if (method === "post" || method === "put") {
-      const modelName = inferModelFromPath(route.pattern);
-      const schemaKey = modelName ? tableToSchema.get(modelName) : undefined;
-      if (schemaKey) {
-        const sref = `#/components/schemas/${schemaKey}`;
-        const media: Record<string, unknown> = { schema: { $ref: sref } };
-        if (route.meta?.example !== undefined) media.example = route.meta.example;
-        operation.requestBody = {
-          required: true,
-          content: { "application/json": media },
-        };
 
-        // Response documents 200 with the resource schema — parity with the
-        // Python master, which emits ONLY 200 for a model write. The old code
-        // stamped an unconditional 422 and a 201 the generator has no way to know
-        // a given route returns; both were fiction on a path-inferred write. A
-        // route that genuinely answers another code declares it via
-        // meta.responses, which is honoured above and never clobbered here.
-        if (route.meta?.responses === undefined) {
-          operation.responses = {
-            "200": { description: "Successful response", content: { "application/json": { schema: { $ref: sref } } } },
-          };
-        }
-      } else if (route.meta?.example !== undefined) {
-        // Non-model body with an explicit example.
-        operation.requestBody = {
-          content: { "application/json": { schema: inferSchema(route.meta.example), example: route.meta.example } },
+      // Response documents 200 with the resource schema — parity with the
+      // Python master, which emits ONLY 200 for a model write. The old code
+      // stamped an unconditional 422 and a 201 the generator has no way to know
+      // a given route returns; both were fiction on a path-inferred write. A
+      // route that genuinely answers another code declares it via
+      // meta.responses, which is honoured above and never clobbered here.
+      if (route.meta?.responses === undefined) {
+        operation.responses = {
+          "200": { description: "Successful response", content: { "application/json": { schema: { $ref: sref } } } },
         };
       }
+    } else if (route.meta?.example !== undefined) {
+      // Non-model body with an explicit example.
+      operation.requestBody = {
+        content: { "application/json": { schema: inferSchema(route.meta.example), example: route.meta.example } },
+      };
     }
+  }
+}
 
-    // Registered response schemas ($ref) — explicit and authoritative, keyed by status.
-    const respSchemas = parseResponseSchemas(route.meta?.responseSchemas);
-    if (respSchemas.length > 0) {
-      const responses = operation.responses as Record<string, unknown>;
-      for (const { status, name, isList } of respSchemas) {
-        refSchemas.add(name);
-        const sref = `#/components/schemas/${name}`;
-        const schema = isList ? { type: "array", items: { $ref: sref } } : { $ref: sref };
-        responses[status] = {
-          description: status.startsWith("2") ? "Successful response" : "Response",
-          content: { "application/json": { schema } },
-        };
-      }
+/**
+ * Registered response schemas ($ref) — explicit and authoritative, keyed by
+ * status; each maps to the resource, or an array of it when marked as a list.
+ */
+function operationResponseSchemas(
+  route: RouteDefinition,
+  operation: Record<string, unknown>,
+  refSchemas: Set<string>
+): void {
+  const respSchemas = parseResponseSchemas(route.meta?.responseSchemas);
+  if (respSchemas.length > 0) {
+    const responses = operation.responses as Record<string, unknown>;
+    for (const { status, name, isList } of respSchemas) {
+      refSchemas.add(name);
+      const sref = `#/components/schemas/${name}`;
+      const schema = isList ? { type: "array", items: { $ref: sref } } : { $ref: sref };
+      responses[status] = {
+        description: status.startsWith("2") ? "Successful response" : "Response",
+        content: { "application/json": { schema } },
+      };
     }
+  }
+}
 
-    // Security (v3.13.42) — explicit meta.security wins (empty list = explicitly
-    // public); otherwise a secured route gets the default scheme. Scopes are kept
-    // valid (only oauth2/openIdConnect carry them).
-    const hasExplicitSecurity =
-      route.meta?.security !== undefined || (route.meta?.scopes !== undefined && route.meta.scopes.length > 0);
-    if (hasExplicitSecurity) {
-      const normalized = normalizeSecurity(route.meta?.security, route.meta?.scopes);
-      operation.security = normalized.length > 0 ? sanitizeSecurity(normalized, schemes) : [];
-      if (normalized.length > 0) {
-        const responses = operation.responses as Record<string, unknown>;
-        if (!responses["401"]) responses["401"] = { description: "Unauthorized" };
-      }
-    } else if (routeRequiresAuth(route, method)) {
-      const requirements = [{ [defaultScheme]: [] }];
-      if (defaultScheme === "bearerAuth" && schemes.ssoSession) requirements.push({ ssoSession: [] });
-      operation.security = sanitizeSecurity(requirements, schemes);
+/**
+ * Per-route security (v3.13.42). Explicit meta.security wins (empty list =
+ * explicitly public); otherwise a secured route gets the default scheme (plus
+ * ssoSession when bearer + SSO is configured). A secured op also documents a
+ * 401. Scopes are kept valid (only oauth2/openIdConnect carry them).
+ */
+function operationSecurity(
+  route: RouteDefinition,
+  method: string,
+  operation: Record<string, unknown>,
+  schemes: Record<string, Record<string, unknown>>,
+  defaultScheme: string
+): void {
+  const hasExplicitSecurity =
+    route.meta?.security !== undefined || (route.meta?.scopes !== undefined && route.meta.scopes.length > 0);
+  if (hasExplicitSecurity) {
+    const normalized = normalizeSecurity(route.meta?.security, route.meta?.scopes);
+    operation.security = normalized.length > 0 ? sanitizeSecurity(normalized, schemes) : [];
+    if (normalized.length > 0) {
       const responses = operation.responses as Record<string, unknown>;
       if (!responses["401"]) responses["401"] = { description: "Unauthorized" };
     }
-
-    spec.paths[openApiPath][method] = operation;
+  } else if (routeRequiresAuth(route, method)) {
+    const requirements = [{ [defaultScheme]: [] }];
+    if (defaultScheme === "bearerAuth" && schemes.ssoSession) requirements.push({ ssoSession: [] });
+    operation.security = sanitizeSecurity(requirements, schemes);
+    const responses = operation.responses as Record<string, unknown>;
+    if (!responses["401"]) responses["401"] = { description: "Unauthorized" };
   }
+}
 
-  // Registered component schemas referenced via meta.requestSchema/responseSchemas.
+/** Registered component schemas referenced via meta.requestSchema/responseSchemas. */
+function buildRefSchemas(spec: OpenAPISpec, refSchemas: Set<string>): void {
   if (refSchemas.size > 0) {
     const schemas = spec.components!.schemas!;
     for (const name of refSchemas) {
@@ -375,12 +481,13 @@ export function generate(
       }
     }
   }
+}
 
+/** Top-level tags[] from the tags collected across operations (registration order). */
+function buildTags(spec: OpenAPISpec, usedTags: string[]): void {
   if (usedTags.length > 0) {
     spec.tags = usedTags.map((name) => ({ name }));
   }
-
-  return spec;
 }
 
 function routeRequiresAuth(route: RouteDefinition, method: string): boolean {
