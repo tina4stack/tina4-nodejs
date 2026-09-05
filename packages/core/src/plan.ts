@@ -158,6 +158,78 @@ function loadParsed(name: string): { path: string; plan: ParsedPlan } {
   return { path: p, plan: parse(fs.readFileSync(p, "utf-8")) };
 }
 
+function fleshPrompt(title: string, goal: string, existing: string[], prompt: string): { system: string; user: string } {
+  const system =
+    "You are Tina4, a coding planner embedded in the Tina4 dev " +
+    "admin. Return ONLY a JSON array of short imperative step " +
+    "strings (no prose, no code-fences, no numbering). 3-8 steps, " +
+    "each referencing concrete files/routes/migrations. Example: " +
+    '["Create src/orm/Duck.ts with id/name/sighted_at", ' +
+    '"Add migration 001_create_ducks.sql", ' +
+    '"Add GET/POST/PUT/DELETE /api/ducks routes in ' +
+    'src/routes/ducks.ts"]';
+  const parts: string[] = [`Plan title: ${title}`];
+  if (goal) parts.push(`Goal: ${goal}`);
+  if (existing.length) parts.push("Existing steps (don't repeat):\n- " + existing.join("\n- "));
+  if (prompt) parts.push(`Extra context from caller: ${prompt}`);
+  parts.push("Reply with ONLY the JSON array — no explanation, no markdown fences.");
+  return { system, user: parts.join("\n\n") };
+}
+
+async function fetchFleshReply(aiUrl: string, aiModel: string, prompts: { system: string; user: string }): Promise<{ reply: string } | { error: string }> {
+  try {
+    const response = await fetch(aiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: aiModel, stream: false, messages: [
+        { role: "system", content: prompts.system },
+        { role: "user", content: prompts.user },
+      ] }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    const result = await response.json() as Record<string, unknown>;
+    const message = (result.message as Record<string, unknown> | undefined) || {};
+    return { reply: ((message.content as string) || (result.response as string) || "") };
+  } catch (error) {
+    return { error: `AI backend unreachable: ${(error as Error).message}` };
+  }
+}
+
+function parseFleshReply(reply: string): string[] {
+  let body = reply.trim();
+  if (body.startsWith("```")) {
+    body = body.replace(/^`+/, "").replace(/`+$/, "");
+    if (body.toLowerCase().startsWith("json")) body = body.slice(4).trim();
+    body = body.trim();
+  }
+  try {
+    const parsed = JSON.parse(body);
+    if (Array.isArray(parsed)) return parsed.map((step) => String(step).trim()).filter(Boolean);
+  } catch {
+    // Fall back to markdown-style lists below.
+  }
+  const proposed: string[] = [];
+  for (const line of reply.split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.+?)\s*$/);
+    if (match) proposed.push(match[1].trim());
+  }
+  return proposed;
+}
+
+function addFleshSteps(target: string, existing: string[], proposed: string[]): string[] {
+  const existingLc = new Set(existing.map((step) => step.toLowerCase()));
+  const added: string[] = [];
+  for (const step of proposed) {
+    if (existingLc.has(step.toLowerCase())) continue;
+    const result = Plan.addStep(step, target);
+    if (result.ok) {
+      added.push(step);
+      existingLc.add(step.toLowerCase());
+    }
+  }
+  return added;
+}
+
 // ── Plan namespace ────────────────────────────────────────────
 
 export const Plan = {
@@ -453,81 +525,17 @@ export const Plan = {
     const title = currentPlan.title || target;
     const goal = currentPlan.goal || "";
 
-    const systemPrompt =
-      "You are Tina4, a coding planner embedded in the Tina4 dev " +
-      "admin. Return ONLY a JSON array of short imperative step " +
-      "strings (no prose, no code-fences, no numbering). 3-8 steps, " +
-      "each referencing concrete files/routes/migrations. Example: " +
-      '["Create src/orm/Duck.ts with id/name/sighted_at", ' +
-      '"Add migration 001_create_ducks.sql", ' +
-      '"Add GET/POST/PUT/DELETE /api/ducks routes in ' +
-      'src/routes/ducks.ts"]';
-
-    const userParts: string[] = [`Plan title: ${title}`];
-    if (goal) userParts.push(`Goal: ${goal}`);
-    if (existing.length) userParts.push("Existing steps (don't repeat):\n- " + existing.join("\n- "));
-    if (prompt) userParts.push(`Extra context from caller: ${prompt}`);
-    userParts.push("Reply with ONLY the JSON array — no explanation, no markdown fences.");
-
     const aiUrl = process.env.TINA4_AI_URL || "http://localhost:11437/api/chat";
     const aiModel = process.env.TINA4_AI_MODEL || "qwen2.5-coder:14b";
-
-    let result: Record<string, unknown>;
-    try {
-      const resp = await fetch(aiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: aiModel,
-          stream: false,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userParts.join("\n\n") },
-          ],
-        }),
-        signal: AbortSignal.timeout(120_000),
-      });
-      result = (await resp.json()) as Record<string, unknown>;
-    } catch (e) {
-      return { ok: false, error: `AI backend unreachable: ${(e as Error).message}` };
-    }
-
-    const msg = (result.message as Record<string, unknown> | undefined) || {};
-    const reply = (msg.content as string) || (result.response as string) || "";
-    let body = reply.trim();
-    if (body.startsWith("```")) {
-      body = body.replace(/^`+/, "").replace(/`+$/, "");
-      if (body.toLowerCase().startsWith("json")) body = body.slice(4).trim();
-      body = body.trim();
-    }
-
-    let proposed: string[] = [];
-    try {
-      const parsed = JSON.parse(body);
-      if (Array.isArray(parsed)) {
-        proposed = parsed.map((x) => String(x).trim()).filter(Boolean);
-      }
-    } catch {
-      for (const line of reply.split(/\r?\n/)) {
-        const m = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.+?)\s*$/);
-        if (m) proposed.push(m[1].trim());
-      }
-    }
+    const prompts = fleshPrompt(title, goal, existing, prompt);
+    const fetched = await fetchFleshReply(aiUrl, aiModel, prompts);
+    if ("error" in fetched) return { ok: false, error: fetched.error };
+    const proposed = parseFleshReply(fetched.reply);
 
     if (proposed.length === 0) {
-      return { ok: false, error: "AI returned no usable steps", raw_reply: reply.slice(0, 400) };
+      return { ok: false, error: "AI returned no usable steps", raw_reply: fetched.reply.slice(0, 400) };
     }
-
-    const existingLc = new Set(existing.map((s) => s.toLowerCase()));
-    const added: string[] = [];
-    for (const step of proposed) {
-      if (existingLc.has(step.toLowerCase())) continue;
-      const res = Plan.addStep(step, target);
-      if (res.ok) {
-        added.push(step);
-        existingLc.add(step.toLowerCase());
-      }
-    }
+    const added = addFleshSteps(target, existing, proposed);
 
     return {
       ok: true,
