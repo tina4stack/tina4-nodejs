@@ -249,6 +249,109 @@ interface ParsedFile {
 
 const CLASS_RE = /(?:^|\n)([ \t]*)((?:export\s+(?:default\s+)?(?:abstract\s+)?)?class\s+([A-Za-z_$][\w$]*))[\s\S]*?(?=\n[ \t]*(?:export\s+(?:default\s+)?(?:abstract\s+)?class|export\s+function|function|$))/g;
 
+interface ClassContext {
+  name: string;
+  bodyStartDepth: number;
+  entry: ParsedClass;
+  isExport: boolean;
+}
+
+function lineNumberAt(source: string, offset: number): number {
+  let line = 1;
+  for (let i = 0; i < offset && i < source.length; i++) {
+    if (source.charCodeAt(i) === 10) line++;
+  }
+  return line;
+}
+
+function readDocComment(stripped: string, source: string, start: number): { doc: string; next: number } | null {
+  if (!(stripped[start] === "/" && stripped[start + 1] === "*" && stripped[start + 2] === "*")) return null;
+  const end = stripped.indexOf("*/", start + 3);
+  return end === -1
+    ? { doc: "", next: -1 }
+    : { doc: source.slice(start, end + 2), next: end + 2 };
+}
+
+function startClass(
+  stripped: string,
+  source: string,
+  lines: string[],
+  index: number,
+  braceDepth: number,
+  pendingDoc: string,
+): { context: ClassContext; next: number } | null {
+  if (!isWordBoundary(stripped, index) || !matchKeyword(stripped, index, "class")) return null;
+  const after = index + "class".length;
+  const nameMatch = /^\s+([A-Za-z_$][\w$]*)/.exec(stripped.slice(after));
+  if (!nameMatch) return null;
+  const name = nameMatch[1];
+  let open = after + nameMatch[0].length;
+  while (open < stripped.length && stripped[open] !== "{") open++;
+  if (open >= stripped.length) return null;
+  const entry: ParsedClass = {
+    name,
+    line: lineNumberAt(source, index),
+    doc: pendingDoc,
+    exported: isExportedAt(stripped, lines, lineNumberAt(source, index), name),
+    methods: [],
+  };
+  return {
+    context: { name, bodyStartDepth: braceDepth, entry, isExport: entry.exported },
+    next: open + 1,
+  };
+}
+
+function closeClasses(
+  braceDepth: number,
+  stack: ClassContext[],
+  classes: ParsedClass[],
+): void {
+  while (stack.length > 0 && braceDepth <= stack[stack.length - 1].bodyStartDepth) {
+    classes.push(stack.pop()!.entry);
+  }
+}
+
+function recordClassMethod(
+  stripped: string,
+  source: string,
+  index: number,
+  stack: ClassContext[],
+  pendingDoc: string,
+): number | null {
+  const match = matchMethodSignature(stripped, source, index);
+  if (!match) return null;
+  const cls = stack[stack.length - 1];
+  cls.entry.methods.push({
+    name: match.name,
+    line: lineNumberAt(source, match.nameStart ?? index),
+    doc: pendingDoc,
+    signature: match.signature,
+    visibility: match.visibility,
+    static: match.static,
+  });
+  return match.endIndex;
+}
+
+function recordTopLevelFunction(
+  stripped: string,
+  source: string,
+  index: number,
+  functions: ParsedMethod[],
+  pendingDoc: string,
+): number | null {
+  const match = matchTopLevelFunction(stripped, source, index);
+  if (!match) return null;
+  functions.push({
+    name: match.name,
+    line: lineNumberAt(source, match.nameStart ?? index),
+    doc: pendingDoc,
+    signature: match.signature,
+    visibility: "public",
+    static: false,
+  });
+  return match.endIndex;
+}
+
 /**
  * Parse a TS source string. Lightweight — finds top-level classes and their
  * public methods, plus top-level exported functions. Captures preceding JSDoc.
@@ -266,32 +369,19 @@ function parseTypeScript(source: string, _debugTag = ""): ParsedFile {
   const lines = source.split(/\r?\n/);
 
   let i = 0;
-  let line = 1;
   let pendingDoc = "";
-  let pendingDocLine = 0;
   const len = stripped.length;
   let braceDepth = 0;
-  let classStack: { name: string; bodyStartDepth: number; entry: ParsedClass; isExport: boolean }[] = [];
-
-  function lineOf(offset: number): number {
-    // Count newlines up to offset.
-    let l = 1;
-    for (let k = 0; k < offset && k < source.length; k++) {
-      if (source.charCodeAt(k) === 10) l++;
-    }
-    return l;
-  }
+  const classStack: ClassContext[] = [];
 
   while (i < len) {
     const ch = stripped[i];
 
-    // JSDoc detection
-    if (ch === "/" && stripped[i + 1] === "*" && stripped[i + 2] === "*") {
-      const end = stripped.indexOf("*/", i + 3);
-      if (end === -1) break;
-      pendingDoc = source.slice(i, end + 2);
-      pendingDocLine = lineOf(i);
-      i = end + 2;
+    const doc = readDocComment(stripped, source, i);
+    if (doc) {
+      if (doc.next === -1) break;
+      pendingDoc = doc.doc;
+      i = doc.next;
       continue;
     }
 
@@ -309,45 +399,18 @@ function parseTypeScript(source: string, _debugTag = ""): ParsedFile {
     }
     if (ch === "}") {
       braceDepth--;
-      // Pop classes whose body just closed
-      while (classStack.length > 0 && braceDepth <= classStack[classStack.length - 1].bodyStartDepth) {
-        const cls = classStack.pop()!;
-        classes.push(cls.entry);
-      }
+      closeClasses(braceDepth, classStack, classes);
       i++;
       continue;
     }
 
-    // Look for "class <Name>"
-    if (isWordBoundary(stripped, i) && matchKeyword(stripped, i, "class")) {
-      // Read modifiers backwards on this line — already covered by pendingDoc capture.
-      const after = i + "class".length;
-      const nameMatch = /^\s+([A-Za-z_$][\w$]*)/.exec(stripped.slice(after));
-      if (nameMatch) {
-        const name = nameMatch[1];
-        const classLine = lineOf(i);
-        // Look for opening '{' starting from after the name
-        let j = after + nameMatch[0].length;
-        while (j < len && stripped[j] !== "{") j++;
-        if (j < len) {
-          const isExport = isExportedAt(stripped, lines, classLine, name);
-          const entry: ParsedClass = {
-            name,
-            line: classLine,
-            doc: pendingDoc,
-            exported: isExport,
-            methods: [],
-          };
-          // Push class context with its bodyStartDepth = current braceDepth
-          // (the upcoming '{' will increment braceDepth one above this).
-          classStack.push({ name, bodyStartDepth: braceDepth, entry, isExport });
-          pendingDoc = "";
-          // Move past '{' and increment depth
-          braceDepth++;
-          i = j + 1;
-          continue;
-        }
-      }
+    const classStart = startClass(stripped, source, lines, i, braceDepth, pendingDoc);
+    if (classStart) {
+      classStack.push(classStart.context);
+      pendingDoc = "";
+      braceDepth++;
+      i = classStart.next;
+      continue;
     }
 
     // Method or top-level function detection — we only care about either:
@@ -355,40 +418,17 @@ function parseTypeScript(source: string, _debugTag = ""): ParsedFile {
     //   * top-level "export function" or "function" declarations
     if (classStack.length > 0
         && braceDepth === classStack[classStack.length - 1].bodyStartDepth + 1) {
-      // We're directly inside a class body.
-      const m = matchMethodSignature(stripped, source, i);
-      if (m) {
-        const methodLine = lineOf(m.nameStart ?? i);
-        const cls = classStack[classStack.length - 1];
-        // Skip private/protected based on TS modifier OR name prefix '_'
-        const visibility = m.visibility;
-        cls.entry.methods.push({
-          name: m.name,
-          line: methodLine,
-          doc: pendingDoc,
-          signature: m.signature,
-          visibility,
-          static: m.static,
-        });
+      const next = recordClassMethod(stripped, source, i, classStack, pendingDoc);
+      if (next !== null) {
         pendingDoc = "";
-        i = m.endIndex;
+        i = next;
         continue;
       }
     } else if (braceDepth === 0) {
-      // Top-level — look for "export function" or "function"
-      const f = matchTopLevelFunction(stripped, source, i);
-      if (f) {
-        const fLine = lineOf(f.nameStart ?? i);
-        functions.push({
-          name: f.name,
-          line: fLine,
-          doc: pendingDoc,
-          signature: f.signature,
-          visibility: "public",
-          static: false,
-        });
+      const next = recordTopLevelFunction(stripped, source, i, functions, pendingDoc);
+      if (next !== null) {
         pendingDoc = "";
-        i = f.endIndex;
+        i = next;
         continue;
       }
     }
@@ -407,9 +447,6 @@ function parseTypeScript(source: string, _debugTag = ""): ParsedFile {
 
   // Any unclosed class (shouldn't happen in valid TS) → flush.
   while (classStack.length > 0) classes.push(classStack.pop()!.entry);
-
-  // Suppress unused-warning
-  void pendingDocLine;
 
   return { classes, functions };
 }
@@ -555,66 +592,69 @@ interface CapturedSig {
   endIndex: number;
 }
 
-function captureSignature(stripped: string, source: string, nameStart: number, name: string): CapturedSig | null {
-  // Skip the name
-  let j = nameStart + name.length;
-  // Optional generic <...>
-  while (j < stripped.length && /\s/.test(stripped[j])) j++;
-  if (stripped[j] === "<") {
-    let depth = 0;
-    while (j < stripped.length) {
-      const c = stripped[j];
-      if (c === "<") depth++;
-      else if (c === ">") {
-        depth--;
-        if (depth === 0) { j++; break; }
-      }
-      j++;
-    }
-  }
-  // Whitespace
-  while (j < stripped.length && /\s/.test(stripped[j])) j++;
-  if (stripped[j] !== "(") return null;
-  // Capture (...) balanced on parens (ignore strings — already stripped)
-  const parenStart = j;
+function skipWhitespace(text: string, start: number, spacesOnly = false): number {
+  let i = start;
+  while (i < text.length && (spacesOnly ? /[ \t]/.test(text[i]) : /\s/.test(text[i]))) i++;
+  return i;
+}
+
+function scanBalanced(text: string, start: number, open: string, close: string): number {
   let depth = 0;
-  while (j < stripped.length) {
-    const c = stripped[j];
-    if (c === "(") depth++;
-    else if (c === ")") {
+  let i = start;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === open) depth++;
+    else if (c === close) {
       depth--;
-      if (depth === 0) { j++; break; }
+      if (depth === 0) return i + 1;
     }
-    j++;
+    i++;
   }
+  return i;
+}
+
+function returnTypeStops(stripped: string, index: number, depth: number): boolean {
+  const c = stripped[index];
+  if (depth === 0 && (c === "{" || c === ";")) return true;
+  if (depth !== 0 || c !== "\n") return false;
+  const next = skipWhitespace(stripped, index + 1, true);
+  return stripped[next] === "{";
+}
+
+function updateReturnDepth(char: string, depth: number): number {
+  if (char === "<" || char === "(" || char === "[") return depth + 1;
+  if (char === ">" || char === ")" || char === "]") return depth - 1;
+  return depth;
+}
+
+function captureReturnType(stripped: string, source: string, start: number): { endIndex: number; returnType: string } {
+  const retStart = skipWhitespace(stripped, start, true);
+  if (stripped[retStart] !== ":") return { endIndex: retStart, returnType: "" };
+
+  let retEnd = retStart + 1;
+  let depth = 0;
+  while (retEnd < stripped.length) {
+    const c = stripped[retEnd];
+    if (returnTypeStops(stripped, retEnd, depth)) break;
+    depth = updateReturnDepth(c, depth);
+    retEnd++;
+  }
+  return { endIndex: retEnd, returnType: source.slice(retStart, retEnd).trim() };
+}
+
+function captureSignature(stripped: string, source: string, nameStart: number, name: string): CapturedSig | null {
+  let j = skipWhitespace(stripped, nameStart + name.length);
+  if (stripped[j] === "<") j = scanBalanced(stripped, j, "<", ">");
+  j = skipWhitespace(stripped, j);
+  if (stripped[j] !== "(") return null;
+
+  const parenStart = j;
+  j = scanBalanced(stripped, j, "(", ")");
   const parenSegment = source.slice(parenStart, j); // pull from original source for human-readable
-  // Optional return type: ": Type" up to '{' or ';' or '=>' or end-of-line for arrow.
-  let retStart = j;
-  while (retStart < stripped.length && /[ \t]/.test(stripped[retStart])) retStart++;
-  let retEnd = retStart;
-  let returnType = "";
-  if (stripped[retStart] === ":") {
-    retEnd = retStart + 1;
-    let depthBracket = 0;
-    while (retEnd < stripped.length) {
-      const c = stripped[retEnd];
-      // Stop on a body-opening '{' or terminating ';' at the same depth.
-      if (depthBracket === 0 && (c === "{" || c === ";")) break;
-      if (depthBracket === 0 && c === "\n") {
-        // Arrow-return on next line — stop only if the next non-space is '{'.
-        let k2 = retEnd + 1;
-        while (k2 < stripped.length && (stripped[k2] === " " || stripped[k2] === "\t")) k2++;
-        if (stripped[k2] === "{") break;
-      }
-      if (c === "<" || c === "(" || c === "[") depthBracket++;
-      else if (c === ">" || c === ")" || c === "]") depthBracket--;
-      retEnd++;
-    }
-    returnType = source.slice(retStart, retEnd).trim();
-  }
+  const result = captureReturnType(stripped, source, j);
   const cleanedParens = parenSegment.replace(/\s+/g, " ");
-  const sig = name + cleanedParens + (returnType ? " " + returnType : "");
-  return { signature: sig, endIndex: retEnd };
+  const sig = name + cleanedParens + (result.returnType ? " " + result.returnType : "");
+  return { signature: sig, endIndex: result.endIndex };
 }
 
 /**
@@ -623,99 +663,116 @@ function captureSignature(stripped: string, source: string, nameStart: number, n
  * Also strips line + block comments. Newlines are preserved so line numbers
  * line up with the original source.
  */
+const BACKTICK = String.fromCharCode(96);
+
+function blankSegment(source: string, start: number, end: number): string {
+  return source.slice(start, end).replace(/[^\n]/g, " ");
+}
+
+function stripBlockComment(source: string, start: number): { text: string; next: number } {
+  const end = source.indexOf("*/", start + 2);
+  return end === -1
+    ? { text: blankSegment(source, start, source.length), next: source.length }
+    : { text: blankSegment(source, start, end + 2), next: end + 2 };
+}
+
+function stripLineComment(source: string, start: number): { text: string; next: number } {
+  const end = source.indexOf("\n", start);
+  const next = end === -1 ? source.length : end;
+  return { text: " ".repeat(next - start), next };
+}
+
+function stripQuoted(source: string, start: number): { text: string; next: number } {
+  const out = [source[start]];
+  let i = start + 1;
+  while (i < source.length) {
+    const c = source[i];
+    if (c === "\\" && i + 1 < source.length) {
+      out.push("  ");
+      i += 2;
+      continue;
+    }
+    if (c === source[start]) {
+      out.push(c);
+      i++;
+      break;
+    }
+    out.push(c === "\n" ? "\n" : " ");
+    i++;
+  }
+  return { text: out.join(""), next: i };
+}
+
+function stripTemplateInterpolation(source: string, start: number): { text: string; next: number } {
+  const out = ["  "];
+  let i = start + 2;
+  let depth = 1;
+  while (i < source.length && depth > 0) {
+    const c = source[i];
+    if (c === "{") depth++;
+    else if (c === "}") depth--;
+    out.push(c === "\n" ? "\n" : " ");
+    i++;
+  }
+  return { text: out.join(""), next: i };
+}
+
+function stripTemplate(source: string, start: number): { text: string; next: number } {
+  const out = [BACKTICK];
+  let i = start + 1;
+  while (i < source.length) {
+    const c = source[i];
+    if (c === "\\" && i + 1 < source.length) {
+      out.push("  ");
+      i += 2;
+      continue;
+    }
+    if (c === BACKTICK) {
+      out.push(BACKTICK);
+      i++;
+      break;
+    }
+    if (c === "$" && source[i + 1] === "{") {
+      const interpolation = stripTemplateInterpolation(source, i);
+      out.push(interpolation.text);
+      i = interpolation.next;
+      continue;
+    }
+    out.push(c === "\n" ? "\n" : " ");
+    i++;
+  }
+  return { text: out.join(""), next: i };
+}
+
 function stripStrings(source: string): string {
   const out: string[] = [];
-  const len = source.length;
   let i = 0;
-  const BACKTICK = String.fromCharCode(96);
-  const DOLLAR = "$";
-  const OPEN_BRACE = "{";
-  const CLOSE_BRACE = "}";
-
-  while (i < len) {
+  while (i < source.length) {
     const c = source[i];
-
     if (c === "/" && source[i + 1] === "*") {
-      const end = source.indexOf("*/", i + 2);
-      if (end === -1) {
-        for (let k = i; k < len; k++) out.push(source[k] === "\n" ? "\n" : " ");
-        return out.join("");
-      }
-      for (let k = i; k < end + 2; k++) out.push(source[k] === "\n" ? "\n" : " ");
-      i = end + 2;
+      const part = stripBlockComment(source, i);
+      out.push(part.text);
+      i = part.next;
       continue;
     }
-
     if (c === "/" && source[i + 1] === "/") {
-      while (i < len && source[i] !== "\n") {
-        out.push(" ");
-        i++;
-      }
+      const part = stripLineComment(source, i);
+      out.push(part.text);
+      i = part.next;
       continue;
     }
-
     if (c === '"' || c === "'") {
-      out.push(c);
-      i++;
-      while (i < len) {
-        const sc = source[i];
-        if (sc === "\\" && i + 1 < len) {
-          out.push("  ");
-          i += 2;
-          continue;
-        }
-        if (sc === c) {
-          out.push(c);
-          i++;
-          break;
-        }
-        out.push(sc === "\n" ? "\n" : " ");
-        i++;
-      }
+      const part = stripQuoted(source, i);
+      out.push(part.text);
+      i = part.next;
       continue;
     }
-
     if (c === BACKTICK) {
-      // Treat the entire template literal — including any ${...} expressions —
-      // as opaque content. Replace every char inside with spaces so brace/paren
-      // accounting in the outer parser isn't fooled. Newlines preserved.
-      out.push(c);
-      i++;
-      while (i < len) {
-        const tc = source[i];
-        if (tc === "\\" && i + 1 < len) {
-          out.push("  ");
-          i += 2;
-          continue;
-        }
-        if (tc === BACKTICK) {
-          out.push(BACKTICK);
-          i++;
-          break;
-        }
-        if (tc === DOLLAR && source[i + 1] === OPEN_BRACE) {
-          // Skip over the entire ${ ... } expression, replacing all chars with
-          // spaces (or newlines). Track real brace depth (ignoring nested
-          // template literals' own braces, but those are zeroed too).
-          out.push(" ");
-          out.push(" ");
-          i += 2;
-          let depth = 1;
-          while (i < len && depth > 0) {
-            const ic = source[i];
-            if (ic === OPEN_BRACE) depth++;
-            else if (ic === CLOSE_BRACE) depth--;
-            out.push(ic === "\n" ? "\n" : " ");
-            i++;
-          }
-          continue;
-        }
-        out.push(tc === "\n" ? "\n" : " ");
-        i++;
-      }
+      const part = stripTemplate(source, i);
+      out.push(part.text);
+      i = part.next;
       continue;
     }
-
     out.push(c);
     i++;
   }
@@ -868,6 +925,52 @@ function buildLineIndex(text: string): (offset: number) => number {
     }
     return lo + 1;
   };
+}
+
+function scoreNameToken(name: string, stripped: string, nameTokens: string[], token: string): number {
+  if (!token) return 0;
+  if (name.startsWith(token) || stripped.startsWith(token)) return 3;
+  for (const nameToken of nameTokens) {
+    if (nameToken === token) return 3;
+    if (nameToken.startsWith(token)) return 2;
+  }
+  return name.includes(token) ? 0.5 : 0;
+}
+
+function scoreName(name: string, stripped: string, nameTokens: string[], tokens: string[], joined: string): number {
+  let score = name === joined || stripped === joined ? 5 : 0;
+  for (const token of tokens) score += scoreNameToken(name, stripped, nameTokens, token);
+  return score;
+}
+
+function scoreText(text: string, tokens: string[], weight: number): number {
+  let score = 0;
+  for (const token of tokens) {
+    if (token && text.includes(token)) score += weight;
+  }
+  return score;
+}
+
+function scoreClassQualifier(entry: InternalEntry, name: string, tokens: string[], joined: string): number {
+  const parent = (entry.class ?? "").toLowerCase();
+  if (!parent) return 0;
+  let score = 0;
+  const normalized = joined.replace(/[:.]+/g, ".");
+  if (normalized === `${parent}.${name}` || normalized === `${parent}.${name.replace(/^_+/, "")}`) score += 6;
+  for (const token of tokens) {
+    if (token === parent) score += 2.5;
+    else if (token && parent.startsWith(token)) score += 1;
+  }
+  return score;
+}
+
+function scoreFqn(entry: InternalEntry, tokens: string[]): number {
+  const segments = new Set(entry.fqn.toLowerCase().split(/[.\s:]+/).filter(Boolean));
+  let score = 0;
+  for (const token of tokens) {
+    if (token && segments.has(token)) score += 1;
+  }
+  return score;
 }
 
 // ── Public Docs class ───────────────────────────────────────────────
@@ -1233,52 +1336,12 @@ export class Docs {
   private scoreEntry(entry: InternalEntry, tokens: string[], joined: string): number {
     const name = entry.name.toLowerCase();
     const stripped = name.replace(/^_+/, "");
-    const summary = entry.summary.toLowerCase();
-    const doc = entry.docblock.toLowerCase();
-    let score = 0;
-
-    if (name === joined || stripped === joined) score += 5;
-
     const nameTokens = tokenise(entry.name);
-    for (const tk of tokens) {
-      if (!tk) continue;
-      if (name.startsWith(tk) || stripped.startsWith(tk)) {
-        score += 3;
-        continue;
-      }
-      let hit = false;
-      for (const nt of nameTokens) {
-        if (nt === tk) { score += 3; hit = true; break; }
-        if (nt.startsWith(tk)) { score += 2; hit = true; break; }
-      }
-      if (!hit && name.includes(tk)) score += 0.5;
-    }
-    for (const tk of tokens) {
-      if (tk && summary.includes(tk)) score += 2;
-    }
-    for (const tk of tokens) {
-      if (tk && doc.includes(tk)) score += 1;
-    }
-    // Class-qualified queries ("Frond.addTest" / "Frond addTest"): score the
-    // owning class so the qualifier steers ranking instead of being dead weight.
-    const parent = (entry.class ?? "").toLowerCase();
-    if (parent) {
-      // Normalise `.`/`:`/whitespace in the joined query to a single `.` so
-      // "frond.addtest", "frond:addtest" and "frondaddtest" all compare alike.
-      const qNorm = joined.replace(/[:.]+/g, ".");
-      if (qNorm === `${parent}.${name}` || qNorm === `${parent}.${stripped}`) {
-        score += 6; // exact "Class.method" intent — the strongest signal
-      }
-      for (const tk of tokens) {
-        if (tk === parent) score += 2.5;
-        else if (tk && parent.startsWith(tk)) score += 1;
-      }
-    }
-    // Any token that is a whole segment of the fqn (module / class / name).
-    const fqnSegs = new Set(entry.fqn.toLowerCase().split(/[.\s:]+/).filter(Boolean));
-    for (const tk of tokens) {
-      if (tk && fqnSegs.has(tk)) score += 1;
-    }
+    let score = scoreName(name, stripped, nameTokens, tokens, joined);
+    score += scoreText(entry.summary.toLowerCase(), tokens, 2);
+    score += scoreText(entry.docblock.toLowerCase(), tokens, 1);
+    score += scoreClassQualifier(entry, name, tokens, joined);
+    score += scoreFqn(entry, tokens);
     if (joined && score === 0 && name.includes(joined)) score += 2;
     return score;
   }
