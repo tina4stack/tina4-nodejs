@@ -1045,88 +1045,9 @@ export class BaseModel {
    */
   toDict(include?: string[], case_: "camel" | "snake" = "camel"): Record<string, unknown> {
     const ModelClass = this.constructor as typeof BaseModel;
-    const result: Record<string, unknown> = {};
-    for (const key of Object.keys(ModelClass.fields)) {
-      if (this[key] !== undefined) {
-        const outKey = case_ === "snake" ? (ModelClass.fieldMapping[key] ?? key) : key;
-        result[outKey] = this[key] instanceof Point ? (this[key] as Point).geojson : this[key];
-      }
-    }
-    // Include soft delete field
-    if (ModelClass.softDelete && this.is_deleted !== undefined) {
-      result.is_deleted = this.is_deleted;
-    }
-
-    if (include) {
-      // Group includes: top-level and nested
-      const topLevel: Record<string, string[]> = {};
-      for (const inc of include) {
-        const parts = inc.split(".", 2);
-        const relName = parts[0];
-        if (!topLevel[relName]) {
-          topLevel[relName] = [];
-        }
-        if (parts.length > 1) {
-          topLevel[relName].push(parts[1]);
-        }
-      }
-
-      for (const [relName, nested] of Object.entries(topLevel)) {
-        // toDict stays synchronous (used in routes, templates, serialization).
-        // Relationships must be eager-loaded first (await Model._eagerLoad / the
-        // include arg on find/all/where) which fills _relCache. A relation that
-        // isn't cached is simply skipped here — async lazy-load on a sync
-        // serializer is not possible after the Option A async refactor.
-        const data = this._relCache[relName];
-        if (data === undefined) {
-          // LOAD-NODE-SERIALIZE-OMIT (feature 26, 3.13.99): the omission used
-          // to be completely silent — a developer who forgot `include` on the
-          // finder that produced this instance got a serialized object
-          // missing the relation with no signal at all. Warn (never throw —
-          // serialization must keep working) naming the model, the relation,
-          // and the fix, so the gap is visible instead of a quiet data loss.
-          Log.warning(
-            `${ModelClass.name}.toDict(): relation "${relName}" was requested via ` +
-              `include but was never eager-loaded (a synchronous serializer cannot ` +
-              `lazy-load it), so it is OMITTED from the result. Pass ` +
-              `include: ["${relName}"] to the finder (find/all/where/select/load) ` +
-              `that produced this instance.`,
-          );
-          continue;
-        }
-        if (data === null || data === undefined) {
-          result[relName] = null;
-        } else if (Array.isArray(data)) {
-          result[relName] = (data as BaseModel[]).map((r) =>
-            r.toDict(nested.length > 0 ? nested : undefined, case_),
-          );
-        } else if (typeof (data as BaseModel).toDict === "function") {
-          result[relName] = (data as BaseModel).toDict(
-            nested.length > 0 ? nested : undefined, case_,
-          );
-        }
-      }
-    } else {
-      // Legacy: include any relationship data already loaded on instance
-      if (ModelClass.hasOne) {
-        for (const rel of ModelClass.hasOne) {
-          const relKey = rel.model.toLowerCase();
-          if (this[relKey] !== undefined) {
-            result[relKey] = this[relKey];
-          }
-        }
-      }
-      if (ModelClass.hasMany) {
-        for (const rel of ModelClass.hasMany) {
-          const base = rel.model.toLowerCase();
-          const relKey = _pluralRelKeys() ? base + "s" : base;
-          if (this[relKey] !== undefined) {
-            result[relKey] = this[relKey];
-          }
-        }
-      }
-    }
-
+    const result = serializeModelFields(this, ModelClass, case_);
+    if (include) serializeIncludedRelations(this, ModelClass, result, include, case_);
+    else serializeLoadedRelations(this, ModelClass, result);
     return result;
   }
 
@@ -1977,6 +1898,84 @@ export class BaseModel {
    */
   clearRelCache(): void {
     this._relCache = {};
+  }
+}
+
+function serializeModelFields(instance: BaseModel, model: typeof BaseModel, case_: "camel" | "snake"): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(model.fields)) {
+    if (instance[key] === undefined) continue;
+    const outKey = case_ === "snake" ? (model.fieldMapping[key] ?? key) : key;
+    result[outKey] = instance[key] instanceof Point ? (instance[key] as Point).geojson : instance[key];
+  }
+  if (model.softDelete && instance.is_deleted !== undefined) result.is_deleted = instance.is_deleted;
+  return result;
+}
+
+function groupIncludedRelations(include: string[]): Record<string, string[]> {
+  const grouped: Record<string, string[]> = {};
+  for (const item of include) {
+    const parts = item.split(".", 2);
+    grouped[parts[0]] ??= [];
+    if (parts.length > 1) grouped[parts[0]].push(parts[1]);
+  }
+  return grouped;
+}
+
+function serializeIncludedRelation(
+  instance: BaseModel,
+  model: typeof BaseModel,
+  result: Record<string, unknown>,
+  relName: string,
+  nested: string[],
+  case_: "camel" | "snake",
+): void {
+  const cache = (instance as unknown as { _relCache: Record<string, unknown> })._relCache;
+  const data = cache[relName];
+  if (data === undefined) {
+    Log.warning(
+      `${model.name}.toDict(): relation "${relName}" was requested via include but was never eager-loaded ` +
+      `(a synchronous serializer cannot lazy-load it), so it is OMITTED from the result. Pass ` +
+      `include: ["${relName}"] to the finder (find/all/where/select/load) that produced this instance.`,
+    );
+    return;
+  }
+  if (data === null) {
+    result[relName] = null;
+    return;
+  }
+  const nestedInclude = nested.length > 0 ? nested : undefined;
+  if (Array.isArray(data)) {
+    result[relName] = (data as BaseModel[]).map((item) => item.toDict(nestedInclude, case_));
+    return;
+  }
+  if (typeof (data as BaseModel).toDict === "function") {
+    result[relName] = (data as BaseModel).toDict(nestedInclude, case_);
+  }
+}
+
+function serializeIncludedRelations(
+  instance: BaseModel,
+  model: typeof BaseModel,
+  result: Record<string, unknown>,
+  include: string[],
+  case_: "camel" | "snake",
+): void {
+  const grouped = groupIncludedRelations(include);
+  for (const [relName, nested] of Object.entries(grouped)) {
+    serializeIncludedRelation(instance, model, result, relName, nested, case_);
+  }
+}
+
+function serializeLoadedRelations(instance: BaseModel, model: typeof BaseModel, result: Record<string, unknown>): void {
+  for (const relation of model.hasOne ?? []) {
+    const key = relation.model.toLowerCase();
+    if (instance[key] !== undefined) result[key] = instance[key];
+  }
+  for (const relation of model.hasMany ?? []) {
+    const base = relation.model.toLowerCase();
+    const key = _pluralRelKeys() ? base + "s" : base;
+    if (instance[key] !== undefined) result[key] = instance[key];
   }
 }
 
