@@ -125,6 +125,46 @@ await assertAsync("410 marks a subscription as dead", async () => {
 });
 await new Promise<void>((resolve) => goneServer.close(() => resolve()));
 
+const notFoundServer = createServer((_req, res) => { res.statusCode = 404; res.end("missing"); });
+await new Promise<void>((resolve) => notFoundServer.listen(0, "127.0.0.1", resolve));
+const notFoundAddress = notFoundServer.address();
+subscription.endpoint = `http://127.0.0.1:${typeof notFoundAddress === "object" && notFoundAddress ? notFoundAddress.port : 0}/missing`;
+await assertAsync("404 marks a subscription as dead", async () => {
+  const result = await new Push({ ...vapid, subject: "mailto:test@tina4.com" }).send(subscription, "missing");
+  return !result.ok && result.status === 404 && result.dead && !result.retryable;
+});
+await new Promise<void>((resolve) => notFoundServer.close(() => resolve()));
+
+const retryServer = createServer((_req, res) => { res.statusCode = 429; res.end("busy"); });
+await new Promise<void>((resolve) => retryServer.listen(0, "127.0.0.1", resolve));
+const retryAddress = retryServer.address();
+subscription.endpoint = `http://127.0.0.1:${typeof retryAddress === "object" && retryAddress ? retryAddress.port : 0}/retry`;
+await assertAsync("429 is classified as retryable", async () => {
+  const result = await new Push({ ...vapid, subject: "mailto:test@tina4.com" }).send(subscription, "busy");
+  return !result.ok && result.status === 429 && !result.dead && result.retryable;
+});
+await new Promise<void>((resolve) => retryServer.close(() => resolve()));
+
+const serverError = createServer((_req, res) => { res.statusCode = 500; res.end("failed"); });
+await new Promise<void>((resolve) => serverError.listen(0, "127.0.0.1", resolve));
+const serverErrorAddress = serverError.address();
+subscription.endpoint = `http://127.0.0.1:${typeof serverErrorAddress === "object" && serverErrorAddress ? serverErrorAddress.port : 0}/error`;
+await assertAsync("5xx is classified as retryable", async () => {
+  const result = await new Push({ ...vapid, subject: "mailto:test@tina4.com" }).send(subscription, "failed");
+  return !result.ok && result.status === 500 && !result.dead && result.retryable;
+});
+await new Promise<void>((resolve) => serverError.close(() => resolve()));
+
+await assertAsync("invalid subscription keys fail before delivery", async () => {
+  const invalid = { ...subscription, endpoint: "http://127.0.0.1:1/push", keys: { ...subscription.keys, p256dh: "bad" } };
+  try {
+    await new Push({ ...vapid, subject: "mailto:test@tina4.com" }).send(invalid, "invalid");
+    return false;
+  } catch (error) {
+    return error instanceof PushError && error.message.includes("subscription.keys.p256dh");
+  }
+});
+
 const oldSubject = process.env.TINA4_VAPID_SUBJECT;
 const oldPublic = process.env.TINA4_VAPID_PUBLIC;
 const oldPrivate = process.env.TINA4_VAPID_PRIVATE;
@@ -143,4 +183,3 @@ try {
 
 console.log(`\nResults: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exitCode = 1;
-
