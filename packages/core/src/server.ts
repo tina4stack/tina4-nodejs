@@ -1941,6 +1941,57 @@ function startLoopbackSiblings(
   );
 }
 
+function startProductionCluster(port: number, host: string): {
+  close: () => void;
+  router: Router;
+  port: number;
+} {
+  const numCPUs = os.cpus().length;
+  const displayHost = host === "0.0.0.0" ? "localhost" : host;
+  const isTty = isatty(1);
+  const color = isTty ? "\x1b[32m" : "";
+  const reset = isTty ? "\x1b[0m" : "";
+  const logLevel = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
+  if (!isBannerSuppressed()) {
+    const [swaggerLine] = bannerSurfaceLines(port, { swaggerEnabled: swaggerAdvertised(), devAdminEnabled: false });
+    console.log(`${color}
+  Tina4 Node.js v${TINA4_VERSION} — The Intelligent Native Application 4ramework
+
+  Server:    http://${displayHost}:${port} (cluster, ${numCPUs} workers)${swaggerLine}
+  Debug:     OFF (Log level: ${logLevel})
+${reset}`);
+  }
+  for (let i = 0; i < numCPUs; i++) cluster.fork();
+  cluster.on("exit", (worker, code) => {
+    if (code !== 0) {
+      console.log(`  Worker ${worker.process.pid} exited (code ${code}), restarting...`);
+      cluster.fork();
+    }
+  });
+  return {
+    close: () => {
+      stopAllBackgroundTasks();
+      for (const id in cluster.workers) cluster.workers[id]?.kill();
+    },
+    router: new Router(),
+    port,
+  };
+}
+
+function wireLocaleGlobal(frondEngine: any, base: string): void {
+  if (!frondEngine) return;
+  const localeDir = resolve(base, process.env.TINA4_LOCALE_DIR ?? "src/locales");
+  if (!existsSync(localeDir)) return;
+  try {
+    const localeFiles = readdirSync(localeDir).filter((file: string) => file.endsWith(".json"));
+    if (localeFiles.length === 0 || frondEngine.globals?.t) return;
+    const i18nInstance = new I18n(process.env.TINA4_LOCALE ?? "en", localeDir);
+    frondEngine.addGlobal("t", (key: string, params?: Record<string, string>) => i18nInstance.t(key, params));
+  } catch {
+    // Locale directory unreadable — skip auto-wire.
+  }
+}
+
 export async function startServer(config?: Tina4Config): Promise<{
   close: () => void;
   router: Router;
@@ -1986,62 +2037,8 @@ export async function startServer(config?: Tina4Config): Promise<{
   // Cluster mode for production: fork workers based on CPU count
   // Only when --production is explicitly set (via TINA4_PRODUCTION env var)
   const isProduction = (process.env.TINA4_PRODUCTION ?? "").toLowerCase() === "true";
-  if (cluster.isPrimary && isProduction) {
-    const numCPUs = os.cpus().length;
-    if (numCPUs > 1) {
-      const displayHost = host === "0.0.0.0" ? "localhost" : host;
-      const isTty = isatty(1);
-      const color = isTty ? "\x1b[32m" : "";
-      const reset = isTty ? "\x1b[0m" : "";
-      const logLevel = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
-
-      if (!isBannerSuppressed()) {
-        // Only advertise a surface that is actually reachable (issue #99).
-        // Cluster mode is the production path: debug is OFF, so /__dev always
-        // 404s here and is never advertised; /swagger only when explicitly on.
-        // Cluster mode is the production path: debug is OFF, so /__dev never
-        // advertises here.
-        const [swaggerLine] = bannerSurfaceLines(port, {
-          swaggerEnabled: swaggerAdvertised(),
-          devAdminEnabled: false,
-        });
-        console.log(`${color}
-  ______ _             __ __
- /_  __/(_)___  ____ _/ // /
-  / /  / / __ \\/ __ \`/ // /_
- / /  / / / / / /_/ /__  __/
-/_/  /_/_/ /_/\\__,_/  /_/
-${reset}
-  Tina4 Node.js v${TINA4_VERSION} — The Intelligent Native Application 4ramework
-
-  Server:    http://${displayHost}:${port} (cluster, ${numCPUs} workers)${swaggerLine}
-  Debug:     OFF (Log level: ${logLevel})
-`);
-      }
-
-      for (let i = 0; i < numCPUs; i++) {
-        cluster.fork();
-      }
-
-      cluster.on("exit", (worker, code, _signal) => {
-        if (code !== 0) {
-          console.log(`  Worker ${worker.process.pid} exited (code ${code}), restarting...`);
-          cluster.fork();
-        }
-      });
-
-      // Return a handle that kills all workers
-      return {
-        close: () => {
-          stopAllBackgroundTasks();
-          for (const id in cluster.workers) {
-            cluster.workers[id]?.kill();
-          }
-        },
-        router: new Router(),
-        port,
-      };
-    }
+  if (cluster.isPrimary && isProduction && os.cpus().length > 1) {
+    return startProductionCluster(port, host);
   }
 
   const base = config?.basePath ? resolve(config.basePath) : process.cwd();
@@ -2112,20 +2109,7 @@ ${reset}
   }
 
   // Auto-wire i18n → template global t() when locale files exist
-  if (frondEngine) {
-    const localeDir = resolve(base, process.env.TINA4_LOCALE_DIR ?? "src/locales");
-    if (existsSync(localeDir)) {
-      try {
-        const localeFiles = readdirSync(localeDir).filter((f: string) => f.endsWith(".json"));
-        if (localeFiles.length > 0 && !frondEngine.globals?.t) {
-          const i18nInstance = new I18n(process.env.TINA4_LOCALE ?? "en", localeDir);
-          frondEngine.addGlobal("t", (key: string, params?: Record<string, string>) => i18nInstance.t(key, params));
-        }
-      } catch {
-        // Locale directory unreadable — skip auto-wire
-      }
-    }
-  }
+  wireLocaleGlobal(frondEngine, base);
 
   // Built-in middleware
   middleware.use(cors());
