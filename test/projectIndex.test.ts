@@ -33,6 +33,7 @@ fs.writeFileSync(
 );
 
 const { ProjectIndex } = await import("../packages/core/src/projectIndex.ts");
+const { extractForPath } = await import("../packages/core/src/projectIndexExtractors.ts");
 
 let pass = 0;
 let fail = 0;
@@ -42,6 +43,9 @@ function assert(name: string, cond: boolean, detail = "") {
 }
 
 console.log("=== ProjectIndex Tests ===\n");
+
+const directRouteEntry = extractForPath("routes/direct.ts", `get("/direct", () => {});`);
+assert("extractor module detects direct routes", directRouteEntry.routes?.[0]?.path === "/direct");
 
 // --- refresh ---
 const r1 = ProjectIndex.refresh();
