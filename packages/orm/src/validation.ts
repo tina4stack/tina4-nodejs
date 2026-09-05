@@ -45,6 +45,31 @@ function validateNumber(name: string, value: unknown, def: FieldDefinition): Val
   return errors;
 }
 
+function validateBoolean(name: string, value: unknown): ValidationError[] {
+  return typeof value === "boolean" || value === 0 || value === 1 || value === "true" || value === "false"
+    ? []
+    : [error(name, "must be a boolean")];
+}
+
+function validateDatetime(name: string, value: unknown): ValidationError[] {
+  return typeof value === "string" && isNaN(Date.parse(value))
+    ? [error(name, "must be a valid date/time")]
+    : [];
+}
+
+function validateJson(name: string, value: unknown): ValidationError[] {
+  return value !== null && typeof value !== "object" && typeof value !== "string"
+    ? [error(name, "must be a JSON object or array")]
+    : [];
+}
+
+function validateForeignKey(name: string, value: unknown): ValidationError[] {
+  const fkNum = typeof value === "string" ? Number(value) : value;
+  return typeof fkNum !== "number" || isNaN(fkNum) || !Number.isInteger(fkNum)
+    ? [error(name, "must be a valid foreign key (integer)")]
+    : [];
+}
+
 function validateField(
   name: string,
   value: unknown,
@@ -63,23 +88,13 @@ function validateField(
 
   switch (def.type) {
     case "boolean":
-      return typeof value === "boolean" || value === 0 || value === 1 || value === "true" || value === "false"
-        ? []
-        : [error(name, "must be a boolean")];
+      return validateBoolean(name, value);
     case "datetime":
-      return typeof value === "string" && isNaN(Date.parse(value))
-        ? [error(name, "must be a valid date/time")]
-        : [];
+      return validateDatetime(name, value);
     case "json":
-      return value !== null && typeof value !== "object" && typeof value !== "string"
-        ? [error(name, "must be a JSON object or array")]
-        : [];
-    case "foreignKey": {
-      const fkNum = typeof value === "string" ? Number(value) : value;
-      return typeof fkNum !== "number" || isNaN(fkNum) || !Number.isInteger(fkNum)
-        ? [error(name, "must be a valid foreign key (integer)")]
-        : [];
-    }
+      return validateJson(name, value);
+    case "foreignKey":
+      return validateForeignKey(name, value);
     default:
       return [];
   }
