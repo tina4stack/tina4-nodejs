@@ -2331,6 +2331,49 @@ export class Frond {
     return { next: start + 1 };
   }
 
+  private renderTextToken(tokens: Token[], index: number, output: string[]): number {
+    output.push(tokens[index][1]);
+    return index + 1;
+  }
+
+  private renderVarToken(tokens: Token[], index: number, context: Record<string, unknown>, output: string[]): number {
+    const [content, stripB, stripA] = stripTag(tokens[index][1]);
+    if (stripB && output.length > 0) output[output.length - 1] = output[output.length - 1].replace(TRAILING_WS_RE, "");
+    const result = this.evalVar(content, context);
+    output.push(result !== null && result !== undefined ? String(result) : "");
+    if (stripA && index + 1 < tokens.length && tokens[index + 1][0] === "TEXT") {
+      tokens[index + 1] = ["TEXT", tokens[index + 1][1].replace(LEADING_WS_RE, "")];
+    }
+    return index + 1;
+  }
+
+  private renderBlockToken(tokens: Token[], index: number, context: Record<string, unknown>, output: string[]): number {
+    const [content, stripB, stripA] = stripTag(tokens[index][1]);
+    if (stripB && output.length > 0) output[output.length - 1] = output[output.length - 1].replace(TRAILING_WS_RE, "");
+    const tag = content.split(/\s+/)[0] || "";
+    if (stripA && index + 1 < tokens.length && tokens[index + 1][0] === "TEXT") {
+      tokens[index + 1] = ["TEXT", tokens[index + 1][1].replace(LEADING_WS_RE, "")];
+    }
+    let next: number;
+    if (tag === "if" && this.tagPermitted(tag)) {
+      const [result, after] = this.handleIf(tokens, index, context);
+      output.push(result);
+      next = after;
+    } else if (tag === "for" && this.tagPermitted(tag)) {
+      const [result, after] = this.handleFor(tokens, index, context);
+      output.push(result);
+      next = after;
+    } else {
+      const block = this.dispatchBlock(tokens, index, content, tag, context);
+      if (block.output !== undefined) output.push(block.output);
+      next = block.next;
+    }
+    if (stripA && next < tokens.length && tokens[next][0] === "TEXT") {
+      tokens[next] = ["TEXT", tokens[next][1].replace(LEADING_WS_RE, "")];
+    }
+    return next;
+  }
+
   private renderTokens(tokens: Token[], context: Record<string, unknown>): string {
     // Expose this instance's filter engine to the module-level evalExpr so a
     // filter pipe resolves at any expression depth with the right (custom)
@@ -2342,60 +2385,16 @@ export class Frond {
     let i = 0;
 
     while (i < tokens.length) {
-      const [ttype, raw] = tokens[i];
+      const [ttype] = tokens[i];
 
       if (ttype === "TEXT") {
-        output.push(raw);
-        i++;
+        i = this.renderTextToken(tokens, i, output);
       } else if (ttype === "COMMENT") {
         i++;
       } else if (ttype === "VAR") {
-        const [content, stripB, stripA] = stripTag(raw);
-        if (stripB && output.length > 0) {
-          output[output.length - 1] = output[output.length - 1].replace(TRAILING_WS_RE, "");
-        }
-
-        const result = this.evalVar(content, context);
-        output.push(result !== null && result !== undefined ? String(result) : "");
-
-        if (stripA && i + 1 < tokens.length && tokens[i + 1][0] === "TEXT") {
-          tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(LEADING_WS_RE, "")];
-        }
-        i++;
+        i = this.renderVarToken(tokens, i, context, output);
       } else if (ttype === "BLOCK") {
-        const [content, stripB, stripA] = stripTag(raw);
-        if (stripB && output.length > 0) {
-          output[output.length - 1] = output[output.length - 1].replace(TRAILING_WS_RE, "");
-        }
-
-        const parts = content.split(/\s+/);
-        const tag = parts[0] || "";
-
-        // Apply stripA before handlers consume body tokens
-        if (stripA && i + 1 < tokens.length && tokens[i + 1][0] === "TEXT") {
-          tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(LEADING_WS_RE, "")];
-        }
-
-        // Keep the two hottest block types on the direct path. The dispatcher
-        // remains responsible for sandboxed/rare tags, while ordinary loops and
-        // conditionals avoid an extra handler lookup on every iteration.
-        if (tag === "if" && this.tagPermitted(tag)) {
-          const [result, next] = this.handleIf(tokens, i, context);
-          output.push(result);
-          i = next;
-        } else if (tag === "for" && this.tagPermitted(tag)) {
-          const [result, next] = this.handleFor(tokens, i, context);
-          output.push(result);
-          i = next;
-        } else {
-          const block = this.dispatchBlock(tokens, i, content, tag, context);
-          if (block.output !== undefined) output.push(block.output);
-          i = block.next;
-        }
-
-        if (stripA && i < tokens.length && tokens[i][0] === "TEXT") {
-          tokens[i] = ["TEXT", tokens[i][1].replace(LEADING_WS_RE, "")];
-        }
+        i = this.renderBlockToken(tokens, i, context, output);
       } else {
         i++;
       }
