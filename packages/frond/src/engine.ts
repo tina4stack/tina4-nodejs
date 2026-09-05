@@ -2636,72 +2636,79 @@ export class Frond {
     return value;
   }
 
-  private handleIf(tokens: Token[], start: number, context: Record<string, unknown>): [string, number] {
-    const [content] = stripTag(tokens[start][1]);
-    const conditionExpr = content.slice(3).trim(); // Remove 'if '
+  private pushIfBranch(
+    branches: [string | null, Token[]][],
+    condition: string | null,
+    branchTokens: Token[],
+    stripBefore: boolean,
+  ): void {
+    if (stripBefore && branchTokens.length > 0 && branchTokens[branchTokens.length - 1][0] === "TEXT") {
+      const last = branchTokens[branchTokens.length - 1];
+      branchTokens[branchTokens.length - 1] = ["TEXT", last[1].replace(TRAILING_WS_RE, "")];
+    }
+    branches.push([condition, branchTokens]);
+  }
 
-    // Collect branches: [condition, tokens][]
+  private collectIfBranches(
+    tokens: Token[],
+    start: number,
+    conditionExpr: string,
+  ): { branches: [string | null, Token[]][]; next: number } {
     const branches: [string | null, Token[]][] = [];
     let currentTokens: Token[] = [];
     let currentCond: string | null = conditionExpr;
     let depth = 0;
     let i = start + 1;
-
     while (i < tokens.length) {
       const [ttype, raw] = tokens[i];
-      if (ttype === "BLOCK") {
-        const [tagContent, tagStripB, tagStripA] = stripTag(raw);
-        const tag = tagContent.split(/\s+/)[0] || "";
-
-        if (tag === "if") {
-          depth++;
-          currentTokens.push(tokens[i]);
-        } else if (tag === "endif" && depth > 0) {
-          depth--;
-          currentTokens.push(tokens[i]);
-        } else if (tag === "endif" && depth === 0) {
-          // Strip trailing whitespace from last body token if endif has strip_before
-          if (tagStripB && currentTokens.length > 0 && currentTokens[currentTokens.length - 1][0] === "TEXT") {
-            currentTokens[currentTokens.length - 1] = ["TEXT", currentTokens[currentTokens.length - 1][1].replace(TRAILING_WS_RE, "")];
-          }
-          branches.push([currentCond, currentTokens]);
-          // Apply stripA on token after endif
-          if (tagStripA && i + 1 < tokens.length && tokens[i + 1][0] === "TEXT") {
-            tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(LEADING_WS_RE, "")];
-          }
-          i++;
-          break;
-        } else if ((tag === "elseif" || tag === "elif") && depth === 0) {
-          if (tagStripB && currentTokens.length > 0 && currentTokens[currentTokens.length - 1][0] === "TEXT") {
-            currentTokens[currentTokens.length - 1] = ["TEXT", currentTokens[currentTokens.length - 1][1].replace(TRAILING_WS_RE, "")];
-          }
-          branches.push([currentCond, currentTokens]);
-          currentCond = tagContent.slice(tag.length).trim();
-          currentTokens = [];
-        } else if (tag === "else" && depth === 0) {
-          if (tagStripB && currentTokens.length > 0 && currentTokens[currentTokens.length - 1][0] === "TEXT") {
-            currentTokens[currentTokens.length - 1] = ["TEXT", currentTokens[currentTokens.length - 1][1].replace(TRAILING_WS_RE, "")];
-          }
-          branches.push([currentCond, currentTokens]);
-          currentCond = null; // else branch
-          currentTokens = [];
-        } else {
-          currentTokens.push(tokens[i]);
+      if (ttype !== "BLOCK") {
+        currentTokens.push(tokens[i]);
+        i++;
+        continue;
+      }
+      const [tagContent, tagStripB, tagStripA] = stripTag(raw);
+      const tag = tagContent.split(/\s+/)[0] || "";
+      if (tag === "if") {
+        depth++;
+        currentTokens.push(tokens[i]);
+      } else if (tag === "endif" && depth > 0) {
+        depth--;
+        currentTokens.push(tokens[i]);
+      } else if (tag === "endif") {
+        this.pushIfBranch(branches, currentCond, currentTokens, tagStripB);
+        if (tagStripA && i + 1 < tokens.length && tokens[i + 1][0] === "TEXT") {
+          tokens[i + 1] = ["TEXT", tokens[i + 1][1].replace(LEADING_WS_RE, "")];
         }
+        return { branches, next: i + 1 };
+      } else if ((tag === "elseif" || tag === "elif") && depth === 0) {
+        this.pushIfBranch(branches, currentCond, currentTokens, tagStripB);
+        currentCond = tagContent.slice(tag.length).trim();
+        currentTokens = [];
+      } else if (tag === "else" && depth === 0) {
+        this.pushIfBranch(branches, currentCond, currentTokens, tagStripB);
+        currentCond = null;
+        currentTokens = [];
       } else {
         currentTokens.push(tokens[i]);
       }
       i++;
     }
+    return { branches, next: i };
+  }
+
+  private handleIf(tokens: Token[], start: number, context: Record<string, unknown>): [string, number] {
+    const [content] = stripTag(tokens[start][1]);
+    const conditionExpr = content.slice(3).trim(); // Remove 'if '
+    const { branches, next } = this.collectIfBranches(tokens, start, conditionExpr);
 
     // Evaluate branches
     for (const [cond, branchTokens] of branches) {
       if (cond === null || evalComparison(cond, context, this.evalVarRaw.bind(this))) {
-        return [this.renderTokens([...branchTokens], context), i];
+        return [this.renderTokens([...branchTokens], context), next];
       }
     }
 
-    return ["", i];
+    return ["", next];
   }
 
   private collectForTokens(tokens: Token[], start: number): { bodyTokens: Token[]; elseTokens: Token[]; next: number } {
