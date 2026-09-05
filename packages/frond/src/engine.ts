@@ -2579,61 +2579,49 @@ export class Frond {
     return fn ? fn(value, ...args) : value;
   }
 
-  private evalVarInner(expr: string, context: Record<string, unknown>): unknown {
-    const [varName, filters] = parseFilterChain(expr);
+  private variablePermitted(varName: string): boolean {
+    if (!this._sandbox || this._allowedVars === null) return true;
+    const rootVar = varName.split(".")[0].split("[")[0].trim();
+    return !rootVar || rootVar === "loop" || this._allowedVars.has(rootVar);
+  }
 
-    // Sandbox: check variable access
-    if (this._sandbox && this._allowedVars !== null) {
-      const rootVar = varName.split(".")[0].split("[")[0].trim();
-      if (rootVar && !this._allowedVars.has(rootVar) && rootVar !== "loop") {
-        return ""; // Silently block
-      }
-    }
+  private resolveConcatenation(
+    expr: string,
+    context: Record<string, unknown>,
+  ): { handled: boolean; value: unknown } {
+    if (findOutsideQuotes(expr, "~") < 0) return { handled: false, value: undefined };
+    let value = evalExpr(expr, context);
+    if (value instanceof SafeString) return { handled: true, value: value.value };
+    if (this._autoEscape && typeof value === "string") value = htmlEscape(value);
+    return { handled: true, value };
+  }
 
-    // Concat precedence (#171): a top-level `~` means the whole expression is a
-    // concatenation, and `|` binds TIGHTER than `~`. parseFilterChain above
-    // wrongly glued the trailing `~ ...` onto the last filter, so evaluate the
-    // WHOLE expression through evalExpr (which resolves the filter pipe at the
-    // correct precedence, at any depth) and only auto-escape the result here.
-    if (findOutsideQuotes(expr, "~") >= 0) {
-      let concatValue = evalExpr(expr, context);
-      if (concatValue instanceof SafeString) return concatValue.value;
-      if (this._autoEscape && typeof concatValue === "string") {
-        concatValue = htmlEscape(concatValue);
-      }
-      return concatValue;
-    }
-
-    let value = evalExpr(varName, context);
-
-    let isSafe = false;
+  private applyRenderedFilters(
+    value: unknown,
+    filters: [string, unknown[]][],
+    context: Record<string, unknown>,
+  ): { value: unknown; safe: boolean } {
+    let safe = false;
     for (const [fname, rawArgs] of filters) {
       const args = rawArgs.map((a) => (a instanceof VarRef ? evalExpr(a.name, context) : a));
       if (fname === "raw" || fname === "safe") {
-        // Decide from what was permitted to RUN, not from what the source asked
-        // for. Marking the value safe here regardless meant a DENIED raw produced
-        // byte-identical output to an allowed one -- the allow-list entry that
-        // governs XSS escaping did nothing at all.
-        if (this.filterPermitted(fname)) isSafe = true;
+        if (this.filterPermitted(fname)) safe = true;
         continue;
       }
-      // escape/e filter marks output as safe (already escaped) -- but ONLY when it
-      // is permitted to run. Node's escape returns a plain string, so this flag is
-      // what suppresses auto-escaping; setting it for a DENIED escape emitted the
-      // value unescaped, having never escaped it.
-      if (fname === "escape" || fname === "e") {
-        if (this.filterPermitted(fname)) isSafe = true;
-      }
-
-      // Sandbox: check filter access
-      if (this._sandbox && this._allowedFilters !== null) {
-        if (!this._allowedFilters.has(fname)) {
-          continue; // Silently skip blocked filter
-        }
-      }
-
+      if ((fname === "escape" || fname === "e") && this.filterPermitted(fname)) safe = true;
+      if (!this.filterPermitted(fname)) continue;
       value = this.applyRenderedFilter(value, fname, args);
     }
+    return { value, safe };
+  }
+
+  private evalVarInner(expr: string, context: Record<string, unknown>): unknown {
+    const [varName, filters] = parseFilterChain(expr);
+    if (!this.variablePermitted(varName)) return "";
+    const concatenated = this.resolveConcatenation(expr, context);
+    if (concatenated.handled) return concatenated.value;
+    const applied = this.applyRenderedFilters(evalExpr(varName, context), filters, context);
+    let value = applied.value;
 
     // SafeString instances are already rendered/safe
     if (value instanceof SafeString) {
@@ -2641,7 +2629,7 @@ export class Frond {
     }
 
     // Auto-escape HTML unless marked safe or auto-escape is disabled
-    if (!isSafe && this._autoEscape && typeof value === "string") {
+    if (!applied.safe && this._autoEscape && typeof value === "string") {
       value = htmlEscape(value);
     }
 
