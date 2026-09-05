@@ -624,45 +624,51 @@ function resolvePathPart(value: unknown, key: string | number): { found: boolean
   return { found: true, value: typeof member === "function" ? member.call(value) : member };
 }
 
-function resolveVar(expr: string, context: Record<string, unknown>): unknown {
-  expr = expr.trim();
-  if ((expr.startsWith('"') && expr.endsWith('"')) || (expr.startsWith("'") && expr.endsWith("'"))) return expr.slice(1, -1);
-  if (NUMERIC_RE.test(expr)) return expr.includes(".") ? parseFloat(expr) : parseInt(expr, 10);
-  if (expr === "true") return true;
-  if (expr === "false") return false;
-  if (expr === "null" || expr === "none" || expr === "None") return null;
+function resolveLiteral(expr: string, context: Record<string, unknown>): { handled: boolean; value: unknown } {
+  if ((expr.startsWith('"') && expr.endsWith('"')) || (expr.startsWith("'") && expr.endsWith("'"))) {
+    return { handled: true, value: expr.slice(1, -1) };
+  }
+  if (NUMERIC_RE.test(expr)) return { handled: true, value: expr.includes(".") ? parseFloat(expr) : parseInt(expr, 10) };
+  if (expr === "true") return { handled: true, value: true };
+  if (expr === "false") return { handled: true, value: false };
+  if (expr === "null" || expr === "none" || expr === "None") return { handled: true, value: null };
   if (expr.startsWith("[") && expr.endsWith("]")) {
     const inner = expr.slice(1, -1).trim();
-    return inner === "" ? [] : splitArgs(inner).map(item => evalExpr(item.trim(), context));
+    return { handled: true, value: inner === "" ? [] : splitArgs(inner).map(item => evalExpr(item.trim(), context)) };
   }
+  return { handled: false, value: undefined };
+}
+
+function resolvePathSegment(
+  value: unknown,
+  part: string,
+  isBracket: boolean,
+  context: Record<string, unknown>,
+): { found: boolean; value: unknown } {
+  if (value === null || value === undefined) return { found: false, value: null };
+  const method = resolveMethodPart(value, part, context);
+  if (part.match(METHOD_CALL_RE)) return method.matched ? { found: true, value: method.value } : { found: false, value: null };
+  const isQuotedPart = (part.startsWith('"') && part.endsWith('"')) || (part.startsWith("'") && part.endsWith("'"));
+  if (isBracket && part.includes(":") && !isQuotedPart) {
+    const [rawStart, rawEnd] = part.split(":", 2);
+    const start = rawStart.trim() ? parseInt(String(evalExpr(rawStart.trim(), context)), 10) : undefined;
+    const end = rawEnd.trim() ? parseInt(String(evalExpr(rawEnd.trim(), context)), 10) : undefined;
+    if (Array.isArray(value)) return { found: true, value: value.slice(start ?? 0, end) };
+    if (typeof value === "string") return { found: true, value: value.slice(start ?? 0, end) };
+    return { found: false, value: null };
+  }
+  return resolvePathPart(value, resolvePathKey(part, isBracket, context));
+}
+
+function resolveVar(expr: string, context: Record<string, unknown>): unknown {
+  expr = expr.trim();
+  const literal = resolveLiteral(expr, context);
+  if (literal.handled) return literal.value;
 
   const [parts, fromBracket] = parsePath(expr);
   let value: unknown = context;
   for (let pi = 0; pi < parts.length; pi++) {
-    const part = parts[pi];
-    const isBracket = fromBracket[pi];
-    if (value === null || value === undefined) return null;
-
-    const method = resolveMethodPart(value, part, context);
-    if (part.match(METHOD_CALL_RE)) {
-      if (!method.matched) return null;
-      value = method.value;
-      continue;
-    }
-
-    const isQuotedPart = (part.startsWith('"') && part.endsWith('"')) ||
-                         (part.startsWith("'") && part.endsWith("'"));
-    if (isBracket && part.includes(":") && !isQuotedPart) {
-      const [rawStart, rawEnd] = part.split(":", 2);
-      const start = rawStart.trim() ? parseInt(String(evalExpr(rawStart.trim(), context)), 10) : undefined;
-      const end = rawEnd.trim() ? parseInt(String(evalExpr(rawEnd.trim(), context)), 10) : undefined;
-      if (Array.isArray(value)) value = value.slice(start ?? 0, end);
-      else if (typeof value === "string") value = value.slice(start ?? 0, end);
-      else return null;
-      continue;
-    }
-
-    const result = resolvePathPart(value, resolvePathKey(part, isBracket, context));
+    const result = resolvePathSegment(value, parts[pi], fromBracket[pi], context);
     if (!result.found) return null;
     value = result.value;
   }
