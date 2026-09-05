@@ -334,6 +334,113 @@ class DrizzleBench extends FrameworkBench {
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
+type FrameworkClass = new () => FrameworkBench;
+type BenchResults = Record<string, Record<string, number | null>>;
+
+async function runFramework(
+  Cls: FrameworkClass,
+  order: string[],
+  results: BenchResults,
+  rowCounts: Record<string, number | null>,
+): Promise<string[]> {
+  let fw: FrameworkBench;
+  try {
+    fw = new Cls();
+  } catch (e) {
+    console.log(`  [${Cls.name}] FAILED to init: ${(e as Error).message}`);
+    return [];
+  }
+  console.log(`  [${fw.name}] Setting up...`);
+  try {
+    await fw.setup();
+  } catch (e) {
+    console.log(`  [${fw.name}] SKIP (setup failed: ${(e as Error).message})`);
+    return [];
+  }
+  try {
+    try {
+      rowCounts[fw.name] = await fw.selectAllRowCount();
+      console.log(`  [${fw.name}] Select-all materialises ${rowCounts[fw.name]} rows`);
+    } catch (e) {
+      rowCounts[fw.name] = null;
+      console.log(`  [${fw.name}] could not report Select-all row count: ${(e as Error).message}`);
+    }
+    order.push(fw.name);
+    results[fw.name] = {};
+    for (const [label, operation] of fw.benchmarks()) {
+      try {
+        results[fw.name][label] = await operation();
+      } catch (e) {
+        results[fw.name][label] = null;
+        console.log(`    ${label.padEnd(20)} FAILED: ${(e as Error).message}`);
+      }
+    }
+    return fw.benchmarks().map(([label]) => label);
+  } finally {
+    await fw.cleanup();
+  }
+}
+
+function assertEqualWork(rowCounts: Record<string, number | null>): boolean {
+  const seen = [...new Set(Object.values(rowCounts).filter((c): c is number => c !== null))];
+  if (seen.length <= 1) return true;
+  console.log("\n  !! EQUAL-WORK CHECK FAILED - performance table withheld.");
+  for (const [name, count] of Object.entries(rowCounts)) console.log(`     ${name.padEnd(16)} Select-all rows: ${count}`);
+  console.log("     The frameworks materialised different row counts, so these timings");
+  console.log("     are not comparable. Fix the read call that truncates, then re-run.\n");
+  return false;
+}
+
+function printPerformanceTable(
+  order: string[],
+  benchNames: string[],
+  results: BenchResults,
+): void {
+  console.log("\n" + "-".repeat(100));
+  process.stdout.write("  " + "Operation".padEnd(22));
+  for (const name of order) process.stdout.write(name.padStart(16));
+  console.log("\n" + "-".repeat(100));
+  for (const label of benchNames) {
+    process.stdout.write("  " + label.padEnd(22));
+    const values = order.map((name) => results[name][label]);
+    const best = values.reduce<number | null>((current, value) =>
+      value !== null && (current === null || value < current) ? value : current, null);
+    for (const value of values) {
+      if (value === null) process.stdout.write("FAIL".padStart(16));
+      else process.stdout.write((value.toFixed(3) + (value === best ? " *" : "  ")).padStart(16));
+    }
+    console.log("");
+  }
+  console.log("-".repeat(100));
+  console.log("  * = fastest\n");
+}
+
+function average(values: Record<string, number | null>): number {
+  const present = Object.values(values).filter((value): value is number => value !== null);
+  return present.reduce((sum, value) => sum + value, 0) / Math.max(1, present.length);
+}
+
+function printOverhead(
+  order: string[],
+  results: BenchResults,
+  baseline: string,
+  differentDriver: Set<string>,
+): void {
+  if (!results[baseline]) return;
+  const baseAvg = average(results[baseline]);
+  console.log("  FRAMEWORK OVERHEAD vs raw node:sqlite (same driver = true framework cost):");
+  for (const name of order) {
+    if (name === baseline || differentDriver.has(name)) continue;
+    const pct = (average(results[name]) / baseAvg - 1) * 100;
+    console.log(`    ${name.padEnd(16)} ${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`);
+  }
+  console.log("");
+  console.log("  NOTE: Knex and Drizzle run on the better-sqlite3 native driver (isolated to");
+  console.log("  this benchmarks/ dir -- NEVER a framework dependency), which is faster than");
+  console.log("  node:sqlite. Their times therefore include a driver advantage over node:sqlite;");
+  console.log("  read them from the table above, not as overhead vs a node:sqlite floor.\n");
+}
+
 async function main(): Promise<void> {
   console.log("\n" + "=".repeat(100));
   console.log("  NODE FRAMEWORK COMPARISON: tina4_nodejs vs node:sqlite vs Knex vs Drizzle");
@@ -353,75 +460,18 @@ async function main(): Promise<void> {
   let benchNames: string[] = [];
 
   for (const Cls of classes) {
-    let fw: FrameworkBench;
-    try { fw = new Cls(); } catch (e) { console.log(`  [${Cls.name}] FAILED to init: ${(e as Error).message}`); continue; }
-    console.log(`  [${fw.name}] Setting up...`);
-    try { await fw.setup(); } catch (e) { console.log(`  [${fw.name}] SKIP (setup failed: ${(e as Error).message})`); continue; }
-
-    try {
-      rowCounts[fw.name] = await fw.selectAllRowCount();
-      console.log(`  [${fw.name}] Select-all materialises ${rowCounts[fw.name]} rows`);
-    } catch (e) { rowCounts[fw.name] = null; console.log(`  [${fw.name}] could not report Select-all row count: ${(e as Error).message}`); }
-
-    order.push(fw.name);
-    results[fw.name] = {};
-    for (const [label, op] of fw.benchmarks()) {
-      try { results[fw.name][label] = await op(); }
-      catch (e) { results[fw.name][label] = null; console.log(`    ${label.padEnd(20)} FAILED: ${(e as Error).message}`); }
-    }
-    if (benchNames.length === 0) benchNames = fw.benchmarks().map(([l]) => l);
-    await fw.cleanup();
+    const names = await runFramework(Cls, order, results, rowCounts);
+    if (benchNames.length === 0) benchNames = names;
   }
 
   // ---- Equal-work gate ----
-  const seen = [...new Set(Object.values(rowCounts).filter((c): c is number => c !== null))];
-  if (seen.length > 1) {
-    console.log("\n  !! EQUAL-WORK CHECK FAILED - performance table withheld.");
-    for (const [n, c] of Object.entries(rowCounts)) console.log(`     ${n.padEnd(16)} Select-all rows: ${c}`);
-    console.log("     The frameworks materialised different row counts, so these timings");
-    console.log("     are not comparable. Fix the read call that truncates, then re-run.\n");
-    process.exit(1);
-  }
+  if (!assertEqualWork(rowCounts)) process.exit(1);
 
   // ---- Performance table ----
-  console.log("\n" + "-".repeat(100));
-  process.stdout.write("  " + "Operation".padEnd(22));
-  for (const name of order) process.stdout.write(name.padStart(16));
-  console.log("\n" + "-".repeat(100));
-
-  for (const label of benchNames) {
-    process.stdout.write("  " + label.padEnd(22));
-    let best: number | null = null;
-    for (const name of order) { const v = results[name][label]; if (v !== null && (best === null || v < best)) best = v; }
-    for (const name of order) {
-      const v = results[name][label];
-      if (v === null) process.stdout.write("FAIL".padStart(16));
-      else process.stdout.write((v.toFixed(3) + (v === best ? " *" : "  ")).padStart(16));
-    }
-    console.log("");
-  }
-  console.log("-".repeat(100));
-  console.log("  * = fastest\n");
+  printPerformanceTable(order, benchNames, results);
 
   // ---- Overhead: only the same-driver pair (Tina4 vs its own node:sqlite) ----
-  if (results[baseline]) {
-    const avg = (o: Record<string, number | null>) => {
-      const vs = Object.values(o).filter((v): v is number => v !== null);
-      return vs.reduce((a, b) => a + b, 0) / Math.max(1, vs.length);
-    };
-    const baseAvg = avg(results[baseline]);
-    console.log("  FRAMEWORK OVERHEAD vs raw node:sqlite (same driver = true framework cost):");
-    for (const name of order) {
-      if (name === baseline || differentDriver.has(name)) continue;
-      const pct = (avg(results[name]) / baseAvg - 1) * 100;
-      console.log(`    ${name.padEnd(16)} ${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`);
-    }
-    console.log("");
-    console.log("  NOTE: Knex and Drizzle run on the better-sqlite3 native driver (isolated to");
-    console.log("  this benchmarks/ dir -- NEVER a framework dependency), which is faster than");
-    console.log("  node:sqlite. Their times therefore include a driver advantage over node:sqlite;");
-    console.log("  read them from the table above, not as overhead vs a node:sqlite floor.\n");
-  }
+  printOverhead(order, results, baseline, differentDriver);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
