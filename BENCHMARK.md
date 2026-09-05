@@ -64,9 +64,9 @@ not a win. Closing this gap is tracked as the ahead-of-time compile layer (ADR-0
 Reproduce: `cd benchmarks && npm install && npx tsx benchmarks/benchTemplates.ts`
 
 
-## 2. Feature Comparison (41 of 98 built-in features)
+## 2. Feature Comparison (41 of 140 cataloged features)
 
-Tina4 ships **98 built-in features**. The table below compares the subset that has a
+Tina4 ships **140 cataloged features**. The table below compares the subset that has a
 meaningful equivalent in the competing frameworks, so it is a like-for-like comparison
 rather than the full inventory. Everything listed ships with the core install, with no
 extra packages needed.

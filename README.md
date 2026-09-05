@@ -108,7 +108,7 @@ Benchmarked with `wrk`: 5,000 requests, 50 concurrent, median of 3 runs:
 | Raw `node:http` | 91,110 | 0 | 1 |
 | **Tina4 Node.js** | **84,771** | 0 | 55 |
 
-Tina4 Node.js runs at **93% of raw Node.js speed** while providing 98 built-in features, a zero-overhead architecture.
+Tina4 Node.js runs at **93% of raw Node.js speed** while providing 140 cataloged features, a zero-overhead architecture.
 
 **Across all 4 Tina4 implementations:**
 
@@ -122,7 +122,7 @@ Tina4 Node.js runs at **93% of raw Node.js speed** while providing 98 built-in f
 
 ## Cross-Framework Parity
 
-Tina4 ships identical features across four languages: same architecture, same conventions, same 98 features:
+Tina4 ships identical features across four languages: same architecture, same conventions, the same 140 cataloged features:
 
 | | Python | PHP | Ruby | Node.js |
 |---|--------|-----|------|---------|
