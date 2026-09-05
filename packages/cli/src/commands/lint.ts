@@ -223,6 +223,86 @@ function resolveNpm(): string | null {
   return null;
 }
 
+interface EslintSetup {
+  bin: string | null;
+  config: string | null;
+}
+
+function bootstrapEslint(cwd: string, noInstall: boolean): EslintSetup {
+  let bin = resolveEslintBin(cwd);
+  let config = findEslintConfig(cwd);
+  if (noInstall || (bin && config)) return { bin, config };
+  const npm = resolveNpm();
+  if (!npm) {
+    console.log("  · npm not found — using the zero-dependency baseline.");
+    return { bin, config };
+  }
+  if (!bin) {
+    console.log("  · installing eslint (npm i -D eslint @eslint/js typescript-eslint)...");
+    const rc = spawnSync(npm, ["install", "-D", "eslint", "@eslint/js", "typescript-eslint"], { cwd, stdio: "inherit" }).status;
+    if (rc === 0) bin = resolveEslintBin(cwd);
+    else console.log("  · could not install eslint — using the zero-dependency baseline.");
+  }
+  if (bin && !config && hasPackage(cwd, "@eslint/js") && hasPackage(cwd, "typescript-eslint")) {
+    const scaffold = join(cwd, ESLINT_SCAFFOLD_FILE);
+    try {
+      writeFileSync(scaffold, ESLINT_SCAFFOLD, "utf-8");
+      config = scaffold;
+      console.log(`  · scaffolded ${ESLINT_SCAFFOLD_FILE} (@eslint/js + typescript-eslint recommended).`);
+    } catch (err) {
+      console.log(`  · could not scaffold ${ESLINT_SCAFFOLD_FILE} (${err instanceof Error ? err.message : String(err)}).`);
+    }
+  }
+  return { bin, config };
+}
+
+function runEslint(cwd: string, files: string[], fix: boolean, bin: string): void {
+  const label = fix ? "eslint --fix" : "eslint";
+  const eslintArgs = [bin, ...files, ...(fix ? ["--fix"] : [])];
+  const code = spawnSync(process.execPath, eslintArgs, { cwd, stdio: "inherit" }).status ?? 1;
+  if (code !== 0) {
+    console.log(`  ✗ lint failed — ${files.length} file(s) [${label}]`);
+    process.exit(1);
+  }
+  console.log(`  ✓ lint clean — ${files.length} file(s) [${label}]`);
+  process.exit(0);
+}
+
+function runTypescript(cwd: string, files: string[]): boolean {
+  const tscBin = resolvePackageBin(cwd, "typescript", "bin/tsc");
+  if (!tscBin) return false;
+  const code = spawnSync(process.execPath, [tscBin, "--noEmit"], { cwd, stdio: "inherit" }).status ?? 1;
+  if (code !== 0) {
+    console.log(`  ✗ lint failed — ${files.length} file(s) [tsc]`);
+    process.exit(1);
+  }
+  console.log(`  ✓ lint clean — ${files.length} file(s) [tsc]`);
+  process.exit(0);
+}
+
+function runJavaScript(cwd: string, files: string[]): void {
+  const jsFiles = files.filter((f) => JS_EXTENSIONS.some((ext) => f.endsWith(ext)));
+  if (jsFiles.length === 0) {
+    console.log("  lint: no JavaScript files to check — add tsconfig.json + typescript to type-check .ts files.");
+    process.exit(0);
+  }
+  let syntaxErrors = 0;
+  for (const file of jsFiles) {
+    const result = spawnSync(process.execPath, ["--check", file], { cwd, encoding: "utf-8" });
+    if ((result.status ?? 1) === 0) continue;
+    const stderr = (result.stderr || "").trim();
+    const detail = stderr.split("\n").reverse().find((line) => line.includes("Error:")) || "syntax error";
+    console.log(`  ✗ ${relative(cwd, file)}: ${detail.trim()}`);
+    syntaxErrors++;
+  }
+  if (syntaxErrors > 0) {
+    console.log(`  ✗ lint failed — ${syntaxErrors} syntax error(s) in ${jsFiles.length} file(s) [node --check]`);
+    process.exit(1);
+  }
+  console.log(`  ✓ lint clean — ${jsFiles.length} file(s) [node --check]`);
+  process.exit(0);
+}
+
 /**
  * Lint the project's source. Exits 0 = clean, 1 = findings (parity with the
  * Python master and with `tina4nodejs test`'s exit-code contract).
@@ -231,130 +311,16 @@ export function runLint(args: string[]): void {
   const fix = args.includes("--fix");
   const noInstall = args.includes("--no-install");
   const cwd = process.cwd();
-
   const files = collectAppFiles(cwd);
   if (files.length === 0) {
     console.log("  lint: nothing to lint (no src/ or app.ts).");
     process.exit(0);
   }
-
-  let eslintBin = resolveEslintBin(cwd);
-  let eslintConfig = findEslintConfig(cwd);
-
-  // ── Silent on-demand bootstrap ──────────────────────────────────────
-  // Running `tina4 lint` is the consent to add eslint as a DEV dependency of the
-  // PROJECT and scaffold a minimal flat config. --no-install opts out (CI /
-  // offline) and falls through to the zero-dependency baseline. We only bootstrap
-  // what is missing, and only scaffold a config once eslint is actually available
-  // to use it (so a failed install never leaves a stray eslint.config.js).
-  if (!noInstall && (!eslintBin || !eslintConfig)) {
-    const npm = resolveNpm();
-    if (!npm) {
-      console.log("  · npm not found — using the zero-dependency baseline.");
-    } else {
-      if (!eslintBin) {
-        console.log("  · installing eslint (npm i -D eslint @eslint/js typescript-eslint)...");
-        const rc = spawnSync(npm, ["install", "-D", "eslint", "@eslint/js", "typescript-eslint"], {
-          cwd,
-          stdio: "inherit",
-        }).status;
-        if (rc === 0) {
-          eslintBin = resolveEslintBin(cwd);
-        } else {
-          console.log("  · could not install eslint — using the zero-dependency baseline.");
-        }
-      }
-      // Scaffold ONLY once all three the config imports are on disk (eslint bin +
-      // @eslint/js + typescript-eslint), so a partial/failed install never leaves
-      // an eslint.config.js that cannot load.
-      if (
-        eslintBin && !eslintConfig &&
-        hasPackage(cwd, "@eslint/js") && hasPackage(cwd, "typescript-eslint")
-      ) {
-        const scaffold = join(cwd, ESLINT_SCAFFOLD_FILE);
-        try {
-          writeFileSync(scaffold, ESLINT_SCAFFOLD, "utf-8");
-          eslintConfig = scaffold;
-          console.log(`  · scaffolded ${ESLINT_SCAFFOLD_FILE} (@eslint/js + typescript-eslint recommended).`);
-        } catch (err) {
-          console.log(
-            `  · could not scaffold ${ESLINT_SCAFFOLD_FILE} (${err instanceof Error ? err.message : String(err)}).`,
-          );
-        }
-      }
-    }
-  }
-
-  // ── eslint: the project's own linter (installed dev-only on demand) ──
-  // Only when a config exists AND eslint resolves from the project. eslint reports
-  // syntax errors too, so when present it is the entire pass.
-  if (eslintBin && eslintConfig) {
-    const label = fix ? "eslint --fix" : "eslint";
-    const eslintArgs = [eslintBin, ...files, ...(fix ? ["--fix"] : [])];
-    const code = spawnSync(process.execPath, eslintArgs, { cwd, stdio: "inherit" }).status ?? 1;
-    if (code !== 0) {
-      console.log(`  ✗ lint failed — ${files.length} file(s) [${label}]`);
-      process.exit(1);
-    }
-    console.log(`  ✓ lint clean — ${files.length} file(s) [${label}]`);
-    process.exit(0);
-  }
-
-  // From here on nothing can autofix — say so once when --fix was asked for.
+  const eslint = bootstrapEslint(cwd, noInstall);
+  if (eslint.bin && eslint.config) return runEslint(cwd, files, fix, eslint.bin);
   if (fix) {
     console.log("  · --fix needs eslint — the baseline check has no autofix.");
   }
-
-  // ── Baseline (TypeScript): the project's own `tsc --noEmit` ──────────
-  // Every tina4-nodejs project ships tsconfig.json + typescript. `--noEmit` forces
-  // a type+syntax check that writes NOTHING (the project's tsconfig may set outDir,
-  // so this must never emit). tsc reports syntax errors too. Run from cwd so tsc
-  // reads THIS tsconfig.json; diagnostics stream straight through.
-  const hasTsconfig = existsSync(join(cwd, "tsconfig.json"));
-  const tscBin = hasTsconfig ? resolvePackageBin(cwd, "typescript", "bin/tsc") : null;
-  if (tscBin) {
-    const code = spawnSync(process.execPath, [tscBin, "--noEmit"], { cwd, stdio: "inherit" }).status ?? 1;
-    if (code !== 0) {
-      console.log(`  ✗ lint failed — ${files.length} file(s) [tsc]`);
-      process.exit(1);
-    }
-    console.log(`  ✓ lint clean — ${files.length} file(s) [tsc]`);
-    process.exit(0);
-  }
-
-  // ── Baseline (plain JS): stdlib `node --check` over .js/.mjs/.cjs ────
-  // Ships with node — zero dependency. A full syntax parse that never runs the
-  // code. TypeScript files are out of its reach (they belong to the tsc path).
-  const jsFiles = files.filter((f) => JS_EXTENSIONS.some((ext) => f.endsWith(ext)));
-  if (jsFiles.length === 0) {
-    console.log(
-      "  lint: no JavaScript files to check — add tsconfig.json + typescript to type-check .ts files.",
-    );
-    process.exit(0);
-  }
-
-  let syntaxErrors = 0;
-  for (const file of jsFiles) {
-    const result = spawnSync(process.execPath, ["--check", file], { cwd, encoding: "utf-8" });
-    if ((result.status ?? 1) !== 0) {
-      const stderr = (result.stderr || "").trim();
-      // node --check ends its stderr with a `SyntaxError: ...` line — surface it.
-      const detail =
-        stderr
-          .split("\n")
-          .reverse()
-          .find((line) => line.includes("Error:")) || "syntax error";
-      console.log(`  ✗ ${relative(cwd, file)}: ${detail.trim()}`);
-      syntaxErrors++;
-    }
-  }
-
-  if (syntaxErrors > 0) {
-    console.log(
-      `  ✗ lint failed — ${syntaxErrors} syntax error(s) in ${jsFiles.length} file(s) [node --check]`,
-    );
-    process.exit(1);
-  }
-  console.log(`  ✓ lint clean — ${jsFiles.length} file(s) [node --check]`);
-  process.exit(0);
+  if (existsSync(join(cwd, "tsconfig.json")) && runTypescript(cwd, files)) return;
+  runJavaScript(cwd, files);
 }
