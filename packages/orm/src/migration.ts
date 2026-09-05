@@ -811,6 +811,85 @@ export function parseSetTerm(statement: string): string | null {
   return m ? m[1] : null;
 }
 
+interface SplitState {
+  sql: string;
+  statements: string[];
+  current: string;
+  delimiter: string;
+  dlen: number;
+  i: number;
+  inDollarBlock: boolean;
+  inSlashBlock: boolean;
+}
+
+function consumeQuotedSql(state: SplitState, quote: string): void {
+  state.current += quote;
+  state.i += 1;
+  while (state.i < state.sql.length) {
+    if (state.sql[state.i] === quote && state.sql[state.i + 1] === quote) {
+      state.current += quote + quote;
+      state.i += 2;
+    } else {
+      state.current += state.sql[state.i];
+      state.i += 1;
+      if (state.sql[state.i - 1] === quote) break;
+    }
+  }
+}
+
+function consumeSpecialSqlToken(state: SplitState): boolean {
+  const { sql, i } = state;
+  const ch = sql[i];
+  if (!state.inSlashBlock && ch === "$" && sql[i + 1] === "$") {
+    state.current += "$$";
+    state.i += 2;
+    state.inDollarBlock = !state.inDollarBlock;
+    return true;
+  }
+  if (!state.inDollarBlock && ch === "/" && sql[i + 1] === "/" && !(i > 0 && sql[i - 1] === ":")) {
+    state.current += "//";
+    state.i += 2;
+    state.inSlashBlock = !state.inSlashBlock;
+    return true;
+  }
+  if (state.inDollarBlock || state.inSlashBlock) {
+    state.current += ch;
+    state.i += 1;
+    return true;
+  }
+  if (ch === "/" && sql[i + 1] === "*") {
+    const end = sql.indexOf("*/", i + 2);
+    state.i = end === -1 ? sql.length : end + 2;
+    return true;
+  }
+  if (ch === "-" && sql[i + 1] === "-") {
+    const end = sql.indexOf("\n", i + 2);
+    state.i = end === -1 ? sql.length : end;
+    return true;
+  }
+  if (ch === "'" || ch === '"') {
+    consumeQuotedSql(state, ch);
+    return true;
+  }
+  return false;
+}
+
+function consumeSqlDelimiter(state: SplitState): boolean {
+  if (state.dlen === 0 || !state.sql.startsWith(state.delimiter, state.i)) return false;
+  state.i += state.dlen;
+  const statement = state.current.trim();
+  state.current = "";
+  if (!statement) return true;
+  const newTerm = parseSetTerm(statement);
+  if (newTerm !== null) {
+    state.delimiter = newTerm;
+    state.dlen = newTerm.length;
+  } else {
+    state.statements.push(statement);
+  }
+  return true;
+}
+
 /**
  * Split SQL text into individual statements with a single-pass, quote- and
  * comment-aware scanner. The split decision is made character by character so
@@ -836,133 +915,24 @@ export function parseSetTerm(statement: string): string | null {
  * Mirrors the tina4-python `_split_statements` / tina4-php / tina4-ruby scanner (parity).
  */
 export function splitStatements(sql: string, delimiter = ";"): string[] {
-  // Normalize smart/curly quotes to straight ASCII first, so SQL pasted from
-  // an editor/doc (which converts " → “ ” and ' → ‘ ’) actually runs.
-  sql = normalizeQuotes(sql);
-
-  const statements: string[] = [];
-  let current = "";
-  const n = sql.length;
-  // Active statement terminator. Starts as the delimiter argument; a SET TERM
-  // directive can switch it mid-script (dlen recomputed) so a statement whose
-  // own body contains the default terminator stays intact.
-  let dlen = delimiter.length;
-  let i = 0;
-  let inDollarBlock = false;
-  let inSlashBlock = false;
-
-  while (i < n) {
-    const ch = sql[i];
-
-    // $$ … $$ stored-proc block (toggle).
-    if (!inSlashBlock && ch === "$" && i + 1 < n && sql[i + 1] === "$") {
-      current += "$$";
-      i += 2;
-      inDollarBlock = !inDollarBlock;
-      continue;
-    }
-
-    // // … // stored-proc block (toggle) — but NOT a `://` URL scheme.
-    if (
-      !inDollarBlock && ch === "/" && i + 1 < n && sql[i + 1] === "/" &&
-      !(i > 0 && sql[i - 1] === ":")
-    ) {
-      current += "//";
-      i += 2;
-      inSlashBlock = !inSlashBlock;
-      continue;
-    }
-
-    // Inside a stored-proc block: consume verbatim (inner ; never splits).
-    if (inDollarBlock || inSlashBlock) {
-      current += ch;
-      i += 1;
-      continue;
-    }
-
-    // Block comment /* … */ — stripped.
-    if (ch === "/" && i + 1 < n && sql[i + 1] === "*") {
-      const end = sql.indexOf("*/", i + 2);
-      i = end !== -1 ? end + 2 : n;
-      continue;
-    }
-
-    // Line comment -- … — stripped to end of line; the newline is left for the
-    // next iteration so line structure (and NEXT-line boundaries) survive.
-    if (ch === "-" && i + 1 < n && sql[i + 1] === "-") {
-      const end = sql.indexOf("\n", i + 2);
-      i = end !== -1 ? end : n;
-      continue;
-    }
-
-    // Single-quoted string literal — '' escapes a quote. Copied verbatim.
-    if (ch === "'") {
-      current += "'";
-      i += 1;
-      while (i < n) {
-        if (sql[i] === "'" && i + 1 < n && sql[i + 1] === "'") {
-          current += "''";
-          i += 2;
-        } else if (sql[i] === "'") {
-          current += "'";
-          i += 1;
-          break;
-        } else {
-          current += sql[i];
-          i += 1;
-        }
-      }
-      continue;
-    }
-
-    // Double-quoted identifier — "" escapes a quote. Same verbatim handling.
-    if (ch === '"') {
-      current += '"';
-      i += 1;
-      while (i < n) {
-        if (sql[i] === '"' && i + 1 < n && sql[i + 1] === '"') {
-          current += '""';
-          i += 2;
-        } else if (sql[i] === '"') {
-          current += '"';
-          i += 1;
-          break;
-        } else {
-          current += sql[i];
-          i += 1;
-        }
-      }
-      continue;
-    }
-
-    // Statement delimiter — only reached outside blocks/comments/strings. A
-    // SET TERM directive switches the active terminator and is consumed (never
-    // emitted); any other completed statement is collected.
-    if (dlen > 0 && sql.startsWith(delimiter, i)) {
-      i += dlen;
-      const stmt = current.trim();
-      current = "";
-      if (stmt) {
-        const newTerm = parseSetTerm(stmt);
-        if (newTerm !== null) {
-          delimiter = newTerm;
-          dlen = delimiter.length;
-        } else {
-          statements.push(stmt);
-        }
-      }
-      continue;
-    }
-
-    current += ch;
-    i += 1;
+  const state: SplitState = {
+    sql: normalizeQuotes(sql),
+    statements: [],
+    current: "",
+    delimiter,
+    dlen: delimiter.length,
+    i: 0,
+    inDollarBlock: false,
+    inSlashBlock: false,
+  };
+  while (state.i < state.sql.length) {
+    if (consumeSpecialSqlToken(state) || consumeSqlDelimiter(state)) continue;
+    state.current += state.sql[state.i];
+    state.i += 1;
   }
-
-  // Trailing statement (may not end with a delimiter). A trailing SET TERM
-  // directive is a no-op — consume it, don't emit it.
-  const stmt = current.trim();
-  if (stmt && parseSetTerm(stmt) === null) statements.push(stmt);
-  return statements;
+  const trailing = state.current.trim();
+  if (trailing && parseSetTerm(trailing) === null) state.statements.push(trailing);
+  return state.statements;
 }
 
 /**
