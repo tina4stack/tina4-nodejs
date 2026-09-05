@@ -69,18 +69,10 @@ function decodeBase64Url(value: string, name: string): Buffer {
   return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
 
-function publicCoordinates(publicKey: Buffer): { x: string; y: string } {
-  if (publicKey.length !== 65 || publicKey[0] !== 0x04) {
-    throw new PushError("P-256 public keys must be 65-byte uncompressed points");
-  }
-  return {
-    x: encodeBase64Url(publicKey.subarray(1, 33)),
-    y: encodeBase64Url(publicKey.subarray(33, 65)),
-  };
-}
-
 function vapidPrivateKey(rawPrivate: Buffer, rawPublic: Buffer) {
-  const { x, y } = publicCoordinates(rawPublic);
+  if (rawPublic.length !== 65 || rawPublic[0] !== 0x04) throw new PushError("P-256 public keys must be 65-byte uncompressed points");
+  const x = encodeBase64Url(rawPublic.subarray(1, 33));
+  const y = encodeBase64Url(rawPublic.subarray(33, 65));
   return createPrivateKey({
     key: {
       kty: "EC",
@@ -184,16 +176,6 @@ function vapidToken(endpoint: string, subject: string, rawPrivate: Buffer, rawPu
   return `${signingInput}.${encodeBase64Url(signature)}`;
 }
 
-function resolveKey(value: string | undefined, envName: string): string | undefined {
-  const resolved = value ?? process.env[envName];
-  return resolved?.trim() || undefined;
-}
-
-function disabledByEnv(): boolean {
-  const value = process.env.TINA4_WEB_PUSH?.trim().toLowerCase();
-  return value !== undefined && ["0", "false", "off", "no"].includes(value);
-}
-
 export function generateVapidKeys(): { publicKey: string; privateKey: string } {
   const ecdh = createECDH(CURVE);
   ecdh.generateKeys();
@@ -209,11 +191,11 @@ export class Push {
 
   constructor(options: PushOptions = {}) {
     this.options = { ...options };
-    if (disabledByEnv()) throw new PushError("Web Push is disabled by TINA4_WEB_PUSH");
+    if (["0", "false", "off", "no"].includes((process.env.TINA4_WEB_PUSH ?? "").trim().toLowerCase())) throw new PushError("Web Push is disabled by TINA4_WEB_PUSH");
     const configured = [
-      resolveKey(options.subject, "TINA4_VAPID_SUBJECT"),
-      resolveKey(options.publicKey, "TINA4_VAPID_PUBLIC"),
-      resolveKey(options.privateKey, "TINA4_VAPID_PRIVATE"),
+      (options.subject ?? process.env.TINA4_VAPID_SUBJECT)?.trim(),
+      (options.publicKey ?? process.env.TINA4_VAPID_PUBLIC)?.trim(),
+      (options.privateKey ?? process.env.TINA4_VAPID_PRIVATE)?.trim(),
     ].some((value) => value !== undefined);
     if (configured) this.requireConfiguration();
   }
@@ -222,9 +204,9 @@ export class Push {
   static generateKeys(): { publicKey: string; privateKey: string } { return generateVapidKeys(); }
 
   private requireConfiguration(): { subject: string; publicKey: string; privateKey: string } {
-    const subject = resolveKey(this.options.subject, "TINA4_VAPID_SUBJECT");
-    const publicKey = resolveKey(this.options.publicKey, "TINA4_VAPID_PUBLIC");
-    const privateKey = resolveKey(this.options.privateKey, "TINA4_VAPID_PRIVATE");
+    const subject = (this.options.subject ?? process.env.TINA4_VAPID_SUBJECT)?.trim();
+    const publicKey = (this.options.publicKey ?? process.env.TINA4_VAPID_PUBLIC)?.trim();
+    const privateKey = (this.options.privateKey ?? process.env.TINA4_VAPID_PRIVATE)?.trim();
     const missing = [
       subject ? undefined : "TINA4_VAPID_SUBJECT",
       publicKey ? undefined : "TINA4_VAPID_PUBLIC",
@@ -242,42 +224,36 @@ export class Push {
     return { subject, publicKey, privateKey };
   }
 
-  async send(subscription: PushSubscription, payload: PushPayload): Promise<PushResult> {
+  private endpointFor(subscription: PushSubscription): URL {
     if (!subscription || typeof subscription.endpoint !== "string") {
       throw new PushError("A Web Push subscription with an endpoint is required");
     }
     let endpoint: URL;
-    try {
-      endpoint = new URL(subscription.endpoint);
-    } catch {
-      throw new PushError("Push subscription endpoint must be a valid URL");
-    }
+    try { endpoint = new URL(subscription.endpoint); } catch { throw new PushError("Push subscription endpoint must be a valid URL"); }
     if (endpoint.protocol !== "https:" && endpoint.protocol !== "http:") {
       throw new PushError("Push subscription endpoint must use HTTP or HTTPS");
     }
+    return endpoint;
+  }
 
-    const config = this.requireConfiguration();
+  private vapidKeys(config: { publicKey: string; privateKey: string }): { rawPublic: Buffer; rawPrivate: Buffer } {
     const rawPublic = decodeBase64Url(config.publicKey, "TINA4_VAPID_PUBLIC");
     const rawPrivate = decodeBase64Url(config.privateKey, "TINA4_VAPID_PRIVATE");
-    if (rawPublic.length !== 65 || rawPublic[0] !== 0x04) {
-      throw new PushError("TINA4_VAPID_PUBLIC must be a 65-byte P-256 public key");
-    }
-    if (rawPrivate.length !== 32) {
-      throw new PushError("TINA4_VAPID_PRIVATE must be a 32-byte P-256 private key");
-    }
+    if (rawPublic.length !== 65 || rawPublic[0] !== 0x04) throw new PushError("TINA4_VAPID_PUBLIC must be a 65-byte P-256 public key");
+    if (rawPrivate.length !== 32) throw new PushError("TINA4_VAPID_PRIVATE must be a 32-byte P-256 private key");
     const derived = createECDH(CURVE);
     try { derived.setPrivateKey(rawPrivate); } catch { throw new PushError("TINA4_VAPID_PRIVATE is not a valid P-256 private key"); }
-    if (!derived.getPublicKey(undefined, "uncompressed").equals(rawPublic)) {
-      throw new PushError("TINA4_VAPID_PUBLIC does not match TINA4_VAPID_PRIVATE");
-    }
+    if (!derived.getPublicKey(undefined, "uncompressed").equals(rawPublic)) throw new PushError("TINA4_VAPID_PUBLIC does not match TINA4_VAPID_PRIVATE");
+    return { rawPublic, rawPrivate };
+  }
 
-    const body = encryptPayload(payloadBytes(payload), subscription);
+  private async deliver(endpoint: URL, config: { subject: string; publicKey: string; privateKey: string }, keys: { rawPublic: Buffer; rawPrivate: Buffer }, body: Buffer): Promise<PushResult> {
     let response: Response;
     try {
       response = await fetch(endpoint, {
         method: "POST",
         headers: {
-          Authorization: `vapid t=${vapidToken(endpoint.toString(), config.subject, rawPrivate, rawPublic)}, k=${config.publicKey}`,
+          Authorization: `vapid t=${vapidToken(endpoint.toString(), config.subject, keys.rawPrivate, keys.rawPublic)}, k=${config.publicKey}`,
           "Content-Encoding": "aes128gcm",
           "Content-Type": "application/octet-stream",
           TTL: String(this.options.ttl ?? 60),
@@ -288,13 +264,14 @@ export class Push {
     } catch (error) {
       throw new PushError(`Web Push request failed: ${String(error)}`);
     }
-    return {
-      ok: response.ok,
-      status: response.status,
-      dead: response.status === 404 || response.status === 410,
-      retryable: response.status === 408 || response.status === 429 || response.status >= 500,
-      endpoint: endpoint.toString(),
-      response: await response.text(),
-    };
+    const status = response.status;
+    return { ok: response.ok, status, dead: status === 404 || status === 410, retryable: status === 408 || status === 429 || status >= 500, endpoint: endpoint.toString(), response: await response.text() };
+  }
+
+  async send(subscription: PushSubscription, payload: PushPayload): Promise<PushResult> {
+    const endpoint = this.endpointFor(subscription);
+    const config = this.requireConfiguration();
+    const keys = this.vapidKeys(config);
+    return this.deliver(endpoint, config, keys, encryptPayload(payloadBytes(payload), subscription));
   }
 }
