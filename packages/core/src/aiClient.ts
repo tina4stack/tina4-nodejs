@@ -580,27 +580,11 @@ export class Ai {
           throw new AiHTTPError(`AI provider returned HTTP ${status}`, status);
         }
         const response = opened.response;
-        const chunks = this.responseChunks(response);
-        const events = parseSseStream(parseLineStream(chunks));
-        const aggregator = new AggregateState(config.provider);
         let done = false;
-        try {
-          for await (const sseEvent of events) {
-            for (const emitted of aggregator.consume(sseEvent)) {
-              yielded = true;
-              yield emitted;
-              if (emitted.type === "done" || emitted.type === "error") { done = true; break; }
-            }
-            if (done) break;
-          }
-        } catch (error) {
-          if (yielded) {
-            yielded = true;
-            yield { type: "error", message: error instanceof AiParseError ? "AI provider returned malformed stream data" : `AI transport failed (${error instanceof Error ? error.name : "Error"})` };
-            opened.cleanup(); opened = null;
-            return;
-          }
-          throw error;
+        for await (const emitted of this.readStream(response, config.provider)) {
+          yielded = true;
+          yield emitted;
+          if (emitted.type === "done" || emitted.type === "error") { done = true; break; }
         }
         opened.cleanup(); opened = null;
         if (done) return;
@@ -622,6 +606,24 @@ export class Ai {
   private static async *responseChunks(response: IncomingMessage): AsyncGenerator<Uint8Array> {
     for await (const chunk of response) {
       yield chunk as Uint8Array;
+    }
+  }
+
+  private static async *readStream(response: IncomingMessage, provider: Config["provider"]): AsyncGenerator<AiEvent> {
+    const events = parseSseStream(parseLineStream(this.responseChunks(response)));
+    const aggregator = new AggregateState(provider);
+    let yielded = false;
+    try {
+      for await (const sseEvent of events) {
+        for (const emitted of aggregator.consume(sseEvent)) {
+          yielded = true;
+          yield emitted;
+          if (emitted.type === "done" || emitted.type === "error") return;
+        }
+      }
+    } catch (error) {
+      if (!yielded) throw error;
+      yield { type: "error", message: error instanceof AiParseError ? "AI provider returned malformed stream data" : `AI transport failed (${error instanceof Error ? error.name : "Error"})` };
     }
   }
 
