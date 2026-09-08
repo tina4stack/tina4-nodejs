@@ -259,11 +259,12 @@ export class Push {
           TTL: String(this.options.ttl ?? 60),
           ...(this.options.urgency ? { Urgency: this.options.urgency } : {}),
         },
-        // Node's fetch accepts Buffer at runtime, while the DOM declaration
-        // used by the published type build narrows BodyInit to ArrayBuffer
-        // backed views. Keep the binary payload intact and make that boundary
-        // explicit rather than converting the encrypted bytes to text.
-        body: body as unknown as BodyInit,
+        // Node's fetch accepts a Buffer at runtime. The typecheck build
+        // (lib ES2022, no DOM) does not know the global `BodyInit` name, and
+        // the DOM declaration narrows it to ArrayBuffer-backed views — a
+        // `Uint8Array` (which a Buffer is) satisfies both, so cast to that and
+        // keep the encrypted bytes intact rather than converting them to text.
+        body: body as unknown as Uint8Array,
       });
     } catch (error) {
       throw new PushError(`Web Push request failed: ${String(error)}`);
