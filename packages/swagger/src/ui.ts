@@ -56,13 +56,38 @@ export function swaggerEnabled(): boolean {
 export function createSwaggerRoutes(
   getSpec: () => unknown
 ): RouteDefinition[] {
+  const serveUi = async (_req: Tina4Request, res: Tina4Response): Promise<void> => {
+    res.html(SWAGGER_UI_HTML("/swagger/openapi.json"));
+  };
+
   return [
     {
       method: "GET",
       pattern: "/swagger",
-      handler: async (_req: Tina4Request, res: Tina4Response) => {
-        res.html(SWAGGER_UI_HTML("/swagger/openapi.json"));
-      },
+      handler: serveUi,
+    },
+    {
+      // The trailing-slash form, registered rather than left to fall through.
+      //
+      // Matching "/foo/" against a "/foo" route is opt-in via
+      // TINA4_TRAILING_SLASH_REDIRECT and OFF by default, so /swagger/ missed
+      // this route and was answered by the framework-bundled
+      // public/swagger/index.html instead. That mattered twice over. It used to
+      // be a 200 carrying a permanently empty UI, because the bundled file asked
+      // for an unsubstituted {SWAGGER_ROUTE}/swagger.json -- fixed in that file.
+      // And it is a SECOND Swagger UI implementation: the bundled one hardcodes
+      // cdnjs, while the page this handler renders loads from
+      // TINA4_SWAGGER_UI_CDN, so an air-gapped deployment pointing that at a
+      // local mirror silently kept reaching cdnjs on this one path.
+      //
+      // Registering it keeps the fix inside swagger rather than changing how
+      // every route treats trailing slashes, satisfies the shared contract that
+      // already requires a 200 here, and matches python and ruby, which both
+      // serve /swagger and /swagger/ with no env var set. Excluded from the
+      // generated document by INTERNAL_PREFIXES like /swagger itself.
+      method: "GET",
+      pattern: "/swagger/",
+      handler: serveUi,
     },
     {
       method: "GET",
