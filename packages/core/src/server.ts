@@ -2598,8 +2598,13 @@ async function configureSwagger(router: Router, ormDir: string, modelsDir: strin
       // Single source of truth for BOTH the gated routes and the bundled
       // public/swagger assets (which static serving would otherwise expose).
       enabled = swagger.swaggerEnabled();
-      if (!swaggerAssetsEnabled) {
-        // Skip the rest of the swagger block when disabled.
+      if (!enabled) {
+        // Skip the rest of the swagger block when disabled. Gate on the LOCAL
+        // `enabled` just read from swaggerEnabled(): the module-level
+        // `swaggerAssetsEnabled` is only assigned from this function's RETURN
+        // (see the call site), so inside here it is still its boot-time false --
+        // reading it skipped the block even when swagger was enabled, so
+        // /swagger/openapi.json 404'd on an enabled server.
         throw new Error("__swagger_disabled__");
       }
 
