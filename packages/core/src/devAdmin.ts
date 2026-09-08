@@ -2069,24 +2069,48 @@ function handleGalleryDeploy(router: Router): RouteHandler {
 // Version check — proxy to npm registry to avoid browser CORS errors
 // ---------------------------------------------------------------------------
 
-const handleVersionCheck: RouteHandler = async (_req, res) => {
+/**
+ * Version check — a check that did not happen says so.
+ *
+ * This used to fall back to `latest = current` on any failure, and the toolbar
+ * renders that as a green "You are up to date!" — so a developer several
+ * releases behind, on a machine with no route out, was told the opposite of the
+ * truth, and the toolbar's own "Could not check for updates" branch could never
+ * fire because the failure arrived as a success. `latest` is `null` when the
+ * check could not be made, and `error` says why. The registry URL is
+ * `TINA4_VERSION_CHECK_URL` when set (a mirror, or a test's own server), else
+ * npm. Mirrors Python `tina4_python.dev_admin._api_version_check`.
+ */
+export const handleVersionCheck: RouteHandler = async (_req, res) => {
   const current = TINA4_VERSION;
-  let latest = current;
+  const url =
+    process.env.TINA4_VERSION_CHECK_URL ||
+    "https://registry.npmjs.org/tina4-nodejs/latest";
+  const failed = (why: string) => res.json({ current, latest: null, error: why });
+
+  let data: Record<string, unknown>;
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const resp = await fetch("https://registry.npmjs.org/tina4-nodejs/latest", {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (resp.ok) {
-      const data = (await resp.json()) as Record<string, unknown>;
-      if (typeof data.version === "string") latest = data.version;
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const resp = await fetch(url, {
+        signal: controller.signal,
+        headers: { "User-Agent": `tina4-nodejs/${current}` },
+      });
+      // Reaching the registry is not the same as a 200 with a body.
+      if (!resp.ok) return failed(`npm registry responded ${resp.status}`);
+      data = (await resp.json()) as Record<string, unknown>;
+    } finally {
+      clearTimeout(timer);
     }
-  } catch {
-    // Offline or timeout — return current as latest
+  } catch (exc) {
+    // offline, timeout, DNS, unreadable body
+    return failed(exc instanceof Error && exc.message ? exc.message : String(exc));
   }
-  res.json({ current, latest });
+  // An answer we cannot read a version out of is the same lie by another route.
+  const latest = typeof data.version === "string" ? data.version : "";
+  if (!latest) return failed("npm registry did not report a version");
+  return res.json({ current, latest });
 };
 
 // ---------------------------------------------------------------------------
@@ -3019,7 +3043,7 @@ function toolbarCss(): string {
  * starts when the toolbar's `data-reload` is "1" (reload not suppressed for this
  * request/port). Mirrors PHP DevAdmin::toolbarJs().
  */
-function toolbarJs(): string {
+export function toolbarJs(): string {
   return `(function () {
     var bar = document.getElementById('tina4-dev-toolbar');
     if (!bar) { return; }
@@ -3029,6 +3053,13 @@ function toolbarJs(): string {
         el.className = 't4-ok';
         el.innerHTML = 'Latest: <strong class="t4-ok">v' + latest + '</strong> &mdash; You are up to date!';
     }
+    // A check that did not happen is not a clean bill of health. The server
+    // sends latest: null when it could not reach the registry, and saying so is
+    // the whole point -- "up to date" here would be a guess dressed as a fact.
+    function couldNotCheck(el, why) {
+        el.className = 't4-err';
+        el.textContent = 'Could not check for updates' + (why ? ' (' + why + ')' : '');
+    }
     function checkVersion() {
         if (modal.style.display === 'block') { modal.style.display = 'none'; return; }
         modal.style.display = 'block';
@@ -3037,6 +3068,7 @@ function toolbarJs(): string {
         el.textContent = 'Checking for updates...';
         fetch('/__dev/api/version-check').then(function (r) { return r.json(); }).then(function (d) {
             var latest = d.latest, current = d.current;
+            if (!latest) { couldNotCheck(el, d.error); return; }
             if (latest === current) { upToDate(el, latest); return; }
             var cP = current.split('.').map(Number), lP = latest.split('.').map(Number);
             var isNewer = false, i, c, l;
