@@ -143,6 +143,48 @@ assert(
     `failed to resolve .js -> .ts and is measuring nothing`,
 );
 
+// Zero-dependency-at-import guard. The module COUNT above is a source-hygiene
+// signal; THIS is the real invariant behind "optional features must not burden
+// every import": nothing in the eager barrel graph may statically import a
+// THIRD-PARTY package. node: builtins and relative modules are free; the
+// package's own name (tina4-nodejs) appears only inside ai.ts's generated
+// skill-content strings, never as a real dependency, so it is allow-listed.
+// The genuinely heavy collaborators (DB drivers, brokers, backends) are already
+// reached with dynamic import(), which is NOT a static edge and so never lands
+// here. A feature that adds a heavy EAGER npm import -- an AI SDK, a broker
+// client -- would load for every `import ... from "@tina4/core"`; defer it with
+// dynamic import() inside the code path that needs it. This is what the other
+// three frameworks get for free (Python __getattr__ lazy, PHP/Ruby autoload).
+const ALLOWED_BARE = new Set(["tina4-nodejs"]);
+const bareSpecRe =
+  /(?:^|\n)\s*(?:import|export)[^'"\n]*?from\s+["']([^"']+)["']|(?:^|\n)\s*import\s+["']([^"']+)["']/g;
+const eagerThirdParty = new Map<string, string>(); // specifier -> first file
+for (const file of coreGraph) {
+  let src: string;
+  try {
+    src = readFileSync(file, "utf-8");
+  } catch {
+    continue;
+  }
+  bareSpecRe.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = bareSpecRe.exec(src)) !== null) {
+    const spec = m[1] ?? m[2];
+    if (!spec || spec.startsWith(".") || spec.startsWith("node:")) continue;
+    if (ALLOWED_BARE.has(spec)) continue;
+    if (!eagerThirdParty.has(spec)) eagerThirdParty.set(spec, file.replace(`${PKGS}/`, ""));
+  }
+}
+assert(
+  "the eager core barrel imports no third-party runtime dependency (zero-dep)",
+  eagerThirdParty.size === 0,
+  eagerThirdParty.size
+    ? `eager third-party import(s) in the barrel graph: ` +
+        [...eagerThirdParty].map(([s, f]) => `"${s}" (${f})`).join(", ") +
+        ` -- move it behind a dynamic import() so it loads only when used`
+    : "",
+);
+
 // ── The eager-by-spec shape is real, not assumed ────────────────────────────
 // If the barrel ever switched to dynamic import() the constraint would be gone
 // and this whole file should be rewritten -- so prove the static form is what
