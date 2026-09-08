@@ -69,6 +69,15 @@ function decodeBase64Url(value: string, name: string): Buffer {
   return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
 
+// Left-pad big-endian EC material to the fixed 32-byte P-256 field width.
+// createECDH().getPrivateKey() and other raw EC outputs drop a leading zero
+// byte, so a scalar whose top byte is zero comes back short (~0.5% of keys);
+// the JWK `d` and the stored VAPID key are fixed-width, so a short value is a
+// malformed key.
+function pad32(value: Buffer): Buffer {
+  return value.length >= 32 ? value : Buffer.concat([Buffer.alloc(32 - value.length), value]);
+}
+
 function vapidPrivateKey(rawPrivate: Buffer, rawPublic: Buffer) {
   if (rawPublic.length !== 65 || rawPublic[0] !== 0x04) throw new PushError("P-256 public keys must be 65-byte uncompressed points");
   const x = encodeBase64Url(rawPublic.subarray(1, 33));
@@ -77,7 +86,7 @@ function vapidPrivateKey(rawPrivate: Buffer, rawPublic: Buffer) {
     key: {
       kty: "EC",
       crv: "P-256",
-      d: encodeBase64Url(rawPrivate),
+      d: encodeBase64Url(pad32(rawPrivate)),
       x,
       y,
       ext: true,
@@ -180,8 +189,10 @@ export function generateVapidKeys(): { publicKey: string; privateKey: string } {
   const ecdh = createECDH(CURVE);
   ecdh.generateKeys();
   return {
+    // getPublicKey keeps its 65-byte width; getPrivateKey drops a leading zero
+    // byte, so the scalar must be padded to the fixed field width.
     publicKey: encodeBase64Url(ecdh.getPublicKey(undefined, "uncompressed")),
-    privateKey: encodeBase64Url(ecdh.getPrivateKey()),
+    privateKey: encodeBase64Url(pad32(ecdh.getPrivateKey())),
   };
 }
 

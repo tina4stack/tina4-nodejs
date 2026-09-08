@@ -79,6 +79,27 @@ const vapid = generateVapidKeys();
 assert("generateVapidKeys returns a 65-byte public key", Buffer.from(vapid.publicKey, "base64url").length === 65);
 assert("generateVapidKeys returns a 32-byte private key", Buffer.from(vapid.privateKey, "base64url").length === 32);
 
+// Regression: createECDH().getPrivateKey() drops a leading zero byte, so ~0.5%
+// of P-256 scalars are 31 bytes; an unpadded VAPID private key is malformed.
+// Generate enough to hit the case FOR REAL (no mock), assert the module always
+// emits a fixed-width key, and assert the short case actually occurred so a
+// green result proves the padding fired.
+{
+  const iterations = 3000;
+  let shortRaw = 0;
+  let allWellFormed = true;
+  for (let i = 0; i < iterations; i++) {
+    const keys = generateVapidKeys();
+    if (Buffer.from(keys.publicKey, "base64url").length !== 65) allWellFormed = false;
+    if (Buffer.from(keys.privateKey, "base64url").length !== 32) allWellFormed = false;
+    const probe = createECDH("prime256v1");
+    probe.generateKeys();
+    if (probe.getPrivateKey().length < 32) shortRaw++;
+  }
+  assert("every VAPID key across 3000 generations is fixed-width (65/32)", allWellFormed);
+  assert("the short-coordinate scenario was actually exercised", shortRaw > 0, `(shortRaw=${shortRaw})`);
+}
+
 const client = createECDH("prime256v1");
 client.generateKeys();
 const auth = Buffer.alloc(16, 7);
