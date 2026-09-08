@@ -17,8 +17,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import {
   RESOLUTION_ENVELOPE_VERSION,
   SQL_RESERVED_TABLE_NAMES,
@@ -27,7 +26,7 @@ import {
 } from "../packages/cli/src/commands/generate.ts";
 import { buildCommandManifest } from "../packages/cli/src/bin.ts";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const repoRoot = resolve(here, "..");
 const binPath = resolve(repoRoot, "packages/cli/src/bin.ts");
 

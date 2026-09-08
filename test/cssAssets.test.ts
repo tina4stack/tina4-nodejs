@@ -20,10 +20,8 @@
  * tina4-documentation/scripts/build-tina4css.py --check, not per framework.
  */
 import { readFileSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { join } from "node:path";
+const __dirname = import.meta.dirname;
 const CSS_DIR = join(__dirname, "..", "packages", "core", "public", "css");
 
 // A `$name` that is not the CSS `[attr$="x"]` suffix operator.

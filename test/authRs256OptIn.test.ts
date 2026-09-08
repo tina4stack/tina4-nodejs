@@ -24,7 +24,6 @@ import { createHmac, createSign, createVerify, generateKeyPairSync } from "node:
 import { readFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   algorithmAvailable,
   availableAlgorithms,
@@ -33,7 +32,7 @@ import {
   validToken,
 } from "../packages/core/src/auth.ts";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = import.meta.dirname;
 const repoRoot = join(__dirname, "..");
 
 let passed = 0;

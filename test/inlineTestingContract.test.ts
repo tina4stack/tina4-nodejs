@@ -22,7 +22,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import * as core from "../packages/core/src/index.ts";
 import { Tina4Test } from "../packages/core/src/index.ts";
 
@@ -33,7 +32,7 @@ function assert(label: string, ok: boolean, detail = ""): void {
   else { fail++; console.log(`  \x1b[31mFAIL\x1b[0m ${label} ${detail}`); }
 }
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = resolve(import.meta.dirname, "..");
 const tsxBin = join(repoRoot, "node_modules/.bin/tsx");
 const cliBin = join(repoRoot, "packages/cli/src/bin.ts");
 const baseDir = join(repoRoot, `.tmp_inlinecontract_${process.pid}`);

@@ -25,7 +25,6 @@ import http from "node:http";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { getToken } from "../packages/core/src/auth.ts";
 import { startServer } from "../packages/core/src/index.ts";
 
@@ -56,7 +55,7 @@ mkdirSync(join(root, "src/routes"), { recursive: true });
 // lives OUTSIDE the repo, in a temp dir) can import BaseModel regardless of
 // its own location -- the same "a real file on disk" pattern
 // secureByDefault.test.ts uses for route files, extended to carry an import.
-const ORM_SRC = fileURLToPath(new URL("../packages/orm/src", import.meta.url));
+const ORM_SRC = join(import.meta.dirname, "..", "packages", "orm", "src");
 
 // Soft-delete enabled + is_deleted DECLARED as a real field -- the worst
 // case for CRUD-MASS-ASSIGNMENT (is_deleted is a genuine writable-looking

@@ -13,11 +13,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { isTruthy, loadEnv } from "../packages/core/src/dotenv.ts";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const corpus = JSON.parse(readFileSync(join(here, "fixtures", "dotenv_corpus.json"), "utf-8"));
 
 let pass = 0;

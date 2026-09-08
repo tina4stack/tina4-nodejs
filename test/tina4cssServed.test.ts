@@ -27,9 +27,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, openSync, closeSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const HERE = fileURLToPath(new URL(".", import.meta.url));
+const HERE = import.meta.dirname;
 const REPO = resolve(HERE, "..");
 const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 const SHIPPED = resolve(REPO, "packages", "core", "public", "css");

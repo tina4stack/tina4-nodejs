@@ -23,9 +23,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, openSync, closeSyn
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
-const HERE = fileURLToPath(new URL(".", import.meta.url));
+import { pathToFileURL } from "node:url";
+const HERE = import.meta.dirname;
 const REPO = resolve(HERE, "..");
 // Invoke tsx via `node <tsx cli>` rather than the .bin/tsx shim so the spawn
 // works on Windows too (the shim is a .cmd there and is not directly spawnable).

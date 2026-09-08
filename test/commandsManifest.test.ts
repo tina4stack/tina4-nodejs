@@ -20,8 +20,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import {
   buildCommandManifest,
   runCommands,
@@ -32,7 +31,7 @@ import {
 import { GENERATORS } from "../packages/cli/src/commands/generate.ts";
 import { parseCliManifest } from "./_parseCliManifest.ts";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const binPath = resolve(here, "../packages/cli/src/bin.ts");
 
 // The command set the tina4 client must be able to discover truthfully.

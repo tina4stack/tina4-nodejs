@@ -24,7 +24,6 @@
 import { spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 let pass = 0;
 let fail = 0;
@@ -39,7 +38,7 @@ function assert(name: string, condition: boolean, detail = "") {
   }
 }
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+const HERE = import.meta.dirname;
 
 /** True while a pid is alive (signal 0 probes without delivering). */
 function alive(pid: number): boolean {

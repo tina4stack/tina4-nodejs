@@ -28,9 +28,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = import.meta.dirname;
 const rootDir = join(__dirname, "..");
 
 // Consumer script source. Deliberately backtick-free so it can live inside this

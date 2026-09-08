@@ -28,9 +28,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, openSync, closeSyn
 import { request } from "node:http";
 import { tmpdir, cpus } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const HERE = fileURLToPath(new URL(".", import.meta.url));
+const HERE = import.meta.dirname;
 const REPO = resolve(HERE, "..");
 const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 

@@ -17,8 +17,7 @@
  * tina4-python/tests/test_dispatch_pipeline.py.
  */
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import * as pipeline from "../packages/core/src/dispatchPipeline.ts";
 
 let pass = 0;
@@ -28,7 +27,7 @@ function assert(name: string, condition: boolean, detail = "") {
   else { console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`); fail++; }
 }
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const coreSrc = join(here, "..", "packages", "core", "src");
 const serverSrc = readFileSync(join(coreSrc, "server.ts"), "utf-8");
 const pipelineSrc = readFileSync(join(coreSrc, "dispatchPipeline.ts"), "utf-8");

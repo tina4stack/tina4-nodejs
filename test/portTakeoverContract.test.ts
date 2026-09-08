@@ -23,8 +23,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   takeOverPort,
   pidfilePath,
@@ -40,7 +40,7 @@ import { killPort } from "../packages/core/src/server.ts";
 
 process.env.TINA4_NO_BROWSER = "true";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const repoRoot = join(here, "..");
 const tsxLoader = pathToFileURL(join(repoRoot, "node_modules/tsx/dist/loader.mjs")).href;
 const portTakeoverUrl = pathToFileURL(join(repoRoot, "packages/core/src/portTakeover.ts")).href;

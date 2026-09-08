@@ -35,14 +35,13 @@ import SwaggerParser from "@apidevtools/swagger-parser";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, openSync, closeSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import { generate } from "../packages/swagger/src/generator.ts";
 import type { RouteDefinition } from "../packages/core/src/types.ts";
 import type { ModelDefinition } from "../packages/orm/src/types.ts";
 import { freePort } from "./freePort.ts";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = import.meta.dirname;
 const REPO = resolve(__dirname, "..");
 const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 const FRAMEWORK_PUBLIC = resolve(REPO, "packages", "core", "public");

@@ -45,9 +45,8 @@
  */
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, dirname, normalize } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = import.meta.dirname;
 const PKGS = join(__dirname, "..", "packages");
 
 let pass = 0;

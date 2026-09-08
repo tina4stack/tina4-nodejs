@@ -19,13 +19,12 @@
  */
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 // Resolved from THIS file, never hardcoded - an absolute developer-machine path
 // passes locally and dies with ERR_MODULE_NOT_FOUND on every other host.
 const CORE = pathToFileURL(
-  join(dirname(fileURLToPath(import.meta.url)), "..", "packages", "core", "src", "index.ts"),
+  join(import.meta.dirname, "..", "packages", "core", "src", "index.ts"),
 ).href;
 
 let pass = 0;

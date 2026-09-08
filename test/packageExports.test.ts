@@ -16,11 +16,10 @@
  * Run with: npx tsx test/packageExports.test.ts (dist is built by `pretest`).
  */
 import { readFileSync, existsSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = import.meta.dirname;
 const ROOT = resolve(__dirname, "..");
 
 let pass = 0;

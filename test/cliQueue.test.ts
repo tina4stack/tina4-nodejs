@@ -15,12 +15,11 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import { queueCommand, resolveQueueHandler } from "../packages/cli/src/commands/queue.ts";
 import { Queue } from "../packages/core/src/queue.ts";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const binPath = resolve(here, "../packages/cli/src/bin.ts");
 
 // Isolated, file-backed queue rooted under a temp dir. Absolute TINA4_QUEUE_PATH

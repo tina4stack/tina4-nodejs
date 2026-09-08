@@ -36,9 +36,8 @@ import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 const MONGO_URI = process.env.TINA4_TEST_MONGO_URI ?? "mongodb://192.168.88.99:27017";
 
 /**
@@ -68,7 +67,7 @@ function mongoUriWithOption(uri: string, option: string): string {
 // measured on the lab box, where it was the suite's only failing file. Each
 // provider needs a fresh module instance, so the import is cache-busted, which
 // means a real URL rather than a bare path.
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = join(import.meta.dirname, "..");
 const ORM = pathToFileURL(
   join(REPO_ROOT, "packages", "orm", "src", "index.ts"),
 ).href;

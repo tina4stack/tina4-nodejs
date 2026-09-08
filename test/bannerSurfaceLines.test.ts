@@ -27,10 +27,8 @@
  */
 import { bannerSurfaceLines } from "../packages/core/src/server.ts";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { resolve } from "node:path";
+const __dirname = import.meta.dirname;
 const PORT = 7148;
 
 let pass = 0;

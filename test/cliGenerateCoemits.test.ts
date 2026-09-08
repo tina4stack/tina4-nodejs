@@ -23,9 +23,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
+import { join, resolve } from "node:path";
 let pass = 0;
 let fail = 0;
 function assert(label: string, ok: boolean, detail = ""): void {
@@ -33,7 +31,7 @@ function assert(label: string, ok: boolean, detail = ""): void {
   else { fail++; console.log(`  \x1b[31mFAIL\x1b[0m ${label} ${detail}`); }
 }
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = resolve(import.meta.dirname, "..");
 const tsxBin = join(repoRoot, "node_modules/.bin/tsx");
 const cliBin = join(repoRoot, "packages/cli/src/bin.ts");
 const baseDir = join(repoRoot, `.tmp_coemit_${process.pid}`);

@@ -18,11 +18,10 @@
  * Run with: npx tsx test/batchWriteContract.test.ts
  */
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { SQLTranslator } from "../packages/orm/src/sqlTranslator.js";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const contract = JSON.parse(readFileSync(join(here, "fixtures", "batch_write_contract.json"), "utf-8"));
 
 let pass = 0;

@@ -38,12 +38,11 @@
  * NO MOCKS. Real Redis, real Valkey, real memcached, real MongoDB, real files.
  */
 import { rmSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import net from "node:net";
 import { buildDriverlessTree, runDriverless as runInDriverlessTree, selftestLine, selftestPassed } from "./_driverlessTree.ts";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+const HERE = import.meta.dirname;
 const REPO = join(HERE, "..");
 
 let pass = 0;

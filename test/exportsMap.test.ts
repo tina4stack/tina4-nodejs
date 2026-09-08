@@ -13,10 +13,8 @@
  * it over the network at container start.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+import { join } from "node:path";
+const ROOT = join(import.meta.dirname, "..");
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 
 let pass = 0;

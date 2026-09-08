@@ -26,10 +26,8 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const here = dirname(fileURLToPath(import.meta.url));
+import { join, resolve } from "node:path";
+const here = import.meta.dirname;
 const repoRoot = resolve(here, "..");
 const coreDir = join(repoRoot, "packages", "core");
 const corePkgPath = join(coreDir, "package.json");

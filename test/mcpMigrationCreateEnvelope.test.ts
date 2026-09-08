@@ -47,12 +47,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
+import { join, resolve } from "node:path";
 import { McpServer, registerDevTools } from "../packages/core/src/mcp.js";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const repoRoot = resolve(here, "..");
 const binPath = resolve(repoRoot, "packages/cli/src/bin.ts");
 const mcpTsPath = resolve(repoRoot, "packages/core/src/mcp.ts");

@@ -4,10 +4,8 @@
  * Run with: npx tsx test/fileUpload.test.ts
  */
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { join } from "node:path";
+const __dirname = import.meta.dirname;
 
 let pass = 0;
 let fail = 0;

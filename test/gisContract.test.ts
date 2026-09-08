@@ -4,6 +4,7 @@ import {
 } from "../packages/orm/src/index.ts";
 import type { FieldDefinition } from "../packages/orm/src/index.ts";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import net from "node:net";
 
 let pass = 0;
@@ -27,7 +28,7 @@ class GisFixtureSite extends BaseModel {
 }
 
 const capeTown: [number, number] = [18.4241, -33.9249];
-const contract = JSON.parse(readFileSync(new URL("./fixtures/gis_contract.json", import.meta.url), "utf8"));
+const contract = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "gis_contract.json"), "utf8"));
 assert("byte-identical shared fixture loads", contract.adr === "ADR-0057" && contract.defaults.coordinate_order.join(",") === "longitude,latitude");
 const forms: unknown[] = [
   capeTown,

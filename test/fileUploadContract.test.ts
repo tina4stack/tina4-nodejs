@@ -17,12 +17,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { request } from "node:http";
-import { fileURLToPath } from "node:url";
 
 import { parseMultipart, saveUpload } from "../packages/core/src/request.ts";
 import type { UploadedFile } from "../packages/core/src/types.ts";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+const HERE = import.meta.dirname;
 const REPO = resolve(HERE, "..");
 const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 

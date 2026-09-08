@@ -25,12 +25,11 @@
  */
 import { startServer } from "../packages/core/src/server.ts";
 import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { freePort } from "./freePort.ts";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = import.meta.dirname;
 const FRAMEWORK_PUBLIC = resolve(__dirname, "..", "packages", "core", "public");
 
 /** Request paths that MUST be gated. */

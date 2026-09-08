@@ -25,8 +25,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import {
   SQLTranslator,
   FirebirdAdapter,
@@ -35,7 +34,7 @@ import {
   initDatabase,
 } from "../packages/orm/src/index.ts";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = resolve(import.meta.dirname, "..");
 const tsxBin = join(repoRoot, "node_modules/.bin/tsx");
 const cliBin = join(repoRoot, "packages/cli/src/bin.ts");
 const FIREBIRD_URL = process.env.TINA4_TEST_FIREBIRD_URL;

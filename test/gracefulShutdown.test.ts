@@ -34,13 +34,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, openSync, closeSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createConnection, createServer } from "node:net";
 import { request } from "node:http";
 import { randomBytes } from "node:crypto";
 import { shutdownTimeoutSeconds, DEFAULT_SHUTDOWN_TIMEOUT_SECONDS } from "../packages/core/src/server.ts";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = import.meta.dirname;
 const REPO = resolve(__dirname, "..");
 const TSX = join(REPO, "node_modules", ".bin", "tsx");
 

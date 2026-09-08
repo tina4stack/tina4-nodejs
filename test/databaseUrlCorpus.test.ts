@@ -15,11 +15,10 @@
  * Run with: npx tsx test/databaseUrlCorpus.test.ts
  */
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { DatabaseUrl } from "../packages/orm/src/databaseUrl.ts";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const corpus = JSON.parse(
   readFileSync(join(here, "fixtures", "database_url_corpus.json"), "utf-8")
 );

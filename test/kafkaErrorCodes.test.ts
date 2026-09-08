@@ -25,7 +25,6 @@ import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { KafkaBackend } from "../packages/core/src/index.ts";
 
 let pass = 0;
@@ -211,7 +210,7 @@ console.log("=== Kafka Error-Code Contract ===\n");
   // REMOVED Produce v0-v2 and Fetch v0-v3 and answers them by closing the
   // socket rather than with an error code, so a regression here would surface
   // as a mystery disconnect. Assert the floors where they are actually written.
-  const here = path.dirname(fileURLToPath(import.meta.url));
+  const here = import.meta.dirname;
   const src = fs.readFileSync(
     path.join(here, "..", "packages", "core", "src", "queueBackends", "kafkaBackend.ts"),
     "utf-8",

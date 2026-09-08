@@ -7,7 +7,7 @@ import { Session, Sso, SsoError } from "../packages/core/src/index.ts";
 const required = Boolean(process.env.TINA4_REQUIRE_OIDC);
 const issuer = process.env.TINA4_TEST_OIDC_ISSUER ?? "http://127.0.0.1:58080/realms/tina4-contract";
 const options = { issuer, clientId: "tina4-app", clientSecret: "tina4-secret", redirectUri: "http://127.0.0.1:7148/auth/callback" };
-const contract = JSON.parse(readFileSync(new URL("./fixtures/sso_contract.json", import.meta.url), "utf8"));
+const contract = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "sso_contract.json"), "utf8"));
 assert.equal(contract.adr, "ADR-0056");
 assert.equal(contract.invariants.length, 10);
 

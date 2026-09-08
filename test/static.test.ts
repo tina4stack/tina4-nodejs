@@ -2,9 +2,8 @@
  * Unit tests for static file serving (packages/core/src/static.ts).
  * Run with: npx tsx test/static.test.ts
  */
-import { join, resolve, dirname } from "node:path";
+import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { tryServeStatic } from "../packages/core/src/static.ts";
 import type { Tina4Request, Tina4Response } from "../packages/core/src/types.ts";
 
@@ -21,7 +20,7 @@ function assert(name: string, condition: boolean, detail = "") {
   }
 }
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = import.meta.dirname;
 const corePublicDir = resolve(__dirname, "../packages/core/public");
 
 /** Build a minimal mock Tina4Request with the given URL. */

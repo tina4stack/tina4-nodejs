@@ -16,10 +16,8 @@
 import { spawnSync } from "node:child_process";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { join } from "node:path";
+const __dirname = import.meta.dirname;
 const rootDir = join(__dirname, "..");
 
 let pass = 0;

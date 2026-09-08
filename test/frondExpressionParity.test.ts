@@ -29,10 +29,8 @@
  */
 import { Frond } from "../packages/frond/src/index.ts";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
+import { join } from "node:path";
+const FIXTURES = join(import.meta.dirname, "fixtures");
 
 let passed = 0;
 let failed = 0;

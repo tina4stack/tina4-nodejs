@@ -35,7 +35,6 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { runLint } from "../packages/cli/src/commands/lint.ts";
 import { parseCliManifest } from "./_parseCliManifest.ts";
 
@@ -51,7 +50,7 @@ function ok(name: string, cond: boolean, detail = ""): void {
   }
 }
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = resolve(import.meta.dirname, "..");
 const tsxBin = join(repoRoot, "node_modules/.bin/tsx");
 const cliBin = join(repoRoot, "packages/cli/src/bin.ts");
 

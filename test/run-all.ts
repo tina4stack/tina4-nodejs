@@ -8,9 +8,8 @@
  */
 import { execSync, spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, mkdirSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import {
   requireServices,
   findProvisionedServiceSkips,
@@ -18,7 +17,7 @@ import {
 } from "./_serviceGate.ts";
 import { summarizeTestOutput } from "./_testSummary.ts";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = import.meta.dirname;
 const rootDir = join(__dirname, "..");
 
 // A test run must never launch a browser. `startServer()` opens one 2s after

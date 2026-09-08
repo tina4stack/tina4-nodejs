@@ -22,9 +22,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
+import { join, resolve } from "node:path";
 import {
   COMMANDS,
   DELEGATED,
@@ -42,7 +40,7 @@ function assert(label: string, ok: boolean, detail = ""): void {
   else { fail++; console.log(`  \x1b[31mFAIL\x1b[0m ${label} ${detail}`); }
 }
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = resolve(import.meta.dirname, "..");
 const nodeBin = process.execPath;
 const tsxLoader = join(repoRoot, "node_modules/tsx/dist/loader.mjs");
 const cliEntry = join(repoRoot, "packages/cli/src/bin.ts");

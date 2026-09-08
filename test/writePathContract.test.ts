@@ -33,8 +33,7 @@
 
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { initDatabase } from "../packages/orm/src/database.js";
 
 let passed = 0;
@@ -57,7 +56,7 @@ function assert(cond: unknown, message: string): void {
   if (!cond) throw new Error(message);
 }
 
-const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "write_path_contract.json");
+const FIXTURE = join(import.meta.dirname, "fixtures", "write_path_contract.json");
 const CONTRACT = JSON.parse(readFileSync(FIXTURE, "utf-8"));
 
 const TABLE: string = CONTRACT.table.name;

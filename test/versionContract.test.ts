@@ -40,13 +40,12 @@ import http from "node:http";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 process.env.TINA4_NO_BROWSER = "true";
 process.env.TINA4_OVERRIDE_CLIENT = "true";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const repoRoot = resolve(here, "..");
 const corePkgDir = join(repoRoot, "packages", "core");
 const cliBinPath = resolve(repoRoot, "packages/cli/src/bin.ts");

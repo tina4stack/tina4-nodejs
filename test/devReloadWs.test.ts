@@ -22,7 +22,6 @@ import { randomBytes, createHash } from "node:crypto";
 import { writeFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import http from "node:http";
-import { fileURLToPath } from "node:url";
 
 import { devReloadWs, computeAcceptKey } from "../packages/core/src/index.ts";
 
@@ -38,7 +37,7 @@ function assert(name: string, condition: boolean, detail = "") {
   }
 }
 
-const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
+const REPO_ROOT = join(import.meta.dirname, "..");
 
 console.log("=== DevReload WebSocket Tests ===\n");
 

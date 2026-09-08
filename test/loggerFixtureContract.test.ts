@@ -43,14 +43,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import { statSync } from "node:fs";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = import.meta.dirname;
 const ROOT = join(__dirname, "..");
 const LOGGER_MODULE = join(ROOT, "packages", "core", "src", "logger.ts");
 // Invoke the LOCAL tsx binary directly everywhere a child process is

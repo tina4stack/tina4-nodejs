@@ -2,9 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
+import { join, resolve } from "node:path";
 let pass = 0;
 let fail = 0;
 function assert(label: string, ok: boolean, detail = ""): void {
@@ -12,7 +10,7 @@ function assert(label: string, ok: boolean, detail = ""): void {
   else { fail++; console.log(`  FAIL ${label} ${detail}`); }
 }
 
-const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repo = resolve(import.meta.dirname, "..");
 const fixture = JSON.parse(readFileSync(join(repo, "test", "fixtures", "cli_routes_contract.json"), "utf-8"));
 const invariants = new Map(fixture.invariants.map((item: { id: string }) => [item.id, item]));
 const routePath = (invariants.get("canonical-route-is-listed") as { route_path: string }).route_path;

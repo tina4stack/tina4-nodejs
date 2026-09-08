@@ -17,10 +17,8 @@
  * Ruby spec/dev_admin_spec.rb.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { join } from "node:path";
+const __dirname = import.meta.dirname;
 const JS_DIR = join(__dirname, "..", "packages", "core", "public", "js");
 
 let pass = 0;

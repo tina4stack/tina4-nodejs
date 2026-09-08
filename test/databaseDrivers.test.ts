@@ -13,11 +13,10 @@ import { FirebirdAdapter } from "../packages/orm/src/adapters/firebird.ts";
 import { mkdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import net from "node:net";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { buildDriverlessTree, runDriverless, selftestLine, selftestPassed } from "./_driverlessTree.ts";
 
-const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO = join(import.meta.dirname, "..");
 
 let pass = 0;
 let fail = 0;
