@@ -6,6 +6,17 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.135
+
+Fix release. An enabled server serves /swagger and /swagger/openapi.json again (they
+answered 404 since 3.13.134 because the boot-time gate read a flag that was still false at
+the point it was checked). The dev-admin version check returns no version and a reason when
+it cannot reach the npm registry (set TINA4_VERSION_CHECK_URL to override), so the toolbar
+reports "could not check" instead of a false "up to date". Web Push pads the VAPID private
+scalar from createECDH().getPrivateKey() to the fixed 32-byte width, so a leading-zero scalar
+no longer yields a malformed key. The vitest-4 test harness and the declaration-build type
+config were also repaired. Full notes: https://tina4.com/nodejs/36-releases
+
 ## 3.13.134
 
 Feature 140 Web Push is now available with provider-neutral subscription delivery,
