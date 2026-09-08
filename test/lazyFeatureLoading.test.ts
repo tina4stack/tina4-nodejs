@@ -126,7 +126,7 @@ assert(
 // `import { anything } from "@tina4/core"`. A ceiling is the only defence: it
 // does not make the barrel lazy, it stops it quietly getting worse.
 const coreGraph = importGraph(coreBarrel);
-const CORE_MODULE_CEILING = 75; // measured 64; headroom for ordinary growth
+const CORE_MODULE_CEILING = 79; // measured 79 through 3.13.135 (the barrel grew as the AI, realtime and Web Push features shipped); raise deliberately, with a fresh measurement, only when new features are added to the barrel
 assert(
   `core barrel eager graph within ceiling (${coreGraph.size} <= ${CORE_MODULE_CEILING})`,
   coreGraph.size <= CORE_MODULE_CEILING,
