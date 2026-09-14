@@ -524,6 +524,19 @@ async function recordApplied(
     values.push(name);
   }
 
+  // A table created by an OLDER Node v3 (<= 3.13.54) carries `name VARCHAR(500)
+  // NOT NULL` (the pre-3.13.55 tracking DDL — see git history). upgradeMigrationTable()
+  // copies its values into migration_name and leaves the `name` column in place
+  // (SQLite cannot drop a NOT NULL column without a full rebuild). Exactly like the
+  // python#93 `migration_id` case above, an insert that omits `name` fails its
+  // NOT NULL constraint, wedging EVERY migration recorded after the upgrade — so
+  // populate it here too, mirroring migration_name. A fresh canonical table has no
+  // `name` column, so this only fires on an upgraded legacy table.
+  if (cols.has("name")) {
+    insertCols.push("name");
+    values.push(name);
+  }
+
   if (isFirebirdAdapter(db)) {
     // Firebird: generate the id from the sequence.
     const rows = await adapterQuery<{ next_id: number }>(db,
