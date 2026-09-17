@@ -87,7 +87,7 @@ export interface AiChatOptions {
   maxTokens?: number;
   stream?: boolean;
   timeout?: number;
-  provider?: "local" | "openai" | "anthropic";
+  provider?: "local" | "openai" | "anthropic" | "gemini";
   /** Tools the model may call. ADR-0061 — translated per provider. */
   tools?: AiToolDeclaration[];
   /**
@@ -97,10 +97,10 @@ export interface AiChatOptions {
    */
   toolChoice?: AiToolChoice;
 }
-export interface AiEmbedOptions { model?: string; timeout?: number; provider?: "local" | "openai" | "anthropic" }
+export interface AiEmbedOptions { model?: string; timeout?: number; provider?: "local" | "openai" | "anthropic" | "gemini" }
 
 interface Config {
-  provider: "local" | "openai" | "anthropic";
+  provider: "local" | "openai" | "anthropic" | "gemini";
   url: string;
   model: string;
   key: string | null;
@@ -288,13 +288,16 @@ export class Ai {
 
   private static config(capability: "chat" | "embed", options: AiChatOptions | AiEmbedOptions): Config {
     const provider = (options.provider ?? process.env.TINA4_AI_PROVIDER ?? "local").trim().toLowerCase();
-    if (provider !== "local" && provider !== "openai" && provider !== "anthropic") throw new AiConfigError("TINA4_AI_PROVIDER must be local, openai, or anthropic");
+    if (provider !== "local" && provider !== "openai" && provider !== "anthropic" && provider !== "gemini") throw new AiConfigError("TINA4_AI_PROVIDER must be local, openai, anthropic, or gemini");
     const key = process.env.TINA4_AI_KEY || null;
-    if ((provider === "openai" || provider === "anthropic") && !key) throw new AiConfigError(`TINA4_AI_KEY is required for the ${provider} provider`);
+    if ((provider === "openai" || provider === "anthropic" || provider === "gemini") && !key) throw new AiConfigError(`TINA4_AI_KEY is required for the ${provider} provider`);
+    // Gemini speaks the OpenAI wire format at its OpenAI-compatible base, so it rides the openai
+    // body/parse/stream path - only the base URL, the endpoint suffix append, and the Bearer key differ.
     const defaults: Record<Config["provider"], [string, string]> = {
       local: ["http://localhost:11437", "llama3.2"],
       openai: ["https://api.openai.com/v1", "gpt-4o-mini"],
       anthropic: ["https://api.anthropic.com/v1", "claude-3-5-haiku-latest"],
+      gemini: ["https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash"],
     };
     const rawUrl = capability === "embed" && process.env.TINA4_EMBED_URL ? process.env.TINA4_EMBED_URL : (process.env.TINA4_AI_URL ?? defaults[provider][0]);
     const model = (options.model ?? process.env.TINA4_AI_MODEL ?? defaults[provider][1]).trim();
@@ -309,7 +312,11 @@ export class Ai {
     try { url = new URL(value); } catch { throw new AiConfigError("AI URL must be an http or https URL"); }
     if (url.protocol !== "http:" && url.protocol !== "https:") throw new AiConfigError("AI URL must be an http or https URL");
     const path = url.pathname.replace(/\/+$/, "");
-    if (path === "" || path === "/v1" || path === "/api") {
+    // "/v1beta/openai" is Gemini's OpenAI-compatible base; append the suffix onto it exactly as
+    // onto a bare host / "/v1" / "/api", so the default gemini base resolves to
+    // .../v1beta/openai/chat/completions (or /embeddings). A full endpoint URL the caller supplies
+    // (any other path) still passes through verbatim.
+    if (path === "" || path === "/v1" || path === "/api" || path === "/v1beta/openai") {
       const suffix = provider === "anthropic" ? "/messages" : capability === "embed" ? "/embeddings" : "/chat/completions";
       url.pathname = (path || "/v1") + suffix;
     }
@@ -318,7 +325,7 @@ export class Ai {
 
   private static headers(config: Config): Record<string, string> {
     const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json" };
-    if (config.provider === "openai") headers.authorization = `Bearer ${config.key}`;
+    if (config.provider === "openai" || config.provider === "gemini") headers.authorization = `Bearer ${config.key}`;
     if (config.provider === "anthropic") { headers["x-api-key"] = config.key!; headers["anthropic-version"] = "2023-06-01"; }
     return headers;
   }

@@ -474,6 +474,48 @@ try {
 
   reset(); process.env.TINA4_AI_URL = base + "/malformed";
   assert("ai_zero_runtime_dependencies_real_socket", !!await throwsType(() => Ai.chat([{ role: "user", content: "hello" }]), AiParseError));
+
+  // ── Gemini: rides the OpenAI wire family at Gemini's OpenAI-compatible base ──
+  // config() is the same real resolver Ai.chat/embed use; we read the resolved URL
+  // it returns (as the Python master reads Ai._config), no network call and no double.
+  type ConfigProbe = { config(capability: "chat" | "embed", options: { provider?: string }): { url: string; model: string } };
+  const configProbe = Ai as unknown as ConfigProbe;
+  reset(); delete process.env.TINA4_AI_MODEL; process.env.TINA4_AI_KEY = "gem-key";
+  const geminiChatConfig = configProbe.config("chat", { provider: "gemini" });
+  const geminiEmbedConfig = configProbe.config("embed", { provider: "gemini" });
+  assert("ai_gemini_default_endpoint_is_openai_compatible",
+    geminiChatConfig.url === "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    && geminiChatConfig.model === "gemini-2.5-flash"
+    && geminiEmbedConfig.url === "https://generativelanguage.googleapis.com/v1beta/openai/embeddings");
+
+  reset(); Object.assign(process.env, { TINA4_AI_PROVIDER: "gemini", TINA4_AI_KEY: "gem-key", TINA4_AI_MODEL: "gemini-2.5-flash", TINA4_AI_URL: base + "/openai" });
+  const geminiChat = await Ai.chat([{ role: "user", content: "hello" }]);
+  const geminiSent = requests.at(-1);
+  assert("ai_gemini_chat_sends_openai_body_with_bearer",
+    geminiChat.text === "hello world"
+    && geminiChat.model === "gemini-2.5-flash"
+    && geminiSent?.authorization === "Bearer gem-key"        // Gemini uses the OpenAI Bearer scheme
+    && geminiSent?.xApiKey === undefined                     // not the Anthropic x-api-key header
+    && geminiSent?.body.model === "gemini-2.5-flash"
+    && JSON.stringify(geminiSent?.body.messages) === JSON.stringify([{ role: "user", content: "hello" }]));
+
+  reset(); Object.assign(process.env, { TINA4_AI_PROVIDER: "gemini", TINA4_AI_KEY: "gem-key", TINA4_EMBED_URL: base + "/embeddings" });
+  const geminiEmbedSingle = await Ai.embed("hello");
+  const geminiEmbedBatch = await Ai.embed(["one", "two"]);
+  assert("ai_gemini_embeddings_are_supported",
+    JSON.stringify(geminiEmbedSingle) === JSON.stringify([0, 0.25, 0.5])
+    && JSON.stringify(geminiEmbedBatch) === JSON.stringify([[0, 0.25, 0.5], [1, 0.25, 0.5]]));
+
+  reset(); process.env.TINA4_AI_PROVIDER = "gemini"; delete process.env.TINA4_AI_KEY; process.env.TINA4_AI_URL = base + "/openai";
+  const geminiMissingKey = await throwsType(() => Ai.chat([{ role: "user", content: "hello" }]), AiConfigError);
+  assert("ai_gemini_requires_a_key", !!geminiMissingKey && geminiMissingKey.message.includes("TINA4_AI_KEY is required") && requests.length === 0);
+
+  reset(); Object.assign(process.env, { TINA4_AI_PROVIDER: "gemini", TINA4_AI_KEY: "gem-key", TINA4_AI_URL: base + "/stream-openai" });
+  const geminiStreamEvents = await collectEvents(Ai.chat([{ role: "user", content: "hello" }], { stream: true }));
+  const geminiStreamLast = geminiStreamEvents.at(-1);
+  assert("ai_gemini_streams_openai_style_deltas",
+    textFrom(geminiStreamEvents).join("") === "hello world"
+    && geminiStreamLast?.type === "done");
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   for (const socket of stalledSockets) socket.destroy();
