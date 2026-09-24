@@ -17,7 +17,7 @@
  * Pure logic over the real handler: no server, no double.
  * Run with: npx tsx test/soapParityCorpus.test.ts
  */
-import { WSDLService } from "../packages/core/src/index.ts";
+import { WSDLService, WSDLOperation } from "../packages/core/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -55,8 +55,8 @@ class ParityService extends WSDLService {
   name: "Echo", input: { text: "string" }, output: { Result: "string" },
 };
 
-// The corpus (scratchpad soap-parity/payloads.json), bodies as base64 so the
-// UTF-16 payload survives byte-exact.
+// The corpus (the ten shared soap-parity payloads, then two extra rows), bodies
+// as base64 so the UTF-16 payloads survive byte-exact.
 const corpus: Array<{ name: string; body: string; expect: { fault?: string; message?: string; result?: string } }> = [
   {
     name: "01-add-two-params",
@@ -106,6 +106,21 @@ const corpus: Array<{ name: string; body: string; expect: { fault?: string; mess
   {
     name: "10-doctype-utf16-bom",
     body: "//48AD8AeABtAGwAIAB2AGUAcgBzAGkAbwBuAD0AIgAxAC4AMAAiACAAZQBuAGMAbwBkAGkAbgBnAD0AIgBVAFQARgAtADEANgAiAD8APgA8ACEARABPAEMAVABZAFAARQAgAHMAbwBhAHAAOgBFAG4AdgBlAGwAbwBwAGUAIABbADwAIQBFAE4AVABJAFQAWQAgAGUAIAAiAEUAWABQAEEATgBEAEUARAAiAD4AXQA+ADwAcwBvAGEAcAA6AEUAbgB2AGUAbABvAHAAZQAgAHgAbQBsAG4AcwA6AHMAbwBhAHAAPQAiAGgAdAB0AHAAOgAvAC8AcwBjAGgAZQBtAGEAcwAuAHgAbQBsAHMAbwBhAHAALgBvAHIAZwAvAHMAbwBhAHAALwBlAG4AdgBlAGwAbwBwAGUALwAiACAAeABtAGwAbgBzADoAdAA9ACIAdQByAG4AOgB0AGkAbgBhADQAOgBwAGEAcgBpAHQAeQAiAD4APABzAG8AYQBwADoAQgBvAGQAeQA+ADwAdAA6AEUAYwBoAG8APgA8AHQAOgB0AGUAeAB0AD4AJgBlADsAPAAvAHQAOgB0AGUAeAB0AD4APAAvAHQAOgBFAGMAaABvAD4APAAvAHMAbwBhAHAAOgBCAG8AZAB5AD4APAAvAHMAbwBhAHAAOgBFAG4AdgBlAGwAbwBwAGUAPgA=",
+    expect: { fault: "Client", message: "Malformed XML" },
+  },
+  // Two more from the PHP audit: a DOCTYPE written in UTF-7 behind an
+  // encoding="UTF-7" declaration (every byte ASCII, so a "<!DOCTYPE" byte
+  // search misses it), and UTF-16LE without a byte-order mark (its NULs are
+  // valid UTF-8). Node never decodes by the declared encoding, so neither can
+  // expand; both are refused as Malformed XML.
+  {
+    name: "11-doctype-utf7-declared",
+    body: "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTciPz4rQUR3QUlRLURPQ1RZUEUgc29hcDpFbnZlbG9wZSArQUZzQVBBQWgtRU5USVRZIGUgK0FDSS1FWFBBTkRFRCtBQ0lBUGdCZEFENC08c29hcDpFbnZlbG9wZSB4bWxuczpzb2FwPSJodHRwOi8vc2NoZW1hcy54bWxzb2FwLm9yZy9zb2FwL2VudmVsb3BlLyIgeG1sbnM6dD0idXJuOnRpbmE0OnBhcml0eSI+PHNvYXA6Qm9keT48dDpFY2hvPjx0OnRleHQ+JmU7PC90OnRleHQ+PC90OkVjaG8+PC9zb2FwOkJvZHk+PC9zb2FwOkVudmVsb3BlPg==",
+    expect: { fault: "Client", message: "Malformed XML" },
+  },
+  {
+    name: "12-doctype-utf16le-no-bom",
+    body: "PAA/AHgAbQBsACAAdgBlAHIAcwBpAG8AbgA9ACIAMQAuADAAIgAgAGUAbgBjAG8AZABpAG4AZwA9ACIAVQBUAEYALQAxADYAIgA/AD4APAAhAEQATwBDAFQAWQBQAEUAIABzAG8AYQBwADoARQBuAHYAZQBsAG8AcABlACAAWwA8ACEARQBOAFQASQBUAFkAIABlACAAIgBFAFgAUABBAE4ARABFAEQAIgA+AF0APgA8AHMAbwBhAHAAOgBFAG4AdgBlAGwAbwBwAGUAIAB4AG0AbABuAHMAOgBzAG8AYQBwAD0AIgBoAHQAdABwADoALwAvAHMAYwBoAGUAbQBhAHMALgB4AG0AbABzAG8AYQBwAC4AbwByAGcALwBzAG8AYQBwAC8AZQBuAHYAZQBsAG8AcABlAC8AIgAgAHgAbQBsAG4AcwA6AHQAPQAiAHUAcgBuADoAdABpAG4AYQA0ADoAcABhAHIAaQB0AHkAIgA+ADwAcwBvAGEAcAA6AEIAbwBkAHkAPgA8AHQAOgBFAGMAaABvAD4APAB0ADoAdABlAHgAdAA+ACYAZQA7ADwALwB0ADoAdABlAHgAdAA+ADwALwB0ADoARQBjAGgAbwA+ADwALwBzAG8AYQBwADoAQgBvAGQAeQA+ADwALwBzAG8AYQBwADoARQBuAHYAZQBsAG8AcABlAD4A",
     expect: { fault: "Client", message: "Malformed XML" },
   },
 ];
@@ -212,9 +227,50 @@ console.log("\n--- Byte-level refusals beyond the corpus ---");
     assert(`${label} is Malformed XML`, outcome.message === "Malformed XML", describe(outcome));
   }
 
+  // The declared encoding must be UTF-8 (any case): all four frameworks refuse any
+  // other declaration before parsing, even over a clean ASCII body.
+  for (const declared of ["ISO-8859-1", "UTF-7", "UTF-16", "UTF8", "us-ascii"]) {
+    const outcome = readOutcome(await new ParityService().handle(`<?xml version="1.0" encoding="${declared}"?>${echo("hello")}`));
+    assert(`an XML declaration naming encoding="${declared}" is Malformed XML`, outcome.message === "Malformed XML", describe(outcome));
+  }
+  for (const [label, prolog] of [
+    ["encoding=\"utf-8\" (lower case)", `<?xml version="1.0" encoding="utf-8"?>`],
+    ["encoding='UTF-8' (single quotes)", `<?xml version='1.0' encoding='UTF-8'?>`],
+    ["a declaration without an encoding", `<?xml version="1.0"?>`],
+    ["no declaration at all", ""],
+  ] as const) {
+    const outcome = readOutcome(await new ParityService().handle(prolog + echo("hello")));
+    assert(`POSITIVE: ${label} is accepted`, outcome.result === "hello", describe(outcome));
+  }
+
   const commented = readOutcome(await new ParityService().handle(
     envelope(`<!-- a comment --><t:Add><t:a> 2 </t:a><?pi data?><t:b>40</t:b></t:Add>`)));
   assert("POSITIVE: comments and processing instructions are skipped", commented.result === "42", describe(commented));
+}
+
+console.log("\n--- @WSDLOperation as a real decorator (the documented form) ---");
+{
+  // tsx / esbuild compile TC39 standard decorators; the decorator must work there
+  // as well as under experimentalDecorators, or the documented example crashes.
+  let decorated: string;
+  try {
+    class DecoratedService extends WSDLService {
+      serviceName = "Decorated";
+      serviceUrl = "/soap/decorated";
+
+      @WSDLOperation({ input: { a: "int", b: "int" }, output: { Result: "int" } })
+      async Add(a: number, b: number): Promise<Record<string, unknown>> {
+        return { Result: a + b };
+      }
+    }
+    const service = new DecoratedService();
+    const wsdl = service.generateWSDL();
+    const outcome = readOutcome(await service.handle(Buffer.from(corpus[0].body, "base64")));
+    decorated = wsdl.includes('<xsd:element name="a" type="xsd:int"/>') ? describe(outcome) : "WSDL is missing the Add input";
+  } catch (error) {
+    decorated = `threw: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  assert("a decorated operation is discovered, described and dispatched", decorated === 'result "5"', decorated);
 }
 
 console.log("\n| payload | outcome | faultstring / Result | EXPANDED |");
