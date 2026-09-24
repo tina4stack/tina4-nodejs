@@ -544,6 +544,12 @@ export class Database {
    * the same Database don't clobber each other. startTransaction() sets the
    * pin via .enterWith(); commit()/rollback() clear it.
    */
+  private leases = new Map<DatabaseAdapter, object>();
+  private discardedSlots = new Set<number>();
+  private repairs = new Map<number, Promise<void>>();
+  private leaseOwner = new AsyncLocalStorage<object>();
+  private operationStore = new AsyncLocalStorage<{ adapter: DatabaseAdapter; active: boolean }>();
+
   private txStore: AsyncLocalStorage<{ adapter: DatabaseAdapter | null; depth?: number }> = new AsyncLocalStorage();
 
   /**
@@ -634,20 +640,79 @@ export class Database {
    * that adapter is returned for every call so the whole transaction is
    * atomic on one connection. Otherwise pooled mode round-robins.
    */
+  private availableAdapter(): DatabaseAdapter {
+    if (this._poolSize === 0) return this.adapter!;
+    for (let offset = 0; offset < this._poolSize; offset++) {
+      const idx = (this.poolIndex + offset) % this._poolSize;
+      const adapter = this.pool[idx];
+      if (adapter && !this.leases.has(adapter)) {
+        this.poolIndex = (idx + 1) % this._poolSize;
+        return adapter;
+      }
+    }
+    throw new Error("Database connection pool exhausted");
+  }
+
+  private reserveAdapter(owner: object): DatabaseAdapter {
+    const adapter = this.availableAdapter();
+    if (this._poolSize > 0) this.leases.set(adapter, owner);
+    return adapter;
+  }
+
+  private async releaseAdapter(adapter: DatabaseAdapter, discard = false): Promise<void> {
+    if (this._poolSize === 0) return;
+    try {
+      if (discard) {
+        const idx = this.pool.indexOf(adapter);
+        if (idx >= 0) {
+          this.pool[idx] = null;
+          this.discardedSlots.add(idx);
+          adapter.close();
+        }
+      }
+    } finally { this.leases.delete(adapter); }
+  }
+
+  private async repairDiscardedConnections(): Promise<void> {
+    for (const idx of this.discardedSlots) {
+      let repair = this.repairs.get(idx);
+      if (!repair) {
+        repair = (async () => {
+          if (!this.adapterFactory) throw new Error("Database connection pool cannot reconnect");
+          const replacement = await this.adapterFactory();
+          this.pool[idx] = replacement;
+          this.discardedSlots.delete(idx);
+        })();
+        this.repairs.set(idx, repair);
+      }
+      try { await repair; }
+      finally { if (this.repairs.get(idx) === repair) this.repairs.delete(idx); }
+    }
+  }
+
+  private async withConnectionOperation<T>(fn: () => Promise<T>): Promise<T> {
+    if (this._poolSize === 0 || this.txStore.getStore()?.adapter || this.operationStore.getStore()?.active) return fn();
+    if (this.discardedSlots.size) await this.repairDiscardedConnections();
+    const adapter = this.reserveAdapter({});
+    const operation = { adapter, active: true };
+    return this.operationStore.run(operation, async () => {
+      try { return await fn(); }
+      finally {
+        operation.active = false;
+        if (this.txStore.getStore()?.adapter !== adapter) await this.releaseAdapter(adapter);
+      }
+    });
+  }
+
   private getNextAdapter(): DatabaseAdapter {
     const pinned = this.txStore.getStore()?.adapter;
     if (pinned) return pinned;
-
-    if (this._poolSize > 0) {
-      const idx = this.poolIndex;
-      this.poolIndex = (this.poolIndex + 1) % this._poolSize;
-      return this.pool[idx] as DatabaseAdapter;
-    }
-
-    return this.adapter!;
+    const operation = this.operationStore.getStore();
+    if (operation?.active) return operation.adapter;
+    return this.availableAdapter();
   }
 
-  /** Get the underlying adapter (for advanced / escape-hatch usage). */
+  /** Non-owning peek excluding leased connections. Use checkout/checkin for concurrent raw driver work. */
   getAdapter(): DatabaseAdapter {
     return this.getNextAdapter();
   }
@@ -673,16 +738,18 @@ export class Database {
    * The caller is responsible for returning it via checkin().
    */
   checkout(): DatabaseAdapter {
-    return this.getNextAdapter();
+    let owner = this.leaseOwner.getStore();
+    if (!owner) { owner = {}; this.leaseOwner.enterWith(owner); }
+    return this.reserveAdapter(owner);
   }
 
-  /**
-   * Return a borrowed connection to the pool.
-   * For round-robin pools this is a no-op (connections stay in the pool array),
-   * but the method exists for API parity and future pooling strategies.
-   */
-  checkin(_adapter: DatabaseAdapter): void {
-    // No-op for round-robin pool — connections are not removed on checkout.
+  /** Only the borrowing async context can release an explicit lease. */
+  checkin(adapter: DatabaseAdapter): void {
+    if (this._poolSize === 0) return;
+    if (!this.leases.has(adapter) || this.leases.get(adapter) !== this.leaseOwner.getStore()) {
+      throw new Error("Database connection lease owner mismatch");
+    }
+    this.leases.delete(adapter);
   }
 
   /**
@@ -713,7 +780,9 @@ export class Database {
    * `fetchAll` deliberately does NOT inherit the cap — see below.
    */
   async fetch(sql: string, params?: unknown[], limit?: number, offset?: number, opts?: { noCache?: boolean }): Promise<DatabaseResult> {
-    return this._fetchWithLimit(sql, params, limit ?? DEFAULT_ROW_CAP, offset, opts);
+    return this.withConnectionOperation(async () => {
+      return this._fetchWithLimit(sql, params, limit ?? DEFAULT_ROW_CAP, offset, opts);
+    });
   }
 
   /**
@@ -726,33 +795,35 @@ export class Database {
    * inherit it and stop returning every row.
    */
   private async _fetchWithLimit(sql: string, params?: unknown[], limit?: number, offset?: number, opts?: { noCache?: boolean }): Promise<DatabaseResult> {
-    // v3.13.12: strip trailing `;` before the adapter wraps with COUNT(*)
-    // or appends LIMIT/OFFSET. Without this, `"SELECT * FROM t;"` becomes
-    // `"SELECT * FROM t; LIMIT 100 OFFSET 0"` — a syntax error.
-    sql = stripTrailingSemicolons(sql);
-    const adapter = this.getNextAdapter();
-    try {
-      // A WRITE that returns rows (INSERT/UPDATE/DELETE ... RETURNING, a
-      // data-modifying CTE) runs exactly once: no LIMIT/OFFSET (a syntax error on
-      // DML), no COUNT probe (it would re-run the statement), never cached, and
-      // committed like execute() (tina4-python#133 contract).
-      if (SQLTranslator.isWriteStatement(sql)) {
-        const written = await adapterFetch(adapter, sql, params, undefined, undefined, true);
-        await this.commitFetchWrite(adapter);
+    return this.withConnectionOperation(async () => {
+      // v3.13.12: strip trailing `;` before the adapter wraps with COUNT(*)
+      // or appends LIMIT/OFFSET. Without this, `"SELECT * FROM t;"` becomes
+      // `"SELECT * FROM t; LIMIT 100 OFFSET 0"` — a syntax error.
+      sql = stripTrailingSemicolons(sql);
+      const adapter = this.getNextAdapter();
+      try {
+        // A WRITE that returns rows (INSERT/UPDATE/DELETE ... RETURNING, a
+        // data-modifying CTE) runs exactly once: no LIMIT/OFFSET (a syntax error on
+        // DML), no COUNT probe (it would re-run the statement), never cached, and
+        // committed like execute() (tina4-python#133 contract).
+        if (SQLTranslator.isWriteStatement(sql)) {
+          const written = await adapterFetch(adapter, sql, params, undefined, undefined, true);
+          await this.commitFetchWrite(adapter);
+          this.lastError = null;
+          return new DatabaseResult(written, undefined, written.length, undefined, undefined, adapter, sql);
+        }
+        // `opts.noCache` bypasses the query cache for this one call — no lookup,
+        // no store, run directly (mirrors the Python master's `no_cache`).
+        const rows = await adapterFetch(adapter, sql, params, limit, offset, opts?.noCache);
         this.lastError = null;
-        return new DatabaseResult(written, undefined, written.length, undefined, undefined, adapter, sql);
+        const total = await probeTotal(adapter, sql, params, limit);
+        return new DatabaseResult(rows, undefined, total, limit, offset, adapter, sql);
+      } catch (e: any) {
+        // v3.13.11 #49.2: fetch() records last_error like execute() does.
+        this.lastError = e?.message ?? String(e);
+        throw e;
       }
-      // `opts.noCache` bypasses the query cache for this one call — no lookup,
-      // no store, run directly (mirrors the Python master's `no_cache`).
-      const rows = await adapterFetch(adapter, sql, params, limit, offset, opts?.noCache);
-      this.lastError = null;
-      const total = await probeTotal(adapter, sql, params, limit);
-      return new DatabaseResult(rows, undefined, total, limit, offset, adapter, sql);
-    } catch (e: any) {
-      // v3.13.11 #49.2: fetch() records last_error like execute() does.
-      this.lastError = e?.message ?? String(e);
-      throw e;
-    }
+    });
   }
 
   /**
@@ -763,28 +834,30 @@ export class Database {
    * (mirrors the Python master's `no_cache`). Default preserves caching.
    */
   async fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[], opts?: { noCache?: boolean }): Promise<T | null> {
-    sql = stripTrailingSemicolons(sql);
-    const adapter = this.getNextAdapter();
-    try {
-      // DB-contract A: route fetchOne through the SAME error-capturing path as
-      // fetch()/execute(). Pre-3.13.37 it called the adapter directly, so a SQL
-      // error raised (good) but db.getError() stayed null — the public API
-      // couldn't read the cause. Now it FAILS LOUD *and* populates lastError.
-      // The throw happens before the CachedDatabaseAdapter ever reaches its
-      // cache.set(), so a buried failure can never be cached either.
-      // A write through fetchOne (the natural home of `INSERT ... RETURNING id`)
-      // is never cached and commits like execute() (tina4-python#133 contract).
-      const isWrite = SQLTranslator.isWriteStatement(sql);
-      const row = (adapter as any).fetchOneAsync
-        ? await (adapter as any).fetchOneAsync(sql, params, isWrite || opts?.noCache)
-        : adapter.fetchOne<T>(sql, params);
-      if (isWrite) await this.commitFetchWrite(adapter);
-      this.lastError = null;
-      return row;
-    } catch (e: any) {
-      this.lastError = e?.message ?? String(e);
-      throw e;
-    }
+    return this.withConnectionOperation(async () => {
+      sql = stripTrailingSemicolons(sql);
+      const adapter = this.getNextAdapter();
+      try {
+        // DB-contract A: route fetchOne through the SAME error-capturing path as
+        // fetch()/execute(). Pre-3.13.37 it called the adapter directly, so a SQL
+        // error raised (good) but db.getError() stayed null — the public API
+        // couldn't read the cause. Now it FAILS LOUD *and* populates lastError.
+        // The throw happens before the CachedDatabaseAdapter ever reaches its
+        // cache.set(), so a buried failure can never be cached either.
+        // A write through fetchOne (the natural home of `INSERT ... RETURNING id`)
+        // is never cached and commits like execute() (tina4-python#133 contract).
+        const isWrite = SQLTranslator.isWriteStatement(sql);
+        const row = (adapter as any).fetchOneAsync
+          ? await (adapter as any).fetchOneAsync(sql, params, isWrite || opts?.noCache)
+          : adapter.fetchOne<T>(sql, params);
+        if (isWrite) await this.commitFetchWrite(adapter);
+        this.lastError = null;
+        return row;
+      } catch (e: any) {
+        this.lastError = e?.message ?? String(e);
+        throw e;
+      }
+    });
   }
 
   /**
@@ -806,10 +879,12 @@ export class Database {
    * SEPARATE trailing argument, never the params array.
    */
   async fetchAll<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, offset?: number, opts?: { noCache?: boolean }): Promise<T[]> {
-    // Routes through _fetchWithLimit, NOT fetch(), so `limit` stays verbatim.
-    // Going through fetch() would apply the 100-row cap and make a method
-    // called "fetchAll" quietly stop returning them all.
-    return (await this._fetchWithLimit(sql, params, limit, offset, opts)).records as T[];
+    return this.withConnectionOperation(async () => {
+      // Routes through _fetchWithLimit, NOT fetch(), so `limit` stays verbatim.
+      // Going through fetch() would apply the 100-row cap and make a method
+      // called "fetchAll" quietly stop returning them all.
+      return (await this._fetchWithLimit(sql, params, limit, offset, opts)).records as T[];
+    });
   }
 
   /**
@@ -838,40 +913,42 @@ export class Database {
    * `try/catch` and convert, rather than testing the return value.
    */
   async execute(sql: string, params?: unknown[]): Promise<boolean | unknown> {
-    try {
-      const adapter = this.getNextAdapter();
-      // A statement that PRODUCES ROWS (SELECT, WITH ... SELECT, a write with
-      // RETURNING / SQL Server OUTPUT, a CALL/EXEC result set) returns them as
-      // the SAME DatabaseResult fetch() returns - run exactly once, with no
-      // COUNT probe and no LIMIT/OFFSET (cross-framework contract, matching
-      // PHP). It used to hand back the raw driver object (pg Result, tedious
-      // {rows}, a mysql2/odbc array), and on SQLite and Firebird the rows were
-      // lost entirely because their execute() returns none.
-      const kind = SQLTranslator.rowsKind(sql);
-      let rows: unknown[] | undefined;
-      let result: unknown;
-      if (kind) {
-        rows = await adapterExecuteRows(adapter, sql, params);
-        if (rows === undefined) {
+    return this.withConnectionOperation(async () => {
+      try {
+        const adapter = this.getNextAdapter();
+        // A statement that PRODUCES ROWS (SELECT, WITH ... SELECT, a write with
+        // RETURNING / SQL Server OUTPUT, a CALL/EXEC result set) returns them as
+        // the SAME DatabaseResult fetch() returns - run exactly once, with no
+        // COUNT probe and no LIMIT/OFFSET (cross-framework contract, matching
+        // PHP). It used to hand back the raw driver object (pg Result, tedious
+        // {rows}, a mysql2/odbc array), and on SQLite and Firebird the rows were
+        // lost entirely because their execute() returns none.
+        const kind = SQLTranslator.rowsKind(sql);
+        let rows: unknown[] | undefined;
+        let result: unknown;
+        if (kind) {
+          rows = await adapterExecuteRows(adapter, sql, params);
+          if (rows === undefined) {
+            result = await adapterExecute(adapter, sql, params);
+            rows = rowsFromExecuteResult(result);
+          }
+        } else {
           result = await adapterExecute(adapter, sql, params);
-          rows = rowsFromExecuteResult(result);
         }
-      } else {
-        result = await adapterExecute(adapter, sql, params);
+        if (this.autoCommit && !this.inExplicitTransaction()) {
+          try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+        }
+        this.lastError = null;
+        if (kind && rows !== undefined && (kind !== "procedure" || rows.length > 0)) {
+          return new DatabaseResult(rows as Record<string, unknown>[], undefined, rows.length, undefined, undefined, adapter, sql);
+        }
+        if (kind === "procedure") return result ?? true;
+        return true;
+      } catch (e: any) {
+        this.lastError = e?.message ?? String(e);
+        throw e;
       }
-      if (this.autoCommit && !this.inExplicitTransaction()) {
-        try { await adapterCommit(adapter); } catch { /* no active transaction */ }
-      }
-      this.lastError = null;
-      if (kind && rows !== undefined && (kind !== "procedure" || rows.length > 0)) {
-        return new DatabaseResult(rows as Record<string, unknown>[], undefined, rows.length, undefined, undefined, adapter, sql);
-      }
-      if (kind === "procedure") return result ?? true;
-      return true;
-    } catch (e: any) {
-      this.lastError = e?.message ?? String(e);
-      throw e;
-    }
+    });
   }
 
   /**
@@ -888,17 +965,19 @@ export class Database {
    * already produces, exactly as it already does for update/delete/truncate.
    */
   async insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): Promise<DatabaseWriteResult> {
-    const adapter = this.getNextAdapter();
-    // ADR-0069 (G3): every row's keys, not only the first row's (the adapters
-    // build a batch from row 0).
-    for (const row of Array.isArray(data) ? data : [data]) this.assertWriteKeys(row);
-    const result = (adapter as any).insertAsync
-      ? await (adapter as any).insertAsync(table, data)
-      : adapter.insert(table, data);
-    if (this.autoCommit && !this.inExplicitTransaction()) {
-      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
-    }
-    return Database.assertWrote(result, "insert", table);
+    return this.withConnectionOperation(async () => {
+      const adapter = this.getNextAdapter();
+      // ADR-0069 (G3): every row's keys, not only the first row's (the adapters
+      // build a batch from row 0).
+      for (const row of Array.isArray(data) ? data : [data]) this.assertWriteKeys(row);
+      const result = (adapter as any).insertAsync
+        ? await (adapter as any).insertAsync(table, data)
+        : adapter.insert(table, data);
+      if (this.autoCommit && !this.inExplicitTransaction()) {
+        try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+      }
+      return Database.assertWrote(result, "insert", table);
+    });
   }
 
   /**
@@ -909,29 +988,31 @@ export class Database {
    * no primary key or cannot be introspected.
    */
   async primaryKey(table: string): Promise<string[]> {
-    if (!this._pkCache.has(table)) {
-      let pk: string[] = [];
-      try {
-        const columns = await this.getColumns(table);
-        // ADR-0044 amendment: sort by primaryKeyPosition so a composite
-        // PRIMARY KEY (b, a) returns ["b", "a"] (declared key order), not
-        // table-column order. A column with no reported position sorts last.
-        const pkColumns = columns.filter((c) => c.primaryKey);
-        pkColumns.sort((a, b) => {
-          const posA = a.primaryKeyPosition ?? null;
-          const posB = b.primaryKeyPosition ?? null;
-          if (posA === posB) return 0;
-          if (posA === null) return 1;
-          if (posB === null) return -1;
-          return posA - posB;
-        });
-        pk = pkColumns.map((c) => c.name);
-      } catch {
-        pk = [];
+    return this.withConnectionOperation(async () => {
+      if (!this._pkCache.has(table)) {
+        let pk: string[] = [];
+        try {
+          const columns = await this.getColumns(table);
+          // ADR-0044 amendment: sort by primaryKeyPosition so a composite
+          // PRIMARY KEY (b, a) returns ["b", "a"] (declared key order), not
+          // table-column order. A column with no reported position sorts last.
+          const pkColumns = columns.filter((c) => c.primaryKey);
+          pkColumns.sort((a, b) => {
+            const posA = a.primaryKeyPosition ?? null;
+            const posB = b.primaryKeyPosition ?? null;
+            if (posA === posB) return 0;
+            if (posA === null) return 1;
+            if (posB === null) return -1;
+            return posA - posB;
+          });
+          pk = pkColumns.map((c) => c.name);
+        } catch {
+          pk = [];
+        }
+        this._pkCache.set(table, pk);
       }
-      this._pkCache.set(table, pk);
-    }
-    return this._pkCache.get(table) ?? [];
+      return this._pkCache.get(table) ?? [];
+    });
   }
 
   /**
@@ -959,87 +1040,89 @@ export class Database {
    * throws rather than silently changing nothing (audit feature 4, P1).
    */
   async update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseWriteResult> {
-    this.assertWriteKeys(data, filter);
-    let effectiveFilter: Record<string, unknown> | string = filter ?? {};
-    let effectiveData = data;
+    return this.withConnectionOperation(async () => {
+      this.assertWriteKeys(data, filter);
+      let effectiveFilter: Record<string, unknown> | string = filter ?? {};
+      let effectiveData = data;
 
-    // A string filter is the OTHER documented form ("id = ?" + params), so it
-    // must be tested as a string: Object.keys("id = ?") is ["0",..,"5"], which
-    // is non-empty by accident rather than by meaning — and an EMPTY string
-    // filter would then be treated as a real filter instead of falling through
-    // to the primary key.
-    const filterIsEmpty = typeof effectiveFilter === "string"
-      ? effectiveFilter.trim() === ""
-      : Object.keys(effectiveFilter).length === 0;
+      // A string filter is the OTHER documented form ("id = ?" + params), so it
+      // must be tested as a string: Object.keys("id = ?") is ["0",..,"5"], which
+      // is non-empty by accident rather than by meaning — and an EMPTY string
+      // filter would then be treated as a real filter instead of falling through
+      // to the primary key.
+      const filterIsEmpty = typeof effectiveFilter === "string"
+        ? effectiveFilter.trim() === ""
+        : Object.keys(effectiveFilter).length === 0;
 
-    if (filterIsEmpty) {
-      const pkColumns = await this.primaryKey(table);
-      // Resolve each key column to the caller's OWN key for it, matched
-      // case-insensitively.
-      //
-      // The engines disagree about identifier case BY DESIGN and always will:
-      // Firebird folds an unquoted identifier to UPPER, PostgreSQL folds it to
-      // LOWER, MySQL and SQLite preserve what was typed. Introspection returns
-      // the ENGINE's spelling while `data` carries the caller's, so `c in data`
-      // failed on whichever engine folds the other way. A case-sensitivity bug,
-      // not a Firebird quirk - Firebird just made it visible first.
-      //
-      // Deliberately does NOT lower-case introspection output: that would
-      // special-case one engine and break a genuinely quoted mixed-case table.
-      // The WHERE is built from the ENGINE's column name and the CALLER's value.
-      const resolved: Record<string, string> = {};
-      const missing: string[] = [];
-      for (const col of pkColumns) {
-        const folded = String(col).toLowerCase();
-        const matches = Object.keys(data).filter((k) => k.toLowerCase() === folded);
-        if (matches.length > 1) {
-          // Ambiguity is refused, never guessed - choosing wrong here writes the
-          // WHERE clause of an UPDATE.
+      if (filterIsEmpty) {
+        const pkColumns = await this.primaryKey(table);
+        // Resolve each key column to the caller's OWN key for it, matched
+        // case-insensitively.
+        //
+        // The engines disagree about identifier case BY DESIGN and always will:
+        // Firebird folds an unquoted identifier to UPPER, PostgreSQL folds it to
+        // LOWER, MySQL and SQLite preserve what was typed. Introspection returns
+        // the ENGINE's spelling while `data` carries the caller's, so `c in data`
+        // failed on whichever engine folds the other way. A case-sensitivity bug,
+        // not a Firebird quirk - Firebird just made it visible first.
+        //
+        // Deliberately does NOT lower-case introspection output: that would
+        // special-case one engine and break a genuinely quoted mixed-case table.
+        // The WHERE is built from the ENGINE's column name and the CALLER's value.
+        const resolved: Record<string, string> = {};
+        const missing: string[] = [];
+        for (const col of pkColumns) {
+          const folded = String(col).toLowerCase();
+          const matches = Object.keys(data).filter((k) => k.toLowerCase() === folded);
+          if (matches.length > 1) {
+            // Ambiguity is refused, never guessed - choosing wrong here writes the
+            // WHERE clause of an UPDATE.
+            throw new Error(
+              `update was given more than one key for the primary-key column ${col}: ` +
+                `[${matches.slice().sort().join(", ")}] (table=${table}). These differ ` +
+                `only by case, so which one identifies the row is ambiguous - pass ` +
+                `exactly one, or pass an explicit filter.`,
+            );
+          }
+          if (matches.length === 1) resolved[col] = matches[0];
+          else missing.push(col);
+        }
+        if (pkColumns.length === 0 || missing.length > 0) {
           throw new Error(
-            `update was given more than one key for the primary-key column ${col}: ` +
-              `[${matches.slice().sort().join(", ")}] (table=${table}). These differ ` +
-              `only by case, so which one identifies the row is ambiguous - pass ` +
-              `exactly one, or pass an explicit filter.`,
+            `update requires a filter or the complete primary key in the data; pass ` +
+              `filter explicitly to update multiple rows (table=${table}, ` +
+              `primary key=[${pkColumns.join(", ")}], missing from data=[${missing.join(", ")}]). ` +
+              `To empty a table use truncate(${table}).`,
           );
         }
-        if (matches.length === 1) resolved[col] = matches[0];
-        else missing.push(col);
+        // EVERY key column goes into the WHERE. A composite key built from only its
+        // first column would match every row sharing that value - the data-loss bug
+        // this method exists to prevent, reintroduced.
+        effectiveData = { ...data };
+        const keyed: Record<string, unknown> = {};
+        for (const col of pkColumns) {
+          const callerKey = resolved[col];
+          keyed[col] = effectiveData[callerKey];
+          delete effectiveData[callerKey];
+        }
+        if (Object.keys(effectiveData).length === 0) {
+          throw new Error(
+            `update was given only the primary key [${pkColumns.join(", ")}] and no ` +
+              `columns to set (table=${table})`,
+          );
+        }
+        effectiveFilter = keyed;
       }
-      if (pkColumns.length === 0 || missing.length > 0) {
-        throw new Error(
-          `update requires a filter or the complete primary key in the data; pass ` +
-            `filter explicitly to update multiple rows (table=${table}, ` +
-            `primary key=[${pkColumns.join(", ")}], missing from data=[${missing.join(", ")}]). ` +
-            `To empty a table use truncate(${table}).`,
-        );
-      }
-      // EVERY key column goes into the WHERE. A composite key built from only its
-      // first column would match every row sharing that value - the data-loss bug
-      // this method exists to prevent, reintroduced.
-      effectiveData = { ...data };
-      const keyed: Record<string, unknown> = {};
-      for (const col of pkColumns) {
-        const callerKey = resolved[col];
-        keyed[col] = effectiveData[callerKey];
-        delete effectiveData[callerKey];
-      }
-      if (Object.keys(effectiveData).length === 0) {
-        throw new Error(
-          `update was given only the primary key [${pkColumns.join(", ")}] and no ` +
-            `columns to set (table=${table})`,
-        );
-      }
-      effectiveFilter = keyed;
-    }
 
-    const adapter = this.getNextAdapter();
-    const result = (adapter as any).updateAsync
-      ? await (adapter as any).updateAsync(table, effectiveData, effectiveFilter, params)
-      : adapter.update(table, effectiveData, effectiveFilter, params);
-    if (this.autoCommit && !this.inExplicitTransaction()) {
-      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
-    }
-    return Database.assertWrote(result, "update", table);
+      const adapter = this.getNextAdapter();
+      const result = (adapter as any).updateAsync
+        ? await (adapter as any).updateAsync(table, effectiveData, effectiveFilter, params)
+        : adapter.update(table, effectiveData, effectiveFilter, params);
+      if (this.autoCommit && !this.inExplicitTransaction()) {
+        try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+      }
+      return Database.assertWrote(result, "update", table);
+    });
   }
 
   /**
@@ -1061,67 +1144,72 @@ export class Database {
 
   /** Delete rows. A filterless delete throws; use truncate() to empty a table. */
   async delete(table: string, filter?: Record<string, unknown> | string | Record<string, unknown>[], params?: unknown[]): Promise<DatabaseWriteResult> {
-    const effectiveFilter = filter ?? {};
-    // A BLANK string counts as no filter. The old guard skipped the emptiness
-    // test for anything typed string, so `delete(t, "")` fell through to the
-    // adapter, which renders an empty WHERE as `DELETE FROM "t"` — a silent
-    // whole-table delete through the very method that exists to make that
-    // impossible. truncate() is the explicit spelling.
-    const filterIsEmpty = Array.isArray(effectiveFilter)
-      ? effectiveFilter.length === 0
-      : typeof effectiveFilter === "string"
-        ? effectiveFilter.trim() === ""
-        : Object.keys(effectiveFilter).length === 0;
-    if (filterIsEmpty) {
-      throw new Error(
-        `delete requires a filter (table=${table}). To remove every row use truncate(${table}).`,
-      );
-    }
-
-    const adapter = this.getNextAdapter();
-    for (const each of Array.isArray(effectiveFilter) ? effectiveFilter : [effectiveFilter]) {
-      this.assertWriteKeys(undefined, each);
-    }
-    // A LIST of filter maps deletes each one. Only the SQLite adapter handled
-    // the list itself; the others read the array's indices ("0", "1", ...) as
-    // column names. Deleting one map at a time gives every engine the same form.
-    if (Array.isArray(effectiveFilter)) {
-      let affectedRows = 0;
-      for (const each of effectiveFilter) {
-        const one = (adapter as any).deleteAsync
-          ? await (adapter as any).deleteAsync(table, each, params)
-          : adapter.delete(table, each, params);
-        affectedRows += Number(Database.assertWrote(one, "delete", table)?.affectedRows ?? 0);
+    return this.withConnectionOperation(async () => {
+      const effectiveFilter = filter ?? {};
+      // A BLANK string counts as no filter. The old guard skipped the emptiness
+      // test for anything typed string, so `delete(t, "")` fell through to the
+      // adapter, which renders an empty WHERE as `DELETE FROM "t"` — a silent
+      // whole-table delete through the very method that exists to make that
+      // impossible. truncate() is the explicit spelling.
+      const filterIsEmpty = Array.isArray(effectiveFilter)
+        ? effectiveFilter.length === 0
+        : typeof effectiveFilter === "string"
+          ? effectiveFilter.trim() === ""
+          : Object.keys(effectiveFilter).length === 0;
+      if (filterIsEmpty) {
+        throw new Error(
+          `delete requires a filter (table=${table}). To remove every row use truncate(${table}).`,
+        );
       }
+
+      const adapter = this.getNextAdapter();
+      for (const each of Array.isArray(effectiveFilter) ? effectiveFilter : [effectiveFilter]) {
+        this.assertWriteKeys(undefined, each);
+      }
+      // A LIST of filter maps deletes each one. Only the SQLite adapter handled
+      // the list itself; the others read the array's indices ("0", "1", ...) as
+      // column names. Deleting one map at a time gives every engine the same form.
+      if (Array.isArray(effectiveFilter)) {
+        let affectedRows = 0;
+        for (const each of effectiveFilter) {
+          const one = (adapter as any).deleteAsync
+            ? await (adapter as any).deleteAsync(table, each, params)
+            : adapter.delete(table, each, params);
+          affectedRows += Number(Database.assertWrote(one, "delete", table)?.affectedRows ?? 0);
+        }
+        if (this.autoCommit && !this.inExplicitTransaction()) {
+          try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+        }
+        return { success: true, affectedRows };
+      }
+      const result = (adapter as any).deleteAsync
+        ? await (adapter as any).deleteAsync(table, effectiveFilter, params)
+        : adapter.delete(table, effectiveFilter, params);
       if (this.autoCommit && !this.inExplicitTransaction()) {
         try { await adapterCommit(adapter); } catch { /* no active transaction */ }
       }
-      return { success: true, affectedRows };
-    }
-    const result = (adapter as any).deleteAsync
-      ? await (adapter as any).deleteAsync(table, effectiveFilter, params)
-      : adapter.delete(table, effectiveFilter, params);
-    if (this.autoCommit && !this.inExplicitTransaction()) {
-      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
-    }
-    return Database.assertWrote(result, "delete", table);
+      return Database.assertWrote(result, "delete", table);
+    });
   }
 
   /** Remove every row. The explicit spelling of a whole-table delete. */
   async truncate(table: string): Promise<DatabaseWriteResult> {
-    const adapter = this.getNextAdapter();
-    // The adapters' delete() already accepts a raw string WHERE clause.
-    const result = (adapter as any).deleteAsync
-      ? await (adapter as any).deleteAsync(table, "1 = 1", [])
-      : adapter.delete(table, "1 = 1" as any, []);
-    if (this.autoCommit && !this.inExplicitTransaction()) {
-      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
-    }
-    return Database.assertWrote(result, "truncate", table);
+    return this.withConnectionOperation(async () => {
+      const adapter = this.getNextAdapter();
+      // The adapters' delete() already accepts a raw string WHERE clause.
+      const result = (adapter as any).deleteAsync
+        ? await (adapter as any).deleteAsync(table, "1 = 1", [])
+        : adapter.delete(table, "1 = 1" as any, []);
+      if (this.autoCommit && !this.inExplicitTransaction()) {
+        try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+      }
+      return Database.assertWrote(result, "truncate", table);
+    });
   }
 
   /** Close all database connections (pool or single). */
   close(): void {
+    this.discardedSlots.clear();
     if (this._poolSize > 0) {
       for (let i = 0; i < this.pool.length; i++) {
         if (this.pool[i] !== null) {
@@ -1158,7 +1246,7 @@ export class Database {
    * connection, and the matching inner commit just unwinds the depth.
    */
   async startTransaction(): Promise<void> {
-    const store = this.txStore.getStore();
+    let store = this.txStore.getStore();
     if (store?.adapter) {
       const depth = store.depth ?? 1;
       console.warn(
@@ -1171,15 +1259,20 @@ export class Database {
       store.depth = depth + 1;
       return;
     }
-    // Pick an adapter using the normal selection logic, then pin it.
-    const adapter = this.getNextAdapter();
-    if (store) {
-      store.adapter = adapter;
-      store.depth = 1;
-    } else {
-      this.txStore.enterWith({ adapter, depth: 1 });
+    // Establish the mutable context before awaiting a reconnect/BEGIN so the
+    // caller's continuation retains the pin, including after a discarded slot.
+    if (!store) { store = { adapter: null, depth: 0 }; this.txStore.enterWith(store); }
+    if (this.discardedSlots.size) await this.repairDiscardedConnections();
+    const adapter = this.reserveAdapter({});
+    store.adapter = adapter;
+    store.depth = 1;
+    try { await adapterStartTransaction(adapter); }
+    catch (error) {
+      const current = this.txStore.getStore();
+      if (current) { current.adapter = null; current.depth = 0; }
+      await this.releaseAdapter(adapter, true);
+      throw error;
     }
-    await adapterStartTransaction(adapter);
   }
 
   /**
@@ -1194,24 +1287,27 @@ export class Database {
    * the depth — the outer commit is the real one.
    */
   async commit(): Promise<void> {
-    const store = this.txStore.getStore();
-    const depth = store?.depth ?? 0;
-    if (depth > 1) {
-      // Inner commit of an ignored nested begin — just unwind the depth.
-      if (store) store.depth = depth - 1;
-      return;
-    }
-    const adapter = this.getNextAdapter();
-    try {
-      await adapterCommit(adapter);
-      this.lastError = null;
-    } catch (e: any) {
-      // Keep the pin so rollback() reaches this same connection.
-      this.lastError = e?.message ?? String(e);
-      throw e;
-    }
-    // Success — release the pin.
-    if (store) { store.adapter = null; store.depth = 0; }
+    return this.withConnectionOperation(async () => {
+      const store = this.txStore.getStore();
+      const depth = store?.depth ?? 0;
+      if (depth > 1) {
+        // Inner commit of an ignored nested begin — just unwind the depth.
+        if (store) store.depth = depth - 1;
+        return;
+      }
+      const adapter = this.getNextAdapter();
+      try {
+        await adapterCommit(adapter);
+        this.lastError = null;
+      } catch (e: any) {
+        // Keep the pin so rollback() reaches this same connection.
+        this.lastError = e?.message ?? String(e);
+        throw e;
+      }
+      // Success — release the transaction lease (an ordinary operation owns its own lease).
+      if (store) { store.adapter = null; store.depth = 0; }
+      if (this.operationStore.getStore()?.adapter !== adapter) await this.releaseAdapter(adapter);
+    });
   }
 
   /**
@@ -1223,28 +1319,36 @@ export class Database {
    * stay pinned to this context forever.
    */
   async rollback(): Promise<void> {
-    const adapter = this.getNextAdapter();
-    const store = this.txStore.getStore();
-    try {
-      await adapterRollback(adapter);
-      this.lastError = null;
-    } catch (e: any) {
-      this.lastError = e?.message ?? String(e);
-      throw e;
-    } finally {
-      // Terminal cleanup — always release the pin.
-      if (store) { store.adapter = null; store.depth = 0; }
-    }
+    return this.withConnectionOperation(async () => {
+      const adapter = this.getNextAdapter();
+      const store = this.txStore.getStore();
+      let failed = false;
+      try {
+        await adapterRollback(adapter);
+        this.lastError = null;
+      } catch (e: any) {
+        this.lastError = e?.message ?? String(e);
+        failed = true;
+        throw e;
+      } finally {
+        if (store) { store.adapter = null; store.depth = 0; }
+        if (failed || this.operationStore.getStore()?.adapter !== adapter) await this.releaseAdapter(adapter, failed);
+      }
+    });
   }
 
   /** Check if a table exists. */
   async tableExists(name: string): Promise<boolean> {
-    return adapterTableExists(this.getNextAdapter(), name);
+    return this.withConnectionOperation(async () => {
+      return adapterTableExists(this.getNextAdapter(), name);
+    });
   }
 
   /** List all tables in the database. */
   async getTables(): Promise<string[]> {
-    return adapterTables(this.getNextAdapter());
+    return this.withConnectionOperation(async () => {
+      return adapterTables(this.getNextAdapter());
+    });
   }
 
   /**
@@ -1256,7 +1360,9 @@ export class Database {
    * @returns Array of column info objects: { name, type, nullable, default, primaryKey }.
    */
   async getColumns(tableName: string): Promise<{ name: string; type: string; nullable?: boolean; default?: unknown; primaryKey?: boolean; primaryKeyPosition?: number | null }[]> {
-    return adapterColumns(this.getNextAdapter(), tableName);
+    return this.withConnectionOperation(async () => {
+      return adapterColumns(this.getNextAdapter(), tableName);
+    });
   }
 
   /**
@@ -1279,41 +1385,43 @@ export class Database {
    * @returns The aggregate DatabaseResult for the whole batch.
    */
   async executeMany(sql: string, paramSets: unknown[][] = []): Promise<DatabaseWriteResult> {
-    // ADR-0044 (DBA-B01): empty input is a successful no-op — it opens no
-    // transaction and calls no adapter.
-    if (paramSets.length === 0) {
-      return { success: true, affectedRows: 0 };
-    }
+    return this.withConnectionOperation(async () => {
+      // ADR-0044 (DBA-B01): empty input is a successful no-op — it opens no
+      // transaction and calls no adapter.
+      if (paramSets.length === 0) {
+        return { success: true, affectedRows: 0 };
+      }
 
-    // Own the batch transaction ONLY when not already inside a caller's explicit
-    // transaction. inExplicitTransaction() is true when startTransaction() has
-    // pinned an adapter to this async context (getNextAdapter() returns that same
-    // pinned connection). If we owned a BEGIN/COMMIT here regardless, the inner
-    // COMMIT would commit the caller's OUTER transaction early and their later
-    // rollback() would undo nothing (the batch rows survive). So: standalone
-    // batch -> own BEGIN/COMMIT (atomic, all-or-nothing); nested batch -> join
-    // the caller's transaction and let their commit/rollback decide. Mirrors the
-    // sibling execute()/insert()/update()/delete() owns-guard and the Python
-    // master (Database.execute_many delegating to adapter.execute_many's
-    // owns_txn guard).
-    const owns = !this.inExplicitTransaction();
-    const adapter = this.getNextAdapter();
-    if (owns) await adapterStartTransaction(adapter);
+      // Own the batch transaction ONLY when not already inside a caller's explicit
+      // transaction. inExplicitTransaction() is true when startTransaction() has
+      // pinned an adapter to this async context (getNextAdapter() returns that same
+      // pinned connection). If we owned a BEGIN/COMMIT here regardless, the inner
+      // COMMIT would commit the caller's OUTER transaction early and their later
+      // rollback() would undo nothing (the batch rows survive). So: standalone
+      // batch -> own BEGIN/COMMIT (atomic, all-or-nothing); nested batch -> join
+      // the caller's transaction and let their commit/rollback decide. Mirrors the
+      // sibling execute()/insert()/update()/delete() owns-guard and the Python
+      // master (Database.execute_many delegating to adapter.execute_many's
+      // owns_txn guard).
+      const owns = !this.inExplicitTransaction();
+      const adapter = this.getNextAdapter();
+      if (owns) await adapterStartTransaction(adapter);
 
-    let result: DatabaseWriteResult;
-    try {
-      // ONE delegated call — native batching (one multi-row round-trip instead
-      // of one per row: 500 rows measured 9848ms on PostgreSQL row-at-a-time
-      // against 15.8ms batched — 625x, MySQL 216x, MSSQL 121x) is the
-      // ADAPTER's job, not a facade loop.
-      result = await adapterExecuteMany(adapter, sql, paramSets);
-      if (owns) await adapterCommit(adapter);
-    } catch (e) {
-      if (owns) await adapterRollback(adapter);
-      throw e;
-    }
+      let result: DatabaseWriteResult;
+      try {
+        // ONE delegated call — native batching (one multi-row round-trip instead
+        // of one per row: 500 rows measured 9848ms on PostgreSQL row-at-a-time
+        // against 15.8ms batched — 625x, MySQL 216x, MSSQL 121x) is the
+        // ADAPTER's job, not a facade loop.
+        result = await adapterExecuteMany(adapter, sql, paramSets);
+        if (owns) await adapterCommit(adapter);
+      } catch (e) {
+        if (owns) await adapterRollback(adapter);
+        throw e;
+      }
 
-    return result;
+      return result;
+    });
   }
 
   /** Return the last execute() error message, or null. */
@@ -1372,24 +1480,26 @@ export class Database {
    * SQLite, MySQL, MSSQL, and as a PostgreSQL fallback.
    */
   private async ensureSequenceTable(): Promise<void> {
-    const adapter = this.getNextAdapter();
+    return this.withConnectionOperation(async () => {
+      const adapter = this.getNextAdapter();
 
-    if (!(await adapterTableExists(adapter, "tina4_sequences"))) {
-      if (this.dbType === "mssql") {
-        await adapterExecute(adapter,
-          "CREATE TABLE tina4_sequences (" +
-          "seq_name VARCHAR(200) NOT NULL PRIMARY KEY, " +
-          "current_value INTEGER NOT NULL DEFAULT 0)"
-        );
-      } else {
-        await adapterExecute(adapter,
-          "CREATE TABLE IF NOT EXISTS tina4_sequences (" +
-          "seq_name VARCHAR(200) NOT NULL PRIMARY KEY, " +
-          "current_value INTEGER NOT NULL DEFAULT 0)"
-        );
+      if (!(await adapterTableExists(adapter, "tina4_sequences"))) {
+        if (this.dbType === "mssql") {
+          await adapterExecute(adapter,
+            "CREATE TABLE tina4_sequences (" +
+            "seq_name VARCHAR(200) NOT NULL PRIMARY KEY, " +
+            "current_value INTEGER NOT NULL DEFAULT 0)"
+          );
+        } else {
+          await adapterExecute(adapter,
+            "CREATE TABLE IF NOT EXISTS tina4_sequences (" +
+            "seq_name VARCHAR(200) NOT NULL PRIMARY KEY, " +
+            "current_value INTEGER NOT NULL DEFAULT 0)"
+          );
+        }
+        try { await adapterCommit(adapter); } catch { /* no active transaction */ }
       }
-      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
-    }
+    });
   }
 
   /**
@@ -1435,49 +1545,51 @@ export class Database {
    * (never silently fall back to 1).
    */
   private async sequenceNext(seqName: string, table?: string, pkColumn = "id"): Promise<number> {
-    // Pin a single adapter for the whole sequence operation so seed +
-    // increment + read all hit the SAME connection. Inside an active
-    // transaction the adapter is already pinned; otherwise pin here and
-    // release in the finally so the pool can rotate afterwards.
-    const store = this.txStore.getStore();
-    const alreadyPinned = !!store?.adapter;
-    const adapter = this.getNextAdapter();
-    if (!alreadyPinned) {
-      if (store) store.adapter = adapter;
-      else this.txStore.enterWith({ adapter });
-    }
-
-    try {
-      if (this.dbType === "sqlite") {
-        // SQLite: the adapter does ensure-table + seed + atomic increment as one
-        // synchronous burst. We compute the seed first (its own read can yield,
-        // but that's fine — INSERT OR IGNORE makes the seed idempotent and the
-        // increment itself is the atomic step).
-        const seed = await this.sequenceSeedValue(adapter, table, pkColumn);
-        const raw = (adapter as any).getAdapter ? (adapter as any).getAdapter() : adapter;
-        if (typeof raw.sequenceNextSqlite === "function") {
-          return raw.sequenceNextSqlite(seqName, seed);
-        }
-        // Defensive fallback if the underlying adapter lacks the atomic helper.
-        return this.sequenceNextGeneric(adapter, seqName, seed);
-      }
-
-      await this.ensureSequenceTable();
-      if (this.dbType === "mysql") {
-        return this.sequenceNextMysql(adapter, seqName, table, pkColumn);
-      }
-      if (this.dbType === "mssql") {
-        return this.sequenceNextMssql(adapter, seqName, table, pkColumn);
-      }
-      // Any other engine routed here (defensive) — generic atomic-ish path.
-      const seed = await this.sequenceSeedValue(adapter, table, pkColumn);
-      return this.sequenceNextGeneric(adapter, seqName, seed);
-    } finally {
+    return this.withConnectionOperation(async () => {
+      // Pin a single adapter for the whole sequence operation so seed +
+      // increment + read all hit the SAME connection. Inside an active
+      // transaction the adapter is already pinned; otherwise pin here and
+      // release in the finally so the pool can rotate afterwards.
+      const store = this.txStore.getStore();
+      const alreadyPinned = !!store?.adapter;
+      const adapter = this.getNextAdapter();
       if (!alreadyPinned) {
-        const s = this.txStore.getStore();
-        if (s) s.adapter = null;
+        if (store) store.adapter = adapter;
+        else this.txStore.enterWith({ adapter });
       }
-    }
+
+      try {
+        if (this.dbType === "sqlite") {
+          // SQLite: the adapter does ensure-table + seed + atomic increment as one
+          // synchronous burst. We compute the seed first (its own read can yield,
+          // but that's fine — INSERT OR IGNORE makes the seed idempotent and the
+          // increment itself is the atomic step).
+          const seed = await this.sequenceSeedValue(adapter, table, pkColumn);
+          const raw = (adapter as any).getAdapter ? (adapter as any).getAdapter() : adapter;
+          if (typeof raw.sequenceNextSqlite === "function") {
+            return raw.sequenceNextSqlite(seqName, seed);
+          }
+          // Defensive fallback if the underlying adapter lacks the atomic helper.
+          return this.sequenceNextGeneric(adapter, seqName, seed);
+        }
+
+        await this.ensureSequenceTable();
+        if (this.dbType === "mysql") {
+          return this.sequenceNextMysql(adapter, seqName, table, pkColumn);
+        }
+        if (this.dbType === "mssql") {
+          return this.sequenceNextMssql(adapter, seqName, table, pkColumn);
+        }
+        // Any other engine routed here (defensive) — generic atomic-ish path.
+        const seed = await this.sequenceSeedValue(adapter, table, pkColumn);
+        return this.sequenceNextGeneric(adapter, seqName, seed);
+      } finally {
+        if (!alreadyPinned) {
+          const s = this.txStore.getStore();
+          if (s) s.adapter = null;
+        }
+      }
+    });
   }
 
   /**
@@ -1576,79 +1688,81 @@ export class Database {
    * - Returns 1 if the table is empty or does not exist.
    */
   async getNextId(table: string, pkColumn = "id", generatorName?: string): Promise<number> {
-    const adapter = this.getNextAdapter();
+    return this.withConnectionOperation(async () => {
+      const adapter = this.getNextAdapter();
 
-    // MongoDB — a DEDICATED atomic counter (findOneAndUpdate($inc) keyed by _id),
-    // monotonic and concurrency-safe. NEVER routed through the relational
-    // tina4_sequences path: the Mongo SET-clause parser matches only `col = ?`
-    // and DROPS the arithmetic `current_value + 1`, so the increment vanished
-    // (empty $set) and every call returned the same id — a duplicate generator.
-    if (this.dbType === "mongodb") {
-      const mongo = adapter as unknown as { getNextId?: (t: string, p: string) => Promise<number> };
-      if (typeof mongo.getNextId === "function") {
-        return mongo.getNextId(table, pkColumn);
-      }
-    }
-
-    // Firebird — use generators (atomic)
-    if (this.dbType === "firebird") {
-      const genName = generatorName ?? `GEN_${table.toUpperCase()}_ID`;
-
-      // Auto-create the generator if it does not exist
-      try {
-        await adapterExecute(adapter, `CREATE GENERATOR ${genName}`);
-      } catch {
-        // Generator already exists — ignore
-      }
-
-      const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT GEN_ID(${genName}, 1) AS NEXT_ID FROM RDB$DATABASE`);
-      return Number(row?.NEXT_ID ?? row?.next_id ?? 1);
-    }
-
-    // PostgreSQL — try sequence first, auto-create if missing, fall through to sequence table
-    if (this.dbType === "postgres") {
-      const seqName = generatorName ?? `${table.toLowerCase()}_${pkColumn.toLowerCase()}_seq`;
-      // Fast path: the sequence already exists — nextval() is atomic.
-      try {
-        const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT nextval('${seqName}') AS next_id`);
-        if (row?.next_id != null) {
-          return Number(row.next_id);
+      // MongoDB — a DEDICATED atomic counter (findOneAndUpdate($inc) keyed by _id),
+      // monotonic and concurrency-safe. NEVER routed through the relational
+      // tina4_sequences path: the Mongo SET-clause parser matches only `col = ?`
+      // and DROPS the arithmetic `current_value + 1`, so the increment vanished
+      // (empty $set) and every call returned the same id — a duplicate generator.
+      if (this.dbType === "mongodb") {
+        const mongo = adapter as unknown as { getNextId?: (t: string, p: string) => Promise<number> };
+        if (typeof mongo.getNextId === "function") {
+          return mongo.getNextId(table, pkColumn);
         }
-      } catch {
-        // Sequence missing — create it idempotently below.
       }
 
-      // First use: create the sequence IDEMPOTENTLY (CREATE SEQUENCE IF NOT
-      // EXISTS), seeded from MAX(pk). Two concurrent first-callers therefore
-      // share ONE counter — the loser's create is a no-op, not an error, so it
-      // never falls to the tina4_sequences table and draws a DUPLICATE id from a
-      // second, independent counter (the first-use race).
-      try {
-        const maxRow = await adapterFetchOne<Record<string, unknown>>(adapter,
-          `SELECT COALESCE(MAX(${pkColumn}), 0) AS max_id FROM ${table}`
-        );
-        const start = maxRow?.max_id != null ? Number(maxRow.max_id) + 1 : 1;
-        await adapterExecute(adapter, `CREATE SEQUENCE IF NOT EXISTS ${seqName} START WITH ${start}`);
-        try { await adapterCommit(adapter); } catch { /* no active transaction */ }
-      } catch {
-        // A concurrent creator won the catalog race — the sequence exists now.
-      }
+      // Firebird — use generators (atomic)
+      if (this.dbType === "firebird") {
+        const genName = generatorName ?? `GEN_${table.toUpperCase()}_ID`;
 
-      // ALWAYS draw from the sequence now that it exists. Never fall to the
-      // sequence table just because our own CREATE lost the race.
-      try {
-        const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT nextval('${seqName}') AS next_id`);
-        if (row?.next_id != null) {
-          return Number(row.next_id);
+        // Auto-create the generator if it does not exist
+        try {
+          await adapterExecute(adapter, `CREATE GENERATOR ${genName}`);
+        } catch {
+          // Generator already exists — ignore
         }
-      } catch {
-        // Truly cannot use a sequence — last-resort table below.
-      }
-    }
 
-    // SQLite / MySQL / MSSQL / PostgreSQL fallback — atomic sequence table
-    const seqKey = generatorName ?? `${table}.${pkColumn}`;
-    return this.sequenceNext(seqKey, table, pkColumn);
+        const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT GEN_ID(${genName}, 1) AS NEXT_ID FROM RDB$DATABASE`);
+        return Number(row?.NEXT_ID ?? row?.next_id ?? 1);
+      }
+
+      // PostgreSQL — try sequence first, auto-create if missing, fall through to sequence table
+      if (this.dbType === "postgres") {
+        const seqName = generatorName ?? `${table.toLowerCase()}_${pkColumn.toLowerCase()}_seq`;
+        // Fast path: the sequence already exists — nextval() is atomic.
+        try {
+          const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT nextval('${seqName}') AS next_id`);
+          if (row?.next_id != null) {
+            return Number(row.next_id);
+          }
+        } catch {
+          // Sequence missing — create it idempotently below.
+        }
+
+        // First use: create the sequence IDEMPOTENTLY (CREATE SEQUENCE IF NOT
+        // EXISTS), seeded from MAX(pk). Two concurrent first-callers therefore
+        // share ONE counter — the loser's create is a no-op, not an error, so it
+        // never falls to the tina4_sequences table and draws a DUPLICATE id from a
+        // second, independent counter (the first-use race).
+        try {
+          const maxRow = await adapterFetchOne<Record<string, unknown>>(adapter,
+            `SELECT COALESCE(MAX(${pkColumn}), 0) AS max_id FROM ${table}`
+          );
+          const start = maxRow?.max_id != null ? Number(maxRow.max_id) + 1 : 1;
+          await adapterExecute(adapter, `CREATE SEQUENCE IF NOT EXISTS ${seqName} START WITH ${start}`);
+          try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+        } catch {
+          // A concurrent creator won the catalog race — the sequence exists now.
+        }
+
+        // ALWAYS draw from the sequence now that it exists. Never fall to the
+        // sequence table just because our own CREATE lost the race.
+        try {
+          const row = await adapterFetchOne<Record<string, unknown>>(adapter, `SELECT nextval('${seqName}') AS next_id`);
+          if (row?.next_id != null) {
+            return Number(row.next_id);
+          }
+        } catch {
+          // Truly cannot use a sequence — last-resort table below.
+        }
+      }
+
+      // SQLite / MySQL / MSSQL / PostgreSQL fallback — atomic sequence table
+      const seqKey = generatorName ?? `${table}.${pkColumn}`;
+      return this.sequenceNext(seqKey, table, pkColumn);
+    });
   }
 }
 
