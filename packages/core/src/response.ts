@@ -158,6 +158,10 @@ export function createResponse(res: ServerResponse): Tina4Response {
     // Normalise ORM models / collections / query results so handlers can
     // `return response(model)` without serialising by hand.
     data = toJsonable(data);
+    // Any byte array is a binary body: view it as a Buffer (no copy) so every branch below writes it as bytes.
+    if (data instanceof Uint8Array && !Buffer.isBuffer(data)) {
+      data = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    }
 
     if (statusCode !== undefined) {
       res.statusCode = statusCode;
@@ -166,7 +170,9 @@ export function createResponse(res: ServerResponse): Tina4Response {
     if (contentType) {
       // Explicit content type
       safeSetHeader("Content-Type", contentType);
-      if (typeof data === "object" && data !== null && !Buffer.isBuffer(data)) {
+      if (Buffer.isBuffer(data)) {
+        safeEnd(data);
+      } else if (typeof data === "object" && data !== null) {
         safeEnd(JSON.stringify(data));
       } else {
         safeEnd(data == null ? "" : String(data));
