@@ -75,11 +75,16 @@ skill-version-check ONCE and remember the result for the whole session:
    (frontmatter). Call this `SKILL_HAS`.
 2. Fetch the latest published skill version — one small HTTP GET to
    `https://tina4.com/skills/tina4-developer-<lang>/version` (plain text,
-   a single semver line like `3.13.107`). Call this `SKILL_LATEST`.
+   a single semver line). This endpoint returns the `updated_for_version`
+   of the LATEST published skill — the SAME quantity as step 1, never the
+   framework release number — so a skill installed from the current bundle
+   never reads as stale. Call this `SKILL_LATEST`.
    - `<lang>` = python / php / ruby / nodejs — match this skill's language.
-   - If the fetch fails (offline, DNS, non-200), silently skip the check.
-     Never fail-loud on a network hiccup; the developer's session must
-     proceed.
+   - If the fetch fails or returns a non-200, do NOT skip silently: say
+     ONCE, next to the 🤖 marker, `stale check unavailable: HTTP <code>`
+     (the status code, or the error name for a network failure). Then carry
+     on — a failed check never blocks the session, but a silent skip once
+     hid that this endpoint was 404ing for everyone.
 3. Compare with a semver-aware compare (three-tuple int).
 
 If `SKILL_LATEST > SKILL_HAS` (a newer skill is out) then for the WHOLE
@@ -587,6 +592,15 @@ The only acceptable overlap is Frond for non-app pages (error pages, email templ
    return await response.render("login.twig", { title: "Login" });
    ```
    Need the HTML as a string instead? Import the Frond engine from `tina4-nodejs/frond`.
+
+   **A template global registered with `frond.addGlobal(name, value)` stores your
+   value as-is, but Frond AUTO-CALLS a zero-argument function global when you
+   name it bare** — `{% if flag %}` and `{{ flag }}` invoke `flag()` and use its
+   RETURN value. This differs from the PHP / Python / Ruby engines, which leave
+   the closure as a truthy object; in Node a `() => false` global correctly reads
+   as false. The catch: it is called with NO arguments every time it is
+   referenced, so a global that needs arguments must be called explicitly
+   (`{{ flag(x) }}`). Full note in `references/templates-and-frontend.md`.
 
 7. **Tina4CSS is the default server-rendered stylesheet.** For any Frond page, use the bundled
    Tina4CSS classes (`container`, `row`, `col`, `card`, `btn`, `form-control`, `navbar`, `mt-*`,
