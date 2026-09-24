@@ -10,14 +10,14 @@
  */
 
 import { cpus as osCpus } from "node:os";
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, copyFileSync, statSync } from "node:fs";
-import { join, dirname, resolve, relative } from "node:path";
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, copyFileSync, statSync, realpathSync, lstatSync } from "node:fs";
+import { join, dirname, resolve, relative, sep, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Router } from "./router.js";
 import type { RouteHandler, Tina4Request } from "./types.js";
 import { DevMailbox } from "./devMailbox.js";
 import { isTruthy } from "./dotenv.js";
-import { fullAnalysis, fileDetail, MetricsEngineError } from "./metrics.js";
+import { fullAnalysis, fileDetail, MetricsEngineError, metricsScanRoot } from "./metrics.js";
 import { registerFeedbackRoutes } from "./feedback.js";
 import { getDefaultDevServer, mcpEnabled, isRequestAllowed, isLoopback } from "./mcp.js";
 import { timingSafeEqual } from "node:crypto";
@@ -67,8 +67,8 @@ function escapeHtml(value: string): string {
  *
  * A drive-by CSRF is a BROWSER cross-origin request, and a modern browser always
  * sends `Sec-Fetch-Site` (and any browser sends `Origin` on a cross-origin POST):
- *   - Sec-Fetch-Site present -> trust the browser's classification
- *     (cross-site refused; same-origin / same-site / none ok).
+ *   - Sec-Fetch-Site present -> only same-origin (the dashboard itself) and
+ *     none (a typed URL) pass; same-site is a different origin (ADR-0078).
  *   - else Origin present -> require its host to match the request Host.
  *   - else neither header -> not a browser cross-origin request (curl, a test
  *     client, a server-side caller); it cannot be a drive-by, so allow here and
@@ -77,7 +77,7 @@ function escapeHtml(value: string): string {
 export function devSameOriginOk(req: Tina4Request): boolean {
   const secFetchSite = (req.header("sec-fetch-site") ?? "").trim().toLowerCase();
   if (secFetchSite) {
-    return secFetchSite === "same-origin" || secFetchSite === "same-site" || secFetchSite === "none";
+    return secFetchSite === "same-origin" || secFetchSite === "none";
   }
   const origin = (req.header("origin") ?? "").trim();
   if (origin) {
@@ -98,6 +98,45 @@ export function devSameOriginOk(req: Tina4Request): boolean {
  * Reads the RAW socket peer (never X-Forwarded-For), exactly like the MCP gate.
  */
 export function devMutationDenial(req: Tina4Request): { status: number; error: string } | null {
+  return devRequestDenial(req);
+}
+
+/**
+ * True when a Host header names the loopback machine or the configured
+ * TINA4_HOST (ADR-0078), so a rebound DNS name cannot reach /__dev. A missing
+ * Host is not a browser request (every browser sends one); the peer gate
+ * governs it instead.
+ */
+export function devHostAllowed(hostHeader: string | undefined | null): boolean {
+  const host = (hostHeader ?? "").trim().toLowerCase();
+  if (!host) return true;
+  let name: string;
+  if (host.startsWith("[")) {
+    const end = host.indexOf("]");
+    name = end < 0 ? host : host.slice(1, end);
+  } else if (host.split(":").length === 2) {
+    name = host.split(":")[0];
+  } else {
+    name = host;
+  }
+  const allowed = new Set(["localhost", "127.0.0.1", "::1"]);
+  const configured = (process.env.TINA4_HOST ?? "").trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (configured) allowed.add(configured);
+  return allowed.has(name);
+}
+
+/**
+ * Return `{status, error}` to REFUSE any /__dev request (read or write), or
+ * `null` to allow (ADR-0078): Host allow-list, then same-origin, then the
+ * loopback peer (the MCP surface keeps its own 404 gate for the peer part).
+ */
+export function devRequestDenial(req: Tina4Request): { status: number; error: string } | null {
+  // A request carrying the valid TINA4_MCP_TOKEN is not a DNS-rebinding page
+  // (a browser cannot know the token), so it may name any Host - that keeps the
+  // opt-in remote MCP path (TINA4_MCP_REMOTE + token) working.
+  if (!devHostAllowed(req.header("host")) && !mcpTokenOk(req)) {
+    return { status: 403, error: "dev-admin: refused (host not allowed)" };
+  }
   if (!devSameOriginOk(req)) {
     return { status: 403, error: "dev-admin: refused (cross-origin request)" };
   }
@@ -605,7 +644,13 @@ export class DevAdmin {
       { method: "GET", pattern: "/__dev/api/metrics/file", handler: (req: any, res: any) => {
         const url = new URL(req.url ?? "/", "http://localhost");
         const p = (url.searchParams.get("path") || "").toString();
-        try { res.json(fileDetail(p)); }
+        // ADR-0078: the path must resolve inside the project or the last scan
+        // root; an absolute path elsewhere is refused before the engine runs.
+        const scanRoot = metricsScanRoot();
+        let target: string | null = p ? safeJoin(process.cwd(), p, [scanRoot]) : "";
+        if (target === null && scanRoot) target = safeJoin(process.cwd(), join(scanRoot, p), [scanRoot]);
+        if (target === null) { res.status(403).json({ error: "Path outside project" }); return; }
+        try { res.json(fileDetail(target)); }
         catch (e) {
           if (e instanceof MetricsEngineError) {
             // A bad path is the caller's mistake (404); anything else is the
@@ -1264,6 +1309,12 @@ const handleTable: RouteHandler = async (req, res) => {
   try {
     const { getAdapter } = await import("../../orm/src/index.js");
     const db = getAdapter();
+    // ADR-0078: only a name the database itself reports is accepted.
+    const known = (db.getTables() as unknown[]).map((t) => String(t));
+    if (!known.includes(name)) {
+      res.json({ error: "unknown table" }, 404);
+      return;
+    }
     const columns = db.getColumns(name);
     if (!columns.length) {
       res.json({ table: name, columns: [], rows: [], message: "Database not connected or table not found" });
@@ -2117,10 +2168,42 @@ export const handleVersionCheck: RouteHandler = async (_req, res) => {
 // Parity handlers — ported from Python tina4_python.dev_admin
 // ---------------------------------------------------------------------------
 
-function safeJoin(projectRoot: string, rel: string): string | null {
-  const resolved = resolve(projectRoot, rel);
-  if (!resolved.startsWith(projectRoot)) return null;
-  return resolved;
+/**
+ * Real path of `target`: the deepest existing ancestor is realpath'd (symlinks
+ * followed the way the OS will open the file) and the not-yet-existing tail is
+ * appended (a new file being saved).
+ */
+function realPathOf(target: string): string {
+  let existing = target;
+  const tail: string[] = [];
+  for (;;) {
+    let present = false;
+    try { lstatSync(existing); present = true; } catch { /* missing */ }
+    if (present || dirname(existing) === existing) break;
+    tail.unshift(basename(existing));
+    existing = dirname(existing);
+  }
+  try { return join(realpathSync(existing), ...tail); } catch { return target; }
+}
+
+/**
+ * Resolve `rel` inside an allowed root (ADR-0078): `..` collapsed, symlinks
+ * followed, and a trailing-separator root check so `/app` never contains
+ * `/app-sibling`. Returns null when the path leaves every root.
+ */
+function safeJoin(projectRoot: string, rel: string, extraRoots: string[] = []): string | null {
+  const root = realPathOf(resolve(projectRoot));
+  const resolved = realPathOf(resolve(root, rel));
+  const roots = [root, ...extraRoots.filter(Boolean).map((r) => realPathOf(resolve(r)))];
+  for (const r of roots) {
+    if (resolved === r || resolved.startsWith(r.endsWith(sep) ? r : r + sep)) return resolved;
+  }
+  return null;
+}
+
+/** Project-relative form of a resolved path, for the secret denylist. */
+function resolvedRelative(projectRoot: string, resolvedPath: string): string {
+  return relative(realPathOf(resolve(projectRoot)), resolvedPath);
 }
 
 const handleThoughts: RouteHandler = (req, res) => {
@@ -2346,14 +2429,19 @@ export function devAdminLanguage(rel: string): string {
 const handleFileRead: RouteHandler = (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const rel = url.searchParams.get("path") ?? "";
-  // DEVADMIN-DEC-03: never serve secret material (.env, keys, .git/, secrets/).
-  if (isSecretPath(rel)) {
+  const root = resolve(process.cwd());
+  const target = safeJoin(root, rel);
+  if (!target) {
+    res.json({ error: "Path outside project", path: rel, content: "", language: "text", bytes: 0 }, 403);
+    return;
+  }
+  // DEVADMIN-DEC-03: never serve secret material (.env, keys, .git/, secrets/),
+  // judged on the RESOLVED path so `.env/.` or a symlink cannot slip past (ADR-0078).
+  if (isSecretPath(rel) || isSecretPath(resolvedRelative(root, target))) {
     res.json({ error: "Refused: secret file", path: rel, content: "", language: "text", bytes: 0 }, 403);
     return;
   }
-  const root = resolve(process.cwd());
-  const target = safeJoin(root, rel);
-  if (!target || !existsSync(target) || !statSync(target).isFile()) {
+  if (!existsSync(target) || !statSync(target).isFile()) {
     res.json({ error: `File not found: ${rel}` }, 404);
     return;
   }
@@ -2373,7 +2461,7 @@ const handleFileSave: RouteHandler = async (req, res) => {
   const root = resolve(process.cwd());
   const target = safeJoin(root, rel);
   if (!target) {
-    res.json({ error: `Path escapes project directory: ${rel}` }, 400);
+    res.json({ error: `Path escapes project directory: ${rel}` }, 403);
     return;
   }
   try {
@@ -2393,14 +2481,18 @@ const handleFileSave: RouteHandler = async (req, res) => {
 const handleFileRaw: RouteHandler = (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const rel = url.searchParams.get("path") ?? "";
-  // DEVADMIN-DEC-03: never serve secret material (.env, keys, .git/, secrets/).
-  if (isSecretPath(rel)) {
+  const root = resolve(process.cwd());
+  const target = safeJoin(root, rel);
+  if (!target) {
+    res.json({ error: "Path outside project" }, 403);
+    return;
+  }
+  // DEVADMIN-DEC-03: never serve secret material, judged on the RESOLVED path.
+  if (isSecretPath(rel) || isSecretPath(resolvedRelative(root, target))) {
     res.json({ error: "Refused: secret file" }, 403);
     return;
   }
-  const root = resolve(process.cwd());
-  const target = safeJoin(root, rel);
-  if (!target || !existsSync(target) || !statSync(target).isFile()) {
+  if (!existsSync(target) || !statSync(target).isFile()) {
     res.raw.writeHead(404);
     res.raw.end("Not found");
     return;
@@ -2544,19 +2636,18 @@ function mcpSecureEqual(expected: string, provided: string): boolean {
 }
 
 /**
- * Whether the request carried a token matching TINA4_MCP_TOKEN (fallback
- * TINA4_API_KEY). Transports: Authorization Bearer / X-MCP-Token / X-Api-Key.
+ * Whether the request carried a token matching TINA4_MCP_TOKEN. The app's
+ * TINA4_API_KEY never unlocks the dev surface (ADR-0078). Transports:
+ * Authorization Bearer / X-MCP-Token.
  * No configured token ⇒ a remote caller can never present a valid one.
  */
 function mcpTokenOk(req: Tina4Request): boolean {
-  let expected = process.env.TINA4_MCP_TOKEN;
-  if (!expected) expected = process.env.TINA4_API_KEY;
+  const expected = process.env.TINA4_MCP_TOKEN;
   if (!expected) return false;
   let provided = "";
   const auth = req.header("authorization") ?? "";
   if (auth.toLowerCase().startsWith("bearer ")) provided = auth.slice(7).trim();
   if (!provided) provided = req.header("x-mcp-token") ?? "";
-  if (!provided) provided = req.header("x-api-key") ?? "";
   if (!provided) return false;
   return mcpSecureEqual(expected, provided);
 }
