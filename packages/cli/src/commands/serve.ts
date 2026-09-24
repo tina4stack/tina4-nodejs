@@ -11,6 +11,8 @@ export async function serveProject(options: ServeOptions): Promise<void> {
   if (options.noReload) {
     process.env.TINA4_NO_RELOAD = "true";
   }
+  // --no-browser was parsed and then dropped (ADR-0070 rule 3).
+  const noBrowser = options.noBrowser === true;
 
   const port = options.port ?? 7148;
   const cwd = process.cwd();
@@ -34,6 +36,7 @@ export async function serveProject(options: ServeOptions): Promise<void> {
     modelsDir,
     templatesDir,
     staticDir,
+    noBrowser,
   });
 
   // File watching is handled by the Rust CLI (tina4 serve). The framework

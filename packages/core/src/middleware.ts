@@ -937,13 +937,29 @@ export class SecurityHeadersMiddleware {
    */
   static preMatch = true;
 
-  static beforeSecurity(req: Tina4Request, res: Tina4Response): [Tina4Request, Tina4Response] {
-    res.header(
-      "X-Frame-Options",
-      process.env.TINA4_FRAME_OPTIONS ?? "SAMEORIGIN",
-    );
 
-    res.header("X-Content-Type-Options", "nosniff");
+  /**
+   * The canonical security header set (SECHDR-DEC-01) with its environment
+   * overrides, WITHOUT Strict-Transport-Security, which depends on the
+   * request's scheme. Also what a transport rejection carries (ADR-0068
+   * section 4), written before the scheme is known.
+   */
+  static canonicalHeaders(): Record<string, string> {
+    return {
+      "X-Frame-Options": process.env.TINA4_FRAME_OPTIONS ?? "SAMEORIGIN",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": process.env.TINA4_CSP ?? "default-src 'self'",
+      "Referrer-Policy": process.env.TINA4_REFERRER_POLICY ?? "strict-origin-when-cross-origin",
+      "X-XSS-Protection": "0",
+      "Permissions-Policy": process.env.TINA4_PERMISSIONS_POLICY ?? "camera=(), microphone=(), geolocation=()",
+    };
+  }
+
+
+  static beforeSecurity(req: Tina4Request, res: Tina4Response): [Tina4Request, Tina4Response] {
+    const canonical = SecurityHeadersMiddleware.canonicalHeaders();
+    res.header("X-Frame-Options", canonical["X-Frame-Options"]);
+    res.header("X-Content-Type-Options", canonical["X-Content-Type-Options"]);
 
     // HSTS is HTTPS-only (SECHDR-DEC-02): a downgrade-protection header on a
     // plain-HTTP response is inert at best and ships a bad max-age on an
@@ -961,22 +977,9 @@ export class SecurityHeadersMiddleware {
     if (process.env.TINA4_CSP === undefined) {
       SecurityHeadersMiddleware.warnCspDefaultOnce();
     }
-    res.header(
-      "Content-Security-Policy",
-      process.env.TINA4_CSP ?? "default-src 'self'",
-    );
-
-    res.header(
-      "Referrer-Policy",
-      process.env.TINA4_REFERRER_POLICY ?? "strict-origin-when-cross-origin",
-    );
-
-    res.header("X-XSS-Protection", "0");
-
-    res.header(
-      "Permissions-Policy",
-      process.env.TINA4_PERMISSIONS_POLICY ?? "camera=(), microphone=(), geolocation=()",
-    );
+    for (const name of ["Content-Security-Policy", "Referrer-Policy", "X-XSS-Protection", "Permissions-Policy"]) {
+      res.header(name, canonical[name]);
+    }
 
     return [req, res];
   }
