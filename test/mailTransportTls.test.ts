@@ -117,14 +117,28 @@ withoutMailEnv(() => {
       message === `Unknown mail encryption '${bad}'. Valid values: ssl, tls, starttls, none.`, `got ${message}`);
   }
 
-  process.env.TINA4_MAIL_ENCRYPTION = "tsl";
-  try {
-    const message = raisedMessage(() => new Messenger({ host: "mail.example" }));
-    assert("TINA4_MAIL_ENCRYPTION=tsl raises too",
-      message === "Unknown mail encryption 'tsl'. Valid values: ssl, tls, starttls, none.", `got ${message}`);
-  } finally {
-    delete process.env.TINA4_MAIL_ENCRYPTION;
+  // From the environment: an unknown or explicitly EMPTY value raises (shown as
+  // given); only an unset variable falls back to the default "tls".
+  for (const bad of ["tsl", "", " "]) {
+    process.env.TINA4_MAIL_ENCRYPTION = bad;
+    try {
+      const message = raisedMessage(() => new Messenger({ host: "mail.example" }));
+      assert(`TINA4_MAIL_ENCRYPTION=${JSON.stringify(bad)} raises too`,
+        message === `Unknown mail encryption '${bad}'. Valid values: ssl, tls, starttls, none.`, `got ${message}`);
+    } finally {
+      delete process.env.TINA4_MAIL_ENCRYPTION;
+    }
   }
+  process.env.TINA4_MAIL_IMAP_ENCRYPTION = "";
+  try {
+    const message = raisedMessage(() => new Messenger({ imapHost: "mail.example" }));
+    assert("TINA4_MAIL_IMAP_ENCRYPTION=\"\" raises",
+      message === "Unknown IMAP encryption ''. Valid values: ssl, tls, starttls, none.", `got ${message}`);
+  } finally {
+    delete process.env.TINA4_MAIL_IMAP_ENCRYPTION;
+  }
+  const unsetImap = new Messenger({ imapHost: "mail.example" }).getImapEncryption();
+  assert("an unset TINA4_MAIL_IMAP_ENCRYPTION defaults to tls", unsetImap === "tls", `got ${unsetImap}`);
 
   for (const bad of ["tsl", "imaps", ""]) {
     const message = raisedMessage(() => new Messenger({ imapHost: "mail.example", imapEncryption: bad }));
