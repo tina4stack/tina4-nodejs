@@ -11,7 +11,8 @@ import {
 } from "../packages/core/src/index.ts";
 import type { SessionHandler } from "../packages/core/src/session.ts";
 import { join } from "node:path";
-import { rmSync, mkdirSync } from "node:fs";
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -28,7 +29,7 @@ function assert(name: string, condition: boolean, detail = "") {
 
 console.log("=== Database Session Handler Tests ===\n");
 
-const TEST_DIR = join("/tmp", "tina4-dbsess-test-" + Date.now());
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-dbsess-test-"));
 mkdirSync(TEST_DIR, { recursive: true });
 const TEST_DB = join(TEST_DIR, "sessions.db");
 

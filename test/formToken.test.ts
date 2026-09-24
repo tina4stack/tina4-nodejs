@@ -3,7 +3,9 @@
  * Run with: npx tsx test/formToken.test.ts
  */
 import { Frond } from "../packages/frond/src/index.ts";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let passed = 0;
 let failed = 0;
@@ -42,8 +44,8 @@ function extractToken(html: string): string {
 
 // Set up
 process.env.TINA4_SECRET = "test-secret-key";
-const tmpDir = "/tmp/frond-formtoken-test";
-try { rmSync(tmpDir, { recursive: true }); } catch {}
+const tmpDir = mkdtempSync(join(tmpdir(), "frond-formtoken-test-"));
+try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 mkdirSync(tmpDir, { recursive: true });
 
 const engine = new Frond(tmpDir);
@@ -135,6 +137,8 @@ console.log("\nFilter:");
   assert("filter pipe descriptor: context is checkout", payload.context === "checkout");
   assert("filter pipe descriptor: ref is order_123", payload.ref === "order_123");
 }
+
+rmSync(tmpDir, { recursive: true, force: true });
 
 // ── Summary ──
 

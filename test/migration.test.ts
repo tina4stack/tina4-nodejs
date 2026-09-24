@@ -2,7 +2,7 @@
  * Unit tests for the Migration enhancements (Phase 2).
  * Run with: npx tsx test/migration.test.ts
  */
-import { rmSync, mkdirSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { rmSync, mkdirSync, writeFileSync, existsSync, readdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import {
   initDatabase,
@@ -19,8 +19,10 @@ import {
   createMigration,
   status,
 } from "../packages/orm/src/index.ts";
+import { tmpdir } from "node:os";
 
-const TEST_DB = "/tmp/tina4-migration-test/test.db";
+const MIGRATION_TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-migration-test-"));
+const TEST_DB = join(MIGRATION_TEST_DIR, "test.db");
 let pass = 0;
 let fail = 0;
 
@@ -35,8 +37,8 @@ function assert(name: string, condition: boolean, detail = "") {
 }
 
 // Clean slate
-try { rmSync("/tmp/tina4-migration-test", { recursive: true }); } catch {}
-mkdirSync("/tmp/tina4-migration-test", { recursive: true });
+try { rmSync(MIGRATION_TEST_DIR, { recursive: true, force: true }); } catch {}
+mkdirSync(MIGRATION_TEST_DIR, { recursive: true });
 
 console.log("=== Migration Enhancement Tests ===\n");
 
@@ -176,14 +178,14 @@ console.log("\n\n=== SQL-File Migration Tests ===\n");
 
 // Close old db, create fresh one for SQL-file tests
 closeDatabase();
-try { rmSync("/tmp/tina4-migration-test", { recursive: true }); } catch {}
-mkdirSync("/tmp/tina4-migration-test", { recursive: true });
+try { rmSync(MIGRATION_TEST_DIR, { recursive: true, force: true }); } catch {}
+mkdirSync(MIGRATION_TEST_DIR, { recursive: true });
 
-const TEST_DB_2 = "/tmp/tina4-migration-test/test2.db";
+const TEST_DB_2 = join(MIGRATION_TEST_DIR, "test2.db");
 await initDatabase({ type: "sqlite", path: TEST_DB_2 });
 const adapter2 = getAdapter();
 
-const MIGRATIONS_DIR = "/tmp/tina4-migration-test/migrations";
+const MIGRATIONS_DIR = join(MIGRATION_TEST_DIR, "migrations");
 
 // --- createMigration() ---
 console.log("--- createMigration ---");
@@ -291,20 +293,20 @@ assert("test_sql_orders table dropped after rollback", !adapter2.tableExists("te
 // --- migrate() with empty directory ---
 console.log("\n--- migrate() edge cases ---");
 
-const emptyDir = "/tmp/tina4-migration-test/empty_migrations";
+const emptyDir = join(MIGRATION_TEST_DIR, "empty_migrations");
 mkdirSync(emptyDir, { recursive: true });
 const resultEmpty = await migrate(adapter2, { migrationsDir: emptyDir });
 assert("Empty dir: no applied", resultEmpty.applied.length === 0);
 assert("Empty dir: no skipped", resultEmpty.skipped.length === 0);
 
 // --- migrate() with non-existent directory ---
-const resultNoDir = await migrate(adapter2, { migrationsDir: "/tmp/tina4-migration-test/nonexistent" });
+const resultNoDir = await migrate(adapter2, { migrationsDir: join(MIGRATION_TEST_DIR, "nonexistent") });
 assert("Non-existent dir: no applied", resultNoDir.applied.length === 0);
 
 // --- migrate() with a failing SQL file ---
 console.log("\n--- migrate() error handling ---");
 
-const failDir = "/tmp/tina4-migration-test/fail_migrations";
+const failDir = join(MIGRATION_TEST_DIR, "fail_migrations");
 mkdirSync(failDir, { recursive: true });
 writeFileSync(join(failDir, "000001_good.sql"), `CREATE TABLE good_table (id INTEGER PRIMARY KEY);`, "utf-8");
 writeFileSync(join(failDir, "000002_bad.sql"), `THIS IS NOT VALID SQL;`, "utf-8");
@@ -323,7 +325,7 @@ assert("another_good NOT created (stopped before it)", !adapter2.tableExists("an
 // --- Both naming patterns supported ---
 console.log("\n--- Dual naming pattern support ---");
 
-const mixedDir = "/tmp/tina4-migration-test/mixed_migrations";
+const mixedDir = join(MIGRATION_TEST_DIR, "mixed_migrations");
 mkdirSync(mixedDir, { recursive: true });
 writeFileSync(join(mixedDir, "000001_sequential.sql"), `CREATE TABLE seq_table (id INTEGER PRIMARY KEY);`, "utf-8");
 writeFileSync(join(mixedDir, "20250101120000_timestamp.sql"), `CREATE TABLE ts_table (id INTEGER PRIMARY KEY);`, "utf-8");
@@ -337,7 +339,7 @@ assert("ts_table exists", adapter2.tableExists("ts_table"));
 // --- migrate() with multi-statement and comments ---
 console.log("\n--- Multi-statement + comments ---");
 
-const multiDir = "/tmp/tina4-migration-test/multi_migrations";
+const multiDir = join(MIGRATION_TEST_DIR, "multi_migrations");
 mkdirSync(multiDir, { recursive: true });
 writeFileSync(join(multiDir, "000001_multi.sql"), `
 -- This is a comment
@@ -365,7 +367,7 @@ assert("Down file also sanitised", resultSpecial.downPath.includes("add_user_s_e
 
 // Cleanup
 closeDatabase();
-try { rmSync("/tmp/tina4-migration-test", { recursive: true }); } catch {}
+try { rmSync(MIGRATION_TEST_DIR, { recursive: true, force: true }); } catch {}
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

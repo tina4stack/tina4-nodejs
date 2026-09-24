@@ -9,11 +9,13 @@
  * NOT a mock: real node:sqlite database, real createTable DDL, real save/all round-trip.
  * Run with: npx tsx test/createTableCallableDefault.test.ts
  */
-import { rmSync, mkdirSync } from "node:fs";
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
 import { initDatabase, closeDatabase, BaseModel } from "../packages/orm/src/index.ts";
 import type { FieldDefinition } from "../packages/orm/src/index.ts";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const DIR = "/tmp/tina4-cd61-test";
+const DIR = mkdtempSync(join(tmpdir(), "tina4-cd61-test-"));
 let pass = 0;
 let fail = 0;
 function assert(name: string, cond: boolean, detail = ""): void {
@@ -21,7 +23,7 @@ function assert(name: string, cond: boolean, detail = ""): void {
   else { console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`); fail++; }
 }
 
-try { rmSync(DIR, { recursive: true }); } catch { /* first run */ }
+try { rmSync(DIR, { recursive: true, force: true }); } catch { /* first run */ }
 mkdirSync(DIR, { recursive: true });
 
 console.log("=== createTable callable-default DDL (#61) ===\n");
@@ -53,6 +55,7 @@ assert("static default persisted", rows.length === 1 && (rows[0] as any).title =
 assert("callable default resolved at insert (not null)", rows.length === 1 && (rows[0] as any).created_at != null);
 
 await closeDatabase();
+rmSync(DIR, { recursive: true, force: true });
 
 console.log(`\ncreateTable callable-default tests: ${pass} passed, ${fail} failed\n`);
 if (fail > 0) process.exit(1);

@@ -19,10 +19,11 @@
  * Run with: npx tsx test/envLocalPrecedence.test.ts
  */
 import { loadEnv } from "../packages/core/src/index.ts";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-env-local-precedence";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-env-local-precedence-"));
 let pass = 0;
 let fail = 0;
 
@@ -96,7 +97,7 @@ console.log("\n--- (b) .env.local wins over .env ---");
 }
 
 // Cleanup
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

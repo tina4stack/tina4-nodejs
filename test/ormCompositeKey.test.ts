@@ -21,7 +21,7 @@
  *
  * Run with: npx tsx test/ormCompositeKey.test.ts
  */
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initDatabase, bindDatabase, getAdapter } from "../packages/orm/src/database.js";
@@ -39,8 +39,11 @@ function assert(name: string, ok: boolean, detail = ""): void {
   }
 }
 
-const dbPath = join(mkdtempSync(join(tmpdir(), "tina4-ck-")), "composite.db");
-const db = await initDatabase({ url: `sqlite://${dbPath}` });
+const scratchDir = mkdtempSync(join(tmpdir(), "tina4-ck-"));
+const dbPath = join(scratchDir, "composite.db");
+// Three slashes before an absolute path: `sqlite://` + "/tmp/..." is RELATIVE
+// (`sqlite:///tmp/...` -> tmp/... under cwd), which put this DB in the repo checkout.
+const db = await initDatabase({ url: `sqlite:///${dbPath}` });
 bindDatabase(getAdapter() as never);
 
 class Membership extends BaseModel {
@@ -149,4 +152,5 @@ console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1
 console.log(`${"=".repeat(50)}\n`);
 
 db.close();
+rmSync(scratchDir, { recursive: true, force: true });
 process.exit(fail > 0 ? 1 : 0);

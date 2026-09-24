@@ -15,10 +15,11 @@
  */
 import { Session, FileSessionHandler } from "../packages/core/src/session.ts";
 import { createHash } from "node:crypto";
-import { existsSync, rmSync, readdirSync } from "node:fs";
+import { existsSync, rmSync, readdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_PATH = "/tmp/tina4-session-lifecycle-test";
+const TEST_PATH = mkdtempSync(join(tmpdir(), "tina4-session-lifecycle-test-"));
 
 /** On-disk path of a session, mirroring FileSessionHandler.filePath(). */
 const sessionFile = (id: string): string =>
@@ -46,7 +47,7 @@ function assert(label: string, condition: boolean) {
 }
 
 // Clean slate
-try { rmSync(TEST_PATH, { recursive: true }); } catch { /* ignore */ }
+try { rmSync(TEST_PATH, { recursive: true, force: true }); } catch { /* ignore */ }
 
 console.log("=== Session Lifecycle Parity Tests ===\n");
 
@@ -128,7 +129,7 @@ console.log("\n-- flash: null reads, does not store null --");
 
 // ── Cleanup ──────────────────────────────────────────────────────────
 
-try { rmSync(TEST_PATH, { recursive: true }); } catch { /* ignore */ }
+try { rmSync(TEST_PATH, { recursive: true, force: true }); } catch { /* ignore */ }
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${passed} passed\x1b[0m, \x1b[31m${failed} failed\x1b[0m`);

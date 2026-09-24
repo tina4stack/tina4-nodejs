@@ -3,10 +3,11 @@
  * Run with: npx tsx test/dotenv.test.ts
  */
 import { loadEnv, getEnv, requireEnv } from "../packages/core/src/index.ts";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-dotenv-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-dotenv-test-"));
 let pass = 0;
 let fail = 0;
 
@@ -21,7 +22,7 @@ function assert(name: string, condition: boolean, detail = "") {
 }
 
 // Clean slate
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 mkdirSync(TEST_DIR, { recursive: true });
 
 console.log("=== DotEnv Tests ===\n");
@@ -129,7 +130,7 @@ assert("requireEnv names EVERY missing var in one throw",
 // --- Non-existent file ---
 console.log("\n--- Edge Cases ---");
 
-const emptyResult = loadEnv("/tmp/does-not-exist.env");
+const emptyResult = loadEnv(join(TEST_DIR, "does-not-exist.env"));
 assert("Returns empty object for non-existent file", Object.keys(emptyResult).length === 0);
 
 // --- Inline comments ---
@@ -139,7 +140,7 @@ const parsed3 = loadEnv(join(TEST_DIR, ".env3"));
 assert("Strips inline comments", parsed3.INLINE === "value");
 
 // Cleanup
-rmSync(TEST_DIR, { recursive: true });
+rmSync(TEST_DIR, { recursive: true, force: true });
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

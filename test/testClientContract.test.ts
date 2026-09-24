@@ -60,6 +60,9 @@ import http from "node:http";
 import { startServer, get, Router, TestClient, getToken } from "@tina4/core";
 import type { Tina4Request, Tina4Response } from "@tina4/core";
 import { freePort } from "./freePort.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let passed = 0;
 let failed = 0;
@@ -111,11 +114,14 @@ async function run(): Promise<void> {
     });
 
     const port = await freePort();
+    // Children of a fresh per-run directory: absent, and unreachable by any
+    // other run on the host (a fixed /tmp name is shared by every user).
+    const scratch = mkdtempSync(join(tmpdir(), "tc131-"));
     const server = await startServer({
       port,
-      routesDir: "/tmp/tc131-nonexistent-routes",
-      modelsDir: "/tmp/tc131-nonexistent-models",
-      staticDir: "/tmp/tc131-nonexistent-static",
+      routesDir: join(scratch, "nonexistent-routes"),
+      modelsDir: join(scratch, "nonexistent-models"),
+      staticDir: join(scratch, "nonexistent-static"),
     });
 
     try {
@@ -153,6 +159,7 @@ async function run(): Promise<void> {
       );
     } finally {
       server.close();
+      rmSync(scratch, { recursive: true, force: true });
     }
   });
 

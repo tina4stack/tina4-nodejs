@@ -34,7 +34,7 @@
  */
 import process from "node:process";
 import net from "node:net";
-import { rmSync, mkdirSync } from "node:fs";
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
 import {
   BaseModel,
   Database,
@@ -44,6 +44,8 @@ import {
   closeDatabase,
 } from "../packages/orm/src/index.js";
 import { Log } from "../packages/core/src/index.js";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -272,14 +274,14 @@ async function runSerializeOmitCase(): Promise<void> {
 
 // ── sqlite ───────────────────────────────────────────────────────────────
 console.log("=== ORM instance loading contract (feature 26) — sqlite ===\n");
-const SQLITE_DIR = "/tmp/tina4-instance-loading-test";
-try { rmSync(SQLITE_DIR, { recursive: true }); } catch { /* ignore */ }
+const SQLITE_DIR = mkdtempSync(join(tmpdir(), "tina4-instance-loading-test-"));
+try { rmSync(SQLITE_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
 mkdirSync(SQLITE_DIR, { recursive: true });
 await initDatabase({ type: "sqlite", path: `${SQLITE_DIR}/test.db` });
 await runCases();
 await runSerializeOmitCase();
 closeDatabase();
-try { rmSync(SQLITE_DIR, { recursive: true }); } catch { /* ignore */ }
+try { rmSync(SQLITE_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
 
 // ── postgres (gated) ────────────────────────────────────────────────────
 console.log("\n=== ORM instance loading contract (feature 26) — postgres ===\n");

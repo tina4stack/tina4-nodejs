@@ -238,7 +238,9 @@ async function main(): Promise<void> {
   console.log("write-path contract");
 
   dir = mkdtempSync(join(tmpdir(), "tina4-writepath-"));
-  url = ENGINE_URL || `sqlite://${join(dir, "contract.db")}`;
+  // Three slashes before an absolute path: `sqlite://` + "/tmp/..." is RELATIVE
+  // (`sqlite:///tmp/...` -> tmp/... under cwd), which put this DB in the repo checkout.
+  url = ENGINE_URL || `sqlite:///${join(dir, "contract.db")}`;
 
   // The orphan guard, checked before any connection: a case naming an op the
   // dispatcher does not implement must FAIL, never be quietly skipped. Silent

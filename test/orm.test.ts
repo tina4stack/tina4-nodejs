@@ -2,7 +2,7 @@
  * Unit tests for the ORM enhancements (Phase 2).
  * Run with: npx tsx test/orm.test.ts
  */
-import { rmSync, mkdirSync } from "node:fs";
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
 import {
   initDatabase,
   closeDatabase,
@@ -13,8 +13,11 @@ import {
 } from "../packages/orm/src/index.ts";
 import { snakeToCamel, camelToSnake } from "../packages/orm/src/baseModel.ts";
 import type { FieldDefinition, DiscoveredModel } from "../packages/orm/src/index.ts";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_DB = "/tmp/tina4-orm-test/test.db";
+const ORM_TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-orm-test-"));
+const TEST_DB = join(ORM_TEST_DIR, "test.db");
 let pass = 0;
 let fail = 0;
 
@@ -29,8 +32,8 @@ function assert(name: string, condition: boolean, detail = "") {
 }
 
 // Clean slate
-try { rmSync("/tmp/tina4-orm-test", { recursive: true }); } catch {}
-mkdirSync("/tmp/tina4-orm-test", { recursive: true });
+try { rmSync(ORM_TEST_DIR, { recursive: true, force: true }); } catch {}
+mkdirSync(ORM_TEST_DIR, { recursive: true });
 
 console.log("=== ORM Enhancement Tests ===\n");
 
@@ -670,7 +673,7 @@ console.log("\n--- ORM error mentions TINA4_DATABASE_URL ---");
 
 // Cleanup
 closeDatabase();
-try { rmSync("/tmp/tina4-orm-test", { recursive: true }); } catch {}
+try { rmSync(ORM_TEST_DIR, { recursive: true, force: true }); } catch {}
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

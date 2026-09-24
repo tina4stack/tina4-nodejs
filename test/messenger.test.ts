@@ -9,9 +9,10 @@ import {
   Messenger, DevMailbox, createMessenger, MessengerConnectionError,
 } from "../packages/core/src/index.ts";
 import type { SendResult, EmailMessage } from "../packages/core/src/index.ts";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import net from "node:net";
+import { tmpdir } from "node:os";
 
 async function assertAsync(name: string, fn: () => Promise<boolean>, detail = ""): Promise<void> {
   try {
@@ -35,7 +36,7 @@ function assert(name: string, condition: boolean, detail = "") {
   }
 }
 
-const TEST_DIR = join("/tmp", "tina4-messenger-test-" + Date.now());
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-messenger-test-"));
 
 function cleanup() {
   try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}

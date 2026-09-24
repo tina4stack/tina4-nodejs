@@ -10,6 +10,9 @@ import { responseCache, clearCache, cacheStats, cacheGet, cacheSet, cacheDelete,
 import type { Tina4Request, Tina4Response, Middleware } from "../packages/core/src/index.ts";
 import * as fs from "node:fs";
 import * as net from "node:net";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -462,7 +465,7 @@ async function main() {
   // --- File backend ---
   console.log("\n--- File Backend ---");
 
-  const testDir = "/tmp/tina4_node_cache_test_" + Date.now();
+  const testDir = mkdtempSync(join(tmpdir(), "tina4_node_cache_test_"));
   const originalBackend = process.env.TINA4_CACHE_BACKEND;
   process.env.TINA4_CACHE_BACKEND = "file";
   process.env.TINA4_CACHE_DIR = testDir;
@@ -477,7 +480,7 @@ async function main() {
 
   // Cleanup
   await cacheClear();
-  try { fs.rmSync(testDir, { recursive: true }); } catch {}
+  try { fs.rmSync(testDir, { recursive: true, force: true }); } catch {}
 
   if (originalBackend !== undefined) {
     process.env.TINA4_CACHE_BACKEND = originalBackend;
@@ -600,7 +603,7 @@ async function main() {
   // --- File backend edge cases ---
   console.log("\n--- File Backend Edge Cases ---");
 
-  const testDir2 = "/tmp/tina4_node_cache_test2_" + Date.now();
+  const testDir2 = mkdtempSync(join(tmpdir(), "tina4_node_cache_test2_"));
   const origBe = process.env.TINA4_CACHE_BACKEND;
   process.env.TINA4_CACHE_BACKEND = "file";
   process.env.TINA4_CACHE_DIR = testDir2;
@@ -625,7 +628,7 @@ async function main() {
   assert("File backend clear empties store", clearedFileStats.size === 0);
 
   // Cleanup file backend
-  try { fs.rmSync(testDir2, { recursive: true }); } catch {}
+  try { fs.rmSync(testDir2, { recursive: true, force: true }); } catch {}
   if (origBe !== undefined) {
     process.env.TINA4_CACHE_BACKEND = origBe;
   } else {

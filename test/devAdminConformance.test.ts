@@ -30,11 +30,12 @@ import { startServer, handle } from "../packages/core/src/index.ts";
 import { initDatabase, closeDatabase } from "../packages/orm/src/index.ts";
 import http from "node:http";
 import net from "node:net";
-import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-devadmin-conformance-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-devadmin-conformance-test-"));
 const SECRET = "sup3r-sekret-do-not-leak-127";
 const DB_PASSWORD_LEAK = "pg-password-leak";
 
@@ -127,7 +128,7 @@ function rawGet(port: number, target: string, headers: Record<string, string> = 
 }
 
 // ── throwaway project with a real .env carrying secrets ──────────────────────
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 mkdirSync(join(TEST_DIR, "src/routes"), { recursive: true });
 writeFileSync(join(TEST_DIR, "package.json"), '{"type":"module"}');
 writeFileSync(
@@ -414,7 +415,7 @@ closeDatabase();
 delete (globalThis as any).__tina4_db;
 for (const k of ENV_KEYS) setEnv({ [k]: savedEnv[k] });
 process.chdir(ORIG_CWD);
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 
 console.log(`\n${"=".repeat(60)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

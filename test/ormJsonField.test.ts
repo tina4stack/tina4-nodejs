@@ -10,7 +10,7 @@
  *
  * Run with: npx tsx test/ormJsonField.test.ts
  */
-import { rmSync, mkdirSync } from "node:fs";
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
 import {
   initDatabase,
   closeDatabase,
@@ -18,8 +18,11 @@ import {
   BaseModel,
 } from "../packages/orm/src/index.ts";
 import type { FieldDefinition } from "../packages/orm/src/index.ts";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_DB = "/tmp/tina4-json-test/test.db";
+const JSON_TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-json-test-"));
+const TEST_DB = join(JSON_TEST_DIR, "test.db");
 let pass = 0;
 let fail = 0;
 
@@ -35,8 +38,8 @@ function assert(name: string, condition: boolean, detail = "") {
 
 const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-try { rmSync("/tmp/tina4-json-test", { recursive: true }); } catch {}
-mkdirSync("/tmp/tina4-json-test", { recursive: true });
+try { rmSync(JSON_TEST_DIR, { recursive: true, force: true }); } catch {}
+mkdirSync(JSON_TEST_DIR, { recursive: true });
 
 console.log("=== ORM JSONField Tests ===\n");
 
@@ -141,7 +144,7 @@ const adapter = getAdapter();
 }
 
 closeDatabase();
-try { rmSync("/tmp/tina4-json-test", { recursive: true }); } catch {}
+try { rmSync(JSON_TEST_DIR, { recursive: true, force: true }); } catch {}
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

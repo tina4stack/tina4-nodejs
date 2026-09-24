@@ -3,7 +3,7 @@
  * Validates all key features work end-to-end using in-memory/temp resources.
  * Run with: npx tsx test/smoke.test.ts
  */
-import { rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -46,6 +46,7 @@ import type { RouteDefinition } from "../packages/core/src/index.ts";
 
 // ── Frond imports ───────────────────────────────────────────────────
 import { Frond } from "../packages/frond/src/index.ts";
+import { tmpdir } from "node:os";
 
 // ═══════════════════════════════════════════════════════════════════
 // Test infrastructure
@@ -64,7 +65,7 @@ function assert(label: string, condition: boolean) {
   }
 }
 
-const TMP = `/tmp/tina4-smoke-test-${Date.now()}`;
+const TMP = mkdtempSync(join(tmpdir(), "tina4-smoke-test-"));
 mkdirSync(TMP, { recursive: true });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -787,7 +788,7 @@ await new Promise<void>((resolve) => apiServer.close(() => resolve()));
 // Cleanup and Summary
 // ═══════════════════════════════════════════════════════════════════
 
-try { rmSync(TMP, { recursive: true }); } catch {}
+try { rmSync(TMP, { recursive: true, force: true }); } catch {}
 
 console.log(`\n${"=".repeat(60)}`);
 console.log(`  Smoke Test Results: \x1b[32m${passed} passed\x1b[0m, \x1b[31m${failed} failed\x1b[0m`);
