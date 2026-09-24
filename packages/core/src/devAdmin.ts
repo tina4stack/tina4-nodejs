@@ -1936,29 +1936,30 @@ const handleConnectionsSave: RouteHandler = (req, res) => {
   }
   try {
     const envPath = join(process.cwd(), ".env");
-    const lines = existsSync(envPath) ? readFileSync(envPath, "utf-8").split("\n") : [];
-    const keysFound: Record<string, boolean> = { TINA4_DATABASE_URL: false, TINA4_DATABASE_USERNAME: false, TINA4_DATABASE_PASSWORD: false };
-    const newLines: string[] = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) {
-        newLines.push(line);
-        continue;
-      }
-      const key = trimmed.split("=", 1)[0].trim();
-      if (key === "TINA4_DATABASE_URL") { newLines.push(`TINA4_DATABASE_URL=${url}`); keysFound.TINA4_DATABASE_URL = true; }
-      else if (key === "TINA4_DATABASE_USERNAME") { newLines.push(`TINA4_DATABASE_USERNAME=${username}`); keysFound.TINA4_DATABASE_USERNAME = true; }
-      else if (key === "TINA4_DATABASE_PASSWORD") { newLines.push(`TINA4_DATABASE_PASSWORD=${password}`); keysFound.TINA4_DATABASE_PASSWORD = true; }
-      else { newLines.push(line); }
-    }
-    const values: Record<string, string> = { TINA4_DATABASE_URL: url, TINA4_DATABASE_USERNAME: username, TINA4_DATABASE_PASSWORD: password };
-    for (const [key, found] of Object.entries(keysFound)) {
-      if (!found) newLines.push(`${key}=${values[key]}`);
-    }
-    const fd = openSync(envPath, constants.O_WRONLY | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0), 0o600);
+    const fd = openSync(envPath, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0), 0o600);
     try {
-      if (fstatSync(fd).nlink !== 1) throw new Error("Refusing a configuration file with multiple hard links");
+      const info = fstatSync(fd);
+      if (!info.isFile() || info.nlink !== 1) throw new Error("Refusing a non-regular or multiply-linked configuration file");
       fchmodSync(fd, 0o600);
+      const lines = readFileSync(fd, "utf-8").split("\n");
+      const keysFound: Record<string, boolean> = { TINA4_DATABASE_URL: false, TINA4_DATABASE_USERNAME: false, TINA4_DATABASE_PASSWORD: false };
+      const newLines: string[] = [];
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) {
+          newLines.push(line);
+          continue;
+        }
+        const key = trimmed.split("=", 1)[0].trim();
+        if (key === "TINA4_DATABASE_URL") { newLines.push(`TINA4_DATABASE_URL=${url}`); keysFound.TINA4_DATABASE_URL = true; }
+        else if (key === "TINA4_DATABASE_USERNAME") { newLines.push(`TINA4_DATABASE_USERNAME=${username}`); keysFound.TINA4_DATABASE_USERNAME = true; }
+        else if (key === "TINA4_DATABASE_PASSWORD") { newLines.push(`TINA4_DATABASE_PASSWORD=${password}`); keysFound.TINA4_DATABASE_PASSWORD = true; }
+        else { newLines.push(line); }
+      }
+      const values: Record<string, string> = { TINA4_DATABASE_URL: url, TINA4_DATABASE_USERNAME: username, TINA4_DATABASE_PASSWORD: password };
+      for (const [key, found] of Object.entries(keysFound)) {
+        if (!found) newLines.push(`${key}=${values[key]}`);
+      }
       ftruncateSync(fd, 0);
       writeFileSync(fd, newLines.join("\n") + "\n");
     } finally {

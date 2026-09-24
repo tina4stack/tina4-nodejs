@@ -25,6 +25,7 @@ import { ensureDevSecret } from "../packages/core/src/index.ts";
 import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync, statSync, chmodSync, symlinkSync, linkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 
 let pass = 0;
 let fail = 0;
@@ -184,6 +185,26 @@ if (process.platform !== "win32") for (const linkKind of ["symlink", "hardlink"]
   const secret = ensureDevSecret(dir);
   assert(`${linkKind}: generated secret remains in memory`, typeof secret === "string");
   assert(`${linkKind}: target remains unchanged`, readFileSync(target, "utf-8") === "original");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// The linked FIFO proves no path-based read happens before the guarded open.
+if (process.platform !== "win32") {
+  const dir = tmpCwd();
+  const target = join(dir, "unrelated-pipe");
+  execFileSync("mkfifo", [target]);
+  symlinkSync(target, join(dir, ".env.local"));
+  const authModule = new URL("../packages/core/src/auth.ts", import.meta.url).href;
+  const code = `import {ensureDevSecret} from ${JSON.stringify(authModule)};
+    delete process.env.TINA4_SECRET; delete process.env.CI; delete process.env.TINA4_ENV;
+    process.env.TINA4_DEBUG = "true";
+    if (!ensureDevSecret(${JSON.stringify(dir)})) process.exit(1);`;
+  let finished = false;
+  try {
+    execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], { timeout: 5000, stdio: "pipe" });
+    finished = true;
+  } catch { /* A pre-read regression blocks and fails the bounded child. */ }
+  assert("linked FIFO is refused before reading", finished);
   rmSync(dir, { recursive: true, force: true });
 }
 

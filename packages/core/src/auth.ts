@@ -115,17 +115,15 @@ export function ensureDevSecret(cwd?: string): string | null {
   const baseDir = cwd ?? process.cwd();
   const envLocalPath = join(baseDir, ".env.local");
   try {
-    // If the file exists and its content doesn't end in a newline, prepend one
-    // so the new key lands on its own line.
-    let prefix = "";
-    if (existsSync(envLocalPath)) {
-      const existing = readFileSync(envLocalPath, "utf-8");
-      if (existing.length > 0 && !existing.endsWith("\n")) prefix = "\n";
-    }
-    const fd = openSync(envLocalPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0), 0o600);
+    // Read and append through one descriptor so replacing a pathname cannot
+    // redirect either operation to an unrelated file.
+    const fd = openSync(envLocalPath, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0), 0o600);
     try {
-      if (fstatSync(fd).nlink !== 1) throw new Error("Refusing a configuration file with multiple hard links");
+      const info = fstatSync(fd);
+      if (!info.isFile() || info.nlink !== 1) throw new Error("Refusing a non-regular or multiply-linked configuration file");
       fchmodSync(fd, 0o600);
+      const existing = readFileSync(fd, "utf-8");
+      const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
       appendFileSync(fd, `${prefix}TINA4_SECRET=${newSecret}\n`);
     } finally {
       closeSync(fd);
