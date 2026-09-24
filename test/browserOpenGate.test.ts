@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, openSync, closeSync, rmSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, openSync, closeSync, fstatSync, readSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import net from "node:net";
@@ -90,7 +90,7 @@ async function bootAndWatch(env: Record<string, string>, launch: "startServer" |
   const childEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const name of ["TINA4_NO_BROWSER", "TINA4_DEBUG", ...CI_VARIABLES]) delete childEnv[name];
   const logPath = join(root, "server.log");
-  const fd = openSync(logPath, "w");
+  const fd = openSync(logPath, "w+");
   const child = spawn(TSX, ["app.ts"], {
     cwd: root,
     detached: true,
@@ -104,7 +104,6 @@ async function bootAndWatch(env: Record<string, string>, launch: "startServer" |
       ...env,
     },
   });
-  closeSync(fd);
   started.push({ child, root });
 
   const deadline = Date.now() + 60_000;
@@ -116,7 +115,18 @@ async function bootAndWatch(env: Record<string, string>, launch: "startServer" |
       await sleep(250);
     }
   }
-  expect(up, `server never came up:\n${readFileSync(logPath, "utf8").slice(-2000)}`).toBe(true);
+  let diagnostics = "";
+  try {
+    if (!up) {
+      const size = fstatSync(fd).size;
+      const tail = Buffer.alloc(Math.min(size, 2000));
+      const bytes = readSync(fd, tail, 0, tail.length, Math.max(0, size - tail.length));
+      diagnostics = tail.subarray(0, bytes).toString("utf8");
+    }
+  } finally {
+    closeSync(fd);
+  }
+  expect(up, `server never came up:\n${diagnostics}`).toBe(true);
   const until = Date.now() + OPEN_WAIT_MS;
   let opened = readMarker(marker);
   while (opened === null && Date.now() < until) {

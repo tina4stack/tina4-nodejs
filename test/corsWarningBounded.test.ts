@@ -121,7 +121,7 @@ async function scenario(label: string, caseName: string, env: Record<string, str
     await new Promise((r) => setTimeout(r, 200));
     const lines = s.output().slice(mark).split("\n").filter((l) => l.includes("CORS"));
     assert(`${caseName} (${ORIGINS} requests served)`, statuses.every((st) => st === 200), JSON.stringify(statuses));
-    assert(caseName, lines.length === 1 && lines[0].split(/\s+/).includes("https://site-0.attacker.example"),
+    assert(caseName, lines.length === 1 && lines[0].split(/\s+/).some((token) => token === "https://site-0.attacker.example"),
       `${lines.length} CORS lines; first: ${lines[0]?.slice(0, 160)}`);
 
     const state = await request(s.port, "GET", "/warnstate", {});

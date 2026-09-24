@@ -167,7 +167,7 @@ for (const policy of [undefined, ALLOWED]) {
     const warnings = await corsWarnings(server);
     const line = warnings[0] ?? "";
     assert(`a refused origin warning names the origin and never advises a wildcard (policy=${policy ?? "unset"})`,
-      warnings.length === 1 && line.split(/\s+/).includes(OTHER) && line.includes("TINA4_CORS_ORIGINS") && !line.includes("*"),
+      warnings.length === 1 && line.split(/\s+/).some((token) => token === OTHER) && line.includes("TINA4_CORS_ORIGINS") && !line.includes("*"),
       `warnings=${JSON.stringify(warnings)}`);
   });
 }

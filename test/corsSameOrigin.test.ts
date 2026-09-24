@@ -130,7 +130,7 @@ console.log("\n--- TINA4_CORS_ORIGINS unset ---");
     lines = await corsLinesSince(s, mark);
     assert("disallowed_cross_origin_warns_without_advising_wildcard (no policy)",
       evil.headers["access-control-allow-origin"] === undefined
-        && lines.length === 1 && lines[0].split(/\s+/).includes("https://evil.example") && !lines[0].includes("*")
+        && lines.length === 1 && lines[0].split(/\s+/).some((token) => token === "https://evil.example") && !lines[0].includes("*")
         && lines[0].includes("TINA4_CORS_ORIGINS"),
       `acao=${String(evil.headers["access-control-allow-origin"])} log=${JSON.stringify(lines)}`);
   } finally {
@@ -156,7 +156,7 @@ console.log("\n--- TINA4_CORS_ORIGINS=https://partner.example.com ---");
     lines = await corsLinesSince(s, mark);
     assert("disallowed_cross_origin_warns_without_advising_wildcard (allow-list)",
       other.headers["access-control-allow-origin"] === undefined
-        && lines.length === 1 && lines[0].split(/\s+/).includes("https://other.example") && !lines[0].includes("*"),
+        && lines.length === 1 && lines[0].split(/\s+/).some((token) => token === "https://other.example") && !lines[0].includes("*"),
       `acao=${String(other.headers["access-control-allow-origin"])} log=${JSON.stringify(lines)}`);
 
     mark = s.output().length;
