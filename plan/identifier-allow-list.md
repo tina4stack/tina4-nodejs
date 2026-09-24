@@ -42,7 +42,19 @@ emitted through the bound adapter's dialect quoting (same as the Python master's
 - [x] F (addendum 2). Runner gate: under TINA4_REQUIRE_SERVICES a skip passes only
       with an excusable `[needs:X]` tag (optional engine while its coordinate is
       unset; always-provisioned service never; platform tag always); untagged
-      fails; vitest skips counted. Optional-engine skip sites tagged.
+      fails; vitest skips counted. Optional-engine skip sites tagged; postgis
+      joined the optional-engine map and CI provisions PostGIS.
+- [x] G1 (addendum 3). AutoCrud POST/PUT bodies keep only declared fields, by
+      property or mapped column, via the same resolver (resolveField).
+- [x] G2 (addendum 3). BaseModel save() writes only declared fields - verified,
+      locked in on all five engines.
+- [x] G3 (addendum 3). Database insert/update/delete (+batch, +filter list) and
+      the sqlDialect builders refuse non-identifier keys: "Invalid column name 'KEY'".
+      db.delete(table, [filters]) now works on every engine.
+- [x] Lock-ins: AutoCrud id routes and fromOrm GraphQL id arguments address one row.
+- [x] Found on the way: fromOrm create/update mutations wrote undeclared arguments
+      as columns - now declared fields only.
+- [x] GraphQL commas are insignificant (spec 2.1.7) - fixed at the tokenizer.
 
 ## Parity
 
@@ -56,6 +68,11 @@ emitted through the bound adapter's dialect quoting (same as the Python master's
 | Wrong-shaped query value -> 400  | n/a | other worker | other worker | ✅ |
 | AutoCrud uses model's connection | n/a | other worker | other worker | ✅ |
 | [needs:X] require-services gate  | other worker | other worker | other worker | ✅ |
+| AutoCrud write-body allow-list   | n/a | other worker | other worker | ✅ |
+| save() writes declared only      | other worker | other worker | other worker | ✅ (lock-in) |
+| Write helpers reject bad keys    | other worker | other worker | other worker | ✅ |
+| Id route / GraphQL id bound      | n/a | other worker | n/a | ✅ (lock-in) |
+| GraphQL commas insignificant     | not checked | not checked | other worker | ✅ |
 
 ## Tests (written first, real - no mocks, positive + negative)
 
@@ -93,6 +110,19 @@ Addendum 2:
       its coordinate is unset, always-provisioned never, platform tag excused, gate off
       unchanged; mutation-proved (5 mutations)
 
+Addendum 3 and follow-ups:
+
+- [x] autocrud_write_body_accepts_only_declared_fields - red (column-named field not written,
+      inherited-name key 500), green, mutation-proved
+- [x] orm_save_writes_only_declared_fields - lock-in on 5 engines, mutation-proved
+- [x] db_write_helpers_reject_non_identifier_keys - 5 engines, red, green; Database layer and
+      builder layer each mutation-proved separately
+- [x] autocrud_id_route_addresses_only_that_row, graphql_id_argument_addresses_only_that_row -
+      lock-ins (test/idArgumentLockIn.test.ts), mutation-proved
+- [x] graphql_orm_mutations_write_only_declared_fields - red, green, mutation-proved
+- [x] commas_are_insignificant_between_arguments_and_fields (test/graphqlCommas.test.ts) -
+      4/7 red, green, mutation-proved
+
 ## Bugs
 
 - [x] AutoCrud filter keys were restricted to `\w+` but not to declared fields, and
@@ -126,5 +156,13 @@ Addendum 2:
 - 7e74a84  AutoCrud queries the connection its model is bound to
 - c42d087  Tag optional-engine skips with a machine-readable [needs:X] reason
 - 64ea164  Require-services gate fails every skip without an excusable [needs:X] tag
+- a04cca4  Plan update
+- 3aa9d39  AutoCrud write bodies accept only declared fields, by property or column
+- f2c12e2  Lock in: BaseModel save() writes only declared fields
+- 70df81d  Database write helpers refuse data and filter keys that are not plain column names
+- 4b96310  Gate treats PostGIS as an optional engine; CI provisions it
+- 237a82d  Lock in: AutoCrud id routes and ORM GraphQL id arguments address only that row
+- 2864863  GraphQL fromOrm mutations write only the model's declared fields
+- 2fcc6fa  GraphQL treats commas as insignificant, as the spec requires
 
 ## Status: Complete locally (lab verification by the lead); remaining red items above are pre-existing / environmental
