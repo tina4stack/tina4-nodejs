@@ -43,9 +43,9 @@ function skip(msg: string): void {
   console.log(`  \x1b[33mSKIP\x1b[0m ${msg}`);
 }
 
-/** Firebird is NOT in the require-services gate: an unset URL stays a green skip. */
+/** Firebird is an optional engine: [needs:firebird] is excused only while TINA4_TEST_FIREBIRD_URL is unset. */
 function skipGated(msg: string): void {
-  console.log(`  \x1b[33mSKIP\x1b[0m ${msg}`);
+  console.log(`  \x1b[33mSKIP\x1b[0m [needs:firebird] ${msg}`);
 }
 
 function tcpReachable(host: string, port: number): Promise<boolean> {

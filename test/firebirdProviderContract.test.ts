@@ -159,7 +159,7 @@ const CASES: Array<[string, (db: any) => Promise<void>]> = [
 ];
 
 if (!FIREBIRD_URL) {
-  for (const [name] of CASES) skip(name, "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)");
+  for (const [name] of CASES) skip(name, "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)");
 } else {
   for (const [name, run] of CASES) {
     const db = await makeDb();

@@ -104,7 +104,7 @@ async function ledgerIds(db: any): Promise<number[]> {
 
 if (!FIREBIRD_URL) {
   for (const name of CASES) {
-    skip(name, "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)");
+    skip(name, "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)");
   }
 } else {
   const db = new FirebirdAdapter(FIREBIRD_URL) as any;

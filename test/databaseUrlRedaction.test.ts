@@ -234,7 +234,7 @@ console.log("\n--- a_live_connect_failure_never_echoes_the_password ---");
 
 const liveUrl = (process.env.TINA4_TEST_PG_URL || "").trim();
 if (!liveUrl) {
-  console.log("  SKIP a live connect failure never echoes the password (PostgreSQL not set: TINA4_TEST_PG_URL)");
+  console.log("  SKIP a live connect failure never echoes the password [needs:postgres] (PostgreSQL not set: TINA4_TEST_PG_URL)");
 } else {
   const tail = liveUrl.split("://")[1].split("@").pop();
   const user = (process.env.TINA4_TEST_PG_USERNAME || "tina4").trim();

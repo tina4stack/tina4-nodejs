@@ -52,8 +52,10 @@ assert("a literal percent in a password survives",
 // SAME password. It connects only if the credential path decodes.
 const liveUrl = (process.env.TINA4_TEST_PG_URL || "").trim();
 const rawPass = (process.env.TINA4_TEST_PG_PASSWORD || "tina4").trim();
-if (!liveUrl || !rawPass.includes("a")) {
-  console.log("  SKIP an encoded password connects to a live database (not configured)");
+if (!liveUrl) {
+  console.log("  SKIP an encoded password connects to a live database [needs:postgres] (TINA4_TEST_PG_URL not set)");
+} else if (!rawPass.includes("a")) {
+  console.log("  SKIP an encoded password connects to a live database (TINA4_TEST_PG_PASSWORD has no 'a' to percent-encode)");
 } else {
   const user = (process.env.TINA4_TEST_PG_USERNAME || "tina4").trim();
   const [scheme, rest] = liveUrl.split("://");

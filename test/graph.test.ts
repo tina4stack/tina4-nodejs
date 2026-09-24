@@ -404,11 +404,11 @@ async function runLive(engine: string, cfg: EngineConfig, graph: GraphAdapter): 
     const url = process.env[cfg.env];
     const liveName = `graph-live cases [${engine}]`;
     if (!url) {
-      skip(liveName, `${cfg.env} not set`);
+      skip(liveName, `[needs:${engine}] ${cfg.env} not set`);
       continue;
     }
     if (!(await reachable(url))) {
-      skip(liveName, `${cfg.env} not reachable`);
+      skip(liveName, `[needs:${engine}] ${cfg.env} not reachable`);
       continue;
     }
     if (!(await driverInstalled(cfg.driver))) {
