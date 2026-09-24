@@ -46,7 +46,7 @@ assert("a percent encoded password is decoded",
   const u = new DatabaseUrl("postgres://us%3Aer:p%40ss%21w%3Ard%2Fx%23y@h:5432/db");
   assert("every reserved character survives a round trip",
     u.username === "us:er" && u.password === "p@ss!w:rd/x#y",
-    `${u.username} / ${u.password}`);
+    "decoded credential mismatch");
 }
 
 assert("an unencoded password is unchanged",
@@ -75,7 +75,7 @@ if (!liveUrl) {
     assert("an encoded password connects to a live database", true);
     db.close();
   } catch (e) {
-    assert("an encoded password connects to a live database", false, e instanceof Error ? e.name : typeof e);
+    assert("an encoded password connects to a live database", false, "service operation failed");
   }
 }
 

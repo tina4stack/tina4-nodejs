@@ -95,7 +95,7 @@ let PostgresAdapter: any = null;
 try {
   ({ PostgresAdapter } = await import("../packages/orm/src/adapters/postgres.ts"));
 } catch (err) {
-  skipClean(`Could not load PostgresAdapter: ${err instanceof Error ? err.name : typeof err}`);
+  skipClean(`Could not load PostgresAdapter: service operation failed`);
 }
 try {
   await import("pg");
@@ -133,8 +133,8 @@ try {
   });
 } catch (err) {
   skipClean(
-    `PostgreSQL not available at ${PG_HOST}:${PG_PORT}/${PG_DB} as user "${PG_USER}" ` +
-    `— ${err instanceof Error ? err.name : typeof err}. Create the database or set TINA4_TEST_PG_HOST / ` +
+    `PostgreSQL test connection unavailable ` +
+    `— service operation failed. Create the database or set TINA4_TEST_PG_HOST / ` +
     `_PORT / _DB / _USERNAME / _PASSWORD.`,
   );
 }

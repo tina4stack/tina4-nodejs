@@ -253,7 +253,7 @@ async function run(): Promise<void> {
 }
 
 run()
-  .catch((e) => { console.error("UNEXPECTED ERROR:", e instanceof Error ? e.name : typeof e); fail++; })
+  .catch((e) => { console.error("UNEXPECTED ERROR:", "service operation failed"); fail++; })
   .finally(() => {
     rmSync(tmpDir, { recursive: true, force: true });
     console.log(`\n  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);
