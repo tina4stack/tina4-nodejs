@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Feature 128 — dual development/test port (the "AI port" at base + 1000).
  *
@@ -171,8 +179,7 @@ function wsUpgradeStatusLine(port: number, path: string, timeoutMs = 8000): Prom
 }
 
 function project(name: string): string {
-  const dir = join(tmpdir(), `tina4-dualport-${process.pid}-${name}-${Date.now()}`);
-  rmSync(dir, { recursive: true, force: true });
+  const dir = mkdtempSync(join(tmpdir(), `tina4-dualport-${name}-`));
   mkdirSync(join(dir, "src", "routes"), { recursive: true });
   writeFileSync(join(dir, "package.json"), '{"type":"module"}');
   return dir;

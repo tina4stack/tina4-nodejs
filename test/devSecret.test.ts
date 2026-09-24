@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Dev-secret bootstrap (ensureDevSecret) — fail-safe defaults.
  * Mirrors tina4_python/tests/test_dev_secret.py. No DB needed.
@@ -14,9 +22,10 @@
  * Run with: npx tsx test/devSecret.test.ts
  */
 import { ensureDevSecret } from "../packages/core/src/index.ts";
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync, statSync, chmodSync, symlinkSync, linkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 
 let pass = 0;
 let fail = 0;
@@ -66,6 +75,7 @@ console.log("--- Dev generates a secret to .env.local ---");
   assert("dev: returns a 64-hex secret", typeof secret === "string" && /^[0-9a-f]{64}$/.test(secret as string), String(secret));
   assert("dev: sets process.env.TINA4_SECRET to the new value", process.env.TINA4_SECRET === secret);
   assert("dev: writes .env.local", existsSync(join(dir, ".env.local")));
+  if (process.platform !== "win32") assert("dev: secret file is owner-only", (statSync(join(dir, ".env.local")).mode & 0o777) === 0o600);
   assert("dev: does NOT write .env", !existsSync(join(dir, ".env")));
   const body = existsSync(join(dir, ".env.local")) ? readFileSync(join(dir, ".env.local"), "utf-8") : "";
   assert("dev: .env.local contains the secret line", body.includes(`TINA4_SECRET=${secret}`), body);
@@ -80,7 +90,9 @@ console.log("--- Dev generates a secret to .env.local ---");
   process.env.TINA4_DEBUG = "true";
   const dir = tmpCwd();
   writeFileSync(join(dir, ".env.local"), "FOO=bar"); // no trailing newline
+  chmodSync(join(dir, ".env.local"), 0o644);
   const secret = ensureDevSecret(dir);
+  if (process.platform !== "win32") assert("append: existing secret file becomes owner-only", (statSync(join(dir, ".env.local")).mode & 0o777) === 0o600);
   const body = readFileSync(join(dir, ".env.local"), "utf-8");
   assert("append: preserves existing FOO=bar line intact", body.includes("FOO=bar\n"), JSON.stringify(body));
   assert("append: adds the secret on its own line", body.includes(`\nTINA4_SECRET=${secret}\n`), JSON.stringify(body));
@@ -160,6 +172,39 @@ console.log("\n--- Never crashes when .env.local cannot be written ---");
   assert("write-fail: did not throw (boot survives)", !threw);
   assert("write-fail: still returned an in-memory secret", typeof secret === "string" && /^[0-9a-f]{64}$/.test(secret as string), String(secret));
   assert("write-fail: in-memory secret set in process.env", process.env.TINA4_SECRET === secret);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+if (process.platform !== "win32") for (const linkKind of ["symlink", "hardlink"]) {
+  clearEnv();
+  process.env.TINA4_DEBUG = "true";
+  const dir = tmpCwd();
+  const target = join(dir, "untouched");
+  writeFileSync(target, "original");
+  (linkKind === "symlink" ? symlinkSync : linkSync)(target, join(dir, ".env.local"));
+  const secret = ensureDevSecret(dir);
+  assert(`${linkKind}: generated secret remains in memory`, typeof secret === "string");
+  assert(`${linkKind}: target remains unchanged`, readFileSync(target, "utf-8") === "original");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// The linked FIFO proves no path-based read happens before the guarded open.
+if (process.platform !== "win32") {
+  const dir = tmpCwd();
+  const target = join(dir, "unrelated-pipe");
+  execFileSync("mkfifo", [target]);
+  symlinkSync(target, join(dir, ".env.local"));
+  const authModule = new URL("../packages/core/src/auth.ts", import.meta.url).href;
+  const code = `import {ensureDevSecret} from ${JSON.stringify(authModule)};
+    delete process.env.TINA4_SECRET; delete process.env.CI; delete process.env.TINA4_ENV;
+    process.env.TINA4_DEBUG = "true";
+    if (!ensureDevSecret(${JSON.stringify(dir)})) process.exit(1);`;
+  let finished = false;
+  try {
+    execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], { timeout: 5000, stdio: "pipe" });
+    finished = true;
+  } catch { /* A pre-read regression blocks and fails the bounded child. */ }
+  assert("linked FIFO is refused before reading", finished);
   rmSync(dir, { recursive: true, force: true });
 }
 

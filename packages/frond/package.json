@@ -1,7 +1,7 @@
 {
   "name": "@tina4/frond",
-  "version": "3.13.137",
-  "description": "Tina4 Frond — zero-dependency Twig-like template engine",
+  "version": "3.13.138",
+  "description": "Tina4 Frond \u2014 zero-dependency Twig-like template engine",
   "type": "module",
   "main": "./dist/index.js",
   "types": "../../types/frond/src/index.d.ts",
@@ -13,5 +13,6 @@
   },
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external"
-  }
+  },
+  "license": "MPL-2.0"
 }

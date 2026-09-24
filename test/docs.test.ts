@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * @tina4/core docs — Live API RAG test corpus.
  *
@@ -12,14 +20,13 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as crypto from "node:crypto";
 
 import { parseTypeScript } from "../packages/core/src/docsParser.ts";
 import { Docs } from "../packages/core/src/docs.ts";
 
 // ── Fixture ────────────────────────────────────────────────────────
 
-const fixtureRoot = path.join(os.tmpdir(), `tina4-docs-fixture-${crypto.randomBytes(4).toString("hex")}`);
+const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tina4-docs-fixture-"));
 
 function setupFixture(): void {
   fs.mkdirSync(path.join(fixtureRoot, "src", "orm"), { recursive: true });

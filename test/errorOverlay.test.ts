@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Unit tests for the error overlay (errorOverlay.ts).
  * Run with: npx tsx test/errorOverlay.test.ts
@@ -15,7 +23,7 @@ function assert(name: string, condition: boolean, detail = "") {
     console.log(`  \x1b[32mPASS\x1b[0m ${name}`);
     pass++;
   } else {
-    console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
+    console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${JSON.stringify(detail)}`);
     fail++;
   }
 }

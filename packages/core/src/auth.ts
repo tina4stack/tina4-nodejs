@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Tina4 Auth — Zero-dependency JWT, password hashing, and auth middleware.
  *
@@ -12,7 +20,7 @@
  *   checkPassword("secret123", hash);  // true
  */
 import { createHmac, createSign, createVerify, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, openSync, closeSync, fstatSync, fchmodSync, constants } from "node:fs";
 import { join } from "node:path";
 import type { Middleware, Tina4Request, Tina4Response } from "./types.js";
 import { isTruthy } from "./dotenv.js";
@@ -107,14 +115,19 @@ export function ensureDevSecret(cwd?: string): string | null {
   const baseDir = cwd ?? process.cwd();
   const envLocalPath = join(baseDir, ".env.local");
   try {
-    // If the file exists and its content doesn't end in a newline, prepend one
-    // so the new key lands on its own line.
-    let prefix = "";
-    if (existsSync(envLocalPath)) {
-      const existing = readFileSync(envLocalPath, "utf-8");
-      if (existing.length > 0 && !existing.endsWith("\n")) prefix = "\n";
+    // Read and append through one descriptor so replacing a pathname cannot
+    // redirect either operation to an unrelated file.
+    const fd = openSync(envLocalPath, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0), 0o600);
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile() || info.nlink !== 1) throw new Error("Refusing a non-regular or multiply-linked configuration file");
+      fchmodSync(fd, 0o600);
+      const existing = readFileSync(fd, "utf-8");
+      const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+      appendFileSync(fd, `${prefix}TINA4_SECRET=${newSecret}\n`);
+    } finally {
+      closeSync(fd);
     }
-    appendFileSync(envLocalPath, `${prefix}TINA4_SECRET=${newSecret}\n`);
     void _logInfo("Auth: generated a development secret, saved to .env.local (gitignored)");
   } catch {
     // Keep the in-memory secret for this run; warn but never crash boot.

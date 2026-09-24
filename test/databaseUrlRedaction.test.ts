@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * A database password must never reach a log, an exception, or a dump.
  *
@@ -250,7 +258,7 @@ if (!liveUrl) {
     db.close();
   } catch (err: any) {
     assert("the live database really is reachable with the real password", false,
-      String(err.message).slice(0, 90));
+      err instanceof Error ? err.name : typeof err);
   }
 
   // NEGATIVE: a wrong password containing a space must not survive into the

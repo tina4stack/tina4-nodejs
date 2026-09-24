@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /** ADR-0053 + ADR-0060 + ADR-0061 app-facing AI client contract over a real HTTP socket. */
 import http from "node:http";
 import net from "node:net";

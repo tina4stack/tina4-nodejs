@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * No-mock tests for the static-file cache policy (packages/core/src/static.ts).
  *
@@ -14,12 +22,12 @@
  */
 import { startServer } from "../packages/core/src/index.ts";
 import http from "node:http";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { freePort } from "./freePort.ts";
 
-const TEST_DIR = join(tmpdir(), "tina4-static-cache-test-" + Date.now());
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-static-cache-test-"));
 const PUBLIC_DIR = join(TEST_DIR, "public");
 const ASSET_BODY = "body { color: rebeccapurple; }";
 const PORT = await freePort();
@@ -56,7 +64,6 @@ function request(
 }
 
 // --- Real temp project: a public dir with one real asset + an empty routes dir.
-try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 mkdirSync(PUBLIC_DIR, { recursive: true });
 mkdirSync(join(TEST_DIR, "src/routes"), { recursive: true });
 writeFileSync(join(TEST_DIR, "package.json"), '{"type":"module"}');

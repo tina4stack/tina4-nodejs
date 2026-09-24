@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * PAGE-DEC-01 pagination clamp + cap — feature 24 (pagination_contract.json).
  *
@@ -100,7 +108,7 @@ async function invokeHandler(
     } catch (err) {
       if (!res.writableEnded) {
         res.statusCode = 500;
-        res.end(JSON.stringify({ error: String(err) }));
+        res.end(JSON.stringify({ error: "Unexpected test server error" }));
       }
     }
     if (!res.writableEnded) res.end();

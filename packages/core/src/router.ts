@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 import type { RouteHandler, RouteDefinition, RouteMeta, Middleware, MiddlewareSpec, Tina4Request, Tina4Response, WebSocketRouteHandler, WebSocketRouteDefinition } from "./types.js";
 import { isTruthy } from "./dotenv.js";
 import { MiddlewareRunner, isMiddlewareClass } from "./middleware.js";

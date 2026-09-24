@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Tina4 Dev Admin — Built-in development dashboard, zero dependencies.
  *
@@ -10,14 +18,14 @@
  */
 
 import { cpus as osCpus } from "node:os";
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, copyFileSync, statSync } from "node:fs";
-import { join, dirname, resolve, relative } from "node:path";
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, copyFileSync, statSync, openSync, closeSync, fstatSync, fchmodSync, ftruncateSync, constants, realpathSync, lstatSync } from "node:fs";
+import { join, dirname, resolve, relative, sep, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Router } from "./router.js";
 import type { RouteHandler, Tina4Request } from "./types.js";
 import { DevMailbox } from "./devMailbox.js";
 import { isTruthy } from "./dotenv.js";
-import { fullAnalysis, fileDetail, MetricsEngineError } from "./metrics.js";
+import { fullAnalysis, fileDetail, MetricsEngineError, metricsScanRoot } from "./metrics.js";
 import { registerFeedbackRoutes } from "./feedback.js";
 import { getDefaultDevServer, mcpEnabled, isRequestAllowed, isLoopback } from "./mcp.js";
 import { timingSafeEqual } from "node:crypto";
@@ -67,8 +75,8 @@ function escapeHtml(value: string): string {
  *
  * A drive-by CSRF is a BROWSER cross-origin request, and a modern browser always
  * sends `Sec-Fetch-Site` (and any browser sends `Origin` on a cross-origin POST):
- *   - Sec-Fetch-Site present -> trust the browser's classification
- *     (cross-site refused; same-origin / same-site / none ok).
+ *   - Sec-Fetch-Site present -> only same-origin (the dashboard itself) and
+ *     none (a typed URL) pass; same-site is a different origin (ADR-0082).
  *   - else Origin present -> require its host to match the request Host.
  *   - else neither header -> not a browser cross-origin request (curl, a test
  *     client, a server-side caller); it cannot be a drive-by, so allow here and
@@ -77,13 +85,18 @@ function escapeHtml(value: string): string {
 export function devSameOriginOk(req: Tina4Request): boolean {
   const secFetchSite = (req.header("sec-fetch-site") ?? "").trim().toLowerCase();
   if (secFetchSite) {
-    return secFetchSite === "same-origin" || secFetchSite === "same-site" || secFetchSite === "none";
+    if (secFetchSite !== "same-origin" && secFetchSite !== "none") return false;
   }
   const origin = (req.header("origin") ?? "").trim();
   if (origin) {
-    const netloc = origin.includes("://") ? origin.split("://", 2)[1] : origin;
-    const host = (req.header("host") ?? "").trim();
-    return host !== "" && netloc.toLowerCase() === host.toLowerCase();
+    try {
+      const supplied = new URL(origin);
+      const host = (req.header("host") ?? "").trim();
+      const scheme = new URL(req.url ?? "http://localhost").protocol;
+      return host !== "" && !supplied.username && !supplied.password
+        && supplied.pathname === "/" && !supplied.search && !supplied.hash
+        && supplied.origin === new URL(`${scheme}//${host}`).origin;
+    } catch { return false; }
   }
   return true;
 }
@@ -98,14 +111,52 @@ export function devSameOriginOk(req: Tina4Request): boolean {
  * Reads the RAW socket peer (never X-Forwarded-For), exactly like the MCP gate.
  */
 export function devMutationDenial(req: Tina4Request): { status: number; error: string } | null {
+  return devRequestDenial(req);
+}
+
+/**
+ * True when a Host header names the loopback machine or the configured
+ * TINA4_HOST (ADR-0082), so a rebound DNS name cannot reach /__dev. A missing
+ * Host is not a browser request (every browser sends one); the peer gate
+ * governs it instead.
+ */
+export function devHostAllowed(hostHeader: string | undefined | null): boolean {
+  const host = (hostHeader ?? "").trim().toLowerCase();
+  if (!host) return true;
+  let name: string;
+  if (host.startsWith("[")) {
+    const end = host.indexOf("]");
+    name = end < 0 ? host : host.slice(1, end);
+  } else if (host.split(":").length === 2) {
+    name = host.split(":")[0];
+  } else {
+    name = host;
+  }
+  const allowed = new Set(["localhost", "127.0.0.1", "::1"]);
+  const configured = (process.env.TINA4_HOST ?? "").trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (configured) allowed.add(configured);
+  return allowed.has(name);
+}
+
+/**
+ * Return `{status, error}` to REFUSE any /__dev request (read or write), or
+ * `null` to allow (ADR-0082): Host allow-list, then same-origin, then the
+ * loopback peer (the MCP surface keeps its own 404 gate for the peer part).
+ */
+export function devRequestDenial(req: Tina4Request): { status: number; error: string } | null {
+  // Host and browser origin remain mandatory even with a valid token.
+  // Remote dashboards explicitly configure TINA4_HOST.
+  const path = (req.path ?? "").replace(/\/+/g, "/");
+  const isMcp = DEV_MCP_PREFIXES.some((prefix) => path === prefix || path.startsWith(prefix + "/"));
+  if (!devHostAllowed(req.header("host"))) {
+    return { status: 403, error: "dev-admin: refused (host not allowed)" };
+  }
   if (!devSameOriginOk(req)) {
     return { status: 403, error: "dev-admin: refused (cross-origin request)" };
   }
-  const path = req.path ?? "";
-  const isMcp = DEV_MCP_PREFIXES.some((prefix) => path.startsWith(prefix));
   if (!isMcp) {
     const peer = (req as unknown as { socket?: { remoteAddress?: string } }).socket?.remoteAddress ?? "";
-    if (!(isLoopback(peer) || mcpTokenOk(req))) {
+    if (!(isLoopback(peer) || mcpTokenOk(req, true))) {
       return { status: 403, error: "dev-admin: refused (non-loopback peer)" };
     }
   }
@@ -605,7 +656,13 @@ export class DevAdmin {
       { method: "GET", pattern: "/__dev/api/metrics/file", handler: (req: any, res: any) => {
         const url = new URL(req.url ?? "/", "http://localhost");
         const p = (url.searchParams.get("path") || "").toString();
-        try { res.json(fileDetail(p)); }
+        // ADR-0082: the path must resolve inside the project or the last scan
+        // root; an absolute path elsewhere is refused before the engine runs.
+        const scanRoot = metricsScanRoot();
+        let target: string | null = p ? safeJoin(process.cwd(), p, [scanRoot]) : "";
+        if (target === null && scanRoot) target = safeJoin(process.cwd(), join(scanRoot, p), [scanRoot]);
+        if (target === null) { res.status(403).json({ error: "Path outside project" }); return; }
+        try { res.json(fileDetail(target)); }
         catch (e) {
           if (e instanceof MetricsEngineError) {
             // A bad path is the caller's mistake (404); anything else is the
@@ -1264,6 +1321,12 @@ const handleTable: RouteHandler = async (req, res) => {
   try {
     const { getAdapter } = await import("../../orm/src/index.js");
     const db = getAdapter();
+    // ADR-0082: only a name the database itself reports is accepted.
+    const known = (db.getTables() as unknown[]).map((t) => String(t));
+    if (!known.includes(name)) {
+      res.json({ error: "unknown table" }, 404);
+      return;
+    }
     const columns = db.getColumns(name);
     if (!columns.length) {
       res.json({ table: name, columns: [], rows: [], message: "Database not connected or table not found" });
@@ -1928,26 +1991,35 @@ const handleConnectionsSave: RouteHandler = (req, res) => {
   }
   try {
     const envPath = join(process.cwd(), ".env");
-    const lines = existsSync(envPath) ? readFileSync(envPath, "utf-8").split("\n") : [];
-    const keysFound: Record<string, boolean> = { TINA4_DATABASE_URL: false, TINA4_DATABASE_USERNAME: false, TINA4_DATABASE_PASSWORD: false };
-    const newLines: string[] = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) {
-        newLines.push(line);
-        continue;
+    const fd = openSync(envPath, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0), 0o600);
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile() || info.nlink !== 1) throw new Error("Refusing a non-regular or multiply-linked configuration file");
+      fchmodSync(fd, 0o600);
+      const lines = readFileSync(fd, "utf-8").split("\n");
+      const keysFound: Record<string, boolean> = { TINA4_DATABASE_URL: false, TINA4_DATABASE_USERNAME: false, TINA4_DATABASE_PASSWORD: false };
+      const newLines: string[] = [];
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) {
+          newLines.push(line);
+          continue;
+        }
+        const key = trimmed.split("=", 1)[0].trim();
+        if (key === "TINA4_DATABASE_URL") { newLines.push(`TINA4_DATABASE_URL=${url}`); keysFound.TINA4_DATABASE_URL = true; }
+        else if (key === "TINA4_DATABASE_USERNAME") { newLines.push(`TINA4_DATABASE_USERNAME=${username}`); keysFound.TINA4_DATABASE_USERNAME = true; }
+        else if (key === "TINA4_DATABASE_PASSWORD") { newLines.push(`TINA4_DATABASE_PASSWORD=${password}`); keysFound.TINA4_DATABASE_PASSWORD = true; }
+        else { newLines.push(line); }
       }
-      const key = trimmed.split("=", 1)[0].trim();
-      if (key === "TINA4_DATABASE_URL") { newLines.push(`TINA4_DATABASE_URL=${url}`); keysFound.TINA4_DATABASE_URL = true; }
-      else if (key === "TINA4_DATABASE_USERNAME") { newLines.push(`TINA4_DATABASE_USERNAME=${username}`); keysFound.TINA4_DATABASE_USERNAME = true; }
-      else if (key === "TINA4_DATABASE_PASSWORD") { newLines.push(`TINA4_DATABASE_PASSWORD=${password}`); keysFound.TINA4_DATABASE_PASSWORD = true; }
-      else { newLines.push(line); }
+      const values: Record<string, string> = { TINA4_DATABASE_URL: url, TINA4_DATABASE_USERNAME: username, TINA4_DATABASE_PASSWORD: password };
+      for (const [key, found] of Object.entries(keysFound)) {
+        if (!found) newLines.push(`${key}=${values[key]}`);
+      }
+      ftruncateSync(fd, 0);
+      writeFileSync(fd, newLines.join("\n") + "\n");
+    } finally {
+      closeSync(fd);
     }
-    const values: Record<string, string> = { TINA4_DATABASE_URL: url, TINA4_DATABASE_USERNAME: username, TINA4_DATABASE_PASSWORD: password };
-    for (const [key, found] of Object.entries(keysFound)) {
-      if (!found) newLines.push(`${key}=${values[key]}`);
-    }
-    writeFileSync(envPath, newLines.join("\n") + "\n");
     res.json({ success: true });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -2117,10 +2189,44 @@ export const handleVersionCheck: RouteHandler = async (_req, res) => {
 // Parity handlers — ported from Python tina4_python.dev_admin
 // ---------------------------------------------------------------------------
 
-function safeJoin(projectRoot: string, rel: string): string | null {
-  const resolved = resolve(projectRoot, rel);
-  if (!resolved.startsWith(projectRoot)) return null;
-  return resolved;
+/**
+ * Real path of `target`: the deepest existing ancestor is realpath'd (symlinks
+ * followed the way the OS will open the file) and the not-yet-existing tail is
+ * appended (a new file being saved).
+ */
+function realPathOf(target: string): string {
+  let existing = target;
+  const tail: string[] = [];
+  for (;;) {
+    let present = false;
+    try { lstatSync(existing); present = true; } catch { /* missing */ }
+    if (present || dirname(existing) === existing) break;
+    tail.unshift(basename(existing));
+    existing = dirname(existing);
+  }
+  return join(realpathSync(existing), ...tail);
+}
+
+/**
+ * Resolve `rel` inside an allowed root (ADR-0082): `..` collapsed, symlinks
+ * followed, and a trailing-separator root check so `/app` never contains
+ * `/app-sibling`. Returns null when the path leaves every root.
+ */
+function safeJoin(projectRoot: string, rel: string, extraRoots: string[] = []): string | null {
+  try {
+    const root = realPathOf(resolve(projectRoot));
+    const resolved = realPathOf(resolve(root, rel));
+    const roots = [root, ...extraRoots.filter(Boolean).map((r) => realPathOf(resolve(r)))];
+    for (const r of roots) {
+      if (resolved === r || resolved.startsWith(r.endsWith(sep) ? r : r + sep)) return resolved;
+    }
+  } catch { /* Broken links or inaccessible ancestors fail closed. */ }
+  return null;
+}
+
+/** Project-relative form of a resolved path, for the secret denylist. */
+function resolvedRelative(projectRoot: string, resolvedPath: string): string {
+  return relative(realPathOf(resolve(projectRoot)), resolvedPath);
 }
 
 const handleThoughts: RouteHandler = (req, res) => {
@@ -2343,22 +2449,43 @@ export function devAdminLanguage(rel: string): string {
   return DEV_ADMIN_LANG_MAP[ext] ?? "text";
 }
 
+/** Read the checked regular file through the same descriptor. Final-component
+ * symlink replacement is refused. Parent-directory resolution is not an atomic
+ * openat walk; the development project directory must remain locally trusted.
+ */
+function readDevFile(target: string): Buffer | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (!fstatSync(fd).isFile()) return null;
+    return readFileSync(fd);
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) return null;
+    throw error;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 const handleFileRead: RouteHandler = (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const rel = url.searchParams.get("path") ?? "";
-  // DEVADMIN-DEC-03: never serve secret material (.env, keys, .git/, secrets/).
-  if (isSecretPath(rel)) {
+  const root = resolve(process.cwd());
+  const target = safeJoin(root, rel);
+  if (!target) {
+    res.json({ error: "Path outside project", path: rel, content: "", language: "text", bytes: 0 }, 403);
+    return;
+  }
+  // DEVADMIN-DEC-03: never serve secret material (.env, keys, .git/, secrets/),
+  // judged on the RESOLVED path so `.env/.` or a symlink cannot slip past (ADR-0082).
+  if (isSecretPath(rel) || isSecretPath(resolvedRelative(root, target))) {
     res.json({ error: "Refused: secret file", path: rel, content: "", language: "text", bytes: 0 }, 403);
     return;
   }
-  const root = resolve(process.cwd());
-  const target = safeJoin(root, rel);
-  if (!target || !existsSync(target) || !statSync(target).isFile()) {
-    res.json({ error: `File not found: ${rel}` }, 404);
-    return;
-  }
   try {
-    const content = readFileSync(target, "utf-8");
+    const data = readDevFile(target);
+    if (data === null) { res.json({ error: `File not found: ${rel}` }, 404); return; }
+    const content = data.toString("utf-8");
     const path = relative(root, target);
     res.json({ path, content, language: devAdminLanguage(path), bytes: Buffer.byteLength(content, "utf-8") });
   } catch (e) {
@@ -2373,7 +2500,7 @@ const handleFileSave: RouteHandler = async (req, res) => {
   const root = resolve(process.cwd());
   const target = safeJoin(root, rel);
   if (!target) {
-    res.json({ error: `Path escapes project directory: ${rel}` }, 400);
+    res.json({ error: `Path escapes project directory: ${rel}` }, 403);
     return;
   }
   try {
@@ -2393,20 +2520,20 @@ const handleFileSave: RouteHandler = async (req, res) => {
 const handleFileRaw: RouteHandler = (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const rel = url.searchParams.get("path") ?? "";
-  // DEVADMIN-DEC-03: never serve secret material (.env, keys, .git/, secrets/).
-  if (isSecretPath(rel)) {
+  const root = resolve(process.cwd());
+  const target = safeJoin(root, rel);
+  if (!target) {
+    res.json({ error: "Path outside project" }, 403);
+    return;
+  }
+  // DEVADMIN-DEC-03: never serve secret material, judged on the RESOLVED path.
+  if (isSecretPath(rel) || isSecretPath(resolvedRelative(root, target))) {
     res.json({ error: "Refused: secret file" }, 403);
     return;
   }
-  const root = resolve(process.cwd());
-  const target = safeJoin(root, rel);
-  if (!target || !existsSync(target) || !statSync(target).isFile()) {
-    res.raw.writeHead(404);
-    res.raw.end("Not found");
-    return;
-  }
   try {
-    const buf = readFileSync(target);
+    const buf = readDevFile(target);
+    if (buf === null) { res.raw.writeHead(404); res.raw.end("Not found"); return; }
     const ext = target.slice(target.lastIndexOf(".") + 1).toLowerCase();
     const mime: Record<string, string> = {
       js: "application/javascript", ts: "text/plain", json: "application/json",
@@ -2544,19 +2671,18 @@ function mcpSecureEqual(expected: string, provided: string): boolean {
 }
 
 /**
- * Whether the request carried a token matching TINA4_MCP_TOKEN (fallback
- * TINA4_API_KEY). Transports: Authorization Bearer / X-MCP-Token / X-Api-Key.
+ * MCP transport retains the documented API-key fallback. Non-MCP dev routes
+ * pass dedicated=true and require TINA4_MCP_TOKEN (ADR-0082).
  * No configured token ⇒ a remote caller can never present a valid one.
  */
-function mcpTokenOk(req: Tina4Request): boolean {
-  let expected = process.env.TINA4_MCP_TOKEN;
-  if (!expected) expected = process.env.TINA4_API_KEY;
+function mcpTokenOk(req: Tina4Request, dedicated = false): boolean {
+  const expected = process.env.TINA4_MCP_TOKEN || (!dedicated ? process.env.TINA4_API_KEY : undefined);
   if (!expected) return false;
   let provided = "";
   const auth = req.header("authorization") ?? "";
   if (auth.toLowerCase().startsWith("bearer ")) provided = auth.slice(7).trim();
   if (!provided) provided = req.header("x-mcp-token") ?? "";
-  if (!provided) provided = req.header("x-api-key") ?? "";
+  if (!dedicated && !provided) provided = req.header("x-api-key") ?? "";
   if (!provided) return false;
   return mcpSecureEqual(expected, provided);
 }

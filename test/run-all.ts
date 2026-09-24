@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Test runner — executes ALL test files and aggregates results.
  * Run with: npx tsx test/run-all.ts
@@ -223,7 +231,9 @@ for (const file of allFiles) {
 if (VITEST_FILES.size > 0) {
   const vitestArgs = [...VITEST_FILES].map((f) => `test/${f}`);
   console.log(`\n${"─".repeat(60)}\n  vitest suites: ${vitestArgs.join(", ")}\n`);
-  const vit = spawnSync("npx", ["vitest", "run", ...vitestArgs], {
+  // Timing suites measure real event-loop stalls. Concurrent test servers can
+  // stall an otherwise yielding handler and contaminate that measurement.
+  const vit = spawnSync("npx", ["vitest", "run", "--no-file-parallelism", ...vitestArgs], {
     cwd: join(__dirname, ".."),
     encoding: "utf8",
     stdio: "pipe",

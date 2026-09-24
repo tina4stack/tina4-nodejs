@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * The AI/test port is DERIVED (base + 1000) — and a derived port is still a port.
  *
@@ -133,8 +141,7 @@ async function lowBase(): Promise<number | null> {
 }
 
 function project(name: string): string {
-  const dir = join(tmpdir(), `tina4-aiport-${process.pid}-${name}`);
-  rmSync(dir, { recursive: true, force: true });
+  const dir = mkdtempSync(join(tmpdir(), `tina4-aiport-${name}-`));
   mkdirSync(join(dir, "src", "routes"), { recursive: true });
   writeFileSync(join(dir, "package.json"), '{"type":"module"}');
   return dir;

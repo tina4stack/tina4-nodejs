@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 // Thin dev-admin adapter for the native `tina4 metrics` engine (ADR-0054).
 
 import * as fs from "node:fs";
@@ -117,6 +125,11 @@ export function fullAnalysis(root: string = "src"): Record<string, any> {
     scan_root: resolved,
     engine: "tina4-cli",
   };
+}
+
+/** The root the last full scan covered ("" before any scan). */
+export function metricsScanRoot(): string {
+  return lastScanRoot;
 }
 
 export function fileDetail(filePath: string): Record<string, any> {

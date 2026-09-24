@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * SQL translator literal-safe + BIGINT-autoincrement contract - feature 7
  * (sqltranslator_contract.json), parity with
@@ -164,7 +172,7 @@ if (!mysqlUp) {
       }
     }
   } catch (err) {
-    assert("MySQL literal-safe translator cases", false, `error: ${(err as Error).message}`);
+    assert("MySQL literal-safe translator cases", false, `error: service operation failed`);
   } finally {
     try { db?.close?.(); } catch { /* ignore */ }
   }
@@ -200,7 +208,7 @@ async function bigintCase(engineLabel: string, url: string, engine: string): Pro
       await db.executeAsync(`DROP TABLE ${t}`);
     }
   } catch (err) {
-    assert(`bigint autoincrement creates a real bigint column (${engineLabel})`, false, `error: ${(err as Error).message}`);
+    assert(`bigint autoincrement creates a real bigint column (${engineLabel})`, false, `error: service operation failed`);
   } finally {
     try { db?.close?.(); } catch { /* ignore */ }
   }

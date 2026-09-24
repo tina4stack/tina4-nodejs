@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Feature 18 - ORM fields and column mapping: the shared conformance contract,
  * parity with tina4-python/tests/test_ormfields_contract.py.
@@ -384,4 +392,4 @@ async function main(): Promise<void> {
   process.exit(fail === 0 ? 0 : 1);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => { console.error("Integration test failed:", "service operation failed"); process.exit(1); });

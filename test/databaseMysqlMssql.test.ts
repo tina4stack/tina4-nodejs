@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Live MySQL + MSSQL driver tests (#262).
  *
@@ -138,7 +146,7 @@ if (!(await reachable(MYSQL_HOST, MYSQL_PORT))) {
     assert("MySQL true row is truthy", onRow.length === 1 && Boolean(onRow[0].flag) === true);
     assert("MySQL false row is falsy", offRow.length === 1 && Boolean(offRow[0].flag) === false);
   } catch (err) {
-    assert("MySQL live boolean round-trip", false, `error: ${(err as Error).message}`);
+    assert("MySQL live boolean round-trip", false, `error: service operation failed`);
   } finally {
     try {
       await db?.executeAsync(`DROP TABLE IF EXISTS ${TABLE}`);
@@ -193,7 +201,7 @@ if (!(await reachable(MYSQL_HOST, MYSQL_PORT))) {
         `result.lastId=${JSON.stringify(ins?.lastId)}`,
       );
     } catch (err) {
-      assert("MySQL getLastId() after AUTO_INCREMENT insert", false, `error: ${(err as Error).message}`);
+      assert("MySQL getLastId() after AUTO_INCREMENT insert", false, `error: service operation failed`);
     } finally {
       try { await db2?.execute(`DROP TABLE IF EXISTS ${ID_TABLE}`); } catch { /* ignore */ }
       try { db2?.close?.(); } catch { /* ignore */ }
@@ -249,7 +257,7 @@ if (!(await reachable(MSSQL_HOST, MSSQL_PORT))) {
     assert("MSSQL true row is truthy", onRow.length === 1 && Boolean(onRow[0].flag) === true);
     assert("MSSQL false row is falsy", offRow.length === 1 && Boolean(offRow[0].flag) === false);
   } catch (err) {
-    assert("MSSQL live boolean round-trip", false, `error: ${(err as Error).message}`);
+    assert("MSSQL live boolean round-trip", false, `error: service operation failed`);
   } finally {
     try {
       await db?.executeAsync(`IF OBJECT_ID('${TABLE}','U') IS NOT NULL DROP TABLE ${TABLE}`);
@@ -318,7 +326,7 @@ if (!(await reachable(MSSQL_HOST, MSSQL_PORT))) {
         `count=${JSON.stringify(res.count)} records=${res.records.length}`,
       );
     } catch (err) {
-      assert("MSSQL getLastId() after IDENTITY insert", false, `error: ${(err as Error).message}`);
+      assert("MSSQL getLastId() after IDENTITY insert", false, `error: service operation failed`);
     } finally {
       try { await db2?.execute(`IF OBJECT_ID('${ID_TABLE}','U') IS NOT NULL DROP TABLE ${ID_TABLE}`); } catch { /* ignore */ }
       try { db2?.close?.(); } catch { /* ignore */ }

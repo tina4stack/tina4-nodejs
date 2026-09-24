@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Feature 19 - Input and request validation: the shared conformance contract.
  * Parity with tina4-python/tests/test_validation_contract.py,
@@ -224,7 +232,7 @@ async function main(): Promise<void> {
       treq.body = raw ? JSON.parse(raw) : {}; // real bytes off the socket, parsed
       const response = createResponse(res);
       try { await handler(treq, response); }
-      catch (err) { if (!res.writableEnded) { res.statusCode = 500; res.end(JSON.stringify({ error: String(err) })); } }
+      catch (err) { if (!res.writableEnded) { res.statusCode = 500; res.end(JSON.stringify({ error: "Unexpected test server error" })); } }
       if (!res.writableEnded) res.end();
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));

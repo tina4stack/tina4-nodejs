@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Live Kafka integration test — exercises the REAL broker (no mocks).
  * Run with: TINA4_TEST_KAFKA_URL=localhost:9092 npx tsx test/kafkaIntegration.test.ts

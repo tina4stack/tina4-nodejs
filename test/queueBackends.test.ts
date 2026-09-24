@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Behavioural tests for Queue Backend classes (RabbitMQ and Kafka).
  * Run with: npx tsx test/queueBackends.test.ts
@@ -161,7 +169,7 @@ if (!(await reachable(rmqHost, rmqPort))) {
     assert("RabbitMQBackend.clear/purge left the pending jobs intact (no drain, no data loss)",
       rmqSizeBefore > 0 && rabbit.size(rmqQueue) === rmqSizeBefore, `before ${rmqSizeBefore}, after ${rabbit.size(rmqQueue)}`);
   } catch (err) {
-    assert("RabbitMQBackend lifecycle ran without throwing", false, String(err));
+    assert("RabbitMQBackend lifecycle ran without throwing", false, "service operation failed");
   } finally {
     try { rabbit.clear(rmqQueue); } catch { /* best-effort cleanup */ }
   }
@@ -218,13 +226,13 @@ if (!(await reachable(rmqHost, rmqPort))) {
           assert(
             "RabbitMQBackend with no config and no env resolves the documented defaults",
             defHost === "localhost" && defPort === 5672 && defaults.username === "guest" && defaults.vhost === "/",
-            JSON.stringify(defaults),
+            "default configuration mismatch",
           );
           const defId = rabbitDefaults.push(rmqDefQueue, { data: "default-conn" });
           const defJob = rabbitDefaults.pop(rmqDefQueue);
           assert("RabbitMQBackend default connection round-trips a payload", typeof defId === "string" && defJob !== null && (defJob.payload as any)?.data === "default-conn", JSON.stringify(defJob));
         } catch (err) {
-          assert("RabbitMQBackend default connection round-trip ran without throwing", false, String(err));
+          assert("RabbitMQBackend default connection round-trip ran without throwing", false, "service operation failed");
         } finally {
           try { rabbitDefaults.clear(rmqDefQueue); } catch { /* best-effort cleanup */ }
         }
@@ -245,7 +253,7 @@ if (!(await reachable(rmqHost, rmqPort))) {
   assert(
     "RabbitMQBackend without config applies defaults (host/port/username/vhost)",
     cfg.host === "localhost" && cfg.port === 5672 && cfg.username === "guest" && cfg.vhost === "/",
-    JSON.stringify(cfg)
+    "configuration mismatch"
   );
   for (const v of SAVED) { if (snap[v] === undefined) delete process.env[v]; else process.env[v] = snap[v]; }
 }
@@ -303,7 +311,7 @@ if (!(await reachable(kHost, kPort))) {
       const kId2 = kafka.push(kTopic, { data: "after-clear", nonce: Math.random().toString(16).slice(2) });
       assert("KafkaBackend.clear/purge did not disturb the producer (still usable after the refusal)", typeof kId2 === "string" && kId2.length > 0 && kafka.size(kTopic) === 0, kId2);
     } catch (err) {
-      assert("KafkaBackend lifecycle ran without throwing", false, String(err));
+      assert("KafkaBackend lifecycle ran without throwing", false, "service operation failed");
     }
 
     // (14) Default-config backend produces+consumes against the DEFAULT broker —
@@ -366,14 +374,14 @@ if (!(await reachable(kHost, kPort))) {
               assert(
                 "KafkaBackend with no config and no env resolves the documented defaults",
                 defBroker === "localhost:9092" && defaults.groupId === "tina4_consumer_group",
-                JSON.stringify(defaults),
+                "default configuration mismatch",
               );
               const defPayload = { data: "default-conn", nonce: Math.random().toString(16).slice(2) };
               const defId = kafkaDefaults.push(kDefTopic, defPayload);
               const defJob = kafkaDefaults.pop(kDefTopic);
               assert("KafkaBackend default connection round-trips a payload", typeof defId === "string" && defJob !== null && JSON.stringify((defJob as any).payload) === JSON.stringify(defPayload), JSON.stringify(defJob?.payload));
             } catch (err) {
-              assert("KafkaBackend default connection round-trip ran without throwing", false, String(err));
+              assert("KafkaBackend default connection round-trip ran without throwing", false, "service operation failed");
             }
           }
         }
@@ -394,7 +402,7 @@ if (!(await reachable(kHost, kPort))) {
   assert(
     "KafkaBackend without config applies the default broker (localhost:9092)",
     cfg.brokers === "localhost:9092" && cfg.groupId === "tina4_consumer_group",
-    JSON.stringify(cfg)
+    "configuration mismatch"
   );
   for (const v of SAVED) { if (snap[v] === undefined) delete process.env[v]; else process.env[v] = snap[v]; }
 }
@@ -408,7 +416,6 @@ import { join } from "node:path";
 
 const TEST_PATH = mkdtempSync(join(tmpdir(), "tina4-qb-test-"));
 
-try { rmSync(TEST_PATH, { recursive: true, force: true }); } catch {}
 
 const fileQueue = new Queue({ topic: "test-queue", path: TEST_PATH });
 const fqId = fileQueue.push({ data: "hello" });

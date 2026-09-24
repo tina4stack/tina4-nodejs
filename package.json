@@ -1,6 +1,6 @@
 {
   "name": "tina4-nodejs",
-  "version": "3.13.137",
+  "version": "3.13.138",
   "type": "module",
   "description": "Tina4 for Node.js/TypeScript - native TypeScript conventions and shared Tina4 contracts",
   "keywords": [
@@ -18,7 +18,7 @@
     "type": "git",
     "url": "https://github.com/tina4stack/tina4-nodejs.git"
   },
-  "license": "MIT",
+  "license": "MPL-2.0",
   "author": "Tina4 Team <info@tina4.com>",
   "workspaces": [
     "packages/*"
@@ -67,7 +67,10 @@
     "BENCHMARK_REPORT.md",
     "CARBONAH.md",
     "README.md",
-    "types"
+    "types",
+    "LICENSE",
+    "NOTICE",
+    "COMMERCIAL-LICENSE.md"
   ],
   "bin": {
     "tina4nodejs": "packages/cli/dist/bin.js"
@@ -131,7 +134,7 @@
     "@apidevtools/swagger-parser": "^12.1.0",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.20.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.2",
     "mongodb": "^6.0.0",
     "pg": "^8.20.0",
     "redis": "^4.7.1",

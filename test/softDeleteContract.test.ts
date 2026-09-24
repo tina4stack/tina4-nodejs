@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Feature 20 - Soft delete: the shared conformance contract, parity with
  * tina4-python/tests/test_softdelete_contract.py.
@@ -232,7 +240,7 @@ async function run(): Promise<void> {
 }
 
 run()
-  .catch((e) => { console.error("UNEXPECTED ERROR:", e); fail++; })
+  .catch((e) => { console.error("UNEXPECTED ERROR:", "service operation failed"); fail++; })
   .finally(() => {
     rmSync(tmpDir, { recursive: true, force: true });
     console.log(`\n  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

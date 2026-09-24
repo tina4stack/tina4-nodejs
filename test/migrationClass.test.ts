@@ -1,11 +1,18 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Unit tests for the Migration class (OOP wrapper around migration functions).
  * Run with: npx tsx test/migrationClass.test.ts
  */
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
 import { Migration } from "../packages/orm/src/migration.ts";
 import { SQLiteAdapter } from "../packages/orm/src/adapters/sqlite.ts";
 import { setAdapter } from "../packages/orm/src/database.ts";
@@ -25,7 +32,7 @@ function assert(label: string, condition: boolean) {
 
 /** Create a temporary directory with its own SQLite DB and return helpers. */
 function makeEnv() {
-  const base = join(tmpdir(), `tina4-migration-test-${randomUUID()}`);
+  const base = mkdtempSync(join(tmpdir(), "tina4-migration-test-"));
   const migrationsDir = join(base, "migrations");
   mkdirSync(migrationsDir, { recursive: true });
   const db = new SQLiteAdapter(`:memory:`);

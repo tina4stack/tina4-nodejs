@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Real end-to-end test for the dev-admin DB + Queue parity fixes.
  * Run with: npx tsx test/devAdminDbQueue.test.ts
@@ -157,10 +165,8 @@ async function main(): Promise<void> {
 
     // 3. GET /table for a nonexistent table (negative).
     {
-      const { json } = await httpGetJson("/__dev/api/table?name=does_not_exist");
-      assert("GET /table unknown table → empty + message",
-        Array.isArray(json?.columns) && json.columns.length === 0 && Array.isArray(json?.rows) && json.rows.length === 0 && !!json?.message,
-        JSON.stringify(json));
+      const { status, json } = await httpGetJson("/__dev/api/table?name=does_not_exist");
+      assert("GET /table unknown table is rejected", status === 404 && json?.error === "unknown table");
     }
 
     // 4. GET /queue — the on-disk persisted job shows (positive; core fix).

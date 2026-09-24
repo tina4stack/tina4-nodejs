@@ -13,13 +13,13 @@ Even if the skill text is not currently loaded, these are non-negotiable:
 
 The full discipline lives in `.claude/skills/tina4-maintainer/SKILL.md`; this block is the always-on floor.
 
-# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.137)
+# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.138)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.13.137 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.13.138 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -1376,7 +1376,7 @@ await initDatabase({ type: "postgres", host: "localhost", port: 5432, database: 
 `@aws-sdk/s3-request-presigner` are **optional `peerDependencies`**
 (`peerDependenciesMeta.optional`), which npm does not install. Declaring them still matters: npm
 refuses (`ERESOLVE`) to install a driver major the adapters were not tested against, unless
-forced (the ranges match `packages/orm`'s manifest; measured with `npm install mysql2@2`). Through 3.13.137 five of them sat in `optionalDependencies`, which npm
+forced (the ranges match `packages/orm`'s manifest; measured with `npm install mysql2@2`). Through 3.13.138 five of them sat in `optionalDependencies`, which npm
 installs by default: a plain install pulled in 64 packages. The app installs what it uses (`npm install pg`), and a feature selected without its
 package fails at the point of use naming the exact command:
 

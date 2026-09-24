@@ -1,0 +1,2553 @@
+{
+  "schema": 1,
+  "scope": "Resolved development and optional dependencies; not a bundled-code licence grant",
+  "components": [
+    {
+      "ecosystem": "npm",
+      "name": "@apidevtools/json-schema-ref-parser",
+      "version": "14.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@apidevtools/openapi-schemas",
+      "version": "2.1.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@apidevtools/swagger-methods",
+      "version": "3.0.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@apidevtools/swagger-parser",
+      "version": "12.1.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure-rest/core-client",
+      "version": "2.8.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/abort-controller",
+      "version": "2.2.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/core-auth",
+      "version": "1.11.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/core-client",
+      "version": "1.11.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/core-lro",
+      "version": "2.7.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/core-paging",
+      "version": "1.7.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/core-process",
+      "version": "1.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/core-rest-pipeline",
+      "version": "1.25.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/core-tracing",
+      "version": "1.4.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/core-util",
+      "version": "1.14.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/identity",
+      "version": "4.13.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/keyvault-common",
+      "version": "2.1.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/keyvault-keys",
+      "version": "4.10.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/logger",
+      "version": "1.4.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/msal-browser",
+      "version": "5.19.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/msal-common",
+      "version": "16.13.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@azure/msal-node",
+      "version": "5.6.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/aix-ppc64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/android-arm",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/android-arm64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/android-x64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/darwin-arm64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/darwin-x64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/freebsd-arm64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/freebsd-x64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/linux-arm",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/linux-arm64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/linux-ia32",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/linux-loong64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/linux-mips64el",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/linux-ppc64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/linux-riscv64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/linux-s390x",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/linux-x64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/netbsd-arm64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/netbsd-x64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/openbsd-arm64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/openbsd-x64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/openharmony-arm64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/sunos-x64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/win32-arm64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/win32-ia32",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@esbuild/win32-x64",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@grpc/grpc-js",
+      "version": "1.14.4",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@grpc/proto-loader",
+      "version": "0.8.1",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@grpc/proto-loader",
+      "version": "0.7.15",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@isaacs/fs-minipass",
+      "version": "4.0.1",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@jridgewell/sourcemap-codec",
+      "version": "1.5.5",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@js-joda/core",
+      "version": "6.1.0",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@js-sdsl/ordered-map",
+      "version": "4.4.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@mapbox/node-pre-gyp",
+      "version": "2.0.3",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@mongodb-js/saslprep",
+      "version": "1.5.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@oxc-project/types",
+      "version": "0.147.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@protobufjs/aspromise",
+      "version": "1.1.2",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@protobufjs/base64",
+      "version": "1.1.2",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@protobufjs/codegen",
+      "version": "2.0.5",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@protobufjs/eventemitter",
+      "version": "1.1.1",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@protobufjs/fetch",
+      "version": "1.1.1",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@protobufjs/float",
+      "version": "1.0.2",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@protobufjs/path",
+      "version": "1.1.2",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@protobufjs/pool",
+      "version": "1.1.0",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@protobufjs/utf8",
+      "version": "1.1.2",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@redis/bloom",
+      "version": "1.2.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@redis/client",
+      "version": "1.6.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@redis/graph",
+      "version": "1.1.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@redis/json",
+      "version": "1.0.7",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@redis/search",
+      "version": "1.2.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@redis/time-series",
+      "version": "1.1.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-android-arm-eabi",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-android-arm64",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-darwin-arm64",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-darwin-x64",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-freebsd-x64",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-linux-arm-gnueabihf",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-linux-arm64-gnu",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-linux-arm64-musl",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-linux-ppc64-gnu",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-linux-s390x-gnu",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-linux-x64-gnu",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-linux-x64-musl",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-openharmony-arm64",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-win32-arm64-msvc",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/binding-win32-x64-msvc",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@rolldown/pluginutils",
+      "version": "1.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@standard-schema/spec",
+      "version": "1.1.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/chai",
+      "version": "5.2.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/deep-eql",
+      "version": "4.0.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/estree",
+      "version": "1.0.9",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/json-schema",
+      "version": "7.0.15",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/node",
+      "version": "22.20.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/pg",
+      "version": "8.23.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/readable-stream",
+      "version": "4.0.24",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/webidl-conversions",
+      "version": "7.0.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/whatwg-url",
+      "version": "11.0.5",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@typespec/ts-http-runtime",
+      "version": "0.3.8",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@vitest/expect",
+      "version": "4.1.11",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@vitest/pretty-format",
+      "version": "4.1.11",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@vitest/runner",
+      "version": "4.1.11",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@vitest/snapshot",
+      "version": "4.1.11",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@vitest/spy",
+      "version": "4.1.11",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@vitest/utils",
+      "version": "4.1.11",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "abbrev",
+      "version": "3.0.1",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "abort-controller",
+      "version": "3.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "agent-base",
+      "version": "7.1.4",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "ajv",
+      "version": "8.20.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "ajv-draft-04",
+      "version": "1.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "ansi-regex",
+      "version": "5.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "ansi-styles",
+      "version": "4.3.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "arangojs",
+      "version": "10.4.0",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/node",
+      "version": "20.19.43",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "argparse",
+      "version": "2.0.1",
+      "platform": "",
+      "lock_license": "Python-2.0",
+      "upstream_declaration": "Python-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "assertion-error",
+      "version": "2.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "async",
+      "version": "3.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "aws-ssl-profiles",
+      "version": "1.1.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "base64-js",
+      "version": "1.5.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "bl",
+      "version": "6.1.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "bson",
+      "version": "6.10.4",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "buffer",
+      "version": "6.0.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "buffer-equal-constant-time",
+      "version": "1.0.1",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "bundle-name",
+      "version": "4.1.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "call-me-maybe",
+      "version": "1.0.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "chai",
+      "version": "6.2.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "chownr",
+      "version": "3.0.0",
+      "platform": "",
+      "lock_license": "BlueOak-1.0.0",
+      "upstream_declaration": "BlueOak-1.0.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "cliui",
+      "version": "8.0.1",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "cluster-key-slot",
+      "version": "1.1.2",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "color-convert",
+      "version": "2.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "color-name",
+      "version": "1.1.4",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "consola",
+      "version": "3.4.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "convert-source-map",
+      "version": "2.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "debug",
+      "version": "4.4.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "default-browser",
+      "version": "5.5.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "default-browser-id",
+      "version": "5.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "define-lazy-prop",
+      "version": "3.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "detect-libc",
+      "version": "2.1.2",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "ecdsa-sig-formatter",
+      "version": "1.0.11",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "emoji-regex",
+      "version": "8.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "es-module-lexer",
+      "version": "2.3.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "esbuild",
+      "version": "0.28.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "escalade",
+      "version": "3.2.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "estree-walker",
+      "version": "3.0.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "event-target-shim",
+      "version": "5.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "events",
+      "version": "3.3.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "expect-type",
+      "version": "1.4.0",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "fast-deep-equal",
+      "version": "3.1.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "fast-uri",
+      "version": "3.1.6",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "fdir",
+      "version": "6.5.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "fsevents",
+      "version": "2.3.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "generate-function",
+      "version": "2.3.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "generic-pool",
+      "version": "3.9.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "get-caller-file",
+      "version": "2.0.5",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "http-proxy-agent",
+      "version": "7.0.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "https-proxy-agent",
+      "version": "7.0.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "iconv-lite",
+      "version": "0.7.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "ieee754",
+      "version": "1.2.1",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "inherits",
+      "version": "2.0.4",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "is-docker",
+      "version": "3.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "is-fullwidth-code-point",
+      "version": "3.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "is-inside-container",
+      "version": "1.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "is-property",
+      "version": "1.0.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "is-wsl",
+      "version": "3.1.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "js-md4",
+      "version": "0.3.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "js-yaml",
+      "version": "4.3.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "json-schema-traverse",
+      "version": "1.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "jsonwebtoken",
+      "version": "9.0.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "jwa",
+      "version": "2.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "jws",
+      "version": "4.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss-android-arm64",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss-darwin-arm64",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss-darwin-x64",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss-freebsd-x64",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss-linux-arm-gnueabihf",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss-linux-arm64-gnu",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss-linux-arm64-musl",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss-linux-x64-gnu",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss-linux-x64-musl",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss-win32-arm64-msvc",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lightningcss-win32-x64-msvc",
+      "version": "1.33.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lodash.camelcase",
+      "version": "4.3.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lodash.includes",
+      "version": "4.3.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lodash.isboolean",
+      "version": "3.0.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lodash.isinteger",
+      "version": "4.0.4",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lodash.isnumber",
+      "version": "3.0.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lodash.isplainobject",
+      "version": "4.0.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lodash.isstring",
+      "version": "4.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lodash.once",
+      "version": "4.1.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "long",
+      "version": "5.3.2",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lru.min",
+      "version": "1.1.4",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "magic-string",
+      "version": "0.30.21",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "memory-pager",
+      "version": "1.5.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "minipass",
+      "version": "7.1.3",
+      "platform": "",
+      "lock_license": "BlueOak-1.0.0",
+      "upstream_declaration": "BlueOak-1.0.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "minizlib",
+      "version": "3.1.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "mongodb",
+      "version": "6.21.0",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "mongodb-connection-string-url",
+      "version": "3.0.2",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "ms",
+      "version": "2.1.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "mysql2",
+      "version": "3.24.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "named-placeholders",
+      "version": "1.1.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "nanoid",
+      "version": "3.3.18",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "native-duplexpair",
+      "version": "1.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "neo4j-driver",
+      "version": "5.28.3",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "neo4j-driver-bolt-connection",
+      "version": "5.28.3",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "neo4j-driver-core",
+      "version": "5.28.3",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "node-addon-api",
+      "version": "3.2.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "node-fetch",
+      "version": "2.7.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tr46",
+      "version": "0.0.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "webidl-conversions",
+      "version": "3.0.1",
+      "platform": "",
+      "lock_license": "BSD-2-Clause",
+      "upstream_declaration": "BSD-2-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "whatwg-url",
+      "version": "5.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "node-firebird",
+      "version": "2.15.0",
+      "platform": "",
+      "lock_license": "MPL-2.0",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "nopt",
+      "version": "8.1.0",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "obug",
+      "version": "2.1.4",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "odbc",
+      "version": "2.5.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "open",
+      "version": "10.2.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "openapi-types",
+      "version": "12.1.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "pathe",
+      "version": "2.0.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "pg",
+      "version": "8.23.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "pg-cloudflare",
+      "version": "1.4.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "pg-connection-string",
+      "version": "2.14.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "pg-int8",
+      "version": "1.0.1",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "pg-pool",
+      "version": "3.14.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "pg-protocol",
+      "version": "1.16.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "pg-types",
+      "version": "2.2.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "pgpass",
+      "version": "1.0.5",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "picocolors",
+      "version": "1.1.1",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "picomatch",
+      "version": "4.0.7",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "postcss",
+      "version": "8.5.26",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "postgres-array",
+      "version": "2.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "postgres-bytea",
+      "version": "1.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "postgres-date",
+      "version": "1.0.7",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "postgres-interval",
+      "version": "1.2.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "process",
+      "version": "0.11.10",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "protobufjs",
+      "version": "7.6.5",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "punycode",
+      "version": "2.3.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "readable-stream",
+      "version": "4.7.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "redis",
+      "version": "4.7.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "require-directory",
+      "version": "2.1.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "require-from-string",
+      "version": "2.0.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "rolldown",
+      "version": "1.2.6",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "run-applescript",
+      "version": "7.1.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "rxjs",
+      "version": "7.8.2",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "safe-buffer",
+      "version": "5.2.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "safer-buffer",
+      "version": "2.1.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "semver",
+      "version": "7.8.5",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "siginfo",
+      "version": "2.0.0",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "source-map-js",
+      "version": "1.2.1",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "sparse-bitfield",
+      "version": "3.0.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "split2",
+      "version": "4.2.0",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "sprintf-js",
+      "version": "1.1.3",
+      "platform": "",
+      "lock_license": "BSD-3-Clause",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "sql-escaper",
+      "version": "1.5.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "stackback",
+      "version": "0.0.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "std-env",
+      "version": "4.2.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "string_decoder",
+      "version": "1.3.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "string-width",
+      "version": "4.2.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "strip-ansi",
+      "version": "6.0.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tar",
+      "version": "7.5.22",
+      "platform": "",
+      "lock_license": "BlueOak-1.0.0",
+      "upstream_declaration": "BlueOak-1.0.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "yallist",
+      "version": "5.0.0",
+      "platform": "",
+      "lock_license": "BlueOak-1.0.0",
+      "upstream_declaration": "BlueOak-1.0.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tedious",
+      "version": "19.2.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tina4-ultipa",
+      "version": "0.1.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tinybench",
+      "version": "2.9.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tinyexec",
+      "version": "1.3.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tinyglobby",
+      "version": "0.2.17",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tinyrainbow",
+      "version": "3.1.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tr46",
+      "version": "5.1.1",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tslib",
+      "version": "2.8.1",
+      "platform": "",
+      "lock_license": "0BSD",
+      "upstream_declaration": "0BSD",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tsx",
+      "version": "4.23.12",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "typescript",
+      "version": "5.9.3",
+      "platform": "",
+      "lock_license": "Apache-2.0",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "undici-types",
+      "version": "6.21.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "vitest",
+      "version": "4.1.11",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@vitest/mocker",
+      "version": "4.1.11",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "vite",
+      "version": "8.2.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "webidl-conversions",
+      "version": "7.0.0",
+      "platform": "",
+      "lock_license": "BSD-2-Clause",
+      "upstream_declaration": "BSD-2-Clause",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "whatwg-url",
+      "version": "14.2.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "why-is-node-running",
+      "version": "2.3.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "wrap-ansi",
+      "version": "7.0.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "wsl-utils",
+      "version": "0.1.0",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "xtend",
+      "version": "4.0.2",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "y18n",
+      "version": "5.0.8",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "yallist",
+      "version": "4.0.0",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "yargs",
+      "version": "17.7.3",
+      "platform": "",
+      "lock_license": "MIT",
+      "upstream_declaration": "MIT",
+      "evidence": "package-lock.json"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "yargs-parser",
+      "version": "21.1.1",
+      "platform": "",
+      "lock_license": "ISC",
+      "upstream_declaration": "ISC",
+      "evidence": "package-lock.json"
+    }
+  ]
+}

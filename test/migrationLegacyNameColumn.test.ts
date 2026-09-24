@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * tina4-python #128 parity sweep + a Node-native legacy-column fix it surfaced.
  *
@@ -25,7 +33,7 @@
  * Real SQLite via node:sqlite — no mocks.
  * Run with: npx tsx test/migrationLegacyNameColumn.test.ts
  */
-import { rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import assert from "node:assert";
@@ -36,7 +44,8 @@ import {
   migrate,
 } from "../packages/orm/src/index.ts";
 
-const root = join(tmpdir(), `tina4_legacyname_${process.pid}_${Math.floor(Date.now() / 1000)}`);
+const fixtureParent = mkdtempSync(join(tmpdir(), "tina4_legacyname_"));
+const root = join(fixtureParent, "case");
 let passed = 0;
 let failed = 0;
 
@@ -165,6 +174,6 @@ await test("fresh_canonical_table_never_grows_a_name_column", async () => {
   await closeDatabase();
 });
 
-rmSync(root, { recursive: true, force: true });
+rmSync(fixtureParent, { recursive: true, force: true });
 console.log(`\n  ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
