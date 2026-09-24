@@ -2,7 +2,7 @@ import type { IncomingMessage, IncomingHttpHeaders } from "node:http";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Tina4Request, UploadedFile } from "./types.js";
-import { resolveClientIp } from "./trustedProxy.js";
+import { resolveClientIp, isTrustedProxy } from "./trustedProxy.js";
 import { Log } from "./logger.js";
 
 /**
@@ -53,11 +53,18 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   (tReq as unknown as { headers: IncomingHttpHeaders }).headers =
     makeCaseInsensitiveHeaders(req.headers);
 
-  // Resolve scheme + host honouring proxy headers — parity with PHP/Python/Ruby.
+  // Resolve scheme + host honouring proxy headers. X-Forwarded-Host is honoured
+  // ONLY when the raw socket peer is a trusted proxy (TINA4_TRUSTED_PROXIES,
+  // ADR-0019) — the same gate already applied to X-Forwarded-For. An untrusted
+  // client can otherwise forge the host and control the absolute request.url the
+  // app builds (password-reset links, cache keys, open-redirect base). Parity
+  // with PHP/Python/Ruby.
   const xfProto = req.headers["x-forwarded-proto"];
   const proto = (Array.isArray(xfProto) ? xfProto[0] : xfProto)
     ?? ((req.socket as { encrypted?: boolean })?.encrypted ? "https" : "http");
-  const xfHost = req.headers["x-forwarded-host"];
+  const xfHost = isTrustedProxy(req.socket?.remoteAddress ?? "")
+    ? req.headers["x-forwarded-host"]
+    : undefined;
   const host = (Array.isArray(xfHost) ? xfHost[0] : xfHost)
     ?? (req.headers.host ?? "localhost");
 
