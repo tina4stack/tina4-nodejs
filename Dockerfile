@@ -175,6 +175,8 @@ RUN set -eux; \
       fs.writeFileSync('/flat/package.json', JSON.stringify(out,null,2)+'\n')"
 
 FROM node:24-alpine
+COPY LICENSE NOTICE COMMERCIAL-LICENSE.md /usr/share/licenses/tina4/
+
 WORKDIR /app
 
 # Framework out of the way at /opt/tina4; /app gets the third-party deps plus a
