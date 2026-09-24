@@ -30,41 +30,45 @@ const skipLine = (reason: string): string => `  \x1b[33mSKIP\x1b[0m ${reason}`;
 const failing = (reason: string, env: Record<string, string>, gateOn = true): number =>
   gateFailures(skipLine(reason), gateOn, env).length;
 
-console.log("\n--- an untagged skip fails ---");
-assert("untagged: a 'not reachable' skip fails", failing("redis not reachable at localhost:6379", {}) === 1);
-assert("untagged: a 'no reachable' skip fails (the phrase the old matcher missed)",
+console.log("\n--- an_untagged_skip_fails_under_the_gate ---");
+const UNTAGGED = "an_untagged_skip_fails_under_the_gate";
+const OPTIONAL = "an_optional_engine_is_excused_only_while_its_coordinate_is_unset";
+const ALWAYS = "an_always_provisioned_service_is_never_excused";
+const PLATFORM = "a_platform_tag_is_always_excused";
+assert(`${UNTAGGED}: a 'not reachable' skip fails`, failing("redis not reachable at localhost:6379", {}) === 1);
+assert(`${UNTAGGED}: a 'no reachable' skip fails (the phrase the old matcher missed)`,
   failing("no reachable MongoDB at mongodb://localhost:27017", {}) === 1);
-assert("untagged: an '... unavailable' skip fails", failing("GreenMail unavailable", {}) === 1);
-assert("untagged: an unrelated skip fails", failing("no free base port in 64536-65500", {}) === 1);
+assert(`${UNTAGGED}: an '... unavailable' skip fails`, failing("GreenMail unavailable", {}) === 1);
+assert(`${UNTAGGED}: an unrelated skip fails`, failing("no free base port in 64536-65500", {}) === 1);
 
-console.log("\n--- an optional engine is excused only while its coordinate is unset ---");
-assert("optional: firebird excused with TINA4_TEST_FIREBIRD_URL unset",
+console.log(`\n--- ${OPTIONAL} ---`);
+assert(`${OPTIONAL}: firebird excused with TINA4_TEST_FIREBIRD_URL unset`,
   failing("[needs:firebird] TINA4_TEST_FIREBIRD_URL not set", {}) === 0);
-assert("optional: firebird fails with TINA4_TEST_FIREBIRD_URL set",
+assert(`${OPTIONAL}: firebird fails with TINA4_TEST_FIREBIRD_URL set`,
   failing("[needs:firebird] firebird not reachable", { TINA4_TEST_FIREBIRD_URL: "firebird://h/db" }) === 1);
-assert("optional: an empty coordinate counts as unset",
+assert(`${OPTIONAL}: an empty coordinate counts as unset`,
   failing("[needs:firebird] not configured", { TINA4_TEST_FIREBIRD_URL: "  " }) === 0);
-assert("optional: postgres fails when TINA4_TEST_PG_URL is set",
+assert(`${OPTIONAL}: postgres fails when TINA4_TEST_PG_URL is set`,
   failing("[needs:postgres] down", { TINA4_TEST_PG_URL: "postgres://h/db" }) === 1);
 for (const [engine, coordinate] of [
   ["postgis", "TINA4_TEST_POSTGIS_URL"], ["mysql", "TINA4_TEST_MYSQL_URL"], ["mssql", "TINA4_TEST_MSSQL_URL"], ["swoole", "TINA4_TEST_SWOOLE"],
   ["oidc", "TINA4_TEST_OIDC_ISSUER"], ["neo4j", "TINA4_TEST_NEO4J_URL"], ["memgraph", "TINA4_TEST_MEMGRAPH_URL"],
   ["arango", "TINA4_TEST_ARANGO_URL"], ["ultipa", "TINA4_TEST_ULTIPA_URL"],
 ]) {
-  assert(`optional: ${engine} excused while ${coordinate} is unset`, failing(`[needs:${engine}] not set`, {}) === 0);
-  assert(`optional: ${engine} fails once ${coordinate} is set`, failing(`[needs:${engine}] down`, { [coordinate]: "x" }) === 1);
+  assert(`${OPTIONAL}: ${engine} excused while ${coordinate} is unset`, failing(`[needs:${engine}] not set`, {}) === 0);
+  assert(`${OPTIONAL}: ${engine} fails once ${coordinate} is set`, failing(`[needs:${engine}] down`, { [coordinate]: "x" }) === 1);
 }
 
-console.log("\n--- an always-provisioned service is never excused ---");
+console.log(`\n--- ${ALWAYS} ---`);
 for (const service of ["mongo", "redis", "valkey", "memcached", "rabbitmq", "kafka", "mqtt", "smtp", "imap", "s3"]) {
-  assert(`always: [needs:${service}] fails with no coordinate set`, failing(`[needs:${service}] not reachable`, {}) === 1);
+  assert(`${ALWAYS}: [needs:${service}] fails with no coordinate set`, failing(`[needs:${service}] not reachable`, {}) === 1);
 }
 
-console.log("\n--- a platform tag is always excused ---");
-assert("platform: absent-ext excused", failing("[needs:absent-ext=pgsql] extension not loaded", {}) === 0);
-assert("platform: no-dac-override excused", failing("[needs:no-dac-override] root ignores 0400", {}) === 0);
-assert("platform: os= excused", failing("[needs:os=windows] path semantics", {}) === 0);
-assert("platform: ipv6-loopback excused", failing("IPv6 loopback (::1) is unavailable on this host [needs:ipv6-loopback]", {}) === 0);
+console.log(`\n--- ${PLATFORM} ---`);
+assert(`${PLATFORM}: absent-ext excused`, failing("[needs:absent-ext=pgsql] extension not loaded", {}) === 0);
+assert(`${PLATFORM}: no-dac-override excused`, failing("[needs:no-dac-override] root ignores 0400", {}) === 0);
+assert(`${PLATFORM}: os= excused`, failing("[needs:os=windows] path semantics", {}) === 0);
+assert(`${PLATFORM}: ipv6-loopback excused`, failing("IPv6 loopback (::1) is unavailable on this host [needs:ipv6-loopback]", {}) === 0);
 
 console.log("\n--- several tags: every one must be excusable ---");
 assert("tags: platform + unset optional engine excused", failing("[needs:os=linux] [needs:firebird]", {}) === 0);
