@@ -10,11 +10,12 @@ import { startServer } from "../packages/core/src/index.ts";
 import { getDefaultDevServer } from "../packages/core/src/mcp.ts";
 import { initDatabase, closeDatabase } from "../packages/orm/src/index.ts";
 import http from "node:http";
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-mcp-endpoint-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-mcp-endpoint-test-"));
 const PORT = await freePort();
 const PORT_DISABLED = await freePort();
 let pass = 0;
@@ -95,7 +96,7 @@ function readSse(
 }
 
 // Clean slate
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 mkdirSync(join(TEST_DIR, "src/routes"), { recursive: true });
 writeFileSync(join(TEST_DIR, "package.json"), '{"type":"module"}');
 // A real route so route_list has something concrete to return.
@@ -392,7 +393,7 @@ delete process.env.TINA4_NO_AI_PORT;
 delete process.env.TINA4_DEBUG;
 // Restore cwd BEFORE removing TEST_DIR (it is the current working directory).
 process.chdir(ORIG_CWD);
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

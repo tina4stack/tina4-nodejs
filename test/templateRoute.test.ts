@@ -4,15 +4,16 @@
  */
 import { startServer } from "../packages/core/src/index.ts";
 import http from "node:http";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-template-route-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-template-route-test-"));
 const PORT = await freePort();
 
 // Clean slate
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 
 // Create project structure
 const dirs = [
@@ -143,6 +144,6 @@ console.log(`${"=".repeat(50)}\n`);
 server.close();
 delete process.env.TINA4_RATE_LIMIT;
 delete process.env.TINA4_DEBUG;
-rmSync(TEST_DIR, { recursive: true });
+rmSync(TEST_DIR, { recursive: true, force: true });
 
 process.exit(fail > 0 ? 1 : 0);

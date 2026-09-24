@@ -9,8 +9,9 @@ import {
   matchesCron,
 } from "../packages/core/src/index.ts";
 import type { ServiceContext } from "../packages/core/src/index.ts";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -29,7 +30,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const TEST_DIR = join("/tmp", "tina4-service-test-" + Date.now());
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-service-test-"));
 
 function cleanup() {
   try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
@@ -291,7 +292,7 @@ assert(
 console.log("\n--- Discovery on missing directory ---");
 
 ServiceRunner.clear();
-const missing = await ServiceRunner.discover("/tmp/nonexistent-service-dir-" + Date.now());
+const missing = await ServiceRunner.discover(join(TEST_DIR, "nonexistent-service-dir"));
 assert("discover returns empty on missing dir", missing.length === 0);
 
 // ─── Daemon mode ─────────────────────────────────────────────────────────────

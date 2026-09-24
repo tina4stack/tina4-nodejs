@@ -16,7 +16,7 @@
  *
  * Run with: npx tsx test/landingPage.test.ts
  */
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import http from "node:http";
 import { freePort } from "./freePort.ts";
@@ -29,6 +29,7 @@ import {
 } from "../packages/core/src/index.ts";
 import { tryServeStatic } from "../packages/core/src/static.ts";
 import type { Tina4Request, Tina4Response } from "../packages/core/src/types.ts";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -67,7 +68,7 @@ function mockRes(): any {
   };
 }
 
-const TEST_DIR = join("/tmp", "tina4-landing-test-" + Date.now());
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-landing-test-"));
 
 function setupProject() {
   rmSync(TEST_DIR, { recursive: true, force: true });

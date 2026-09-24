@@ -44,11 +44,12 @@ import { startServer, handle } from "../packages/core/src/index.ts";
 import { initDatabase, closeDatabase } from "../packages/orm/src/index.ts";
 import http from "node:http";
 import os from "node:os";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-mcp-call-gate-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-mcp-call-gate-test-"));
 let pass = 0;
 let fail = 0;
 
@@ -131,7 +132,7 @@ function post(
 }
 
 // ── clean slate + throwaway project ─────────────────────────
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 mkdirSync(join(TEST_DIR, "src/routes"), { recursive: true });
 writeFileSync(join(TEST_DIR, "package.json"), '{"type":"module"}');
 writeFileSync(
@@ -388,7 +389,7 @@ closeDatabase();
 delete (globalThis as any).__tina4_db;
 for (const k of ENV_KEYS) setEnv({ [k]: savedEnv[k] });
 process.chdir(ORIG_CWD);
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 
 console.log(`\n${"=".repeat(56)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

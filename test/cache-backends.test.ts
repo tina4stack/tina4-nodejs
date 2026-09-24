@@ -23,6 +23,9 @@
 import { createBackend } from "../packages/core/src/index.ts";
 import * as fs from "node:fs";
 import * as net from "node:net";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -81,15 +84,16 @@ async function main() {
   await roundtrip(await createBackend({ backend: "memory" }), "memory");
 
   {
-    const dir = `/tmp/tina4_cache_node_file_${Date.now()}`;
+    const dir = mkdtempSync(join(tmpdir(), "tina4_cache_node_file_"));
     await roundtrip(await createBackend({ backend: "file", cacheDir: dir }), "file");
-    try { fs.rmSync(dir, { recursive: true }); } catch {}
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 
   {
-    const dbFile = `/tmp/tina4_cache_node_db_${Date.now()}.db`;
+    const dbDir = mkdtempSync(join(tmpdir(), "tina4_cache_node_db_"));
+    const dbFile = join(dbDir, "tina4_cache_node_db.db");
     await roundtrip(await createBackend({ backend: "database", cacheUrl: `sqlite:///${dbFile}` }), "database");
-    try { fs.rmSync(dbFile); } catch {}
+    try { fs.rmSync(dbDir, { recursive: true, force: true }); } catch {}
   }
 
   // ── Factory edge cases ──────────────────────────────────────────
@@ -115,12 +119,12 @@ async function main() {
   {
     // A configured backend whose service is unreachable degrades to the file
     // backend (a real working cache), not a silent no-op.
-    const dir = `/tmp/tina4_cache_node_fallback_${Date.now()}`;
+    const dir = mkdtempSync(join(tmpdir(), "tina4_cache_node_fallback_"));
     const b = await createBackend({ backend: "redis", cacheUrl: "redis://localhost:6399", cacheDir: dir });
     assert("unreachable backend falls back to file", b.name() === "file");
     await b.set("k", { v: 1 }, 60);
     assert("file fallback is a real cache (round-trips)", JSON.stringify(await b.get("k")) === JSON.stringify({ v: 1 }));
-    try { fs.rmSync(dir, { recursive: true }); } catch {}
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 
   // ── Credential parsing — verified without a live server ─────────
@@ -150,13 +154,13 @@ async function main() {
       JSON.stringify(await bUserPass.get("cred_userpass")) === JSON.stringify({ v: 2 }));
 
     // (3) dead-port form still falls back to a real file cache (no creds applied).
-    const dir = `/tmp/tina4_cred_dead_${Date.now()}`;
+    const dir = mkdtempSync(join(tmpdir(), "tina4_cred_dead_"));
     const bDead = await createBackend({ backend: "redis", cacheUrl: "redis://:s3cret@127.0.0.1:6399/3", cacheDir: dir });
     assert("cred URL on dead port falls back to file", bDead.name() === "file");
     await bDead.set("cred_dead", { v: 3 }, 60);
     assert("cred URL dead-port file fallback round-trips",
       JSON.stringify(await bDead.get("cred_dead")) === JSON.stringify({ v: 3 }));
-    try { fs.rmSync(dir, { recursive: true }); } catch {}
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   } else {
     skip("credential URL forms authenticate", "redis-auth not running on 6381");
   }
@@ -182,14 +186,14 @@ async function main() {
         JSON.stringify(await bGood.get("cred_env_good")) === JSON.stringify({ v: 7 }));
 
       // Wrong env password → failed handshake → file fallback (a real cache).
-      const dir = `/tmp/tina4_cred_env_bad_${Date.now()}`;
+      const dir = mkdtempSync(join(tmpdir(), "tina4_cred_env_bad_"));
       process.env.TINA4_CACHE_PASSWORD = "wrongpass";
       const bBad = await createBackend({ backend: "redis", cacheUrl: "redis://localhost:6381/3", cacheDir: dir });
       assert("wrong env password fails AUTH and falls back to file", bBad.name() === "file");
       await bBad.set("cred_env_bad", { v: 8 }, 60);
       assert("env-credential bad-auth file fallback round-trips",
         JSON.stringify(await bBad.get("cred_env_bad")) === JSON.stringify({ v: 8 }));
-      try { fs.rmSync(dir, { recursive: true }); } catch {}
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
     } else {
       skip("env-var credentials drive AUTH", "redis-auth not running on 6381");
     }
@@ -240,12 +244,12 @@ async function main() {
     await roundtrip(b, "redis");
 
     // Wrong password → graceful fallback to file, not a no-op.
-    const dir = `/tmp/tina4_cache_node_badauth_${Date.now()}`;
+    const dir = mkdtempSync(join(tmpdir(), "tina4_cache_node_badauth_"));
     const bad = await createBackend({ backend: "redis", cacheUrl: "redis://:wrongpass@localhost:6381/3", cacheDir: dir });
     assert("wrong password falls back to file", bad.name() === "file");
     await bad.set("k", { v: 1 }, 60);
     assert("bad-auth file fallback round-trips", JSON.stringify(await bad.get("k")) === JSON.stringify({ v: 1 }));
-    try { fs.rmSync(dir, { recursive: true }); } catch {}
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   } else {
     skip("authenticated redis", "redis-auth not running on 6381");
   }
@@ -329,7 +333,8 @@ async function persistentBackendDistributed() {
   delete process.env.TINA4_DB_CACHE_BACKEND;
   delete process.env.TINA4_DB_CACHE_URL;
   try {
-    const dbFile = `/tmp/tina4_cache_node_persist_mem_${Date.now()}.db`;
+    const dbDir = mkdtempSync(join(tmpdir(), "tina4_cache_node_persist_mem_"));
+    const dbFile = join(dbDir, "tina4_cache_node_persist_mem.db");
     const url = `sqlite:///${dbFile}`;
     closeDatabase();
     const db = await initDatabase({ url });
@@ -353,7 +358,7 @@ async function persistentBackendDistributed() {
 
     db.cacheClear();
     closeDatabase();
-    try { fs.rmSync(dbFile); } catch {}
+    try { fs.rmSync(dbDir, { recursive: true, force: true }); } catch {}
   } finally {
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
@@ -373,7 +378,8 @@ async function persistentBackendDistributed() {
   process.env.TINA4_DB_CACHE_BACKEND = "redis";
   process.env.TINA4_DB_CACHE_URL = "redis://localhost:6379/3";
   try {
-    const dbFile = `/tmp/tina4_cache_node_persist_redis_${Date.now()}.db`;
+    const dbDir = mkdtempSync(join(tmpdir(), "tina4_cache_node_persist_redis_"));
+    const dbFile = join(dbDir, "tina4_cache_node_persist_redis.db");
     const url = `sqlite:///${dbFile}`;
     closeDatabase();
     const db = await initDatabase({ url });
@@ -402,7 +408,7 @@ async function persistentBackendDistributed() {
 
     db.cacheClear();
     closeDatabase();
-    try { fs.rmSync(dbFile); } catch {}
+    try { fs.rmSync(dbDir, { recursive: true, force: true }); } catch {}
   } finally {
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;

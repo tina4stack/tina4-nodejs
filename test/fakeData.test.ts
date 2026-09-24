@@ -7,6 +7,9 @@ import { FakeData } from "../packages/orm/src/fakeData.ts";
 import { seedTable } from "../packages/orm/src/seeder.ts";
 import { createAdapterFromUrl } from "../packages/orm/src/index.ts";
 import type { FieldDefinition } from "../packages/orm/src/types.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -161,7 +164,11 @@ assert("run() records have expected fields",
 // --- seedDir() with missing directory ---
 console.log("\n--- SeedDir Method ---");
 
-const seedResult = await fake.seedDir("/tmp/nonexistent-seed-dir-xyz");
+// A child of a fresh per-run directory: guaranteed absent, and no other run on
+// the host can create it (a fixed /tmp name could be created by anyone).
+const seedScratch = mkdtempSync(join(tmpdir(), "nonexistent-seed-dir-"));
+const seedResult = await fake.seedDir(join(seedScratch, "missing"));
+rmSync(seedScratch, { recursive: true, force: true });
 assert("seedDir() with missing dir returns empty array",
   Array.isArray(seedResult) && seedResult.length === 0);
 

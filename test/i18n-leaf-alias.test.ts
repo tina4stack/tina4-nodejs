@@ -13,13 +13,14 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { I18n } from "../packages/core/src/index.ts";
 import { Frond } from "../packages/frond/src/engine.ts";
-import { mkdirSync, writeFileSync, rmSync, readdirSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_ROOT = "/tmp/tina4-i18n-leaf-test";
+const TEST_ROOT = mkdtempSync(join(tmpdir(), "tina4-i18n-leaf-test-"));
 
 afterAll(() => {
-  try { rmSync(TEST_ROOT, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TEST_ROOT, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 /** Write a single en.json under a fresh per-test dir and return the dir. */

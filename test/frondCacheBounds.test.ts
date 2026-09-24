@@ -24,7 +24,9 @@ import {
   filterChainCache,
   pathParseCache,
 } from "../packages/frond/src/engine.ts";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let passed = 0;
 let failed = 0;
@@ -43,8 +45,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const tmpDir = "/tmp/frond-cache-bounds-test";
-try { rmSync(tmpDir, { recursive: true }); } catch {}
+const tmpDir = mkdtempSync(join(tmpdir(), "frond-cache-bounds-test-"));
+try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 mkdirSync(tmpDir, { recursive: true });
 
 /** Read a private instance cache off the engine (compiled/fragmentCache etc.). */
@@ -201,6 +203,6 @@ await (async () => {
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 
-try { rmSync(tmpDir, { recursive: true }); } catch {}
+try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 
 process.exit(failed > 0 ? 1 : 0);

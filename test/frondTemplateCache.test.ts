@@ -15,9 +15,10 @@
  */
 import { Frond } from "../packages/frond/src/index.ts";
 import { TEMPLATE_CACHE_MAX } from "../packages/frond/src/engine.ts";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 
 let passed = 0;
 let failed = 0;
@@ -32,8 +33,8 @@ function assert(label: string, condition: boolean) {
   }
 }
 
-const tmpDir = "/tmp/frond-template-cache-test";
-try { rmSync(tmpDir, { recursive: true }); } catch {}
+const tmpDir = mkdtempSync(join(tmpdir(), "frond-template-cache-test-"));
+try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 mkdirSync(tmpDir, { recursive: true });
 
 function writeTemplate(name: string, contents: string): string {
@@ -180,6 +181,6 @@ assert("TEMPLATE_CACHE_MAX is a positive cap", TEMPLATE_CACHE_MAX > 0);
 // ── Summary ────────────────────────────────────────────────────
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 
-try { rmSync(tmpDir, { recursive: true }); } catch {}
+try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 
 process.exit(failed > 0 ? 1 : 0);

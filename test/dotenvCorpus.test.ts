@@ -160,11 +160,16 @@ async function ormCopyAgrees() {
   const saved = process.env.TINA4_DB_CACHE;
   const savedAuto = process.env.TINA4_AUTO_CACHING;
   delete process.env.TINA4_AUTO_CACHING;
+  // Three slashes is a RELATIVE sqlite path, so the old `sqlite:///tmp/...`
+  // literal wrote tmp/tina4_truthiness_*.db into the repo checkout on every run
+  // (gitignored, so it piled up unseen). An absolute per-run dir fixes both that
+  // and the shared-/tmp collision; join() yields `sqlite:////abs/...`.
+  const truthinessDir = mkdtempSync(join(tmpdir(), "tina4_truthiness-"));
   try {
     for (const [value, wantMode] of [["true", "persistent"], ["y", "off"]] as const) {
       process.env.TINA4_DB_CACHE = value;
       closeDatabase();
-      const db = await initDatabase({ url: `sqlite:///tmp/tina4_truthiness_${value}_${process.pid}.db` });
+      const db = await initDatabase({ url: `sqlite:///${join(truthinessDir, `tina4_truthiness_${value}.db`)}` });
       const mode = db.cacheStats().mode;
       assert(
         `orm copy: TINA4_DB_CACHE=${JSON.stringify(value)} -> mode "${wantMode}"`,
@@ -174,6 +179,7 @@ async function ormCopyAgrees() {
       closeDatabase();
     }
   } finally {
+    rmSync(truthinessDir, { recursive: true, force: true });
     if (saved === undefined) delete process.env.TINA4_DB_CACHE; else process.env.TINA4_DB_CACHE = saved;
     if (savedAuto === undefined) delete process.env.TINA4_AUTO_CACHING; else process.env.TINA4_AUTO_CACHING = savedAuto;
   }

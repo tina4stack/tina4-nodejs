@@ -16,8 +16,9 @@
  * Run with: npx tsx test/poolTransactionAtomicity.test.ts
  */
 import { Database } from "../packages/orm/src/database.ts";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -34,7 +35,7 @@ function assert(name: string, condition: boolean, detail = "") {
 
 console.log("=== Pool Transaction Atomicity Tests ===\n");
 
-const tmpDir = "/tmp/tina4-pool-tx-test";
+const tmpDir = mkdtempSync(join(tmpdir(), "tina4-pool-tx-test-"));
 rmSync(tmpDir, { recursive: true, force: true });
 mkdirSync(tmpDir, { recursive: true });
 

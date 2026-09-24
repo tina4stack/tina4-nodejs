@@ -2,7 +2,7 @@
  * Parity tests for features added/changed in 3.10.99.
  * Run with: npx tsx test/parity-310-99.test.ts
  */
-import { rmSync, mkdirSync } from "node:fs";
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
 import {
   initDatabase,
   closeDatabase,
@@ -12,8 +12,11 @@ import {
 import type { FieldDefinition, DiscoveredModel } from "../packages/orm/src/index.ts";
 import { Frond } from "../packages/frond/src/index.ts";
 import { ServiceRunner } from "../packages/core/src/service.ts";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_DB = "/tmp/tina4-parity-310-99/test.db";
+const PARITY_TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-parity-310-99-"));
+const TEST_DB = join(PARITY_TEST_DIR, "test.db");
 let passed = 0;
 let failed = 0;
 
@@ -28,8 +31,8 @@ function assert(label: string, condition: boolean) {
 }
 
 // Clean slate
-try { rmSync("/tmp/tina4-parity-310-99", { recursive: true }); } catch {}
-mkdirSync("/tmp/tina4-parity-310-99", { recursive: true });
+try { rmSync(PARITY_TEST_DIR, { recursive: true, force: true }); } catch {}
+mkdirSync(PARITY_TEST_DIR, { recursive: true });
 
 console.log("=== Parity 3.10.99 Tests ===\n");
 
@@ -105,7 +108,7 @@ console.log("\n--- autoMap defaults to true ---");
 console.log("\n--- Frond replace filter with object arg ---");
 
 {
-  const engine = new Frond("/tmp/tina4-parity-310-99");
+  const engine = new Frond(PARITY_TEST_DIR);
   // The replace filter accepts an object map for multi-replacement.
   // Test the filter function directly since inline object literals in
   // template filter args are not yet supported by the parser.
@@ -119,7 +122,7 @@ console.log("\n--- Frond replace filter with object arg ---");
 console.log("\n--- Frond replace filter with positional args ---");
 
 {
-  const engine = new Frond("/tmp/tina4-parity-310-99");
+  const engine = new Frond(PARITY_TEST_DIR);
   const result = engine.renderString(
     '{{ val|replace("hello", "world") }}',
     { val: "say hello" },
@@ -177,7 +180,7 @@ console.log("\n--- ServiceRunner registration ---");
 
 // Cleanup
 closeDatabase();
-try { rmSync("/tmp/tina4-parity-310-99", { recursive: true }); } catch {}
+try { rmSync(PARITY_TEST_DIR, { recursive: true, force: true }); } catch {}
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

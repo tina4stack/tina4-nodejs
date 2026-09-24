@@ -4,15 +4,16 @@
  */
 import { startServer, getToken } from "../packages/core/src/index.ts";
 import http from "node:http";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-integration-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-integration-test-"));
 const PORT = await freePort();
 
 // Clean slate
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 
 // 1. Create project structure (simulating what `tina4 init` does)
 const dirs = [
@@ -248,6 +249,6 @@ server.close();
 delete process.env.TINA4_RATE_LIMIT;
 delete process.env.TINA4_DEBUG;
 delete process.env.TINA4_SECRET;
-rmSync(TEST_DIR, { recursive: true });
+rmSync(TEST_DIR, { recursive: true, force: true });
 
 process.exit(fail > 0 ? 1 : 0);

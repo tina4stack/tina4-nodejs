@@ -3,8 +3,9 @@
  * Run with: npx tsx test/frond.test.ts
  */
 import { Frond } from "../packages/frond/src/index.ts";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let passed = 0;
 let failed = 0;
@@ -20,8 +21,8 @@ function assert(label: string, condition: boolean) {
 }
 
 // Helper to create a temporary template directory for include/extends tests
-const tmpDir = "/tmp/frond-test-templates";
-try { rmSync(tmpDir, { recursive: true }); } catch {}
+const tmpDir = mkdtempSync(join(tmpdir(), "frond-test-templates-"));
+try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 mkdirSync(tmpDir, { recursive: true });
 
 const engine = new Frond(tmpDir);
@@ -735,8 +736,8 @@ assert("cache invalidation on file change (dev mode)",
   (() => {
     process.env.TINA4_DEBUG = "true";
     try {
-      const cacheDir = "/tmp/frond-cache-test";
-      try { rmSync(cacheDir, { recursive: true }); } catch {}
+      const cacheDir = mkdtempSync(join(tmpdir(), "frond-cache-test-"));
+      try { rmSync(cacheDir, { recursive: true, force: true }); } catch {}
       mkdirSync(cacheDir, { recursive: true });
       const e = new Frond(cacheDir);
 
@@ -749,7 +750,7 @@ assert("cache invalidation on file change (dev mode)",
       writeFileSync(join(cacheDir, "changing.html"), "Version 2: {{ v }}");
       const r2 = e.render("changing.html", { v: "b" });
 
-      try { rmSync(cacheDir, { recursive: true }); } catch {}
+      try { rmSync(cacheDir, { recursive: true, force: true }); } catch {}
       return r1 === "Version 1: a" && r2 === "Version 2: b";
     } finally {
       delete process.env.TINA4_DEBUG;
@@ -1217,6 +1218,6 @@ console.log("\n--- filter + property chain (issue #113) ---");
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 
 // Cleanup
-try { rmSync(tmpDir, { recursive: true }); } catch {}
+try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 
 process.exit(failed > 0 ? 1 : 0);

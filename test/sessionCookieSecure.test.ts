@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { freePort } from "./freePort.ts";
 
-const TEST_DIR = "/tmp/tina4-session-secure-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-session-secure-test-"));
 const PORT = await freePort();
 let pass = 0;
 let fail = 0;
@@ -58,7 +58,7 @@ function setCookie(
 }
 
 // Clean slate + a single route so the server has something to serve.
-try { rmSync(TEST_DIR, { recursive: true }); } catch { /* fresh */ }
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* fresh */ }
 mkdirSync(join(TEST_DIR, "src/routes/api/ping"), { recursive: true });
 writeFileSync(join(TEST_DIR, "package.json"), '{"type":"module"}');
 writeFileSync(join(TEST_DIR, "src/routes/api/ping/get.ts"), `
@@ -146,7 +146,7 @@ server.close();
 // Cleanup
 delete process.env.TINA4_SESSION_PATH;
 delete process.env.TINA4_RATE_LIMIT;
-try { rmSync(TEST_DIR, { recursive: true }); } catch { /* ignore */ }
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
 try { rmSync(sessDir, { recursive: true }); } catch { /* ignore */ }
 
 console.log(`\n${"=".repeat(50)}`);

@@ -22,11 +22,13 @@
  * decision never consulted it), and a deleted model is ABSENT from findById() and
  * count() (guards the dead-local removal in delete()).
  */
-import { rmSync, mkdirSync } from "node:fs";
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
 import { initDatabase, closeDatabase, getAdapter, BaseModel } from "../packages/orm/src/index.ts";
 import type { FieldDefinition } from "../packages/orm/src/index.ts";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-ormbase-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-ormbase-test-"));
 const TEST_DB = `${TEST_DIR}/ormbase.db`;
 
 let pass = 0;
@@ -52,7 +54,7 @@ class BaseWidget extends BaseModel {
   };
 }
 
-try { rmSync(TEST_DIR, { recursive: true }); } catch { /* fresh slate */ }
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* fresh slate */ }
 mkdirSync(TEST_DIR, { recursive: true });
 
 await initDatabase({ type: "sqlite", path: TEST_DB });
@@ -171,7 +173,7 @@ async function newWidget(name: string, qty: number): Promise<void> {
 }
 
 closeDatabase();
-try { rmSync(TEST_DIR, { recursive: true }); } catch { /* best effort */ }
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* best effort */ }
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

@@ -4,8 +4,9 @@
  */
 import { Session } from "../packages/core/src/session.ts";
 import { createHash } from "node:crypto";
-import { existsSync, rmSync, readFileSync } from "node:fs";
+import { existsSync, rmSync, readFileSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 /**
  * On-disk path of a session, mirroring `FileSessionHandler.filePath()`.
@@ -32,10 +33,10 @@ function assert(label: string, condition: boolean) {
   }
 }
 
-const TEST_PATH = "/tmp/tina4-session-test";
+const TEST_PATH = mkdtempSync(join(tmpdir(), "tina4-session-test-"));
 
 // Clean slate
-try { rmSync(TEST_PATH, { recursive: true }); } catch { /* ignore */ }
+try { rmSync(TEST_PATH, { recursive: true, force: true }); } catch { /* ignore */ }
 
 console.log("=== Session Tests ===\n");
 
@@ -201,7 +202,7 @@ assert(
 
 // ── Cleanup ──────────────────────────────────────────────────────
 
-try { rmSync(TEST_PATH, { recursive: true }); } catch { /* ignore */ }
+try { rmSync(TEST_PATH, { recursive: true, force: true }); } catch { /* ignore */ }
 
 // ── Summary ──────────────────────────────────────────────────────
 
