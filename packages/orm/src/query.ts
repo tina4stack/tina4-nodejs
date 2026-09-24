@@ -1,5 +1,6 @@
 import type { QueryOptions } from "./types.js";
 import { DEFAULT_ROW_CAP } from "./database.js";
+import { quoteIdentifierAnsi } from "./adapters/sqlDialect.js";
 
 export interface ParsedQuery {
   where: string;
@@ -9,11 +10,25 @@ export interface ParsedQuery {
   params: unknown[];
 }
 
+/**
+ * Build the list SQL from parsed query options.
+ *
+ * `quote` renders every table/column name the builder emits - pass the bound
+ * adapter's dialect (`(name) => quoteIdentifier(adapter, name)`); the default is
+ * the ANSI `"name"`.
+ */
 export function buildQuery(
   tableName: string,
   options: QueryOptions,
   extraConditions?: string[],
-): { sql: string; countSql: string; params: unknown[]; limit: number; offset: number; page: number } {
+  quote: (name: string) => string = quoteIdentifierAnsi,
+): {
+  sql: string; countSql: string; params: unknown[]; limit: number; offset: number; page: number;
+  /** The same SELECT without LIMIT/OFFSET, for adapterFetch to page in the engine's own syntax. */
+  pageSql: string;
+  /** The filter parameters alone (params minus the trailing limit/offset). */
+  filterParams: unknown[];
+} {
   const conditions: string[] = [];
   const params: unknown[] = [];
 
@@ -31,13 +46,13 @@ export function buildQuery(
         for (const [op, opVal] of Object.entries(ops)) {
           const sqlOp = operatorMap[op];
           if (sqlOp) {
-            conditions.push(`"${field}" ${sqlOp} ?`);
+            conditions.push(`${quote(field)} ${sqlOp} ?`);
             params.push(opVal);
           }
         }
       } else {
         // Exact match: filter[name]=John
-        conditions.push(`"${field}" = ?`);
+        conditions.push(`${quote(field)} = ?`);
         params.push(value);
       }
     }
@@ -51,9 +66,9 @@ export function buildQuery(
     const parts = options.sort.split(",").map((s) => {
       const trimmed = s.trim();
       if (trimmed.startsWith("-")) {
-        return `"${trimmed.slice(1)}" DESC`;
+        return `${quote(trimmed.slice(1))} DESC`;
       }
-      return `"${trimmed}" ASC`;
+      return `${quote(trimmed)} ASC`;
     });
     orderClause = `ORDER BY ${parts.join(", ")}`;
   }
@@ -71,8 +86,9 @@ export function buildQuery(
   const page = Math.max(options.page ?? 1, 1);
   const offset = (page - 1) * limit;
 
-  const sql = `SELECT * FROM "${tableName}" ${whereClause} ${orderClause} LIMIT ? OFFSET ?`;
-  const countSql = `SELECT COUNT(*) as total FROM "${tableName}" ${whereClause}`;
+  const pageSql = `SELECT * FROM ${quote(tableName)} ${whereClause} ${orderClause}`.trimEnd();
+  const sql = `SELECT * FROM ${quote(tableName)} ${whereClause} ${orderClause} LIMIT ? OFFSET ?`;
+  const countSql = `SELECT COUNT(*) as total FROM ${quote(tableName)} ${whereClause}`;
 
   return {
     sql,
@@ -81,6 +97,8 @@ export function buildQuery(
     limit,
     offset,
     page,
+    pageSql,
+    filterParams: params,
   };
 }
 

@@ -32,6 +32,35 @@ export interface Dialect {
 }
 
 const doubleQuote = (name: string): string => `"${name}"`;
+
+/**
+ * Quote a table/column name the ORM emits, in one engine's identifier quotes.
+ *
+ * Port of the Python master's `quote_identifier` (adapter.py; Firebird's
+ * override upper-cases): idempotent (an already-quoted name is returned
+ * unchanged), dot-aware (`schema.table` quotes each part), and a non-identifier
+ * (`*`, `COUNT(*)`, an expression) is passed through untouched. An embedded
+ * closing quote is doubled.
+ *
+ * `upperCase` is Firebird's rule: an unquoted identifier is stored UPPER CASE,
+ * so a lower-case name must be quoted upper-case to match it.
+ */
+export function quoteIdentifierWith(name: string, open: string, close: string, upperCase = false): string {
+  if (!name) return name;
+  const trimmed = name.trim();
+  if (trimmed.length >= 2 && trimmed.startsWith(open) && trimmed.endsWith(close)) return trimmed;
+  if (trimmed.includes(".")) {
+    return trimmed.split(".").map((part) => quoteIdentifierWith(part, open, close, upperCase)).join(".");
+  }
+  if (!/^[\p{L}\p{N}_$]+$/u.test(trimmed)) return trimmed;
+  const body = upperCase ? trimmed.toUpperCase() : trimmed;
+  return `${open}${body.split(close).join(close + close)}${close}`;
+}
+
+/** The ANSI default: `"name"` (SQLite, PostgreSQL, MSSQL, ODBC). */
+export function quoteIdentifierAnsi(name: string): string {
+  return quoteIdentifierWith(name, '"', '"');
+}
 const questionMark = (): string => "?";
 
 /** SQLite, and ODBC which follows the SQL standard spelling. */

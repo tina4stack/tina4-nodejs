@@ -4,7 +4,7 @@
  * Install: npm install node-firebird
  * URL format: firebird://user:pass@host:port/path/to/database.fdb
  */
-import { firebirdDialect, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
+import { firebirdDialect, buildInsert, buildSetClause, buildWhereClause, quoteIdentifierWith } from "./sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslator.js";
 import { connectTimeoutMillis, withConnectTimeout } from "../connectTimeout.js";
@@ -233,6 +233,15 @@ export class FirebirdAdapter implements DatabaseAdapter {
   /** ADR-0044 required adapter capability. */
   getDatabaseType(): string {
     return 'firebird';
+  }
+
+  /**
+   * Quote a name the ORM emits the way Firebird stores it: UPPER CASE (see
+   * fbQuote). An already-quoted name passes through - the escape hatch for a
+   * genuinely case-sensitive table. Python master: FirebirdAdapter.quote_identifier.
+   */
+  quoteIdentifier(name: string): string {
+    return quoteIdentifierWith(name, '"', '"', true);
   }
 
   /** ADR-0044: readable/writable native boolean. */

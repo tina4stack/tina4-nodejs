@@ -4,6 +4,7 @@ import { DatabaseResult } from "./databaseResult.js";
 import { DatabaseUrl } from "./databaseUrl.js";
 import { CachedDatabaseAdapter, type CachedAdapterOptions } from "./cachedDatabase.js";
 import { QueryCache } from "./sqlTranslator.js";
+import { quoteIdentifierAnsi } from "./adapters/sqlDialect.js";
 
 /**
  * v3.13.12 — strip trailing `;` and whitespace from user-supplied SQL
@@ -47,6 +48,16 @@ export async function adapterFetch<T = Record<string, unknown>>(
   return (adapter as any).fetchAsync
     ? await (adapter as any).fetchAsync(sql, params, limit, skip, noCache)
     : adapter.fetch<T>(sql, params, limit, skip);
+}
+
+/**
+ * Quote a table/column name the ORM emits, in the bound adapter's dialect
+ * (MySQL backticks, Firebird upper-cased, `"name"` elsewhere). Python master:
+ * `Database.quote_identifier`. Only for framework-emitted identifiers - a
+ * user's raw SQL is never rewritten.
+ */
+export function quoteIdentifier(adapter: DatabaseAdapter | null | undefined, name: string): string {
+  return adapter?.quoteIdentifier ? adapter.quoteIdentifier(name) : quoteIdentifierAnsi(name);
 }
 
 export async function adapterQuery<T = Record<string, unknown>>(
