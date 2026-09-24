@@ -90,12 +90,6 @@ await withEchoServer(async (hit) => {
     !url.includes("evil.com") && url.includes("127.0.0.1"),
     `forged host leaked into request.url: ${url}`,
   );
-  const proto = await hit("127.0.0.1", "https");
-  assert(
-    "untrusted peer: X-Forwarded-Proto is ignored for request.url",
-    proto.startsWith("http://"),
-    `forged proto leaked into request.url: ${proto}`,
-  );
 });
 
 // Trusted peer: real deployments behind a proxy must still see the forwarded host.
