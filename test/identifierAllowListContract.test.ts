@@ -552,8 +552,62 @@ async function realMongoParity(fallbackResults: Record<string, string[]>): Promi
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// E. AutoCrud queries the connection its model is bound to
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function registeredConnectionCases(): Promise<void> {
+  console.log("\n--- autocrud_list_uses_the_registered_connection ---");
+  const root = mkdtempSync(join(tmpdir(), "tina4-ident-conn-"));
+  mkdirSync(join(root, "src/models"), { recursive: true });
+  mkdirSync(join(root, "src/routes"), { recursive: true });
+  writeFileSync(join(root, "src/models/IdentRemote.ts"), `import { BaseModel } from "file://${ORM_SRC}/baseModel.js";
+
+export default class IdentRemote extends BaseModel {
+  static tableName = "ident_remote";
+  static autoCrud = true;
+  static _db = "ident_secondary";
+  static fields = {
+    id: { type: "integer" as const, primaryKey: true },
+    name: { type: "string" as const },
+  };
+}
+`);
+  // Two real SQLite files: the global (default) database has NO rows for this
+  // model; the named connection the model declares holds them.
+  const secondaryPath = join(root, "secondary.db");
+  const seed = new DatabaseSync(secondaryPath);
+  seed.exec("CREATE TABLE ident_remote (id INTEGER PRIMARY KEY, name TEXT)");
+  seed.exec("INSERT INTO ident_remote (id, name) VALUES (1, 'remote-a'), (2, 'remote-b')");
+  seed.close();
+  bindDatabase(await createAdapterFromUrl(`sqlite:///${secondaryPath}`) as any, "ident_secondary");
+
+  const port = PORT + 1;
+  const server = await startServer({
+    port,
+    routesDir: join(root, "src/routes"),
+    modelsDir: join(root, "src/models"),
+    staticDir: join(root, "public"),
+    database: { type: "sqlite", path: join(root, "global.db") },
+  });
+  try {
+    const list = await request(port, "/api/ident_remote?sort=id");
+    const listIds = (list.json?.records ?? []).map((row: any) => Number(row.id));
+    assert("autocrud_list_uses_the_registered_connection: list reads the named connection",
+      list.status === 200 && JSON.stringify(listIds) === "[1,2]" && list.json?.total === 2,
+      `status=${list.status} body=${list.text.slice(0, 200)}`);
+    const one = await request(port, "/api/ident_remote/2");
+    assert("autocrud_list_uses_the_registered_connection: get by id reads the named connection",
+      one.status === 200 && one.json?.data?.name === "remote-b", `status=${one.status} body=${one.text.slice(0, 200)}`);
+  } finally {
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   await autoCrudCases();
+  await registeredConnectionCases();
   await ormFindCases();
   await docStoreCases();
 

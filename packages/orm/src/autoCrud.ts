@@ -1,7 +1,7 @@
 import type { RouteDefinition, Tina4Request, Tina4Response } from "../../core/src/index.js";
 import type { DiscoveredModel } from "./model.js";
 import type { FieldDefinition } from "./types.js";
-import { getAdapter, adapterQuery, adapterExecute, adapterFetch, quoteIdentifier } from "./database.js";
+import { getAdapter, getNamedAdapter, adapterQuery, adapterExecute, adapterFetch, quoteIdentifier } from "./database.js";
 import { DatabaseResult } from "./databaseResult.js";
 import { buildQuery, parseQueryString, resolveFieldColumn, UnknownFieldError, InvalidQueryParameterError } from "./query.js";
 import { validate } from "./validation.js";
@@ -154,7 +154,11 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
   const writeSecurity = options.public === true ? { secure: false as const } : {};
 
   for (const { definition } of models) {
-    const { tableName, fields, softDelete, tableFilter, fieldMapping } = definition;
+    const { tableName, fields, softDelete, tableFilter, fieldMapping, dbName } = definition;
+
+    // The connection the model is bound to (`static _db = "name"`), never the
+    // global default behind its back - the same resolution BaseModel.getDb() uses.
+    const modelAdapter = () => (dbName ? getNamedAdapter(dbName) : getAdapter());
     const basePath = `/api/${tableName}`;
     const mapping = fieldMapping ?? {};
 
@@ -185,7 +189,7 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const adapter = getAdapter();
+        const adapter = modelAdapter();
         const q = (name: string): string => quoteIdentifier(adapter, name);
 
         // Parse query params for filtering / sorting / pagination.
@@ -241,7 +245,7 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const adapter = getAdapter();
+        const adapter = modelAdapter();
         const q = (name: string): string => quoteIdentifier(adapter, name);
 
         const conditions = [`${q(pkColumn)} = ?`, ...extraConditions];
@@ -269,7 +273,7 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const adapter = getAdapter();
+        const adapter = modelAdapter();
         const q = (name: string): string => quoteIdentifier(adapter, name);
         const rawBody = req.body as Record<string, unknown>;
 
@@ -336,7 +340,7 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const adapter = getAdapter();
+        const adapter = modelAdapter();
         const q = (name: string): string => quoteIdentifier(adapter, name);
         const rawBody = req.body as Record<string, unknown>;
 
@@ -411,7 +415,7 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const adapter = getAdapter();
+        const adapter = modelAdapter();
         const q = (name: string): string => quoteIdentifier(adapter, name);
 
         const conditions = [`${q(pkColumn)} = ?`, ...extraConditions];
