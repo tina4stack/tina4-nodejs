@@ -165,10 +165,8 @@ async function main(): Promise<void> {
 
     // 3. GET /table for a nonexistent table (negative).
     {
-      const { json } = await httpGetJson("/__dev/api/table?name=does_not_exist");
-      assert("GET /table unknown table → empty + message",
-        Array.isArray(json?.columns) && json.columns.length === 0 && Array.isArray(json?.rows) && json.rows.length === 0 && !!json?.message,
-        JSON.stringify(json));
+      const { status, json } = await httpGetJson("/__dev/api/table?name=does_not_exist");
+      assert("GET /table unknown table is rejected", status === 404 && json?.error === "unknown table");
     }
 
     // 4. GET /queue — the on-disk persisted job shows (positive; core fix).

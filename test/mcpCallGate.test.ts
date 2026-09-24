@@ -76,7 +76,7 @@ function assert(name: string, condition: boolean, detail = "") {
 // per request, so flipping these between calls (no restart) is faithful.
 const ENV_KEYS = [
   "TINA4_DEBUG", "TINA4_MCP", "TINA4_MCP_REMOTE", "TINA4_MCP_TOKEN",
-  "TINA4_API_KEY", "TINA4_RATE_LIMIT", "TINA4_NO_AI_PORT",
+  "TINA4_API_KEY", "TINA4_RATE_LIMIT", "TINA4_NO_AI_PORT", "TINA4_HOST",
 ] as const;
 const savedEnv: Record<string, string | undefined> = {};
 for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
@@ -355,6 +355,7 @@ for (const addrs of Object.values(os.networkInterfaces())) {
 }
 let ifaceServer: http.Server | null = null;
 if (nonLoopIp) {
+  setEnv({ TINA4_HOST: nonLoopIp });
   ifaceServer = http.createServer((rawReq, rawRes) => { void handle(rawReq, rawRes); });
   await new Promise<void>((r) => ifaceServer!.listen(0, "0.0.0.0", () => r()));
   const ifacePort = (ifaceServer.address() as any).port;

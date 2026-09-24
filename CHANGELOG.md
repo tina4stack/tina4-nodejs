@@ -8,6 +8,8 @@ https://tina4.com/nodejs/36-releases
 
 ## 3.13.138
 
+- Bind HTTP credentials to the configured origin on every transfer path; trust forwarded host and protocol only from trusted transport peers. Gate all development endpoint methods by peer, Host and browser Origin, confine resolved file paths, and validate table identifiers. Preserve the documented MCP transport API-key fallback and health version.
+
 Development credential files are owner-only and refuse symbolic or hard-linked targets.
 
 This release adopts MPL-2.0 with Code Infinity copyright and an optional separate

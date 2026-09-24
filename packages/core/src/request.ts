@@ -10,7 +10,7 @@ import type { IncomingMessage, IncomingHttpHeaders } from "node:http";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Tina4Request, UploadedFile } from "./types.js";
-import { resolveClientIp } from "./trustedProxy.js";
+import { resolveClientIp, isTrustedProxy } from "./trustedProxy.js";
 import { Log } from "./logger.js";
 
 /**
@@ -62,10 +62,11 @@ export function createRequest(req: IncomingMessage): Tina4Request {
     makeCaseInsensitiveHeaders(req.headers);
 
   // Resolve scheme + host honouring proxy headers — parity with PHP/Python/Ruby.
-  const xfProto = req.headers["x-forwarded-proto"];
+  const trustedPeer = isTrustedProxy(req.socket?.remoteAddress ?? "");
+  const xfProto = trustedPeer ? req.headers["x-forwarded-proto"] : undefined;
   const proto = (Array.isArray(xfProto) ? xfProto[0] : xfProto)
     ?? ((req.socket as { encrypted?: boolean })?.encrypted ? "https" : "http");
-  const xfHost = req.headers["x-forwarded-host"];
+  const xfHost = trustedPeer ? req.headers["x-forwarded-host"] : undefined;
   const host = (Array.isArray(xfHost) ? xfHost[0] : xfHost)
     ?? (req.headers.host ?? "localhost");
 

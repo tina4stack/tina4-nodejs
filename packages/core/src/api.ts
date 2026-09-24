@@ -675,7 +675,7 @@ export class Api {
             url += (url.includes("?") ? "&" : "?") + qs;
         }
 
-        const { headers, data } = this.buildRequest("GET", "application/json", undefined);
+        const { headers, data } = this.buildRequest("GET", "application/json", undefined, undefined, url);
 
         // An injected transport can't stream (it returns a buffered result), so
         // write its body out; only the real network path streams chunk-by-chunk.
@@ -768,7 +768,7 @@ export class Api {
         const url = this.buildUrl(path);
         const method = (opts.method ?? "GET").toUpperCase();
         const contentType = opts.contentType ?? "application/json";
-        const { headers, data } = this.buildRequest(method, contentType, opts.body, opts.headers);
+        const { headers, data } = this.buildRequest(method, contentType, opts.body, opts.headers, url);
         const totalSec = this.streamSeconds(opts.timeout, "TINA4_API_TIMEOUT", this.timeout);
         const connectSec = this.streamSeconds(opts.connectTimeout, "TINA4_API_CONNECT_TIMEOUT", 10);
         const opened = await this.openStreamRequest(method, url, headers, data, connectSec);
@@ -912,6 +912,7 @@ export class Api {
         contentType: string,
         body: unknown,
         extraHeaders?: Record<string, string>,
+        targetUrl?: string,
     ): { headers: Record<string, string>; data: Buffer | undefined } {
         const headers: Record<string, string> = { "User-Agent": `Tina4/${TINA4_VERSION}`, ...this.headers };
         if (this.authHeader) {
@@ -951,6 +952,9 @@ export class Api {
             Object.assign(headers, extraHeaders);
         }
 
+        if (targetUrl !== undefined && !sameOrigin(targetUrl, this.baseUrl)) {
+            for (const name of STRIP_ON_CROSS_ORIGIN) deleteHeaderCaseInsensitive(headers, name);
+        }
         return { headers, data };
     }
 
@@ -993,7 +997,7 @@ export class Api {
         contentType: string = "application/json",
         extraHeaders?: Record<string, string>,
     ): Promise<ApiResult> {
-        const { headers, data } = this.buildRequest(method, contentType, body, extraHeaders);
+        const { headers, data } = this.buildRequest(method, contentType, body, extraHeaders, url);
 
         // A user-injected transport fully replaces the network call.
         if (this.transportFn) {
