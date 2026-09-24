@@ -329,6 +329,17 @@ jobs:
           MQTT_REQUIRE_EMQX=false bash test/mqtt-infra.sh "$RUNNER_TEMP/tina4-mqtt-infra"
           echo "TINA4_TEST_MQTT_CA_FILE=$RUNNER_TEMP/tina4-mqtt-infra/certs/ca.crt" >> "$GITHUB_ENV"
 
+      # TLS + AUTH mail servers for ADR-0071 (test/mailTransportTls.test.ts):
+      # GreenMail 4025/4465/4143/4993, Mailpit 4587/4825, Dovecot 4144, all with
+      # certificates from a throwaway CA the test trusts in a child process
+      # through NODE_EXTRA_CA_CERTS. The script fails the job if a server does
+      # not come up, so the mail TLS tests never skip green.
+      - name: Start TLS mail servers (GreenMail / Mailpit / Dovecot)
+        run: |
+          bash test/mail-infra.sh "$RUNNER_TEMP/tina4-mail-infra"
+          echo "TINA4_TEST_MAIL_TLS_HOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "TINA4_TEST_MAIL_TLS_CA_FILE=$RUNNER_TEMP/tina4-mail-infra/certs/ca.crt" >> "$GITHUB_ENV"
+
       # Node 22+ is required — packages/orm/src/adapters/sqlite.ts uses
       # `node:sqlite` (introduced in Node 22, stable in Node 24).
       # Node 20 fails with ERR_UNKNOWN_BUILTIN_MODULE.
