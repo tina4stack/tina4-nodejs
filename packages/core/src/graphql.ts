@@ -930,7 +930,9 @@ export class GraphQL {
       className,
       (root, args) => {
         const db = getDb();
-        const fieldNames = Object.keys(args);
+        // Declared fields only: the executor passes every argument the query
+        // names, declared or not, and each one becomes a column (ADR-0069).
+        const fieldNames = Object.keys(args).filter((k) => Object.hasOwn(mutationArgs, k));
         const placeholders = fieldNames.map(() => "?");
         const values = fieldNames.map((f) => args[f]);
 
@@ -960,7 +962,8 @@ export class GraphQL {
         const values: unknown[] = [];
 
         for (const [k, v] of Object.entries(args)) {
-          if (k !== "id") {
+          // Declared fields only (see create above).
+          if (k !== "id" && Object.hasOwn(mutationArgs, k)) {
             setClauses.push(`"${k}" = ?`);
             values.push(v);
           }

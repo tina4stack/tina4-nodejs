@@ -9,6 +9,8 @@
 //     GraphQL.fromOrm() generates, executed in-process against a real SQLite
 //     adapter: the single-row query and the update/delete mutations touch only
 //     the addressed row, and a non-matching id changes nothing.
+//   graphql_orm_mutations_write_only_declared_fields - the generated create /
+//     update mutations write declared fields only.
 //
 // NO MOCKS. Run with: npx tsx test/idArgumentLockIn.test.ts
 
@@ -190,9 +192,47 @@ async function graphqlCases(): Promise<void> {
   }
 }
 
+// graphql_orm_mutations_write_only_declared_fields: the create/update
+// mutations fromOrm() generates write the model's declared fields only. The
+// executor hands a resolver every argument the query names, so an argument the
+// schema never declared used to reach the INSERT/UPDATE column list.
+async function graphqlDeclaredFieldCases(): Promise<void> {
+  console.log("\n--- graphql_orm_mutations_write_only_declared_fields ---");
+  const dir = mkdtempSync(join(tmpdir(), "tina4-gql-declared-"));
+  const dbPath = join(dir, "gql.db");
+  const seed = new DatabaseSync(dbPath);
+  seed.exec("CREATE TABLE gql_widget (id INTEGER PRIMARY KEY, name TEXT, internal_code TEXT)");
+  seed.exec("INSERT INTO gql_widget (id, name, internal_code) VALUES (1, 'alpha', 'c1')");
+  seed.close();
+  const read = (): string => {
+    const db = new DatabaseSync(dbPath);
+    const rows = db.prepare("SELECT id, name, internal_code FROM gql_widget ORDER BY id").all() as any[];
+    db.close();
+    return JSON.stringify(rows.map((r) => [Number(r.id), r.name, r.internal_code]));
+  };
+  const adapter = new SQLiteAdapter(dbPath);
+  const label = "graphql_orm_mutations_write_only_declared_fields";
+  try {
+    const gql = new GraphQL().fromOrm(GqlWidget, adapter as any);
+    const upd = await gql.execute(`mutation { updateGqlWidget(id: "1", name: "alpha-2", internal_code: "zz") { id name } }`);
+    assert(`${label}: update writes the declared field and not the undeclared one`,
+      read() === JSON.stringify([[1, "alpha-2", "c1"]]), `${JSON.stringify(upd)} state=${read()}`);
+    const only = await gql.execute(`mutation { updateGqlWidget(id: "1", internal_code: "zz") { id } }`);
+    assert(`${label}: an update naming only undeclared arguments changes nothing`,
+      read() === JSON.stringify([[1, "alpha-2", "c1"]]), `${JSON.stringify(only)} state=${read()}`);
+    const created = await gql.execute(`mutation { createGqlWidget(name: "beta", internal_code: "zz") { id name } }`);
+    assert(`${label}: create writes the declared field and not the undeclared one`,
+      read() === JSON.stringify([[1, "alpha-2", "c1"], [2, "beta", null]]), `${JSON.stringify(created)} state=${read()}`);
+  } finally {
+    adapter.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   await autoCrudCases();
   await graphqlCases();
+  await graphqlDeclaredFieldCases();
   console.log(`\n==================================================`);
   console.log(`  Results: ${passed} passed, ${failed} failed`);
   console.log(`==================================================`);
