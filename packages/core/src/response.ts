@@ -151,6 +151,16 @@ export function createResponse(res: ServerResponse): Tina4Response {
     if (!res.headersSent) res.setHeader(name, value);
   };
 
+  // True once the route set Content-Type with header(); response(data) then
+  // keeps it instead of detecting one (ADR-0072, #144).
+  let contentTypeFromHeader = false;
+  const setDetectedContentType = (contentType: string) => {
+    if (!contentTypeFromHeader) safeSetHeader("Content-Type", contentType);
+  };
+  const noteContentTypeHeader = (name: string) => {
+    if (name.toLowerCase() === "content-type") contentTypeFromHeader = true;
+  };
+
   // ── The callable: response(data, status, contentType) ──
   const response = function (data?: unknown, statusCode?: number, contentType?: string): Tina4Response {
     if (res.headersSent) return response;
@@ -179,14 +189,14 @@ export function createResponse(res: ServerResponse): Tina4Response {
       }
     } else if (typeof data === "object" && data !== null && !Buffer.isBuffer(data)) {
       // dict/array → auto JSON
-      safeSetHeader("Content-Type", "application/json");
+      setDetectedContentType("application/json");
       safeEnd(JSON.stringify(data));
     } else if (typeof data === "string") {
       const trimmed = data.trim();
       if (trimmed.startsWith("<") && trimmed.endsWith(">")) {
-        safeSetHeader("Content-Type", "text/html; charset=utf-8");
+        setDetectedContentType("text/html; charset=utf-8");
       } else {
-        safeSetHeader("Content-Type", "text/plain; charset=utf-8");
+        setDetectedContentType("text/plain; charset=utf-8");
       }
       safeEnd(data);
     } else if (Buffer.isBuffer(data)) {
@@ -197,7 +207,7 @@ export function createResponse(res: ServerResponse): Tina4Response {
     } else if (data == null) {
       safeEnd("");
     } else {
-      safeSetHeader("Content-Type", "text/plain; charset=utf-8");
+      setDetectedContentType("text/plain; charset=utf-8");
       safeEnd(String(data));
     }
 
@@ -252,6 +262,7 @@ export function createResponse(res: ServerResponse): Tina4Response {
 
   response.header = function (name: string, value: string | number | readonly string[]): Tina4Response {
     safeSetHeader(name, value);
+    noteContentTypeHeader(name);
     return response;
   };
 
@@ -260,6 +271,7 @@ export function createResponse(res: ServerResponse): Tina4Response {
    */
   response.addHeader = function (name: string, value: string): void {
     safeSetHeader(name, value);
+    noteContentTypeHeader(name);
   };
 
   response.redirect = function (url: string, code?: number): Tina4Response {

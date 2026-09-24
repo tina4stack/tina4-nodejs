@@ -3,6 +3,7 @@ import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Tina4Request, UploadedFile } from "./types.js";
 import { resolveClientIp } from "./trustedProxy.js";
+import { Log } from "./logger.js";
 
 /**
  * Wrap Node's `IncomingHttpHeaders` in a Proxy so mixed-case lookups
@@ -148,8 +149,29 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   return tReq;
 }
 
-/** Maximum upload size in bytes (default 10 MB). Override via TINA4_MAX_UPLOAD_SIZE env var. */
-const TINA4_MAX_UPLOAD_SIZE = parseInt(process.env.TINA4_MAX_UPLOAD_SIZE ?? "10485760", 10);
+/** Default request body cap in bytes (10 MB). */
+export const DEFAULT_MAX_UPLOAD_SIZE = 10_485_760;
+const warnedUploadLimits = new Set<string>();
+
+/**
+ * TINA4_MAX_UPLOAD_SIZE in bytes, read when it is used (ADR-0072, #143).
+ *
+ * Never read it into a module constant: this module is imported before
+ * startServer() loads .env, so a constant kept the 10MB default whatever .env
+ * said. A value that is not a positive whole number warns once and uses the
+ * default (ADR-0068) - parseInt("abc") used to give NaN, which switched the cap off.
+ */
+export function maxUploadSize(): number {
+  const raw = (process.env.TINA4_MAX_UPLOAD_SIZE ?? "").trim();
+  if (raw === "") return DEFAULT_MAX_UPLOAD_SIZE;
+  const value = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (Number.isSafeInteger(value) && value > 0) return value;
+  if (!warnedUploadLimits.has(raw)) {
+    warnedUploadLimits.add(raw);
+    Log.warning(`TINA4_MAX_UPLOAD_SIZE=${raw} is not a usable limit - using ${DEFAULT_MAX_UPLOAD_SIZE}`);
+  }
+  return DEFAULT_MAX_UPLOAD_SIZE;
+}
 
 export class PayloadTooLargeError extends Error {
   public statusCode = 413;
@@ -164,9 +186,10 @@ async function parseBody(req: Tina4Request): Promise<void> {
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
 
   // Check content-length header against upload size limit before reading body
+  const uploadLimit = maxUploadSize();
   const declaredLength = parseInt(req.headers["content-length"] ?? "0", 10);
-  if (declaredLength > TINA4_MAX_UPLOAD_SIZE) {
-    throw new PayloadTooLargeError(declaredLength, TINA4_MAX_UPLOAD_SIZE);
+  if (declaredLength > uploadLimit) {
+    throw new PayloadTooLargeError(declaredLength, uploadLimit);
   }
 
   const contentType = req.headers["content-type"] ?? "";
@@ -190,10 +213,10 @@ async function parseBody(req: Tina4Request): Promise<void> {
     req.on("data", (chunk: Buffer) => {
       if (refused) return;
       received += chunk.length;
-      if (received > TINA4_MAX_UPLOAD_SIZE) {
+      if (received > uploadLimit) {
         refused = true;
         chunks.length = 0; // drop what we have; the request is dead
-        reject(new PayloadTooLargeError(received, TINA4_MAX_UPLOAD_SIZE));
+        reject(new PayloadTooLargeError(received, uploadLimit));
         return;
       }
       chunks.push(chunk);
