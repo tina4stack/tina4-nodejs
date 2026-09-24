@@ -243,6 +243,27 @@ console.log("\n--- Byte-level refusals beyond the corpus ---");
     assert(`POSITIVE: ${label} is accepted`, outcome.result === "hello", describe(outcome));
   }
 
+  // Not XML at all, and nothing at all: the Client "Malformed XML" fault, never
+  // "Internal server error" and never a different wording (Python parity).
+  for (const [label, body] of [["an empty body", ""], ["a whitespace-only body", "  \n "], ["plain text", "hello"],
+    ["a truncated tag", "<soap:Envelope"]] as const) {
+    const outcome = readOutcome(await new ParityService().handle(body));
+    assert(`${label} is the Client "Malformed XML" fault`, outcome.fault === "Client" && outcome.message === "Malformed XML",
+      describe(outcome));
+  }
+  {
+    // The POST route handler the service registers: an empty request body gets the same fault.
+    const service = new ParityService();
+    const routes: Record<string, (req: unknown, res: unknown) => Promise<void> | void> = {};
+    service.register({ get: (path: string, handler: never) => { routes[`GET ${path}`] = handler; },
+      post: (path: string, handler: never) => { routes[`POST ${path}`] = handler; } } as never);
+    let sent = "";
+    await routes["POST /soap/parity"]({ body: "" }, { send: (text: string) => { sent = text; } });
+    const outcome = readOutcome(sent);
+    assert("register(): an empty POST body is the Client \"Malformed XML\" fault", outcome.fault === "Client"
+      && outcome.message === "Malformed XML", describe(outcome));
+  }
+
   const commented = readOutcome(await new ParityService().handle(
     envelope(`<!-- a comment --><t:Add><t:a> 2 </t:a><?pi data?><t:b>40</t:b></t:Add>`)));
   assert("POSITIVE: comments and processing instructions are skipped", commented.result === "42", describe(commented));
