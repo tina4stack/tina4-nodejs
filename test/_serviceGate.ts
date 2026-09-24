@@ -8,7 +8,7 @@
  * ghost tests under a flag that promised they would fail.
  *
  *   - X is an OPTIONAL engine with a coordinate env var (firebird, postgres,
- *     mysql, mssql, swoole, oidc, neo4j, memgraph, arango, ultipa): excused
+ *     postgis, mysql, mssql, swoole, oidc, neo4j, memgraph, arango, ultipa): excused
  *     ONLY while that coordinate is unset in this run. A CI job that never
  *     promised the engine stays green; the lab, which sets every coordinate,
  *     fails.
@@ -29,6 +29,7 @@ const OPTIONAL_ENGINE_COORDINATES: Record<string, string[]> = {
   // Only the canonical name (ADR-0038, test/fixtures/test_env_contract.json):
   // the contract's "or TINA4_TEST_POSTGRES_URL" alias is non-canonical here.
   postgres: ["TINA4_TEST_PG_URL"],
+  postgis: ["TINA4_TEST_POSTGIS_URL"],
   mysql: ["TINA4_TEST_MYSQL_URL"],
   mssql: ["TINA4_TEST_MSSQL_URL"],
   swoole: ["TINA4_TEST_SWOOLE"],

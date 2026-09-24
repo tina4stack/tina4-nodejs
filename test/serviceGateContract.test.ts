@@ -47,7 +47,7 @@ assert("optional: an empty coordinate counts as unset",
 assert("optional: postgres fails when TINA4_TEST_PG_URL is set",
   failing("[needs:postgres] down", { TINA4_TEST_PG_URL: "postgres://h/db" }) === 1);
 for (const [engine, coordinate] of [
-  ["mysql", "TINA4_TEST_MYSQL_URL"], ["mssql", "TINA4_TEST_MSSQL_URL"], ["swoole", "TINA4_TEST_SWOOLE"],
+  ["postgis", "TINA4_TEST_POSTGIS_URL"], ["mysql", "TINA4_TEST_MYSQL_URL"], ["mssql", "TINA4_TEST_MSSQL_URL"], ["swoole", "TINA4_TEST_SWOOLE"],
   ["oidc", "TINA4_TEST_OIDC_ISSUER"], ["neo4j", "TINA4_TEST_NEO4J_URL"], ["memgraph", "TINA4_TEST_MEMGRAPH_URL"],
   ["arango", "TINA4_TEST_ARANGO_URL"], ["ultipa", "TINA4_TEST_ULTIPA_URL"],
 ]) {

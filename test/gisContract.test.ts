@@ -67,7 +67,9 @@ const reachable = await new Promise<boolean>((resolve) => {
   socket.once("error", () => { clearTimeout(timer); resolve(false); });
 });
 if (!reachable) {
-  console.log(`  SKIP real PostGIS fixture — PostGIS not reachable at ${parsed.hostname}:${parsed.port || 5432}`);
+  // [needs:postgis]: excused by the require-services gate only while
+  // TINA4_TEST_POSTGIS_URL is unset; with it set, an unreachable PostGIS fails.
+  console.log(`  SKIP real PostGIS fixture [needs:postgis] — PostGIS not reachable at ${parsed.hostname}:${parsed.port || 5432}`);
 } else {
   const adapter = await createAdapterFromUrl(postgisUrl);
   setAdapter(adapter);

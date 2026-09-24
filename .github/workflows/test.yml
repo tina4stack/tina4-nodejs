@@ -72,6 +72,22 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
+      # PostGIS for test/gisContract.test.ts - a separate container on 55433 (same
+      # as tina4-python's CI), because the plain postgres:16 image has no PostGIS
+      # extension to install. The image creates the extension in POSTGRES_DB.
+      postgis:
+        image: postgis/postgis:16-3.4
+        ports:
+          - 55433:5432
+        env:
+          POSTGRES_USER: tina4
+          POSTGRES_PASSWORD: tina4
+          POSTGRES_DB: tina4_gis
+        options: >-
+          --health-cmd "pg_isready -U tina4 -d tina4_gis"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
       # MySQL 8 (#262). DB tina4_test, user tina4/tina4 created by the image env.
       mysql:
         image: mysql:8
@@ -123,6 +139,7 @@ jobs:
       TINA4_TEST_PG_DB: tina4_node
       TINA4_TEST_PG_DB_2: tina4_py
       TINA4_TEST_PG_URL: postgres://tina4:tina4@localhost:55432/tina4_node
+      TINA4_TEST_POSTGIS_URL: postgres://tina4:tina4@localhost:55433/tina4_gis
       # MySQL 8 + MSSQL 2022 (#262) — mirror the service containers above and the
       # local docker harness. The MySQL+MSSQL boolean round-trip test reads these.
       # 127.0.0.1, not "localhost": mysql2 (like libmysqlclient) treats the literal
