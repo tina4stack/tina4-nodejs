@@ -60,7 +60,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  *          Ruby spec/test_client_contract_spec.rb.
  */
 
-process.env.TINA4_SECRET = "tc131-contract-secret";
+process.env.TINA4_SECRET = "tc131-contract-secret-0123456789";
 delete process.env.TINA4_API_KEY;
 
 import { strict as assert } from "node:assert";

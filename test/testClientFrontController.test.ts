@@ -42,7 +42,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  *          PHP tests/TestClientFrontControllerTest.php.
  */
 
-process.env.TINA4_SECRET = "node-d6-front-controller-secret";
+process.env.TINA4_SECRET = "node-d6-front-controller-secret-";
 
 import { strict as assert } from "node:assert";
 import { TestClient, Router } from "@tina4/core";

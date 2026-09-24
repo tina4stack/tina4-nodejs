@@ -13,6 +13,15 @@ import type { Router } from "./router.js";
 export class SsoError extends Error {}
 
 type Json = Record<string, any>;
+
+export { liveSessionIdentity } from "./ssoIdentity.js";
+import { liveSessionIdentity } from "./ssoIdentity.js";
+
+/** When the provider's access token lapses; 0 when it gave no lifetime (never "now"). */
+function expiresAt(tokens: Json): number {
+  const lifetime = Number(tokens.expires_in ?? 0);
+  return lifetime > 0 ? Math.floor(Date.now() / 1000) + lifetime : 0;
+}
 type SessionLike = {
   get(key: string): unknown;
   set(key: string, value: unknown): void;
@@ -225,14 +234,13 @@ export class Sso {
     session!.regenerate();
     session!.set(Sso.SESSION_KEY, {
       version: 1, identity, access_token: tokens.access_token, refresh_token: tokens.refresh_token,
-      id_token: tokens.id_token, expires_at: Math.floor(Date.now() / 1000) + Number(tokens.expires_in ?? 0),
+      id_token: tokens.id_token, expires_at: expiresAt(tokens),
     });
     return { identity, return_to: Sso.safeReturn(pending.return_to) };
   }
 
   identity(requestOrSession: any): Json | null {
-    const stored = this.session(requestOrSession)?.get(Sso.SESSION_KEY) as Json | undefined;
-    const identity = stored?.identity ?? null;
+    const identity = liveSessionIdentity(this.session(requestOrSession)?.get(Sso.SESSION_KEY));
     if (identity && requestOrSession?.session) requestOrSession.user = identity;
     return identity;
   }
@@ -251,7 +259,7 @@ export class Sso {
       const identity = this.normalize(claims);
       session!.set(Sso.SESSION_KEY, { ...stored, identity, access_token: tokens.access_token,
         refresh_token: tokens.refresh_token ?? stored.refresh_token, id_token: tokens.id_token ?? stored.id_token,
-        expires_at: Math.floor(Date.now() / 1000) + Number(tokens.expires_in ?? 0) });
+        expires_at: expiresAt(tokens) });
       return identity;
     } catch (error) { session?.delete(Sso.SESSION_KEY); throw error; }
   }

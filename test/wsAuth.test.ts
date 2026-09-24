@@ -56,7 +56,7 @@ function assert(name: string, condition: boolean, detail = "") {
 console.log("=== WebSocket Per-Route Auth Tests ===\n");
 
 // A known secret so getToken / validToken agree.
-process.env.TINA4_SECRET = "ws-auth-test-secret";
+process.env.TINA4_SECRET = "ws-auth-test-secret-0123456789ab";
 const validJwt = getToken({ userId: 42, role: "admin" });
 const invalidJwt = validJwt + "tampered";
 

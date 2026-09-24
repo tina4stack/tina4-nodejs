@@ -82,6 +82,58 @@ function _warnBlankSecret(): void {
   void _logWarning(BLANK_SECRET_WARNING);
 }
 
+// ── Auth-token rules (ADR-0079) ────────────────────────────────────
+
+/**
+ * Token purposes that are never an identity (ADR-0079 s1). Frond's formToken()
+ * signs a JWT with the same TINA4_SECRET as an auth token, marked
+ * `type: "form"`. A form token proves where a write came from, never who the
+ * caller is, so every identity gate refuses these purposes. validToken itself
+ * stays purpose-neutral: the CSRF middleware needs it for form tokens.
+ */
+export const NON_IDENTITY_TOKEN_TYPES: readonly string[] = ["form"];
+
+/**
+ * Minimum HMAC key length in bytes (ADR-0079 s2): the HS256 output size, RFC
+ * 7518 s3.2. A blank key is the shortest case - anyone can reproduce it.
+ */
+export const MIN_SECRET_BYTES = 32;
+
+/**
+ * True when a VERIFIED payload may stand for a caller's identity. A payload
+ * whose `type` is a reserved non-identity purpose (a Frond form token) is
+ * refused; application payloads are otherwise untouched.
+ */
+export function isIdentityPayload(payload: Record<string, unknown> | null | undefined): payload is Record<string, unknown> {
+  return payload != null && !NON_IDENTITY_TOKEN_TYPES.includes(payload.type as string);
+}
+
+/** The actionable error for a weak HMAC key, or null when the key is usable. */
+export function insecureSecretMessage(secret: string | undefined | null): string | null {
+  const length = Buffer.byteLength(secret ?? "", "utf8");
+  if (length >= MIN_SECRET_BYTES) return null;
+  const what = length === 0 ? "is not set" : `is ${length} bytes`;
+  return `Auth: TINA4_SECRET ${what}; an HMAC JWT secret must be at least ${MIN_SECRET_BYTES} bytes. ` +
+    "Generate one with `openssl rand -hex 32` and set TINA4_SECRET in your environment or .env.";
+}
+
+/**
+ * Refuse to boot with a secret that makes tokens forgeable (ADR-0079 s2).
+ * Outside dev a blank TINA4_SECRET is refused; in any mode a set-but-short one
+ * is refused. Dev with a blank secret has already had one minted into
+ * .env.local by ensureDevSecret(). RS256 keys are PEMs and are not measured.
+ *
+ * @throws Error with the actionable message naming TINA4_SECRET.
+ */
+export function requireBootSecret(): void {
+  const algorithm = (process.env.TINA4_JWT_ALGORITHM ?? "").trim() || "HS256";
+  if (RSA_SIGN_ALGORITHMS.has(algorithm)) return;
+  const secret = process.env.TINA4_SECRET ?? "";
+  if (secret === "" && _isDev()) return;
+  const message = insecureSecretMessage(secret);
+  if (message) throw new Error(message);
+}
+
 /**
  * Ensure a usable TINA4_SECRET exists. Run ONCE at server boot, after env load
  * and before auth is used. Mirrors Python's `ensure_dev_secret()`.
@@ -460,6 +512,14 @@ export function validToken(token: string, secret?: string, algorithm?: string): 
     const header = JSON.parse(base64urlDecode(h).toString()) as Record<string, unknown>;
     if (header.alg !== resolvedAlgorithm) return null;
 
+    // A blank or short HMAC key verifies tokens anyone can mint, so the token is
+    // REJECTED (fail closed with a 401, never a 500) and the operator is told
+    // why. ADR-0079 s2.
+    if (HMAC_DIGESTS.has(resolvedAlgorithm)) {
+      const weak = insecureSecretMessage(resolvedSecret);
+      if (weak) { void _logWarning(weak); return null; }
+    }
+
     const signingInput = `${h}.${p}`;
     if (!verifySignature(signingInput, sig, resolvedSecret, resolvedAlgorithm)) {
       return null;
@@ -522,6 +582,8 @@ function sign(input: string, secret: string, algorithm: string): string {
   // the header is the one that actually produced this signature.
   const digest = HMAC_DIGESTS.get(algorithm);
   if (digest) {
+    const weak = insecureSecretMessage(secret);
+    if (weak) throw new Error(weak);
     return base64urlEncode(createHmac(digest, secret).update(input).digest());
   }
   const rsaAlgorithm = RSA_SIGN_ALGORITHMS.get(algorithm);
@@ -622,12 +684,14 @@ export function authMiddleware(secret?: string, algorithm?: string): Middleware 
     }
 
     const token = authHeader.slice(7);
-    if (!validToken(token, secret, algorithm)) {
+    const payload = validToken(token, secret, algorithm);
+    // Invalid, expired, or a form token (not an identity, ADR-0079 s1).
+    if (!isIdentityPayload(payload)) {
       res({ error: "Unauthorized" }, 401);
       return;
     }
 
-    (req as any).auth = getPayload(token);
+    (req as any).auth = payload;
     next();
   };
 }
@@ -648,11 +712,12 @@ export function refreshToken(
   token: string,
   expiresIn: number = 60,
 ): string | null {
-  if (!validToken(token)) return null;
-
-  const payload = getPayload(token);
+  const payload = validToken(token);
   if (!payload) return null;
 
+  // Refresh preserves PURPOSE: a form token comes back as a form token (CSRF
+  // rotation) and so can still never pass an identity gate. The route gate
+  // issues a FreshToken only for an identity token. ADR-0079 s1.
   // Strip standard timing claims so getToken sets fresh ones
   const { iat: _iat, exp: _exp, ...claims } = payload;
   return getToken(claims, expiresIn);
@@ -686,7 +751,9 @@ export function authenticateRequest(
   // algorithm= silently got the env values instead, and `algorithm` defaulted to
   // the literal "HS256" which additionally shadowed TINA4_JWT_ALGORITHM. Python,
   // PHP and Ruby all honour these; Node was the last one that did not.
-  if (validToken(token, secret, algorithm)) return getPayload(token);
+  const payload = validToken(token, secret, algorithm);
+  // A form token is not an identity (ADR-0079 s1).
+  if (payload) return isIdentityPayload(payload) ? payload : null;
 
   // Fallback: treat Bearer value as API key
   if (validateApiKey(token)) {

@@ -103,11 +103,11 @@ console.log("--- Dev generates a secret to .env.local ---");
   // An existing TINA4_SECRET is left untouched — no generation, no write.
   clearEnv();
   process.env.TINA4_DEBUG = "true";
-  process.env.TINA4_SECRET = "already-set-secret";
+  process.env.TINA4_SECRET = "already-set-secret-0123456789abc";
   const dir = tmpCwd();
   const result = ensureDevSecret(dir);
   assert("already-set: returns null (no-op)", result === null);
-  assert("already-set: TINA4_SECRET unchanged", process.env.TINA4_SECRET === "already-set-secret");
+  assert("already-set: TINA4_SECRET unchanged", process.env.TINA4_SECRET === "already-set-secret-0123456789abc");
   assert("already-set: no .env.local written", !existsSync(join(dir, ".env.local")));
   rmSync(dir, { recursive: true, force: true });
 }

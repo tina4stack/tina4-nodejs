@@ -88,7 +88,7 @@ process.env.TINA4_RATE_LIMIT = "10000";
 process.env.TINA4_DEBUG = "true";
 
 // Set up auth secret and generate a test token for write operations
-const TEST_SECRET = "integration-test-secret";
+const TEST_SECRET = "integration-test-secret-01234567";
 process.env.TINA4_SECRET = TEST_SECRET;
 const testToken = getToken({ sub: "test-user", role: "admin" }, TEST_SECRET, 3600);
 

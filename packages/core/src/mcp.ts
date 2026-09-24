@@ -238,7 +238,9 @@ function envTruthy(val: string | undefined): boolean {
  * Python master parity: tina4_python.mcp.is_loopback.
  */
 export function isLoopback(ip: string | undefined | null): boolean {
-  if (ip == null || ip === "") return true;
+  // An empty or missing peer is UNKNOWN and is not loopback: a runtime path
+  // that lost its socket address must fail closed (ADR-0079 s4).
+  if (ip == null || ip === "") return false;
   let addr = ip.trim().toLowerCase();
   if (addr.startsWith("::ffff:")) addr = addr.slice(7);
   return addr === "::1" || addr === "localhost" || addr.startsWith("127.");

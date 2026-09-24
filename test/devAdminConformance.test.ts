@@ -44,7 +44,7 @@ import { freePort } from "./freePort.ts";
 import { tmpdir } from "node:os";
 
 const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-devadmin-conformance-test-"));
-const SECRET = "sup3r-sekret-do-not-leak-127";
+const SECRET = "sup3r-sekret-do-not-leak-127-32bytes";
 const DB_PASSWORD_LEAK = "pg-password-leak";
 
 let pass = 0;

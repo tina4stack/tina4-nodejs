@@ -45,6 +45,13 @@ process.env.TINA4_NO_BROWSER = "true";
 // deletes it per-case, so it still proves the default-blocked behaviour.
 process.env.TINA4_ALLOW_PRIVATE_REQUESTS = "true";
 
+// A usable signing secret for every test file (ADR-0079 s2). Auth refuses to
+// sign with a blank or short TINA4_SECRET and startServer() refuses to boot
+// outside dev without one; each file inherits this unless it sets its own.
+if (Buffer.byteLength(process.env.TINA4_SECRET ?? "", "utf8") < 32) {
+  process.env.TINA4_SECRET = "tina4-nodejs-test-suite-secret-0123456789abcdef";
+}
+
 // ── Temp sandbox ────────────────────────────────────────────────────────────
 //
 // Every temp path this run creates goes into ONE per-run directory, removed

@@ -56,7 +56,7 @@ function assert(label: string, condition: boolean, detail = ""): void {
   else { failed++; console.log(`  \x1b[31mFAIL\x1b[0m ${label} ${detail}`); }
 }
 
-const SECRET = "test-secure-handoff-secret";
+const SECRET = "test-secure-handoff-secret-01234";
 process.env.TINA4_SECRET = SECRET;
 process.env.TINA4_RATE_LIMIT = "100000";
 

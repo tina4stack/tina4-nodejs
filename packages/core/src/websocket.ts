@@ -38,7 +38,7 @@ import type { WebSocketConnection } from "./websocketConnection.js";
 import type { WebSocketRouteHandler } from "./types.js";
 import { Router } from "./router.js";
 import { Log } from "./logger.js";
-import { validToken } from "./auth.js";
+import { validToken, isIdentityPayload } from "./auth.js";
 import { WsBackplaneManager, type WsEnvelope } from "./websocketBackplane.js";
 
 // ── Constants ────────────────────────────────────────────────
@@ -211,7 +211,9 @@ export function wsAuthorized(
   const token = wsToken(headers, queryString, subprotocol);
   if (!token) return [null, false];
   const payload = validToken(token);
-  return [payload, payload !== null];
+  // A form token is not an identity (ADR-0079 s1).
+  if (!isIdentityPayload(payload)) return [null, false];
+  return [payload, true];
 }
 
 /**

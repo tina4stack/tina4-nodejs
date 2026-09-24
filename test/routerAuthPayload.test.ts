@@ -54,7 +54,7 @@ function assert(label: string, condition: boolean, detail = "") {
   }
 }
 
-const SECRET = "test-router-auth-secret";
+const SECRET = "test-router-auth-secret-01234567";
 process.env.TINA4_SECRET = SECRET;
 process.env.TINA4_RATE_LIMIT = "100000";
 process.env.TINA4_NO_BROWSER = "true";
