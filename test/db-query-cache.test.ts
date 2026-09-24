@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * DB query cache — BOTH layers are opt-in / DEFAULT OFF. Protects the DB from
  * rapid identical reads when enabled. Mirrors tina4_python/tests/test_db_query_cache.py.

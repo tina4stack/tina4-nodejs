@@ -1,7 +1,7 @@
 {
   "name": "@tina4/orm",
   "version": "3.13.138",
-  "description": "Tina4 ORM — models, auto-CRUD, query builder",
+  "description": "Tina4 ORM \u2014 models, auto-CRUD, query builder",
   "type": "module",
   "main": "./dist/index.js",
   "types": "../../types/orm/src/index.d.ts",
@@ -24,5 +24,6 @@
     "pg": "^8.20.0",
     "tedious": "^19.2.1",
     "tina4-ultipa": "^0.1.0"
-  }
+  },
+  "license": "MPL-2.0"
 }

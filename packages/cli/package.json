@@ -1,7 +1,7 @@
 {
   "name": "tina4nodejs",
   "version": "3.13.138",
-  "description": "Tina4 CLI — The Intelligent Native Application 4ramework",
+  "description": "Tina4 CLI \u2014 The Intelligent Native Application 4ramework",
   "type": "module",
   "bin": {
     "tina4nodejs": "./dist/bin.js",
@@ -17,5 +17,6 @@
     "@tina4/core": "*",
     "@tina4/orm": "*",
     "@tina4/swagger": "*"
-  }
+  },
+  "license": "MPL-2.0"
 }

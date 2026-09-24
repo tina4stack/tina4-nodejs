@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Seeder + fake-data cross-engine contract — feature 28 (seeder_contract.json),
  * parity with tina4-python/tests/test_seeder_contract.py.

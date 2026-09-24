@@ -18,7 +18,7 @@
     "type": "git",
     "url": "https://github.com/tina4stack/tina4-nodejs.git"
   },
-  "license": "MIT",
+  "license": "MPL-2.0",
   "author": "Tina4 Team <info@tina4.com>",
   "workspaces": [
     "packages/*"
@@ -67,7 +67,10 @@
     "BENCHMARK_REPORT.md",
     "CARBONAH.md",
     "README.md",
-    "types"
+    "types",
+    "LICENSE",
+    "NOTICE",
+    "COMMERCIAL-LICENSE.md"
   ],
   "bin": {
     "tina4nodejs": "packages/cli/dist/bin.js"

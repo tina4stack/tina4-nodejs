@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Replace string literals and template literal contents with spaces of equal
  * length so brace/paren scanning isn't fooled by characters inside strings.

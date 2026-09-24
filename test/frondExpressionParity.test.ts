@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * Frond expression parity gate -- the cross-framework output contract.
  * Run with: npx tsx test/frondExpressionParity.test.ts

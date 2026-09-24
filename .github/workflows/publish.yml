@@ -1,3 +1,9 @@
+# Copyright (c) 2026 Code Infinity
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 name: Publish to npm
 
 on:
@@ -41,7 +47,7 @@ jobs:
       - name: Generate SPDX inventory and checksums
         run: |
           python3 scripts/release_evidence.py --output release-dist --name tina4-nodejs \
-            --version "$(node -p 'require("./package.json").version')" --license MIT --repository tina4stack/tina4-nodejs
+            --version "$(node -p 'require("./package.json").version')" --license MPL-2.0 --repository tina4stack/tina4-nodejs
           (cd release-dist && sha256sum --check SHA256SUMS)
       - name: Test release evidence generator
         run: python3 -m unittest discover -s scripts -p 'test_release_evidence.py'

@@ -1,3 +1,11 @@
+/*
+Copyright (c) 2026 Code Infinity
+SPDX-License-Identifier: MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*/
+
 /**
  * MCP security guard tests (3.13.40 P0 — Node mirror of the Python master
  * tests/test_mcp_security.py, the PHP McpSecurityTest, and the Ruby
