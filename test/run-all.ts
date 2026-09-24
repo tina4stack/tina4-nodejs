@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   requireServices,
-  findProvisionedServiceSkips,
+  gateFailures,
   findSkipLines,
 } from "./_serviceGate.ts";
 import { summarizeTestOutput } from "./_testSummary.ts";
@@ -99,10 +99,9 @@ let filesRun = 0;
 let filesFailed = 0;
 const failures: string[] = [];
 
-// Real-service gate: collect skips that name a PROVISIONED service that was
-// unavailable. When TINA4_REQUIRE_SERVICES is set, these turn the run red
-// (mirrors tina4-python/tests/conftest.py). MySQL/MSSQL joined the provisioned
-// set in #262; only Firebird is excluded now.
+// Real-service gate: when TINA4_REQUIRE_SERVICES is set, every skip that is not
+// excused by a machine-readable [needs:X] tag turns the run red (the rule is in
+// test/_serviceGate.ts, the same in all four frameworks).
 const gateOn = requireServices();
 const serviceSkips: { file: string; reason: string }[] = [];
 
@@ -120,8 +119,7 @@ function collectServiceSkips(label: string, output: string): void {
   for (const reason of findSkipLines(output)) {
     allSkips.push({ file: label, reason });
   }
-  if (!gateOn) return;
-  for (const reason of findProvisionedServiceSkips(output)) {
+  for (const reason of gateFailures(output, gateOn)) {
     serviceSkips.push({ file: label, reason });
   }
 }
@@ -239,6 +237,14 @@ if (VITEST_FILES.size > 0) {
   const plain = vout.replace(/\x1b\[[0-9;]*m/g, "");
   const m = plain.match(/Tests\s+(?:(\d+)\s+failed[^\n]*?)?(\d+)\s+passed/);
   const vFail = m?.[1] ? Number(m[1]) : 0;
+  // A vitest skip/todo carries no [needs:X] reason the gate could excuse, so it
+  // is counted - and, under the gate, fails - like any untagged skip.
+  const vSkipped = Number(plain.match(/Tests\s+[^\n]*?(\d+)\s+(?:skipped|todo)/)?.[1] ?? 0);
+  if (vSkipped > 0) {
+    const reason = `SKIP ${vSkipped} vitest test(s) skipped`;
+    allSkips.push({ file: "vitest", reason });
+    if (gateOn) serviceSkips.push({ file: "vitest", reason });
+  }
   const vPass = m?.[2] ? Number(m[2]) : 0;
   if (vit.status !== 0 || vPass === 0) {
     totalFail += Math.max(vFail, 1);
@@ -280,21 +286,21 @@ if (allSkips.length > 0) {
   console.log("");
 }
 
-// Real-service gate verdict. With TINA4_REQUIRE_SERVICES set, a skip caused by
-// a PROVISIONED service being unavailable fails the whole run — a green skip of
-// an integration test in CI is exactly what we must never allow.
+// Real-service gate verdict. With TINA4_REQUIRE_SERVICES set, a skip that is not
+// excused by its [needs:X] tag fails the whole run — a green skip of an
+// integration test is exactly what we must never allow.
 if (gateOn && serviceSkips.length > 0) {
   console.log(
-    "\x1b[31m  TINA4_REQUIRE_SERVICES is set, but real-service tests SKIPPED because a\x1b[0m"
+    "\x1b[31m  TINA4_REQUIRE_SERVICES is set, but tests SKIPPED without an excusable\x1b[0m"
   );
   console.log(
-    "\x1b[31m  provisioned service or client library was unavailable:\x1b[0m"
+    "\x1b[31m  [needs:X] tag (untagged, an always-provisioned service, or an optional engine whose coordinate is set):\x1b[0m"
   );
   for (const { file, reason } of serviceSkips) {
     console.log(`\x1b[31m    - [${file}] ${reason}\x1b[0m`);
   }
   console.log(
-    "\x1b[31m  Provision the service / install the client, or unset TINA4_REQUIRE_SERVICES.\x1b[0m\n"
+    "\x1b[31m  Provision the service / install the client, tag a genuine platform exclusion [needs:X], or unset TINA4_REQUIRE_SERVICES.\x1b[0m\n"
   );
 }
 

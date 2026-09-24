@@ -4,7 +4,7 @@
  * Install: npm install mysql2
  * URL format: mysql://user:pass@host:port/database
  */
-import { MYSQL_DIALECT, buildInsert, buildSetClause, buildWhereClause } from "./sqlDialect.js";
+import { MYSQL_DIALECT, buildInsert, buildSetClause, buildWhereClause, quoteIdentifierWith } from "./sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "../types.js";
 import { SQLTranslator } from "../sqlTranslator.js";
 import { connectTarget, connectTimeoutMillis, driverConnectTimeoutMillis, withConnectTimeout } from "../connectTimeout.js";
@@ -60,6 +60,11 @@ export class MysqlAdapter implements DatabaseAdapter {
   /** ADR-0044 required adapter capability. */
   getDatabaseType(): string {
     return 'mysql';
+  }
+
+  /** MySQL identifiers are backtick-quoted; a double-quoted token is a string. */
+  quoteIdentifier(name: string): string {
+    return quoteIdentifierWith(name, "`", "`");
   }
 
   /** ADR-0044: readable/writable native boolean. */

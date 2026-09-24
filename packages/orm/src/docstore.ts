@@ -199,9 +199,23 @@ const COMPARATORS: Record<string, string> = {
   $lte: "<=",
 };
 
-/** Field name -> a JSON path. Dotted names address nested keys. */
+const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Field name -> a JSON path. Dotted names address nested keys.
+ *
+ * tina4: ADR-0069 - this is the single chokepoint every field path passes
+ * through on its way into SQL (filter keys at any depth, $or/$and members,
+ * operator fields, sort keys), so it validates every dot segment here and
+ * throws before any SQL is built.
+ */
 function jsonPath(field: string): string {
   const segments = field.split(".");
+  if (!segments.every((s) => SAFE_PATH_SEGMENT.test(s))) {
+    throw new Error(
+      `DocStore: invalid field path '${field}' - each dot-separated segment must match [A-Za-z0-9_-]+`,
+    );
+  }
   const isIdent = (s: string) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(s);
   return "$." + segments.map((s) => (isIdent(s) ? s : `"${s}"`)).join(".");
 }

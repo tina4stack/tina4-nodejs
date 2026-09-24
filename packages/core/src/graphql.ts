@@ -62,12 +62,14 @@ const TOKEN_PATTERNS: Array<[string, RegExp]> = [
   ["EQUALS", /=/y],
   ["AT", /@/y],
   ["DOLLAR", /\$/y],
-  ["COMMA", /,/y],
   ["STRING", /"(?:[^"\\]|\\.)*"/y],
   ["NUMBER", /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y],
   ["BOOL", /\b(?:true|false)\b/y],
   ["NULL", /\bnull\b/y],
   ["NAME", /[_a-zA-Z]\w*/y],
+  // GraphQL spec 2.1.7: a comma is insignificant, exactly like whitespace. It
+  // used to be a COMMA token that only the argument and variable loops
+  // consumed, so a comma between fields or list values was a parse error.
   ["SKIP", /[\s,]+/y],
   ["COMMENT", /#[^\n]*/y],
 ];
@@ -331,7 +333,6 @@ class Parser {
       const name = this.expect("NAME").value;
       this.expect("COLON");
       args[name] = this.parseValue();
-      this.match("COMMA");
     }
     return args;
   }
@@ -416,7 +417,6 @@ class Parser {
         defaultVal = this.parseValue();
       }
       defs.push({ name, type: typeName, default: defaultVal });
-      this.match("COMMA");
     }
     return defs;
   }
@@ -930,7 +930,9 @@ export class GraphQL {
       className,
       (root, args) => {
         const db = getDb();
-        const fieldNames = Object.keys(args);
+        // Declared fields only: the executor passes every argument the query
+        // names, declared or not, and each one becomes a column (ADR-0069).
+        const fieldNames = Object.keys(args).filter((k) => Object.hasOwn(mutationArgs, k));
         const placeholders = fieldNames.map(() => "?");
         const values = fieldNames.map((f) => args[f]);
 
@@ -960,7 +962,8 @@ export class GraphQL {
         const values: unknown[] = [];
 
         for (const [k, v] of Object.entries(args)) {
-          if (k !== "id") {
+          // Declared fields only (see create above).
+          if (k !== "id" && Object.hasOwn(mutationArgs, k)) {
             setClauses.push(`"${k}" = ?`);
             values.push(v);
           }

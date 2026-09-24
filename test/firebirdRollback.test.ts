@@ -93,7 +93,7 @@ const CASES = [
 
 async function main(): Promise<void> {
   if (!FIREBIRD_URL) {
-    for (const c of CASES) skip(c, "TINA4_TEST_FIREBIRD_URL not set (firebird)");
+    for (const c of CASES) skip(c, "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (firebird)");
     return summarise();
   }
 

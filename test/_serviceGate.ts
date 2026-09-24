@@ -1,68 +1,49 @@
 /**
- * Real-service test gate — mirrors tina4-python/tests/conftest.py.
+ * Real-service test gate - the same rule in all four frameworks.
  *
- * When TINA4_REQUIRE_SERVICES is truthy, a test that SKIPPED because a
- * PROVISIONED service (or its client library) was unavailable is treated as a
- * hard FAILURE. CI stands up PostgreSQL, Redis, Valkey, Memcached, MongoDB,
- * RabbitMQ, and Kafka and sets every TINA4_TEST_* URL, so these integration
- * tests must RUN — a service-unavailable skip means the service or driver
- * silently went missing (the exact gap that let the migration / queue bugs
- * ship green).
+ * Under TINA4_REQUIRE_SERVICES a skip PASSES only when its reason carries a
+ * machine-readable `[needs:X]` tag AND X is excusable in this run. There is no
+ * phrase matching: the old keyword + "not reachable" matcher missed reasons
+ * worded "no reachable ..." or "... unavailable", and those skipped green -
+ * ghost tests under a flag that promised they would fail.
  *
- * MySQL / MSSQL / SQL Server joined the provisioned set in #262 (CI stands up
- * mysql:8 + mssql/server:2022), so their reachability / driver skips now fail
- * the gate too — they are in SERVICE_KEYWORDS below. Firebird is still NOT
- * provisioned, so its skips must stay green and its keyword stays EXCLUDED.
+ *   - X is an OPTIONAL engine with a coordinate env var (firebird, postgres,
+ *     postgis, mysql, mssql, swoole, oidc, neo4j, memgraph, arango, ultipa): excused
+ *     ONLY while that coordinate is unset in this run. A CI job that never
+ *     promised the engine stays green; the lab, which sets every coordinate,
+ *     fails.
+ *   - X is an ALWAYS-provisioned service (mongo, redis, valkey, memcached,
+ *     rabbitmq, kafka, mqtt, smtp, imap, s3): never excused.
+ *   - Any other X (absent-ext=..., no-dac-override, os=..., runtime=...) is a
+ *     platform exclusion: always excused.
+ *   - An untagged skip FAILS.
  *
  * The runner (test/run-all.ts) captures each test file's stdout and runs every
- * SKIP line through this matcher — so individual test files need no edits. This
- * is the same "central gate" approach as the Python conftest hook.
+ * SKIP line through gateFailures() - the "central gate" approach of the Python
+ * conftest hook.
  */
 
-// Provisioned real services + their Node client libraries. A skip reason that
-// names one of these AND signals unavailability is a hard failure under the flag.
-const SERVICE_KEYWORDS = [
-  "postgres",
-  "postgresql",
-  "mysql", // also matches "mysql2" (#262, provisioned mysql:8)
-  "mssql",
-  "sqlserver", // MSSQL / SQL Server (#262, provisioned mssql/server:2022)
-  "tedious", // the Node MSSQL client library
-  "redis",
-  "valkey",
-  "memcached",
-  "mongo", // also matches "mongodb"
-  "rabbit",
-  "amqp",
-  "kafka",
-  "mqtt", // Mosquitto (+ EMQX) for the MQTT tests; also matches "mqtts"
-  "mosquitto",
-  // GreenMail (real SMTP 3025 / IMAP 3143) for the Messenger round-trip tests
-  // in messengerGreenMail.test.ts. No mail keyword existed here before, so a
-  // "not reachable" mail skip passed green in CI.
-  "greenmail",
-  "smtp",
-  "imap",
-];
+/** Optional engines and the coordinate env vars that promise them. */
+const OPTIONAL_ENGINE_COORDINATES: Record<string, string[]> = {
+  firebird: ["TINA4_TEST_FIREBIRD_URL"],
+  // Only the canonical name (ADR-0038, test/fixtures/test_env_contract.json):
+  // the contract's "or TINA4_TEST_POSTGRES_URL" alias is non-canonical here.
+  postgres: ["TINA4_TEST_PG_URL"],
+  postgis: ["TINA4_TEST_POSTGIS_URL"],
+  mysql: ["TINA4_TEST_MYSQL_URL"],
+  mssql: ["TINA4_TEST_MSSQL_URL"],
+  swoole: ["TINA4_TEST_SWOOLE"],
+  oidc: ["TINA4_TEST_OIDC_ISSUER"],
+  neo4j: ["TINA4_TEST_NEO4J_URL"],
+  memgraph: ["TINA4_TEST_MEMGRAPH_URL"],
+  arango: ["TINA4_TEST_ARANGO_URL"],
+  ultipa: ["TINA4_TEST_ULTIPA_URL"],
+};
 
-// Hints that a skip was caused by the service/driver being unavailable (rather
-// than e.g. an intentional "this needs a running X server" placeholder skip or
-// a "package is installed" branch).
-const UNAVAILABLE_HINTS = [
-  "not reachable",
-  "unreachable",
-  "not running",
-  "not set",
-  "not installed",
-  "could not connect",
-  "not available",
-  "refused",
-];
-
-// Service keywords that are NOT provisioned in CI — their skips stay green even
-// when they appear alongside an unavailable hint. Firebird is the only engine
-// left here (MySQL/MSSQL became provisioned in #262 and moved to SERVICE_KEYWORDS).
-const EXCLUDED_KEYWORDS = ["firebird"];
+/** Services every provisioned environment stands up: a skip is never excused. */
+const ALWAYS_PROVISIONED = new Set([
+  "mongo", "redis", "valkey", "memcached", "rabbitmq", "kafka", "mqtt", "smtp", "imap", "s3",
+]);
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
@@ -74,17 +55,24 @@ export function requireServices(): boolean {
   return isTruthy(process.env.TINA4_REQUIRE_SERVICES);
 }
 
+/** The `[needs:X]` tags in a skip reason, in order. */
+export function needsTags(reason: string): string[] {
+  return [...(reason || "").matchAll(/\[needs:([^\]]+)\]/g)].map((m) => m[1].trim());
+}
+
 /**
- * Does this skip reason describe a PROVISIONED service that was unavailable?
- * Excludes the non-provisioned engines (mysql/mssql/sqlserver/firebird).
+ * Is this skip excused under TINA4_REQUIRE_SERVICES? Only a tagged reason can
+ * be, and only when EVERY tag is excusable in this environment (see header).
  */
-export function isProvisionedServiceSkip(reason: string): boolean {
-  const low = (reason || "").toLowerCase();
-  if (EXCLUDED_KEYWORDS.some((k) => low.includes(k))) return false;
-  return (
-    SERVICE_KEYWORDS.some((k) => low.includes(k)) &&
-    UNAVAILABLE_HINTS.some((h) => low.includes(h))
-  );
+export function isExcusedSkip(reason: string, env: Record<string, string | undefined> = process.env): boolean {
+  const tags = needsTags(reason);
+  if (tags.length === 0) return false;
+  return tags.every((tag) => {
+    const coordinates = OPTIONAL_ENGINE_COORDINATES[tag];
+    if (coordinates) return coordinates.every((name) => (env[name] ?? "").trim() === "");
+    if (ALWAYS_PROVISIONED.has(tag)) return false;
+    return true;
+  });
 }
 
 /**
@@ -112,9 +100,14 @@ export function findSkipLines(output: string): string[] {
 }
 
 /**
- * Scan a test file's full stdout for SKIP lines that name an unavailable
- * provisioned service. Returns the offending reason strings (ANSI-stripped).
+ * The SKIP lines in a test file's stdout that FAIL the run. Empty when the gate
+ * is off - the flag decides whether skips fail, never whether they are counted.
  */
-export function findProvisionedServiceSkips(output: string): string[] {
-  return findSkipLines(output).filter(isProvisionedServiceSkip);
+export function gateFailures(
+  output: string,
+  gateOn: boolean,
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  if (!gateOn) return [];
+  return findSkipLines(output).filter((reason) => !isExcusedSkip(reason, env));
 }

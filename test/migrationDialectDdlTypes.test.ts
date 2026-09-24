@@ -214,7 +214,7 @@ console.log("\n--- live Firebird round-trip ---");
 if (!FIREBIRD_URL) {
   skip(
     "generated migration applies + row round-trips",
-    "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)",
+    "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)",
   );
 } else if (!generated?.createStmt) {
   ok("generated migration applies + row round-trips", false, "generator produced no CREATE statement");

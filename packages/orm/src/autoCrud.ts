@@ -1,9 +1,9 @@
 import type { RouteDefinition, Tina4Request, Tina4Response } from "../../core/src/index.js";
 import type { DiscoveredModel } from "./model.js";
 import type { FieldDefinition } from "./types.js";
-import { getAdapter, adapterQuery, adapterExecute } from "./database.js";
+import { getAdapter, getNamedAdapter, adapterQuery, adapterExecute, adapterFetch, quoteIdentifier } from "./database.js";
 import { DatabaseResult } from "./databaseResult.js";
-import { buildQuery, parseQueryString } from "./query.js";
+import { buildQuery, parseQueryString, resolveField, resolveFieldColumn, UnknownFieldError, InvalidQueryParameterError } from "./query.js";
 import { validate } from "./validation.js";
 
 /**
@@ -23,6 +23,7 @@ import { validate } from "./validation.js";
  */
 function allowListedBody(
   fields: Record<string, FieldDefinition>,
+  columnOf: (field: string) => string,
   pkField: string,
   body: Record<string, unknown> | null | undefined,
   isCreate: boolean,
@@ -31,10 +32,14 @@ function allowListedBody(
   const stripPk = isCreate ? pkDef?.autoIncrement === true : true;
   const allowed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(body ?? {})) {
-    if (!(key in fields)) continue;
-    if (key === "is_deleted") continue;
-    if (stripPk && key === pkField) continue;
-    allowed[key] = value;
+    // ADR-0069 (G1): the SAME resolver the list route uses - a declared field
+    // by its property or its column; anything else (including an inherited
+    // Object property such as "constructor") is dropped.
+    const field = resolveField(fields, columnOf, key);
+    if (field === null) continue;
+    if (field === "is_deleted") continue;
+    if (stripPk && field === pkField) continue;
+    allowed[field] = value;
   }
   return allowed;
 }
@@ -154,7 +159,11 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
   const writeSecurity = options.public === true ? { secure: false as const } : {};
 
   for (const { definition } of models) {
-    const { tableName, fields, softDelete, tableFilter, fieldMapping } = definition;
+    const { tableName, fields, softDelete, tableFilter, fieldMapping, dbName } = definition;
+
+    // The connection the model is bound to (`static _db = "name"`), never the
+    // global default behind its back - the same resolution BaseModel.getDb() uses.
+    const modelAdapter = () => (dbName ? getNamedAdapter(dbName) : getAdapter());
     const basePath = `/api/${tableName}`;
     const mapping = fieldMapping ?? {};
 
@@ -168,7 +177,9 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
     // Build extra WHERE conditions for soft delete and table filter
     const extraConditions: string[] = [];
     if (softDelete) {
-      extraConditions.push(`"is_deleted" = 0`);
+      // Bare, like BaseModel's soft-delete filter: resolves on every engine
+      // (Firebird folds it to IS_DELETED, the name its DDL created).
+      extraConditions.push(`is_deleted = 0`);
     }
     if (tableFilter) {
       extraConditions.push(tableFilter);
@@ -183,23 +194,42 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const adapter = getAdapter();
+        const adapter = modelAdapter();
+        const q = (name: string): string => quoteIdentifier(adapter, name);
 
-        // Parse query params for filtering / sorting / pagination
-        const qp = parseQueryString(req.query ?? {});
+        // Parse query params for filtering / sorting / pagination.
         // limit/offset/page are the CLAMPED/CAPPED values buildQuery actually used
         // for the SQL (PAGE-DEC-01: page >= 1, per-page <= DEFAULT_ROW_CAP) — read
         // them back here instead of recomputing from the raw qp, so the envelope
         // can never drift from the query that ran.
-        const { sql, countSql, params, limit, offset } = buildQuery(tableName, qp, extraConditions);
+        //
+        // Filter keys and sort fields resolve against the model's DECLARED fields
+        // (ADR-0069); an unknown one is a 400 before any SQL runs.
+        // A wrong-shaped value (a list/map where one value belongs) is a 400 too.
+        let built: ReturnType<typeof buildQuery>;
+        try {
+          const qp = parseQueryString(req.query ?? {});
+          built = buildQuery(tableName, qp, extraConditions, q, (key) => resolveFieldColumn(fields, getDbCol, key));
+        } catch (err) {
+          if (err instanceof UnknownFieldError) {
+            res.error("UNKNOWN_FIELD", err.message, 400);
+            return;
+          }
+          if (err instanceof InvalidQueryParameterError) {
+            res.error("INVALID_QUERY_PARAMETER", err.message, 400);
+            return;
+          }
+          throw err;
+        }
+        const { pageSql, countSql, filterParams, limit, offset } = built;
 
-        // params includes limit and offset at the end; countSql doesn't need them
-        const countParams = params.slice(0, -2);
-        const rows = await adapterQuery(adapter, sql, params);
+        // adapterFetch pages in the engine's own syntax (LIMIT/OFFSET, OFFSET
+        // FETCH on MSSQL, ROWS on Firebird) - the same path BaseModel reads use.
+        const rows = await adapterFetch(adapter, pageSql, filterParams, limit, offset);
 
         // total is the TRUE total for the filter (a COUNT probe), NEVER the number
         // of rows this page returned (ADR-0043).
-        const countRow = await adapterQuery(adapter, countSql, countParams);
+        const countRow = await adapterQuery(adapter, countSql, filterParams);
         const total = Number(countRow[0]?.total ?? 0);
 
         // The REST list envelope IS the canonical paginate envelope: exactly the
@@ -220,11 +250,12 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const adapter = getAdapter();
+        const adapter = modelAdapter();
+        const q = (name: string): string => quoteIdentifier(adapter, name);
 
-        const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
+        const conditions = [`${q(pkColumn)} = ?`, ...extraConditions];
         const rows = await adapterQuery(adapter,
-          `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
+          `SELECT * FROM ${q(tableName)} WHERE ${conditions.join(" AND ")}`,
           [req.params.id],
         );
 
@@ -247,12 +278,13 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const adapter = getAdapter();
+        const adapter = modelAdapter();
+        const q = (name: string): string => quoteIdentifier(adapter, name);
         const rawBody = req.body as Record<string, unknown>;
 
         // CRUD-MASS-ASSIGNMENT: allow-list before anything downstream (both
         // validation and persistence) ever sees the body.
-        const body = allowListedBody(fields, pkField, rawBody, true);
+        const body = allowListedBody(fields, getDbCol, pkField, rawBody, true);
 
         // Validate against field definitions
         const errors = validate(body, fields);
@@ -276,8 +308,8 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         // tolerates RETURNING but we still prefer its lastId below.
         const isSqlite = adapter.constructor.name === "SQLiteAdapter";
         const insertSql =
-          `INSERT INTO "${tableName}" (${columns.map((c) => `"${c}"`).join(", ")}) VALUES (${placeholders})` +
-          (isSqlite ? "" : ` RETURNING "${pkColumn}"`);
+          `INSERT INTO ${q(tableName)} (${columns.map((c) => q(c)).join(", ")}) VALUES (${placeholders})` +
+          (isSqlite ? "" : ` RETURNING ${q(pkColumn)}`);
 
         const insertResult = await adapterExecute(adapter, insertSql, values);
 
@@ -295,7 +327,7 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
 
         // Fetch the created record to include auto-generated fields (e.g. id)
         const created = await adapterQuery(adapter,
-          `SELECT * FROM "${tableName}" WHERE "${pkColumn}" = ?`,
+          `SELECT * FROM ${q(tableName)} WHERE ${q(pkColumn)} = ?`,
           [lastId],
         );
 
@@ -313,14 +345,15 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const adapter = getAdapter();
+        const adapter = modelAdapter();
+        const q = (name: string): string => quoteIdentifier(adapter, name);
         const rawBody = req.body as Record<string, unknown>;
 
         // CRUD-MASS-ASSIGNMENT: allow-list -- the row is addressed by the URL
         // {id} alone, so a body PK is stripped (never lets the write rename
         // the row's own identity column or, on a mis-wired WHERE, redirect
         // to a different row); is_deleted is guarded the same as create.
-        const body = allowListedBody(fields, pkField, rawBody, false);
+        const body = allowListedBody(fields, getDbCol, pkField, rawBody, false);
 
         // Feature 19 (VALID-NODE-PUT-NOVALIDATE): the update path validates the
         // request body too — previously only POST did, so a PUT could write
@@ -334,9 +367,9 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
           return;
         }
 
-        const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
+        const conditions = [`${q(pkColumn)} = ?`, ...extraConditions];
         const existing = await adapterQuery(adapter,
-          `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
+          `SELECT * FROM ${q(tableName)} WHERE ${conditions.join(" AND ")}`,
           [req.params.id],
         );
         if (existing.length === 0) {
@@ -359,17 +392,17 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         }
 
         const setClauses = Object.keys(dbBody)
-          .map((col) => `"${col}" = ?`)
+          .map((col) => `${q(col)} = ?`)
           .join(", ");
         const values = [...Object.values(dbBody), req.params.id];
 
         await adapterExecute(adapter,
-          `UPDATE "${tableName}" SET ${setClauses} WHERE "${pkColumn}" = ?`,
+          `UPDATE ${q(tableName)} SET ${setClauses} WHERE ${q(pkColumn)} = ?`,
           values,
         );
 
         const updated = await adapterQuery(adapter,
-          `SELECT * FROM "${tableName}" WHERE "${pkColumn}" = ?`,
+          `SELECT * FROM ${q(tableName)} WHERE ${q(pkColumn)} = ?`,
           [req.params.id],
         );
 
@@ -387,11 +420,12 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         tags: [tableName],
       },
       handler: async (req: Tina4Request, res: Tina4Response) => {
-        const adapter = getAdapter();
+        const adapter = modelAdapter();
+        const q = (name: string): string => quoteIdentifier(adapter, name);
 
-        const conditions = [`"${pkColumn}" = ?`, ...extraConditions];
+        const conditions = [`${q(pkColumn)} = ?`, ...extraConditions];
         const existing = await adapterQuery(adapter,
-          `SELECT * FROM "${tableName}" WHERE ${conditions.join(" AND ")}`,
+          `SELECT * FROM ${q(tableName)} WHERE ${conditions.join(" AND ")}`,
           [req.params.id],
         );
         if (existing.length === 0) {
@@ -401,13 +435,13 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
 
         if (softDelete) {
           await adapterExecute(adapter,
-            `UPDATE "${tableName}" SET is_deleted = 1 WHERE "${pkColumn}" = ?`,
+            `UPDATE ${q(tableName)} SET is_deleted = 1 WHERE ${q(pkColumn)} = ?`,
             [req.params.id],
           );
           res.json({ message: "Deleted (soft)", data: existing[0] });
         } else {
           await adapterExecute(adapter,
-            `DELETE FROM "${tableName}" WHERE "${pkColumn}" = ?`,
+            `DELETE FROM ${q(tableName)} WHERE ${q(pkColumn)} = ?`,
             [req.params.id],
           );
           res.json({ message: "Deleted", data: existing[0] });

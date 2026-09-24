@@ -447,7 +447,7 @@ async function run(): Promise<void> {
       }
     });
   } else {
-    console.log("  \x1b[33mSKIP\x1b[0m TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)");
+    console.log("  \x1b[33mSKIP\x1b[0m [needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)");
   }
 
   {

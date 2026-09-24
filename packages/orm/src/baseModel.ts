@@ -3,11 +3,12 @@ import {
   adapterQuery, adapterFetch, adapterExecute, adapterFetchOne,
   adapterStartTransaction, adapterCommit, adapterRollback,
   adapterTableExists, adapterCreateTable, extractLastInsertId,
-  probeTotal, DEFAULT_ROW_CAP,
+  probeTotal, DEFAULT_ROW_CAP, quoteIdentifier,
 } from "./database.js";
 import { ModelCollection } from "./modelCollection.js";
 import { validate as validateFields } from "./validation.js";
 import { QueryBuilder } from "./queryBuilder.js";
+import { resolveFieldColumn } from "./query.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
 import { QueryCache, SQLTranslator } from "./sqlTranslator.js";
 import { Log } from "../../core/src/index.js";
@@ -379,6 +380,14 @@ export class BaseModel {
    * SQLite URLs are initialised synchronously. Other engines require initDatabase()
    * to be called before first use.
    */
+  /**
+   * Quote a table/column name in the dialect of the adapter this model runs on
+   * (MySQL backticks, Firebird upper-cased, `"name"` elsewhere).
+   */
+  protected static quoteName(name: string): string {
+    return quoteIdentifier(this.getDb(), name);
+  }
+
   protected static getDb(): DatabaseAdapter {
     if (this._db) {
       return getNamedAdapter(this._db);
@@ -497,7 +506,7 @@ export class BaseModel {
   static async findById<T extends BaseModel>(this: new (data?: Record<string, unknown>) => T, id: unknown, include?: string[]): Promise<T | null> {
     const ModelClass = this as unknown as typeof BaseModel & (new (data?: Record<string, unknown>) => T);
     const pkCol = ModelClass.getPkColumn();
-    let sql = `SELECT * FROM "${ModelClass.tableName}" WHERE "${pkCol}" = ?`;
+    let sql = `SELECT * FROM ${ModelClass.quoteName(ModelClass.tableName)} WHERE ${ModelClass.quoteName(pkCol)} = ?`;
 
     if (ModelClass.softDelete) {
       sql += ` AND is_deleted = 0`;
@@ -598,8 +607,12 @@ export class BaseModel {
 
     if (filter) {
       for (const [key, value] of Object.entries(filter)) {
-        const col = ModelClass.getDbColumn(key) ?? key;
-        conditions.push(`"${col}" = ?`);
+        // ADR-0069: a filter key must be a declared field (or its column).
+        const col = resolveFieldColumn(ModelClass.fields, (field) => ModelClass.getDbColumn(field), key);
+        if (col === null) {
+          throw new Error(`Unknown filter field '${key}' for model ${ModelClass.name}`);
+        }
+        conditions.push(`${ModelClass.quoteName(col)} = ?`);
         params.push(value);
       }
     }
@@ -608,7 +621,7 @@ export class BaseModel {
       conditions.push("is_deleted = 0");
     }
 
-    let sql = `SELECT * FROM "${ModelClass.tableName}"`;
+    let sql = `SELECT * FROM ${ModelClass.quoteName(ModelClass.tableName)}`;
     if (conditions.length > 0) {
       sql += ` WHERE ${conditions.join(" AND ")}`;
     }
@@ -648,7 +661,7 @@ export class BaseModel {
       const pkCol = ModelClass.getPkColumn();
       const pkValue = (this as any)[pkProp];
       if (pkValue === undefined || pkValue === null) return false;
-      sql = `SELECT * FROM "${table}" WHERE "${pkCol}" = ?`;
+      sql = `SELECT * FROM ${ModelClass.quoteName(table)} WHERE ${ModelClass.quoteName(pkCol)} = ?`;
       params = [pkValue];
     } else {
       sql = `SELECT * FROM ${table} WHERE ${filter}`;
@@ -712,7 +725,7 @@ export class BaseModel {
     const orderClause = orderBy ? ` ORDER BY ${orderBy}` : "";
     // No LIMIT/OFFSET embedded: _collect's adapterFetch applies them to the page
     // and the COUNT probe wraps the un-limited SQL so the total is the whole set.
-    const sql = `SELECT * FROM "${ModelClass.tableName}"${whereClause}${orderClause}`;
+    const sql = `SELECT * FROM ${ModelClass.quoteName(ModelClass.tableName)}${whereClause}${orderClause}`;
 
     // No bind parameters: the only conditions left are the framework's own
     // softDelete / tableFilter literals. A caller-supplied filter belongs on
@@ -754,7 +767,7 @@ export class BaseModel {
     const orderClause = orderBy ? ` ORDER BY ${orderBy}` : "";
     // No LIMIT/OFFSET embedded — _collect applies them to the page and probes
     // the total (ADR-0064). orderBy affects the page only; COUNT is order-free.
-    const sql = `SELECT * FROM "${ModelClass.tableName}" WHERE ${parts.join(" AND ")}${orderClause}`;
+    const sql = `SELECT * FROM ${ModelClass.quoteName(ModelClass.tableName)} WHERE ${parts.join(" AND ")}${orderClause}`;
 
     return ModelClass._collect<T>(sql, params, limit, offset, include);
   }
@@ -840,13 +853,13 @@ export class BaseModel {
     try {
       if (ModelClass.softDelete) {
         await adapterExecute(db,
-          `UPDATE "${ModelClass.tableName}" SET is_deleted = 1 WHERE ${this.pkWhere().sql}`,
+          `UPDATE ${ModelClass.quoteName(ModelClass.tableName)} SET is_deleted = 1 WHERE ${this.pkWhere().sql}`,
           this.pkWhere().params,
         );
         this.is_deleted = 1;
       } else {
         await adapterExecute(db,
-          `DELETE FROM "${ModelClass.tableName}" WHERE ${this.pkWhere().sql}`,
+          `DELETE FROM ${ModelClass.quoteName(ModelClass.tableName)} WHERE ${this.pkWhere().sql}`,
           this.pkWhere().params,
         );
       }
@@ -1136,7 +1149,7 @@ export class BaseModel {
     await adapterStartTransaction(db);
     try {
       await adapterExecute(db,
-        `DELETE FROM "${ModelClass.tableName}" WHERE ${this.pkWhere().sql}`,
+        `DELETE FROM ${ModelClass.quoteName(ModelClass.tableName)} WHERE ${this.pkWhere().sql}`,
         this.pkWhere().params,
       );
       await adapterCommit(db);
@@ -1169,7 +1182,7 @@ export class BaseModel {
     await adapterStartTransaction(db);
     try {
       await adapterExecute(db,
-        `UPDATE "${ModelClass.tableName}" SET is_deleted = 0 WHERE ${this.pkWhere().sql}`,
+        `UPDATE ${ModelClass.quoteName(ModelClass.tableName)} SET is_deleted = 0 WHERE ${this.pkWhere().sql}`,
         this.pkWhere().params,
       );
       await adapterCommit(db);
@@ -1203,7 +1216,7 @@ export class BaseModel {
       parts.push(conditions);
     }
 
-    let sql = `SELECT * FROM "${ModelClass.tableName}"`;
+    let sql = `SELECT * FROM ${ModelClass.quoteName(ModelClass.tableName)}`;
     if (parts.length > 0) {
       sql += ` WHERE ${parts.join(" AND ")}`;
     }
@@ -1230,7 +1243,7 @@ export class BaseModel {
       parts.push(conditions);
     }
     const whereClause = parts.length > 0 ? ` WHERE ${parts.join(" AND ")}` : "";
-    const sql = `SELECT COUNT(*) as cnt FROM "${this.tableName}"${whereClause}`;
+    const sql = `SELECT COUNT(*) as cnt FROM ${this.quoteName(this.tableName)}${whereClause}`;
     const rows = await adapterQuery(db, sql, params);
     if (rows.length === 0) return 0;
     // PostgreSQL returns COUNT(*) as a bigint, which the `pg` driver hands
@@ -1277,7 +1290,7 @@ export class BaseModel {
     }
 
     const db = relatedClass.getDb();
-    let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${foreignKey}" = ?`;
+    let sql = `SELECT * FROM ${quoteIdentifier(db, relatedClass.tableName)} WHERE ${quoteIdentifier(db, foreignKey)} = ?`;
     if (relatedClass.softDelete) {
       sql += ` AND is_deleted = 0`;
     }
@@ -1325,12 +1338,12 @@ export class BaseModel {
 
     const db = relatedClass.getDb();
     const orderCol = relatedClass.getPkColumn();
-    let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${foreignKey}" = ?`;
+    let sql = `SELECT * FROM ${quoteIdentifier(db, relatedClass.tableName)} WHERE ${quoteIdentifier(db, foreignKey)} = ?`;
     if (relatedClass.softDelete) {
       sql += ` AND is_deleted = 0`;
     }
     // Order by the child PK for a stable read (parity with the lazy accessor).
-    sql += ` ORDER BY "${orderCol}"`;
+    sql += ` ORDER BY ${quoteIdentifier(db, orderCol)}`;
     // IMPREL-PY-CAP parity: with no explicit limit, return the WHOLE set (like
     // the lazy accessor, which is uncapped) instead of a silent 100-row cap. An
     // explicit limit still pages (explicit, never silent).
@@ -1369,7 +1382,7 @@ export class BaseModel {
 
     const db = relatedClass.getDb();
     const relatedPkCol = relatedClass.getPkColumn();
-    let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${relatedPkCol}" = ?`;
+    let sql = `SELECT * FROM ${quoteIdentifier(db, relatedClass.tableName)} WHERE ${quoteIdentifier(db, relatedPkCol)} = ?`;
     if (relatedClass.softDelete) {
       sql += ` AND is_deleted = 0`;
     }
@@ -1504,9 +1517,9 @@ export class BaseModel {
     if (pkValue === undefined || pkValue === null) return [];
     const db = relatedClass.getDb();
     const orderCol = relatedClass.getPkColumn();
-    let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${foreignKey}" = ?`;
+    let sql = `SELECT * FROM ${quoteIdentifier(db, relatedClass.tableName)} WHERE ${quoteIdentifier(db, foreignKey)} = ?`;
     if (relatedClass.softDelete) sql += ` AND is_deleted = 0`;
-    sql += ` ORDER BY "${orderCol}"`;
+    sql += ` ORDER BY ${quoteIdentifier(db, orderCol)}`;
     const rows = await adapterQuery(db, sql, [pkValue]);
     return rows.map((row) => new (relatedClass as unknown as new (d: Record<string, unknown>) => BaseModel)(row as Record<string, unknown>));
   }
@@ -1606,11 +1619,11 @@ function validateBeforeSave(instance: BaseModel, model: typeof BaseModel, isUpda
 async function executeModelUpdate(instance: BaseModel, model: typeof BaseModel, db: DatabaseAdapter): Promise<void> {
   const fields = Object.entries(model.fields).filter(([name, def]) => !def.primaryKey && instance[name] !== undefined);
   if (fields.length === 0) return;
-  const setClause = fields.map(([name]) => `"${model.getDbColumn(name)}" = ?`).join(", ");
+  const setClause = fields.map(([name]) => `${quoteIdentifier(db, model.getDbColumn(name))} = ?`).join(", ");
   const values = fields.map(([name, def]) => toDbFieldValue(def, instance[name]));
   const where = savePrimaryKeyWhere(instance, model);
   values.push(...where.params);
-  await adapterExecute(db, `UPDATE "${model.tableName}" SET ${setClause} WHERE ${where.sql}`, values);
+  await adapterExecute(db, `UPDATE ${quoteIdentifier(db, model.tableName)} SET ${setClause} WHERE ${where.sql}`, values);
 }
 
 function buildInsertStatement(
@@ -1623,17 +1636,17 @@ function buildInsertStatement(
   const fields = Object.entries(model.fields).filter(
     ([name, def]) => !(def.primaryKey && def.autoIncrement) && instance[name] !== undefined,
   );
-  const returning = pkField?.autoIncrement && db.constructor.name !== "SQLiteAdapter" ? ` RETURNING "${pkCol}"` : "";
+  const returning = pkField?.autoIncrement && db.constructor.name !== "SQLiteAdapter" ? ` RETURNING ${quoteIdentifier(db, pkCol)}` : "";
   if (fields.length === 0) {
     const emptyInsert = db.constructor.name === "MysqlAdapter"
-      ? `INSERT INTO "${model.tableName}" () VALUES ()`
-      : `INSERT INTO "${model.tableName}" DEFAULT VALUES`;
+      ? `INSERT INTO ${quoteIdentifier(db, model.tableName)} () VALUES ()`
+      : `INSERT INTO ${quoteIdentifier(db, model.tableName)} DEFAULT VALUES`;
     return { sql: emptyInsert + returning, values: [] };
   }
-  const columns = fields.map(([name]) => `"${model.getDbColumn(name)}"`).join(", ");
+  const columns = fields.map(([name]) => quoteIdentifier(db, model.getDbColumn(name))).join(", ");
   const placeholders = fields.map(() => "?").join(", ");
   const values = fields.map(([name, def]) => toDbFieldValue(def, instance[name]));
-  return { sql: `INSERT INTO "${model.tableName}" (${columns}) VALUES (${placeholders})${returning}`, values };
+  return { sql: `INSERT INTO ${quoteIdentifier(db, model.tableName)} (${columns}) VALUES (${placeholders})${returning}`, values };
 }
 
 function applyInsertedId(
@@ -1804,7 +1817,7 @@ async function eagerQueryRelated(
   const related: BaseModel[] = [];
   for (const chunk of _chunk(values, EAGER_IN_CHUNK)) {
     const placeholders = chunk.map(() => "?").join(",");
-    let sql = `SELECT * FROM "${relatedClass.tableName}" WHERE "${column}" IN (${placeholders})`;
+    let sql = `SELECT * FROM ${quoteIdentifier(db, relatedClass.tableName)} WHERE ${quoteIdentifier(db, column)} IN (${placeholders})`;
     if (relatedClass.softDelete) sql += " AND is_deleted = 0";
     const rows = await adapterQuery(db, sql, chunk);
     for (const row of rows) related.push(new relatedClass(row as Record<string, unknown>));

@@ -48,7 +48,7 @@ const CASES: Array<[string, string, string]> = [
 ];
 
 if (!FIREBIRD_URL) {
-  for (const [n] of CASES) skip(n, "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)");
+  for (const [n] of CASES) skip(n, "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)");
 } else {
   for (const [name, sql, expectedKey] of CASES) {
     const db = new FirebirdAdapter(FIREBIRD_URL) as any;

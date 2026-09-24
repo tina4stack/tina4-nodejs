@@ -32,6 +32,35 @@ export interface Dialect {
 }
 
 const doubleQuote = (name: string): string => `"${name}"`;
+
+/**
+ * Quote a table/column name the ORM emits, in one engine's identifier quotes.
+ *
+ * Port of the Python master's `quote_identifier` (adapter.py; Firebird's
+ * override upper-cases): idempotent (an already-quoted name is returned
+ * unchanged), dot-aware (`schema.table` quotes each part), and a non-identifier
+ * (`*`, `COUNT(*)`, an expression) is passed through untouched. An embedded
+ * closing quote is doubled.
+ *
+ * `upperCase` is Firebird's rule: an unquoted identifier is stored UPPER CASE,
+ * so a lower-case name must be quoted upper-case to match it.
+ */
+export function quoteIdentifierWith(name: string, open: string, close: string, upperCase = false): string {
+  if (!name) return name;
+  const trimmed = name.trim();
+  if (trimmed.length >= 2 && trimmed.startsWith(open) && trimmed.endsWith(close)) return trimmed;
+  if (trimmed.includes(".")) {
+    return trimmed.split(".").map((part) => quoteIdentifierWith(part, open, close, upperCase)).join(".");
+  }
+  if (!/^[\p{L}\p{N}_$]+$/u.test(trimmed)) return trimmed;
+  const body = upperCase ? trimmed.toUpperCase() : trimmed;
+  return `${open}${body.split(close).join(close + close)}${close}`;
+}
+
+/** The ANSI default: `"name"` (SQLite, PostgreSQL, MSSQL, ODBC). */
+export function quoteIdentifierAnsi(name: string): string {
+  return quoteIdentifierWith(name, '"', '"');
+}
 const questionMark = (): string => "?";
 
 /** SQLite, and ODBC which follows the SQL standard spelling. */
@@ -64,6 +93,23 @@ export function firebirdDialect(fbQuote: (name: string) => string): Dialect {
   return { quote: fbQuote, marker: questionMark };
 }
 
+const PLAIN_COLUMN_NAME = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+
+/**
+ * Refuse a data or filter-map key that is not a plain identifier.
+ *
+ * tina4: ADR-0069 (G3) - the write helpers emit these keys as column names, and
+ * the dialect quoters do not escape, so a key must be a plain identifier
+ * (letters, digits, underscore, dollar; not starting with a digit) before any
+ * SQL is built. Valid names are emitted exactly as before. Table names are
+ * developer code and are not checked here.
+ */
+export function assertColumnNames(keys: Iterable<string>): void {
+  for (const key of keys) {
+    if (!PLAIN_COLUMN_NAME.test(key)) throw new Error(`Invalid column name '${key}'`);
+  }
+}
+
 /**
  * `INSERT INTO <table> (<cols>) VALUES (<markers>)`.
  *
@@ -81,6 +127,7 @@ export function buildInsert(
   suffix = "",
   startAt = 1,
 ): string {
+  assertColumnNames(keys);
   const columns = keys.map((k) => dialect.quote(k)).join(", ");
   const placeholders = keys.map((_, i) => dialect.marker(startAt + i)).join(", ");
   return `INSERT INTO ${dialect.quote(table)} (${columns}) VALUES (${placeholders})${suffix}`;
@@ -98,6 +145,7 @@ export function buildSetClause(
   keys: string[],
   startAt = 1,
 ): string {
+  assertColumnNames(keys);
   return keys
     .map((k, i) => `${dialect.quote(k)} = ${dialect.marker(startAt + i)}`)
     .join(", ");
@@ -114,6 +162,7 @@ export function buildWhereClause(
   keys: string[],
   startAt = 1,
 ): string {
+  assertColumnNames(keys);
   return keys
     .map((k, i) => `${dialect.quote(k)} = ${dialect.marker(startAt + i)}`)
     .join(" AND ");

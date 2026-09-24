@@ -119,6 +119,13 @@ export interface DatabaseAdapter {
   /** Return the canonical, credential-free engine name ("sqlite", "postgres", ...). */
   getDatabaseType(): string;
 
+  /**
+   * Quote a table/column name the ORM emits, in this engine's dialect
+   * (Python master: `quote_identifier`). Optional: an adapter without it gets
+   * the ANSI `"name"` default through `quoteIdentifier(adapter, name)`.
+   */
+  quoteIdentifier?(name: string): string;
+
   /** Execute a statement (INSERT, UPDATE, DELETE, DDL). */
   execute(sql: string, params?: unknown[]): unknown;
 

@@ -239,9 +239,9 @@ async function attemptConnect(
 }
 
 if (!reachable) {
-  skip("connect via single-slash URL form", `Firebird not reachable at ${FIREBIRD_HOST}:${FIREBIRD_PORT}`);
-  skip("connect via double-slash URL form", `Firebird not reachable at ${FIREBIRD_HOST}:${FIREBIRD_PORT}`);
-  skip("env override wins over wrong URL path", `Firebird not reachable at ${FIREBIRD_HOST}:${FIREBIRD_PORT}`);
+  skip("connect via single-slash URL form", `[needs:firebird] Firebird not reachable at ${FIREBIRD_HOST}:${FIREBIRD_PORT}`);
+  skip("connect via double-slash URL form", `[needs:firebird] Firebird not reachable at ${FIREBIRD_HOST}:${FIREBIRD_PORT}`);
+  skip("env override wins over wrong URL path", `[needs:firebird] Firebird not reachable at ${FIREBIRD_HOST}:${FIREBIRD_PORT}`);
 } else if (!driverInstalled) {
   skip("connect via single-slash URL form", "node-firebird package not installed");
   skip("connect via double-slash URL form", "node-firebird package not installed");

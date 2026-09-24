@@ -81,18 +81,14 @@ function skip(msg: string): void {
 }
 
 /**
- * Firebird is NOT in the require-services gate (test/_serviceGate.ts's
- * EXCLUDED_KEYWORDS=["firebird"] -- the main CI job does not provision it, by
- * design, in favour of the dedicated `firebird:` job + the lab): an unset URL
- * stays a green skip here too, exactly like every other Firebird-gated
- * fixture in this suite (see ormFieldsContract.test.ts's skipGated). Before
- * this, skip() above made ANY missing service fatal under
- * TINA4_REQUIRE_SERVICES, including Firebird -- contradicting the exclusion
- * the rest of the framework already honours and failing the main job on a gap
- * it was never meant to cover.
+ * Firebird is an OPTIONAL engine for the require-services gate: the main CI
+ * job does not provision it, by design, in favour of the dedicated `firebird:`
+ * job + the lab. The [needs:firebird] tag is excused only while
+ * TINA4_TEST_FIREBIRD_URL is unset (test/_serviceGate.ts), so an unset URL
+ * stays a green skip and a set-but-broken one fails.
  */
 function skipGated(msg: string): void {
-  console.log(`  \x1b[33mSKIP\x1b[0m ${msg}`);
+  console.log(`  \x1b[33mSKIP\x1b[0m [needs:firebird] ${msg}`);
 }
 
 function tcpReachable(host: string, port: number): Promise<boolean> {

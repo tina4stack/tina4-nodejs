@@ -453,7 +453,7 @@ try {
 
   const firebirdUrl = process.env.TINA4_TEST_FIREBIRD_URL;
   if (!firebirdUrl) {
-    const reason = "firebird not configured (TINA4_TEST_FIREBIRD_URL)";
+    const reason = "[needs:firebird] firebird not configured (TINA4_TEST_FIREBIRD_URL)";
     console.log(`  \x1b[33mSKIP\x1b[0m ${reason}`);
   } else {
     const adapter = new FirebirdAdapter(firebirdUrl);

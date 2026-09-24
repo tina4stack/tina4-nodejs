@@ -33,6 +33,7 @@
  */
 
 import { QueryCache } from "./sqlTranslator.js";
+import { quoteIdentifierAnsi } from "./adapters/sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "./types.js";
 import type { CacheBackend } from "../../core/src/index.js";
 
@@ -319,6 +320,11 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   /** ADR-0044 required capability — delegates to the wrapped adapter. */
   getDatabaseType(): string {
     return this.adapter.getDatabaseType();
+  }
+
+  /** Identifier quoting is the wrapped engine's, never the wrapper's. */
+  quoteIdentifier(name: string): string {
+    return this.adapter.quoteIdentifier ? this.adapter.quoteIdentifier(name) : quoteIdentifierAnsi(name);
   }
 
   /**
