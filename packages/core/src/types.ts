@@ -207,6 +207,11 @@ export interface Tina4Config {
    *  and staticDir are resolved relative to this path instead of process.cwd(). */
   basePath?: string;
   routesDir?: string;
+  /**
+   * Never open a browser on start (ADR-0070 rule 3, the programmatic
+   * --no-browser). It can only veto: false does not force one open.
+   */
+  noBrowser?: boolean;
   modelsDir?: string;
   templatesDir?: string;
   staticDir?: string;
