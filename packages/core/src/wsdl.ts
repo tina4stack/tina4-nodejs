@@ -71,95 +71,155 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
-// ── Minimal zero-dep XML DOM parser ────────────────────────────
-// Stack-based parser that builds a tree. Handles namespaces by
-// stripping prefixes. No external dependencies.
+// ── Minimal zero-dep XML parser ──────────────────────────────
+// A small well-formedness-checking parser, enough for a SOAP envelope: it
+// matches start and end tags, decodes the five predefined entities, decimal
+// and hexadecimal character references and CDATA, skips comments and
+// processing instructions, and refuses anything else (an undefined entity, a
+// bare "&", a mismatched tag, a second root) the way Python's ElementTree
+// does, so the handler can answer "Malformed XML" exactly where the reference
+// does. Namespace prefixes are stripped to the local name. DOCTYPE is refused
+// before this parser ever runs (see handle()).
 
-interface XmlNode {
-  tag: string;
-  children: XmlNode[];
+interface XmlElement {
+  /** Local name, prefix stripped ("soap:Body" -> "Body"). */
+  name: string;
+  /** Qualified name as written, used to match the end tag. */
+  qualifiedName: string;
+  children: XmlElement[];
+  /** Text before the first child element - ElementTree's `.text`. */
   text: string;
 }
 
-function parseXml(xml: string): XmlNode {
-  const root: XmlNode = { tag: "", children: [], text: "" };
-  const stack: XmlNode[] = [root];
-  let i = 0;
+class MalformedXmlError extends Error {}
 
-  while (i < xml.length) {
-    if (xml[i] === "<") {
-      const closeIdx = xml.indexOf(">", i);
-      if (closeIdx === -1) break;
-      const tagContent = xml.substring(i + 1, closeIdx).trim();
+function malformed(): never {
+  throw new MalformedXmlError("Malformed XML");
+}
 
-      if (tagContent.startsWith("/")) {
-        stack.pop();
-      } else if (tagContent.startsWith("?") || tagContent.startsWith("!")) {
-        // PI or comment — skip
-      } else {
-        const selfClosing = tagContent.endsWith("/");
-        const raw = selfClosing ? tagContent.slice(0, -1).trim() : tagContent;
-        const spaceIdx = raw.indexOf(" ");
-        const fullTag = spaceIdx === -1 ? raw : raw.substring(0, spaceIdx);
-        const colonIdx = fullTag.indexOf(":");
-        const localTag = colonIdx === -1 ? fullTag : fullTag.substring(colonIdx + 1);
+const PREDEFINED_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+};
 
-        const node: XmlNode = { tag: localTag, children: [], text: "" };
-        stack[stack.length - 1].children.push(node);
-        if (!selfClosing) stack.push(node);
-      }
-      i = closeIdx + 1;
+/** A code point the XML 1.0 Char production allows. */
+function isXmlCharacter(codePoint: number): boolean {
+  return codePoint === 0x9 || codePoint === 0xa || codePoint === 0xd
+    || (codePoint >= 0x20 && codePoint <= 0xd7ff)
+    || (codePoint >= 0xe000 && codePoint <= 0xfffd)
+    || (codePoint >= 0x10000 && codePoint <= 0x10ffff);
+}
+
+/** Any character XML 1.0 forbids (NUL, most C0 controls, U+FFFE/U+FFFF, a lone surrogate). */
+const ILLEGAL_XML_CHARACTER = /[^\t\n\r\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/u;
+
+function decodeEntities(raw: string): string {
+  if (!raw.includes("&")) return raw;
+  return raw.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[A-Za-z_][\w.-]*)?(;)?/g, (_whole, reference?: string, semicolon?: string) => {
+    if (!reference || !semicolon) malformed();
+    if (reference.startsWith("#")) {
+      const codePoint = reference[1] === "x" ? parseInt(reference.slice(2), 16) : parseInt(reference.slice(1), 10);
+      if (!isXmlCharacter(codePoint)) malformed();
+      return String.fromCodePoint(codePoint);
+    }
+    const value = PREDEFINED_ENTITIES[reference];
+    if (value === undefined) malformed();
+    return value;
+  });
+}
+
+const XML_NAME = `[^\\s/<>="'&!?]+`;
+const START_TAG = new RegExp(`<(${XML_NAME})((?:\\s+${XML_NAME}\\s*=\\s*(?:"[^"<]*"|'[^'<]*'))*)\\s*(/?)>`, "y");
+const END_TAG = new RegExp(`</(${XML_NAME})\\s*>`, "y");
+const ATTRIBUTE_VALUE = /=\s*(?:"([^"<]*)"|'([^'<]*)')/g;
+
+function parseXmlDocument(xml: string): XmlElement {
+  const stack: XmlElement[] = [];
+  let root: XmlElement | null = null;
+  let position = 0;
+
+  const addText = (text: string): void => {
+    const current = stack[stack.length - 1];
+    if (current.children.length === 0) current.text += text;
+  };
+
+  while (position < xml.length) {
+    const nextTag = xml.indexOf("<", position);
+    const textEnd = nextTag === -1 ? xml.length : nextTag;
+    if (textEnd > position) {
+      const raw = xml.slice(position, textEnd);
+      if (stack.length > 0) addText(decodeEntities(raw));
+      else if (raw.trim() !== "") malformed(); // text outside the root element
+      position = textEnd;
+      if (nextTag === -1) break;
+    }
+
+    if (xml.startsWith("<!--", position)) {
+      const close = xml.indexOf("-->", position + 4);
+      if (close === -1) malformed();
+      position = close + 3;
+    } else if (xml.startsWith("<![CDATA[", position)) {
+      const close = xml.indexOf("]]>", position + 9);
+      if (close === -1 || stack.length === 0) malformed();
+      addText(xml.slice(position + 9, close));
+      position = close + 3;
+    } else if (xml.startsWith("<?", position)) {
+      const close = xml.indexOf("?>", position + 2);
+      if (close === -1) malformed();
+      const target = xml.slice(position + 2, close).split(/\s/, 1)[0];
+      // The XML declaration is only legal as the very first thing in the document.
+      if (target.toLowerCase() === "xml" && position !== 0) malformed();
+      position = close + 2;
+    } else if (xml.startsWith("<!", position)) {
+      malformed(); // any other declaration; DOCTYPE was refused before parsing
+    } else if (xml.startsWith("</", position)) {
+      END_TAG.lastIndex = position;
+      const match = END_TAG.exec(xml);
+      const open = stack.pop();
+      if (!match || !open || open.qualifiedName !== match[1]) malformed();
+      position = END_TAG.lastIndex;
     } else {
-      const nextTag = xml.indexOf("<", i);
-      const text = (nextTag === -1 ? xml.substring(i) : xml.substring(i, nextTag)).trim();
-      if (text && stack.length > 1) {
-        stack[stack.length - 1].text += text;
-      }
-      i = nextTag === -1 ? xml.length : nextTag;
+      START_TAG.lastIndex = position;
+      const match = START_TAG.exec(xml);
+      if (!match || (stack.length === 0 && root !== null)) malformed(); // bad tag, or a second root
+      for (const attribute of match[2].matchAll(ATTRIBUTE_VALUE)) decodeEntities(attribute[1] ?? attribute[2]);
+      const qualifiedName = match[1];
+      const element: XmlElement = {
+        name: qualifiedName.slice(qualifiedName.indexOf(":") + 1),
+        qualifiedName,
+        children: [],
+        text: "",
+      };
+      if (stack.length > 0) stack[stack.length - 1].children.push(element);
+      else root = element;
+      if (match[3] !== "/") stack.push(element);
+      position = START_TAG.lastIndex;
     }
   }
 
+  if (root === null || stack.length > 0) malformed();
   return root;
 }
 
-function findNode(node: XmlNode, tagName: string): XmlNode | null {
-  if (node.tag === tagName) return node;
-  for (const child of node.children) {
-    const found = findNode(child, tagName);
-    if (found) return found;
+/**
+ * Turn the request body into text, refusing anything that is not UTF-8 XML
+ * BEFORE any parse: bytes that are not valid UTF-8, a byte-order mark (a
+ * UTF-16 body starts with one), or a character XML forbids (the NULs a UTF-16
+ * body leaves behind once decoded as UTF-8). A DOCTYPE hidden in UTF-16 is
+ * therefore refused here, never parsed.
+ */
+function decodeSoapBody(body: string | Uint8Array): string {
+  let text: string;
+  if (typeof body === "string") {
+    text = body;
+  } else {
+    try {
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body);
+    } catch {
+      malformed();
+    }
   }
-  return null;
-}
-
-function extractElement(xml: string, tagName: string): string | null {
-  const tree = parseXml(xml);
-  const node = findNode(tree, tagName);
-  if (!node) return null;
-  // Rebuild inner content from children
-  if (node.children.length === 0) return node.text || null;
-  // For complex content, fall back to regex on the original XML
-  const pattern = new RegExp(`<(?:[a-zA-Z0-9]+:)?${tagName}[^>]*>([\\s\\S]*?)</(?:[a-zA-Z0-9]+:)?${tagName}>`, "i");
-  const match = xml.match(pattern);
-  return match ? match[1] : node.text || null;
-}
-
-function extractChildren(xml: string): Array<{ name: string; value: string }> {
-  const tree = parseXml(xml);
-  const target = tree.children.length === 1 ? tree.children[0] : tree;
-  return target.children.map(c => ({ name: c.tag, value: c.text }));
-}
-
-function extractSoapBody(xml: string): string | null {
-  return extractElement(xml, "Body");
-}
-
-function extractOperation(bodyXml: string): { name: string; content: string } | null {
-  const tree = parseXml(bodyXml);
-  const firstChild = tree.children[0];
-  if (!firstChild) return null;
-  const pattern = new RegExp(`<(?:[a-zA-Z0-9]+:)?${firstChild.tag}[^>]*>([\\s\\S]*?)</(?:[a-zA-Z0-9]+:)?${firstChild.tag}>`, "i");
-  const match = bodyXml.match(pattern);
-  return { name: firstChild.tag, content: match ? match[1] : "" };
+  if (text.startsWith("\uFEFF") || ILLEGAL_XML_CHARACTER.test(text)) malformed();
+  return text;
 }
 
 // ── Metadata storage ─────────────────────────────────────────
@@ -403,27 +463,41 @@ export abstract class WSDLService {
   /**
    * Handle incoming SOAP request (parse XML, dispatch to method, return SOAP response).
    */
-  async handle(soapXml: string = ""): Promise<string> {
+  async handle(soapXml: string | Uint8Array = ""): Promise<string> {
     const ops = this.discoverOperations();
+
+    // Bytes that are not UTF-8 XML (a UTF-16 body, a byte-order mark) are
+    // refused before anything looks inside them.
+    let xml: string;
+    try {
+      xml = decodeSoapBody(soapXml);
+    } catch {
+      return this.soapFault("Client", "Malformed XML");
+    }
 
     // SOAP 1.1 (§3) forbids a Document Type Declaration in a SOAP message.
     // Rejecting any DOCTYPE/DTD up front — BEFORE the body is parsed — also
     // closes the XML entity-expansion (billion-laughs) and external-entity
     // (XXE) attack surface regardless of parser internals. The operation
-    // never runs. (Node's parser is hand-rolled and already immune; this is
-    // defence in depth + consistent fault behaviour across all 4 frameworks.)
-    if (/<!DOCTYPE/i.test(soapXml)) {
+    // never runs.
+    if (/<!DOCTYPE/i.test(xml)) {
       return this.soapFault("Client", "DOCTYPE declarations are not allowed in SOAP messages");
     }
 
-    // Parse SOAP body
-    const body = extractSoapBody(soapXml);
+    let envelope: XmlElement;
+    try {
+      envelope = parseXmlDocument(xml);
+    } catch {
+      return this.soapFault("Client", "Malformed XML");
+    }
+
+    // The Body is a direct child of the envelope; its first child is the operation.
+    const body = envelope.children.find((child) => child.name === "Body");
     if (!body) {
       return this.soapFault("Client", "Missing SOAP Body");
     }
 
-    // Extract operation
-    const operation = extractOperation(body);
+    const operation = body.children[0];
     if (!operation) {
       return this.soapFault("Client", "Empty SOAP Body");
     }
@@ -447,15 +521,14 @@ export abstract class WSDLService {
     // non-numeric value for an int/float param (convertValue throws, matching
     // Python's int()/float() raise) becomes a Server fault — not a silent NaN.
     try {
-      // Extract parameters from the operation element
-      const children = extractChildren(operation.content);
+      // Extract parameters from the operation element's children
       const params: unknown[] = [];
 
       if (opMeta.input) {
         for (const [paramName, paramType] of Object.entries(opMeta.input)) {
-          const child = children.find((c) => c.name === paramName);
+          const child = operation.children.find((c) => c.name === paramName);
           if (child) {
-            params.push(this.convertValue(child.value, paramType));
+            params.push(this.convertValue(child.text, paramType));
           } else {
             params.push(null);
           }
@@ -549,18 +622,18 @@ export abstract class WSDLService {
    * Handle POST request — process SOAP XML.
    */
   private async handlePostRequest(req: Record<string, unknown>, res: Record<string, unknown>): Promise<void> {
-    let xmlBody = "";
+    let xmlBody: string | Uint8Array = "";
 
-    // Try to get body from request object
-    if (typeof req.rawBody === "string") {
+    // Try to get body from request object (raw bytes are checked for UTF-8 in handle())
+    if (typeof req.rawBody === "string" || req.rawBody instanceof Uint8Array) {
       xmlBody = req.rawBody;
-    } else if (typeof req.body === "string") {
+    } else if (typeof req.body === "string" || req.body instanceof Uint8Array) {
       xmlBody = req.body;
     } else if (typeof req.body === "object" && req.body !== null) {
       xmlBody = JSON.stringify(req.body);
     }
 
-    if (!xmlBody) {
+    if (xmlBody.length === 0) {
       const fault = this.soapFault("Client", "Empty request body");
       if (typeof res.send === "function") {
         if (typeof res.status === "function") (res.status as Function)(400);
