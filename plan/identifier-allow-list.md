@@ -34,6 +34,15 @@ emitted through the bound adapter's dialect quoting (same as the Python master's
       Firebird (case-sensitive lower-case name). The adapter now owns identifier
       quoting (`quoteIdentifier`), and the AutoCrud list pages through
       `adapterFetch` (MSSQL/Firebird rejected the literal `LIMIT ? OFFSET ?`).
+- [x] D (addendum 2). Wrong-shaped query values on the AutoCrud list are 400
+      `INVALID_QUERY_PARAMETER`: `sort[...]`, `filter[KEY][]`, `filter[KEY][x]`,
+      nested `filter[KEY][a][b]`; an operator outside the map is now this 400.
+- [x] E (addendum 2). AutoCrud routes use the model's named connection
+      (`static _db`), as BaseModel.getDb() does, not the global default.
+- [x] F (addendum 2). Runner gate: under TINA4_REQUIRE_SERVICES a skip passes only
+      with an excusable `[needs:X]` tag (optional engine while its coordinate is
+      unset; always-provisioned service never; platform tag always); untagged
+      fails; vitest skips counted. Optional-engine skip sites tagged.
 
 ## Parity
 
@@ -44,6 +53,9 @@ emitted through the bound adapter's dialect quoting (same as the Python master's
 | ORM find(filter-map) allow-list  | other worker | other worker | other worker | ✅ |
 | DocStore path segment validation | other worker | other worker | other worker | ✅ |
 | Adapter-owned identifier quoting | ✅ (master) | not checked | not checked | ✅ |
+| Wrong-shaped query value -> 400  | n/a | other worker | other worker | ✅ |
+| AutoCrud uses model's connection | n/a | other worker | other worker | ✅ |
+| [needs:X] require-services gate  | other worker | other worker | other worker | ✅ |
 
 ## Tests (written first, real - no mocks, positive + negative)
 
@@ -72,6 +84,15 @@ File: `test/ormIdentifierQuoting.test.ts`.
       list/get over a real startServer() on SQLite, PostgreSQL, MySQL, MSSQL, Firebird
 - [x] Red on origin/v3 (MySQL + Firebird CRUD, MSSQL + Firebird list); mutation-proved
 
+Addendum 2:
+
+- [x] odd_typed_query_values_return_400 (identifierAllowListContract) - red, green, mutation-proved
+- [x] autocrud_list_uses_the_registered_connection (identifierAllowListContract) - two real
+      SQLite files; red, green, mutation-proved
+- [x] test/serviceGateContract.test.ts - untagged fails, optional engine excused only while
+      its coordinate is unset, always-provisioned never, platform tag excused, gate off
+      unchanged; mutation-proved (5 mutations)
+
 ## Bugs
 
 - [x] AutoCrud filter keys were restricted to `\w+` but not to declared fields, and
@@ -87,8 +108,23 @@ File: `test/ormIdentifierQuoting.test.ts`.
       ("bad option"), so databaseDrivers' driverless cases fail locally on
       origin/v3 too.
 
+- [ ] Pre-existing, environment: cacheMemcachedExptime and sessionTtlUnits fail on the
+      local tunnel to the lab memcached (server reports ~65 s less remaining TTL than
+      requested - clock offset between this Mac and the memcached host); same on origin/v3.
+- [ ] Pre-existing, environment: kafkaIntegration / queueBackends skip (no local
+      `tina4-lab-kafka` container for `docker exec`), mqttAuthTls TLS skip (CA file absent
+      locally); both old and new gate fail them.
+- [ ] Contract note: the gate rule lists TINA4_TEST_POSTGRES_URL as a postgres coordinate,
+      but ADR-0038's shared test_env_contract.json makes it non-canonical, so Node's gate
+      reads TINA4_TEST_PG_URL only.
+
 ## Commits
 
-- (pending)
+- 52b57c2  ORM emits identifiers through the adapter's dialect quoting (+ AutoCrud list pages via adapterFetch)
+- accf663  AutoCrud and find() accept only declared model fields; DocStore validates field paths
+- aac1ecb  AutoCrud list rejects wrong-shaped query values with 400 INVALID_QUERY_PARAMETER
+- 7e74a84  AutoCrud queries the connection its model is bound to
+- c42d087  Tag optional-engine skips with a machine-readable [needs:X] reason
+- 64ea164  Require-services gate fails every skip without an excusable [needs:X] tag
 
-## Status: In Progress
+## Status: Complete locally (lab verification by the lead); remaining red items above are pre-existing / environmental
