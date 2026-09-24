@@ -512,6 +512,19 @@ jobs:
             echo "::error::Firebird rollback test reported no passing cases (got: '${summary:-no summary line}')."; exit 1; }
           echo "Firebird rollback test RAN against live Firebird: $summary."
 
+      # The main job does not provision Firebird. Exercise the new ORM key /
+      # mapped-column read-back contract here, with no silent skip allowed.
+      - name: Run ORM field read-back against live Firebird
+        run: |
+          set -o pipefail
+          out=$(npx tsx test/ormFieldColumnReadback.test.ts --engine=firebird 2>&1 | tee /dev/stderr)
+          clean=$(printf '%s\n' "$out" | sed -E 's/\x1b\[[0-9;]*m//g')
+          if printf '%s\n' "$clean" | grep -qw SKIP; then
+            echo "::error::Firebird ORM read-back coverage skipped."; exit 1
+          fi
+          printf '%s\n' "$clean" | grep -Eq '^ORM field column read-back: [1-9][0-9]* passed, 0 failed$' || {
+            echo "::error::Firebird ORM read-back did not report passing cases with zero failures."; exit 1; }
+
       # The remaining firebird test files also run in the main `test` job (they
       # are pure-logic), but run them here too for completeness. They self-exit
       # non-zero on failure. firebirdUrl's optional live block targets a local

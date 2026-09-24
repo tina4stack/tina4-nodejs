@@ -12,11 +12,13 @@
  *
  * Real databases, no mocks: SQLite, PostgreSQL, MySQL, MSSQL and Firebird
  * (Firebird folds unquoted identifiers to upper case). Under
- * TINA4_REQUIRE_SERVICES an unreachable engine is a hard failure.
+ * TINA4_REQUIRE_SERVICES a configured, unreachable engine is a hard failure.
+ * Firebird runs in its dedicated CI job via --engine=firebird.
  *
  * Imports the ORM from src so tsx runs the checked-out source directly.
  */
 import process from "node:process";
+import { isExcusedSkip } from "./_serviceGate.ts";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -43,7 +45,7 @@ function check(name: string, condition: boolean, detail = ""): void {
 const requireServices = /^(1|true|yes|on)$/i.test(process.env.TINA4_REQUIRE_SERVICES ?? "");
 
 function skip(message: string): void {
-  if (requireServices) {
+  if (requireServices && !isExcusedSkip(message)) {
     console.error(`  \x1b[31mSKIP-AS-FAIL\x1b[0m ${message}`);
     process.exit(1);
   }
@@ -80,7 +82,10 @@ const SERVERS: Record<string, { host: string; port: number; user: string; pass: 
   },
 };
 const FIREBIRD_URL = process.env.TINA4_TEST_FIREBIRD_URL ?? "";
-const ENGINES = ["sqlite", "postgres", "mysql", "mssql", "firebird"];
+const ALL_ENGINES = ["sqlite", "postgres", "mysql", "mssql", "firebird"];
+const engineArg = process.argv.find((arg) => arg.startsWith("--engine="))?.slice("--engine=".length);
+if (engineArg !== undefined && !ALL_ENGINES.includes(engineArg)) throw new Error(`Unknown engine: ${engineArg}`);
+const ENGINES = engineArg === undefined ? ALL_ENGINES : [engineArg];
 
 const tmpDir = path.join(os.tmpdir(), `colrn_${process.pid}`);
 mkdirSync(tmpDir, { recursive: true });
@@ -93,14 +98,14 @@ async function openEngine(engine: string): Promise<Database | null> {
     url = `sqlite:///${path.join(tmpDir, "colrn.db")}`;
   } else if (engine === "firebird") {
     if (!FIREBIRD_URL) {
-      skip("firebird not set: TINA4_TEST_FIREBIRD_URL (needs a live Firebird)");
+      skip("[needs:firebird] firebird not set: TINA4_TEST_FIREBIRD_URL (needs a live Firebird)");
       return null;
     }
     url = FIREBIRD_URL;
   } else {
     const server = SERVERS[engine];
     if (!(await tcpReachable(server.host, server.port))) {
-      skip(`${engine} unreachable at ${server.host}:${server.port}`);
+      skip(`[needs:${engine}] ${engine} unreachable at ${server.host}:${server.port}`);
       return null;
     }
     url = `${engine}://${server.user}:${server.pass}@${server.host}:${server.port}/${server.db}`;
