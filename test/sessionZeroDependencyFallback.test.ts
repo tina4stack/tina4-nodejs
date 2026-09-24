@@ -23,8 +23,8 @@
  * resolve those packages - not be told it cannot.
  *
  * So the source is COPIED OUT of the repository into a temp directory that has
- * no node_modules anywhere above it, and run with `node --experimental-strip-types`
- * (Node 24 strips TypeScript natively, so not even tsx is needed). Module
+ * no node_modules anywhere above it, compiled to JavaScript there, and run with
+ * plain `node` (no flags, no tsx, same on Node 24, 25 and 26). Module
  * resolution walks up from the IMPORTING FILE, so from there every bare
  * specifier genuinely fails. Nothing is shimmed, stubbed or intercepted: the
  * failure is the one Node's real resolver produces.
