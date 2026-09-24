@@ -429,6 +429,8 @@ async function ormFindCases(): Promise<void> {
           JSON.stringify(byCol.map((m: any) => Number(m.id)).sort()) === "[2,3]",
           `rows=${JSON.stringify(byCol)}`,
         );
+
+        await saveCases(db, engine);
       } catch (err) {
         assert(`orm_find_rejects_undeclared_filter_key: ${engine} run completed`, false, String((err as Error)?.stack ?? err));
       } finally {
@@ -439,6 +441,36 @@ async function ormFindCases(): Promise<void> {
   } finally {
     rmSync(sqliteDir, { recursive: true, force: true });
   }
+}
+
+/** A column of one row, read with plain SQL (Firebird reports it upper-case). */
+async function columnOf(db: Database, id: number, column: string): Promise<unknown> {
+  const rows = (await db.fetch(`SELECT * FROM ident_widget WHERE id = ?`, [id], 1)).records as Record<string, unknown>[];
+  if (rows.length === 0) return "(no row)";
+  const row = rows[0];
+  return row[column] ?? row[column.toUpperCase()] ?? null;
+}
+
+// orm_save_writes_only_declared_fields: save() (insert and update) writes the
+// declared fields' columns and nothing else, however the instance got the key.
+async function saveCases(db: Database, engine: string): Promise<void> {
+  const fromData = new IdentWidget({ id: 4, name: "delta", firstName: "Kim", internal_code: "leak" } as any);
+  assert(`orm_save_writes_only_declared_fields: insert from constructor data on ${engine}`,
+    (await fromData.save()) !== false && (await columnOf(db, 4, "internal_code")) === null && (await columnOf(db, 4, "first_name")) === "Kim",
+    `internal_code=${await columnOf(db, 4, "internal_code")} lastError=${fromData.lastError}`);
+
+  const assigned: any = new IdentWidget({ id: 5, name: "epsilon" });
+  assigned.internal_code = "leak";
+  assert(`orm_save_writes_only_declared_fields: insert with an assigned undeclared property on ${engine}`,
+    (await assigned.save()) !== false && (await columnOf(db, 5, "internal_code")) === null,
+    `internal_code=${await columnOf(db, 5, "internal_code")} lastError=${assigned.lastError}`);
+
+  const loaded: any = await IdentWidget.findById(1);
+  loaded.internal_code = "leak";
+  loaded.name = "alpha-updated";
+  assert(`orm_save_writes_only_declared_fields: update with an assigned undeclared property on ${engine}`,
+    (await loaded.save()) !== false && (await columnOf(db, 1, "internal_code")) === "c1" && (await columnOf(db, 1, "name")) === "alpha-updated",
+    `internal_code=${await columnOf(db, 1, "internal_code")} name=${await columnOf(db, 1, "name")} lastError=${loaded.lastError}`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
