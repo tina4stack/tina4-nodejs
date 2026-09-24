@@ -94,7 +94,7 @@ await withEchoServer(async (hit) => {
   const url = await hit("evil.com", "https");
   assert(
     "forwarded host and proto share raw peer trust: untrusted peer: X-Forwarded-Host and Proto are ignored for request.url",
-    url.startsWith("http://127.0.0.1") && !url.includes("evil.com"),
+    new URL(url).protocol === "http:" && new URL(url).hostname === "127.0.0.1",
     `forged host leaked into request.url: ${url}`,
   );
 });
@@ -105,7 +105,7 @@ await withEchoServer(async (hit) => {
   const url = await hit("app.example.com", "https");
   assert(
     "forwarded host and proto share raw peer trust: trusted peer: X-Forwarded-Host and Proto are honoured for request.url",
-    url.startsWith("https://app.example.com/"),
+    new URL(url).protocol === "https:" && new URL(url).hostname === "app.example.com",
     `forwarded host not honoured behind a trusted proxy: ${url}`,
   );
 });

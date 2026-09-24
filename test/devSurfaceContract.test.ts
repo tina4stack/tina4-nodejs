@@ -303,8 +303,7 @@ const port = (peerServer.address() as any).port;
   setEnv({ TINA4_API_KEY: undefined, TINA4_MCP_REMOTE: undefined, TINA4_MCP_TOKEN: undefined });
   assert("the api key does not unlock dev writes",
     bearer.status === 403 && apiKey.status === 403 && !wroteEarly && mcp.status === 200 &&
-      ok.status === 200 && readFileSync(probe, "utf-8") === "ok",
-    `bearer=${bearer.status} apiKey=${apiKey.status} wrote=${wroteEarly} mcp=${mcp.status} ok=${ok.status}`);
+      ok.status === 200 && readFileSync(probe, "utf-8") === "ok");
 }
 
 // ── table viewer takes only a real table name ───────────────────────────────

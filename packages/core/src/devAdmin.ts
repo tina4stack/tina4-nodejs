@@ -2449,6 +2449,24 @@ export function devAdminLanguage(rel: string): string {
   return DEV_ADMIN_LANG_MAP[ext] ?? "text";
 }
 
+/** Read the checked regular file through the same descriptor. Final-component
+ * symlink replacement is refused. Parent-directory resolution is not an atomic
+ * openat walk; the development project directory must remain locally trusted.
+ */
+function readDevFile(target: string): Buffer | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (!fstatSync(fd).isFile()) return null;
+    return readFileSync(fd);
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) return null;
+    throw error;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 const handleFileRead: RouteHandler = (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const rel = url.searchParams.get("path") ?? "";
@@ -2464,12 +2482,10 @@ const handleFileRead: RouteHandler = (req, res) => {
     res.json({ error: "Refused: secret file", path: rel, content: "", language: "text", bytes: 0 }, 403);
     return;
   }
-  if (!existsSync(target) || !statSync(target).isFile()) {
-    res.json({ error: `File not found: ${rel}` }, 404);
-    return;
-  }
   try {
-    const content = readFileSync(target, "utf-8");
+    const data = readDevFile(target);
+    if (data === null) { res.json({ error: `File not found: ${rel}` }, 404); return; }
+    const content = data.toString("utf-8");
     const path = relative(root, target);
     res.json({ path, content, language: devAdminLanguage(path), bytes: Buffer.byteLength(content, "utf-8") });
   } catch (e) {
@@ -2515,13 +2531,9 @@ const handleFileRaw: RouteHandler = (req, res) => {
     res.json({ error: "Refused: secret file" }, 403);
     return;
   }
-  if (!existsSync(target) || !statSync(target).isFile()) {
-    res.raw.writeHead(404);
-    res.raw.end("Not found");
-    return;
-  }
   try {
-    const buf = readFileSync(target);
+    const buf = readDevFile(target);
+    if (buf === null) { res.raw.writeHead(404); res.raw.end("Not found"); return; }
     const ext = target.slice(target.lastIndexOf(".") + 1).toLowerCase();
     const mime: Record<string, string> = {
       js: "application/javascript", ts: "text/plain", json: "application/json",
