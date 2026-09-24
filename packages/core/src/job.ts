@@ -39,6 +39,7 @@ export type QueueJob = JobData & JobLifecycle;
 
 export interface JobQueueBridge {
   _failJob(topic: string, job: QueueJob, reason: string, maxRetries: number): void;
+  _rejectJob(topic: string, job: QueueJob, reason: string, maxRetries: number): void;
   _retryJob(topic: string, job: QueueJob, delaySeconds?: number): void;
   _completeJob(topic: string, job: QueueJob): void;
   getMaxRetries(): number;
@@ -66,7 +67,13 @@ export function createJob(data: JobData, queue: JobQueueBridge): QueueJob {
       queue._failJob(job.topic, job, reason, queue.getMaxRetries());
     },
     reject(reason = "") {
-      job.fail(reason);
+      // Reject permanently — dead-letter NOW, no retry (ADR-0023). Distinct
+      // from fail(): fail() retries until maxRetries is spent; reject() is for
+      // a message the consumer KNOWS is poison and sends it straight to the
+      // dead-letter store. Was a literal alias for fail() before 3.13.139.
+      job.status = "dead";
+      job.error = reason;
+      queue._rejectJob(job.topic, job, reason, queue.getMaxRetries());
     },
     retry(delaySeconds?: number) {
       queue._retryJob(job.topic, job, delaySeconds);
