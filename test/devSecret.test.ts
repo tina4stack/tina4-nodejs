@@ -14,7 +14,7 @@
  * Run with: npx tsx test/devSecret.test.ts
  */
 import { ensureDevSecret } from "../packages/core/src/index.ts";
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, statSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -70,6 +70,12 @@ console.log("--- Dev generates a secret to .env.local ---");
   const body = existsSync(join(dir, ".env.local")) ? readFileSync(join(dir, ".env.local"), "utf-8") : "";
   assert("dev: .env.local contains the secret line", body.includes(`TINA4_SECRET=${secret}`), body);
   assert("dev: .env.local ends with a newline", body.endsWith("\n"), JSON.stringify(body));
+  // F15: the file holds a signing secret, so it must be owner-only (0600),
+  // never the default 0644. POSIX only — Windows has no such bits.
+  if (process.platform !== "win32") {
+    const mode = statSync(join(dir, ".env.local")).mode & 0o777;
+    assert("dev: .env.local is mode 0600 (secret file)", mode === 0o600, mode.toString(8));
+  }
   rmSync(dir, { recursive: true, force: true });
 }
 
