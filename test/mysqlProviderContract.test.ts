@@ -256,6 +256,6 @@ async function run(): Promise<void> {
 }
 
 run().catch((e) => {
-  console.error(e);
+  console.error("Integration test failed:", e instanceof Error ? e.name : typeof e);
   process.exit(1);
 });

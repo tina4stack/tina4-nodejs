@@ -10,7 +10,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Tests that route discovery works correctly when basePath is provided.
  * Run with: npx tsx test/basePath.test.ts
  */
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { discoverRoutes, _resetRouteDiscovery } from "../packages/core/src/routeDiscovery.ts";
 
@@ -31,7 +31,7 @@ console.log("=== basePath Route Discovery Tests ===\n");
 
 // Create a temporary directory structure simulating basePath usage
 import { tmpdir } from "node:os";
-const tmpBase = resolve(tmpdir(), `tina4-basepath-test-${Date.now()}`);
+const tmpBase = mkdtempSync(join(tmpdir(), "tina4-basepath-test-"));
 const routesDir = join(tmpBase, "src", "routes");
 const apiUsersDir = join(routesDir, "api", "users");
 const apiUsersIdDir = join(routesDir, "api", "users", "[id]");

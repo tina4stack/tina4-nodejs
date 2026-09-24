@@ -38,7 +38,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * legacy cwd/data/queue path — a real stale artefact of exactly the kind that
  * produced the 100, there to prove the endpoint no longer reads it.
  */
-import { rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import http from "node:http";
@@ -57,7 +57,7 @@ function assert(label: string, condition: boolean, detail = ""): void {
 }
 
 const PORT = await freePort();
-const scaffold = join(tmpdir(), `tina4-devadmin-queuepath-${Date.now()}-${process.pid}`);
+const scaffold = mkdtempSync(join(tmpdir(), "tina4-devadmin-queuepath-"));
 const originalCwd = process.cwd();
 
 // The REAL store, deliberately NOT <cwd>/data/queue — that difference is the

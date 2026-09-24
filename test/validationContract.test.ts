@@ -232,7 +232,7 @@ async function main(): Promise<void> {
       treq.body = raw ? JSON.parse(raw) : {}; // real bytes off the socket, parsed
       const response = createResponse(res);
       try { await handler(treq, response); }
-      catch (err) { if (!res.writableEnded) { res.statusCode = 500; res.end(JSON.stringify({ error: String(err) })); } }
+      catch (err) { if (!res.writableEnded) { res.statusCode = 500; res.end(JSON.stringify({ error: "Unexpected test server error" })); } }
       if (!res.writableEnded) res.end();
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));

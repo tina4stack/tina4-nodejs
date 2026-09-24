@@ -67,7 +67,7 @@ function assert(name: string, condition: boolean, detail = ""): void {
     console.log(`  \x1b[32mPASS\x1b[0m ${name}`);
     pass++;
   } else {
-    console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
+    console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${JSON.stringify(detail)}`);
     fail++;
   }
 }
@@ -126,8 +126,7 @@ function mcpInitializeVersion(port: number): Promise<string | undefined> {
 }
 
 function project(name: string): string {
-  const dir = join(tmpdir(), `tina4-versioncontract-${process.pid}-${name}-${Date.now()}`);
-  rmSync(dir, { recursive: true, force: true });
+  const dir = mkdtempSync(join(tmpdir(), `tina4-versioncontract-${name}-`));
   mkdirSync(join(dir, "src", "routes"), { recursive: true });
   writeFileSync(join(dir, "package.json"), '{"type":"module"}');
   return dir;

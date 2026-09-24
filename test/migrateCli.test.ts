@@ -13,7 +13,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  *
  * Run with: npx tsx test/migrateCli.test.ts
  */
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -31,7 +31,7 @@ function assert(name: string, condition: boolean, detail = ""): void {
 }
 
 function makeProject(name: string): { dir: string; dbPath: string; envPath: string } {
-  const dir = resolve(tmpdir(), `tina4_migrate_cli_${name}_${process.pid}_${Date.now()}`);
+  const dir = mkdtempSync(join(tmpdir(), `tina4_migrate_cli_${name}_`));
   mkdirSync(join(dir, "migrations"), { recursive: true });
   return {
     dir,

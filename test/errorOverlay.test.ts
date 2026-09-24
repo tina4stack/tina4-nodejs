@@ -23,7 +23,7 @@ function assert(name: string, condition: boolean, detail = "") {
     console.log(`  \x1b[32mPASS\x1b[0m ${name}`);
     pass++;
   } else {
-    console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
+    console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${JSON.stringify(detail)}`);
     fail++;
   }
 }

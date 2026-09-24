@@ -23,7 +23,7 @@ import { Api } from "../packages/core/src/api.ts";
 import type { ApiTransport } from "../packages/core/src/api.ts";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { promises as fsp } from "node:fs";
+import { promises as fsp, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -35,7 +35,7 @@ function assert(name: string, condition: boolean, detail = "") {
         console.log(`  \x1b[32mPASS\x1b[0m ${name}`);
         pass++;
     } else {
-        console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`);
+        console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${JSON.stringify(detail)}`);
         fail++;
     }
 }
@@ -84,9 +84,11 @@ function parseMultipart(body: Buffer, contentType: string): {
 } {
     const fields: Record<string, string> = {};
     const files: Record<string, { filename: string; contentType: string; content: Buffer }> = {};
-    const bm = /boundary=(.+)$/.exec(contentType);
-    if (!bm) return { fields, files };
-    const sep = Buffer.from(`--${bm[1]}`);
+    const boundaryAt = contentType.indexOf("boundary=");
+    if (boundaryAt < 0) return { fields, files };
+    const boundary = contentType.slice(boundaryAt + "boundary=".length);
+    if (!boundary) return { fields, files };
+    const sep = Buffer.from(`--${boundary}`);
     const headerSep = Buffer.from("\r\n\r\n");
     for (const seg of splitBuffer(body, sep)) {
         if (seg.length === 0) continue;
@@ -129,8 +131,11 @@ function makeEcho(label: string): http.RequestListener {
     };
 }
 
+const transferRoot = mkdtempSync(join(tmpdir(), "tina4-apixfer-"));
+process.on("exit", () => rmSync(transferRoot, { recursive: true, force: true }));
+
 function tmpFile(name: string): string {
-    return join(tmpdir(), `tina4-apixfer-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}-${name}`);
+    return join(transferRoot, `tina4-apixfer-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}-${name}`);
 }
 
 async function unlinkQuiet(path: string): Promise<void> {

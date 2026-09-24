@@ -22,12 +22,12 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 import { startServer } from "../packages/core/src/index.ts";
 import http from "node:http";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { freePort } from "./freePort.ts";
 
-const TEST_DIR = join(tmpdir(), "tina4-static-cache-test-" + Date.now());
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-static-cache-test-"));
 const PUBLIC_DIR = join(TEST_DIR, "public");
 const ASSET_BODY = "body { color: rebeccapurple; }";
 const PORT = await freePort();

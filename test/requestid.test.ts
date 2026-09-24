@@ -30,7 +30,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * interleaving on the one event loop keep DISTINCT ids (AsyncLocalStorage).
  */
 import http from "node:http";
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startServer } from "../packages/core/src/index.ts";
@@ -68,7 +68,7 @@ function get(port: number, path: string, headers: Record<string, string> = {}) {
 }
 
 async function main() {
-  const base = join(tmpdir(), "tina4-rid-" + Date.now());
+  const base = mkdtempSync(join(tmpdir(), "tina4-rid-"));
   const logDir = join(base, "logs");
   mkdirSync(join(base, "src/routes"), { recursive: true });
   mkdirSync(logDir, { recursive: true });

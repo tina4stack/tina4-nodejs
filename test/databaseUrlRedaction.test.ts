@@ -258,7 +258,7 @@ if (!liveUrl) {
     db.close();
   } catch (err: any) {
     assert("the live database really is reachable with the real password", false,
-      String(err.message).slice(0, 90));
+      err instanceof Error ? err.name : typeof err);
   }
 
   // NEGATIVE: a wrong password containing a space must not survive into the

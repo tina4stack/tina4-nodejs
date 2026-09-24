@@ -179,8 +179,7 @@ function wsUpgradeStatusLine(port: number, path: string, timeoutMs = 8000): Prom
 }
 
 function project(name: string): string {
-  const dir = join(tmpdir(), `tina4-dualport-${process.pid}-${name}-${Date.now()}`);
-  rmSync(dir, { recursive: true, force: true });
+  const dir = mkdtempSync(join(tmpdir(), `tina4-dualport-${name}-`));
   mkdirSync(join(dir, "src", "routes"), { recursive: true });
   writeFileSync(join(dir, "package.json"), '{"type":"module"}');
   return dir;

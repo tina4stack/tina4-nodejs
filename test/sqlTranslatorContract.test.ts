@@ -172,7 +172,7 @@ if (!mysqlUp) {
       }
     }
   } catch (err) {
-    assert("MySQL literal-safe translator cases", false, `error: ${(err as Error).message}`);
+    assert("MySQL literal-safe translator cases", false, `error: ${err instanceof Error ? err.name : typeof err}`);
   } finally {
     try { db?.close?.(); } catch { /* ignore */ }
   }
@@ -208,7 +208,7 @@ async function bigintCase(engineLabel: string, url: string, engine: string): Pro
       await db.executeAsync(`DROP TABLE ${t}`);
     }
   } catch (err) {
-    assert(`bigint autoincrement creates a real bigint column (${engineLabel})`, false, `error: ${(err as Error).message}`);
+    assert(`bigint autoincrement creates a real bigint column (${engineLabel})`, false, `error: ${err instanceof Error ? err.name : typeof err}`);
   } finally {
     try { db?.close?.(); } catch { /* ignore */ }
   }

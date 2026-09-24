@@ -11,7 +11,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Run with: npx tsx test/static.test.ts
  */
 import { join, resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { mkdtempSync, existsSync } from "node:fs";
 import { tryServeStatic } from "../packages/core/src/static.ts";
 import type { Tina4Request, Tina4Response } from "../packages/core/src/types.ts";
 
@@ -197,7 +197,7 @@ import { tmpdir } from "node:os";
 import http from "node:http";
 import { startServer } from "../packages/core/src/index.ts";
 import { freePort } from "./freePort.ts";
-const customDir = join(tmpdir(), "tina4-static-test-" + Date.now());
+const customDir = mkdtempSync(join(tmpdir(), "tina4-static-test-"));
 mkdirSync(join(customDir, "images"), { recursive: true });
 mkdirSync(join(customDir, "data"), { recursive: true });
 
@@ -302,7 +302,7 @@ console.log("\n--- Content-Length Accuracy ---");
 // honoured — REAL files, a REAL symlink, and (for the env case) a REAL server.
 console.log("\n--- Feature 41 static contract ---");
 
-const c41 = join(tmpdir(), "tina4-static-c41-" + Date.now());
+const c41 = mkdtempSync(join(tmpdir(), "tina4-static-c41-"));
 const c41Pub = join(c41, "pub");
 mkdirSync(join(c41Pub, "css"), { recursive: true });
 mkdirSync(join(c41Pub, ".git"), { recursive: true });

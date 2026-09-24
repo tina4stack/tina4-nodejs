@@ -75,7 +75,7 @@ if (!liveUrl) {
     assert("an encoded password connects to a live database", true);
     db.close();
   } catch (e) {
-    assert("an encoded password connects to a live database", false, String(e).slice(0, 70));
+    assert("an encoded password connects to a live database", false, e instanceof Error ? e.name : typeof e);
   }
 }
 

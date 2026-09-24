@@ -24,7 +24,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import {
   toSnake, toTableName, toPascal, parseFields, parseCliArgs, parseEvery,
   aiFill, extend, generate,
@@ -231,7 +231,7 @@ async function main(): Promise<void> {
   }, null, 2));
   let tscOut = "";
   try {
-    tscOut = execSync(`npx tsc --noEmit -p ${JSON.stringify(join(tmpDir, "tsconfig.json"))}`,
+    tscOut = execFileSync("npx", ["tsc", "--noEmit", "-p", join(tmpDir, "tsconfig.json")],
       { cwd: repoRoot, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
   } catch (err: unknown) {
     const e = err as { stdout?: string; stderr?: string };
@@ -355,7 +355,7 @@ async function main(): Promise<void> {
   // Run the emitted gate test for real (in-repo → tina4-nodejs self-resolves).
   let gadgetTestGreen = false;
   try {
-    const out = execSync(`npx tsx ${JSON.stringify(join(tmpDir, "tests/gadgets.test.ts"))}`,
+    const out = execFileSync("npx", ["tsx", join(tmpDir, "tests/gadgets.test.ts")],
       { cwd: tmpDir, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
     gadgetTestGreen = /(\d+) passed, 0 failed/.test(out);
   } catch { gadgetTestGreen = false; }

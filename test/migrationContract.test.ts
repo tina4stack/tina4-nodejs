@@ -53,7 +53,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * means the Firebird cases skip locally -- the lab gate's own preflight FATALs
  * if it is unreachable there, a skipped required engine is a ghost).
  */
-import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import net from "node:net";
@@ -167,7 +167,7 @@ async function cleanLedgerRow(db: DatabaseAdapter, migrationName: string): Promi
 }
 
 function tmpMigDir(label: string): string {
-  const dir = resolve(tmpdir(), `tina4_mig_contract_${label}_${process.pid}_${Date.now()}`);
+  const dir = mkdtempSync(join(tmpdir(), `tina4_mig_contract_${label}_`));
   mkdirSync(join(dir, "migrations"), { recursive: true });
   return dir;
 }
@@ -546,6 +546,6 @@ async function run(): Promise<void> {
 }
 
 run().catch((e) => {
-  console.error(e);
+  console.error("Integration test failed:", e instanceof Error ? e.name : typeof e);
   process.exit(1);
 });

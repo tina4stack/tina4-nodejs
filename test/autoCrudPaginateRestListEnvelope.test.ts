@@ -69,7 +69,7 @@ async function invokeHandler(
     } catch (err) {
       if (!res.writableEnded) {
         res.statusCode = 500;
-        res.end(JSON.stringify({ error: String(err) }));
+        res.end(JSON.stringify({ error: "Unexpected test server error" }));
       }
     }
     if (!res.writableEnded) res.end();

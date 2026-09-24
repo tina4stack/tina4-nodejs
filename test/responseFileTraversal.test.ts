@@ -98,7 +98,8 @@ await abs.text();
 // reported Forbidden instead of Not Found. Unrooted, an absolute path is the
 // caller's business (Express res.sendFile, Rails send_file, ASP.NET
 // PhysicalFile all serve one), so this must NOT be 403.
-const outsideFile = join(tmpdir(), `tina4-outside-${process.pid}.txt`);
+const outsideDir = mkdtempSync(join(tmpdir(), "tina4-outside-"));
+const outsideFile = join(outsideDir, "outside.txt");
 writeFileSync(outsideFile, "OUTSIDE\n");
 const unrootedServer = http.createServer((req, res) => {
   const name = new URL(req.url!, "http://x").searchParams.get("name") ?? "";
@@ -115,7 +116,7 @@ const missingRes = await unrootedGet("/nonexistent/path/to/file.css");
 assert("a MISSING absolute path is 404, not 403", missingRes.status === 404, `got ${missingRes.status}`);
 await missingRes.text();
 unrootedServer.close();
-rmSync(outsideFile, { force: true });
+rmSync(outsideDir, { recursive: true, force: true });
 
 // An explicit root wins over the working directory.
 const rootServer = http.createServer((req, res) => {

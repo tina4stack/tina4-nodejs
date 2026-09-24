@@ -141,8 +141,7 @@ async function lowBase(): Promise<number | null> {
 }
 
 function project(name: string): string {
-  const dir = join(tmpdir(), `tina4-aiport-${process.pid}-${name}`);
-  rmSync(dir, { recursive: true, force: true });
+  const dir = mkdtempSync(join(tmpdir(), `tina4-aiport-${name}-`));
   mkdirSync(join(dir, "src", "routes"), { recursive: true });
   writeFileSync(join(dir, "package.json"), '{"type":"module"}');
   return dir;

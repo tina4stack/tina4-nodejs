@@ -392,4 +392,4 @@ async function main(): Promise<void> {
   process.exit(fail === 0 ? 0 : 1);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => { console.error("Integration test failed:", e instanceof Error ? e.name : typeof e); process.exit(1); });

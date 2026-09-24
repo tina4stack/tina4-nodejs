@@ -169,7 +169,7 @@ if (!(await reachable(rmqHost, rmqPort))) {
     assert("RabbitMQBackend.clear/purge left the pending jobs intact (no drain, no data loss)",
       rmqSizeBefore > 0 && rabbit.size(rmqQueue) === rmqSizeBefore, `before ${rmqSizeBefore}, after ${rabbit.size(rmqQueue)}`);
   } catch (err) {
-    assert("RabbitMQBackend lifecycle ran without throwing", false, String(err));
+    assert("RabbitMQBackend lifecycle ran without throwing", false, err instanceof Error ? err.name : typeof err);
   } finally {
     try { rabbit.clear(rmqQueue); } catch { /* best-effort cleanup */ }
   }
@@ -232,7 +232,7 @@ if (!(await reachable(rmqHost, rmqPort))) {
           const defJob = rabbitDefaults.pop(rmqDefQueue);
           assert("RabbitMQBackend default connection round-trips a payload", typeof defId === "string" && defJob !== null && (defJob.payload as any)?.data === "default-conn", JSON.stringify(defJob));
         } catch (err) {
-          assert("RabbitMQBackend default connection round-trip ran without throwing", false, String(err));
+          assert("RabbitMQBackend default connection round-trip ran without throwing", false, err instanceof Error ? err.name : typeof err);
         } finally {
           try { rabbitDefaults.clear(rmqDefQueue); } catch { /* best-effort cleanup */ }
         }
@@ -311,7 +311,7 @@ if (!(await reachable(kHost, kPort))) {
       const kId2 = kafka.push(kTopic, { data: "after-clear", nonce: Math.random().toString(16).slice(2) });
       assert("KafkaBackend.clear/purge did not disturb the producer (still usable after the refusal)", typeof kId2 === "string" && kId2.length > 0 && kafka.size(kTopic) === 0, kId2);
     } catch (err) {
-      assert("KafkaBackend lifecycle ran without throwing", false, String(err));
+      assert("KafkaBackend lifecycle ran without throwing", false, err instanceof Error ? err.name : typeof err);
     }
 
     // (14) Default-config backend produces+consumes against the DEFAULT broker —
@@ -381,7 +381,7 @@ if (!(await reachable(kHost, kPort))) {
               const defJob = kafkaDefaults.pop(kDefTopic);
               assert("KafkaBackend default connection round-trips a payload", typeof defId === "string" && defJob !== null && JSON.stringify((defJob as any).payload) === JSON.stringify(defPayload), JSON.stringify(defJob?.payload));
             } catch (err) {
-              assert("KafkaBackend default connection round-trip ran without throwing", false, String(err));
+              assert("KafkaBackend default connection round-trip ran without throwing", false, err instanceof Error ? err.name : typeof err);
             }
           }
         }
