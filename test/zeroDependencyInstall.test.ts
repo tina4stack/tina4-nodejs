@@ -27,15 +27,28 @@
  * app-installed driver), and a Redis backplane publish/subscribe - proving
  * every peer is found once the app installs it.
  */
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const rootDir = join(import.meta.dirname, "..");
 
-const OPTIONAL_PEERS = ["pg", "mongodb", "redis", "@aws-sdk/client-s3", "@aws-sdk/s3-request-presigner"];
+const OPTIONAL_PEERS = [
+  "pg", "mongodb", "redis", "@aws-sdk/client-s3", "@aws-sdk/s3-request-presigner",
+  "mysql2", "tedious", "node-firebird", "odbc",
+];
+// The published manifest must DECLARE the SQL drivers too, as optional peers,
+// with the range the adapters are tested against (packages/orm's manifest), so
+// npm can warn an app that installs an incompatible major. Undeclared, npm
+// never checks the version at all.
+const DECLARED_SQL_DRIVER_PEERS: Record<string, string> = {
+  mysql2: "^3.22.5",
+  tedious: "^19.2.1",
+  "node-firebird": "^2.14.3",
+  odbc: "^2.4.9",
+};
 
 const PG_HOST = process.env.TINA4_TEST_PG_HOST ?? "localhost";
 const PG_PORT = parseInt(process.env.TINA4_TEST_PG_PORT ?? "5432", 10);
@@ -44,6 +57,8 @@ const PG_PASS = process.env.TINA4_TEST_PG_PASSWORD ?? "tina4";
 const PG_DB = process.env.TINA4_TEST_PG_DB ?? "tina4_node";
 const MONGO_URI = process.env.TINA4_TEST_MONGO_URI ?? "mongodb://127.0.0.1:27017";
 const REDIS_URL = process.env.TINA4_TEST_REDIS_URL ?? "redis://127.0.0.1:6379";
+// Password-protected Redis (requirepass s3cret on 6381, as in CI and the lab).
+const REDIS_AUTH_URL = process.env.TINA4_TEST_REDIS_AUTH_URL ?? "redis://:s3cret@127.0.0.1:6381/3";
 
 let passed = 0;
 let failed = 0;
@@ -262,6 +277,27 @@ if (process.env.ZD_REDIS_URL) {
   catch (error) { report.deadPublish = "rejected"; }
 }
 
+// The backplane's own log lines must never carry the password in its URL
+// (the "connected to" line printed it verbatim). The parent reads this
+// process's REAL stdout and stderr for the secret.
+if (process.env.ZD_REDIS_AUTH_URL) {
+  try {
+    const authBackplane = new core.RedisBackplane(process.env.ZD_REDIS_AUTH_URL);
+    const channel = "tina4:zd:auth:" + Date.now();
+    const received = new Promise((resolve) => {
+      authBackplane.subscribe(channel, resolve).then(() => authBackplane.publish(channel, "redis with a password"));
+      setTimeout(() => resolve(null), 5000);
+    });
+    report.redisAuthMessage = await received;
+    await authBackplane.close();
+  } catch (error) {
+    report.redisAuthError = String((error && error.stack) || error);
+  }
+  // NEGATIVE: a WRONG password fails - and its failure line must not print it either.
+  const wrongPasswordBackplane = new core.RedisBackplane(process.env.ZD_REDIS_WRONG_PASSWORD_URL);
+  try { await wrongPasswordBackplane.publish("tina4:zd:wrong", "x"); report.wrongPasswordPublish = "resolved"; }
+  catch (error) { report.wrongPasswordPublish = "rejected"; }
+}
 await new Promise((resolve) => setTimeout(resolve, 300));
 writeSync(1, "\\n__REPORT__" + JSON.stringify(report) + "\\n");
 process.exit(0);
@@ -278,13 +314,10 @@ function runConsumer(appDir: string, file: string, extraEnv: Record<string, stri
     TINA4_DEBUG: "false",
     ...extraEnv,
   };
-  let raw = "";
-  try {
-    raw = execFileSync(process.execPath, [file], { cwd: workingDirectory, env, encoding: "utf-8", timeout: 45_000, stdio: ["ignore", "pipe", "pipe"] });
-  } catch (error) {
-    const failure = error as { stdout?: string; stderr?: string; message?: string };
-    raw = (failure.stdout ?? "") + (failure.stderr ?? "") + (failure.message ?? "");
-  }
+  // stdout AND stderr, always: the framework logs to both, and a test that
+  // looks for a leaked secret must read everything the process wrote.
+  const child = spawnSync(process.execPath, [file], { cwd: workingDirectory, env, encoding: "utf-8", timeout: 45_000, stdio: ["ignore", "pipe", "pipe"] });
+  const raw = (child.stdout ?? "") + (child.stderr ?? "") + (child.error ? String(child.error) : "");
   const marker = raw.lastIndexOf("__REPORT__");
   if (marker < 0) return { report: null, raw };
   return { report: JSON.parse(raw.slice(marker + "__REPORT__".length).split("\n")[0]), raw };
@@ -318,6 +351,13 @@ try {
     `${installed.length} installed: ${installed.map((path) => path.split("node_modules/").pop()).join(", ")}`);
   for (const peer of OPTIONAL_PEERS) {
     assert(`optional peer '${peer}' is NOT installed`, !existsSync(join(appDir, "node_modules", peer)));
+  }
+  const publishedManifest = JSON.parse(readFileSync(join(appDir, "node_modules", "tina4-nodejs", "package.json"), "utf-8"));
+  for (const [driver, range] of Object.entries(DECLARED_SQL_DRIVER_PEERS)) {
+    assert(`published manifest declares '${driver}' as an optional peer (${range})`,
+      publishedManifest.peerDependencies?.[driver] === range
+        && publishedManifest.peerDependenciesMeta?.[driver]?.optional === true,
+      `peerDependencies: ${JSON.stringify(publishedManifest.peerDependencies?.[driver])}, meta: ${JSON.stringify(publishedManifest.peerDependenciesMeta?.[driver])}`);
   }
 
   const consumer = join(appDir, "driverless.mjs");
@@ -377,14 +417,17 @@ try {
   // ── POSITIVE: the app installs the peers, and each works on a real server ──
   const [mongoHost, mongoPort] = hostPort(MONGO_URI, 27017);
   const [redisHost, redisPort] = hostPort(REDIS_URL, 6379);
+  const [redisAuthHost, redisAuthPort] = hostPort(REDIS_AUTH_URL, 6381);
   const services = {
     postgres: await reachable(PG_HOST, PG_PORT),
     mongo: await reachable(mongoHost, mongoPort),
     redis: await reachable(redisHost, redisPort),
+    redisAuth: await reachable(redisAuthHost, redisAuthPort),
   };
   if (!services.postgres) console.log(`  \x1b[33mSKIP\x1b[0m PostgreSQL not reachable at ${PG_HOST}:${PG_PORT} - the installed-pg round-trip did not run`);
   if (!services.mongo) console.log(`  \x1b[33mSKIP\x1b[0m MongoDB not reachable at ${mongoHost}:${mongoPort} - the installed-mongodb queue did not run`);
   if (!services.redis) console.log(`  \x1b[33mSKIP\x1b[0m Redis not reachable at ${redisHost}:${redisPort} - the installed-redis backplane did not run`);
+  if (!services.redisAuth) console.log(`  \x1b[33mSKIP\x1b[0m password Redis not reachable at ${redisAuthHost}:${redisAuthPort} - the backplane log-redaction check did not run`);
 
   const installPeers = execFileSync("npm", ["install", "pg", "mongodb", "redis", "--no-audit", "--no-fund", "--prefer-offline"], {
     cwd: appDir, encoding: "utf-8", timeout: 180_000, stdio: ["ignore", "pipe", "pipe"],
@@ -402,6 +445,14 @@ try {
   }
   if (services.mongo) peerEnv.ZD_MONGO_URI = MONGO_URI;
   if (services.redis) peerEnv.ZD_REDIS_URL = REDIS_URL;
+  const redisPassword = decodeURIComponent(new URL(REDIS_AUTH_URL).password);
+  const wrongPassword = "wrong-" + redisPassword + "-zd";
+  if (services.redisAuth) {
+    peerEnv.ZD_REDIS_AUTH_URL = REDIS_AUTH_URL;
+    const wrong = new URL(REDIS_AUTH_URL);
+    wrong.password = wrongPassword;
+    peerEnv.ZD_REDIS_WRONG_PASSWORD_URL = wrong.href;
+  }
   // Run from OUTSIDE the app directory, as a server started from anywhere is:
   // the peers must resolve from the framework's location, not process.cwd().
   const { report: peers, raw: peersRaw } = runConsumer(appDir, peersConsumer, peerEnv, workDir);
@@ -423,6 +474,17 @@ try {
       assert("redis: backplane publish -> subscribe on real Redis",
         peers.redisMessage === "redis installed by the app", JSON.stringify(peers.redisMessage));
       assert("redis: a dead server rejects publish()", peers.deadPublish === "rejected", String(peers.deadPublish));
+    }
+    if (services.redisAuth) {
+      assert("redis with a password: backplane publish -> subscribe on real Redis",
+        peers.redisAuthMessage === "redis with a password", peers.redisAuthError ?? JSON.stringify(peers.redisAuthMessage));
+      const leakedLines = peersRaw.split("\n").filter((line) => line.includes(redisPassword) || line.includes(wrongPassword));
+      assert("backplane_log_never_prints_the_redis_password (real stdout + stderr)", leakedLines.length === 0,
+        leakedLines.slice(0, 3).join(" | "));
+      assert("backplane 'connected' line still names the (redacted) target",
+        peersRaw.includes(`RedisBackplane connected to redis://:***@${redisAuthHost}:${redisAuthPort}`),
+        peersRaw.split("\n").filter((line) => line.includes("RedisBackplane")).join(" | "));
+      assert("redis with a WRONG password: publish rejects", peers.wrongPasswordPublish === "rejected", "expected rejected authentication");
     }
     assert("installed peers: no unhandled rejection", peers.unhandled.length === 0, JSON.stringify(peers.unhandled));
   }

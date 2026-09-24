@@ -23,8 +23,9 @@
  *   tina4-php/tests/LandingPageContractTest.php
  *   tina4-ruby/spec/landing_page_contract_spec.rb
  */
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import http from "node:http";
 import { startServer, resetTemplateCache } from "../packages/core/src/index.ts";
 import { freePort } from "./freePort.ts";
@@ -57,8 +58,7 @@ function req(port: number, path: string): Promise<{ status: number; body: string
 }
 
 function freshDir(tag: string): string {
-  const dir = join("/tmp", `tina4-landing-contract-${tag}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  rmSync(dir, { recursive: true, force: true });
+  const dir = mkdtempSync(join(tmpdir(), `tina4-landing-contract-${tag}-`));
   mkdirSync(join(dir, "src/routes"), { recursive: true });
   mkdirSync(join(dir, "src/templates/pages"), { recursive: true });
   return dir;

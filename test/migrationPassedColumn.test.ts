@@ -17,7 +17,7 @@
  *
  * Run with: npx tsx test/migrationPassedColumn.test.ts
  */
-import { rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { rmSync, mkdirSync, writeFileSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import {
   initDatabase,
@@ -33,6 +33,7 @@ import {
   adapterQuery,
   adapterColumns,
 } from "../packages/orm/src/index.ts";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -54,8 +55,8 @@ console.log("=== tina4_migration `passed` Column Lock-in Tests (#129/#172) ===\n
 // ── (1) a fresh v3 tracking table carries the canonical `passed` column ──────
 console.log("--- [1] fresh v3 table has the `passed` column ---");
 {
-  const TMP = "/tmp/tina4-mig-passed-fresh";
-  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  const TMP = mkdtempSync(join(tmpdir(), "tina4-mig-passed-fresh-"));
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* fresh */ }
   mkdirSync(TMP, { recursive: true });
 
   await initDatabase({ type: "sqlite", path: join(TMP, "test.db") });
@@ -79,15 +80,15 @@ console.log("--- [1] fresh v3 table has the `passed` column ---");
   );
 
   closeDatabase();
-  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 // ── (2) an applied migration is recorded passed=1 and is NOT re-run ─────────
 console.log("\n--- [2] applied migration -> passed=1, second migrate skips it ---");
 {
-  const TMP = "/tmp/tina4-mig-passed-applied";
+  const TMP = mkdtempSync(join(tmpdir(), "tina4-mig-passed-applied-"));
   const MIGS = join(TMP, "migrations");
-  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* fresh */ }
   mkdirSync(MIGS, { recursive: true });
   writeFileSync(join(MIGS, "000001_widgets.sql"), "CREATE TABLE pc_widgets (id INTEGER PRIMARY KEY, name TEXT);");
 
@@ -116,7 +117,7 @@ console.log("\n--- [2] applied migration -> passed=1, second migrate skips it --
   assert("the created table still exists after the re-run", (db as any).tableExists("pc_widgets"));
 
   closeDatabase();
-  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 // ── (3) a passed=0 row is pending, then migrate() re-applies it cleanly ──────
@@ -135,9 +136,9 @@ console.log("\n--- [2] applied migration -> passed=1, second migrate skips it --
 // design. The framework source is not modified by this test.
 console.log("\n--- [3] passed=0 row is pending, then migrate() re-applies it cleanly ---");
 {
-  const TMP = "/tmp/tina4-mig-passed-zero";
+  const TMP = mkdtempSync(join(tmpdir(), "tina4-mig-passed-zero-"));
   const MIGS = join(TMP, "migrations");
-  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* fresh */ }
   mkdirSync(MIGS, { recursive: true });
   writeFileSync(join(MIGS, "000001_pending.sql"), "CREATE TABLE pc_pending (id INTEGER PRIMARY KEY, label TEXT);");
 
@@ -185,7 +186,7 @@ console.log("\n--- [3] passed=0 row is pending, then migrate() re-applies it cle
   assert("isMigrationApplied() is TRUE after the clean re-run", await isMigrationApplied("000001_pending"));
 
   closeDatabase();
-  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 // ── (4) an older-v3 name/applied_at table upgrades in place; applied not re-run
@@ -197,9 +198,9 @@ console.log("\n--- [3] passed=0 row is pending, then migrate() re-applies it cle
 // already recorded in the legacy table stays "applied" and is NOT re-run.
 console.log("\n--- [4] older-v3 name/applied_at table upgrades in place; applied not re-run ---");
 {
-  const TMP = "/tmp/tina4-mig-passed-upgrade";
+  const TMP = mkdtempSync(join(tmpdir(), "tina4-mig-passed-upgrade-"));
   const MIGS = join(TMP, "migrations");
-  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* fresh */ }
   mkdirSync(MIGS, { recursive: true });
   // The on-disk migration whose row we pre-seed as already applied. Its CREATE
   // TABLE (no IF NOT EXISTS) would ERROR "table pc_legacy already exists" if it
@@ -253,7 +254,7 @@ console.log("\n--- [4] older-v3 name/applied_at table upgrades in place; applied
   assert("upgrade: isMigrationApplied() true after in-place upgrade", await isMigrationApplied("000001_legacy"));
 
   closeDatabase();
-  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 // Summary

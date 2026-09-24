@@ -10,11 +10,12 @@ import { PostgresAdapter } from "../packages/orm/src/adapters/postgres.ts";
 import { MysqlAdapter } from "../packages/orm/src/adapters/mysql.ts";
 import { MssqlAdapter } from "../packages/orm/src/adapters/mssql.ts";
 import { FirebirdAdapter } from "../packages/orm/src/adapters/firebird.ts";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, mkdtempSync } from "node:fs";
 import { createRequire } from "node:module";
 import net from "node:net";
 import { join } from "node:path";
 import { buildDriverlessTree, runDriverless, selftestLine, selftestPassed } from "./_driverlessTree.ts";
+import { tmpdir } from "node:os";
 
 const REPO = join(import.meta.dirname, "..");
 
@@ -43,14 +44,15 @@ console.log("=== Database Drivers Tests ===\n");
 
 console.log("--- Adapter Registration ---");
 
-const testDbPath = "/tmp/tina4-driver-test/test.db";
+const DRIVER_TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-driver-test-"));
+const testDbPath = join(DRIVER_TEST_DIR, "test.db");
 // Clear it BEFORE the run, not only after. The cleanup at the bottom of this
 // file never executes when the process dies mid-file, and the row-count
 // assertions below (fetch-with-limit, fetch-with-skip) then see the previous
 // run's rows: `SQLite fetch with skip` reads 2 instead of 1 and reports FAIL on
 // a green build. Reproduced by seeding one extra row and re-running.
-rmSync("/tmp/tina4-driver-test", { recursive: true, force: true });
-mkdirSync("/tmp/tina4-driver-test", { recursive: true });
+rmSync(DRIVER_TEST_DIR, { recursive: true, force: true });
+mkdirSync(DRIVER_TEST_DIR, { recursive: true });
 
 const sqlite = new SQLiteAdapter(testDbPath);
 setAdapter(sqlite);
@@ -194,8 +196,8 @@ assert("firebird two slashes is absolute", fb1abs.database === "/var/data/test.f
 // the deleted test/_hidePackages.mjs did.
 //
 // Instead the source is COPIED OUT of the repository into a temp tree with no
-// node_modules anywhere above it and run with plain
-// `node --experimental-strip-types` (test/_driverlessTree.ts, shared with
+// node_modules anywhere above it, compiled to JavaScript there and run with
+// plain `node` (test/_driverlessTree.ts, shared with
 // sessionZeroDependencyFallback.test.ts). All four adapters reach for their
 // driver through `createRequire(import.meta.url)`, which resolves from the
 // ADAPTER's directory, so inside that tree the failure is the real resolver's —
@@ -499,7 +501,7 @@ for (const spec of LIVE) {
 // ── Cleanup ──────────────────────────────────────────────────
 
 try {
-  rmSync("/tmp/tina4-driver-test", { recursive: true, force: true });
+  rmSync(DRIVER_TEST_DIR, { recursive: true, force: true });
 } catch {
   // ignore
 }

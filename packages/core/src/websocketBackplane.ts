@@ -18,6 +18,16 @@
  */
 import { randomUUID } from "node:crypto";
 import { resolveOptionalPackage } from "./optionalPackage.js";
+import { redactCredentials } from "../../orm/src/databaseUrl.js";
+
+/**
+ * The one "connected" line both backplanes print. The URL goes through the
+ * framework's single redaction primitive: it can carry a password
+ * (`redis://:secret@host`), and this line used to print it verbatim.
+ */
+function logConnected(backplaneName: string, url: string): void {
+  console.log(`[Tina4] ${backplaneName} connected to ${redactCredentials(url)}`);
+}
 
 /**
  * A backplane connects in the background, and publish()/subscribe() await that
@@ -83,7 +93,7 @@ export class RedisBackplane implements WebSocketBackplane {
         this.publisher.connect(),
         this.subscriber.connect(),
       ]);
-      console.log(`[Tina4] RedisBackplane connected to ${resolvedUrl}`);
+      logConnected("RedisBackplane", resolvedUrl);
     })();
     observeConnectFailure(this.ready, "RedisBackplane");
   }
@@ -138,7 +148,7 @@ export class NATSBackplane implements WebSocketBackplane {
     this.ready = (async () => {
       const nats: any = await import(natsModuleUrl);
       this.nc = await nats.connect({ servers: resolvedUrl });
-      console.log(`[Tina4] NATSBackplane connected to ${resolvedUrl}`);
+      logConnected("NATSBackplane", resolvedUrl);
     })();
     observeConnectFailure(this.ready, "NATSBackplane");
   }

@@ -9,7 +9,7 @@
  *
  * Run with: npx tsx test/parityStaticOrm.test.ts
  */
-import { rmSync, mkdirSync } from "node:fs";
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
 import {
   initDatabase,
   closeDatabase,
@@ -19,8 +19,11 @@ import {
   seedOrm,
 } from "../packages/orm/src/index.ts";
 import type { FieldDefinition, DiscoveredModel } from "../packages/orm/src/index.ts";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_DB = "/tmp/tina4-parity-static-orm/test.db";
+const PARITY_TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-parity-static-orm-"));
+const TEST_DB = join(PARITY_TEST_DIR, "test.db");
 let pass = 0;
 let fail = 0;
 
@@ -35,8 +38,8 @@ function assert(name: string, condition: boolean, detail = "") {
 }
 
 // Clean slate
-try { rmSync("/tmp/tina4-parity-static-orm", { recursive: true }); } catch {}
-mkdirSync("/tmp/tina4-parity-static-orm", { recursive: true });
+try { rmSync(PARITY_TEST_DIR, { recursive: true, force: true }); } catch {}
+mkdirSync(PARITY_TEST_DIR, { recursive: true });
 
 console.log("=== Parity: Static ORM Helpers + seedOrm ===\n");
 
@@ -265,6 +268,7 @@ assert(
 
 // Cleanup
 closeDatabase();
+rmSync(PARITY_TEST_DIR, { recursive: true, force: true });
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

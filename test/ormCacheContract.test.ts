@@ -19,11 +19,13 @@
  * `adapter.execute("UPDATE ...")` on the SAME connection the models use, which
  * never touches the model query cache.
  */
-import { rmSync, mkdirSync } from "node:fs";
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
 import { initDatabase, closeDatabase, getAdapter, BaseModel } from "../packages/orm/src/index.ts";
 import type { FieldDefinition } from "../packages/orm/src/index.ts";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-ormcache-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-ormcache-test-"));
 const TEST_DB = `${TEST_DIR}/ormcache.db`;
 
 let pass = 0;
@@ -66,7 +68,7 @@ const ALL_BOOK_SQL = "SELECT id, title FROM cachebook";
 const JOIN_SQL =
   "SELECT b.id FROM cachebook b JOIN cacheauthor a ON a.id = b.author_id WHERE a.name = ?";
 
-try { rmSync(TEST_DIR, { recursive: true }); } catch { /* fresh slate */ }
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* fresh slate */ }
 mkdirSync(TEST_DIR, { recursive: true });
 
 await initDatabase({ type: "sqlite", path: TEST_DB });
@@ -195,7 +197,7 @@ console.log("=== ORM result caching contract (feature 25) ===\n");
 }
 
 closeDatabase();
-try { rmSync(TEST_DIR, { recursive: true }); } catch { /* best effort */ }
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* best effort */ }
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

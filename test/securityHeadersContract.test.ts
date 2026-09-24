@@ -29,11 +29,12 @@
  */
 import { startServer } from "../packages/core/src/index.ts";
 import http from "node:http";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-security-headers-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-security-headers-test-"));
 const PORT = await freePort();
 let pass = 0;
 let fail = 0;
@@ -76,7 +77,7 @@ function getHeaders(reqHeaders?: Record<string, string>): Promise<http.IncomingH
 }
 
 // Clean slate + a single route so the server has something to serve.
-try { rmSync(TEST_DIR, { recursive: true }); } catch { /* fresh */ }
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* fresh */ }
 mkdirSync(join(TEST_DIR, "src/routes/api/ping"), { recursive: true });
 writeFileSync(join(TEST_DIR, "package.json"), '{"type":"module"}');
 writeFileSync(join(TEST_DIR, "src/routes/api/ping/get.ts"), `
@@ -158,7 +159,7 @@ server.close();
 
 // Cleanup
 delete process.env.TINA4_RATE_LIMIT;
-try { rmSync(TEST_DIR, { recursive: true }); } catch { /* ignore */ }
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

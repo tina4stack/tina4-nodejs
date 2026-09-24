@@ -24,11 +24,12 @@
 import { startServer } from "../packages/core/src/index.ts";
 import http from "node:http";
 import zlib from "node:zlib";
-import { mkdirSync, writeFileSync, rmSync, utimesSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, utimesSync, statSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-compression-etag-contract-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-compression-etag-contract-test-"));
 const PORT = await freePort();
 let pass = 0;
 let fail = 0;
@@ -66,7 +67,7 @@ function request(path: string, reqHeaders?: Record<string, string>): Promise<Raw
 }
 
 // ── Fixture project: file-based routes + a real static asset ────────────
-try { rmSync(TEST_DIR, { recursive: true }); } catch { /* fresh */ }
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* fresh */ }
 mkdirSync(join(TEST_DIR, "src/routes/big"), { recursive: true });
 mkdirSync(join(TEST_DIR, "src/routes/small"), { recursive: true });
 mkdirSync(join(TEST_DIR, "src/routes/binary"), { recursive: true });
@@ -202,7 +203,7 @@ function gunzip(buf: Buffer): Buffer {
 }
 
 server.close();
-try { rmSync(TEST_DIR, { recursive: true }); } catch { /* best-effort cleanup */ }
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

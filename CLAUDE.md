@@ -1371,12 +1371,13 @@ await initDatabase({ type: "postgres", host: "localhost", port: 5432, database: 
 | MongoDB | `mongodb://` | `mongodb` |
 
 ### Drivers are the app's dependencies (ADR-0067)
-`npm install tina4-nodejs` installs **exactly one package**. `pg`, `mongodb`, `redis`,
-`@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner` are **optional `peerDependencies`**
-(`peerDependenciesMeta.optional`), which npm does not install; `mysql2`, `tedious`,
-`node-firebird` and `odbc` are not declared by the published package at all. Through 3.13.137 the
-five sat in `optionalDependencies`, which npm installs by default: a plain install pulled in 64
-packages. The app installs what it uses (`npm install pg`), and a feature selected without its
+`npm install tina4-nodejs` installs **exactly one package**. `pg`, `mysql2`, `tedious`,
+`node-firebird`, `odbc`, `mongodb`, `redis`, `@aws-sdk/client-s3` and
+`@aws-sdk/s3-request-presigner` are **optional `peerDependencies`**
+(`peerDependenciesMeta.optional`), which npm does not install. Declaring them still matters: npm
+refuses (`ERESOLVE`) to install a driver major the adapters were not tested against, unless
+forced (the ranges match `packages/orm`'s manifest; measured with `npm install mysql2@2`). Through 3.13.137 five of them sat in `optionalDependencies`, which npm
+installs by default: a plain install pulled in 64 packages. The app installs what it uses (`npm install pg`), and a feature selected without its
 package fails at the point of use naming the exact command:
 
 | Feature | Without the package |

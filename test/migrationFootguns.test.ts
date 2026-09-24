@@ -10,7 +10,7 @@
  *
  * Run with: npx tsx test/migrationFootguns.test.ts
  */
-import { rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { rmSync, mkdirSync, writeFileSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import {
   splitStatements,
@@ -25,6 +25,7 @@ import {
   adapterExecute,
   adapterQuery,
 } from "../packages/orm/src/index.ts";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -142,9 +143,9 @@ console.log("\n--- [8] numeric-aware sort ---");
 console.log("\n--- G3: stop at first failure ---");
 
 {
-  const TMP = "/tmp/tina4-migration-footgun-g3";
+  const TMP = mkdtempSync(join(tmpdir(), "tina4-migration-footgun-g3-"));
   const MIGS = join(TMP, "migrations");
-  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* fresh */ }
   mkdirSync(MIGS, { recursive: true });
 
   // 1 good, 2 bad (syntax error), 3 good — file 3 must NOT be applied after 2 fails.
@@ -169,7 +170,7 @@ console.log("\n--- G3: stop at first failure ---");
   assert("earlier migration's table exists", (db as any).tableExists("g3_a"));
 
   closeDatabase();
-  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 // ── [#54] a ';' inside a comment or string literal must NOT split a statement ──
@@ -224,9 +225,9 @@ console.log("\n--- [#54] comment/string-aware split ---");
 {
   // End-to-end against a REAL temp SQLite DB (no mocks): the issue's repro
   // migration must apply cleanly and create the table.
-  const TMP = "/tmp/tina4-migration-issue54";
+  const TMP = mkdtempSync(join(tmpdir(), "tina4-migration-issue54-"));
   const MIGS = join(TMP, "migrations");
-  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* fresh */ }
   mkdirSync(MIGS, { recursive: true });
   writeFileSync(
     join(MIGS, "000001_create_users.sql"),
@@ -245,7 +246,7 @@ console.log("\n--- [#54] comment/string-aware split ---");
   assert("users table created from the repro migration", (db as any).tableExists("users"), JSON.stringify(result));
 
   closeDatabase();
-  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 // ── SET TERM switches the terminator so PSQL bodies survive ──────────────
@@ -326,8 +327,8 @@ console.log("\n--- 3.13.55 canonical migration schema (NO MOCKS, real sqlite) --
 // (a) A freshly-created tracking table has the canonical 6 columns and none of
 //     the legacy `name`/`applied_at` columns.
 {
-  const TMP = "/tmp/tina4-mig-canonical-fresh";
-  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  const TMP = mkdtempSync(join(tmpdir(), "tina4-mig-canonical-fresh-"));
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* fresh */ }
   mkdirSync(TMP, { recursive: true });
 
   await initDatabase({ type: "sqlite", path: join(TMP, "test.db") });
@@ -351,15 +352,15 @@ console.log("\n--- 3.13.55 canonical migration schema (NO MOCKS, real sqlite) --
   assert("ensureMigrationTable is idempotent (still canonical)", cols2.has("migration_name") && !cols2.has("name"), JSON.stringify([...cols2]));
 
   closeDatabase();
-  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 // (b) record + read round-trip; a second migrate() does NOT re-run the applied
 //     migration.
 {
-  const TMP = "/tmp/tina4-mig-canonical-rt";
+  const TMP = mkdtempSync(join(tmpdir(), "tina4-mig-canonical-rt-"));
   const MIGS = join(TMP, "migrations");
-  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* fresh */ }
   mkdirSync(MIGS, { recursive: true });
   writeFileSync(join(MIGS, "000001_widgets.sql"), "CREATE TABLE canon_widgets (id INTEGER PRIMARY KEY, name TEXT);");
 
@@ -392,7 +393,7 @@ console.log("\n--- 3.13.55 canonical migration schema (NO MOCKS, real sqlite) --
   );
 
   closeDatabase();
-  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 // (c) An OLD-v3 table (id, name, batch, applied_at — NO migration_name /
@@ -400,9 +401,9 @@ console.log("\n--- 3.13.55 canonical migration schema (NO MOCKS, real sqlite) --
 //     migration_name/executed_at are backfilled from name/applied_at, and the
 //     already-applied migration is NOT re-run.
 {
-  const TMP = "/tmp/tina4-mig-canonical-upgrade";
+  const TMP = mkdtempSync(join(tmpdir(), "tina4-mig-canonical-upgrade-"));
   const MIGS = join(TMP, "migrations");
-  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* fresh */ }
   mkdirSync(MIGS, { recursive: true });
   // The real migration file whose row we pre-seed as already applied. If it were
   // re-run, it would (re-)create `legacy_created` — which must NOT happen.
@@ -447,7 +448,7 @@ console.log("\n--- 3.13.55 canonical migration schema (NO MOCKS, real sqlite) --
   assert("upgrade: executed_at copied from applied_at", rows[0]?.executed_at === "2026-01-01T00:00:00.000Z", JSON.stringify(rows));
 
   closeDatabase();
-  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 // ── batch applies in numeric order (real prod-incident regression) ──────
@@ -460,9 +461,9 @@ console.log("\n--- batch applies in numeric order ---");
   // End-to-end against a REAL SQLite DB (no mocks). The sort-key unit test above
   // locks the KEY; this locks the sort actually driving apply order through
   // migrate() (e.g. a pending filter regressed to an unordered set diff).
-  const TMP = "/tmp/tina4-migration-footgun-order";
+  const TMP = mkdtempSync(join(tmpdir(), "tina4-migration-footgun-order-"));
   const MIGS = join(TMP, "migrations");
-  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* fresh */ }
   mkdirSync(MIGS, { recursive: true });
 
   // UNPADDED prefixes on purpose: 1..10 so a LEXICAL sort ("10" < "2") differs
@@ -499,7 +500,7 @@ console.log("\n--- batch applies in numeric order ---");
   assert("batch: last migration wins (final=10)", Number(final) === 10, String(final));
 
   closeDatabase();
-  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 // Summary

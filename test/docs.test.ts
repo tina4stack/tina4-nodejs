@@ -14,6 +14,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 
+import { parseTypeScript } from "../packages/core/src/docsParser.ts";
 import { Docs } from "../packages/core/src/docs.ts";
 
 // ── Fixture ────────────────────────────────────────────────────────
@@ -113,6 +114,20 @@ function eq<T>(a: T, b: T, msg: string): void {
 function makeDocs(): Docs {
   return new Docs(fixtureRoot);
 }
+
+test("test_regex_quotes_do_not_hide_following_classes", () => {
+  const source = `const unsafe = /[<>&'\\u2028\\u2029]/g;
+const quoted = /["{}\\/]/;
+const ratio = 12 / 3;
+export class Example {
+  render(value: string): string { return value.replace(/"/g, "&quot;"); }
+  count(): number { return 12 / 3; }
+}`;
+  const parsed = parseTypeScript(source);
+  const cls = parsed.classes.find((c) => c.name === "Example");
+  assert(cls?.exported, "regexp quotes must not consume the exported class");
+  eq(cls.methods.map((m) => m.name), ["render", "count"], "regexp braces and division preserve methods");
+});
 
 console.log("=== @tina4/core docs — Live API RAG tests ===\n");
 

@@ -20,15 +20,16 @@
  */
 import net from "node:net";
 import http from "node:http";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
+import { tmpdir } from "node:os";
 
 // The fix must work with the dev-only ErrorTracker absent — force prod-shape env.
 delete process.env.TINA4_DEBUG;
 delete process.env.TINA4_PRODUCTION;
 
-const TEST_DIR = "/tmp/tina4-malformed-path-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-malformed-path-test-"));
 const PORT = await freePort();
 let pass = 0;
 let fail = 0;
@@ -81,7 +82,7 @@ function normalRequestStatus(path: string): Promise<number> {
 }
 
 // Clean slate — one real route so the "normal following request" has a 200 target.
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 mkdirSync(join(TEST_DIR, "src/routes/ok"), { recursive: true });
 writeFileSync(join(TEST_DIR, "package.json"), '{"type":"module"}');
 writeFileSync(join(TEST_DIR, "src/routes/ok/get.ts"), `
@@ -136,7 +137,7 @@ try {
   }
 } finally {
   server.close();
-  try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+  try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
   delete process.env.TINA4_RATE_LIMIT;
 }
 

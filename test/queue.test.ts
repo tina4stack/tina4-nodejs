@@ -4,9 +4,10 @@
  */
 import { Queue } from "../packages/core/src/index.ts";
 import type { QueueJob } from "../packages/core/src/index.ts";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import * as net from "node:net";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -31,7 +32,7 @@ function skip(name: string, reason: string) {
   skipped++;
 }
 
-const TEST_PATH = join("/tmp", "tina4-queue-test-" + Date.now());
+const TEST_PATH = mkdtempSync(join(tmpdir(), "tina4-queue-test-"));
 
 function cleanup() {
   try {
@@ -348,7 +349,7 @@ cleanup();
 // --- Topic-based API (unified constructor) ---
 console.log("\n--- Topic-based API ---");
 
-const TEST_PATH_TOPIC = join("/tmp", "tina4-queue-topic-test-" + Date.now());
+const TEST_PATH_TOPIC = mkdtempSync(join(tmpdir(), "tina4-queue-topic-test-"));
 function cleanupTopic() {
   try { rmSync(TEST_PATH_TOPIC, { recursive: true, force: true }); } catch {}
 }
@@ -493,7 +494,7 @@ cleanupTopic();
 // --- Payload Types ---
 console.log("\n--- Payload Types ---");
 
-const TEST_PATH_TYPES = join("/tmp", "tina4-queue-types-test-" + Date.now());
+const TEST_PATH_TYPES = mkdtempSync(join(tmpdir(), "tina4-queue-types-test-"));
 function cleanupTypes() {
   try { rmSync(TEST_PATH_TYPES, { recursive: true, force: true }); } catch {}
 }
@@ -538,7 +539,7 @@ cleanupTypes();
 // --- Process with success ---
 console.log("\n--- Process Success ---");
 
-const TEST_PATH_PROC = join("/tmp", "tina4-queue-proc-test-" + Date.now());
+const TEST_PATH_PROC = mkdtempSync(join(tmpdir(), "tina4-queue-proc-test-"));
 function cleanupProc() {
   try { rmSync(TEST_PATH_PROC, { recursive: true, force: true }); } catch {}
 }
@@ -565,7 +566,7 @@ cleanupProc();
 // --- Multiple topics isolation ---
 console.log("\n--- Multiple Topics Isolation ---");
 
-const TEST_PATH_MULTI = join("/tmp", "tina4-queue-multi-test-" + Date.now());
+const TEST_PATH_MULTI = mkdtempSync(join(tmpdir(), "tina4-queue-multi-test-"));
 function cleanupMulti() {
   try { rmSync(TEST_PATH_MULTI, { recursive: true, force: true }); } catch {}
 }
@@ -591,7 +592,7 @@ cleanupMulti();
 // --- Job lifecycle methods ---
 console.log("\n--- Job Lifecycle Methods ---");
 
-const TEST_PATH_LC = join("/tmp", "tina4-queue-lc-test-" + Date.now());
+const TEST_PATH_LC = mkdtempSync(join(tmpdir(), "tina4-queue-lc-test-"));
 function cleanupLC() {
   try { rmSync(TEST_PATH_LC, { recursive: true, force: true }); } catch {}
 }
@@ -663,7 +664,7 @@ console.log("\n--- getMaxRetries ---");
 // --- popBatch ---
 console.log("\n--- popBatch ---");
 
-const TEST_PATH_BATCH = join("/tmp", "tina4-queue-batch-test-" + Date.now());
+const TEST_PATH_BATCH = mkdtempSync(join(tmpdir(), "tina4-queue-batch-test-"));
 function cleanupBatch() {
   try { rmSync(TEST_PATH_BATCH, { recursive: true, force: true }); } catch {}
 }
@@ -743,7 +744,7 @@ cleanupBatch();
 // temp dirs so it can't be contaminated by the shared TEST_PATH above.
 console.log("\n--- Queue Isolation Contract ---");
 {
-  const isoPath = join("/tmp", "tina4-queue-iso-" + Date.now());
+  const isoPath = mkdtempSync(join(tmpdir(), "tina4-queue-iso-"));
   try { rmSync(isoPath, { recursive: true, force: true }); } catch {}
 
   const topicA = new Queue({ topic: "topic_a", path: isoPath });
@@ -766,8 +767,8 @@ console.log("\n--- Queue Isolation Contract ---");
   try { rmSync(isoPath, { recursive: true, force: true }); } catch {}
 
   // A queue on a DIFFERENT base path starts empty.
-  const pathOne = join("/tmp", "tina4-queue-iso-one-" + Date.now());
-  const pathTwo = join("/tmp", "tina4-queue-iso-two-" + Date.now());
+  const pathOne = mkdtempSync(join(tmpdir(), "tina4-queue-iso-one-"));
+  const pathTwo = mkdtempSync(join(tmpdir(), "tina4-queue-iso-two-"));
   try { rmSync(pathOne, { recursive: true, force: true }); } catch {}
   try { rmSync(pathTwo, { recursive: true, force: true }); } catch {}
 
@@ -799,7 +800,7 @@ const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 await (async () => {
   // (a) reserve-then-abandon is reclaimed after the timeout, attempts == 1
   {
-    const p = join("/tmp", "tina4-vt-reclaim-" + Date.now());
+    const p = mkdtempSync(join(tmpdir(), "tina4-vt-reclaim-"));
     try { rmSync(p, { recursive: true, force: true }); } catch {}
     const q = new Queue({ topic: "vt", path: p, visibilityTimeout: 0.05 });
     q.push({ job: "import" });
@@ -821,7 +822,7 @@ await (async () => {
 
   // (b) NOT reclaimed before the timeout (second consumer gets nothing)
   {
-    const p = join("/tmp", "tina4-vt-notyet-" + Date.now());
+    const p = mkdtempSync(join(tmpdir(), "tina4-vt-notyet-"));
     try { rmSync(p, { recursive: true, force: true }); } catch {}
     const q = new Queue({ topic: "vt", path: p, visibilityTimeout: 30 });
     q.push({ job: "import" });
@@ -833,7 +834,7 @@ await (async () => {
 
   // (c) reclaim past maxRetries dead-letters instead of re-delivering
   {
-    const p = join("/tmp", "tina4-vt-deadletter-" + Date.now());
+    const p = mkdtempSync(join(tmpdir(), "tina4-vt-deadletter-"));
     try { rmSync(p, { recursive: true, force: true }); } catch {}
     const q = new Queue({ topic: "vt", path: p, maxRetries: 1, visibilityTimeout: 0.05 });
     q.push({ job: "import" });
@@ -850,7 +851,7 @@ await (async () => {
 
   // (d) complete() clears the reservation (no phantom reclaim)
   {
-    const p = join("/tmp", "tina4-vt-complete-" + Date.now());
+    const p = mkdtempSync(join(tmpdir(), "tina4-vt-complete-"));
     try { rmSync(p, { recursive: true, force: true }); } catch {}
     const q = new Queue({ topic: "vt", path: p, visibilityTimeout: 0.05 });
     q.push({ job: "import" });
@@ -871,7 +872,7 @@ await (async () => {
 
   // (d2) fail() clears the reservation and requeues with attempts incremented
   {
-    const p = join("/tmp", "tina4-vt-fail-" + Date.now());
+    const p = mkdtempSync(join(tmpdir(), "tina4-vt-fail-"));
     try { rmSync(p, { recursive: true, force: true }); } catch {}
     const q = new Queue({ topic: "vt", path: p, maxRetries: 3, visibilityTimeout: 0.05 });
     q.push({ job: "import" });
@@ -892,23 +893,25 @@ await (async () => {
   {
     const prev = process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
     delete process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
-    const def = new Queue({ topic: "vt", path: join("/tmp", "tina4-vt-def-" + Date.now()) });
+    const vtScratch = mkdtempSync(join(tmpdir(), "tina4-vt-config-"));
+    const def = new Queue({ topic: "vt", path: join(vtScratch, "def") });
     assert("vt: default visibility timeout is 300", def.getVisibilityTimeout() === 300);
 
     process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT = "42";
-    const fromEnv = new Queue({ topic: "vt", path: join("/tmp", "tina4-vt-env-" + Date.now()) });
+    const fromEnv = new Queue({ topic: "vt", path: join(vtScratch, "env") });
     assert("vt: env override sets visibility timeout to 42", fromEnv.getVisibilityTimeout() === 42);
 
-    const ctorWins = new Queue({ topic: "vt", path: join("/tmp", "tina4-vt-ctor-" + Date.now()), visibilityTimeout: 7 });
+    const ctorWins = new Queue({ topic: "vt", path: join(vtScratch, "ctor"), visibilityTimeout: 7 });
     assert("vt: constructor arg wins over env", ctorWins.getVisibilityTimeout() === 7);
 
     if (prev === undefined) delete process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT;
     else process.env.TINA4_QUEUE_VISIBILITY_TIMEOUT = prev;
+    rmSync(vtScratch, { recursive: true, force: true });
   }
 
   // (f) visibilityTimeout=0 disables reclaim (reservation stays)
   {
-    const p = join("/tmp", "tina4-vt-disabled-" + Date.now());
+    const p = mkdtempSync(join(tmpdir(), "tina4-vt-disabled-"));
     try { rmSync(p, { recursive: true, force: true }); } catch {}
     const q = new Queue({ topic: "vt", path: p, visibilityTimeout: 0 });
     q.push({ job: "import" });
@@ -1171,7 +1174,7 @@ console.log("\n--- RabbitMQ + Kafka ignore visibilityTimeout ---");
 // master regression test (commit 04f9f05).
 console.log("\n--- Topic Targeting (consume/process/produce honour topic) ---");
 
-const TEST_PATH_TGT = join("/tmp", "tina4-queue-target-test-" + Date.now());
+const TEST_PATH_TGT = mkdtempSync(join(tmpdir(), "tina4-queue-target-test-"));
 function cleanupTgt() {
   try { rmSync(TEST_PATH_TGT, { recursive: true, force: true }); } catch {}
 }
@@ -1273,7 +1276,7 @@ await (async () => {
   // Uses its OWN path so the leak assertion can't be contaminated by earlier
   // sub-blocks that deliberately leave default-topic jobs pending.
   {
-    const dPath = join("/tmp", "tina4-queue-target-d-" + Date.now());
+    const dPath = mkdtempSync(join(tmpdir(), "tina4-queue-target-d-"));
     try { rmSync(dPath, { recursive: true, force: true }); } catch {}
     const q = new Queue({ topic: "default", path: dPath, maxRetries: 3 });
     q.produce("retryable", { task: "x" });

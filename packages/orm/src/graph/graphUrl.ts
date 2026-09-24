@@ -6,6 +6,7 @@
  * alias (bolt/neo4j/memgraph all speak Bolt/Cypher and share ONE adapter) resolves
  * to its engine here. See tina4-documentation/plan/v3/features/139-graph-databases.md.
  */
+import { redactCredentials } from "../databaseUrl.js";
 
 /** The canonical graph engine names. */
 export type GraphEngine = "ultipa" | "bolt" | "arango";
@@ -55,7 +56,7 @@ export class GraphUrl {
       parsed = new URL(url);
     } catch {
       throw new Error(
-        `Unsupported graph URL '${url}' — expected scheme://[user[:password]@]host[:port]/graph `
+        `Unsupported graph URL '${redactCredentials(url)}' — expected scheme://[user[:password]@]host[:port]/graph `
         + `(e.g. ultipa://host:60061/mygraph).`,
       );
     }

@@ -6,14 +6,15 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { I18n } from "../packages/core/src/index.ts";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_ROOT = "/tmp/tina4-i18n-test";
+const TEST_ROOT = mkdtempSync(join(tmpdir(), "tina4-i18n-test-"));
 const LOCALE_DIR = join(TEST_ROOT, "locales");
 
 beforeAll(() => {
-  try { rmSync(TEST_ROOT, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TEST_ROOT, { recursive: true, force: true }); } catch { /* ignore */ }
   mkdirSync(LOCALE_DIR, { recursive: true });
 
   writeFileSync(join(LOCALE_DIR, "en.json"), JSON.stringify({
@@ -42,7 +43,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  try { rmSync(TEST_ROOT, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TEST_ROOT, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 // Constructor arg order is (locale, path) to match Python I18n(locale, path).
@@ -166,12 +167,12 @@ describe("I18n — available locales", () => {
 
 describe("I18n — edge cases", () => {
   it("missing locale dir returns the key as-is", () => {
-    const i18nMissing = new I18n("en", "/tmp/nonexistent-locale-dir-xyz");
+    const i18nMissing = new I18n("en", join(TEST_ROOT, "nonexistent-locale-dir-xyz"));
     expect(i18nMissing.t("anything")).toBe("anything");
   });
 
   it("missing locale dir lists the default locale only", () => {
-    const i18nMissing = new I18n("en", "/tmp/nonexistent-locale-dir-xyz");
+    const i18nMissing = new I18n("en", join(TEST_ROOT, "nonexistent-locale-dir-xyz"));
     expect(i18nMissing.availableLocales().length).toBe(1);
   });
 });

@@ -31,7 +31,9 @@ function assert(name: string, condition: boolean, detail = "") {
 async function freshProject(): Promise<string> {
   const base = mkdtempSync(join(tmpdir(), "tina4-automig-"));
   // Each test gets its own on-disk sqlite file so adapters don't collide.
-  await initDatabase({ url: `sqlite://${join(base, "test.db")}` });
+  // Three slashes before an absolute path: `sqlite://` + "/tmp/..." is RELATIVE
+  // (`sqlite:///tmp/...` -> tmp/... under cwd), which put this DB in the repo checkout.
+  await initDatabase({ url: `sqlite:///${join(base, "test.db")}` });
   return base;
 }
 

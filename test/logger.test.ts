@@ -12,10 +12,12 @@
  * json — the old "text unless TINA4_LOG_FORMAT=json" default is gone.
  */
 import { Log } from "../packages/core/src/index.ts";
-import { readFileSync, existsSync, rmSync } from "node:fs";
+import { readFileSync, existsSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST_LOG_DIR = "/tmp/tina4-logger-test/logs";
+const LOGGER_TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-logger-test-"));
+const TEST_LOG_DIR = join(LOGGER_TEST_DIR, "logs");
 let pass = 0;
 let fail = 0;
 
@@ -40,7 +42,7 @@ function isJsonLine(line: string): boolean {
 }
 
 // Clean slate
-try { rmSync("/tmp/tina4-logger-test", { recursive: true }); } catch { /* fresh */ }
+try { rmSync(LOGGER_TEST_DIR, { recursive: true, force: true }); } catch { /* fresh */ }
 
 console.log("=== Logger Tests ===\n");
 
@@ -108,7 +110,7 @@ console.log("\n--- Format: debug-derived (Decision 3) ---");
 
 // TINA4_DEBUG falsy ("production") -> JSON by default.
 {
-  const prodDir = "/tmp/tina4-logger-test/prod";
+  const prodDir = join(LOGGER_TEST_DIR, "prod");
   delete process.env.TINA4_DEBUG;
   process.env.TINA4_LOG_DIR = prodDir;
   delete process.env.TINA4_LOG_FORMAT;
@@ -139,7 +141,7 @@ console.log("\n--- Format: debug-derived (Decision 3) ---");
 
 // TINA4_DEBUG truthy -> TEXT by default.
 {
-  const devDir = "/tmp/tina4-logger-test/dev-format";
+  const devDir = join(LOGGER_TEST_DIR, "dev-format");
   process.env.TINA4_DEBUG = "true";
   process.env.TINA4_LOG_DIR = devDir;
   delete process.env.TINA4_LOG_FORMAT;
@@ -153,7 +155,7 @@ console.log("\n--- Format: debug-derived (Decision 3) ---");
 
 // The explicit opt-in still works in EITHER direction — that is the ONE switch.
 {
-  const dir = "/tmp/tina4-logger-test/explicit-json-in-dev";
+  const dir = join(LOGGER_TEST_DIR, "explicit-json-in-dev");
   process.env.TINA4_DEBUG = "true";
   process.env.TINA4_LOG_FORMAT = "json";
   process.env.TINA4_LOG_DIR = dir;
@@ -173,7 +175,7 @@ console.log("\n--- Format: debug-derived (Decision 3) ---");
 console.log("\n--- TINA4_LOG_FUNC (caller-name injection) ---");
 
 {
-  const funcDir = "/tmp/tina4-logger-test/func";
+  const funcDir = join(LOGGER_TEST_DIR, "func");
   process.env.TINA4_DEBUG = "true";
   process.env.TINA4_LOG_DIR = funcDir;
   process.env.TINA4_LOG_OUTPUT = "file";
@@ -241,7 +243,7 @@ console.log("\n--- TINA4_LOG_FUNC (caller-name injection) ---");
 console.log("\n--- Log.critical (first-class, always logs) ---");
 
 {
-  const critDir = "/tmp/tina4-logger-test/critical";
+  const critDir = join(LOGGER_TEST_DIR, "critical");
   process.env.TINA4_DEBUG = "true";
   process.env.TINA4_LOG_DIR = critDir;
   process.env.TINA4_LOG_OUTPUT = "both"; // this section asserts on BOTH the file and the console
@@ -369,7 +371,7 @@ console.log("\n--- Log.isEnabled (console-threshold predicate) ---");
   // (set earlier in this block) would make isEnabled(..., "file") false no
   // matter what TINA4_LOG_FILE_LEVEL says, which tests the wrong thing.
   process.env.TINA4_LOG_OUTPUT = "both";
-  process.env.TINA4_LOG_DIR = "/tmp/tina4-logger-test/isenabled-file-sink";
+  process.env.TINA4_LOG_DIR = join(LOGGER_TEST_DIR, "isenabled-file-sink");
   process.env.TINA4_LOG_LEVEL = "CRITICAL"; // console: nothing but critical
   delete process.env.TINA4_LOG_FILE_LEVEL;   // file: default ALL
   Log.reset();
@@ -388,7 +390,7 @@ console.log("\n--- Log.isEnabled (console-threshold predicate) ---");
 // --- Default file output: dev writes a file, prod is stdout-only (v3.13.39) ---
 console.log("\n--- Default file output (dev=file, prod=stdout-only) ---");
 
-const DEFAULT_OUT_DIR = "/tmp/tina4-logger-test/default-output";
+const DEFAULT_OUT_DIR = join(LOGGER_TEST_DIR, "default-output");
 
 function resetDefaultOutputEnv(subdir: string): string {
   Log.reset();
@@ -495,7 +497,7 @@ delete process.env.TINA4_LOG_FILE;
 delete process.env.TINA4_LOG_LEVEL;
 delete process.env.TINA4_LOG_FORMAT;
 delete process.env.TINA4_DEBUG;
-rmSync("/tmp/tina4-logger-test", { recursive: true });
+rmSync(LOGGER_TEST_DIR, { recursive: true, force: true });
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

@@ -4,11 +4,12 @@
  */
 import { startServer } from "../packages/core/src/index.ts";
 import http from "node:http";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
+import { tmpdir } from "node:os";
 
-const TEST_DIR = "/tmp/tina4-health-test";
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-health-test-"));
 const PORT = await freePort();
 let pass = 0;
 let fail = 0;
@@ -40,7 +41,7 @@ function request(method: string, path: string): Promise<{ status: number; data: 
 }
 
 // Clean slate
-try { rmSync(TEST_DIR, { recursive: true }); } catch {}
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 mkdirSync(TEST_DIR, { recursive: true });
 writeFileSync(join(TEST_DIR, "package.json"), '{"type":"module"}');
 
@@ -102,7 +103,7 @@ assert("Uptime is positive", health.data.uptime > 0);
 server.close();
 delete process.env.TINA4_RATE_LIMIT;
 delete process.env.TINA4_DEBUG;
-rmSync(TEST_DIR, { recursive: true });
+rmSync(TEST_DIR, { recursive: true, force: true });
 
 // Summary
 console.log(`\n${"=".repeat(50)}`);

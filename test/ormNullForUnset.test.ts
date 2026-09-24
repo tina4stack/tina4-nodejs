@@ -25,11 +25,13 @@
  * constraints, real save()/reload round-trips.
  * Run with: npx tsx test/ormNullForUnset.test.ts
  */
-import { rmSync, mkdirSync } from "node:fs";
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
 import { initDatabase, closeDatabase, BaseModel } from "../packages/orm/src/index.ts";
 import type { FieldDefinition } from "../packages/orm/src/index.ts";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const DIR = "/tmp/tina4-orm-null-unset-165";
+const DIR = mkdtempSync(join(tmpdir(), "tina4-orm-null-unset-165-"));
 let pass = 0;
 let fail = 0;
 function assert(name: string, cond: boolean, detail = ""): void {
@@ -37,7 +39,7 @@ function assert(name: string, cond: boolean, detail = ""): void {
   else { console.log(`  \x1b[31mFAIL\x1b[0m ${name} ${detail}`); fail++; }
 }
 
-try { rmSync(DIR, { recursive: true }); } catch { /* first run */ }
+try { rmSync(DIR, { recursive: true, force: true }); } catch { /* first run */ }
 mkdirSync(DIR, { recursive: true });
 
 console.log("=== ORM omit-unset-columns-on-INSERT (#165) ===\n");
@@ -151,6 +153,7 @@ async function rowById(id: unknown): Promise<Record<string, unknown> | null> {
 }
 
 await closeDatabase();
+rmSync(DIR, { recursive: true, force: true });
 
 console.log(`\nResults: ${pass} passed, ${fail} failed\n`);
 if (fail > 0) process.exit(1);

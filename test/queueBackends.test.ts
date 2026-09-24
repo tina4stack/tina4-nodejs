@@ -19,6 +19,7 @@ import { execFileSync } from "node:child_process";
 import {
   RabbitMQBackend, KafkaBackend, kafkaSecurityConfig, parseAmqpUrl,
 } from "../packages/core/src/index.ts";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -402,10 +403,10 @@ if (!(await reachable(kHost, kPort))) {
 console.log("\n--- File queue via Queue class ---");
 
 import { Queue } from "../packages/core/src/index.ts";
-import { rmSync } from "node:fs";
+import { rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 
-const TEST_PATH = join("/tmp", "tina4-qb-test-" + Date.now());
+const TEST_PATH = mkdtempSync(join(tmpdir(), "tina4-qb-test-"));
 
 try { rmSync(TEST_PATH, { recursive: true, force: true }); } catch {}
 

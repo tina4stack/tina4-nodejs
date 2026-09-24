@@ -29,11 +29,11 @@
 import { startServer } from "../packages/core/src/index.ts";
 import http from "node:http";
 import os from "node:os";
-import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
 
-const TEST_DIR = join(os.tmpdir(), "tina4-csp-warn-test");
+const TEST_DIR = mkdtempSync(join(os.tmpdir(), "tina4-csp-warn-test-"));
 const LOG_FILE = join(TEST_DIR, "tina4.log");
 const MARK = "TINA4_CSP is not set";
 const PORT = await freePort();
@@ -128,7 +128,7 @@ delete process.env.TINA4_LOG_OUTPUT;
 server.close();
 
 delete process.env.TINA4_RATE_LIMIT;
-try { rmSync(TEST_DIR, { recursive: true }); } catch { /* ignore */ }
+try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

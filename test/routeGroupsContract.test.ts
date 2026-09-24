@@ -22,11 +22,14 @@
  *
  * Run with: npx tsx test/routeGroupsContract.test.ts
  */
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { Router, defaultRouter, startServer } from "../packages/core/src/index.ts";
 import { freePort } from "./freePort.ts";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const ROUTES_DIR = "/tmp/tina4-routegroups-contract/src/routes";
+const SCRATCH_DIR = mkdtempSync(join(tmpdir(), "tina4-routegroups-contract-"));
+const ROUTES_DIR = join(SCRATCH_DIR, "src/routes");
 mkdirSync(ROUTES_DIR, { recursive: true });
 
 let pass = 0;
@@ -141,6 +144,7 @@ assert("literal_regex_metacharacters_in_a_route_path_match_themselves (a literal
 }
 
 if (server?.close) server.close();
+rmSync(SCRATCH_DIR, { recursive: true, force: true });
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(`  Results: \x1b[32m${pass} passed\x1b[0m, \x1b[31m${fail} failed\x1b[0m`);

@@ -24,6 +24,39 @@ async function closeSource(source: AsyncIterable<unknown>): Promise<void> {
   }
 }
 
+/** RFC 9110 `token`: one or more `tchar`. */
+const HEADER_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/**
+ * The caller's name as a JSON string literal with non-ASCII escaped, byte-
+ * identical to Python's json.dumps (ADR-0068), so a name that is itself broken
+ * cannot break the error message or the log line carrying it.
+ */
+export function quoteHeaderName(name: string): string {
+  return JSON.stringify(name).replace(/[\u007f-\uffff]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+}
+
+/** A TypeError carrying node:http's own error code, as setHeader() throws natively. */
+function headerRefusal(message: string, code: string): TypeError {
+  return Object.assign(new TypeError(message), { code });
+}
+
+/**
+ * Refuse a response header whose name is not an HTTP token or whose value
+ * carries CR, LF or NUL, with the exact ADR-0068 wording. node:http refuses
+ * these too, but names a broken header raw (a CR/LF in the name reaches the
+ * log line) - this is the ADR's form, checked first.
+ */
+export function assertSafeHeader(name: string, value: unknown): void {
+  if (!HEADER_TOKEN.test(name)) {
+    throw headerRefusal(`Header name must be a valid HTTP token [${quoteHeaderName(name)}]`, "ERR_INVALID_HTTP_TOKEN");
+  }
+  const values = Array.isArray(value) ? value : [value];
+  if (values.some((item) => /[\r\n\0]/.test(String(item)))) {
+    throw headerRefusal(`Invalid character in header content [${quoteHeaderName(name)}]`, "ERR_INVALID_CHAR");
+  }
+}
+
 /** Cache Frond instances by template directory to avoid repeated instantiation. */
 const _frondCache = new Map<string, InstanceType<any>>();
 
@@ -147,8 +180,22 @@ export function createResponse(res: ServerResponse): Tina4Response {
       res.end(chunk, encoding);
     }
   };
+  // Every header this Response sets goes through here, so every one is
+  // checked (ADR-0068) - even after the headers are sent, since an unsafe
+  // value is a bug in the code that built it either way.
   const safeSetHeader = (name: string, value: string | number | readonly string[]) => {
+    assertSafeHeader(name, value);
     if (!res.headersSent) res.setHeader(name, value);
+  };
+
+  // True once the route set Content-Type with header(); response(data) then
+  // keeps it instead of detecting one (ADR-0072, #144).
+  let contentTypeFromHeader = false;
+  const setDetectedContentType = (contentType: string) => {
+    if (!contentTypeFromHeader) safeSetHeader("Content-Type", contentType);
+  };
+  const noteContentTypeHeader = (name: string) => {
+    if (name.toLowerCase() === "content-type") contentTypeFromHeader = true;
   };
 
   // ── The callable: response(data, status, contentType) ──
@@ -179,14 +226,14 @@ export function createResponse(res: ServerResponse): Tina4Response {
       }
     } else if (typeof data === "object" && data !== null && !Buffer.isBuffer(data)) {
       // dict/array → auto JSON
-      safeSetHeader("Content-Type", "application/json");
+      setDetectedContentType("application/json");
       safeEnd(JSON.stringify(data));
     } else if (typeof data === "string") {
       const trimmed = data.trim();
       if (trimmed.startsWith("<") && trimmed.endsWith(">")) {
-        safeSetHeader("Content-Type", "text/html; charset=utf-8");
+        setDetectedContentType("text/html; charset=utf-8");
       } else {
-        safeSetHeader("Content-Type", "text/plain; charset=utf-8");
+        setDetectedContentType("text/plain; charset=utf-8");
       }
       safeEnd(data);
     } else if (Buffer.isBuffer(data)) {
@@ -197,7 +244,7 @@ export function createResponse(res: ServerResponse): Tina4Response {
     } else if (data == null) {
       safeEnd("");
     } else {
-      safeSetHeader("Content-Type", "text/plain; charset=utf-8");
+      setDetectedContentType("text/plain; charset=utf-8");
       safeEnd(String(data));
     }
 
@@ -252,6 +299,7 @@ export function createResponse(res: ServerResponse): Tina4Response {
 
   response.header = function (name: string, value: string | number | readonly string[]): Tina4Response {
     safeSetHeader(name, value);
+    noteContentTypeHeader(name);
     return response;
   };
 
@@ -260,9 +308,11 @@ export function createResponse(res: ServerResponse): Tina4Response {
    */
   response.addHeader = function (name: string, value: string): void {
     safeSetHeader(name, value);
+    noteContentTypeHeader(name);
   };
 
   response.redirect = function (url: string, code?: number): Tina4Response {
+    assertSafeHeader("Location", url); // before the status changes
     if (res.headersSent) return response;
     res.statusCode = code ?? 302;
     safeSetHeader("Location", url);
@@ -271,6 +321,15 @@ export function createResponse(res: ServerResponse): Tina4Response {
   };
 
   response.cookie = function (name: string, value: string, options?: CookieOptions): Tina4Response {
+    // The name and value are percent-encoded below, so they cannot carry CR,
+    // LF, NUL or ';' to the wire and keep being encoded (ADR-0068). Attribute
+    // values are written as given, so one carrying those is refused: a ';'
+    // would add an attribute (say Domain=) the application never set.
+    for (const attribute of [options?.path, options?.domain, options?.sameSite, options?.maxAge]) {
+      if (attribute !== undefined && /[\r\n\0;]/.test(String(attribute))) {
+        throw headerRefusal(`Invalid character in cookie content [${quoteHeaderName(name)}]`, "ERR_INVALID_CHAR");
+      }
+    }
     const parts = [`${encodeURIComponent(name)}=${encodeURIComponent(value)}`];
     if (options?.maxAge !== undefined) parts.push(`Max-Age=${options.maxAge}`);
     if (options?.expires) parts.push(`Expires=${options.expires.toUTCString()}`);
@@ -425,6 +484,7 @@ export function createResponse(res: ServerResponse): Tina4Response {
     source: AsyncIterable<string | Buffer>,
     contentType: string = "text/event-stream",
   ): Promise<Tina4Response> {
+    assertSafeHeader("Content-Type", contentType);
     if (res.headersSent) return response;
     res.writeHead(200, {
       "Content-Type": contentType,

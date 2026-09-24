@@ -9,9 +9,10 @@ import {
   Messenger, DevMailbox, createMessenger, MessengerConnectionError,
 } from "../packages/core/src/index.ts";
 import type { SendResult, EmailMessage } from "../packages/core/src/index.ts";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import net from "node:net";
+import { tmpdir } from "node:os";
 
 async function assertAsync(name: string, fn: () => Promise<boolean>, detail = ""): Promise<void> {
   try {
@@ -35,7 +36,7 @@ function assert(name: string, condition: boolean, detail = "") {
   }
 }
 
-const TEST_DIR = join("/tmp", "tina4-messenger-test-" + Date.now());
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-messenger-test-"));
 
 function cleanup() {
   try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
@@ -285,18 +286,15 @@ if (origEnv) process.env.NODE_ENV = origEnv;
   if (savedEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = savedEnv;
 }
 
-// ── Async lock-in tests (IMAP fail-loud + TLS default) ──────────
+// ── Async lock-in tests (IMAP fail-loud) ──────────
 (async () => {
-  // --- N1: TLS default is secure unless the insecure env is set ---
-  console.log("\n--- IMAP TLS default (N1) ---");
+  // --- N1: an IMAP connection failure raises (certificate verification itself is
+  // proven against real TLS servers in mailTransportTls.test.ts, ADR-0071) ---
+  console.log("\n--- IMAP connection failure (N1) ---");
 
   {
-    // A bad IMAP host over TLS must reject (connection failure). With the
-    // default secure setting we still expect a thrown MessengerConnectionError,
-    // never a silently-empty []. (No env override = secure.)
-    const savedInsecure = process.env.TINA4_MAIL_TLS_INSECURE;
-    delete process.env.TINA4_MAIL_TLS_INSECURE;
-
+    // A bad IMAP host over TLS must reject (connection failure): a thrown
+    // MessengerConnectionError, never a silently-empty [].
     // Find a closed port to guarantee a connection refusal.
     const m = new Messenger({
       imapHost: "127.0.0.1",
@@ -330,9 +328,6 @@ if (origEnv) process.env.NODE_ENV = origEnv;
       try { await m.folders(); return false; }
       catch (e) { return e instanceof MessengerConnectionError; }
     });
-
-    if (savedInsecure === undefined) delete process.env.TINA4_MAIL_TLS_INSECURE;
-    else process.env.TINA4_MAIL_TLS_INSECURE = savedInsecure;
   }
 
   // --- Real refused-connection failure paths ---

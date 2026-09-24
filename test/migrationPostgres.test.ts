@@ -23,8 +23,9 @@
  *   TINA4_TEST_PG_DB=tina4_node npx tsx test/migrationPostgres.test.ts
  */
 import net from "node:net";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const PG_HOST = process.env.TINA4_TEST_PG_HOST ?? "localhost";
 const PG_PORT = parseInt(process.env.TINA4_TEST_PG_PORT ?? "55432", 10);
@@ -136,7 +137,7 @@ assert(
   `got ${db.constructor.name}`,
 );
 
-const TMP = "/tmp/tina4-migration-pg-test";
+const TMP = mkdtempSync(join(tmpdir(), "tina4-migration-pg-test-"));
 const MIGS = join(TMP, "migrations");
 
 try {
@@ -145,7 +146,7 @@ try {
   await db.executeAsync(`DROP TABLE IF EXISTS "${MIGRATION_TABLE}"`);
   await db.executeAsync(`DROP TABLE IF EXISTS ${WIDGET_TABLE}`);
 
-  try { rmSync(TMP, { recursive: true }); } catch { /* fresh */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* fresh */ }
   mkdirSync(MIGS, { recursive: true });
 
   // A real migration: CREATE the widget table + seed one row.
@@ -229,7 +230,7 @@ try {
   try { await db.executeAsync(`DROP TABLE IF EXISTS "${MIGRATION_TABLE}"`); } catch { /* ignore */ }
   try { await db.executeAsync(`DROP TABLE IF EXISTS ${WIDGET_TABLE}`); } catch { /* ignore */ }
   try { db.close(); } catch { /* ignore */ }
-  try { rmSync(TMP, { recursive: true }); } catch { /* ignore */ }
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 console.log(`\n${"=".repeat(50)}`);

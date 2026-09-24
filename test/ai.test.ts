@@ -6,8 +6,9 @@ import {
   AI_TOOLS, isInstalled, generateContext,
   installSelected, installAll,
 } from "../packages/core/src/index.ts";
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, mkdtempSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -22,7 +23,7 @@ function assert(name: string, condition: boolean, detail = "") {
   }
 }
 
-const TEST_DIR = join("/tmp", "tina4-ai-test-" + Date.now());
+const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-ai-test-"));
 
 function cleanup() {
   try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
