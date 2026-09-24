@@ -56,6 +56,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 import * as net from "node:net";
+import { optionalPackageMissing } from "./optionalPackage.js";
 
 // ── Credential parsing (WHATWG URL or TINA4_CACHE_USERNAME / _PASSWORD) ──
 
@@ -181,6 +182,12 @@ interface CacheBackend {
   /** One-time async connect/probe. Resolves once the backend has decided
    *  availability; createBackend() awaits this before falling back to file. */
   ready?(): Promise<void>;
+  /**
+   * When unavailable because the app has not installed the backend's driver
+   * (an optional peer, ADR-0067): the actionable install message, appended to
+   * the fallback warning. null for every other cause.
+   */
+  missingDriver?(): string | null;
 }
 
 // ── Memory backend ────────────────────────────────────────────────
@@ -1141,6 +1148,7 @@ class MongoBackend implements CacheBackend {
   private misses = 0;
   private maxEntries: number;
   private available = false;
+  private missingDriverMessage: string | null = null;
   private readyPromise: Promise<void>;
   // The mongodb driver types aren't depended on at compile time (optional dep).
   private client: any = null;
@@ -1178,8 +1186,15 @@ class MongoBackend implements CacheBackend {
     try {
       // Dynamic import so @tina4/core has no hard dependency on `mongodb` and an
       // absent driver degrades to file-fallback (never an import-time crash).
-      const mod: any = await import("mongodb").catch(() => null);
-      if (!mod || !mod.MongoClient) { this.available = false; return; }
+      let importError: any = null;
+      const mod: any = await import("mongodb").catch((error) => { importError = error; return null; });
+      if (!mod || !mod.MongoClient) {
+        this.available = false;
+        if (importError?.code === "ERR_MODULE_NOT_FOUND") {
+          this.missingDriverMessage = optionalPackageMissing("the mongodb cache backend", ["mongodb"]).message;
+        }
+        return;
+      }
       const client = new mod.MongoClient(this.url, { serverSelectionTimeoutMS: 4000 });
       await client.connect();
       await client.db(this.dbName).command({ ping: 1 });
@@ -1198,6 +1213,10 @@ class MongoBackend implements CacheBackend {
 
   ready(): Promise<void> {
     return this.readyPromise;
+  }
+
+  missingDriver(): string | null {
+    return this.missingDriverMessage;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -1291,6 +1310,7 @@ class DatabaseBackend implements CacheBackend {
   private misses = 0;
   private maxEntries: number;
   private available = false;
+  private missingDriverMessage: string | null = null;
   private readyPromise: Promise<void>;
   // @tina4/orm Database instance (optional dep, loaded dynamically).
   private db: any = null;
@@ -1324,8 +1344,13 @@ class DatabaseBackend implements CacheBackend {
       try { db.commit(); } catch { /* sqlite autocommits DDL */ }
       this.db = db;
       this.available = true;
-    } catch {
+    } catch (error) {
       this.available = false;
+      // The ORM adapters already phrase a missing driver as the install
+      // command; carry THAT through, and nothing else (a connect error can
+      // name the host and user).
+      const message = error instanceof Error ? error.message : String(error);
+      if (/npm install \S/.test(message)) this.missingDriverMessage = message;
     } finally {
       if (prevAuto === undefined) delete process.env.TINA4_AUTO_CACHING; else process.env.TINA4_AUTO_CACHING = prevAuto;
       if (prevDb === undefined) delete process.env.TINA4_DB_CACHE; else process.env.TINA4_DB_CACHE = prevDb;
@@ -1334,6 +1359,10 @@ class DatabaseBackend implements CacheBackend {
 
   ready(): Promise<void> {
     return this.readyPromise;
+  }
+
+  missingDriver(): string | null {
+    return this.missingDriverMessage;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -1531,9 +1560,11 @@ export async function createBackend(config?: {
   // degrading to a no-op cache. Mirrors the Python master.
   if (typeof backend.isAvailable === "function" && !(await backend.isAvailable())) {
     // eslint-disable-next-line no-console
+    const installHint = backend.missingDriver?.() ?? null;
     console.warn(
       `[tina4] Cache backend '${backendName}' is unavailable ` +
-      `(driver missing or service unreachable) — falling back to 'file'.`,
+      `(driver missing or service unreachable) — falling back to 'file'.` +
+      (installHint ? ` ${installHint}` : ""),
     );
     return new FileBackend(cacheDir(), maxEntries);
   }

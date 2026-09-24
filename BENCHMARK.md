@@ -143,18 +143,23 @@ Command: `npm install <pkg> --omit=dev` into an empty project, then `du -sh node
 | @hapi/hapi | **2 MB** | 2 |
 | koa | 2 MB | 30 |
 | express | 4 MB | 65 |
-| **Tina4 Node.js** | **7.7 MB** package, **40 MB** as installed | **36** |
+| **Tina4 Node.js** | **2.7 MB** package, **11 MB** as installed | **1** |
 | fastify | 13 MB | 41 |
 
-**Correction.** This table claimed **~1.8 MB**. The published package is **7.7 MB**, and a
-default `npm install tina4-nodejs` produces a **40 MB** `node_modules` holding 36 packages,
-because npm installs `optionalDependencies` unless you pass `--no-optional`.
+The Tina4 row was re-measured on 2026-09-24 (macOS, npm 11.19.1, the 3.13.137 sources) by a plain
+`npm install` of the `npm pack` tarball into an empty project. The other rows are from 2026-07-27.
 
-To be precise about the zero-dependency claim, which does survive: the published
-`package.json` declares **0 `dependencies`** and 5 `optionalDependencies` (AWS SDK,
-mongodb, redis, pg and friends, for the storage and cache backends). Nothing is a hard
-requirement, so the framework genuinely runs on the stdlib alone. But 40 MB is what a user
-gets by default, and quoting 1.8 MB was misleading. Use `--no-optional` for the lean path.
+**History.** An earlier version of this table claimed ~1.8 MB, and the correction that followed
+measured a default `npm install tina4-nodejs` at 40 MB and 36 packages: the database and
+storage drivers (pg, mongodb, redis, the AWS SDK) were declared as `optionalDependencies`,
+which npm installs unless told not to. On the 3.13.137 tarball a plain install added 64
+packages and a 43 MB `node_modules`.
+
+Those drivers are now optional `peerDependencies` (ADR-0067: drivers and service clients are
+the application's dependencies, never the framework's). npm does not install optional peers,
+so a plain `npm install tina4-nodejs` adds exactly one package, and the app installs the driver
+it actually uses (`npm install pg`). `test/zeroDependencyInstall.test.ts` pins that count on
+every run.
 
 ## 4. CO2 / Carbonah
 

@@ -1141,7 +1141,7 @@ await cacheStats();   // { hits, misses, size, backend } — reflects the real K
 
 **Async everywhere (full parity):** the KV API, the `responseCache` middleware, and the persistent DB query cache all route through the same unified async backend set with native async clients (no child processes). The `responseCache` middleware and persistent DB cache distribute cross-instance when a network backend (redis/valkey/memcached/mongodb/database) is selected — exactly like Python/PHP/Ruby. The default `memory` backend keeps both in-process (fastest), so default behaviour is unchanged. Because the KV/middleware API is async, **`await` it** (`await cacheGet`/`await cacheSet`/`await clearCache`; the middleware runner and `db.fetch` are async). Request-scoped DB caching (`TINA4_AUTO_CACHING`) always stays in-process.
 
-**Graceful fallback**: if a configured backend's driver is missing or the service/credentials are unreachable or wrong, the cache logs a warning and falls back to the **file** backend — a real persistent cache, never a silent no-op.
+**Graceful fallback**: if a configured backend's driver is missing or the service/credentials are unreachable or wrong, the cache logs a warning and falls back to the **file** backend — a real persistent cache, never a silent no-op. When the cause is a driver the app has not installed (`mongodb`, or the SQL driver behind `database`), the warning ends with the install command.
 
 Environment:
 - `TINA4_CACHE_BACKEND` — `memory` (default) | `file` | `redis` | `valkey` | `memcached` | `mongodb` | `database`
@@ -1367,6 +1367,35 @@ await initDatabase({ type: "postgres", host: "localhost", port: 5432, database: 
 | MySQL | `mysql://` | `mysql2` |
 | MSSQL | `mssql://`, `sqlserver://` | `tedious` |
 | Firebird | `firebird://` | `node-firebird` |
+| ODBC | `odbc:///` | `odbc` |
+| MongoDB | `mongodb://` | `mongodb` |
+
+### Drivers are the app's dependencies (ADR-0067)
+`npm install tina4-nodejs` installs **exactly one package**. `pg`, `mongodb`, `redis`,
+`@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner` are **optional `peerDependencies`**
+(`peerDependenciesMeta.optional`), which npm does not install; `mysql2`, `tedious`,
+`node-firebird` and `odbc` are not declared by the published package at all. Through 3.13.137 the
+five sat in `optionalDependencies`, which npm installs by default: a plain install pulled in 64
+packages. The app installs what it uses (`npm install pg`), and a feature selected without its
+package fails at the point of use naming the exact command:
+
+| Feature | Without the package |
+|---------|---------------------|
+| postgres / mysql / mssql / firebird adapter | throws `... requires the "pg" package. Install one of: npm install pg ...` |
+| mongodb adapter | throws `The 'mongodb' package is required for MongoDB connections. Install one of: ...` |
+| DocStore with `TINA4_MONGO_URI` | throws `DocStoreDriverMissing` naming `npm install mongodb` |
+| `mongodb` queue backend | throws from the constructor: `... required for the MongoDB queue backend. Install it with: npm install mongodb` |
+| `database` session backend on a server engine | throws naming `npm install pg` (etc.) on first use |
+| `RedisBackplane` / `NATSBackplane` | throws from the constructor: `Install it with: npm install redis` |
+| `S3Storage` | throws `Install them with: npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner`; `selectStorage()` logs it and falls back to local |
+| `mongodb` / `database` cache | falls back to `file`; the warning ends with the install command |
+
+The helper is `packages/core/src/optionalPackage.ts` (`resolveOptionalPackage`, resolved from the
+framework's own location, never `process.cwd()`). The monorepo still installs every driver as a
+devDependency / `@tina4/orm` workspace optionalDependency so the suite runs against real services;
+`test/zeroDependencyInstall.test.ts` packs the real tarball, installs it plainly into an empty
+project, asserts the one-package count and every message above, then installs `pg mongodb redis`
+and round-trips each against a live server.
 
 ## Testing
 

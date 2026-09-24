@@ -3,11 +3,30 @@ import { mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync } from "no
 import { resolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import { Log } from "../../../core/src/index.js";
+import { optionalPackageMissing } from "../../../core/src/optionalPackage.js";
 
 // ESM has no global `require`; create one so the OPTIONAL aws-sdk can be loaded
-// synchronously in S3Storage's constructor. A missing driver throws here and
-// selectStorage() catches it, degrading to local storage.
+// synchronously in S3Storage's constructor.
 const require = createRequire(import.meta.url);
+
+/** S3 needs both SDK packages, so a missing one names the command for both. */
+const S3_PACKAGES = ["@aws-sdk/client-s3", "@aws-sdk/s3-request-presigner"];
+
+/**
+ * Load an @aws-sdk package (an optional peer, ADR-0067). A missing one throws
+ * the actionable install error; selectStorage() catches it and logs it while
+ * degrading to local storage. Any OTHER load failure is re-thrown untouched,
+ * so an installed-but-broken SDK is never mislabelled "not installed".
+ */
+function loadAwsSdk(packageName: string): any {
+  try {
+    return require(packageName);
+  } catch (error: any) {
+    const missing = error?.code === "MODULE_NOT_FOUND" && String(error?.message ?? "").includes(`'${packageName}'`);
+    if (!missing) throw error;
+    throw optionalPackageMissing("S3Storage", S3_PACKAGES);
+  }
+}
 
 /**
  * Pluggable file storage for the realtime "files" feature. StorageBackend is
@@ -97,7 +116,8 @@ export class LocalStorage implements StorageBackend {
 }
 
 /**
- * S3-compatible store (AWS S3, MinIO, ...). Opt-in; needs @aws-sdk/client-s3.
+ * S3-compatible store (AWS S3, MinIO, ...). Opt-in; the app installs the SDK:
+ * `npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner`.
  * Presigned GET URLs let clients fetch large blobs straight from object
  * storage instead of streaming through the app.
  */
@@ -108,9 +128,12 @@ export class S3Storage implements StorageBackend {
   constructor(opts: { endpoint?: string; key?: string; secret?: string; bucket?: string; region?: string } = {}) {
     this.bucket = opts.bucket || process.env.TINA4_STORAGE_BUCKET || "";
     if (!this.bucket) throw new Error("S3Storage requires TINA4_STORAGE_BUCKET");
-    // Loaded lazily; a missing driver throws here and selectStorage falls back.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { S3Client } = require("@aws-sdk/client-s3");
+    // Loaded lazily; a missing SDK throws the install command here, and
+    // selectStorage() logs it and falls back to local storage.
+    const { S3Client } = loadAwsSdk("@aws-sdk/client-s3");
+    // url() needs the presigner; check it now so a half-installed SDK refuses
+    // at construction instead of failing on the first download link.
+    loadAwsSdk("@aws-sdk/s3-request-presigner");
     const endpoint = opts.endpoint || process.env.TINA4_STORAGE_URL;
     this.client = new S3Client({
       endpoint: endpoint || undefined,
@@ -124,13 +147,13 @@ export class S3Storage implements StorageBackend {
   }
 
   async put(key: string, data: Buffer | string, mime = "application/octet-stream"): Promise<void> {
-    const { PutObjectCommand } = require("@aws-sdk/client-s3");
+    const { PutObjectCommand } = loadAwsSdk("@aws-sdk/client-s3");
     await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: data, ContentType: mime }));
   }
 
   async get(key: string): Promise<Buffer | null> {
     try {
-      const { GetObjectCommand } = require("@aws-sdk/client-s3");
+      const { GetObjectCommand } = loadAwsSdk("@aws-sdk/client-s3");
       const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
       const chunks: Buffer[] = [];
       for await (const chunk of res.Body as AsyncIterable<Buffer>) chunks.push(Buffer.from(chunk));
@@ -141,14 +164,14 @@ export class S3Storage implements StorageBackend {
   }
 
   async url(key: string, ttl = 3600): Promise<string | null> {
-    const { GetObjectCommand } = require("@aws-sdk/client-s3");
-    const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+    const { GetObjectCommand } = loadAwsSdk("@aws-sdk/client-s3");
+    const { getSignedUrl } = loadAwsSdk("@aws-sdk/s3-request-presigner");
     return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), { expiresIn: ttl });
   }
 
   async delete(key: string): Promise<void> {
     try {
-      const { DeleteObjectCommand } = require("@aws-sdk/client-s3");
+      const { DeleteObjectCommand } = loadAwsSdk("@aws-sdk/client-s3");
       await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
     } catch (e) {
       Log.error(`S3Storage delete failed for ${key}: ${(e as Error).message}`);
@@ -157,7 +180,7 @@ export class S3Storage implements StorageBackend {
 
   async exists(key: string): Promise<boolean> {
     try {
-      const { HeadObjectCommand } = require("@aws-sdk/client-s3");
+      const { HeadObjectCommand } = loadAwsSdk("@aws-sdk/client-s3");
       await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
       return true;
     } catch {

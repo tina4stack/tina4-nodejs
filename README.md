@@ -28,6 +28,27 @@ cd my-app && npx tina4nodejs serve
 
 Open http://localhost:7148
 
+### Database drivers and optional services
+
+`npm install tina4-nodejs` installs exactly one package. SQLite is built in (`node:sqlite`); every
+other driver or service client is your app's dependency, installed only when you use it:
+
+| You use | Install |
+|---------|---------|
+| PostgreSQL | `npm install pg` |
+| MySQL / MariaDB | `npm install mysql2` |
+| MSSQL / SQL Server | `npm install tedious` |
+| Firebird | `npm install node-firebird` |
+| ODBC | `npm install odbc` |
+| MongoDB (database, queue, DocStore, cache) | `npm install mongodb` |
+| Redis WebSocket backplane | `npm install redis` |
+| S3 realtime file storage | `npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner` |
+
+Select one without its package and Tina4 tells you the exact command, e.g.
+`The 'redis' package is required for RedisBackplane. Install it with: npm install redis`.
+Redis/Valkey/Memcached sessions and caching, and MongoDB sessions, need nothing: they speak the wire
+protocol directly.
+
 ---
 
 ## Code Examples

@@ -260,7 +260,9 @@ config incomplete) **falls back to `LocalStorage`** with a warning — a real st
 no-op.
 
 > **Node uses `@aws-sdk/client-s3` (+ `@aws-sdk/s3-request-presigner`), not boto3.** It's an optional
-> peer dependency loaded lazily; install it only if you set `TINA4_STORAGE_BACKEND=s3`.
+> peer dependency loaded lazily; install it only if you set `TINA4_STORAGE_BACKEND=s3`:
+> `npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner`. Without it the fallback warning
+> names that exact command.
 
 | var | default | effect |
 |---|---|---|

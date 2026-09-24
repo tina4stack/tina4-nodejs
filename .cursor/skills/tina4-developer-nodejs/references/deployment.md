@@ -55,8 +55,9 @@ docker run -d -p 7148:7148 -v $(pwd)/data:/app/data my-app
 
 ## Database Drivers
 
-SQLite works out of the box (bundled with Node). Other engines are **optional peer dependencies** —
-add the one you use to the project's `package.json` `dependencies` so `npm ci` installs it into the
+SQLite works out of the box (bundled with Node), and `npm install tina4-nodejs` adds exactly one
+package. Other engines are **the app's dependencies** (ADR-0067) — tina4-nodejs never installs them.
+Add the one you use to the project's `package.json` `dependencies` so `npm ci` installs it into the
 image:
 
 | Engine | npm package |
