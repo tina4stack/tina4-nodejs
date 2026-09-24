@@ -416,7 +416,6 @@ import { join } from "node:path";
 
 const TEST_PATH = mkdtempSync(join(tmpdir(), "tina4-qb-test-"));
 
-try { rmSync(TEST_PATH, { recursive: true, force: true }); } catch {}
 
 const fileQueue = new Queue({ topic: "test-queue", path: TEST_PATH });
 const fqId = fileQueue.push({ data: "hello" });

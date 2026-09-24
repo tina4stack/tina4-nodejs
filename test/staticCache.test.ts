@@ -64,7 +64,6 @@ function request(
 }
 
 // --- Real temp project: a public dir with one real asset + an empty routes dir.
-try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
 mkdirSync(PUBLIC_DIR, { recursive: true });
 mkdirSync(join(TEST_DIR, "src/routes"), { recursive: true });
 writeFileSync(join(TEST_DIR, "package.json"), '{"type":"module"}');
