@@ -21,6 +21,7 @@ import {
   createSign,
   randomBytes,
 } from "node:crypto";
+import { guardUrl, SsrfError } from "./ssrf.js";
 
 const CURVE = "prime256v1";
 const RECORD_SIZE = 4096;
@@ -40,6 +41,11 @@ export interface PushOptions {
   privateKey?: string;
   ttl?: number;
   urgency?: "very-low" | "low" | "normal" | "high";
+  /**
+   * SSRF guard (ADR-0084): an explicit allow-list of hosts / host:port / CIDRs
+   * that bypass the private-endpoint refusal even with the opt-out off.
+   */
+  allowHosts?: string[];
 }
 
 export interface PushResult {
@@ -267,10 +273,20 @@ export class Push {
   }
 
   private async deliver(endpoint: URL, config: { subject: string; publicKey: string; privateKey: string }, keys: { rawPublic: Buffer; rawPrivate: Buffer }, body: Buffer): Promise<PushResult> {
+    // SSRF guard (ADR-0084): refuse a private/internal push endpoint.
+    try {
+      await guardUrl(endpoint.toString(), this.options.allowHosts);
+    } catch (error) {
+      if (error instanceof SsrfError) throw new PushError(error.message);
+      throw error;
+    }
     let response: Response;
     try {
       response = await fetch(endpoint, {
         method: "POST",
+        // A real push service answers the POST directly; a redirect from a push
+        // endpoint is not followed to a private address (ADR-0084).
+        redirect: "manual",
         headers: {
           Authorization: `vapid t=${vapidToken(endpoint.toString(), config.subject, keys.rawPrivate, keys.rawPublic)}, k=${config.publicKey}`,
           "Content-Encoding": "aes128gcm",
