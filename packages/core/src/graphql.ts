@@ -167,10 +167,17 @@ type ParsedDefinition = ParsedOperation | ParsedFragment;
 class Parser {
   private tokens: Token[];
   private pos: number;
+  // F2: bound the parser's own recursion. A deeply nested query
+  // ("{a{a{a...}}}") otherwise recurses in parseSelectionSet until the call
+  // stack overflows — BEFORE the execution-time depth guard can run. Reusing
+  // TINA4_GRAPHQL_MAX_DEPTH keeps parse and execution on one bound.
+  private depth = 0;
+  private readonly maxDepth: number;
 
   constructor(tokens: Token[]) {
     this.tokens = tokens;
     this.pos = 0;
+    this.maxDepth = graphqlMaxDepth();
   }
 
   peek(): Token | null {
@@ -264,6 +271,18 @@ class Parser {
   }
 
   private parseSelectionSet(): ParsedSelection[] {
+    this.depth++;
+    if (this.maxDepth > 0 && this.depth > this.maxDepth) {
+      throw new Error(`Query exceeds maximum depth of ${this.maxDepth}`);
+    }
+    try {
+      return this.parseSelectionSetInner();
+    } finally {
+      this.depth--;
+    }
+  }
+
+  private parseSelectionSetInner(): ParsedSelection[] {
     this.expect("LBRACE");
     const selections: ParsedSelection[] = [];
     while (!this.match("RBRACE")) {
@@ -480,6 +499,24 @@ export function graphqlMaxDepth(): number {
   return Number.isNaN(n) ? 50 : n;
 }
 
+/**
+ * F2: maximum number of expanded selection nodes a single query may request.
+ * The depth guard bounds NESTING but not WIDTH: a fragment that spreads another
+ * fragment many times (a "fragment bomb") stays shallow while expanding to
+ * millions of fields, and a query with thousands of aliases of one field is not
+ * deep at all. This budget bounds the expanded selection tree (fragments
+ * expanded, aliases counted) so both are rejected before any resolver runs.
+ * `TINA4_GRAPHQL_MAX_NODES` overrides the default (1000); `<= 0` disables it.
+ */
+export function graphqlMaxNodes(): number {
+  const raw = (process.env.TINA4_GRAPHQL_MAX_NODES ?? "1000").trim();
+  const n = parseInt(raw, 10);
+  return Number.isNaN(n) ? 1000 : n;
+}
+
+/** Thrown when a query's expanded selection count exceeds the node budget (F2). */
+class ComplexityError extends Error {}
+
 // ── GraphQL Engine ───────────────────────────────────────────
 
 export class GraphQL {
@@ -506,6 +543,13 @@ export class GraphQL {
    * spread / inline fragment, so circular fragments are caught too.
    */
   public maxDepth: number = graphqlMaxDepth();
+
+  /**
+   * Maximum expanded selection nodes per query (from `TINA4_GRAPHQL_MAX_NODES`,
+   * default 1000; `<= 0` disables). Bounds query WIDTH — fragment bombs and
+   * alias explosions — which the depth guard does not. See {@link graphqlMaxNodes}.
+   */
+  public maxNodes: number = graphqlMaxNodes();
 
   /**
    * Decorator-style resolver registration.
@@ -684,6 +728,20 @@ export class GraphQL {
     }
 
     const op = operations[0];
+
+    // F2: reject an over-complex query (fragment bomb / alias explosion) before
+    // any resolver runs.
+    if (this.maxNodes > 0) {
+      try {
+        this.assertComplexity(op.selections, fragments);
+      } catch (e: unknown) {
+        if (e instanceof ComplexityError) {
+          return { data: null, errors: [{ message: e.message }] };
+        }
+        throw e;
+      }
+    }
+
     const resolvers = op.operation === "query" ? this.queries : this.mutations;
 
     // Apply variable defaults
@@ -715,6 +773,40 @@ export class GraphQL {
    * instead of recursing until the interpreter stack overflows. Top-level
    * starts at depth 1; `maxDepth <= 0` disables the guard.
    */
+  /**
+   * Count the expanded selection nodes, throwing {@link ComplexityError} past
+   * `maxNodes` (F2). Fragment spreads are expanded (so a fragment bomb is
+   * counted, not the small unexpanded document) and every field — including
+   * each alias — counts once. The count is capped by `maxNodes` and the walk by
+   * `maxDepth`, so a circular fragment trips the budget instead of looping and
+   * the check itself can never cost more than the budget.
+   */
+  private assertComplexity(
+    selections: ParsedSelection[],
+    fragments: Map<string, ParsedFragment>,
+  ): void {
+    const depthCap = this.maxDepth > 0 ? this.maxDepth : 1000;
+    let count = 0;
+    const walk = (sels: ParsedSelection[], depth: number): void => {
+      if (depth > depthCap) return;
+      for (const sel of sels) {
+        count++;
+        if (count > this.maxNodes) {
+          throw new ComplexityError(`Query exceeds maximum complexity of ${this.maxNodes} nodes`);
+        }
+        if (sel.kind === "fragment_spread") {
+          const frag = fragments.get(sel.name);
+          if (frag) walk(frag.selections, depth + 1);
+        } else if (sel.kind === "inline_fragment") {
+          walk(sel.selections, depth + 1);
+        } else if (sel.kind === "field" && sel.selections) {
+          walk(sel.selections, depth + 1);
+        }
+      }
+    };
+    walk(selections, 1);
+  }
+
   private async resolveSelectionsInto(
     selections: ParsedSelection[],
     resolvers: Map<string, QueryConfig>,
