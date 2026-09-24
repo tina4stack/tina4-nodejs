@@ -184,16 +184,17 @@ try {
       ),
     );
 
-    // 3) Install the tarball. Optional drivers are not needed to prove import
-    //    resolution (they are lazily required only when their feature is used),
-    //    so --no-optional keeps the install fast and network-free.
+    // 3) Install the tarball. The drivers are optional PEER dependencies
+    //    (ADR-0067), which npm does not install, so a plain install is already
+    //    the one-package, network-free install (zeroDependencyInstall.test.ts
+    //    pins that count).
     let installed = false;
     try {
       execFileSync(
         "npm",
         [
           "install", tarball,
-          "--no-audit", "--no-fund", "--ignore-scripts", "--no-optional", "--prefer-offline",
+          "--no-audit", "--no-fund", "--ignore-scripts", "--prefer-offline",
         ],
         { cwd: appDir, encoding: "utf-8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] },
       );

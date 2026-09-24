@@ -17,6 +17,21 @@
  *   }
  */
 import { randomUUID } from "node:crypto";
+import { resolveOptionalPackage } from "./optionalPackage.js";
+
+/**
+ * A backplane connects in the background, and publish()/subscribe() await that
+ * connect. Until someone does, a failed connect is a rejected promise nobody is
+ * holding - and Node's default for an unhandled rejection is to kill the
+ * process. Observe it so the failure is LOGGED once and still rejects every
+ * later publish()/subscribe(). The URL is deliberately not logged: it can carry
+ * a password.
+ */
+function observeConnectFailure(ready: Promise<void>, backplaneName: string): void {
+  ready.catch((error: unknown) => {
+    console.error(`[Tina4] ${backplaneName} could not connect: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
 
 /**
  * Base interface for scaling WebSocket broadcast across instances.
@@ -55,20 +70,12 @@ export class RedisBackplane implements WebSocketBackplane {
     const resolvedUrl = url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "redis://localhost:6379";
     this.url = resolvedUrl;
 
-    this.ready = (async () => {
-      let redis: any;
-      try {
-        // Optional peer dependency — resolved via a string specifier so the
-        // module isn't required at type-check time when it isn't installed.
-        const redisModule: string = "redis";
-        redis = await import(redisModule);
-      } catch {
-        throw new Error(
-          "The 'redis' package is required for RedisBackplane. " +
-          "Install it with: npm install redis"
-        );
-      }
+    // Optional peer (ADR-0067): resolved NOW so a missing package throws from
+    // the constructor with the install command, as the Python master's does.
+    const redisModuleUrl = resolveOptionalPackage("redis", "RedisBackplane");
 
+    this.ready = (async () => {
+      const redis: any = await import(redisModuleUrl);
       this.publisher = redis.createClient({ url: resolvedUrl });
       this.subscriber = this.publisher.duplicate();
 
@@ -78,6 +85,7 @@ export class RedisBackplane implements WebSocketBackplane {
       ]);
       console.log(`[Tina4] RedisBackplane connected to ${resolvedUrl}`);
     })();
+    observeConnectFailure(this.ready, "RedisBackplane");
   }
 
   async publish(channel: string, message: string): Promise<void> {
@@ -118,42 +126,33 @@ export class NATSBackplane implements WebSocketBackplane {
   private url: string;
   private subs: Map<string, any> = new Map();
   private ready: Promise<void>;
+  private natsModuleUrl: string;
 
   constructor(url?: string) {
     const resolvedUrl = url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "nats://localhost:4222";
     this.url = resolvedUrl;
 
-    this.ready = (async () => {
-      let nats: any;
-      try {
-        // Optional peer dependency — resolved via a string specifier so the
-        // module isn't required at type-check time when it isn't installed.
-        const natsModule: string = "nats";
-        nats = await import(natsModule);
-      } catch {
-        throw new Error(
-          "The 'nats' package is required for NATSBackplane. " +
-          "Install it with: npm install nats"
-        );
-      }
+    const natsModuleUrl = resolveOptionalPackage("nats", "NATSBackplane");
+    this.natsModuleUrl = natsModuleUrl;
 
+    this.ready = (async () => {
+      const nats: any = await import(natsModuleUrl);
       this.nc = await nats.connect({ servers: resolvedUrl });
       console.log(`[Tina4] NATSBackplane connected to ${resolvedUrl}`);
     })();
+    observeConnectFailure(this.ready, "NATSBackplane");
   }
 
   async publish(channel: string, message: string): Promise<void> {
     await this.ready;
-    const natsModule: string = "nats";
-    const { StringCodec } = await import(natsModule);
+    const { StringCodec } = await import(this.natsModuleUrl);
     const sc = StringCodec();
     this.nc.publish(channel, sc.encode(message));
   }
 
   async subscribe(channel: string, callback: (message: string) => void): Promise<void> {
     await this.ready;
-    const natsModule: string = "nats";
-    const { StringCodec } = await import(natsModule);
+    const { StringCodec } = await import(this.natsModuleUrl);
     const sc = StringCodec();
     const sub = this.nc.subscribe(channel);
     this.subs.set(channel, sub);

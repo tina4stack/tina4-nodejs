@@ -87,12 +87,29 @@
   "engines": {
     "node": ">=22.0.0"
   },
-  "optionalDependencies": {
+  "peerDependencies": {
     "@aws-sdk/client-s3": "^3.600.0",
     "@aws-sdk/s3-request-presigner": "^3.600.0",
     "mongodb": "^6.0.0",
     "pg": "^8.20.0",
     "redis": "^4.7.0"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-s3": {
+      "optional": true
+    },
+    "@aws-sdk/s3-request-presigner": {
+      "optional": true
+    },
+    "mongodb": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    },
+    "redis": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",
@@ -100,6 +117,7 @@
     "@types/pg": "^8.20.0",
     "esbuild": "^0.24.0",
     "mongodb": "^6.0.0",
+    "pg": "^8.20.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.9"

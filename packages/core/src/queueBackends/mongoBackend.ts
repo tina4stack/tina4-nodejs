@@ -1,5 +1,6 @@
 /**
- * Tina4 MongoDB Queue Backend — uses `mongodb` npm package via dynamic import.
+ * Tina4 MongoDB Queue Backend — uses the `mongodb` npm package, which the app
+ * installs (`npm install mongodb`; an optional peer, ADR-0067).
  *
  * Implements the same interface as the file-based queue but uses MongoDB
  * for message storage and delivery. Atomic pop via findOneAndUpdate.
@@ -21,6 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import type { QueueJob } from "../queue.js";
+import { resolveOptionalPackage } from "../optionalPackage.js";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -71,8 +73,17 @@ export class MongoBackend implements QueueBackend {
   private collection: string;
   private visibilityTimeout: number;
   private maxRetries: number;
+  /** Module URL of the app-installed `mongodb` driver, resolved once. */
+  private driverUrl: string;
 
   constructor(config?: MongoConfig) {
+    // Optional peer (ADR-0067), resolved HERE, on the main thread. Every
+    // operation runs in a child process that swallows its own failures, so a
+    // driver missing there used to surface as "MongoDB push failed" and a pop
+    // that silently returned nothing. The Python master raises in its
+    // constructor; so does this. Resolving from the framework's location also
+    // means the child finds the driver whatever directory the server runs in.
+    this.driverUrl = resolveOptionalPackage("mongodb", "the MongoDB queue backend");
     this.host = config?.host ?? process.env.TINA4_MONGO_HOST ?? "localhost";
     this.port = config?.port
       ?? (process.env.TINA4_MONGO_PORT ? parseInt(process.env.TINA4_MONGO_PORT, 10) : 27017);
@@ -136,13 +147,7 @@ export class MongoBackend implements QueueBackend {
   buildScript(operation: string, queue: string, data?: string): string {
     return `
       async function main() {
-        let mongodb;
-        try {
-          mongodb = await import("mongodb");
-        } catch {
-          process.stderr.write("mongodb package not installed — run: npm install mongodb");
-          process.exit(1);
-        }
+        const mongodb = await import(${JSON.stringify(this.driverUrl)});
 
         const { MongoClient } = mongodb;
         const uri = ${JSON.stringify(this.uri)};

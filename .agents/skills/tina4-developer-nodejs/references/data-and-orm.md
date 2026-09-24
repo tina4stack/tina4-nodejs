@@ -585,9 +585,9 @@ tina4-nodejs is **batteries-included** and, unlike most Node frameworks, effecti
 **zero runtime dependencies**: the root and every workspace `package.json` declare **no
 `dependencies`** (the CLI depends only on sibling `@tina4/*` packages). SQLite runs on Node's
 **built-in `node:sqlite`** (`DatabaseSync`, `adapters/sqlite.ts:1`) — which is why `engines.node`
-is **`>=22.0.0`** and there is no `better-sqlite3`. The only things you ever `npm install` are the
-**optional DB drivers** for a non-SQLite engine — `pg`, `mysql2`, `tedious` (MSSQL), `mongodb`, `node-firebird` (Firebird), `odbc` (ODBC) —
-declared as `optionalDependencies` on `@tina4/orm`. Before you add a package, check whether it's
+is **`>=22.0.0`** and there is no `better-sqlite3`. `npm install tina4-nodejs` installs exactly **one** package.
+The only things you ever `npm install` next are the **drivers** for what you use — `pg`, `mysql2`, `tedious` (MSSQL), `mongodb`, `node-firebird` (Firebird), `odbc` (ODBC), `redis` (WebSocket backplane), `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` (S3 storage) —
+the app's own dependencies, never the framework's (ADR-0067; `pg`/`mongodb`/`redis`/`@aws-sdk/*` are optional `peerDependencies`, which npm does not install). A feature selected without its driver fails naming the exact `npm install` command. Before you add a package, check whether it's
 already in the box. **Need → Tina4 built-in (verified export) — don't add the dep:**
 
 | Need | Tina4 built-in — don't `npm install …` |
@@ -595,7 +595,7 @@ already in the box. **Need → Tina4 built-in (verified export) — don't add th
 | Auth / JWT / password hashing | `import { Auth, getToken, validToken, hashPassword, checkPassword } from "tina4-nodejs"` *(don't add `jsonwebtoken`, `bcrypt`)* |
 | ORM / models | `import { BaseModel, initDatabase, bindDatabase } from "tina4-nodejs/orm"` *(don't add `sequelize`, `typeorm`, `prisma`)* |
 | Fluent queries / JOINs | `import { QueryBuilder } from "tina4-nodejs/orm"` — `QueryBuilder.fromTable(...)` *(don't add `knex`)* |
-| DB drivers | SQLite built in via `node:sqlite`; postgres/mysql/mssql/mongodb via the `optionalDependencies` above |
+| DB drivers | SQLite built in via `node:sqlite`; postgres/mysql/mssql/mongodb: the app runs `npm install pg` (etc.) itself |
 | Migrations | `tina4nodejs migrate:create` / `migrate` CLI (or `migrate`/`createMigration` from `tina4-nodejs/orm`) *(don't add `knex`/`node-pg-migrate`)* |
 | Templating | Frond — `response.render("page.twig", {...})`; templates in `src/templates/` *(don't add `ejs`, `handlebars`, `nunjucks`)* |
 | SCSS → CSS | drop `.scss` in `src/scss/` (`ScssCompiler`) — auto-compiled on serve *(don't add `sass`)* |
