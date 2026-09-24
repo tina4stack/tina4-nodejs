@@ -3,7 +3,7 @@ import type { DiscoveredModel } from "./model.js";
 import type { FieldDefinition } from "./types.js";
 import { getAdapter, getNamedAdapter, adapterQuery, adapterExecute, adapterFetch, quoteIdentifier } from "./database.js";
 import { DatabaseResult } from "./databaseResult.js";
-import { buildQuery, parseQueryString, resolveFieldColumn, UnknownFieldError, InvalidQueryParameterError } from "./query.js";
+import { buildQuery, parseQueryString, resolveField, resolveFieldColumn, UnknownFieldError, InvalidQueryParameterError } from "./query.js";
 import { validate } from "./validation.js";
 
 /**
@@ -23,6 +23,7 @@ import { validate } from "./validation.js";
  */
 function allowListedBody(
   fields: Record<string, FieldDefinition>,
+  columnOf: (field: string) => string,
   pkField: string,
   body: Record<string, unknown> | null | undefined,
   isCreate: boolean,
@@ -31,10 +32,14 @@ function allowListedBody(
   const stripPk = isCreate ? pkDef?.autoIncrement === true : true;
   const allowed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(body ?? {})) {
-    if (!(key in fields)) continue;
-    if (key === "is_deleted") continue;
-    if (stripPk && key === pkField) continue;
-    allowed[key] = value;
+    // ADR-0069 (G1): the SAME resolver the list route uses - a declared field
+    // by its property or its column; anything else (including an inherited
+    // Object property such as "constructor") is dropped.
+    const field = resolveField(fields, columnOf, key);
+    if (field === null) continue;
+    if (field === "is_deleted") continue;
+    if (stripPk && field === pkField) continue;
+    allowed[field] = value;
   }
   return allowed;
 }
@@ -279,7 +284,7 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
 
         // CRUD-MASS-ASSIGNMENT: allow-list before anything downstream (both
         // validation and persistence) ever sees the body.
-        const body = allowListedBody(fields, pkField, rawBody, true);
+        const body = allowListedBody(fields, getDbCol, pkField, rawBody, true);
 
         // Validate against field definitions
         const errors = validate(body, fields);
@@ -348,7 +353,7 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         // {id} alone, so a body PK is stripped (never lets the write rename
         // the row's own identity column or, on a mis-wired WHERE, redirect
         // to a different row); is_deleted is guarded the same as create.
-        const body = allowListedBody(fields, pkField, rawBody, false);
+        const body = allowListedBody(fields, getDbCol, pkField, rawBody, false);
 
         // Feature 19 (VALID-NODE-PUT-NOVALIDATE): the update path validates the
         // request body too — previously only POST did, so a PUT could write

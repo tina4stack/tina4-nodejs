@@ -24,6 +24,10 @@ import { DatabaseSync } from "node:sqlite";
 import { startServer } from "../packages/core/src/index.ts";
 import { BaseModel, Database, bindDatabase, createAdapterFromUrl } from "../packages/orm/src/index.ts";
 import { SqliteDatabase } from "../packages/orm/src/docstore.ts";
+import { getToken } from "../packages/core/src/auth.ts";
+
+// AutoCrud write routes are secure by default; the write cases send a real JWT.
+process.env.TINA4_SECRET = "identifier-allow-list-contract-secret";
 
 let passed = 0;
 let failed = 0;
@@ -83,9 +87,17 @@ interface Result {
   text: string;
 }
 
-function request(port: number, path: string): Promise<Result> {
+function request(
+  port: number,
+  path: string,
+  method = "GET",
+  headers: Record<string, string> = {},
+  body?: unknown,
+): Promise<Result> {
   return new Promise((resolve, reject) => {
-    const req = http.request({ hostname: "127.0.0.1", port, path, method: "GET" }, (res) => {
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    const allHeaders = payload === undefined ? headers : { "content-type": "application/json", ...headers };
+    const req = http.request({ hostname: "127.0.0.1", port, path, method, headers: allHeaders }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (c) => chunks.push(c));
       res.on("end", () => {
@@ -96,6 +108,7 @@ function request(port: number, path: string): Promise<Result> {
       });
     });
     req.on("error", reject);
+    if (payload !== undefined) req.write(payload);
     req.end();
   });
 }
@@ -243,6 +256,42 @@ export default class IdentItem extends BaseModel {
     const operator = await get("/api/ident_item?filter[age][lte]=30&sort=id");
     assert("odd_typed_query_values_return_400: a mapped operator still filters",
       operator.status === 200 && JSON.stringify(ids(operator)) === "[1,2]", operator.text.slice(0, 200));
+
+    // ── autocrud_write_body_accepts_only_declared_fields ─────────────────
+    // Writes DROP an undeclared key (CRUD-DEC-02); a declared field is written
+    // whether the body names its property or its mapped column.
+    console.log("\n--- autocrud_write_body_accepts_only_declared_fields ---");
+    const authed = { Authorization: `Bearer ${getToken({ sub: "identifier-allow-list" }, 3600)}` };
+    const readRow = async (id: number): Promise<any> => (await get(`/api/ident_item/${id}`)).json?.data ?? null;
+
+    const byColumn = await request(PORT, "/api/ident_item", "POST", authed, { name: "delta", first_name: "Kim", age: 50 });
+    const byColumnRow = byColumn.status === 201 ? await readRow(Number(byColumn.json?.data?.id)) : null;
+    assert("autocrud_write_body_accepts_only_declared_fields: POST writes a mapped field named by its column",
+      byColumn.status === 201 && byColumnRow?.first_name === "Kim" && byColumnRow?.name === "delta",
+      `status=${byColumn.status} row=${JSON.stringify(byColumnRow)} body=${byColumn.text.slice(0, 200)}`);
+
+    const byProperty = await request(PORT, "/api/ident_item", "POST", authed, { name: "epsilon", firstName: "Lee" });
+    const byPropertyRow = byProperty.status === 201 ? await readRow(Number(byProperty.json?.data?.id)) : null;
+    assert("autocrud_write_body_accepts_only_declared_fields: POST writes a mapped field named by its property",
+      byProperty.status === 201 && byPropertyRow?.first_name === "Lee",
+      `status=${byProperty.status} row=${JSON.stringify(byPropertyRow)}`);
+
+    const undeclared = await request(PORT, "/api/ident_item", "POST", authed,
+      { name: "zeta", internal_code: "zz", constructor: "x", "first name": "y" });
+    const undeclaredRow = undeclared.status === 201 ? await readRow(Number(undeclared.json?.data?.id)) : null;
+    assert("autocrud_write_body_accepts_only_declared_fields: POST drops undeclared keys and still creates the row",
+      undeclared.status === 201 && undeclaredRow?.name === "zeta" && undeclaredRow?.internal_code === null,
+      `status=${undeclared.status} row=${JSON.stringify(undeclaredRow)} body=${undeclared.text.slice(0, 200)}`);
+
+    const putColumn = await request(PORT, "/api/ident_item/2", "PUT", authed, { first_name: "Max" });
+    assert("autocrud_write_body_accepts_only_declared_fields: PUT writes a mapped field named by its column",
+      putColumn.status === 200 && (await readRow(2))?.first_name === "Max", `status=${putColumn.status} body=${putColumn.text.slice(0, 200)}`);
+
+    const putUndeclared = await request(PORT, "/api/ident_item/2", "PUT", authed, { internal_code: "yy", constructor: "x" });
+    const afterPut = await readRow(2);
+    assert("autocrud_write_body_accepts_only_declared_fields: PUT drops undeclared keys",
+      putUndeclared.status === 200 && afterPut?.internal_code === "c2" && afterPut?.first_name === "Max",
+      `status=${putUndeclared.status} row=${JSON.stringify(afterPut)} body=${putUndeclared.text.slice(0, 200)}`);
   } finally {
     server.close();
     rmSync(root, { recursive: true, force: true });

@@ -28,9 +28,23 @@ export function resolveFieldColumn(
   columnOf: (field: string) => string,
   key: string,
 ): string | null {
-  if (Object.hasOwn(fields, key)) return columnOf(key);
+  const field = resolveField(fields, columnOf, key);
+  return field === null ? null : columnOf(field);
+}
+
+/**
+ * The declared FIELD (property) name a key names - by the field name itself or
+ * by its column - or null. The write-side twin of resolveFieldColumn(): AutoCrud
+ * writes need the field, to validate the body and then map it to its column.
+ */
+export function resolveField(
+  fields: Record<string, FieldDefinition>,
+  columnOf: (field: string) => string,
+  key: string,
+): string | null {
+  if (Object.hasOwn(fields, key)) return key;
   for (const field of Object.keys(fields)) {
-    if (columnOf(field) === key) return columnOf(field);
+    if (columnOf(field) === key) return field;
   }
   return null;
 }
