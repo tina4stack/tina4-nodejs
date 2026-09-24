@@ -1,4 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { createTina4HttpServer, guardUnsafeHeaders, sendTransportRejection } from "./transport.js";
 import { randomBytes } from "node:crypto";
 import { resolve, dirname, join, relative } from "node:path";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -21,7 +22,7 @@ import {
   TAKEOVER_KILLED,
   TAKEOVER_REFUSALS,
 } from "./portTakeover.js";
-import { createRequest } from "./request.js";
+import { createRequest, PayloadTooLargeError } from "./request.js";
 import {
   resetRequestCaches,
   headStripIntercept,
@@ -356,6 +357,35 @@ function findAvailablePort(start: number): number {
 }
 
 /**
+ * Variables that mark a CI run, in ADR-0070's order (ci_env_vars). A run is CI
+ * when any of them holds a value that, trimmed and lower-cased, is non-empty
+ * and not in CI_NOT_SET_VALUES.
+ */
+export const CI_ENVIRONMENT_VARIABLES = ["CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "JENKINS_URL", "TF_BUILD", "TEAMCITY_VERSION"];
+
+/** Values that say "not under CI" (ADR-0070 ci_not_set_values), compared trimmed and lower-cased. */
+export const CI_NOT_SET_VALUES = ["false", "0", "no", "off"];
+
+/**
+ * Whether the server may open a browser (ADR-0070): only for a developer at a
+ * desk. Every rule is a veto; nothing forces a browser open past one.
+ *
+ *   1. development only - the caller's resolved debug mode, and never with
+ *      TINA4_PRODUCTION truthy or in a cluster worker (the primary decides);
+ *   2. never when TINA4_NO_BROWSER is truthy (true/1/yes/on);
+ *   3. never with --no-browser / a programmatic noBrowser (it can only veto);
+ *   4. never under CI.
+ */
+export function shouldOpenBrowser(isDevelopment: boolean, noBrowser = false): boolean {
+  if (!isDevelopment || isTruthy(process.env.TINA4_PRODUCTION) || cluster.isWorker) return false;
+  if (noBrowser || isTruthy(process.env.TINA4_NO_BROWSER)) return false;
+  return !CI_ENVIRONMENT_VARIABLES.some((name) => {
+    const value = (process.env[name] ?? "").trim().toLowerCase();
+    return value !== "" && !CI_NOT_SET_VALUES.includes(value);
+  });
+}
+
+/**
  * Open the user's default browser after a short delay so the server is ready.
  */
 function openBrowser(url: string) {
@@ -578,9 +608,9 @@ const HTTP_REASON_PHRASES: Record<number, string> = {
   304: "Not Modified", 307: "Temporary Redirect", 308: "Permanent Redirect",
   400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
   404: "Not Found", 405: "Method Not Allowed", 406: "Not Acceptable",
-  409: "Conflict", 410: "Gone", 413: "Content Too Large",
+  408: "Request Timeout", 409: "Conflict", 410: "Gone", 413: "Content Too Large",
   415: "Unsupported Media Type", 422: "Unprocessable Content",
-  429: "Too Many Requests",
+  429: "Too Many Requests", 431: "Request Header Fields Too Large",
   500: "Internal Server Error", 501: "Not Implemented",
   502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout",
 };
@@ -1707,6 +1737,10 @@ async function dispatchInner(
   // These four close over nothing but the raw req/res (never ctx), which is
   // why they take no context object at all.
   await resetRequestCaches();
+  // Installed FIRST so it is the innermost wrapper of end()/write(): whatever
+  // the later interceptors do, a response carrying a header node:http refused
+  // leaves as the ADR-0068 500 {"error":"Invalid response header"}.
+  guardUnsafeHeaders(rawRes);
   headStripIntercept(rawReq, rawRes);
   // Feature 40 (CE-DEC-01/02): gzip + ETag + conditional-GET for every
   // dynamic response. Installed right after headStripIntercept so it runs
@@ -1740,6 +1774,16 @@ async function dispatchInner(
     try {
       await req.parseBody();
     } catch (err) {
+      // The transport already answered (a 408 for a stalled body) and the
+      // connection is going away: nothing left to say.
+      if (rawRes.writableEnded) return;
+      // A body over TINA4_MAX_UPLOAD_SIZE is a transport rejection (ADR-0068
+      // section 4): exact body, security headers, and Connection: close, so
+      // node:http does not go on reading the rest of the upload.
+      if (err instanceof PayloadTooLargeError) {
+        sendTransportRejection(rawRes, 413, err.message);
+        return;
+      }
       const status = (err as { statusCode?: number })?.statusCode;
       if (typeof status === "number" && status >= 400 && status < 500) {
         if (!rawRes.writableEnded) {
@@ -1910,7 +1954,7 @@ function startLoopbackSiblings(
     siblingHosts.map(
       (siblingHost) =>
         new Promise<ReturnType<typeof createServer> | null>((resolveSibling) => {
-          const sibling = createServer(dispatch);
+          const sibling = createTina4HttpServer(dispatch);
           let settled = false;
           sibling.on("error", (err: NodeJS.ErrnoException) => {
             const expected =
@@ -2186,7 +2230,7 @@ export async function startServer(config?: Tina4Config): Promise<{
   // dev; the stable AI port (port+1000, created below) suppresses reload/toolbar so an
   // AI tool can drive it without its own edits triggering refreshes. The tina4 client
   // posts /__dev/api/reload to the MAIN port. Matches Python (master).
-  const server = createServer(dispatch);
+  const server = createTina4HttpServer(dispatch);
 
   // WebSocket upgrade handling on the MAIN port. Two responsibilities:
   //
@@ -2295,7 +2339,7 @@ export async function startServer(config?: Tina4Config): Promise<{
 
       if (isDebug && !noAiPort && aiPortInRange) {
         // Stable AI port (port+1000): tag requests so /__dev_reload + toolbar are suppressed.
-        aiServer = createServer(async (req, res) => {
+        aiServer = createTina4HttpServer(async (req, res) => {
           (req as any)._tina4AiPort = true;
           await dispatch(req, res);
         });
@@ -2352,8 +2396,7 @@ ${reset}
   Debug:     ${isDebug ? "ON" : "OFF"} (Log level: ${logLevel})${dualPortLines}
 `);
       }
-      const noBrowser = isTruthy(process.env.TINA4_NO_BROWSER);
-      if (!noBrowser) {
+      if (shouldOpenBrowser(isDebug, config?.noBrowser === true)) {
         // Open the browser on the MAIN port — that's the hot-reload port.
         openBrowser(`http://${displayHost}:${port}`);
       }

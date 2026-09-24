@@ -149,34 +149,50 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   return tReq;
 }
 
-/** Default request body cap in bytes (10 MB). */
+
+// ── Request limits (ADR-0068) ────────────────────────────────────────────────
+// Here rather than in a module of their own: request.ts sits below the server
+// and transport.ts, so both can read them without an import cycle, and the
+// core barrel's eager module graph stays one module smaller.
+
 export const DEFAULT_MAX_UPLOAD_SIZE = 10_485_760;
-const warnedUploadLimits = new Set<string>();
+
+const warnedLimits = new Set<string>();
 
 /**
- * TINA4_MAX_UPLOAD_SIZE in bytes, read when it is used (ADR-0072, #143).
- *
- * Never read it into a module constant: this module is imported before
- * startServer() loads .env, so a constant kept the 10MB default whatever .env
- * said. A value that is not a positive whole number warns once and uses the
- * default (ADR-0068) - parseInt("abc") used to give NaN, which switched the cap off.
+ * Read a numeric limit from the environment. A value that is not a usable
+ * number falls back to the default with a warning naming the variable (the
+ * same rule as PHP's Server::resolveLimit) - a typo must never be what
+ * disables a DoS guard.
  */
-export function maxUploadSize(): number {
-  const raw = (process.env.TINA4_MAX_UPLOAD_SIZE ?? "").trim();
-  if (raw === "") return DEFAULT_MAX_UPLOAD_SIZE;
-  const value = /^\d+$/.test(raw) ? Number(raw) : NaN;
-  if (Number.isSafeInteger(value) && value > 0) return value;
-  if (!warnedUploadLimits.has(raw)) {
-    warnedUploadLimits.add(raw);
-    Log.warning(`TINA4_MAX_UPLOAD_SIZE=${raw} is not a usable limit - using ${DEFAULT_MAX_UPLOAD_SIZE}`);
+export function resolveLimit(name: string, fallback: number, zeroAllowed = false): number {
+  const raw = (process.env[name] ?? "").trim();
+  if (raw === "") return fallback;
+  const value = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+  if (Number.isSafeInteger(value) && (value > 0 || (value === 0 && zeroAllowed))) return value;
+  if (!warnedLimits.has(`${name}=${raw}`)) {
+    warnedLimits.add(`${name}=${raw}`);
+    Log.warning(`${name}=${raw} is not a usable limit - using ${fallback}`);
   }
-  return DEFAULT_MAX_UPLOAD_SIZE;
+  return fallback;
 }
+
+/** TINA4_MAX_UPLOAD_SIZE, read when it is needed so a value from .env counts. */
+export function maxUploadSize(): number {
+  return resolveLimit("TINA4_MAX_UPLOAD_SIZE", DEFAULT_MAX_UPLOAD_SIZE);
+}
+
+/** The one 413 wording (ADR-0068 section 4). */
+export function bodyTooLargeMessage(bytes: number | bigint | string, limit: number): string {
+  return `Request body (${bytes} bytes) exceeds TINA4_MAX_UPLOAD_SIZE (${limit} bytes)`;
+}
+
+
 
 export class PayloadTooLargeError extends Error {
   public statusCode = 413;
   constructor(actual: number, limit: number) {
-    super(`Request body (${actual} bytes) exceeds TINA4_MAX_UPLOAD_SIZE (${limit} bytes)`);
+    super(bodyTooLargeMessage(actual, limit));
     this.name = "PayloadTooLargeError";
   }
 }
@@ -187,6 +203,7 @@ async function parseBody(req: Tina4Request): Promise<void> {
 
   // Check content-length header against upload size limit before reading body
   const uploadLimit = maxUploadSize();
+
   const declaredLength = parseInt(req.headers["content-length"] ?? "0", 10);
   if (declaredLength > uploadLimit) {
     throw new PayloadTooLargeError(declaredLength, uploadLimit);
