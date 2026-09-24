@@ -685,6 +685,21 @@ export class LiteBackend {
    * dead-letter file -- two spellings of the same intent that previously
    * diverged.
    */
+  /**
+   * Reject a job permanently — dead-letter it NOW, no retry (ADR-0023).
+   *
+   * Unlike failJob(), which requeues until maxRetries is spent, rejectJob()
+   * moves a known-poison job straight to the dead-letter store. attempts is
+   * floored at maxRetries so deadLetters() (attempts >= maxRetries) returns it
+   * and size("dead") agrees.
+   */
+  rejectJob(queue: string, job: QueueJob, reason: string, maxRetries: number): void {
+    this.clearReservation(queue, job.id);
+    job.attempts = Math.max((job.attempts || 0) + 1, maxRetries);
+    job.error = reason;
+    this.deadLetter(queue, job, reason);
+  }
+
   retryJob(queue: string, job: QueueJob, delaySeconds?: number): void {
     // Clear the reservation — the consumer acknowledged (with an explicit retry).
     this.clearReservation(queue, job.id);

@@ -299,11 +299,35 @@ export class MongoBackend implements QueueBackend {
             }
           }
           else if (operation === "size") {
-            const count = await col.countDocuments({
-              queue: queueName,
-              status: "pending",
-            });
+            // ADR-0022 dec 7: size(status) must not answer a different question.
+            // The dead aliases count the .dead_letter store (== deadLetters().length);
+            // reserved/completed count by status; else pending. data = status.
+            const status = data || "pending";
+            let count: number;
+            if (status === "dead" || status === "failed" || status === "dead_letter") {
+              count = await col.countDocuments({ queue: queueName + ".dead_letter" });
+            } else if (status === "reserved" || status === "completed") {
+              count = await col.countDocuments({ queue: queueName, status });
+            } else {
+              count = await col.countDocuments({ queue: queueName, status: "pending" });
+            }
             process.stdout.write(String(count));
+          }
+          else if (operation === "reject") {
+            // Dead-letter NOW, no retry (ADR-0023). Floor attempts at maxRetries
+            // so it reads as exhausted (parity with fail()'s dead-letter branch
+            // and size("dead")). data = JSON { id, reason, maxRetries }.
+            const info = JSON.parse(data);
+            const doc = await col.findOne({ queue: queueName, id: info.id });
+            if (doc) {
+              const attempts = Math.max((doc.attempts || 0) + 1, info.maxRetries);
+              await col.insertOne({
+                ...doc, _id: undefined, attempts,
+                status: "dead", queue: queueName + ".dead_letter", error: info.reason,
+              });
+              await col.deleteOne({ _id: doc._id, queue: queueName });
+            }
+            process.stdout.write("__OK__");
           }
           else if (operation === "clear") {
             await col.deleteMany({ queue: queueName });
@@ -551,10 +575,20 @@ export class MongoBackend implements QueueBackend {
     }
   }
 
-  size(queue: string): number {
-    const result = this.execSync("size", queue);
+  size(queue: string, status: string = "pending"): number {
+    const result = this.execSync("size", queue, status);
     const num = parseInt(result, 10);
     return isNaN(num) ? 0 : num;
+  }
+
+  /**
+   * Dead-letter a job immediately — no retry (ADR-0023 reject()). Distinct from
+   * fail(): fail() requeues until maxRetries is spent. attempts is floored at
+   * maxRetries so deadLetters()/size("dead") (which filter/scope to the
+   * dead-letter store) see it.
+   */
+  reject(queue: string, id: string, reason: string, maxRetries: number): void {
+    this.execSync("reject", queue, JSON.stringify({ id, reason, maxRetries }));
   }
 
   clear(queue: string): void {
