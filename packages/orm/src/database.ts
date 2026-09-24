@@ -3,7 +3,7 @@ import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult, ColumnInfo
 import { DatabaseResult } from "./databaseResult.js";
 import { DatabaseUrl } from "./databaseUrl.js";
 import { CachedDatabaseAdapter, type CachedAdapterOptions } from "./cachedDatabase.js";
-import { QueryCache } from "./sqlTranslator.js";
+import { QueryCache, SQLTranslator } from "./sqlTranslator.js";
 import { quoteIdentifierAnsi, assertColumnNames } from "./adapters/sqlDialect.js";
 
 /**
@@ -74,6 +74,37 @@ export async function adapterFetchOne<T = Record<string, unknown>>(
   return (adapter as any).fetchOneAsync
     ? await (adapter as any).fetchOneAsync(sql, params)
     : adapter.fetchOne<T>(sql, params);
+}
+
+/**
+ * Run a row-producing statement through an adapter's own row-returning execute
+ * (SQLite's executeRows, Firebird's executeRowsAsync, or the cache wrapper
+ * forwarding either). `undefined` means the adapter has none and NOTHING ran.
+ */
+export async function adapterExecuteRows(
+  adapter: DatabaseAdapter, sql: string, params?: unknown[],
+): Promise<unknown[] | undefined> {
+  const a = adapter as unknown as {
+    executeRowsAsync?: (s: string, p?: unknown[]) => Promise<unknown[] | undefined>;
+    executeRows?: (s: string, p?: unknown[]) => unknown[] | undefined;
+  };
+  if (typeof a.executeRowsAsync === "function") return a.executeRowsAsync(sql, params);
+  if (typeof a.executeRows === "function") return a.executeRows(sql, params);
+  return undefined;
+}
+
+/**
+ * The rows inside a driver's execute() result: pg and tedious carry `.rows`,
+ * mysql2 and odbc return the row array itself, and a MySQL CALL returns
+ * `[[rows], OkPacket]`. `undefined` when the result carries no row list.
+ */
+export function rowsFromExecuteResult(result: unknown): unknown[] | undefined {
+  if (Array.isArray(result)) {
+    if (result.length > 0 && Array.isArray(result[0])) return result[0] as unknown[];
+    return Array.from(result).filter((r) => r !== null && typeof r === "object");
+  }
+  const rows = (result as { rows?: unknown } | null | undefined)?.rows;
+  return Array.isArray(rows) ? rows : undefined;
 }
 
 export async function adapterExecute(
@@ -225,7 +256,9 @@ export async function probeTotal(
     const suffix = alias ? ` AS ${alias}` : "";
     const rows = await adapterFetch(
       adapter,
-      `SELECT COUNT(*) AS tina4_total FROM (${sql}\n)${suffix}`,
+      // ORDER BY cannot change a COUNT, and SQL Server rejects it inside a
+      // derived table, so the probe drops a trailing top-level one.
+      `SELECT COUNT(*) AS tina4_total FROM (${SQLTranslator.stripTrailingOrderBy(sql)}\n)${suffix}`,
       params,
       undefined,
       undefined,
@@ -699,6 +732,16 @@ export class Database {
     sql = stripTrailingSemicolons(sql);
     const adapter = this.getNextAdapter();
     try {
+      // A WRITE that returns rows (INSERT/UPDATE/DELETE ... RETURNING, a
+      // data-modifying CTE) runs exactly once: no LIMIT/OFFSET (a syntax error on
+      // DML), no COUNT probe (it would re-run the statement), never cached, and
+      // committed like execute() (tina4-python#133 contract).
+      if (SQLTranslator.isWriteStatement(sql)) {
+        const written = await adapterFetch(adapter, sql, params, undefined, undefined, true);
+        await this.commitFetchWrite(adapter);
+        this.lastError = null;
+        return new DatabaseResult(written, undefined, written.length, undefined, undefined, adapter, sql);
+      }
       // `opts.noCache` bypasses the query cache for this one call — no lookup,
       // no store, run directly (mirrors the Python master's `no_cache`).
       const rows = await adapterFetch(adapter, sql, params, limit, offset, opts?.noCache);
@@ -729,9 +772,13 @@ export class Database {
       // couldn't read the cause. Now it FAILS LOUD *and* populates lastError.
       // The throw happens before the CachedDatabaseAdapter ever reaches its
       // cache.set(), so a buried failure can never be cached either.
+      // A write through fetchOne (the natural home of `INSERT ... RETURNING id`)
+      // is never cached and commits like execute() (tina4-python#133 contract).
+      const isWrite = SQLTranslator.isWriteStatement(sql);
       const row = (adapter as any).fetchOneAsync
-        ? await (adapter as any).fetchOneAsync(sql, params, opts?.noCache)
+        ? await (adapter as any).fetchOneAsync(sql, params, isWrite || opts?.noCache)
         : adapter.fetchOne<T>(sql, params);
+      if (isWrite) await this.commitFetchWrite(adapter);
       this.lastError = null;
       return row;
     } catch (e: any) {
@@ -766,6 +813,17 @@ export class Database {
   }
 
   /**
+   * Close a write that ran through fetch()/fetchOne() the way execute() closes
+   * its own: auto-commit outside an explicit transaction, and leave it to the
+   * caller's commit()/rollback() inside one.
+   */
+  private async commitFetchWrite(adapter: DatabaseAdapter): Promise<void> {
+    if (this.autoCommit && !this.inExplicitTransaction()) {
+      try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+    }
+  }
+
+  /**
    * Execute a write statement.
    *
    * On SUCCESS returns `true` for simple writes, or the result set when the
@@ -782,16 +840,33 @@ export class Database {
   async execute(sql: string, params?: unknown[]): Promise<boolean | unknown> {
     try {
       const adapter = this.getNextAdapter();
-      const result = await adapterExecute(adapter, sql, params);
+      // A statement that PRODUCES ROWS (SELECT, WITH ... SELECT, a write with
+      // RETURNING / SQL Server OUTPUT, a CALL/EXEC result set) returns them as
+      // the SAME DatabaseResult fetch() returns - run exactly once, with no
+      // COUNT probe and no LIMIT/OFFSET (cross-framework contract, matching
+      // PHP). It used to hand back the raw driver object (pg Result, tedious
+      // {rows}, a mysql2/odbc array), and on SQLite and Firebird the rows were
+      // lost entirely because their execute() returns none.
+      const kind = SQLTranslator.rowsKind(sql);
+      let rows: unknown[] | undefined;
+      let result: unknown;
+      if (kind) {
+        rows = await adapterExecuteRows(adapter, sql, params);
+        if (rows === undefined) {
+          result = await adapterExecute(adapter, sql, params);
+          rows = rowsFromExecuteResult(result);
+        }
+      } else {
+        result = await adapterExecute(adapter, sql, params);
+      }
       if (this.autoCommit && !this.inExplicitTransaction()) {
         try { await adapterCommit(adapter); } catch { /* no active transaction */ }
       }
       this.lastError = null;
-      const upper = sql.trim().toUpperCase();
-      if (upper.includes("RETURNING") || upper.startsWith("CALL ") ||
-          upper.startsWith("EXEC ") || upper.startsWith("SELECT ")) {
-        return result;
+      if (kind && rows !== undefined && (kind !== "procedure" || rows.length > 0)) {
+        return new DatabaseResult(rows as Record<string, unknown>[], undefined, rows.length, undefined, undefined, adapter, sql);
       }
+      if (kind === "procedure") return result ?? true;
       return true;
     } catch (e: any) {
       this.lastError = e?.message ?? String(e);

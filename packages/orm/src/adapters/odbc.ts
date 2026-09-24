@@ -270,6 +270,9 @@ export class OdbcAdapter implements DatabaseAdapter {
     limit?: number,
     skip?: number,
   ): Promise<T[]> {
+    // A write that returns rows (INSERT/UPDATE/DELETE ... RETURNING) runs exactly
+    // as written: a LIMIT/OFFSET appended to DML is a syntax error (#133 contract).
+    if (SQLTranslator.isWriteStatement(sql)) return this.queryAsync<T>(sql, params);
     // See SQLTranslator.appendLimit: the old inline check was a substring search,
     // so a LIMIT in a string literal or a trailing comment silently dropped the
     // row cap and returned every row.

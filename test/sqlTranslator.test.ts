@@ -173,6 +173,14 @@ assert(
   SQLTranslator.autoIncrementSyntax(ddl, "unknown") === ddl,
 );
 
+for (const engine of ["postgresql", "firebird"]) {
+  const whitespace = " ".repeat(100_000);
+  assert(`${engine}: whitespace without keyword stays unchanged`,
+    SQLTranslator.autoIncrementSyntax("SELECT" + whitespace, engine) === "SELECT" + whitespace);
+  assert(`${engine}: removes keyword and only preceding whitespace`,
+    SQLTranslator.autoIncrementSyntax("id" + whitespace + "AUTOINCREMENT, value TEXT", engine) === "id, value TEXT");
+}
+
 // --- parseReturning ---
 console.log("\n--- parseReturning ---");
 
