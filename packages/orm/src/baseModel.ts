@@ -8,6 +8,7 @@ import {
 import { ModelCollection } from "./modelCollection.js";
 import { validate as validateFields } from "./validation.js";
 import { QueryBuilder } from "./queryBuilder.js";
+import { resolveFieldColumn } from "./query.js";
 import { SQLiteAdapter } from "./adapters/sqlite.js";
 import { QueryCache, SQLTranslator } from "./sqlTranslator.js";
 import { Log } from "../../core/src/index.js";
@@ -606,7 +607,11 @@ export class BaseModel {
 
     if (filter) {
       for (const [key, value] of Object.entries(filter)) {
-        const col = ModelClass.getDbColumn(key) ?? key;
+        // ADR-0069: a filter key must be a declared field (or its column).
+        const col = resolveFieldColumn(ModelClass.fields, (field) => ModelClass.getDbColumn(field), key);
+        if (col === null) {
+          throw new Error(`Unknown filter field '${key}' for model ${ModelClass.name}`);
+        }
         conditions.push(`${ModelClass.quoteName(col)} = ?`);
         params.push(value);
       }

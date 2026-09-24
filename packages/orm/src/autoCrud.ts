@@ -3,7 +3,7 @@ import type { DiscoveredModel } from "./model.js";
 import type { FieldDefinition } from "./types.js";
 import { getAdapter, adapterQuery, adapterExecute, adapterFetch, quoteIdentifier } from "./database.js";
 import { DatabaseResult } from "./databaseResult.js";
-import { buildQuery, parseQueryString } from "./query.js";
+import { buildQuery, parseQueryString, resolveFieldColumn, UnknownFieldError } from "./query.js";
 import { validate } from "./validation.js";
 
 /**
@@ -194,7 +194,20 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         // for the SQL (PAGE-DEC-01: page >= 1, per-page <= DEFAULT_ROW_CAP) — read
         // them back here instead of recomputing from the raw qp, so the envelope
         // can never drift from the query that ran.
-        const { pageSql, countSql, filterParams, limit, offset } = buildQuery(tableName, qp, extraConditions, q);
+        //
+        // Filter keys and sort fields resolve against the model's DECLARED fields
+        // (ADR-0069); an unknown one is a 400 before any SQL runs.
+        let built: ReturnType<typeof buildQuery>;
+        try {
+          built = buildQuery(tableName, qp, extraConditions, q, (key) => resolveFieldColumn(fields, getDbCol, key));
+        } catch (err) {
+          if (err instanceof UnknownFieldError) {
+            res.error("UNKNOWN_FIELD", err.message, 400);
+            return;
+          }
+          throw err;
+        }
+        const { pageSql, countSql, filterParams, limit, offset } = built;
 
         // adapterFetch pages in the engine's own syntax (LIMIT/OFFSET, OFFSET
         // FETCH on MSSQL, ROWS on Firebird) - the same path BaseModel reads use.
