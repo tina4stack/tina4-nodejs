@@ -127,7 +127,7 @@ export interface ConsumeOptions {
 export interface QueueBackendInterface {
   push(queue: string, payload: unknown, delay?: number, priority?: number): string;
   pop(queue: string): QueueJob | null;
-  size(queue: string): number;
+  size(queue: string, status?: string): number;
   clear(queue: string): void;
   /**
    * Release whatever connection the backend holds, and be safe to call twice.
@@ -152,6 +152,7 @@ export interface QueueBackendInterface {
   // persistent-connection rewrite lands.
   complete?(queue: string, id: string): void;
   fail?(queue: string, id: string, error: string, maxRetries: number, retryBackoff: number): void;
+  reject?(queue: string, id: string, reason: string, maxRetries: number): void;
   /**
    * Explicit manual re-queue: returns true if the id was found and revived,
    * false otherwise (parity with Python's backend.retry_job()). A backend may
@@ -432,7 +433,7 @@ export class Queue {
     const q = this.topic;
 
     if (this.externalBackend) {
-      return this.externalBackend.size(q);
+      return this.externalBackend.size(q, status);
     }
     return this.liteBackend.size(q, status);
   }
@@ -756,6 +757,18 @@ export class Queue {
       return;
     }
     this.liteBackend.failJob(queue, job, error, maxRetries, this._retryBackoff);
+  }
+
+  /**
+   * Dead-letter a job immediately — no retry (ADR-0023 reject()). Distinct from
+   * _failJob, which retries until maxRetries is spent.
+   */
+  _rejectJob(queue: string, job: QueueJob, reason: string, maxRetries: number): void {
+    if (this.externalBackend?.reject) {
+      this.externalBackend.reject(queue, job.id, reason, maxRetries);
+      return;
+    }
+    this.liteBackend.rejectJob(queue, job, reason, maxRetries);
   }
 
   /**
