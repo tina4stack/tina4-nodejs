@@ -26,6 +26,44 @@ export default async function (request: Tina4Request, response: Tina4Response) {
 Need the rendered HTML as a string (for an email body, etc.) rather than a response? Import the Frond
 engine from `tina4-nodejs/frond`.
 
+## Globals (values available in every template)
+
+Register a value every template can read with `addGlobal`:
+
+```typescript
+import { Frond } from "tina4-nodejs/frond";
+const engine = new Frond();
+engine.addGlobal("app_name", "My App");
+```
+
+```twig
+<title>{{ app_name }}</title>
+```
+
+**`addGlobal` stores your value as-is, but the Node engine AUTO-CALLS a
+zero-argument function global when you name it bare.** `{% if flag %}` and
+`{{ flag }}` invoke `flag()` and use its RETURN value:
+
+```typescript
+frond.addGlobal("admin_only", () => access.adminOnly());
+```
+
+```twig
+{% if admin_only %} ...admin link... {% endif %}   {# calls admin_only() — uses its boolean result #}
+```
+
+Verified on tina4-nodejs 3.13.x with `addGlobal("g", () => false)`: `{% if g %}`
+is **false**, `{{ g }}` prints `false`, and `() => true` makes `{% if g %}` true.
+This differs from the PHP / Python / Ruby engines, where the same closure stays a
+truthy object and must be called explicitly with `g()`. Two consequences in Node:
+
+- A boolean flag registered as a zero-arg function **just works** in `{% if flag %}`.
+- The function is called with **no arguments** every time it is named, so a global
+  that needs arguments must be called explicitly (`{{ greet(name) }}`), and a
+  value you want to inspect rather than invoke should not be a bare function.
+
+An object or plain value global is used as-is (objects are truthy, not called).
+
 ## Basic Syntax
 
 ```twig
