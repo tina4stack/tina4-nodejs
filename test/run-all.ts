@@ -231,7 +231,9 @@ for (const file of allFiles) {
 if (VITEST_FILES.size > 0) {
   const vitestArgs = [...VITEST_FILES].map((f) => `test/${f}`);
   console.log(`\n${"─".repeat(60)}\n  vitest suites: ${vitestArgs.join(", ")}\n`);
-  const vit = spawnSync("npx", ["vitest", "run", ...vitestArgs], {
+  // Timing suites measure real event-loop stalls. Concurrent test servers can
+  // stall an otherwise yielding handler and contaminate that measurement.
+  const vit = spawnSync("npx", ["vitest", "run", "--no-file-parallelism", ...vitestArgs], {
     cwd: join(__dirname, ".."),
     encoding: "utf8",
     stdio: "pipe",
