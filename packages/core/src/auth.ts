@@ -12,7 +12,7 @@
  *   checkPassword("secret123", hash);  // true
  */
 import { createHmac, createSign, createVerify, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Middleware, Tina4Request, Tina4Response } from "./types.js";
 import { isTruthy } from "./dotenv.js";
@@ -113,8 +113,16 @@ export function ensureDevSecret(cwd?: string): string | null {
     if (existsSync(envLocalPath)) {
       const existing = readFileSync(envLocalPath, "utf-8");
       if (existing.length > 0 && !existing.endsWith("\n")) prefix = "\n";
+    } else {
+      // Create the file 0600 BEFORE writing the secret so it is never briefly
+      // group/world-readable (F15; parity with Python's os.open(...,0o600) and
+      // Ruby's SecretFile 0o600). On Windows the mode is largely ignored, which
+      // is acceptable — POSIX perms do not apply there.
+      writeFileSync(envLocalPath, "", { mode: 0o600 });
     }
     appendFileSync(envLocalPath, `${prefix}TINA4_SECRET=${newSecret}\n`);
+    // Tighten an existing .env.local too (a secret file must be owner-only).
+    chmodSync(envLocalPath, 0o600);
     void _logInfo("Auth: generated a development secret, saved to .env.local (gitignored)");
   } catch {
     // Keep the in-memory secret for this run; warn but never crash boot.
