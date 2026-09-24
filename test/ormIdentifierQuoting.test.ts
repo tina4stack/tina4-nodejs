@@ -24,6 +24,7 @@ import {
 } from "../packages/orm/src/index.ts";
 import { quoteIdentifier } from "../packages/orm/src/database.ts";
 import { quoteIdentifierWith, quoteIdentifierAnsi } from "../packages/orm/src/adapters/sqlDialect.ts";
+import { safeErrorText } from "./_safeError.ts";
 
 let passed = 0;
 let failed = 0;
@@ -193,7 +194,7 @@ async function modelCases(engine: string, url: string): Promise<void> {
     await one.delete();
     assert(`${engine}: BaseModel delete()`, (await QuoteWidget.count()) === 2);
   } catch (err) {
-    assert(`${engine}: BaseModel CRUD completed`, false, String((err as Error)?.message ?? err).slice(0, 300));
+    assert(`${engine}: BaseModel CRUD completed`, false, safeErrorText(err).slice(0, 300));
   } finally {
     await dropTable(db, engine, "quote_widget");
     try { db.close(); } catch { /* already closed */ }
@@ -271,7 +272,7 @@ export default class QuoteCrud extends BaseModel {
       `status=${one.status} body=${one.text.slice(0, 200)}`);
     await dropTable(db, engine, table);
   } catch (err) {
-    assert(`${engine}: AutoCrud run completed`, false, String((err as Error)?.message ?? err).slice(0, 300));
+    assert(`${engine}: AutoCrud run completed`, false, safeErrorText(err).slice(0, 300));
   } finally {
     server?.close();
     if (savedUrl === undefined) delete process.env.TINA4_DATABASE_URL; else process.env.TINA4_DATABASE_URL = savedUrl;
@@ -302,6 +303,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(safeErrorText(err));
   process.exit(1);
 });

@@ -25,6 +25,7 @@ import { startServer } from "../packages/core/src/index.ts";
 import { BaseModel, Database, bindDatabase, createAdapterFromUrl, getAdapter } from "../packages/orm/src/index.ts";
 import { SqliteDatabase } from "../packages/orm/src/docstore.ts";
 import { getToken } from "../packages/core/src/auth.ts";
+import { safeErrorText } from "./_safeError.ts";
 
 // AutoCrud write routes are secure by default; the write cases send a real JWT.
 process.env.TINA4_SECRET = "identifier-allow-list-contract-secret";
@@ -433,7 +434,7 @@ async function ormFindCases(): Promise<void> {
         await saveCases(db, engine);
         await writeHelperCases(db, engine);
       } catch (err) {
-        assert(`orm_find_rejects_undeclared_filter_key: ${engine} run completed`, false, String((err as Error)?.stack ?? err));
+        assert(`orm_find_rejects_undeclared_filter_key: ${engine} run completed`, false, safeErrorText(err));
       } finally {
         await dropTable(db, engine);
         try { db.close(); } catch { /* already closed */ }
@@ -749,6 +750,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(safeErrorText(err));
   process.exit(1);
 });

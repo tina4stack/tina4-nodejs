@@ -10,6 +10,7 @@
 // Run with: npx tsx test/graphqlCommas.test.ts
 
 import { GraphQL } from "../packages/core/src/index.ts";
+import { safeErrorText } from "./_safeError.ts";
 
 let passed = 0;
 let failed = 0;
@@ -61,6 +62,6 @@ async function run(): Promise<void> {
 }
 
 run().catch((err) => {
-  console.error(err);
+  console.error(safeErrorText(err));
   process.exit(1);
 });

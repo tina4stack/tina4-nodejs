@@ -23,6 +23,7 @@ import { startServer } from "../packages/core/src/index.ts";
 import { getToken } from "../packages/core/src/auth.ts";
 import { GraphQL } from "../packages/core/src/graphql.ts";
 import { SQLiteAdapter } from "../packages/orm/src/adapters/sqlite.ts";
+import { safeErrorText } from "./_safeError.ts";
 
 process.env.TINA4_SECRET = "id-argument-lock-in-secret";
 
@@ -240,6 +241,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(safeErrorText(err));
   process.exit(1);
 });
