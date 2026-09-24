@@ -36,12 +36,16 @@
  * Firebird), set on the lab. So CI still runs sqlite+postgres+mysql and the lab
  * runs all four - the ran.length >= 3 floor below holds either way.
  */
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
+import { DatabaseSync } from "node:sqlite";
 
 import { DatabaseSessionHandler } from "../packages/core/src/sessionHandlers/databaseHandler.js";
+import { sqlCommandSync } from "../packages/core/src/sessionHandlers/sqlClient.js";
+import type { SqlTarget } from "../packages/core/src/sessionHandlers/sqlClient.js";
 
 let pass = 0;
 let fail = 0;
@@ -95,8 +99,145 @@ const MYSQL_URL = `mysql://${process.env.TINA4_TEST_MYSQL_USERNAME ?? "root"}:`
 // never added, and the loop sees exactly sqlite+postgres+mysql.
 const FB_URL = process.env.TINA4_TEST_FIREBIRD_URL;
 
+const MSSQL_HOST = process.env.TINA4_TEST_MSSQL_HOST ?? "127.0.0.1";
+const MSSQL_PORT = Number(process.env.TINA4_TEST_MSSQL_PORT ?? 1433);
+
 const originalUrl = process.env.TINA4_DATABASE_URL;
+const originalUsername = process.env.TINA4_DATABASE_USERNAME;
+const originalPassword = process.env.TINA4_DATABASE_PASSWORD;
 const originalCwd = process.cwd();
+
+type RaceScenario = {
+  name: string;
+  url: string;
+  username?: string;
+  password?: string;
+  workers: number;
+  holdNamedLock?: boolean;
+};
+
+/** Point the env at one engine, the way an app's .env does. */
+function pointAt(scenario: RaceScenario): void {
+  process.env.TINA4_DATABASE_URL = scenario.url;
+  if (scenario.username === undefined) delete process.env.TINA4_DATABASE_USERNAME;
+  else process.env.TINA4_DATABASE_USERNAME = scenario.username;
+  if (scenario.password === undefined) delete process.env.TINA4_DATABASE_PASSWORD;
+  else process.env.TINA4_DATABASE_PASSWORD = scenario.password;
+}
+
+/**
+ * Run a statement on this process's OWN connection to the scenario's engine -
+ * independent of every racing worker. SQLite is opened directly.
+ */
+function runOutOfBand(scenario: RaceScenario, sql: string): Record<string, unknown>[] {
+  if (scenario.url.startsWith("sqlite:")) {
+    const connection = new DatabaseSync(scenario.url.replace(/^sqlite:(\/\/)?/, ""));
+    try {
+      return connection.prepare(sql).all() as Record<string, unknown>[];
+    } finally {
+      connection.close();
+    }
+  }
+  pointAt(scenario);
+  const target = (new DatabaseSessionHandler() as unknown as { target: SqlTarget }).target;
+  return sqlCommandSync(target, sql, []);
+}
+
+function dropSessionTable(scenario: RaceScenario): void {
+  try {
+    runOutOfBand(scenario, "DROP TABLE tina4_session");
+  } catch { /* absent already - which is the state the race needs */ }
+}
+
+/**
+ * CASE 4. Every app that starts more than one process races to create
+ * tina4_session on first use, and the loser must not take a request down. PHP
+ * has always run this race with real processes; Node had no such case, and
+ * MEASURED on the lab before the fix, six processes lost one to five of them on
+ * PostgreSQL, SQLite and Firebird (no rescue after the CREATE), and on SQL
+ * Server whenever two landed inside the IF OBJECT_ID window.
+ *
+ * MySQL runs twice. The second pass holds a named lock in every worker: MySQL
+ * backs the loser of the metadata-lock deadlock inside CREATE TABLE IF NOT
+ * EXISTS off silently only when the session holds no other metadata lock, so
+ * without one the losing path is reached rarely (tina4-php CI run 35972320442)
+ * and with one it is reached every run.
+ */
+async function concurrentFirstUse(workDir: string): Promise<void> {
+  const name = "concurrent_first_use_is_safe_with_real_processes_on_every_engine";
+  if (!(await reachable(MSSQL_HOST, MSSQL_PORT))) {
+    skipLoudly(name, `mssql is not reachable at ${MSSQL_HOST}:${MSSQL_PORT}`);
+    return;
+  }
+  const mysqlDb = process.env.TINA4_TEST_MYSQL_DB ?? "tina4_test";
+  const mysqlUser = process.env.TINA4_TEST_MYSQL_USERNAME ?? "root";
+  const mysqlPass = process.env.TINA4_TEST_MYSQL_PASSWORD ?? "tina4";
+  const scenarios: RaceScenario[] = [
+    { name: "sqlite", url: `sqlite://${join(workDir, "race.db")}`, workers: 6 },
+    { name: "postgres", url: PG_URL, workers: 6 },
+    { name: "mysql", url: `mysql://127.0.0.1:3306/${mysqlDb}`, username: mysqlUser, password: mysqlPass, workers: 6 },
+    { name: "mysql+named-lock", url: `mysql://127.0.0.1:3306/${mysqlDb}`, username: mysqlUser,
+      password: mysqlPass, workers: 12, holdNamedLock: true },
+    { name: "mssql", url: `mssql://${MSSQL_HOST}:${MSSQL_PORT}/${process.env.TINA4_TEST_MSSQL_DB ?? "tina4_test"}`,
+      username: process.env.TINA4_TEST_MSSQL_USERNAME ?? "sa",
+      password: process.env.TINA4_TEST_MSSQL_PASSWORD ?? "TinaSQL123!Secure", workers: 6 },
+  ];
+  if (FB_URL) scenarios.push({ name: "firebird", url: FB_URL, workers: 6 });
+
+  const workerScript = join(import.meta.dirname, "fixtures", "sessionConcurrentFirstUse.ts");
+  const tsx = join(import.meta.dirname, "..", "node_modules", ".bin", "tsx");
+  const survived: string[] = [];
+  const failures: string[] = [];
+
+  for (const scenario of scenarios) {
+    try {
+      dropSessionTable(scenario);
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        TINA4_DATABASE_URL: scenario.url,
+        TINA4_DATABASE_USERNAME: scenario.username ?? "",
+        TINA4_DATABASE_PASSWORD: scenario.password ?? "",
+        T4_RACE_HOLD_NAMED_LOCK: scenario.holdNamedLock ? "1" : "",
+      };
+      if (scenario.username === undefined) delete env.TINA4_DATABASE_USERNAME;
+      if (scenario.password === undefined) delete env.TINA4_DATABASE_PASSWORD;
+      // Enough lead for every worker to boot tsx and CONNECT first - a worker
+      // still connecting is not in the race.
+      const startAt = (Date.now() / 1000 + 6).toFixed(3);
+      const exits = await Promise.all(Array.from({ length: scenario.workers }, (_, index) =>
+        new Promise<string | null>((resolveExit) => {
+          const child = spawn(tsx, [workerScript, startAt, `race-${scenario.name}-${index}`],
+            { env, stdio: ["ignore", "ignore", "pipe"] });
+          let errorOutput = "";
+          child.stderr.on("data", (chunk) => { errorOutput += String(chunk); });
+          child.on("close", (code) => resolveExit(code === 0
+            ? null
+            : `${scenario.name} worker ${index} exited ${code}: ${errorOutput.trim().slice(-300)}`));
+        })));
+      failures.push(...exits.filter((exit): exit is string => exit !== null));
+
+      // OUT OF BAND on this process's own connection: a worker that swallowed
+      // its own failure would otherwise look exactly like one that wrote.
+      const row = runOutOfBand(scenario, "SELECT COUNT(*) AS n FROM tina4_session")[0] ?? {};
+      const rows = Number(Object.values(row)[0] ?? -1);
+      if (rows === scenario.workers) survived.push(scenario.name);
+      else failures.push(`${scenario.name} ended the race with ${rows} of ${scenario.workers} rows`);
+    } catch (err) {
+      failures.push(`${scenario.name} (${String((err as Error).message).slice(0, 200)})`);
+    } finally {
+      dropSessionTable(scenario);
+    }
+  }
+
+  assert(
+    name,
+    failures.length === 0 && survived.length === scenarios.length,
+    failures.length
+      ? `concurrent first use is NOT safe on: ${failures.join("; ")}`
+      : `the race did not run on every engine (ran: ${survived.join(", ")})`,
+  );
+  console.log(`     concurrent first use survived on: ${survived.join(", ")}`);
+}
 
 async function main(): Promise<void> {
   const workDir = mkdtempSync(join(tmpdir(), "tina4-engines-"));
@@ -205,10 +346,18 @@ async function main(): Promise<void> {
       + "losing sessions across instances",
     );
     rmSync(cleanCwd, { recursive: true, force: true });
+
+    // -- 4. concurrent first use with real processes -------------------------
+    console.log("\n-- 4. real processes race to create tina4_session on every engine --\n");
+    await concurrentFirstUse(workDir);
   } finally {
     process.chdir(originalCwd);
     if (originalUrl === undefined) delete process.env.TINA4_DATABASE_URL;
     else process.env.TINA4_DATABASE_URL = originalUrl;
+    if (originalUsername === undefined) delete process.env.TINA4_DATABASE_USERNAME;
+    else process.env.TINA4_DATABASE_USERNAME = originalUsername;
+    if (originalPassword === undefined) delete process.env.TINA4_DATABASE_PASSWORD;
+    else process.env.TINA4_DATABASE_PASSWORD = originalPassword;
     rmSync(workDir, { recursive: true, force: true });
     try {
       const { closeSyncSockets } = await import("../packages/core/src/sessionHandlers/syncSocket.js");
