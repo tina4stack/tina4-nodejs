@@ -29,6 +29,7 @@ import { promises as fsp, createWriteStream } from "node:fs";
 import { basename } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { TINA4_VERSION } from "./version.js";
+import { guardUrl } from "./ssrf.js";
 
 export interface ApiResult {
     http_code: number | null;
@@ -229,6 +230,11 @@ export interface ApiOptions {
      * persisted; scoped to this instance.
      */
     cookies?: boolean;
+    /**
+     * SSRF guard (ADR-0084): an explicit allow-list of hosts / host:port / CIDRs
+     * that bypass the private-address refusal even with the opt-out off.
+     */
+    allowHosts?: string[];
 }
 
 /** True when two URLs share scheme + host + (effective) port. */
@@ -430,6 +436,7 @@ export class Api {
     private transportFn?: ApiTransport;
     private cookiesEnabled: boolean;
     private cookies: Record<string, string>;
+    private allowHosts: string[];
 
     /**
      * Construct an Api client.
@@ -476,6 +483,7 @@ export class Api {
         this.transportFn = undefined;
         this.cookiesEnabled = false;
         this.cookies = {};
+        this.allowHosts = [];
 
         // Options-bag form — second arg is an object literal
         if (typeof authHeaderOrOptions === "object" && authHeaderOrOptions !== null) {
@@ -487,6 +495,7 @@ export class Api {
             this.retryBackoff = opts.retryBackoff ?? 0.5;
             this.transportFn = opts.transport;
             this.cookiesEnabled = opts.cookies ?? false;
+            this.allowHosts = opts.allowHosts ?? [];
 
             // Bearer wins over basic-auth when both are passed
             if (opts.bearerToken != null) {
@@ -842,13 +851,19 @@ export class Api {
      * body-phase timeout is applied by the caller (streamBytes) via
      * `res.destroy()`.
      */
-    private openStreamRequest(
+    private async openStreamRequest(
         method: string,
         url: string,
         headers: Record<string, string>,
         data: Buffer | undefined,
         connectSec: number,
     ): Promise<{ res: http.IncomingMessage }> {
+        // SSRF guard (ADR-0084): refuse a private/internal target before connect.
+        try {
+            await guardUrl(url, this.allowHosts);
+        } catch (err) {
+            throw new ApiStreamError(err instanceof Error ? err.message : String(err), null);
+        }
         return new Promise((resolve, reject) => {
             let parsed: URL;
             try {
@@ -1049,13 +1064,21 @@ export class Api {
      * bearer token / session cookie never leaks to a host you didn't
      * authenticate to.
      */
-    private performRequest(
+    private async performRequest(
         method: string,
         url: string,
         headers: Record<string, string>,
         data: Buffer | undefined,
         redirectsLeft: number,
     ): Promise<NetworkResult> {
+        // SSRF guard (ADR-0084): re-validated per hop (this method recurses on a
+        // redirect), so a hop to a private/internal address is refused even when
+        // the initial URL was public.
+        try {
+            await guardUrl(url, this.allowHosts);
+        } catch (err) {
+            return { kind: "error", error: err instanceof Error ? err.message : String(err) };
+        }
         return new Promise<NetworkResult>((resolve) => {
             let parsed: URL;
             try {

@@ -36,6 +36,15 @@ const rootDir = join(__dirname, "..");
 // spawns below inherit this process's env.
 process.env.TINA4_NO_BROWSER = "true";
 
+// ── SSRF guard opt-out for local-listener tests (ADR-0084) ──────────────────
+// The Api client and Web Push refuse private/internal addresses by default, so
+// every test that points them at a 127.0.0.1 test server would now be refused.
+// The suite legitimately talks to loopback (the internal-service case
+// TINA4_ALLOW_PRIVATE_REQUESTS exists for), so it opts in by default; children
+// inherit this env. The dedicated guard suite (test/ssrfGuardContract.test.ts)
+// deletes it per-case, so it still proves the default-blocked behaviour.
+process.env.TINA4_ALLOW_PRIVATE_REQUESTS = "true";
+
 // ── Temp sandbox ────────────────────────────────────────────────────────────
 //
 // Every temp path this run creates goes into ONE per-run directory, removed
