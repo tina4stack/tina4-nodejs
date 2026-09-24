@@ -93,6 +93,23 @@ export function firebirdDialect(fbQuote: (name: string) => string): Dialect {
   return { quote: fbQuote, marker: questionMark };
 }
 
+const PLAIN_COLUMN_NAME = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+
+/**
+ * Refuse a data or filter-map key that is not a plain identifier.
+ *
+ * tina4: ADR-0069 (G3) - the write helpers emit these keys as column names, and
+ * the dialect quoters do not escape, so a key must be a plain identifier
+ * (letters, digits, underscore, dollar; not starting with a digit) before any
+ * SQL is built. Valid names are emitted exactly as before. Table names are
+ * developer code and are not checked here.
+ */
+export function assertColumnNames(keys: Iterable<string>): void {
+  for (const key of keys) {
+    if (!PLAIN_COLUMN_NAME.test(key)) throw new Error(`Invalid column name '${key}'`);
+  }
+}
+
 /**
  * `INSERT INTO <table> (<cols>) VALUES (<markers>)`.
  *
@@ -110,6 +127,7 @@ export function buildInsert(
   suffix = "",
   startAt = 1,
 ): string {
+  assertColumnNames(keys);
   const columns = keys.map((k) => dialect.quote(k)).join(", ");
   const placeholders = keys.map((_, i) => dialect.marker(startAt + i)).join(", ");
   return `INSERT INTO ${dialect.quote(table)} (${columns}) VALUES (${placeholders})${suffix}`;
@@ -127,6 +145,7 @@ export function buildSetClause(
   keys: string[],
   startAt = 1,
 ): string {
+  assertColumnNames(keys);
   return keys
     .map((k, i) => `${dialect.quote(k)} = ${dialect.marker(startAt + i)}`)
     .join(", ");
@@ -143,6 +162,7 @@ export function buildWhereClause(
   keys: string[],
   startAt = 1,
 ): string {
+  assertColumnNames(keys);
   return keys
     .map((k, i) => `${dialect.quote(k)} = ${dialect.marker(startAt + i)}`)
     .join(" AND ");

@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { startServer } from "../packages/core/src/index.ts";
-import { BaseModel, Database, bindDatabase, createAdapterFromUrl } from "../packages/orm/src/index.ts";
+import { BaseModel, Database, bindDatabase, createAdapterFromUrl, getAdapter } from "../packages/orm/src/index.ts";
 import { SqliteDatabase } from "../packages/orm/src/docstore.ts";
 import { getToken } from "../packages/core/src/auth.ts";
 
@@ -431,6 +431,7 @@ async function ormFindCases(): Promise<void> {
         );
 
         await saveCases(db, engine);
+        await writeHelperCases(db, engine);
       } catch (err) {
         assert(`orm_find_rejects_undeclared_filter_key: ${engine} run completed`, false, String((err as Error)?.stack ?? err));
       } finally {
@@ -471,6 +472,55 @@ async function saveCases(db: Database, engine: string): Promise<void> {
   assert(`orm_save_writes_only_declared_fields: update with an assigned undeclared property on ${engine}`,
     (await loaded.save()) !== false && (await columnOf(db, 1, "internal_code")) === "c1" && (await columnOf(db, 1, "name")) === "alpha-updated",
     `internal_code=${await columnOf(db, 1, "internal_code")} name=${await columnOf(db, 1, "name")} lastError=${loaded.lastError}`);
+}
+
+// db_write_helpers_reject_non_identifier_keys: Database insert / update /
+// delete (and the batch insert) refuse a data or filter-map key that is not a
+// plain identifier, before any SQL; ordinary columns still work.
+async function writeHelperCases(db: Database, engine: string): Promise<void> {
+  const invalid = (key: string) => `Invalid column name '${key}'`;
+  const snapshot = async () => JSON.stringify(((await db.fetch("SELECT id, name FROM ident_widget ORDER BY id", [], 100)).records as any[])
+    .map((r) => [Number(r.id ?? r.ID), r.name ?? r.NAME]));
+  const before = await snapshot();
+  const rejected: [string, string, () => Promise<unknown>][] = [
+    ["insert data key with a space", "first name", () => db.insert("ident_widget", { id: 90, "first name": "x" })],
+    ["insert data key with a quote", 'na"me', () => db.insert("ident_widget", { id: 91, 'na"me': "x" })],
+    ["insert data key starting with a digit", "1name", () => db.insert("ident_widget", { id: 92, "1name": "x" })],
+    ["batch insert data key with a bracket", "name]", () => db.insert("ident_widget", [{ id: 93, "name]": "x" }])],
+    ["update data key with a paren", "name)", () => db.update("ident_widget", { "name)": "x" }, { id: 1 })],
+    ["update filter key with a quote", "id'", () => db.update("ident_widget", { name: "x" }, { "id'": 1 })],
+    ["delete filter key with a space", "id x", () => db.delete("ident_widget", { "id x": 1 })],
+    ["delete filter-list key with a bracket", "id[0]", () => db.delete("ident_widget", [{ "id[0]": 1 }])],
+    // The adapters build a batch from row 0's keys; a bad key in a later row is
+    // refused too, not silently left out.
+    ["batch insert key in a later row", "na me", () => db.insert("ident_widget", [{ id: 94, name: "ok" }, { id: 95, "na me": "x" }])],
+    // The SQL builders refuse too, for a caller that uses the adapter directly.
+    ["adapter insert used directly", "na-me", () => {
+      const adapter: any = getAdapter();
+      return adapter.insertAsync ? adapter.insertAsync("ident_widget", { id: 96, "na-me": "x" }) : adapter.insert("ident_widget", { id: 96, "na-me": "x" });
+    }],
+    ["adapter update used directly", "id x", () => {
+      const adapter: any = getAdapter();
+      return adapter.updateAsync ? adapter.updateAsync("ident_widget", { name: "x" }, { "id x": 1 }) : adapter.update("ident_widget", { name: "x" }, { "id x": 1 });
+    }],
+  ];
+  for (const [label, key, call] of rejected) {
+    const message = await errorOf(call);
+    assert(`db_write_helpers_reject_non_identifier_keys: ${label} on ${engine}`,
+      message === invalid(key), `got ${JSON.stringify(message)}`);
+  }
+  assert(`db_write_helpers_reject_non_identifier_keys: rejected writes changed nothing on ${engine}`,
+    (await snapshot()) === before, `${before} -> ${await snapshot()}`);
+
+  // positive: ordinary column names insert, update and delete as before
+  await db.insert("ident_widget", { id: 60, name: "sixty", first_name: "Six", internal_code: "c60" });
+  await db.insert("ident_widget", [{ id: 61, name: "sixty-one" }, { id: 62, name: "sixty-two" }]);
+  await db.update("ident_widget", { name: "sixty-updated" }, { id: 60 });
+  await db.delete("ident_widget", { id: 62 });
+  assert(`db_write_helpers_reject_non_identifier_keys: ordinary columns still insert/update/delete on ${engine}`,
+    (await columnOf(db, 60, "name")) === "sixty-updated" && (await columnOf(db, 61, "name")) === "sixty-one" &&
+      (await columnOf(db, 62, "name")) === "(no row)",
+    `60=${await columnOf(db, 60, "name")} 61=${await columnOf(db, 61, "name")} 62=${await columnOf(db, 62, "name")}`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

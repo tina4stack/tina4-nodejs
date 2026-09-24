@@ -4,7 +4,7 @@ import { DatabaseResult } from "./databaseResult.js";
 import { DatabaseUrl } from "./databaseUrl.js";
 import { CachedDatabaseAdapter, type CachedAdapterOptions } from "./cachedDatabase.js";
 import { QueryCache } from "./sqlTranslator.js";
-import { quoteIdentifierAnsi } from "./adapters/sqlDialect.js";
+import { quoteIdentifierAnsi, assertColumnNames } from "./adapters/sqlDialect.js";
 
 /**
  * v3.13.12 — strip trailing `;` and whitespace from user-supplied SQL
@@ -814,6 +814,9 @@ export class Database {
    */
   async insert(table: string, data: Record<string, unknown> | Record<string, unknown>[]): Promise<DatabaseWriteResult> {
     const adapter = this.getNextAdapter();
+    // ADR-0069 (G3): every row's keys, not only the first row's (the adapters
+    // build a batch from row 0).
+    for (const row of Array.isArray(data) ? data : [data]) this.assertWriteKeys(row);
     const result = (adapter as any).insertAsync
       ? await (adapter as any).insertAsync(table, data)
       : adapter.insert(table, data);
@@ -881,6 +884,7 @@ export class Database {
    * throws rather than silently changing nothing (audit feature 4, P1).
    */
   async update(table: string, data: Record<string, unknown>, filter?: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseWriteResult> {
+    this.assertWriteKeys(data, filter);
     let effectiveFilter: Record<string, unknown> | string = filter ?? {};
     let effectiveData = data;
 
@@ -963,6 +967,23 @@ export class Database {
     return Database.assertWrote(result, "update", table);
   }
 
+  /**
+   * ADR-0069 (G3): a data or filter-map key must be a plain identifier - it is
+   * emitted as a column name. Checked here, before any adapter work, so every
+   * engine raises the same error; the SQL builders (sqlDialect) check again for
+   * callers that use an adapter directly. MongoDB builds no SQL and its keys are
+   * document paths, so it is left alone.
+   */
+  private assertWriteKeys(data?: Record<string, unknown>, filter?: unknown): void {
+    // The engine, read without advancing the pool's round-robin.
+    const anyAdapter = this._poolSize > 0 ? this.pool[0] : this.adapter;
+    if (anyAdapter?.getDatabaseType() === "mongodb") return;
+    if (data) assertColumnNames(Object.keys(data));
+    if (filter && typeof filter === "object" && !Array.isArray(filter)) {
+      assertColumnNames(Object.keys(filter as Record<string, unknown>));
+    }
+  }
+
   /** Delete rows. A filterless delete throws; use truncate() to empty a table. */
   async delete(table: string, filter?: Record<string, unknown> | string | Record<string, unknown>[], params?: unknown[]): Promise<DatabaseWriteResult> {
     const effectiveFilter = filter ?? {};
@@ -983,6 +1004,25 @@ export class Database {
     }
 
     const adapter = this.getNextAdapter();
+    for (const each of Array.isArray(effectiveFilter) ? effectiveFilter : [effectiveFilter]) {
+      this.assertWriteKeys(undefined, each);
+    }
+    // A LIST of filter maps deletes each one. Only the SQLite adapter handled
+    // the list itself; the others read the array's indices ("0", "1", ...) as
+    // column names. Deleting one map at a time gives every engine the same form.
+    if (Array.isArray(effectiveFilter)) {
+      let affectedRows = 0;
+      for (const each of effectiveFilter) {
+        const one = (adapter as any).deleteAsync
+          ? await (adapter as any).deleteAsync(table, each, params)
+          : adapter.delete(table, each, params);
+        affectedRows += Number(Database.assertWrote(one, "delete", table)?.affectedRows ?? 0);
+      }
+      if (this.autoCommit && !this.inExplicitTransaction()) {
+        try { await adapterCommit(adapter); } catch { /* no active transaction */ }
+      }
+      return { success: true, affectedRows };
+    }
     const result = (adapter as any).deleteAsync
       ? await (adapter as any).deleteAsync(table, effectiveFilter, params)
       : adapter.delete(table, effectiveFilter, params);
