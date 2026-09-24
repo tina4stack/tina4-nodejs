@@ -27,6 +27,21 @@ import {
   attachCsrfFromEnv,
 } from "../packages/core/src/middleware.ts";
 import { getToken } from "../packages/core/src/auth.ts";
+import { createHmac } from "node:crypto";
+
+/**
+ * Sign an HS256 JWT with a raw HMAC, as a forger would. getToken refuses to SIGN
+ * with a blank or short key (ADR-0079 s2), so a token made with the retired
+ * public "tina4-default-secret" or the blank key is built by hand here: the
+ * point is that the middleware REJECTS it.
+ */
+function forgeHs256(claims: Record<string, unknown>, key: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  const b64 = (data: string) => Buffer.from(data).toString("base64url");
+  const head = b64(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const body = b64(JSON.stringify({ ...claims, iat: now, exp: now + 3600 }));
+  return `${head}.${body}.${createHmac("sha256", key).update(`${head}.${body}`).digest("base64url")}`;
+}
 import { Frond, setFormTokenSessionId } from "../packages/frond/src/engine.ts";
 import type { Tina4Request, Tina4Response } from "../packages/core/src/types.ts";
 
@@ -43,7 +58,7 @@ function assert(label: string, condition: boolean) {
   }
 }
 
-const SECRET = "csrf-test-secret";
+const SECRET = "csrf-test-secret-0123456789abcde";
 process.env.TINA4_SECRET = SECRET;
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -316,7 +331,7 @@ console.log("\n-- Invalid tokens --");
 
 {
   csrfOn();
-  process.env.TINA4_SECRET = "wrong-secret";
+  process.env.TINA4_SECRET = "wrong-secret-0123456789abcdef012";
   const wrongSecretToken = getToken({ type: "form" }, 60);
   process.env.TINA4_SECRET = SECRET;
   const req = mockRequest({ method: "POST", body: { formToken: wrongSecretToken } });
@@ -508,7 +523,7 @@ console.log("\n-- Conformance (csrf_contract.json) --");
 {
   csrfNoSecret();
   // A formToken forged with the RETIRED public 'tina4-default-secret'.
-  const forged = getToken({ type: "form" }, "tina4-default-secret");
+  const forged = forgeHs256({ type: "form" }, "tina4-default-secret");
   const req = mockRequest({ method: "POST", body: { formToken: forged } });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
@@ -518,7 +533,7 @@ console.log("\n-- Conformance (csrf_contract.json) --");
 {
   csrfNoSecret();
   // A formToken forged with the BLANK '' key (publicly reproducible).
-  const forged = getToken({ type: "form" }, "");
+  const forged = forgeHs256({ type: "form" }, "");
   const req = mockRequest({ method: "POST", body: { formToken: forged } });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);

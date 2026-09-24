@@ -198,7 +198,7 @@ async function run(): Promise<void> {
 
   // ── Auth.validToken return type 3.13.0 ──────────────────────────────
   it("validToken returns payload object on success", () => {
-    process.env.TINA4_SECRET = "parity-d-secret";
+    process.env.TINA4_SECRET = "parity-d-secret-0123456789abcdef";
     const token = getToken({ user_id: 42, role: "admin" });
     const result = validToken(token);
     assert.ok(result !== null && typeof result === "object", "expected object payload");
@@ -213,7 +213,7 @@ async function run(): Promise<void> {
   });
 
   it("validToken truthy/falsy contract preserved", () => {
-    process.env.TINA4_SECRET = "parity-d-secret";
+    process.env.TINA4_SECRET = "parity-d-secret-0123456789abcdef";
     const token = getToken({ x: 1 });
     assert.ok(!!validToken(token), "valid token should be truthy");
     assert.ok(!validToken("bogus"), "invalid token should be falsy");

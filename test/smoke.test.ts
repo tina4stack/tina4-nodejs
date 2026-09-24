@@ -219,7 +219,7 @@ assert("session destroyed", sess.getSessionId() === null);
 
 console.log("\n=== 7. Auth/JWT ===\n");
 
-const SECRET = "smoke-test-secret-key";
+const SECRET = "smoke-test-secret-key-0123456789";
 process.env.TINA4_SECRET = SECRET;
 
 const token = getToken({ userId: 1 }, 3600);

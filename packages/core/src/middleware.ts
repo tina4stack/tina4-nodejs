@@ -1,6 +1,6 @@
 import type { Tina4Request, Tina4Response, Middleware } from "./types.js";
 import { HTTP_OK, HTTP_FORBIDDEN } from "./constants.js";
-import { validToken, getPayload } from "./auth.js";
+import { validToken, getPayload, isIdentityPayload } from "./auth.js";
 import { Log } from "./logger.js";
 import { isTruthy } from "./dotenv.js";
 import { defaultRouter, type Router } from "./router.js";
@@ -1052,7 +1052,9 @@ function csrfBearerIsValid(req: Tina4Request, secret: string): boolean {
   const authHeader = req.headers.authorization ?? "";
   if (!authHeader.startsWith("Bearer ")) return false;
   const bearerToken = authHeader.slice(7).trim();
-  return Boolean(bearerToken && validToken(bearerToken, secret));
+  // Only an IDENTITY token marks an API client; a form token in the Bearer
+  // slot is not one and does not skip the check (ADR-0079 s1).
+  return Boolean(bearerToken && isIdentityPayload(validToken(bearerToken, secret)));
 }
 
 function csrfRequestToken(req: Tina4Request): { token: string; fromQuery: boolean } {

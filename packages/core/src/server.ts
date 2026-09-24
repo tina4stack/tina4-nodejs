@@ -2055,8 +2055,13 @@ export async function startServer(config?: Tina4Config): Promise<{
   // Auto-generate a per-machine dev secret to a gitignored .env.local when one
   // is missing (dev only, never CI/prod). Must run after env load and before
   // any auth use. Local import avoids a load-time cycle through auth.
-  const { ensureDevSecret } = await import("./auth.js");
+  const { ensureDevSecret, requireBootSecret } = await import("./auth.js");
   ensureDevSecret();
+
+  // Refuse to serve with a secret anyone can reproduce: blank outside dev, or
+  // set but shorter than 32 bytes in any mode (ADR-0079 s2). Throws the
+  // actionable message naming TINA4_SECRET.
+  requireBootSecret();
 
   // Refuse to boot with pre-3.12 un-prefixed env vars set.
   _checkLegacyEnvVars();

@@ -9,7 +9,8 @@
  * verification layer lied. This is the same defect fixed in tina4-python under
  * #PY2; extracting the gate here lets both callers share one implementation.
  */
-import { validToken, getPayload, refreshToken } from "./auth.js";
+import { validToken, refreshToken, isIdentityPayload } from "./auth.js";
+import { liveSessionIdentity } from "./ssoIdentity.js";
 import type { Tina4Request, Tina4Response } from "./types.js";
 
 /** Just the auth-relevant fields of a matched route. */
@@ -44,52 +45,58 @@ export function enforceRouteAuth(
     return false;
   }
 
+  // Token slots in priority order: Bearer header, body formToken (frond.js
+  // puts the auth token it received as a FreshToken there), session token.
+  // Each slot is accepted only when it carries an IDENTITY token: a Frond
+  // form token (`type: "form"`) proves where a write came from, not who sent
+  // it, so it is skipped and the search moves on (ADR-0079 s1).
   const authHeader = req.headers.authorization ?? "";
   const headerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
 
-  let resolvedToken = "";
+  let payload: Record<string, unknown> | null = null;
   let tokenSource: "header" | "body" | "session" | "" = "";
+  let resolvedToken = "";
 
   // Priority 1: Authorization Bearer header
-  if (headerToken && validToken(headerToken)) {
-    resolvedToken = headerToken;
-    tokenSource = "header";
+  if (headerToken) {
+    const candidate = validToken(headerToken);
+    if (isIdentityPayload(candidate)) { payload = candidate; tokenSource = "header"; resolvedToken = headerToken; }
   }
 
   // Priority 2: formToken from request body
-  if (!resolvedToken) {
+  if (!payload) {
     const bodyToken = (req.body as Record<string, unknown>)?.formToken as string | undefined;
-    if (bodyToken && validToken(bodyToken)) {
-      resolvedToken = bodyToken;
-      tokenSource = "body";
+    if (bodyToken) {
+      const candidate = validToken(bodyToken);
+      if (isIdentityPayload(candidate)) { payload = candidate; tokenSource = "body"; resolvedToken = bodyToken; }
     }
   }
 
-  // Priority 3: Session token
-  if (!resolvedToken) {
-    const sso = (req as any).session?.get?.("_tina4_sso") as Record<string, any> | undefined;
-    const identity = sso?.identity;
-    if (identity?.issuer && identity?.subject) {
+  // Priority 3: Session — a provider-verified SSO identity while it is live
+  // (ADR-0079 s5), then the session token.
+  if (!payload) {
+    const identity = liveSessionIdentity((req as any).session?.get?.("_tina4_sso"));
+    if (identity) {
       req.user = identity;
       // RBAC guards apply to the SSO identity too (Feature 138).
       return rbacForbidden(match, identity, res);
     }
     const sessionToken = (req as any).session?.get?.("token") as string | undefined;
-    if (sessionToken && validToken(sessionToken)) {
-      resolvedToken = sessionToken;
-      tokenSource = "session";
+    if (sessionToken) {
+      const candidate = validToken(sessionToken);
+      if (isIdentityPayload(candidate)) { payload = candidate; tokenSource = "session"; resolvedToken = sessionToken; }
     }
   }
 
-  if (!resolvedToken) {
+  if (!payload) {
     res.raw.writeHead(401, { "Content-Type": "application/json" });
     res.raw.end(JSON.stringify({ error: "Unauthorized" }));
     return true;
   }
 
-  req.user = getPayload(resolvedToken) ?? {};
+  req.user = payload;
 
-  // When a body formToken validates, return a FreshToken header with a refreshed JWT
+  // When a body token authenticates, return a FreshToken header with a refreshed JWT
   if (tokenSource === "body") {
     const fresh = refreshToken(resolvedToken);
     if (fresh) {

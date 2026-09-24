@@ -19,7 +19,7 @@
  *       deeper suite — this locks the existing algorithm, doesn't change it).
  */
 
-process.env.TINA4_SECRET = "request-contract-secret";
+process.env.TINA4_SECRET = "request-contract-secret-01234567";
 
 import { strict as assert } from "node:assert";
 import http from "node:http";

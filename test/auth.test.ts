@@ -25,7 +25,7 @@ function assert(label: string, condition: boolean) {
   }
 }
 
-const SECRET = "test-secret-key-for-jwt";
+const SECRET = "test-secret-key-for-jwt-01234567";
 process.env.TINA4_SECRET = SECRET;
 
 console.log("=== Auth Tests ===\n");
@@ -91,7 +91,7 @@ console.log("\n-- JWT Invalid Signature --");
 
 // Test with wrong secret via env
 const origSecret = process.env.TINA4_SECRET;
-process.env.TINA4_SECRET = "wrong-secret";
+process.env.TINA4_SECRET = "wrong-secret-0123456789abcdef012";
 assert("Wrong secret returns false", validToken(token1) === null);
 process.env.TINA4_SECRET = origSecret;
 
@@ -518,10 +518,10 @@ console.log("\n-- getToken with explicit secret --");
 
 {
   process.env.TINA4_SECRET = SECRET;
-  const tokenWithSecret = getToken({ userId: 1 }, "custom-secret-xyz", 3600);
+  const tokenWithSecret = getToken({ userId: 1 }, "custom-secret-xyz-0123456789abcdef", 3600);
   assert("getToken with explicit secret returns a string", typeof tokenWithSecret === "string");
   // Token signed with custom secret — env SECRET should NOT validate it
-  process.env.TINA4_SECRET = "different-secret";
+  process.env.TINA4_SECRET = "different-secret-0123456789abcde";
   assert("token signed with custom secret is invalid with different env SECRET", validToken(tokenWithSecret) === null);
   // Restore
   process.env.TINA4_SECRET = SECRET;
@@ -549,16 +549,16 @@ console.log("\n-- authenticateRequest with explicit secret --");
   const origAlg = process.env.TINA4_JWT_ALGORITHM;
   try {
     // (a) No override -> env is still the source of truth (unchanged behaviour).
-    process.env.TINA4_SECRET = "my-explicit-secret";
+    process.env.TINA4_SECRET = "my-explicit-secret-0123456789abc";
     const token = getToken({ userId: 55 });
     const ok = authenticateRequest({ authorization: `Bearer ${token}` });
     assert("authenticateRequest validates against env TINA4_SECRET (userId === 55)", ok?.userId === 55);
 
     // (b) POSITIVE: the secret param now overrides env. A token signed under a
     //     different secret authenticates when that secret is passed explicitly.
-    const tokenOther = getToken({ userId: 56 }, "param-only-secret");
-    process.env.TINA4_SECRET = "different-env-secret";
-    const viaParam = authenticateRequest({ authorization: `Bearer ${tokenOther}` }, "param-only-secret");
+    const tokenOther = getToken({ userId: 56 }, "param-only-secret-0123456789abcdef");
+    process.env.TINA4_SECRET = "different-env-secret-0123456789a";
+    const viaParam = authenticateRequest({ authorization: `Bearer ${tokenOther}` }, "param-only-secret-0123456789abcdef");
     assert("authenticateRequest HONOURS the secret override (userId === 56)", viaParam?.userId === 56);
 
     // (c) NEGATIVE: without the override that same token must still fail, so (b)
@@ -568,9 +568,9 @@ console.log("\n-- authenticateRequest with explicit secret --");
 
     // (d) POSITIVE: the algorithm param overrides env too. It used to default to
     //     the literal "HS256", which additionally shadowed TINA4_JWT_ALGORITHM.
-    process.env.TINA4_SECRET = "alg-override-secret";
+    process.env.TINA4_SECRET = "alg-override-secret-0123456789ab";
     delete process.env.TINA4_JWT_ALGORITHM;
-    const hs512 = getToken({ userId: 57 }, "alg-override-secret", 60, "HS512");
+    const hs512 = getToken({ userId: 57 }, "alg-override-secret-0123456789ab", 60, "HS512");
     const wrongAlg = authenticateRequest({ authorization: `Bearer ${hs512}` });
     assert("an HS512 token is rejected under the HS256 default", wrongAlg === null);
     const rightAlg = authenticateRequest({ authorization: `Bearer ${hs512}` }, undefined, "HS512");

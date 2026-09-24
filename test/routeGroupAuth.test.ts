@@ -23,7 +23,7 @@ import { freePort } from "./freePort.ts";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-process.env.TINA4_SECRET = "route-group-auth-secret";
+process.env.TINA4_SECRET = "route-group-auth-secret-01234567";
 const SCRATCH_DIR = mkdtempSync(join(tmpdir(), "tina4-routegroup-auth-"));
 const ROUTES_DIR = join(SCRATCH_DIR, "src/routes");
 mkdirSync(ROUTES_DIR, { recursive: true });
