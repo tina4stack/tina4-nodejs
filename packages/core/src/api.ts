@@ -930,12 +930,18 @@ export class Api {
         targetUrl?: string,
     ): { headers: Record<string, string>; data: Buffer | undefined } {
         const headers: Record<string, string> = { "User-Agent": `Tina4/${TINA4_VERSION}`, ...this.headers };
-        if (this.authHeader) {
+        // Attach the configured Authorization / Cookie ONLY when the request
+        // target is same-origin as the configured base. A path that is itself
+        // an absolute off-origin URL (e.g. get("http://evil/x")) otherwise
+        // leaks the bearer token / session cookie to an attacker-chosen host —
+        // the same cross-origin strip already applied to followed redirects.
+        const sameOriginAsBase = targetUrl === undefined || sameOrigin(targetUrl, this.baseUrl);
+        if (this.authHeader && sameOriginAsBase) {
             headers["Authorization"] = this.authHeader;
         }
 
         // Cookie jar: attach the accumulated Cookie header when enabled.
-        if (this.cookiesEnabled) {
+        if (this.cookiesEnabled && sameOriginAsBase) {
             const cookieHeader = this.cookieHeader();
             if (cookieHeader) {
                 headers["Cookie"] = cookieHeader;
