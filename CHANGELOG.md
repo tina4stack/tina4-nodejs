@@ -8,6 +8,8 @@ https://tina4.com/nodejs/36-releases
 
 ## 3.13.138
 
+Development credential files are owner-only and refuse symbolic or hard-linked targets.
+
 This release adopts MPL-2.0 with Code Infinity copyright and an optional separate
 commercial licence. Previously published releases retain their original licences.
 

@@ -38,7 +38,7 @@ import { startServer, handle } from "../packages/core/src/index.ts";
 import { initDatabase, closeDatabase } from "../packages/orm/src/index.ts";
 import http from "node:http";
 import net from "node:net";
-import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, mkdtempSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, mkdtempSync, chmodSync, statSync, symlinkSync, linkSync } from "node:fs";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
 import { tmpdir } from "node:os";
@@ -413,6 +413,31 @@ console.log("\n-- DEC-05: mcp/call gate --");
       loop.status === 200 && after3 - before3 === 1,
     `remote=${remote.status}(+${after1 - before1}) xff=${xff.status}(+${after2 - before2}) loop=${loop.status}(+${after3 - before3})`,
   );
+}
+
+// Saved connection credentials stay owner-only on creation and replacement.
+if (process.platform !== "win32") {
+  currentPeer = "127.0.0.1";
+  setEnv({ TINA4_DEBUG: "true", TINA4_CSRF: undefined });
+  const envPath = join(TEST_DIR, ".env");
+  for (const existing of [true, false]) {
+    if (existing) chmodSync(envPath, 0o644);
+    else rmSync(envPath);
+    const saved = await post(peerPort, "/__dev/api/connections/save", {
+      url: "sqlite:///private.db", username: "alice", password: "private-test-value",
+    });
+    assert(`connection credentials private (existing=${existing})`, saved.data.success === true &&
+      (statSync(envPath).mode & 0o777) === 0o600 && readFileSync(envPath, "utf-8").includes("TINA4_DATABASE_PASSWORD=private-test-value"));
+  }
+  rmSync(envPath);
+  const target = join(TEST_DIR, "untouched");
+  writeFileSync(target, "original");
+  for (const linkKind of ["symlink", "hardlink"]) {
+  (linkKind === "symlink" ? symlinkSync : linkSync)(target, envPath);
+  const refused = await post(peerPort, "/__dev/api/connections/save", { url: "sqlite:///private.db", password: "private-test-value" });
+  assert(`connection credential save refuses ${linkKind}`, refused.data.success === false && readFileSync(target, "utf-8") === "original");
+  rmSync(envPath);
+  }
 }
 
 // ── cleanup — reap EVERYTHING we spawned ─────────────────────────────────────

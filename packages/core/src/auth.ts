@@ -20,7 +20,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  *   checkPassword("secret123", hash);  // true
  */
 import { createHmac, createSign, createVerify, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, openSync, closeSync, fstatSync, fchmodSync, constants } from "node:fs";
 import { join } from "node:path";
 import type { Middleware, Tina4Request, Tina4Response } from "./types.js";
 import { isTruthy } from "./dotenv.js";
@@ -122,7 +122,14 @@ export function ensureDevSecret(cwd?: string): string | null {
       const existing = readFileSync(envLocalPath, "utf-8");
       if (existing.length > 0 && !existing.endsWith("\n")) prefix = "\n";
     }
-    appendFileSync(envLocalPath, `${prefix}TINA4_SECRET=${newSecret}\n`);
+    const fd = openSync(envLocalPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0), 0o600);
+    try {
+      if (fstatSync(fd).nlink !== 1) throw new Error("Refusing a configuration file with multiple hard links");
+      fchmodSync(fd, 0o600);
+      appendFileSync(fd, `${prefix}TINA4_SECRET=${newSecret}\n`);
+    } finally {
+      closeSync(fd);
+    }
     void _logInfo("Auth: generated a development secret, saved to .env.local (gitignored)");
   } catch {
     // Keep the in-memory secret for this run; warn but never crash boot.

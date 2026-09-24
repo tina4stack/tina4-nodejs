@@ -18,7 +18,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 import { cpus as osCpus } from "node:os";
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, copyFileSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, copyFileSync, statSync, openSync, closeSync, fstatSync, fchmodSync, ftruncateSync, constants } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Router } from "./router.js";
@@ -1955,7 +1955,15 @@ const handleConnectionsSave: RouteHandler = (req, res) => {
     for (const [key, found] of Object.entries(keysFound)) {
       if (!found) newLines.push(`${key}=${values[key]}`);
     }
-    writeFileSync(envPath, newLines.join("\n") + "\n");
+    const fd = openSync(envPath, constants.O_WRONLY | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0), 0o600);
+    try {
+      if (fstatSync(fd).nlink !== 1) throw new Error("Refusing a configuration file with multiple hard links");
+      fchmodSync(fd, 0o600);
+      ftruncateSync(fd, 0);
+      writeFileSync(fd, newLines.join("\n") + "\n");
+    } finally {
+      closeSync(fd);
+    }
     res.json({ success: true });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);

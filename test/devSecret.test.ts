@@ -22,7 +22,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Run with: npx tsx test/devSecret.test.ts
  */
 import { ensureDevSecret } from "../packages/core/src/index.ts";
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync, statSync, chmodSync, symlinkSync, linkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -74,6 +74,7 @@ console.log("--- Dev generates a secret to .env.local ---");
   assert("dev: returns a 64-hex secret", typeof secret === "string" && /^[0-9a-f]{64}$/.test(secret as string), String(secret));
   assert("dev: sets process.env.TINA4_SECRET to the new value", process.env.TINA4_SECRET === secret);
   assert("dev: writes .env.local", existsSync(join(dir, ".env.local")));
+  if (process.platform !== "win32") assert("dev: secret file is owner-only", (statSync(join(dir, ".env.local")).mode & 0o777) === 0o600);
   assert("dev: does NOT write .env", !existsSync(join(dir, ".env")));
   const body = existsSync(join(dir, ".env.local")) ? readFileSync(join(dir, ".env.local"), "utf-8") : "";
   assert("dev: .env.local contains the secret line", body.includes(`TINA4_SECRET=${secret}`), body);
@@ -88,7 +89,9 @@ console.log("--- Dev generates a secret to .env.local ---");
   process.env.TINA4_DEBUG = "true";
   const dir = tmpCwd();
   writeFileSync(join(dir, ".env.local"), "FOO=bar"); // no trailing newline
+  chmodSync(join(dir, ".env.local"), 0o644);
   const secret = ensureDevSecret(dir);
+  if (process.platform !== "win32") assert("append: existing secret file becomes owner-only", (statSync(join(dir, ".env.local")).mode & 0o777) === 0o600);
   const body = readFileSync(join(dir, ".env.local"), "utf-8");
   assert("append: preserves existing FOO=bar line intact", body.includes("FOO=bar\n"), JSON.stringify(body));
   assert("append: adds the secret on its own line", body.includes(`\nTINA4_SECRET=${secret}\n`), JSON.stringify(body));
@@ -168,6 +171,19 @@ console.log("\n--- Never crashes when .env.local cannot be written ---");
   assert("write-fail: did not throw (boot survives)", !threw);
   assert("write-fail: still returned an in-memory secret", typeof secret === "string" && /^[0-9a-f]{64}$/.test(secret as string), String(secret));
   assert("write-fail: in-memory secret set in process.env", process.env.TINA4_SECRET === secret);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+if (process.platform !== "win32") for (const linkKind of ["symlink", "hardlink"]) {
+  clearEnv();
+  process.env.TINA4_DEBUG = "true";
+  const dir = tmpCwd();
+  const target = join(dir, "untouched");
+  writeFileSync(target, "original");
+  (linkKind === "symlink" ? symlinkSync : linkSync)(target, join(dir, ".env.local"));
+  const secret = ensureDevSecret(dir);
+  assert(`${linkKind}: generated secret remains in memory`, typeof secret === "string");
+  assert(`${linkKind}: target remains unchanged`, readFileSync(target, "utf-8") === "original");
   rmSync(dir, { recursive: true, force: true });
 }
 
