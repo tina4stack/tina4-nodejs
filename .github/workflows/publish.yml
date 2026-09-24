@@ -8,21 +8,28 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # softprops/action-gh-release calls the GitHub REST API with the
-    # default GITHUB_TOKEN. That token only writes to the repository if
-    # the job declares contents:write — without this block, the action
-    # 403s on every tag push regardless of the repo's default Workflow
-    # permissions setting (Settings → Actions → General).
+    # Gate the publish behind a protected environment (ADR-0081); NPM_TOKEN
+    # should live on the `release` environment, with required reviewers / a tag
+    # deployment-branch rule configured in Settings -> Environments.
+    environment: release
     permissions:
+      # contents:write — softprops/action-gh-release writes the GitHub Release
+      #   with the default GITHUB_TOKEN (403s without this, regardless of the
+      #   repo's default Workflow permissions).
+      # id-token:write — `npm publish --provenance` signs the package via
+      #   sigstore/OIDC so users can verify it was built by THIS workflow run.
       contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
+      # Pin every action to a commit SHA (supply chain): a moved tag cannot swap
+      # the action out from under a release.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0  # need full history for git log on the tagged commit
 
       # Node 22+ required — packages/orm/src/adapters/sqlite.ts imports
       # `node:sqlite` (Node 22 experimental, Node 24 stable).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
@@ -45,7 +52,10 @@ jobs:
         run: npm run build
 
       - name: Publish to npm
-        run: npm publish
+        # --provenance: cryptographically signs the package via sigstore so
+        #   users can verify the build came from this exact workflow run on this
+        #   exact commit. Requires the id-token:write permission above.
+        run: npm publish --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -63,6 +73,6 @@ jobs:
           cat /tmp/release-notes.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           body_path: /tmp/release-notes.md
