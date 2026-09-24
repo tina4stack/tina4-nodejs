@@ -415,10 +415,17 @@ jobs:
           TINA4_TEST_MONGO_PORT: '27018'
           TINA4_MONGO_URI: mongodb://127.0.0.1:27018
           TINA4_SESSION_MONGO_URI: mongodb://127.0.0.1:27018
+          TINA4_SESSION_MONGO_HOST: 127.0.0.1
+          TINA4_SESSION_MONGO_PORT: '27018'
         run: |
-          set -e
+          set -eo pipefail
           for t in sessionMongoRawProtocol sessionMongoDatabaseDefault sessionMongoTargetPrecedence sessionZeroDependencyFallback sessionTtlContract sessionExpiryContract cacheNullRoundTrip docstoreSubstitutability mongoQueue queueMongoRetryAndPurge mongoQueueDeadLetterLive mongosqlFailClosed; do
-            echo "── $t"; npx tsx "test/$t.test.ts"
+            echo "── $t"
+            out=$(npx tsx "test/$t.test.ts" 2>&1 | tee /dev/stderr)
+            clean=$(printf '%s\n' "$out" | sed -E 's/\x1b\[[0-9;]*m//g')
+            if printf '%s\n' "$clean" | grep -qw SKIP; then
+              echo "::error::${t} skipped coverage in the provisioned MongoDB 8 leg."; exit 1
+            fi
           done
 
       - name: Report results
