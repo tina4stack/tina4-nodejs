@@ -26,6 +26,7 @@ import { BaseModel, Database, bindDatabase, createAdapterFromUrl, getAdapter } f
 import { SqliteDatabase } from "../packages/orm/src/docstore.ts";
 import { getToken } from "../packages/core/src/auth.ts";
 import { safeErrorText } from "./_safeError.ts";
+import { labEngineUrl, hostAndPort } from "./_engineUrls.ts";
 
 // AutoCrud write routes are secure by default; the write cases send a real JWT.
 process.env.TINA4_SECRET = "identifier-allow-list-contract-secret";
@@ -314,27 +315,6 @@ class IdentWidget extends BaseModel {
   };
 }
 
-const PG = {
-  host: process.env.TINA4_TEST_PG_HOST ?? "127.0.0.1",
-  port: parseInt(process.env.TINA4_TEST_PG_PORT ?? "55432", 10),
-  user: process.env.TINA4_TEST_PG_USERNAME ?? "tina4",
-  pass: process.env.TINA4_TEST_PG_PASSWORD ?? "tina4",
-  db: process.env.TINA4_TEST_PG_DB ?? "tina4_node",
-};
-const MY = {
-  host: process.env.TINA4_TEST_MYSQL_HOST ?? "127.0.0.1",
-  port: parseInt(process.env.TINA4_TEST_MYSQL_PORT ?? "3306", 10),
-  user: process.env.TINA4_TEST_MYSQL_USERNAME ?? "tina4",
-  pass: process.env.TINA4_TEST_MYSQL_PASSWORD ?? "tina4",
-  db: process.env.TINA4_TEST_MYSQL_DB ?? "tina4_test",
-};
-const MS = {
-  host: process.env.TINA4_TEST_MSSQL_HOST ?? "127.0.0.1",
-  port: parseInt(process.env.TINA4_TEST_MSSQL_PORT ?? "1433", 10),
-  user: process.env.TINA4_TEST_MSSQL_USERNAME ?? "sa",
-  pass: process.env.TINA4_TEST_MSSQL_PASSWORD ?? "TinaSQL123!Secure",
-  db: process.env.TINA4_TEST_MSSQL_DB ?? "tina4_test",
-};
 const FIREBIRD_URL = process.env.TINA4_TEST_FIREBIRD_URL ?? "";
 
 async function engineDb(engine: string, sqlitePath: string): Promise<Database | null> {
@@ -342,14 +322,20 @@ async function engineDb(engine: string, sqlitePath: string): Promise<Database | 
   if (engine === "sqlite") {
     url = `sqlite:///${sqlitePath}`;
   } else if (engine === "postgres") {
-    if (!(await tcpReachable(PG.host, PG.port))) { serviceMissing(`orm_find_rejects_undeclared_filter_key: postgres not reachable at ${PG.host}:${PG.port} (set TINA4_TEST_PG_*)`); return null; }
-    url = `postgres://${PG.user}:${PG.pass}@${PG.host}:${PG.port}/${PG.db}`;
+    const pgUrl = labEngineUrl("postgres");
+    const pgTarget = hostAndPort(pgUrl, 55432);
+    if (!(await tcpReachable(pgTarget.host, pgTarget.port))) { serviceMissing(`orm_find_rejects_undeclared_filter_key: postgres not reachable at ${pgTarget.host}:${pgTarget.port} (set TINA4_TEST_PG_URL)`); return null; }
+    url = pgUrl;
   } else if (engine === "mysql") {
-    if (!(await tcpReachable(MY.host, MY.port))) { serviceMissing(`orm_find_rejects_undeclared_filter_key: mysql not reachable at ${MY.host}:${MY.port} (set TINA4_TEST_MYSQL_*)`); return null; }
-    url = `mysql://${MY.user}:${MY.pass}@${MY.host}:${MY.port}/${MY.db}`;
+    const myUrl = labEngineUrl("mysql");
+    const myTarget = hostAndPort(myUrl, 3306);
+    if (!(await tcpReachable(myTarget.host, myTarget.port))) { serviceMissing(`orm_find_rejects_undeclared_filter_key: mysql not reachable at ${myTarget.host}:${myTarget.port} (set TINA4_TEST_MYSQL_URL)`); return null; }
+    url = myUrl;
   } else if (engine === "mssql") {
-    if (!(await tcpReachable(MS.host, MS.port))) { serviceMissing(`orm_find_rejects_undeclared_filter_key: mssql not reachable at ${MS.host}:${MS.port} (set TINA4_TEST_MSSQL_*)`); return null; }
-    url = `mssql://${MS.user}:${MS.pass}@${MS.host}:${MS.port}/${MS.db}`;
+    const msUrl = labEngineUrl("mssql");
+    const msTarget = hostAndPort(msUrl, 1433);
+    if (!(await tcpReachable(msTarget.host, msTarget.port))) { serviceMissing(`orm_find_rejects_undeclared_filter_key: mssql not reachable at ${msTarget.host}:${msTarget.port} (set TINA4_TEST_MSSQL_URL)`); return null; }
+    url = msUrl;
   } else {
     // Firebird is not in CI's provisioned set (the repo's gate excludes it);
     // the lab sets TINA4_TEST_FIREBIRD_URL and then it must connect.
