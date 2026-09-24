@@ -667,7 +667,7 @@ export class Api {
             url += (url.includes("?") ? "&" : "?") + qs;
         }
 
-        const { headers, data } = this.buildRequest("GET", "application/json", undefined);
+        const { headers, data } = this.buildRequest("GET", "application/json", undefined, undefined, url);
 
         // An injected transport can't stream (it returns a buffered result), so
         // write its body out; only the real network path streams chunk-by-chunk.
@@ -760,7 +760,7 @@ export class Api {
         const url = this.buildUrl(path);
         const method = (opts.method ?? "GET").toUpperCase();
         const contentType = opts.contentType ?? "application/json";
-        const { headers, data } = this.buildRequest(method, contentType, opts.body, opts.headers);
+        const { headers, data } = this.buildRequest(method, contentType, opts.body, opts.headers, url);
         const totalSec = this.streamSeconds(opts.timeout, "TINA4_API_TIMEOUT", this.timeout);
         const connectSec = this.streamSeconds(opts.connectTimeout, "TINA4_API_CONNECT_TIMEOUT", 10);
         const opened = await this.openStreamRequest(method, url, headers, data, connectSec);
@@ -904,14 +904,21 @@ export class Api {
         contentType: string,
         body: unknown,
         extraHeaders?: Record<string, string>,
+        targetUrl?: string,
     ): { headers: Record<string, string>; data: Buffer | undefined } {
         const headers: Record<string, string> = { "User-Agent": `Tina4/${TINA4_VERSION}`, ...this.headers };
-        if (this.authHeader) {
+        // Attach the configured Authorization / Cookie ONLY when the request
+        // target is same-origin as the configured base. A path that is itself
+        // an absolute off-origin URL (e.g. get("http://evil/x")) otherwise
+        // leaks the bearer token / session cookie to an attacker-chosen host —
+        // the same cross-origin strip already applied to followed redirects.
+        const sameOriginAsBase = targetUrl === undefined || sameOrigin(targetUrl, this.baseUrl);
+        if (this.authHeader && sameOriginAsBase) {
             headers["Authorization"] = this.authHeader;
         }
 
         // Cookie jar: attach the accumulated Cookie header when enabled.
-        if (this.cookiesEnabled) {
+        if (this.cookiesEnabled && sameOriginAsBase) {
             const cookieHeader = this.cookieHeader();
             if (cookieHeader) {
                 headers["Cookie"] = cookieHeader;
@@ -985,7 +992,7 @@ export class Api {
         contentType: string = "application/json",
         extraHeaders?: Record<string, string>,
     ): Promise<ApiResult> {
-        const { headers, data } = this.buildRequest(method, contentType, body, extraHeaders);
+        const { headers, data } = this.buildRequest(method, contentType, body, extraHeaders, url);
 
         // A user-injected transport fully replaces the network call.
         if (this.transportFn) {
