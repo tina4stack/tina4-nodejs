@@ -93,7 +93,8 @@ assert("Uptime is positive", health.data.uptime > 0);
 {
   const keys = Object.keys(health.data).sort().join(",");
   assert(
-    "the body is exactly the four contract keys",
+    // This server runs with TINA4_DEBUG=true, so `version` is present (ADR-0078).
+    "the body is exactly the contract keys",
     keys === "framework,status,uptime,version",
     `got: ${keys}`,
   );

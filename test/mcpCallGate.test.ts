@@ -285,9 +285,10 @@ setEnv({ TINA4_MCP_REMOTE: "true", TINA4_MCP_TOKEN: TOKEN, TINA4_API_KEY: undefi
     x.status === 200 && x.data?.ok === true && x.inserted === 1,
     `status=${x.status} delta=${x.inserted}`);
 
+  // ADR-0078: X-Api-Key is no longer an MCP token transport.
   const a = await callAs("8.8.8.8", "t-xapi", { "X-Api-Key": TOKEN });
-  assert("mcpTokenOk_x_api_key_accepted__200_and_row",
-    a.status === 200 && a.data?.ok === true && a.inserted === 1,
+  assert("mcpTokenOk_x_api_key_not_a_transport__404_and_no_row",
+    a.status === 404 && a.inserted === 0,
     `status=${a.status} delta=${a.inserted}`);
 
   // The Bearer prefix check is case-insensitive (auth.toLowerCase()).
@@ -318,12 +319,12 @@ setEnv({ TINA4_MCP_REMOTE: "true", TINA4_MCP_TOKEN: TOKEN, TINA4_API_KEY: undefi
     `status=${wrongHeader.status} delta=${wrongHeader.inserted}`);
 }
 
-console.log("\n--- mcpTokenOk: TINA4_API_KEY fallback (no TINA4_MCP_TOKEN) ---");
+console.log("\n--- mcpTokenOk: TINA4_API_KEY is NOT a fallback (ADR-0078) ---");
 setEnv({ TINA4_MCP_REMOTE: "true", TINA4_MCP_TOKEN: undefined, TINA4_API_KEY: API_KEY });
 {
-  const ok = await callAs("8.8.8.8", "t-apikey-ok", { "X-Api-Key": API_KEY });
-  assert("mcpTokenOk_api_key_env_fallback_accepted__200_and_row",
-    ok.status === 200 && ok.data?.ok === true && ok.inserted === 1,
+  const ok = await callAs("8.8.8.8", "t-apikey-ok", { Authorization: `Bearer ${API_KEY}` });
+  assert("mcpTokenOk_api_key_env_is_not_a_fallback__404_and_no_row",
+    ok.status === 404 && ok.inserted === 0,
     `status=${ok.status} delta=${ok.inserted}`);
 
   const bad = await callAs("8.8.8.8", "t-apikey-bad", { "X-Api-Key": "wrong-api-key" });
@@ -358,8 +359,9 @@ if (nonLoopIp) {
     const before = await probeCount();
     const res = await post(nonLoopIp, ifacePort, "/__dev/api/mcp/call", insertBody("iface-deny"));
     const after = await probeCount();
-    assert("real_interface_nonloopback_no_token__404_forbidden",
-      res.status === 404 && res.data?.error === "MCP forbidden",
+    // 403 since ADR-0078: the Host (the interface IP) is not a loopback name.
+    assert("real_interface_nonloopback_no_token__refused",
+      res.status === 403 || (res.status === 404 && res.data?.error === "MCP forbidden"),
       `status=${res.status} body=${JSON.stringify(res.data).slice(0, 120)}`);
     assert("real_interface_nonloopback_no_token__row_NOT_inserted", after - before === 0, `delta=${after - before}`);
   }

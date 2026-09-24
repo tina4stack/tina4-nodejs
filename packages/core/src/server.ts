@@ -37,7 +37,7 @@ import { isDebugMode } from "./errorOverlay.js";
 import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
-import { DevAdmin, RequestInspector, WsTracker, devMutationDenial, DEV_SAFE_METHODS } from "./devAdmin.js";
+import { DevAdmin, RequestInspector, WsTracker, devRequestDenial, devHostAllowed } from "./devAdmin.js";
 import { CLOSE_GOING_AWAY, devReloadWs, serveWebSocketRoute, wsRouteManager } from "./websocket.js";
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
@@ -658,6 +658,9 @@ export function resolveTemplate(pathname: string, templatesDir: string): string 
     // Skip underscore-prefixed files even within pages/ — they're private
     // by Hugo/Jekyll convention (helpers, fragments) and shouldn't auto-serve.
     if (cleanPath.split("/").some((seg) => seg.startsWith("_"))) return null;
+    // ADR-0078: a "." / ".." segment (or a backslash) could walk out of pages/
+    // - the only directory that auto-routes. Refuse it outright.
+    if (cleanPath.includes("\\") || cleanPath.split("/").some((seg) => seg === "" || seg === "." || seg === "..")) return null;
     const pagesDir = resolve(templatesDir, TEMPLATE_PAGES_DIR);
     for (const ext of [".twig", ".html"]) {
       if (existsSync(resolve(pagesDir, cleanPath + ext))) {
@@ -1131,15 +1134,15 @@ async function runMatchedRoute(ctx: MatchedRouteContext): Promise<void> {
   const { req, res, match, postMatchMiddleware } = ctx;
   req.params = match.params as never;
 
-  // DEVADMIN-DEC-01/02: fail-closed same-origin + loopback gate on every /__dev
-  // write (POST/PUT/PATCH/DELETE), BEFORE the handler runs. Closes drive-by CSRF
-  // (a cross-origin page POSTing to /file/save then /reload) and a network-exposed
-  // debug box. Scoped to /__dev so /__feedback + /ai are unaffected; GET/HEAD/
-  // OPTIONS are safe and skip the gate. The MCP endpoints keep their own 404 gate
-  // (devMutationDenial skips the mcp prefixes for the loopback part).
-  const devMethod = (req.method ?? "GET").toUpperCase();
-  if (ctx.pathname.startsWith("/__dev") && !DEV_SAFE_METHODS.has(devMethod)) {
-    const denial = devMutationDenial(req);
+  // DEVADMIN-DEC-01/02 + ADR-0078: fail-closed gate BEFORE the handler runs.
+  // Closes drive-by CSRF, cross-site reads, DNS rebinding and a network-exposed
+  // debug box. Scoped to /__dev so /__feedback + /ai are unaffected. The MCP
+  // endpoints keep their own 404 gate (devRequestDenial skips the mcp prefixes
+  // for the loopback part).
+  // ADR-0078: ONE gate for every /__dev request, reads included - Host
+  // allow-list (DNS rebinding), same-origin, loopback peer.
+  if (ctx.pathname.startsWith("/__dev")) {
+    const denial = devRequestDenial(req);
     if (denial) {
       res.json({ ok: false, error: denial.error }, denial.status);
       return;
@@ -2261,6 +2264,11 @@ export async function startServer(config?: Tina4Config): Promise<{
     const upPath = (req.url ?? "/").split("?")[0];
     // Dev-reload channel (debug only).
     if (isDevMode() && upPath === "/__dev_reload") {
+      // ADR-0078: the reload socket answers only a loopback / TINA4_HOST Host.
+      if (!devHostAllowed(req.headers.host)) {
+        try { socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); } catch { /* gone */ }
+        return;
+      }
       devReloadWs.handleUpgrade(req, socket, head);
       return;
     }

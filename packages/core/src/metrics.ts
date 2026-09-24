@@ -119,6 +119,11 @@ export function fullAnalysis(root: string = "src"): Record<string, any> {
   };
 }
 
+/** The root the last full scan covered ("" before any scan). */
+export function metricsScanRoot(): string {
+  return lastScanRoot;
+}
+
 export function fileDetail(filePath: string): Record<string, any> {
   if (!filePath) throw new MetricsEngineError("fileDetail needs a path");
   let target = filePath;
