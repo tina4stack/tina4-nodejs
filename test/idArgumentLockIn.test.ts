@@ -33,7 +33,7 @@ import { GraphQL } from "../packages/core/src/graphql.ts";
 import { SQLiteAdapter } from "../packages/orm/src/adapters/sqlite.ts";
 import { safeErrorText } from "./_safeError.ts";
 
-process.env.TINA4_SECRET = "id-argument-lock-in-secret";
+process.env.TINA4_SECRET = "id-argument-lock-in-secret-01234567";
 
 let passed = 0;
 let failed = 0;
