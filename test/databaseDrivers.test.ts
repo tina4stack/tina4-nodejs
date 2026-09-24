@@ -463,7 +463,9 @@ for (const spec of LIVE) {
   const name = `${spec.label} live connection`;
   const url = spec.env.map((e) => process.env[e]).find((v) => v && v.trim() !== "");
   if (!url) {
-    skip(name, `set ${spec.env[0]} to point at a live ${spec.label} (the lab exports it)`);
+    // ADR-0069 gate: an optional engine is excused only while its coordinate is unset.
+    const tag = ({ PostgreSQL: "postgres", MySQL: "mysql", MSSQL: "mssql", Firebird: "firebird" } as Record<string, string>)[spec.label];
+    skip(name, `[needs:${tag}] set ${spec.env[0]} to point at a live ${spec.label} (the lab exports it)`);
     continue;
   }
   // A driver that is genuinely not installed means this test cannot run here --
