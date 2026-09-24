@@ -3,7 +3,7 @@ import type { DiscoveredModel } from "./model.js";
 import type { FieldDefinition } from "./types.js";
 import { getAdapter, adapterQuery, adapterExecute, adapterFetch, quoteIdentifier } from "./database.js";
 import { DatabaseResult } from "./databaseResult.js";
-import { buildQuery, parseQueryString, resolveFieldColumn, UnknownFieldError } from "./query.js";
+import { buildQuery, parseQueryString, resolveFieldColumn, UnknownFieldError, InvalidQueryParameterError } from "./query.js";
 import { validate } from "./validation.js";
 
 /**
@@ -188,8 +188,7 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         const adapter = getAdapter();
         const q = (name: string): string => quoteIdentifier(adapter, name);
 
-        // Parse query params for filtering / sorting / pagination
-        const qp = parseQueryString(req.query ?? {});
+        // Parse query params for filtering / sorting / pagination.
         // limit/offset/page are the CLAMPED/CAPPED values buildQuery actually used
         // for the SQL (PAGE-DEC-01: page >= 1, per-page <= DEFAULT_ROW_CAP) — read
         // them back here instead of recomputing from the raw qp, so the envelope
@@ -197,12 +196,18 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         //
         // Filter keys and sort fields resolve against the model's DECLARED fields
         // (ADR-0069); an unknown one is a 400 before any SQL runs.
+        // A wrong-shaped value (a list/map where one value belongs) is a 400 too.
         let built: ReturnType<typeof buildQuery>;
         try {
+          const qp = parseQueryString(req.query ?? {});
           built = buildQuery(tableName, qp, extraConditions, q, (key) => resolveFieldColumn(fields, getDbCol, key));
         } catch (err) {
           if (err instanceof UnknownFieldError) {
             res.error("UNKNOWN_FIELD", err.message, 400);
+            return;
+          }
+          if (err instanceof InvalidQueryParameterError) {
+            res.error("INVALID_QUERY_PARAMETER", err.message, 400);
             return;
           }
           throw err;

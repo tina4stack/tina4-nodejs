@@ -48,6 +48,17 @@ export class UnknownFieldError extends Error {
   }
 }
 
+/** A query parameter whose SHAPE is wrong (a list or map where one value belongs). */
+export class InvalidQueryParameterError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidQueryParameterError";
+  }
+}
+
+const filterValueError = (field: string): InvalidQueryParameterError =>
+  new InvalidQueryParameterError(`Filter value for '${field}' must be a single value`);
+
 /**
  * Build the list SQL from parsed query options.
  *
@@ -95,12 +106,11 @@ export function buildQuery(
         // Operator filters: filter[age][gt]=25
         const ops = value as Record<string, unknown>;
         for (const [op, opVal] of Object.entries(ops)) {
-          // Own keys only: an inherited name ("constructor") is not an operator.
-          const sqlOp = Object.hasOwn(operatorMap, op) ? operatorMap[op] : undefined;
-          if (sqlOp) {
-            conditions.push(`${col} ${sqlOp} ?`);
-            params.push(opVal);
-          }
+          // Own keys only: an inherited name ("constructor") is not an operator,
+          // and an unknown operator is an error, never silently dropped.
+          if (!Object.hasOwn(operatorMap, op)) throw filterValueError(field);
+          conditions.push(`${col} ${operatorMap[op]} ?`);
+          params.push(opVal);
         }
       } else {
         // Exact match: filter[name]=John
@@ -162,23 +172,31 @@ export function parseQueryString(query: Record<string, string>): QueryOptions {
   // Parse filter params: filter[name]=John or filter[age][gt]=25. ANY key
   // inside the brackets is captured - buildQuery rejects one that is not a
   // declared field rather than it being silently ignored here (ADR-0069).
+  // A second bracket must be a known operator; a list (filter[name][]), a map
+  // (filter[name][x]) or a nested key is a wrong-shaped value and throws
+  // InvalidQueryParameterError. `sort[...]` is a list/map where a single
+  // comma-separated string belongs, and throws the same way.
   // A null-prototype map, so a "__proto__" key is stored (and then rejected)
   // instead of silently re-pointing the object's prototype.
   const filter: Record<string, unknown> = Object.create(null);
   for (const [key, value] of Object.entries(query)) {
-    const filterMatch = key.match(/^filter\[(.*?)\](?:\[([^\]]*)\])?$/);
-    if (filterMatch) {
-      const field = filterMatch[1];
-      const operator = filterMatch[2];
-      if (operator) {
-        if (!filter[field] || typeof filter[field] !== "object") {
-          filter[field] = {};
-        }
-        (filter[field] as Record<string, string>)[operator] = value;
-      } else {
-        filter[field] = value;
-      }
+    if (key.startsWith("sort[")) {
+      throw new InvalidQueryParameterError("Query parameter 'sort' must be a single comma-separated string");
     }
+    if (!key.startsWith("filter[")) continue;
+    const filterMatch = key.match(/^filter\[([^\]]*)\](.*)$/s);
+    if (!filterMatch) throw new UnknownFieldError("filter", key.slice("filter[".length));
+    const [, field, rest] = filterMatch;
+    if (rest === "") {
+      filter[field] = value;
+      continue;
+    }
+    const operator = rest.match(/^\[([^[\]]*)\]$/)?.[1];
+    if (operator === undefined || !Object.hasOwn(operatorMap, operator)) throw filterValueError(field);
+    if (!filter[field] || typeof filter[field] !== "object") {
+      filter[field] = {};
+    }
+    (filter[field] as Record<string, string>)[operator] = value;
   }
   if (Object.keys(filter).length > 0) {
     options.filter = filter;

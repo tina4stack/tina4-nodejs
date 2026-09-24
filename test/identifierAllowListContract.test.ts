@@ -216,6 +216,33 @@ export default class IdentItem extends BaseModel {
     }
     const total = await get("/api/ident_item?filter[firstName]=Amy");
     assert("declared_filter_and_sort_still_work: total counts the resolved filter", total.json?.total === 2, total.text.slice(0, 300));
+
+    // ── odd_typed_query_values_return_400 ────────────────────────────────
+    console.log("\n--- odd_typed_query_values_return_400 ---");
+    const sortBody = JSON.stringify({
+      error: true, code: "INVALID_QUERY_PARAMETER",
+      message: "Query parameter 'sort' must be a single comma-separated string", status: 400,
+    });
+    const filterBody = (key: string) => JSON.stringify({
+      error: true, code: "INVALID_QUERY_PARAMETER",
+      message: `Filter value for '${key}' must be a single value`, status: 400,
+    });
+    const oddCases: [string, string, string][] = [
+      ["sort as a list", "/api/ident_item?sort[]=name", sortBody],
+      ["sort as a map", "/api/ident_item?sort[a]=name", sortBody],
+      ["filter value as a list", "/api/ident_item?filter[name][]=alpha", filterBody("name")],
+      ["filter value as a map (unknown operator)", "/api/ident_item?filter[name][x]=alpha", filterBody("name")],
+      ["unknown operator on a declared field", "/api/ident_item?filter[age][between]=1", filterBody("age")],
+      ["nested filter", "/api/ident_item?filter[name][a][b]=alpha", filterBody("name")],
+    ];
+    for (const [label, path, body] of oddCases) {
+      const r = await get(path);
+      assert(`odd_typed_query_values_return_400: ${label} -> 400`, r.status === 400, `status=${r.status} body=${r.text.slice(0, 200)}`);
+      assert(`odd_typed_query_values_return_400: ${label} -> exact INVALID_QUERY_PARAMETER body`, JSON.stringify(r.json) === body, r.text.slice(0, 200));
+    }
+    const operator = await get("/api/ident_item?filter[age][lte]=30&sort=id");
+    assert("odd_typed_query_values_return_400: a mapped operator still filters",
+      operator.status === 200 && JSON.stringify(ids(operator)) === "[1,2]", operator.text.slice(0, 200));
   } finally {
     server.close();
     rmSync(root, { recursive: true, force: true });
