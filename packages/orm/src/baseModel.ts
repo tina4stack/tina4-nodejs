@@ -1636,17 +1636,28 @@ function buildInsertStatement(
   const fields = Object.entries(model.fields).filter(
     ([name, def]) => !(def.primaryKey && def.autoIncrement) && instance[name] !== undefined,
   );
-  const returning = pkField?.autoIncrement && db.constructor.name !== "SQLiteAdapter" ? ` RETURNING ${quoteIdentifier(db, pkCol)}` : "";
+  // The generated key comes back three ways: PostgreSQL and Firebird take a
+  // trailing RETURNING, MSSQL an OUTPUT INSERTED clause before VALUES, and
+  // SQLite / MySQL report it through lastInsertId(). MySQL and MSSQL reject a
+  // RETURNING outright, so an auto-increment save() used to fail on both. The
+  // engine comes from getDatabaseType(): the ORM holds the CachedDatabaseAdapter
+  // wrapper, whose constructor.name never names the engine.
+  const engine = db.getDatabaseType?.() ?? "";
+  const wantsKey = Boolean(pkField?.autoIncrement);
+  const returning = wantsKey && (engine === "postgres" || engine === "firebird")
+    ? ` RETURNING ${quoteIdentifier(db, pkCol)}` : "";
+  const output = wantsKey && engine === "mssql" ? ` OUTPUT INSERTED.${quoteIdentifier(db, pkCol)}` : "";
+  const table = quoteIdentifier(db, model.tableName);
   if (fields.length === 0) {
-    const emptyInsert = db.constructor.name === "MysqlAdapter"
-      ? `INSERT INTO ${quoteIdentifier(db, model.tableName)} () VALUES ()`
-      : `INSERT INTO ${quoteIdentifier(db, model.tableName)} DEFAULT VALUES`;
+    const emptyInsert = engine === "mysql"
+      ? `INSERT INTO ${table} () VALUES ()`
+      : `INSERT INTO ${table}${output} DEFAULT VALUES`;
     return { sql: emptyInsert + returning, values: [] };
   }
   const columns = fields.map(([name]) => quoteIdentifier(db, model.getDbColumn(name))).join(", ");
   const placeholders = fields.map(() => "?").join(", ");
   const values = fields.map(([name, def]) => toDbFieldValue(def, instance[name]));
-  return { sql: `INSERT INTO ${quoteIdentifier(db, model.tableName)} (${columns}) VALUES (${placeholders})${returning}`, values };
+  return { sql: `INSERT INTO ${table} (${columns})${output} VALUES (${placeholders})${returning}`, values };
 }
 
 function applyInsertedId(

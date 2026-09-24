@@ -532,6 +532,14 @@ export class FirebirdAdapter implements DatabaseAdapter {
 
   async executeAsync(sql: string, params?: unknown[]): Promise<unknown> {
     this.ensureConnected();
+    if (/\bRETURNING\b/i.test(sql)) {
+      // A RETURNING statement hands back rows (the ORM reads the generated key
+      // from them, as it does on PostgreSQL). node-firebird answers a single
+      // returned row as a bare object, so normalise it to a row list.
+      const returned = await this.queryPromise(sql, params);
+      const rows = Array.isArray(returned) ? returned : returned ? [returned] : [];
+      return { rows: rows.map((row) => foldColumnNames(row)) };
+    }
     await this.executePromise(sql, params);
     return undefined;
   }
