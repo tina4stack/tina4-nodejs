@@ -484,7 +484,9 @@ assert("Macro with multiple params", engine.renderString(
 console.log("\n--- Sandboxing ---");
 
 const sandboxed = new Frond(tmpDir);
-sandboxed.sandbox(["upper"], ["if", "for"], ["allowed"]);
+// ADR-0077: the allow-list governs every variable read, including a for
+// iterable, so a collection a loop iterates must itself be allow-listed.
+sandboxed.sandbox(["upper"], ["if", "for"], ["allowed", "items"]);
 
 assert("Sandbox allows whitelisted var", sandboxed.renderString("{{ allowed }}", { allowed: "ok", secret: "nope" }) === "ok");
 assert("Sandbox blocks non-whitelisted var", sandboxed.renderString("{{ secret }}", { allowed: "ok", secret: "nope" }) === "");

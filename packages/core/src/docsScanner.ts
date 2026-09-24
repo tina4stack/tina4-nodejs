@@ -85,6 +85,34 @@ function stripTemplate(source: string, start: number): { text: string; next: num
   return { text: out.join(""), next: i };
 }
 
+// A slash starts a regexp where an expression may begin. Division follows a
+// value (identifier, number, closing bracket/paren) and must remain visible.
+function startsRegex(source: string, start: number): boolean {
+  let i = start - 1;
+  while (i >= 0 && /\s/.test(source[i])) i--;
+  if (i < 0 || "=(:,[!&|?;{}".includes(source[i])) return true;
+  const end = i + 1;
+  while (i >= 0 && /[A-Za-z_$]/.test(source[i])) i--;
+  return ["return", "throw", "case", "yield", "await"].includes(source.slice(i + 1, end));
+}
+
+function stripRegex(source: string, start: number): { text: string; next: number } | null {
+  let inClass = false;
+  for (let i = start + 1; i < source.length; i++) {
+    const c = source[i];
+    if (c === "\n" || c === "\r") return null;
+    if (c === "\\") { i++; continue; }
+    if (c === "[") inClass = true;
+    else if (c === "]") inClass = false;
+    else if (c === "/" && !inClass) {
+      let next = i + 1;
+      while (next < source.length && /[a-z]/i.test(source[next])) next++;
+      return { text: blankSegment(source, start, next), next };
+    }
+  }
+  return null;
+}
+
 export function stripStrings(source: string): string {
   const out: string[] = [];
   let i = 0;
@@ -101,6 +129,14 @@ export function stripStrings(source: string): string {
       out.push(part.text);
       i = part.next;
       continue;
+    }
+    if (c === "/" && startsRegex(source, i)) {
+      const part = stripRegex(source, i);
+      if (part) {
+        out.push(part.text);
+        i = part.next;
+        continue;
+      }
     }
     if (c === '"' || c === "'") {
       const part = stripQuoted(source, i);
