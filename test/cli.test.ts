@@ -236,7 +236,7 @@ async function main(): Promise<void> {
     genErrors.length === 0, `\n${genErrors.join("\n")}`);
 
   // ── DB + real router from the generated file-based routes ─────────
-  process.env.TINA4_SECRET = "scaffold-test-secret";
+  process.env.TINA4_SECRET = "scaffold-test-secret-0123456789a";
   delete process.env.TINA4_API_KEY;
   mkdirSync(join(tmpDir, "data"), { recursive: true });
   await initDatabase({ url: `sqlite:///${tmpDir}/data/scaffold.db` });

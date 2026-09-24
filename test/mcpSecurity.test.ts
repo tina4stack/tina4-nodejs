@@ -38,8 +38,13 @@ function setEnv(env: Partial<Record<(typeof KEYS)[number], string>>) {
 console.log("MCP Security Guard");
 
 // ── isLoopback ───────────────────────────────────────────────
-for (const ip of ["127.0.0.1", "127.0.0.5", "::1", "::ffff:127.0.0.1", "localhost", "", null, undefined]) {
+for (const ip of ["127.0.0.1", "127.0.0.5", "::1", "::ffff:127.0.0.1", "localhost"]) {
   assert(`isLoopback(${JSON.stringify(ip)}) → true`, isLoopback(ip) === true);
+}
+// An unknown (empty) peer is not local: a runtime path that lost the socket
+// address must fail closed (ADR-0079 s4).
+for (const ip of ["", null, undefined]) {
+  assert(`isLoopback(${JSON.stringify(ip)}) → false (unknown peer)`, isLoopback(ip) === false);
 }
 for (const ip of ["0.0.0.0", "1.2.3.4", "10.0.0.5", "192.168.1.10", "::ffff:1.2.3.4", "2001:db8::1", "203.0.113.9"]) {
   assert(`isLoopback("${ip}") → false (0.0.0.0 is a bind addr)`, isLoopback(ip) === false);
@@ -51,7 +56,7 @@ assert("disabled denies even loopback", isRequestAllowed("127.0.0.1") === false)
 
 setEnv({ TINA4_DEBUG: "true" });
 assert("loopback allowed when enabled", isRequestAllowed("127.0.0.1") === true);
-assert("in-process (empty) allowed when enabled", isRequestAllowed("") === true);
+assert("unknown (empty) peer refused when enabled", isRequestAllowed("") === false);
 assert("remote denied without opt-in", isRequestAllowed("1.2.3.4") === false);
 
 setEnv({ TINA4_DEBUG: "true", TINA4_MCP_REMOTE: "true" });

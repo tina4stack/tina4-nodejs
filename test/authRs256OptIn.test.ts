@@ -58,7 +58,7 @@ function assertThrows(label: string, fn: () => unknown, messageCheck: (message: 
   }
 }
 
-const SECRET = "rs256-optin-regression-secret";
+const SECRET = "rs256-optin-regression-secret-01";
 const HMAC_ALGORITHMS = ["HS256", "HS384", "HS512"] as const;
 const DIGEST_BYTES: Record<string, { digest: string; bytes: number }> = {
   HS256: { digest: "sha256", bytes: 32 },

@@ -22,7 +22,7 @@
 
 // A real signing secret so getToken() and validToken() agree — set before any
 // token is minted. Clear a stray API key so the JWT path is what's under test.
-process.env.TINA4_SECRET = "node-py2-testclient-auth-secret";
+process.env.TINA4_SECRET = "node-py2-testclient-auth-secret-";
 delete process.env.TINA4_API_KEY;
 
 import { strict as assert } from "node:assert";

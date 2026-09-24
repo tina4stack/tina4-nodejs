@@ -111,7 +111,7 @@ console.log("\n-- Malformed token --");
 console.log("\n-- Wrong secret --");
 
 {
-  process.env.TINA4_SECRET = "wrong-secret";
+  process.env.TINA4_SECRET = "wrong-secret-0123456789abcdef012";
   const wrongToken = getToken({ userId: 1 });
   process.env.TINA4_SECRET = SECRET;
   const req = mockRequest(`Bearer ${wrongToken}`);

@@ -41,7 +41,7 @@ function assert(label: string, condition: boolean, detail = ""): void {
   }
 }
 
-const SECRET = "autocrud-contract-test-secret";
+const SECRET = "autocrud-contract-test-secret-01";
 process.env.TINA4_SECRET = SECRET;
 process.env.TINA4_RATE_LIMIT = "100000";
 process.env.TINA4_NO_BROWSER = "true";

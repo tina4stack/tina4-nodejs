@@ -199,6 +199,9 @@ export class TestClient {
 
     // Create a mock IncomingMessage
     const socket = new Socket();
+    // The in-process client is a local caller and says so explicitly: an
+    // unknown (empty) peer is not loopback (ADR-0079 s4).
+    Object.defineProperty(socket, "remoteAddress", { value: "127.0.0.1" });
     const rawReq = new IncomingMessage(socket);
     rawReq.method = method.toUpperCase();
     rawReq.url = path;

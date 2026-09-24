@@ -28,7 +28,7 @@ function assert(label: string, condition: boolean, detail = "") {
   }
 }
 
-const SECRET = "rbac-contract-secret";
+const SECRET = "rbac-contract-secret-0123456789a";
 process.env.TINA4_SECRET = SECRET;
 process.env.TINA4_RATE_LIMIT = "100000";
 process.env.TINA4_NO_BROWSER = "true";
