@@ -570,6 +570,11 @@ function resolveMethodPart(value: unknown, part: string, context: Record<string,
   if (!methodMatch || typeof value !== "object" || value === null) return { matched: false, value };
   const methodName = methodMatch[1];
   const rawArgs = methodMatch[2] || "";
+  // F6/ADR-0077: never traverse a prototype/constructor/dunder key -- that is
+  // the Function-constructor and prototype-pollution escape.
+  if (unsafeKey(methodName) || !Object.prototype.hasOwnProperty.call(value, methodName)) {
+    return { matched: false, value };
+  }
   const fn = (value as Record<string, unknown>)[methodName];
   if (typeof fn !== "function") return { matched: false, value };
   const args = rawArgs.trim() ? splitArgs(rawArgs).map(a => evalExpr(a.trim(), context)) : [];
@@ -592,7 +597,9 @@ function resolvePathKey(part: string, isBracket: boolean, context: Record<string
 function resolvePathPart(value: unknown, key: string | number): { found: boolean; value: unknown } {
   if (typeof value !== "object" || value === null) return { found: false, value: null };
   if (Array.isArray(value) && typeof key === "number") return { found: true, value: value[key] };
-  if (!(key in (value as Record<string, unknown>))) return { found: false, value: null };
+  // F6/ADR-0077: only own, non-dunder properties are reachable, so an
+  // inherited prototype method (constructor, __proto__, ...) cannot be called.
+  if (unsafeKey(key) || !Object.prototype.hasOwnProperty.call(value, key)) return { found: false, value: null };
   const member = (value as Record<string, unknown>)[key as string];
   return { found: true, value: typeof member === "function" ? member.call(value) : member };
 }
@@ -889,7 +896,10 @@ function evalDottedFunction(name: string, rawArgs: string, context: Record<strin
   const lastDot = name.lastIndexOf(".");
   const owner = resolveVar(name.slice(0, lastDot), context);
   const member = name.slice(lastDot + 1);
-  if (!owner || typeof owner !== "object" || !(member in (owner as Record<string, unknown>))) {
+  // F6/ADR-0077: never call through a prototype/constructor/dunder key or an
+  // inherited method -- that is the Function-constructor and prototype escape.
+  if (!owner || typeof owner !== "object" || unsafeKey(member) ||
+      !Object.prototype.hasOwnProperty.call(owner, member)) {
     return EXPR_NOT_MATCHED;
   }
   const method = (owner as Record<string, unknown>)[member];
@@ -1361,6 +1371,115 @@ function htmlEscape(str: string): string {
     .replace(/'/g, "&#x27;");
 }
 
+// -- Escape strategies (ADR-0077) -------------------------------------------
+// Shared by js_escape and e(strategy); byte-identical to the Python master.
+// Twig-compatible. Iterates code points so astral characters emit a surrogate
+// pair for the js strategy.
+const JS_SAFE_RE = /[A-Za-z0-9,._]/;
+function jsEscape(value: unknown): string {
+  let out = "";
+  for (const ch of String(value)) {
+    if (JS_SAFE_RE.test(ch) && ch.length === 1) {
+      out += ch;
+      continue;
+    }
+    let code = ch.codePointAt(0)!;
+    if (code < 0x80) {
+      out += "\\x" + code.toString(16).toUpperCase().padStart(2, "0");
+    } else if (code <= 0xffff) {
+      out += "\\u" + code.toString(16).toUpperCase().padStart(4, "0");
+    } else {
+      code -= 0x10000;
+      out += "\\u" + (0xd800 + (code >> 10)).toString(16).toUpperCase().padStart(4, "0");
+      out += "\\u" + (0xdc00 + (code & 0x3ff)).toString(16).toUpperCase().padStart(4, "0");
+    }
+  }
+  return out;
+}
+
+function cssEscape(value: unknown): string {
+  let out = "";
+  for (const ch of String(value)) {
+    out += /[A-Za-z0-9]/.test(ch)
+      ? ch
+      : "\\" + ch.codePointAt(0)!.toString(16).toUpperCase().padStart(6, "0") + " ";
+  }
+  return out;
+}
+
+function htmlAttrEscape(value: unknown): string {
+  let out = "";
+  for (const ch of String(value)) {
+    out += /[A-Za-z0-9,.\-_]/.test(ch)
+      ? ch
+      : "&#x" + ch.codePointAt(0)!.toString(16).toUpperCase().padStart(2, "0") + ";";
+  }
+  return out;
+}
+
+function urlEscape(value: unknown): string {
+  return encodeURIComponent(String(value)).replace(
+    /[!'()*]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
+}
+
+// Dispatch e(strategy)/escape(strategy). Unknown strategy throws so a typo can
+// never silently pass the value through unescaped.
+function escapeStrategy(value: unknown, strategy: string = "html"): SafeString {
+  const s = String(strategy).trim().replace(/^['"]|['"]$/g, "");
+  switch (s) {
+    case "":
+    case "html":
+      return new SafeString(htmlEscape(String(value)));
+    case "js":
+      return new SafeString(jsEscape(value));
+    case "url":
+      return new SafeString(urlEscape(value));
+    case "css":
+      return new SafeString(cssEscape(value));
+    case "html_attr":
+    case "attr":
+      return new SafeString(htmlAttrEscape(value));
+    default:
+      throw new Error(`Unknown escape strategy: ${strategy}`);
+  }
+}
+
+// Confine a client-supplied media type to type/subtype (F3/ADR-0077).
+const MEDIA_TYPE_RE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$/;
+function sanitiseMediaType(type: string): string {
+  const t = String(type).trim();
+  return MEDIA_TYPE_RE.test(t) ? t : "application/octet-stream";
+}
+
+// Property keys that must never be traversed/invoked through {{ obj.x }} —
+// prototype pollution and the Function constructor RCE (F6/ADR-0077).
+const SANDBOX_EXPR_KEYWORDS = new Set([
+  "true","false","none","null","nil","and","or","not","in","is","loop",
+  "if","else","empty","starts","ends","with","matches",
+]);
+const SANDBOX_IDENT_RE = /(?<![.\w'"])([A-Za-z_][A-Za-z0-9_]*)/g;
+const SANDBOX_STRING_RE = /'[^']*'|"[^"]*"/g;
+const UNSAFE_KEYS = new Set([
+  "constructor", "__proto__", "prototype", "__defineGetter__",
+  "__defineSetter__", "__lookupGetter__", "__lookupSetter__",
+  "__defineProperty__", "valueOf",
+]);
+function unsafeKey(key: string | number): boolean {
+  return UNSAFE_KEYS.has(String(key));
+}
+
+// A value whose rendered string form must be auto-escaped: an array/object
+// (not a SafeString). Strings, numbers, booleans and null are handled by the
+// caller's own branches. (F4/ADR-0077)
+function isEscapableStructured(value: unknown): boolean {
+  return value !== null && typeof value === "object" && !(value instanceof SafeString);
+}
+function toOutputString(value: unknown): string {
+  return String(value);
+}
+
 function dateFilter(value: unknown, fmt: string): string {
   let dt: Date;
   if (value instanceof Date) {
@@ -1514,8 +1633,8 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   default: (v, fallback) => (v !== null && v !== undefined && v !== "") ? v : (fallback !== undefined ? fallback : ""),
   raw: (v) => v,
   safe: (v) => v,
-  escape: (v) => htmlEscape(String(v)),
-  e: (v) => htmlEscape(String(v)),
+  escape: (v, ...a) => escapeStrategy(v, (a[0] as string) ?? "html"),
+  e: (v, ...a) => escapeStrategy(v, (a[0] as string) ?? "html"),
   striptags: (v) => String(v).replace(STRIP_TAGS_RE, ""),
   nl2br: (v) => new SafeString(htmlEscape(String(v)).replace(/\n/g, "<br />\n")),
   abs: (v) => typeof v === "number" ? Math.abs(v) : v,
@@ -1604,9 +1723,9 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   base64decode: (v) => Buffer.from(String(v), "base64").toString("utf-8"),
   data_uri: (v) => {
     if (v && typeof v === "object" && "content" in v) {
-      const ct = (v as any).type ?? "application/octet-stream";
+      const ct = sanitiseMediaType(String((v as any).type ?? "application/octet-stream"));
       const raw = Buffer.isBuffer((v as any).content) ? (v as any).content : Buffer.from(String((v as any).content));
-      return `data:${ct};base64,${raw.toString("base64")}`;
+      return new SafeString(`data:${ct};base64,${raw.toString("base64")}`);
     }
     return String(v);
   },
@@ -1626,7 +1745,7 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   // broke byte-parity for the one filter whose whole job is a wire format.
   tojson: (v) => jsonSafe(v),
   to_json: (v) => jsonSafe(v),
-  js_escape: (v) => new SafeString(String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")),
+  js_escape: (v) => new SafeString(jsEscape(v)),
 };
 
 // ── Form Token ────────────────────────────────────────────────
@@ -2526,6 +2645,9 @@ export class Frond {
   }
 
   private evalVarRaw(expr: string, context: Record<string, unknown>): unknown {
+    // F6/ADR-0077: gate the whole condition/RHS so a comparison or iterable
+    // cannot leak a blocked variable.
+    if (this._sandbox && !this.sandboxExprOk(expr)) return null;
     const [varName, filters] = parseFilterChain(expr);
     let value = evalExpr(varName, context);
     for (const [fname, rawArgs] of filters) {
@@ -2576,10 +2698,26 @@ export class Frond {
     return fn ? fn(value, ...args) : value;
   }
 
-  private variablePermitted(varName: string): boolean {
-    if (!this._sandbox || this._allowedVars === null) return true;
-    const rootVar = varName.split(".")[0].split("[")[0].trim();
-    return !rootVar || rootVar === "loop" || this._allowedVars.has(rootVar);
+  /**
+   * Sandbox gate for a WHOLE expression (F6/ADR-0077): refuse a dunder walk or
+   * a root variable outside the allow-list. Applied to output, if conditions,
+   * set right-hand sides and for iterables so none can smuggle a blocked
+   * variable past the per-output gate.
+   */
+  private sandboxExprOk(expr: string): boolean {
+    if (!this._sandbox) return true;
+    if (expr.includes("__")) return false;
+    if (this._allowedVars === null) return true;
+    const stripped = expr.replace(SANDBOX_STRING_RE, "");
+    let m: RegExpExecArray | null;
+    SANDBOX_IDENT_RE.lastIndex = 0;
+    while ((m = SANDBOX_IDENT_RE.exec(stripped)) !== null) {
+      const ident = m[1];
+      if (SANDBOX_EXPR_KEYWORDS.has(ident.toLowerCase())) continue;
+      if (ident in this.filters) continue;
+      if (!this._allowedVars.has(ident)) return false;
+    }
+    return true;
   }
 
   private resolveConcatenation(
@@ -2590,6 +2728,7 @@ export class Frond {
     let value = evalExpr(expr, context);
     if (value instanceof SafeString) return { handled: true, value: value.value };
     if (this._autoEscape && typeof value === "string") value = htmlEscape(value);
+    else if (this._autoEscape && isEscapableStructured(value)) value = htmlEscape(toOutputString(value));
     return { handled: true, value };
   }
 
@@ -2605,7 +2744,10 @@ export class Frond {
         if (this.filterPermitted(fname)) safe = true;
         continue;
       }
-      if ((fname === "escape" || fname === "e") && this.filterPermitted(fname)) safe = true;
+      // F2/ADR-0077: do NOT keep a persistent "safe" flag for escape/e. The
+      // filter returns a SafeString; if a later filter (replace/format/join)
+      // transforms it, the result is a plain string and is re-escaped at
+      // output. Keeping a safe flag here let post-escape filters emit raw.
       if (!this.filterPermitted(fname)) continue;
       value = this.applyRenderedFilter(value, fname, args);
     }
@@ -2614,7 +2756,7 @@ export class Frond {
 
   private evalVarInner(expr: string, context: Record<string, unknown>): unknown {
     const [varName, filters] = parseFilterChain(expr);
-    if (!this.variablePermitted(varName)) return "";
+    if (this._sandbox && !this.sandboxExprOk(expr)) return "";
     const concatenated = this.resolveConcatenation(expr, context);
     if (concatenated.handled) return concatenated.value;
     const applied = this.applyRenderedFilters(evalExpr(varName, context), filters, context);
@@ -2625,9 +2767,16 @@ export class Frond {
       return value.value;
     }
 
-    // Auto-escape HTML unless marked safe or auto-escape is disabled
-    if (!applied.safe && this._autoEscape && typeof value === "string") {
-      value = htmlEscape(value);
+    // Auto-escape HTML unless marked safe or auto-escape is disabled. A plain
+    // string is escaped directly; an array/object is escaped on its rendered
+    // string form (F4/ADR-0077) -- before this, only string values were
+    // escaped, so {{ items }} holding markup emitted it raw.
+    if (!applied.safe && this._autoEscape) {
+      if (typeof value === "string") {
+        value = htmlEscape(value);
+      } else if (isEscapableStructured(value)) {
+        value = new SafeString(htmlEscape(toOutputString(value)));
+      }
     }
 
     return value;
@@ -2756,7 +2905,10 @@ export class Frond {
     const { bodyTokens, elseTokens, next: i } = this.collectForTokens(tokens, start);
 
     // Evaluate iterable
-    const iterable = evalExpr(forMatch[3].trim(), context);
+    const iterableExpr = forMatch[3].trim();
+    const iterable = (this._sandbox && !this.sandboxExprOk(iterableExpr))
+      ? null
+      : evalExpr(iterableExpr, context);
     const { items, isDict } = this.forItems(iterable);
     if (items.length === 0) return [elseTokens.length ? this.renderTokens([...elseTokens], context) : "", i];
 
