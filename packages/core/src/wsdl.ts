@@ -644,18 +644,8 @@ export abstract class WSDLService {
       xmlBody = JSON.stringify(req.body);
     }
 
-    if (xmlBody.length === 0) {
-      const fault = this.soapFault("Client", "Empty request body");
-      if (typeof res.send === "function") {
-        if (typeof res.status === "function") (res.status as Function)(400);
-        if (typeof res.setHeader === "function") {
-          (res.setHeader as Function)("Content-Type", "text/xml; charset=UTF-8");
-        }
-        (res.send as Function)(fault);
-      }
-      return;
-    }
-
+    // An empty body is not XML: handle() answers it with the same Client
+    // "Malformed XML" fault as any other unparsable body (Python parity).
     const soapResponse = await this.handle(xmlBody);
 
     if (typeof res.send === "function") {
