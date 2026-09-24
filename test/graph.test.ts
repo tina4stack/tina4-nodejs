@@ -166,6 +166,21 @@ function testConnectByUrl(): void {
     rejected = true;
   }
   ok("graph-connect-by-url: an unsupported scheme is rejected", rejected);
+
+  // An unparsable URL's error must not carry the password: error messages end
+  // up in logs, crash reports and the dev overlay.
+  let unparsableMessage = "";
+  try {
+    new GraphUrl("ultipa://root:graph-secret-42@h:notaport/g");
+  } catch (error) {
+    unparsableMessage = (error as Error).message;
+  }
+  ok(
+    "graph_url_parse_error_never_prints_the_password",
+    unparsableMessage !== "" && !unparsableMessage.includes("graph-secret-42")
+      && unparsableMessage.includes("ultipa://root:***@h:notaport/g"),
+    unparsableMessage,
+  );
 }
 
 // graph-driver-optional: the core imports with NO engine driver, and a missing

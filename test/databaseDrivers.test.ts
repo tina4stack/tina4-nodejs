@@ -194,8 +194,8 @@ assert("firebird two slashes is absolute", fb1abs.database === "/var/data/test.f
 // the deleted test/_hidePackages.mjs did.
 //
 // Instead the source is COPIED OUT of the repository into a temp tree with no
-// node_modules anywhere above it and run with plain
-// `node --experimental-strip-types` (test/_driverlessTree.ts, shared with
+// node_modules anywhere above it, compiled to JavaScript there and run with
+// plain `node` (test/_driverlessTree.ts, shared with
 // sessionZeroDependencyFallback.test.ts). All four adapters reach for their
 // driver through `createRequire(import.meta.url)`, which resolves from the
 // ADAPTER's directory, so inside that tree the failure is the real resolver's —

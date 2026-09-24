@@ -91,8 +91,12 @@
     "@aws-sdk/client-s3": "^3.600.0",
     "@aws-sdk/s3-request-presigner": "^3.600.0",
     "mongodb": "^6.0.0",
+    "mysql2": "^3.22.5",
+    "node-firebird": "^2.14.3",
+    "odbc": "^2.4.9",
     "pg": "^8.20.0",
-    "redis": "^4.7.0"
+    "redis": "^4.7.0",
+    "tedious": "^19.2.1"
   },
   "peerDependenciesMeta": {
     "@aws-sdk/client-s3": {
@@ -104,10 +108,22 @@
     "mongodb": {
       "optional": true
     },
+    "mysql2": {
+      "optional": true
+    },
+    "node-firebird": {
+      "optional": true
+    },
+    "odbc": {
+      "optional": true
+    },
     "pg": {
       "optional": true
     },
     "redis": {
+      "optional": true
+    },
+    "tedious": {
       "optional": true
     }
   },
@@ -118,6 +134,7 @@
     "esbuild": "^0.24.0",
     "mongodb": "^6.0.0",
     "pg": "^8.20.0",
+    "redis": "^4.7.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.9"

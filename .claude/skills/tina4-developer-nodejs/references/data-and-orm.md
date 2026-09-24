@@ -629,7 +629,7 @@ tina4-nodejs is **batteries-included** and, unlike most Node frameworks, effecti
 **built-in `node:sqlite`** (`DatabaseSync`, `adapters/sqlite.ts:1`) — which is why `engines.node`
 is **`>=22.0.0`** and there is no `better-sqlite3`. `npm install tina4-nodejs` installs exactly **one** package.
 The only things you ever `npm install` next are the **drivers** for what you use — `pg`, `mysql2`, `tedious` (MSSQL), `mongodb`, `node-firebird` (Firebird), `odbc` (ODBC), `redis` (WebSocket backplane), `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` (S3 storage) —
-the app's own dependencies, never the framework's (ADR-0067; `pg`/`mongodb`/`redis`/`@aws-sdk/*` are optional `peerDependencies`, which npm does not install). A feature selected without its driver fails naming the exact `npm install` command. Before you add a package, check whether it's
+the app's own dependencies, never the framework's (ADR-0067; every one of them is an optional `peerDependency`, which npm does not install). A feature selected without its driver fails naming the exact `npm install` command. Before you add a package, check whether it's
 already in the box. **Need → Tina4 built-in (verified export) — don't add the dep:**
 
 | Need | Tina4 built-in — don't `npm install …` |
