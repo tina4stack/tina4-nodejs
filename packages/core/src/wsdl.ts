@@ -200,12 +200,16 @@ function parseXmlDocument(xml: string): XmlElement {
   return root;
 }
 
+/** The encoding named in the XML declaration, when the document opens with one. */
+const XML_DECLARED_ENCODING = /^<\?xml\s[^>]*?\bencoding\s*=\s*(["'])(.*?)\1/;
+
 /**
  * Turn the request body into text, refusing anything that is not UTF-8 XML
  * BEFORE any parse: bytes that are not valid UTF-8, a byte-order mark (a
- * UTF-16 body starts with one), or a character XML forbids (the NULs a UTF-16
- * body leaves behind once decoded as UTF-8). A DOCTYPE hidden in UTF-16 is
- * therefore refused here, never parsed.
+ * UTF-16 body starts with one), a character XML forbids (the NULs a UTF-16
+ * body leaves behind once decoded as UTF-8), or an XML declaration naming an
+ * encoding other than UTF-8. A DOCTYPE hidden in UTF-16 or UTF-7 is therefore
+ * refused here, never parsed.
  */
 function decodeSoapBody(body: string | Uint8Array): string {
   let text: string;
@@ -219,34 +223,41 @@ function decodeSoapBody(body: string | Uint8Array): string {
     }
   }
   if (text.startsWith("\uFEFF") || ILLEGAL_XML_CHARACTER.test(text)) malformed();
+  // The body IS UTF-8, so a declaration naming any other encoding (UTF-7,
+  // UTF-16, ISO-8859-1, even "UTF8") is refused rather than trusted: a parser
+  // that honours it would read a different document from the one checked here.
+  const declaredEncoding = XML_DECLARED_ENCODING.exec(text);
+  if (declaredEncoding && declaredEncoding[2].toUpperCase() !== "UTF-8") malformed();
   return text;
 }
 
 // ── Metadata storage ─────────────────────────────────────────
-
-/** Symbol key for storing operation metadata on class prototypes. */
-const WSDL_OPS_KEY = Symbol("wsdl_operations");
 
 /**
  * Decorator function for marking methods as WSDL operations.
  *
  *   @WSDLOperation({ description: "Add two numbers", input: { a: "int", b: "int" }, output: { Result: "int" } })
  *   async Add(a: number, b: number): Promise<Record<string, unknown>> { ... }
+ *
+ * Works under both decorator flavours: TC39 standard decorators (what tsx and
+ * esbuild compile by default: `(method, context)`) and TypeScript's
+ * experimentalDecorators (`(prototype, name, descriptor)`).
  */
 export function WSDLOperation(config?: WSDLOperationConfig) {
-  return function (_target: unknown, propertyKey: string, descriptor: PropertyDescriptor) {
+  return function (
+    target: unknown,
+    context: string | symbol | { name: string | symbol },
+    descriptor?: PropertyDescriptor,
+  ): PropertyDescriptor | undefined {
+    const method = (descriptor ? descriptor.value : target) as { _wsdlOp?: WSDLOperationMeta };
+    const name = typeof context === "object" ? context.name : context;
     // Store metadata on the method itself
-    const op: WSDLOperationMeta = {
-      name: propertyKey,
+    method._wsdlOp ??= {
+      name: String(name),
       description: config?.description,
       input: config?.input,
       output: config?.output,
     };
-
-    if (!descriptor.value._wsdlOp) {
-      descriptor.value._wsdlOp = op;
-    }
-
     return descriptor;
   };
 }
