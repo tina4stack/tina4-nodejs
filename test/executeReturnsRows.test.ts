@@ -146,7 +146,7 @@ async function countFrom(reader: Database, table: string): Promise<number> {
 async function runDialect(d: Dialect): Promise<void> {
   console.log(`\n--- ${d.label} ---`);
   if (!d.url) {
-    skip(`${d.label}: execute returns rows`, `${d.urlEnv} not set, ${d.label} not reachable`);
+    skip(`${d.label}: execute returns rows`, `${d.label === "odbc" ? "" : `[needs:${d.label}] `}${d.urlEnv} not set, ${d.label} not reachable`);
     return;
   }
   const L = d.label;
@@ -222,7 +222,12 @@ async function runDialect(d: Dialect): Promise<void> {
 }
 
 console.log("=== execute() returns the rows of a row-producing statement ===");
-for (const d of dialects()) {
+const selectedEngine = process.argv.find(arg => arg.startsWith("--engine="))?.slice("--engine=".length);
+const availableDialects = dialects();
+if (selectedEngine && !availableDialects.some(d => d.label === selectedEngine)) {
+  throw new Error(`Unknown engine: ${selectedEngine}`);
+}
+for (const d of availableDialects.filter(d => !selectedEngine || d.label === selectedEngine)) {
   try {
     await runDialect(d);
   } catch (err) {

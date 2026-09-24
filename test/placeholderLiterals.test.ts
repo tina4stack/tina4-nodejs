@@ -157,7 +157,7 @@ async function attempt<T>(fn: () => Promise<T>): Promise<{ value?: T; error?: st
 async function runDialect(d: Dialect): Promise<void> {
   console.log(`\n--- ${d.label} ---`);
   if (!d.url) {
-    skip(`${d.label}: placeholder literals`, `${d.urlEnv} not set, ${d.label} not reachable`);
+    skip(`${d.label}: placeholder literals`, `${d.label === "odbc" ? "" : `[needs:${d.label}] `}${d.urlEnv} not set, ${d.label} not reachable`);
     return;
   }
   const db = await Database.create(d.url);
@@ -210,7 +210,7 @@ async function runParameterless(): Promise<void> {
   const url = process.env.TINA4_TEST_PG_URL;
   console.log("\n--- postgres: parameterless SQL ---");
   if (!url) {
-    skip("postgres: parameterless_sql_is_sent_as_written", "TINA4_TEST_PG_URL not set, postgres not reachable");
+    skip("postgres: parameterless_sql_is_sent_as_written", "[needs:postgres] TINA4_TEST_PG_URL not set, postgres not reachable");
     return;
   }
   const db = await Database.create(url);
@@ -240,13 +240,19 @@ async function runParameterless(): Promise<void> {
   }
 }
 
+const selectedEngine = process.argv.find(arg => arg.startsWith("--engine="))?.slice("--engine=".length);
+const availableDialects = DIALECTS;
+if (selectedEngine && !availableDialects.some(d => d.label === selectedEngine)) {
+  throw new Error(`Unknown engine: ${selectedEngine}`);
+}
+
 try {
-  await runParameterless();
+  if (!selectedEngine || selectedEngine === "postgres") await runParameterless();
 } catch (err) {
   assert("postgres: parameterless suite ran without error", false, (err as Error).stack ?? String(err));
 }
 
-for (const d of DIALECTS) {
+for (const d of availableDialects.filter(d => !selectedEngine || d.label === selectedEngine)) {
   try {
     await runDialect(d);
   } catch (err) {

@@ -91,7 +91,7 @@ const DIALECTS: Dialect[] = [
 async function runDialect(d: Dialect): Promise<void> {
   console.log(`\n--- ${d.label} ---`);
   if (!d.url) {
-    skip(`${d.label}: fetch count total`, `${d.urlEnv} not set, ${d.label} not reachable`);
+    skip(`${d.label}: fetch count total`, `[needs:${d.label}] ${d.urlEnv} not set, ${d.label} not reachable`);
     return;
   }
   const db = await Database.create(d.url);

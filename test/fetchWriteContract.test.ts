@@ -165,7 +165,7 @@ async function attempt<T>(fn: () => Promise<T>): Promise<{ value?: T; error?: st
 async function runDialect(d: Dialect): Promise<void> {
   console.log(`\n--- ${d.label} ---`);
   if (!d.url) {
-    skip(`${d.label}: fetch-write contract`, `${d.urlEnv} not set, ${d.label} not reachable`);
+    skip(`${d.label}: fetch-write contract`, `${d.label === "odbc" ? "" : `[needs:${d.label}] `}${d.urlEnv} not set, ${d.label} not reachable`);
     return;
   }
 
@@ -266,7 +266,12 @@ async function runDialect(d: Dialect): Promise<void> {
   }
 }
 
-for (const d of DIALECTS) {
+const selectedEngine = process.argv.find(arg => arg.startsWith("--engine="))?.slice("--engine=".length);
+const availableDialects = DIALECTS;
+if (selectedEngine && !availableDialects.some(d => d.label === selectedEngine)) {
+  throw new Error(`Unknown engine: ${selectedEngine}`);
+}
+for (const d of availableDialects.filter(d => !selectedEngine || d.label === selectedEngine)) {
   try {
     await runDialect(d);
   } catch (err) {

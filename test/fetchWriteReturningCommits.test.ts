@@ -136,7 +136,7 @@ async function exactRows(url: string): Promise<number> {
 async function runDialect(d: Dialect): Promise<void> {
   console.log(`\n--- ${d.label} ---`);
   if (!d.url) {
-    skip(`${d.label}: fetch write returning commits`, `${d.urlEnv} not set, ${d.label} not reachable`);
+    skip(`${d.label}: fetch write returning commits`, `[needs:${d.label}] ${d.urlEnv} not set, ${d.label} not reachable`);
     return;
   }
 

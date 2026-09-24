@@ -173,7 +173,7 @@ await check("execute of a plain write keeps its return value", async () => {
 
 const mssqlUrl = process.env.TINA4_TEST_MSSQL_URL;
 if (!mssqlUrl) {
-  skip("execute returns rows for output and exec on sql server", "TINA4_TEST_MSSQL_URL not set, mssql not reachable");
+  skip("execute returns rows for output and exec on sql server", "[needs:mssql] TINA4_TEST_MSSQL_URL not set, mssql not reachable");
 } else {
   await check("execute returns rows for output and exec on sql server", async () => {
     const database = await Database.create(mssqlUrl);
@@ -204,8 +204,8 @@ if (!mssqlUrl) {
 
 const postgresUrl = process.env.TINA4_TEST_PG_URL;
 if (!postgresUrl) {
-  skip("sql with no parameters is sent exactly as written on postgresql", "TINA4_TEST_PG_URL not set, postgres not reachable");
-  skip("jsonb exists functions and literal percent work with parameters on postgresql", "TINA4_TEST_PG_URL not set, postgres not reachable");
+  skip("sql with no parameters is sent exactly as written on postgresql", "[needs:postgres] TINA4_TEST_PG_URL not set, postgres not reachable");
+  skip("jsonb exists functions and literal percent work with parameters on postgresql", "[needs:postgres] TINA4_TEST_PG_URL not set, postgres not reachable");
 } else {
   const database = await Database.create(postgresUrl);
   try {
