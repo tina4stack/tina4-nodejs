@@ -149,12 +149,13 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   return tReq;
 }
 
+
 // ── Request limits (ADR-0068) ────────────────────────────────────────────────
 // Here rather than in a module of their own: request.ts sits below the server
 // and transport.ts, so both can read them without an import cycle, and the
 // core barrel's eager module graph stays one module smaller.
 
-const DEFAULT_MAX_UPLOAD_SIZE = 10_485_760;
+export const DEFAULT_MAX_UPLOAD_SIZE = 10_485_760;
 
 const warnedLimits = new Set<string>();
 
@@ -187,6 +188,7 @@ export function bodyTooLargeMessage(bytes: number | bigint | string, limit: numb
 }
 
 
+
 export class PayloadTooLargeError extends Error {
   public statusCode = 413;
   constructor(actual: number, limit: number) {
@@ -200,14 +202,11 @@ async function parseBody(req: Tina4Request): Promise<void> {
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
 
   // Check content-length header against upload size limit before reading body
-  // Read per request, not at import: the module loads before startServer()
-  // reads .env, so a TINA4_MAX_UPLOAD_SIZE set there used to be ignored. An
-  // unusable value falls back to the default (limits.ts) instead of turning
-  // the cap off, which parseInt's NaN did.
-  const TINA4_MAX_UPLOAD_SIZE = maxUploadSize();
+  const uploadLimit = maxUploadSize();
+
   const declaredLength = parseInt(req.headers["content-length"] ?? "0", 10);
-  if (declaredLength > TINA4_MAX_UPLOAD_SIZE) {
-    throw new PayloadTooLargeError(declaredLength, TINA4_MAX_UPLOAD_SIZE);
+  if (declaredLength > uploadLimit) {
+    throw new PayloadTooLargeError(declaredLength, uploadLimit);
   }
 
   const contentType = req.headers["content-type"] ?? "";
@@ -231,10 +230,10 @@ async function parseBody(req: Tina4Request): Promise<void> {
     req.on("data", (chunk: Buffer) => {
       if (refused) return;
       received += chunk.length;
-      if (received > TINA4_MAX_UPLOAD_SIZE) {
+      if (received > uploadLimit) {
         refused = true;
         chunks.length = 0; // drop what we have; the request is dead
-        reject(new PayloadTooLargeError(received, TINA4_MAX_UPLOAD_SIZE));
+        reject(new PayloadTooLargeError(received, uploadLimit));
         return;
       }
       chunks.push(chunk);
