@@ -159,12 +159,27 @@ export class PostgresAdapter implements DatabaseAdapter {
   // `startAt` lets a caller that has already consumed N placeholders (an UPDATE
   // whose SET values are $1..$N) continue the numbering into a raw WHERE
   // fragment instead of restarting at $1.
+  //
+  // Only REAL placeholders are rewritten: a `?` inside a string literal (incl.
+  // E'...' and $$...$$), a quoted identifier or a comment is left alone. A plain
+  // text replace bound `SELECT 'why?' AS v, ? AS n`'s parameter INTO the
+  // literal and left the real marker unbound (tina4-python#138).
   private convertPlaceholders(sql: string, startAt = 1): string {
-    let count = startAt - 1;
-    return sql.replace(/\?/g, () => {
-      count++;
-      return `$${count}`;
-    });
+    return SQLTranslator.replacePlaceholders(sql, (index) => `$${startAt + index}`);
+  }
+
+  /**
+   * The SQL the driver receives. With NO parameters it is sent EXACTLY as
+   * written (the cross-framework contract): there is nothing to bind, and the
+   * rewrite would turn PostgreSQL's jsonb operators `?`, `?|` and `?&` into
+   * unbound markers.
+   *
+   * tina4: with parameters every `?` outside a literal, quoted identifier or
+   * comment is a placeholder - use jsonb_exists(), jsonb_exists_any() or
+   * jsonb_exists_all() instead of the `?`, `?|` or `?&` operators.
+   */
+  private bindable(sql: string, params?: unknown[]): string {
+    return params && params.length > 0 ? this.convertPlaceholders(sql) : sql;
   }
 
   /**
@@ -232,7 +247,7 @@ export class PostgresAdapter implements DatabaseAdapter {
   /** Async execute for real usage. */
   async executeAsync(sql: string, params?: unknown[]): Promise<unknown> {
     this.ensureConnected();
-    const convertedSql = this.convertPlaceholders(sql);
+    const convertedSql = this.bindable(sql, params);
     const result = await this.client!.query(convertedSql, params);
     if (result.rows?.[0]?.id !== undefined) {
       this._lastInsertId = this.normalizeId(result.rows[0].id);
@@ -247,7 +262,7 @@ export class PostgresAdapter implements DatabaseAdapter {
   /** Async query for real usage. */
   async queryAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
     this.ensureConnected();
-    const convertedSql = this.convertPlaceholders(sql);
+    const convertedSql = this.bindable(sql, params);
     const result = await this.client!.query(convertedSql, params);
     return (result.rows as T[]).map(row => this.decodeBlobs(row));
   }
@@ -257,6 +272,9 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async fetchAsync<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): Promise<T[]> {
+    // A write that returns rows (INSERT/UPDATE/DELETE ... RETURNING) runs exactly
+    // as written: a LIMIT/OFFSET appended to DML is a syntax error (#133 contract).
+    if (SQLTranslator.isWriteStatement(sql)) return this.queryAsync<T>(sql, params);
     let effectiveSql = sql;
     if (limit !== undefined) {
       effectiveSql += ` LIMIT ${limit}`;
@@ -378,7 +396,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     // was broken outright on PostgreSQL.
     if (typeof filter === "string") {
       const sql = filter
-        ? `DELETE FROM "${table}" WHERE ${this.convertPlaceholders(filter)}`
+        ? `DELETE FROM "${table}" WHERE ${this.bindable(filter, params)}`
         : `DELETE FROM "${table}"`;
       try {
         const result = await this.client!.query(sql, params ?? []);

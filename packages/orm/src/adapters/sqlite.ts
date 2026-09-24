@@ -219,7 +219,25 @@ export class SQLiteAdapter implements DatabaseAdapter {
     return (params ? stmt.all(...toSqlParams(params)) : stmt.all()) as T[];
   }
 
+  /**
+   * Run a row-producing statement ONCE and return its rows, for
+   * Database.execute(). execute()'s run() discards rows, so a SELECT or an
+   * `INSERT ... RETURNING` through execute() used to lose them. A write still
+   * records its last insert id, exactly as execute() does.
+   */
+  executeRows<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[] {
+    const rows = this.query<T>(sql, params);
+    if (SQLTranslator.isWriteStatement(sql)) {
+      const last = this.db.prepare("SELECT last_insert_rowid() AS id").get() as { id?: number | bigint } | undefined;
+      if (last?.id !== undefined) this._lastInsertId = last.id;
+    }
+    return rows;
+  }
+
   fetch<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): T[] {
+    // A write that returns rows (INSERT/UPDATE/DELETE ... RETURNING) runs exactly
+    // as written: a LIMIT/OFFSET appended to DML is a syntax error (#133 contract).
+    if (SQLTranslator.isWriteStatement(sql)) return this.query<T>(sql, params);
     // SQLTranslator.appendLimit owns BOTH halves of this decision: it scrubs
     // literals and comments before asking "does the caller already have a
     // LIMIT?", and it appends on a new line so the clause can never land inside

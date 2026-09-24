@@ -259,11 +259,11 @@ export class SQLTranslator {
         return sql
           .replace(/\bBIGINT\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b/gi, "BIGSERIAL PRIMARY KEY")
           .replace(/\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b/gi, "SERIAL PRIMARY KEY")
-          .replace(/\s*\bAUTOINCREMENT\b/gi, "");
+          .split(/\bAUTOINCREMENT\b/gi).map((part, index, parts) => index < parts.length - 1 ? part.trimEnd() : part).join("");
       case "mssql":
         return sql.replace(/AUTOINCREMENT/gi, "IDENTITY(1,1)");
       case "firebird":
-        return sql.replace(/\s*AUTOINCREMENT\b/gi, "");
+        return sql.split(/\bAUTOINCREMENT\b/gi).map((part, index, parts) => index < parts.length - 1 ? part.trimEnd() : part).join("");
       default:
         return sql;
     }
@@ -322,16 +322,103 @@ export class SQLTranslator {
    */
   static placeholderStyle(sql: string, style: string): string {
     if (style === "%s") {
-      return sql.replace(/\?/g, "%s");
+      // A pyformat driver (psycopg, PyMySQL) reads EVERY `%` as the start of a
+      // placeholder once parameters are passed, literals included, so a literal
+      // `%` is doubled before the real `?` markers become `%s` (tina4-python#138).
+      const doubled = sql.replace(/%/g, "%%");
+      return SQLTranslator.replacePlaceholders(doubled, () => "%s");
     }
     if (style.startsWith(":")) {
-      let count = 0;
-      return sql.replace(/\?/g, () => {
-        count++;
-        return `:${count}`;
-      });
+      return SQLTranslator.replacePlaceholders(sql, (i) => `:${i + 1}`);
     }
     return sql;
+  }
+
+  /**
+   * Offsets of the REAL `?` placeholders in a statement: every `?` that is not
+   * inside a string literal ('...', Postgres E'...', dollar-quoted $$...$$ /
+   * $tag$...$tag$), a quoted identifier ("..." or `...`), or a comment (-- to
+   * end of line, /* ... *\/). A plain text replace turned the `?` in
+   * `SELECT 'why?' AS v, ? AS n` into a placeholder and shifted every binding
+   * after it (tina4-python#138).
+   *
+   * @param sql Raw SQL, exactly as the caller wrote it.
+   * @param options.backslashEscapes Treat `\` as an escape inside '...' and
+   *   "..." as well (MySQL's default string syntax). E'...' always does.
+   */
+  static placeholderPositions(sql: string, options: { backslashEscapes?: boolean } = {}): number[] {
+    const positions: number[] = [];
+    const n = sql.length;
+    const isIdent = (ch: string | undefined): boolean => !!ch && /[A-Za-z0-9_]/.test(ch);
+    let i = 0;
+    while (i < n) {
+      const c = sql[i];
+      const next = sql[i + 1];
+
+      if (c === "'" || c === '"' || c === "`") {
+        // E'...' (Postgres escape string) honours backslash escapes; so does
+        // every quoted string when the engine does (MySQL).
+        const prev = sql[i - 1];
+        const escapeString = c === "'" && (prev === "E" || prev === "e") && !isIdent(sql[i - 2]);
+        const backslash = c !== "`" && (escapeString || options.backslashEscapes === true);
+        i++;
+        while (i < n) {
+          if (backslash && sql[i] === "\\") { i += 2; continue; }
+          if (sql[i] === c) {
+            if (sql[i + 1] === c) { i += 2; continue; }
+            i++;
+            break;
+          }
+          i++;
+        }
+        continue;
+      }
+
+      if (c === "-" && next === "-") {
+        while (i < n && sql[i] !== "\n") i++;
+        continue;
+      }
+
+      if (c === "/" && next === "*") {
+        const end = sql.indexOf("*/", i + 2);
+        i = end === -1 ? n : end + 2;
+        continue;
+      }
+
+      if (c === "$" && !isIdent(sql[i - 1])) {
+        const tag = sql.slice(i).match(/^\$([A-Za-z_][A-Za-z0-9_]*)?\$/);
+        if (tag) {
+          const end = sql.indexOf(tag[0], i + tag[0].length);
+          i = end === -1 ? n : end + tag[0].length;
+          continue;
+        }
+      }
+
+      if (c === "?") positions.push(i);
+      i++;
+    }
+    return positions;
+  }
+
+  /**
+   * Replace each REAL `?` placeholder (see placeholderPositions) with
+   * `marker(index)`, index counting from 0. Literals, quoted identifiers and
+   * comments are copied through untouched.
+   */
+  static replacePlaceholders(
+    sql: string,
+    marker: (index: number) => string,
+    options: { backslashEscapes?: boolean } = {},
+  ): string {
+    const positions = SQLTranslator.placeholderPositions(sql, options);
+    if (positions.length === 0) return sql;
+    let out = "";
+    let last = 0;
+    positions.forEach((pos, index) => {
+      out += sql.slice(last, pos) + marker(index);
+      last = pos + 1;
+    });
+    return out + sql.slice(last);
   }
 
   /**
@@ -605,6 +692,88 @@ export class SQLTranslator {
       "i",
     );
     return re.test(SQLTranslator.scrubSqlText(sql));
+  }
+
+  /**
+   * Strip a trailing TOP-LEVEL `ORDER BY` so the statement can be wrapped in
+   * `SELECT COUNT(*) FROM (<sql>) AS _count_query` for the row-count probe.
+   *
+   * SQL Server rejects an ORDER BY inside a derived table unless it carries
+   * TOP/OFFSET/FETCH (error 1033), so the probe failed - and the total fell
+   * back to the page length - for any read ending in ORDER BY. ORDER BY cannot
+   * change a COUNT, so dropping it for the probe ONLY is safe; the paginated
+   * query keeps it. An ORDER BY nested in a subquery, or one already legalised
+   * by a following OFFSET/FETCH/FOR, is left intact. Positions are found on the
+   * scrubbed text, so an `ORDER BY` inside a literal or comment is ignored.
+   * Parity with Python `_strip_trailing_order_by` / PHP `stripTrailingOrderBy`.
+   *
+   * @param sql The read statement the probe is about to wrap.
+   */
+  static stripTrailingOrderBy(sql: string): string {
+    const scrubbed = SQLTranslator.scrubSqlText(sql ?? "");
+    const re = /\bORDER\s+BY\b/gi;
+    let lastTopLevel = -1;
+    for (let m = re.exec(scrubbed); m; m = re.exec(scrubbed)) {
+      const before = scrubbed.slice(0, m.index);
+      const balancedBefore = (before.match(/\(/g)?.length ?? 0) === (before.match(/\)/g)?.length ?? 0);
+      let depth = 0;
+      let balancedAfter = true;
+      for (const ch of scrubbed.slice(m.index)) {
+        if (ch === "(") depth++;
+        else if (ch === ")" && --depth < 0) { balancedAfter = false; break; }
+      }
+      if (balancedBefore && balancedAfter) lastTopLevel = m.index;
+    }
+    if (lastTopLevel === -1) return sql;
+    if (/\b(?:OFFSET|FETCH|FOR)\b/i.test(scrubbed.slice(lastTopLevel))) return sql;
+    return sql.slice(0, lastTopLevel).trimEnd();
+  }
+
+  /**
+   * True when the statement CHANGES data, even though it may return rows.
+   *
+   * fetch()/fetchOne() are the natural way to run a write that RETURNS rows
+   * (`INSERT ... RETURNING id`, SQL Server's `OUTPUT inserted.id`), so they
+   * cannot treat every statement as a read (tina4-python#133). A write is one
+   * whose first word is a DML verb, or a `WITH` whose body holds one (a
+   * data-modifying CTE ends in SELECT). The shared cross-framework contract:
+   * a write through fetch/fetchOne runs exactly once, with no COUNT probe and
+   * no LIMIT/OFFSET/ROWS/TOP pagination, is never cached, and commits like
+   * execute(). Python's `_is_write_statement` answers identically.
+   *
+   * Literals and comments are scrubbed first, so `WHERE note = 'DELETE'` stays
+   * a read. Erring towards "write" is the safe direction: a read misread as a
+   * write only loses its pagination and cache for that one call.
+   *
+   * @param sql Raw SQL, exactly as the caller wrote it.
+   */
+  static isWriteStatement(sql: string): boolean {
+    const scrubbed = SQLTranslator.scrubSqlText(sql ?? "").replace(/^[\s(]+/, "");
+    const verb = (scrubbed.match(/^[A-Za-z]+/)?.[0] ?? "").toUpperCase();
+    if (["INSERT", "UPDATE", "DELETE", "MERGE", "UPSERT", "REPLACE"].includes(verb)) return true;
+    if (verb === "WITH") return /\b(INSERT|UPDATE|DELETE|MERGE)\b/i.test(scrubbed);
+    return false;
+  }
+
+  /**
+   * Which kind of rows a statement produces, for execute() (cross-framework
+   * contract): "read" (SELECT, WITH ... SELECT, VALUES, SHOW, EXPLAIN,
+   * DESCRIBE), "returning" (a write with RETURNING, or SQL Server's OUTPUT
+   * inserted./deleted.), "procedure" (CALL / EXEC / EXECUTE, which may return a
+   * result set), or null for a statement that produces none. A data-modifying
+   * CTE (WITH ... INSERT ... SELECT) produces rows too, so it is "read" here and
+   * a write for isWriteStatement(). Literals and comments are scrubbed first.
+   *
+   * @param sql Raw SQL, exactly as the caller wrote it.
+   */
+  static rowsKind(sql: string): "read" | "returning" | "procedure" | null {
+    const scrubbed = SQLTranslator.scrubSqlText(sql ?? "").replace(/^[\s(]+/, "");
+    const verb = (scrubbed.match(/^[A-Za-z]+/)?.[0] ?? "").toUpperCase();
+    if (["SELECT", "WITH", "VALUES", "SHOW", "EXPLAIN", "DESCRIBE"].includes(verb)) return "read";
+    if (["CALL", "EXEC", "EXECUTE"].includes(verb)) return "procedure";
+    if (SQLTranslator.isWriteStatement(sql)
+      && /\bRETURNING\b|\bOUTPUT\s+(INSERTED|DELETED)\./i.test(scrubbed)) return "returning";
+    return null;
   }
 
   /**

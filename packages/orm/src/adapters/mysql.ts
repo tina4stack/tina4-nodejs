@@ -223,6 +223,9 @@ export class MysqlAdapter implements DatabaseAdapter {
   }
 
   async fetchAsync<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): Promise<T[]> {
+    // A write that returns rows (INSERT/UPDATE/DELETE ... RETURNING) runs exactly
+    // as written: a LIMIT/OFFSET appended to DML is a syntax error (#133 contract).
+    if (SQLTranslator.isWriteStatement(sql)) return this.queryAsync<T>(sql, params);
     let effectiveSql = sql;
     if (limit !== undefined) {
       effectiveSql += ` LIMIT ${limit}`;

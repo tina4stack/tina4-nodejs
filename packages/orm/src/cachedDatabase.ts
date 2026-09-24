@@ -32,7 +32,7 @@
  *   db.cacheStats();                   // { enabled, mode, hits, misses, size, ttl }
  */
 
-import { QueryCache } from "./sqlTranslator.js";
+import { QueryCache, SQLTranslator } from "./sqlTranslator.js";
 import { quoteIdentifierAnsi } from "./adapters/sqlDialect.js";
 import type { DatabaseAdapter, DatabaseResult, ColumnInfo, FieldDefinition } from "./types.js";
 import type { CacheBackend } from "../../core/src/index.js";
@@ -310,11 +310,42 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     if (b) { try { await b.set(key, { row }, this.ttl); } catch { /* best effort */ } }
   }
 
+  /**
+   * A write that arrives through a READ method (fetch/fetchOne/query of an
+   * `INSERT ... RETURNING`) is still a write: its result must never be cached
+   * (a repeat would answer from the cache and never insert) and it flushes the
+   * cache like every other write (tina4-python#133 contract).
+   */
+  private isWriteRead(sql: string): boolean {
+    return this.enabled && SQLTranslator.isWriteStatement(sql);
+  }
+
+  /** Run a write that came through a read method, then flush (never store). */
+  private runWrite<R>(run: () => R): R {
+    try { return run(); } finally { this.invalidate(); }
+  }
+
+  private async runWriteAsync<R>(run: () => Promise<R>): Promise<R> {
+    try { return await run(); } finally { await this.invalidateAsync(); }
+  }
+
   // ── DatabaseAdapter interface — writes flush, reads cache ──
 
   /** ADR-0044 required capability — delegates to the wrapped adapter. */
   connect(): void | Promise<void> {
     return this.adapter.connect?.();
+  }
+
+  /**
+   * The derived-table alias the COUNT probe needs, forwarded from the wrapped
+   * adapter. SQL Server and MySQL REQUIRE `FROM (<sql>) AS _count_query`; the
+   * probe reads this property off whatever adapter it is handed, and
+   * Database.create() hands it THIS wrapper. Without the forward the probe ran
+   * unaliased, the engine rejected it, the error was swallowed, and
+   * `result.count` silently became the page length on those two engines.
+   */
+  get countSubqueryAlias(): string | undefined {
+    return (this.adapter as { countSubqueryAlias?: string } | null)?.countSubqueryAlias;
   }
 
   /** ADR-0044 required capability — delegates to the wrapped adapter. */
@@ -353,6 +384,21 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     return this.adapter.execute(sql, params);
   }
 
+  /**
+   * Forward an adapter's row-returning execute (SQLite, Firebird), for
+   * Database.execute(). Resolves `undefined` when the wrapped adapter has none
+   * - WITHOUT running anything - so the caller falls back to execute().
+   */
+  async executeRowsAsync(sql: string, params?: unknown[]): Promise<unknown[] | undefined> {
+    const inner = this.adapter as unknown as {
+      executeRowsAsync?: (s: string, p?: unknown[]) => Promise<unknown[]>;
+      executeRows?: (s: string, p?: unknown[]) => unknown[];
+    };
+    if (!inner.executeRowsAsync && !inner.executeRows) return undefined;
+    if (this.enabled) await this.invalidateAsync();
+    return inner.executeRowsAsync ? inner.executeRowsAsync(sql, params) : inner.executeRows!(sql, params);
+  }
+
   executeMany(sql: string, paramsList: unknown[][]): import("./types.js").DatabaseResult | { totalAffected: number; lastId?: number | bigint } {
     if (this.enabled) this.invalidate();
     return this.adapter.executeMany(sql, paramsList);
@@ -363,6 +409,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     // so caching here is what makes ORM reads dedupe — matching the Python master
     // where every ORM read flows through the cached db.fetch(). Same store, same
     // counters, flushed on writes.
+    if (this.isWriteRead(sql)) return this.runWrite(() => this.adapter.query<T>(sql, params));
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":Q", params as unknown[] | undefined, this.identity);
       const cached = this.cache.get<T[]>(key);
@@ -383,6 +430,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     // store, run straight against the underlying adapter (mirrors the Python
     // master's `no_cache`). Counters are left untouched so a bypass read isn't
     // misreported as a hit or a miss.
+    if (this.isWriteRead(sql)) return this.runWrite(() => this.adapter.fetch<T>(sql, params, limit, skip));
     if (this.enabled && !noCache) {
       const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined, this.identity);
       const cached = this.cache.get<T[]>(key);
@@ -399,6 +447,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
   }
 
   fetchOne<T = Record<string, unknown>>(sql: string, params?: unknown[], noCache?: boolean): T | null {
+    if (this.isWriteRead(sql)) return this.runWrite(() => this.adapter.fetchOne<T>(sql, params));
     if (this.enabled && !noCache) {
       const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined, this.identity);
       const cached = this.cache.get<T | null>(key);
@@ -494,6 +543,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       : this.adapter.fetch<T>(sql, params, limit, skip);
     // `noCache` bypasses both cache layers for this one call — no lookup, no
     // store, run directly (mirrors the Python master's `no_cache`).
+    if (this.isWriteRead(sql)) return this.runWriteAsync(run);
     if (this.enabled && !noCache) {
       const key = QueryCache.queryKey(sql + `:L${limit}:S${skip}`, params as unknown[] | undefined, this.identity);
       // Persistent distributed backend is AUTHORITATIVE (mirrors Python, where a
@@ -526,6 +576,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
       ? await (this.adapter as any).fetchOneAsync(sql, params)
       : this.adapter.fetchOne<T>(sql, params);
     // `noCache` bypasses both cache layers for this one call (see fetchAsync).
+    if (this.isWriteRead(sql)) return this.runWriteAsync(run);
     if (this.enabled && !noCache) {
       const key = QueryCache.queryKey(sql + ":ONE", params as unknown[] | undefined, this.identity);
       if (this.usesPersistentBackend()) {
@@ -553,6 +604,7 @@ export class CachedDatabaseAdapter implements DatabaseAdapter {
     const run = async (): Promise<T[]> => (this.adapter as any).queryAsync
       ? await (this.adapter as any).queryAsync(sql, params)
       : this.adapter.query<T>(sql, params);
+    if (this.isWriteRead(sql)) return this.runWriteAsync(run);
     if (this.enabled) {
       const key = QueryCache.queryKey(sql + ":Q", params as unknown[] | undefined, this.identity);
       if (this.usesPersistentBackend()) {

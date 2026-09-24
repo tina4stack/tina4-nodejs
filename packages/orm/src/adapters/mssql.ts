@@ -231,12 +231,23 @@ export class MssqlAdapter implements DatabaseAdapter {
    * `startAt` lets a caller that has already consumed N placeholders (an UPDATE
    * whose SET values are @p0..@p{N-1}) continue the numbering into a raw WHERE
    * fragment instead of restarting at @p0.
+   *
+   * Only REAL placeholders are rewritten: a `?` inside a string literal, a
+   * quoted identifier or a comment is left alone (tina4-python#138).
    */
   private convertPlaceholders(sql: string, startAt = 0): string {
-    let count = startAt;
-    return sql.replace(/\?/g, () => {
-      return `@p${count++}`;
-    });
+    return SQLTranslator.replacePlaceholders(sql, (index) => `@p${startAt + index}`);
+  }
+
+  /**
+   * The SQL the driver receives. With NO parameters it is sent EXACTLY as
+   * written (the cross-framework contract): there is nothing to bind.
+   *
+   * tina4: with parameters every `?` outside a literal, quoted identifier or
+   * comment is a placeholder.
+   */
+  private bindable(sql: string, params?: unknown[]): string {
+    return params && params.length > 0 ? this.convertPlaceholders(sql) : sql;
   }
 
   execute(sql: string, params?: unknown[]): unknown {
@@ -275,7 +286,7 @@ export class MssqlAdapter implements DatabaseAdapter {
   async executeAsync(sql: string, params?: unknown[]): Promise<unknown> {
     this.ensureConnected();
     const translated = this.translateSql(sql);
-    const converted = this.convertPlaceholders(translated);
+    const converted = this.bindable(translated, params);
     return this.execSqlPromise(converted, params);
   }
 
@@ -286,7 +297,7 @@ export class MssqlAdapter implements DatabaseAdapter {
   async queryAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
     this.ensureConnected();
     const translated = this.translateSql(sql);
-    const converted = this.convertPlaceholders(translated);
+    const converted = this.bindable(translated, params);
     const result = await this.execSqlPromise(converted, params);
     return result.rows as T[];
   }
@@ -296,6 +307,9 @@ export class MssqlAdapter implements DatabaseAdapter {
   }
 
   async fetchAsync<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): Promise<T[]> {
+    // A write that returns rows (INSERT/UPDATE/DELETE ... RETURNING) runs exactly
+    // as written: a LIMIT/OFFSET appended to DML is a syntax error (#133 contract).
+    if (SQLTranslator.isWriteStatement(sql)) return this.queryAsync<T>(sql, params);
     let effectiveSql = sql;
     if (limit !== undefined && limit > 0) {
       // MSSQL-PAGINATION-DIVERGE: ONE pagination strategy across all four
@@ -430,7 +444,7 @@ export class MssqlAdapter implements DatabaseAdapter {
     // `WHERE [0] = @p0 AND [1] = @p1 ...` — db.truncate() was broken outright.
     if (typeof filter === "string") {
       const sql = filter
-        ? `DELETE FROM [${table}] WHERE ${this.convertPlaceholders(filter)}`
+        ? `DELETE FROM [${table}] WHERE ${this.bindable(filter, params)}`
         : `DELETE FROM [${table}]`;
       try {
         const result = await this.execSqlPromise(sql, params ?? []);

@@ -459,17 +459,32 @@ export interface CorsConfig {
   credentials?: boolean;
 }
 
-/** Warn-once ledger so a scripted probe cannot flood the log. */
-const corsWarned = new Set<string>();
+/** The reasons a CORS warning can be raised for - the ONLY keys the ledger holds. */
+type CorsWarningReason = "unconfigured" | "denied" | "wildcard-credentials";
+
+/**
+ * Warn-once ledger, keyed by REASON only (ADR-0048: denial diagnostics are
+ * bounded - no per-origin ledger, no per-origin warning). The Origin header is
+ * attacker-chosen, so keying by it grew this Set and the log by one entry per
+ * distinct value, forever. It now holds at most one entry per reason, and the
+ * origin value is never retained; a message may still NAME the origin that
+ * first triggered its reason in this process.
+ */
+const corsWarned = new Set<CorsWarningReason>();
 
 /** Reset the CORS warn-once ledger. Test seam. */
 export function resetCorsWarnings(): void {
   corsWarned.clear();
 }
 
-function corsWarnOnce(key: string, message: string): void {
-  if (corsWarned.has(key)) return;
-  corsWarned.add(key);
+/** The reasons warned about so far in this process (bounded by construction). */
+export function corsWarningReasons(): string[] {
+  return [...corsWarned];
+}
+
+function corsWarnOnce(reason: CorsWarningReason, message: string): void {
+  if (corsWarned.has(reason)) return;
+  corsWarned.add(reason);
   Log.warning(message);
 }
 
@@ -551,14 +566,24 @@ export class CorsPolicy {
   /**
    * The CORS headers for a request origin. `isPreflight` adds Max-Age, which
    * the Fetch Standard only defines for a preflight response.
+   *
+   * `sameOrigin` (see isSameOriginRequest) marks a request whose Origin is the
+   * request's OWN origin. Browsers send Origin on every same-origin POST/PUT/
+   * PATCH/DELETE, and such a request needs no CORS headers at all, so it is not
+   * a CORS event: it is never warned about (tina4-python#139). It is handled by
+   * the configured policy exactly like any other request - the flag silences a
+   * warning and never grants anything, so a spoofed Host gains nothing.
+   *
+   * A warning never advises '*': it names the one origin the operator could add.
    */
-  headersFor(requestOrigin: string, isPreflight: boolean): Record<string, string> {
+  headersFor(requestOrigin: string, isPreflight: boolean, sameOrigin = false): Record<string, string> {
     if (this.allowedOrigins.length === 0) {
-      if (requestOrigin) {
+      if (requestOrigin && !sameOrigin) {
         corsWarnOnce("unconfigured",
-          `CORS: refused cross-origin request from ${requestOrigin} — no policy is configured. `
-          + "Set TINA4_CORS_ORIGINS to the origins you want to allow, e.g. "
-          + "TINA4_CORS_ORIGINS=https://app.example.com (or '*' to allow any origin).");
+          `CORS: cross-origin request from ${requestOrigin} got no CORS headers — no policy is `
+          + "configured, so the browser will block the response. If this origin should be allowed, "
+          + `set TINA4_CORS_ORIGINS=${requestOrigin}. (Logged once per process; later origins `
+          + "are not logged.)");
       }
       return {};
     }
@@ -570,10 +595,12 @@ export class CorsPolicy {
 
     const origin = this.resolveOrigin(requestOrigin);
     if (origin === undefined) {
-      if (requestOrigin) {
-        corsWarnOnce(`denied:${requestOrigin}`,
+      if (requestOrigin && !sameOrigin) {
+        corsWarnOnce("denied",
           `CORS: origin ${requestOrigin} is not in TINA4_CORS_ORIGINS `
-          + `(${this.allowedOrigins.join(",")}) — the browser will block this response.`);
+          + `(${this.allowedOrigins.join(",")}) — the browser will block this response. `
+          + `If this origin should be allowed, add ${requestOrigin} to TINA4_CORS_ORIGINS. `
+          + "(Logged once per process; later denied origins are not logged.)");
       }
       return out;
     }
@@ -609,6 +636,39 @@ function applyCorsHeaders(res: Tina4Response, headers: Record<string, string>): 
       continue;
     }
     res.header(name, value);
+  }
+}
+
+/**
+ * Is the request SAME-origin: does its Origin equal the request's own origin?
+ *
+ * The own origin is the request's scheme (first hop of X-Forwarded-Proto, else
+ * the native TLS socket) and host (first hop of X-Forwarded-Host, else Host).
+ * Both sides go through the WHATWG URL parser, so scheme and host compare
+ * case-insensitively and http:80 / https:443 equal the port-less form. An
+ * unparseable Origin (including the opaque "null") is never same-origin.
+ *
+ * Proxy headers are honoured without a trusted-proxy check on purpose: the
+ * answer only decides whether a CORS WARNING is logged, never what the policy
+ * grants, so a forged header gains the sender nothing.
+ */
+export function isSameOriginRequest(req: {
+  headers: Record<string, string | string[] | undefined>;
+  socket?: unknown;
+}): boolean {
+  const first = (value: string | string[] | undefined): string | undefined =>
+    (Array.isArray(value) ? value[0] : value)?.split(",")[0]?.trim() || undefined;
+  const origin = first(req.headers.origin);
+  const host = first(req.headers["x-forwarded-host"]) ?? first(req.headers.host);
+  if (!origin || !host) return false;
+  const encrypted = Boolean((req.socket as { encrypted?: boolean } | undefined)?.encrypted);
+  const scheme = (first(req.headers["x-forwarded-proto"]) ?? (encrypted ? "https" : "http")).toLowerCase();
+  try {
+    const own = new URL(`${scheme}://${host}`).origin;
+    const claimed = new URL(origin).origin;
+    return claimed !== "null" && claimed === own;
+  } catch {
+    return false;
   }
 }
 
@@ -653,7 +713,8 @@ export function cors(config?: CorsConfig): Middleware {
     const requestOrigin = req.headers.origin ?? "";
     const preflight = isCorsPreflight(req.method, requestOrigin);
 
-    applyCorsHeaders(res as Tina4Response, policy.headersFor(requestOrigin, preflight));
+    applyCorsHeaders(res as Tina4Response,
+      policy.headersFor(requestOrigin, preflight, isSameOriginRequest(req as Tina4Request)));
 
     if (preflight) {
       // Carry the resource's REAL method set as Allow (RFC 9110 s9.3.7): a
@@ -688,7 +749,7 @@ export class CorsMiddleware {
     const requestOrigin = req.headers.origin ?? "";
     const preflight = isCorsPreflight(req.method, requestOrigin);
 
-    applyCorsHeaders(res, new CorsPolicy().headersFor(requestOrigin, preflight));
+    applyCorsHeaders(res, new CorsPolicy().headersFor(requestOrigin, preflight, isSameOriginRequest(req)));
 
     if (preflight) {
       res.header("Allow", allowHeaderForUrl(req.url));
@@ -866,6 +927,16 @@ export class RequestLogger {
  *   Router.use(SecurityHeadersMiddleware);
  */
 export class SecurityHeadersMiddleware {
+  /**
+   * Run BEFORE route matching (ADR-0012), so EVERY response gets the headers,
+   * not only a matched route's. Static files, the SPA index.html at "/",
+   * template pages, 404s and 405s are all answered by the not-found fallback
+   * chain, which only the pre-match pass reaches. As a post-match middleware
+   * this left an SPA's front door with no CSP and frameable (tina4-python#137).
+   * The headers read no route metadata, so nothing is lost by running early.
+   */
+  static preMatch = true;
+
   static beforeSecurity(req: Tina4Request, res: Tina4Response): [Tina4Request, Tina4Response] {
     res.header(
       "X-Frame-Options",

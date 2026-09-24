@@ -536,13 +536,27 @@ export class FirebirdAdapter implements DatabaseAdapter {
     return undefined;
   }
 
+  /**
+   * Run a row-producing statement ONCE and return its rows, for
+   * Database.execute(). node-firebird's execute() returns no rows, so a SELECT
+   * or an `INSERT ... RETURNING` through execute() used to lose them.
+   */
+  async executeRowsAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
+    this.ensureConnected();
+    return this.queryAsync<T>(sql, params);
+  }
+
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): T[] {
     throw new Error("Use queryAsync() for Firebird.");
   }
 
   async queryAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
     this.ensureConnected();
-    const rows = await this.queryPromise(sql, params);
+    const result = await this.queryPromise(sql, params);
+    // A singleton statement (`INSERT ... VALUES ... RETURNING id`) comes back from
+    // node-firebird as ONE row object, not an array of rows (MEASURED), so it is
+    // wrapped here rather than iterated as if it were a list.
+    const rows: unknown[] = Array.isArray(result) ? result : (result && typeof result === "object" ? [result] : []);
     const decoded: T[] = [];
     for (const row of rows as T[]) {
       decoded.push(await this.decodeBlobs(foldColumnNames(row)));
@@ -574,6 +588,9 @@ export class FirebirdAdapter implements DatabaseAdapter {
   }
 
   async fetchAsync<T = Record<string, unknown>>(sql: string, params?: unknown[], limit?: number, skip?: number): Promise<T[]> {
+    // A write that returns rows (INSERT/UPDATE/DELETE ... RETURNING) runs exactly
+    // as written: a LIMIT/OFFSET appended to DML is a syntax error (#133 contract).
+    if (SQLTranslator.isWriteStatement(sql)) return this.queryAsync<T>(sql, params);
     let effectiveSql = sql;
     if (limit !== undefined) {
       const offset = skip ?? 0;
@@ -590,7 +607,12 @@ export class FirebirdAdapter implements DatabaseAdapter {
   }
 
   async fetchOneAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | null> {
-    const rows = await this.fetchAsync<T>(sql, params, 1, 0);
+    // A write runs unpaginated: Firebird rejects `INSERT ... RETURNING id ROWS 1
+    // TO 1` (ROWS is not valid on INSERT, and on UPDATE/DELETE it must precede
+    // RETURNING), so fetchOne() of a RETURNING write failed (#133 contract).
+    const rows = SQLTranslator.isWriteStatement(sql)
+      ? await this.queryAsync<T>(sql, params)
+      : await this.fetchAsync<T>(sql, params, 1, 0);
     return rows[0] ?? null;
   }
 
