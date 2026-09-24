@@ -32,15 +32,80 @@ import { isTruthy } from "./dotenv.js";
 import { DevMailbox } from "./devMailbox.js";
 import { Log } from "./logger.js";
 
+// ── Transport security (ADR-0071) ───────────────────────────
+//
+// `encryption` means what it says. Port 465 is always implicit TLS; `ssl` is
+// implicit TLS on ANY port; `tls` / `starttls` upgrade with STARTTLS and FAIL
+// when the server does not offer it; `none` never upgrades. An unknown value
+// is refused when the Messenger is built, so a typo never means cleartext.
+//
+// Every TLS connection verifies the certificate and the host name. There is
+// no Tina4 switch to turn that off (TINA4_MAIL_TLS_INSECURE is withdrawn);
+// `rejectUnauthorized: true` is passed explicitly so NODE_TLS_REJECT_UNAUTHORIZED=0
+// cannot turn it off either. Trust a private CA the standard Node way:
+// NODE_EXTRA_CA_CERTS=/path/ca.pem.
+
+const MAIL_ENCRYPTION_VALUES = ["ssl", "tls", "starttls", "none"];
+
+/** Trim + lowercase an encryption setting, refusing anything that is not a known value. */
+function normaliseEncryption(value: string, kind: "mail" | "IMAP"): string {
+  const normalised = value.trim().toLowerCase();
+  if (!MAIL_ENCRYPTION_VALUES.includes(normalised)) {
+    throw new Error(`Unknown ${kind} encryption '${value}'. Valid values: ${MAIL_ENCRYPTION_VALUES.join(", ")}.`);
+  }
+  return normalised;
+}
+
+type SmtpTransport = "implicit_tls" | "starttls" | "plain";
+
+/** Matches Python's smtplib timeouts: 30 s for a send, 10 s for a connection check. */
+const SMTP_SEND_TIMEOUT_MS = 30_000;
+const SMTP_CHECK_TIMEOUT_MS = 10_000;
+
 /**
- * TLS certificate validation defaults to SECURE (rejectUnauthorized: true).
- * Set TINA4_MAIL_TLS_INSECURE=true to disable validation for dev / self-signed
- * certificates ONLY — never in production. Previously this was hard-coded to
- * `rejectUnauthorized: false`, silently disabling certificate validation for
- * every TLS connection (a man-in-the-middle risk).
+ * Give a socket an idle timeout that fails it with a clear error. Without one a
+ * client that waits for a greeting the server never sends (a plaintext client
+ * on a TLS-only port) hangs forever.
  */
-function tlsRejectUnauthorized(): boolean {
-  return !isTruthy(process.env.TINA4_MAIL_TLS_INSECURE);
+function failOnIdle<T extends net.Socket>(socket: T, timeoutMs: number, what: string): T {
+  socket.setTimeout(timeoutMs, () => {
+    socket.destroy(new Error(`${what} timed out after ${timeoutMs / 1000}s`));
+  });
+  return socket;
+}
+
+/** Open a verified TLS connection (implicit TLS), or upgrade `socket` (STARTTLS). */
+function connectVerifiedTls(host: string, port: number, socket?: net.Socket): Promise<tls.TLSSocket> {
+  const secureSocket = tls.connect({
+    host,
+    port,
+    socket,
+    servername: net.isIP(host) ? undefined : host,
+    rejectUnauthorized: true,
+  });
+  return new Promise((resolve, reject) => {
+    secureSocket.once("secureConnect", () => {
+      secureSocket.removeListener("error", reject);
+      resolve(secureSocket);
+    });
+    secureSocket.once("error", reject);
+  });
+}
+
+function connectPlain(host: string, port: number): Promise<net.Socket> {
+  const socket = net.createConnection({ host, port });
+  return new Promise((resolve, reject) => {
+    socket.once("connect", () => {
+      socket.removeListener("error", reject);
+      resolve(socket);
+    });
+    socket.once("error", reject);
+  });
+}
+
+/** Does this EHLO reply advertise the STARTTLS extension? */
+function offersStarttls(ehloReply: string): boolean {
+  return /^\d{3}[ -]STARTTLS\b/im.test(ehloReply);
 }
 
 /**
@@ -384,7 +449,6 @@ export class Messenger {
   private fromAddress: string;
   private fromName: string;
   private encryption: string;
-  private useTls: boolean;
   /** Whether an SMTP host was actually configured (see the constructor). */
   private smtpConfigured: boolean = false;
   /** The local mailbox, present only when this messenger captures. */
@@ -421,17 +485,18 @@ export class Messenger {
       ?? process.env.TINA4_MAIL_FROM_NAME
       ?? "";
 
-    // Encryption: constructor > .env > backward-compat useTls > default "tls"
-    const envEncryption = options?.encryption
+    // Encryption: constructor > .env > backward-compat useTls > default "tls".
+    // A configured value is validated (ADR-0071): an unknown one, an empty one
+    // included, raises here rather than sending in cleartext later.
+    const configuredEncryption = options?.encryption
       ?? process.env.TINA4_MAIL_ENCRYPTION;
-    if (envEncryption) {
-      this.encryption = envEncryption.toLowerCase();
+    if (configuredEncryption !== undefined) {
+      this.encryption = normaliseEncryption(configuredEncryption, "mail");
     } else if (options?.useTls !== undefined) {
       this.encryption = options.useTls ? "tls" : "none";
     } else {
       this.encryption = "tls";
     }
-    this.useTls = ["tls", "starttls"].includes(this.encryption);
 
     this.imapHost = options?.imapHost
       ?? process.env.TINA4_MAIL_IMAP_HOST
@@ -448,10 +513,23 @@ export class Messenger {
     // IMAP encryption — separate from SMTP encryption because IMAP almost
     // always uses port 993 + implicit TLS while SMTP toggles between 587
     // (STARTTLS) and 465 (implicit TLS). Default is "tls" to match
-    // industry-standard IMAPS port 993 behaviour.
-    this.imapEncryption = (options?.imapEncryption
+    // industry-standard IMAPS port 993 behaviour. "tls" and "ssl" are implicit
+    // TLS, "starttls" is a REQUIRED STARTTLS upgrade, "none" is plaintext; any
+    // other value raises here.
+    this.imapEncryption = normaliseEncryption(options?.imapEncryption
       ?? process.env.TINA4_MAIL_IMAP_ENCRYPTION
-      ?? "tls").toLowerCase();
+      ?? "tls", "IMAP");
+  }
+
+  /**
+   * How the SMTP connection is secured (ADR-0071 section 1). Port 465 is the
+   * implicit-TLS submission port whatever the setting; `ssl` is implicit TLS on
+   * any port; `tls` / `starttls` upgrade with a required STARTTLS; `none` is
+   * plaintext on purpose.
+   */
+  private smtpTransport(): SmtpTransport {
+    if (this.port === 465 || this.encryption === "ssl") return "implicit_tls";
+    return this.encryption === "none" ? "plain" : "starttls";
   }
 
   /**
@@ -507,21 +585,12 @@ export class Messenger {
     return { toList, ccList, bccList, allRecipients };
   }
 
-  private async connectSmtpSocket(): Promise<SmtpSocket> {
-    if (this.port === 465) {
-      const socket = tls.connect({ host: this.host, port: this.port, rejectUnauthorized: tlsRejectUnauthorized() });
-      await new Promise<void>((resolve, reject) => {
-        socket.once("secureConnect", resolve);
-        socket.once("error", reject);
-      });
-      return socket;
+  private async connectSmtpSocket(timeoutMs: number): Promise<SmtpSocket> {
+    const what = `SMTP connection to ${this.host}:${this.port}`;
+    if (this.smtpTransport() === "implicit_tls") {
+      return failOnIdle(await connectVerifiedTls(this.host, this.port), timeoutMs, what);
     }
-    const socket = net.createConnection({ host: this.host, port: this.port });
-    await new Promise<void>((resolve, reject) => {
-      socket.once("connect", resolve);
-      socket.once("error", reject);
-    });
-    return socket;
+    return failOnIdle(await connectPlain(this.host, this.port), timeoutMs, what);
   }
 
   private async requireSmtpResponse(socket: SmtpSocket, command: string, expected: number, failure: string): Promise<{ code: number; text: string }> {
@@ -530,20 +599,23 @@ export class Messenger {
     return response;
   }
 
-  private async openSmtpSession(): Promise<SmtpSocket> {
-    let socket = await this.connectSmtpSocket();
+  /**
+   * Connect, read the greeting, EHLO, and - for the STARTTLS transport - upgrade.
+   * STARTTLS is REQUIRED: when the server does not offer it the session fails
+   * here, before AUTH or MAIL FROM is ever sent.
+   */
+  private async openSmtpSession(timeoutMs: number = SMTP_SEND_TIMEOUT_MS): Promise<SmtpSocket> {
+    let socket = await this.connectSmtpSocket(timeoutMs);
     try {
       await this.requireSmtpResponse(socket, "", 220, "SMTP greeting failed");
       const ehlo = await this.requireSmtpResponse(socket, `EHLO ${this.host}`, 250, "EHLO failed");
-      if (this.useTls && this.port !== 465 && ehlo.text.includes("STARTTLS")) {
+      if (this.smtpTransport() === "starttls") {
+        if (!offersStarttls(ehlo.text)) {
+          throw new SmtpCommandError(`STARTTLS was requested but ${this.host}:${this.port} does not offer it`);
+        }
         await this.requireSmtpResponse(socket, "STARTTLS", 220, "STARTTLS failed");
-        const plainSocket = socket as net.Socket;
-        const secureSocket = tls.connect({ socket: plainSocket, host: this.host, rejectUnauthorized: tlsRejectUnauthorized() });
-        await new Promise<void>((resolve, reject) => {
-          secureSocket.once("secureConnect", resolve);
-          secureSocket.once("error", reject);
-        });
-        socket = secureSocket;
+        socket = failOnIdle(await connectVerifiedTls(this.host, this.port, socket as net.Socket), timeoutMs,
+          `SMTP connection to ${this.host}:${this.port}`);
         await this.requireSmtpResponse(socket, `EHLO ${this.host}`, 250, "EHLO after STARTTLS failed");
       }
       return socket;
@@ -679,42 +751,19 @@ export class Messenger {
    * Test the SMTP connection without sending an email.
    */
   async testConnection(): Promise<{ success: boolean; message: string }> {
+    // Same transport rules as send(): implicit TLS / required STARTTLS / plain,
+    // certificates verified.
+    let socket: SmtpSocket | null = null;
     try {
-      let socket: net.Socket | tls.TLSSocket;
-
-      if (this.port === 465) {
-        socket = tls.connect({ host: this.host, port: this.port, rejectUnauthorized: tlsRejectUnauthorized() });
-        await new Promise<void>((resolve, reject) => {
-          socket.once("secureConnect", resolve);
-          socket.once("error", reject);
-        });
-      } else {
-        socket = net.createConnection({ host: this.host, port: this.port });
-        await new Promise<void>((resolve, reject) => {
-          socket.once("connect", resolve);
-          socket.once("error", reject);
-        });
-      }
-
-      const greeting = await readResponse(socket);
-      if (greeting.code !== 220) {
-        socket.destroy();
-        return { success: false, message: `SMTP greeting failed: ${greeting.text}` };
-      }
-
-      const ehlo = await sendCommand(socket, `EHLO ${this.host}`);
-      if (ehlo.code !== 250) {
-        socket.destroy();
-        return { success: false, message: `EHLO failed: ${ehlo.text}` };
-      }
-
+      socket = await this.openSmtpSession(SMTP_CHECK_TIMEOUT_MS);
       await sendCommand(socket, "QUIT");
-      socket.destroy();
-
       return { success: true, message: `Connected to ${this.host}:${this.port}` };
     } catch (err) {
+      if (err instanceof SmtpCommandError) return { success: false, message: err.message };
       const errMsg = err instanceof Error ? err.message : String(err);
       return { success: false, message: `Connection failed: ${errMsg}` };
+    } finally {
+      socket?.destroy();
     }
   }
 
@@ -731,27 +780,27 @@ export class Messenger {
 
     let socket: net.Socket | tls.TLSSocket;
 
-    // Honour TINA4_MAIL_IMAP_ENCRYPTION when set; otherwise infer from port.
-    // "tls" / "ssl" → implicit TLS connect; anything else → plain connect.
-    const useTls = this.imapEncryption === "tls" || this.imapEncryption === "ssl"
-      || (this.imapEncryption === "" && this.imapPort === 993);
-
-    if (useTls) {
-      socket = tls.connect({ host: this.imapHost, port: this.imapPort, rejectUnauthorized: tlsRejectUnauthorized() });
-      await new Promise<void>((resolve, reject) => {
-        socket.once("secureConnect", resolve);
-        socket.once("error", reject);
-      });
+    // "tls" / "ssl" → implicit TLS; "starttls" → plain connect, then a REQUIRED
+    // STARTTLS upgrade before LOGIN; "none" → plaintext. (Validated in the constructor.)
+    if (this.imapEncryption === "tls" || this.imapEncryption === "ssl") {
+      socket = await connectVerifiedTls(this.imapHost, this.imapPort);
     } else {
-      socket = net.createConnection({ host: this.imapHost, port: this.imapPort });
-      await new Promise<void>((resolve, reject) => {
-        socket.once("connect", resolve);
-        socket.once("error", reject);
-      });
+      socket = await connectPlain(this.imapHost, this.imapPort);
     }
 
     // Read server greeting
     await imapReadLine(socket);
+
+    if (this.imapEncryption === "starttls") {
+      try {
+        await imapCommand(socket, "STARTTLS");
+      } catch {
+        socket.destroy();
+        throw new MessengerConnectionError(
+          `STARTTLS was requested but ${this.imapHost}:${this.imapPort} does not offer it`);
+      }
+      socket = await connectVerifiedTls(this.imapHost, this.imapPort, socket);
+    }
 
     // Login
     if (this.imapUser && this.imapPass) {
