@@ -62,12 +62,14 @@ const TOKEN_PATTERNS: Array<[string, RegExp]> = [
   ["EQUALS", /=/y],
   ["AT", /@/y],
   ["DOLLAR", /\$/y],
-  ["COMMA", /,/y],
   ["STRING", /"(?:[^"\\]|\\.)*"/y],
   ["NUMBER", /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y],
   ["BOOL", /\b(?:true|false)\b/y],
   ["NULL", /\bnull\b/y],
   ["NAME", /[_a-zA-Z]\w*/y],
+  // GraphQL spec 2.1.7: a comma is insignificant, exactly like whitespace. It
+  // used to be a COMMA token that only the argument and variable loops
+  // consumed, so a comma between fields or list values was a parse error.
   ["SKIP", /[\s,]+/y],
   ["COMMENT", /#[^\n]*/y],
 ];
@@ -331,7 +333,6 @@ class Parser {
       const name = this.expect("NAME").value;
       this.expect("COLON");
       args[name] = this.parseValue();
-      this.match("COMMA");
     }
     return args;
   }
@@ -416,7 +417,6 @@ class Parser {
         defaultVal = this.parseValue();
       }
       defs.push({ name, type: typeName, default: defaultVal });
-      this.match("COMMA");
     }
     return defs;
   }
