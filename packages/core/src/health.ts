@@ -18,9 +18,12 @@ export function healthPath(): string {
 function buildHandler(version: string): RouteHandler {
   return (_req, res) => {
     const uptimeSeconds = (Date.now() - startTime) / 1000;
+    // ADR-0078 (supersedes the ADR-0016 key set): the exact version is only
+    // disclosed in debug mode.
+    const debug = ["true", "1", "yes", "on"].includes((process.env.TINA4_DEBUG ?? "").trim().toLowerCase());
     res.json({
       status: "ok",
-      version,
+      ...(debug ? { version } : {}),
       uptime: Math.round(uptimeSeconds * 100) / 100,
       framework: "tina4-nodejs",
     });
