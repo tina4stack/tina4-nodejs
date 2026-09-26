@@ -1,0 +1,40 @@
+# Copyright (c) 2026 Code Infinity
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+# Doc-drift gate: fail a PR when the packaged CLAUDE.md documents a @tina4
+# import the code does not export. Fast, no live services, no build -- the gate
+# reads the live export surface straight from each package's barrel source.
+name: Doc Drift
+
+on:
+  push:
+    branches: [v3]
+  pull_request:
+    branches: [v3]
+
+jobs:
+  doc-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 22+ — tsx runs the TypeScript gate directly (no build step).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Only tsx + typescript are needed to run the gate; a full install keeps
+      # it simple and matches the other workflows.
+      - name: Install dependencies
+        run: npm install
+
+      # Prove the gate itself is a real gate (RED on mutation, GREEN on the
+      # live tree) before trusting its verdict on the packaged CLAUDE.md.
+      - name: Doc-drift gate self-test (mutation-proof)
+        run: npx tsx test/docDrift.test.ts
+
+      - name: Audit packaged CLAUDE.md against the live exports
+        run: npx tsx scripts/auditDocDrift.ts --strict
