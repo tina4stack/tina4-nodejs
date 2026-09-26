@@ -320,6 +320,9 @@ function runConsumer(appDir: string, file: string, extraEnv: Record<string, stri
     TMPDIR: process.env.TMPDIR ?? tmpdir(),
     TINA4_NO_BROWSER: "true",
     TINA4_DEBUG: "false",
+    // A production app must carry a real signing secret: outside dev the
+    // server refuses to boot without one (ADR-0079 s2).
+    TINA4_SECRET: "zero-dependency-consumer-secret-0123456789abcdef",
     ...extraEnv,
   };
   // stdout AND stderr, always: the framework logs to both, and a test that

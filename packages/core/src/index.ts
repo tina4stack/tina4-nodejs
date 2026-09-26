@@ -90,6 +90,7 @@ export type { ServiceOptions, ServiceContext, ServiceHandler, ServiceInfo } from
 export { responseCache, clearCache, cacheStats, cacheGet, cacheSet, cacheDelete, cacheClear, cacheBackendStats, sweep, createBackend, _resetBackend } from "./cache.js";
 export type { ResponseCacheConfig, CacheBackend } from "./cache.js";
 export { Api, ApiStreamError, parseLineStream, parseSseStream } from "./api.js";
+export { guardUrl, isBlockedAddress, allowPrivateRequests, SsrfError, ALLOW_PRIVATE_ENV } from "./ssrf.js";
 export type { ApiResult, ApiOptions, ApiTransport, DownloadResult, UploadOptions, StreamOptions, SseEvent } from "./api.js";
 export { Context, defaultContext, existingContext, fts5Supported, _sharedContexts } from "./context/index.js";
 export type { SearchHit } from "./context/index.js";

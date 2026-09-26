@@ -31,7 +31,7 @@ const LAN_IP = Object.values(networkInterfaces()).flat().find((i) => i && !i.int
 if (!LAN_IP) throw new Error("A real non-loopback interface is required for dev peer tests");
 const TEST_DIR = join(BASE_DIR, "app");
 const SIBLING_DIR = join(BASE_DIR, "app-sibling");
-const SECRET = "dev-surface-secret-0078";
+const SECRET = "dev-surface-secret-0078-0123456789ab";
 
 let pass = 0;
 let fail = 0;
@@ -114,7 +114,7 @@ process.chdir(TEST_DIR);
 setEnv({
   TINA4_RATE_LIMIT: "100000", TINA4_NO_AI_PORT: "true", TINA4_CSRF: undefined,
   TINA4_MCP: undefined, TINA4_MCP_REMOTE: undefined, TINA4_MCP_TOKEN: undefined,
-  TINA4_API_KEY: undefined, TINA4_HOST: undefined, TINA4_SECRET: "app-secret",
+  TINA4_API_KEY: undefined, TINA4_HOST: undefined, TINA4_SECRET: "app-secret-0123456789abcdef0123456",
   TINA4_DATABASE_URL: undefined,
 });
 

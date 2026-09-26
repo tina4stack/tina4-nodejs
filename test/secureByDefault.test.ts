@@ -52,7 +52,7 @@ function assert(label: string, condition: boolean, detail = "") {
   }
 }
 
-const SECRET = "secure-test-secret";
+const SECRET = "secure-test-secret-0123456789abc";
 process.env.TINA4_SECRET = SECRET;
 process.env.TINA4_RATE_LIMIT = "100000";
 process.env.TINA4_NO_BROWSER = "true";
@@ -213,7 +213,7 @@ try {
   {
     // A token signed with the WRONG secret -- the case a copy of the gate can
     // never get wrong, because the copy and the original share the same helper.
-    const foreign = getToken({ userId: 99 }, "a-completely-different-secret", 3600);
+    const foreign = getToken({ userId: 99 }, "a-completely-different-secret-0123", 3600);
     const r = await call("POST", "/api/data", { Authorization: `Bearer ${foreign}` });
     assert("Foreign-secret Bearer on POST returns a real 401", r.status === 401, `status=${r.status}`);
   }

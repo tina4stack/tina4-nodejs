@@ -134,7 +134,7 @@ assert(
 // `import { anything } from "@tina4/core"`. A ceiling is the only defence: it
 // does not make the barrel lazy, it stops it quietly getting worse.
 const coreGraph = importGraph(coreBarrel);
-const CORE_MODULE_CEILING = 81; // measured 79 through 3.13.137; 80 with optionalPackage.ts (ADR-0067: ~40 lines, no imports, the one "npm install <driver>" error every optional-peer path shares); 81 with transport.ts (ADR-0068: the node:http wrapper every listener uses - rejection shape, header cap, timeouts, refused-upload close; ~330 lines, imports only modules already in the graph). Raise deliberately, with a fresh measurement, only when new features are added to the barrel
+const CORE_MODULE_CEILING = 83; // measured 79 through 3.13.137; 80 with optionalPackage.ts (ADR-0067: ~40 lines, no imports, the one "npm install <driver>" error every optional-peer path shares); 81 with transport.ts (ADR-0068: the node:http wrapper every listener uses - rejection shape, header cap, timeouts, refused-upload close; ~330 lines, imports only modules already in the graph); 83 for 3.13.139 with ssrf.ts (ADR-0084: outbound SSRF guard the Api client + Web Push both call - private/internal address refusal, ~220 lines) and ssoIdentity.ts (ADR-0079: the identity-token predicate the auth gates + SSO share, ~20 lines). Raise deliberately, with a fresh measurement, only when new features are added to the barrel
 assert(
   `core barrel eager graph within ceiling (${coreGraph.size} <= ${CORE_MODULE_CEILING})`,
   coreGraph.size <= CORE_MODULE_CEILING,

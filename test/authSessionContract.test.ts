@@ -74,7 +74,7 @@ function withTempDir(body: (dir: string) => void): void {
 
 // ── Test fixtures ─────────────────────────────────────────────────
 
-const SECRET = "auth-session-contract-secret";
+const SECRET = "auth-session-contract-secret-012";
 process.env.TINA4_SECRET = SECRET;
 delete process.env.TINA4_JWT_ALGORITHM;
 delete process.env.TINA4_SESSION_BACKEND;

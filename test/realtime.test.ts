@@ -41,7 +41,7 @@ import { join } from "node:path";
 delete process.env.DATABASE_URL; // pre-3.12 unprefixed vars would be refused
 delete process.env.SECRET;
 delete process.env.TINA4_DEBUG; // no dev toolbar / no second AI port
-process.env.TINA4_SECRET = "rt-test-secret";
+process.env.TINA4_SECRET = "rt-test-secret-0123456789abcdef0";
 const dbDir = mkdtempSync(join(tmpdir(), "tina4-rt-"));
 process.env.TINA4_DATABASE_URL = "sqlite:///" + join(dbDir, "rt.db");
 

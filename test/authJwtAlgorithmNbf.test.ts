@@ -51,7 +51,7 @@ function assertThrows(label: string, fn: () => unknown, messageCheck: (message: 
   }
 }
 
-const SECRET = "jwt-cluster-regression-secret";
+const SECRET = "jwt-cluster-regression-secret-01";
 const HMAC_ALGORITHMS = ["HS256", "HS384", "HS512"] as const;
 /** node:crypto digest name + digest SIZE IN BYTES for each HMAC algorithm. */
 const DIGEST_FOR: Record<string, { digest: string; bytes: number }> = {

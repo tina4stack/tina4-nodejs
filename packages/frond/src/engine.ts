@@ -1794,6 +1794,15 @@ function _buildFormTokenJwt(descriptor: string = ""): string {
   // AND a ''-forged token was accepted (CSRF-NODE-SECRET-SPLIT, feature 37).
   // The generator and the validator MUST resolve the same secret.
   const secret = process.env.TINA4_SECRET ?? "";
+  // Same rule as core auth (ADR-0079 s2): never sign with a blank or short key,
+  // which would make every form token reproducible by anyone.
+  const secretBytes = Buffer.byteLength(secret, "utf8");
+  if (secretBytes < 32) {
+    throw new Error(
+      `Auth: TINA4_SECRET ${secretBytes === 0 ? "is not set" : `is ${secretBytes} bytes`}; an HMAC JWT secret must be at least 32 bytes. ` +
+      "Generate one with `openssl rand -hex 32` and set TINA4_SECRET in your environment or .env.",
+    );
+  }
   const ttlMinutes = parseInt(process.env.TINA4_TOKEN_LIMIT || "60", 10);
 
   const header = { alg: "HS256", typ: "JWT" };

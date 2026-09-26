@@ -205,7 +205,7 @@ export default async function (req: any, res: any) {
 `);
 
 process.env.TINA4_CSRF = "true";
-process.env.TINA4_SECRET = "issue134-node-secret";
+process.env.TINA4_SECRET = "issue134-node-secret-0123456789abcd";
 process.env.TINA4_DEBUG = "false";
 process.env.TINA4_RATE_LIMIT = "100000";
 process.env.TINA4_SESSION_PATH = SESSION_DIR;

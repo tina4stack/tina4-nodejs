@@ -160,6 +160,16 @@ const CREATE_TABLE: Record<string, string> = {
     `,
 };
 
+/** How many times ensureTable() tries the CREATE before a failure is real. */
+const CREATE_ATTEMPTS = 5;
+/** Base pause between tries; it grows linearly (50, 100, 150, 200 ms). */
+const CREATE_RETRY_DELAY_MS = 50;
+
+/** Block this thread for `ms` - the SessionHandler interface is synchronous. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
  * Read a column out of a result row, case-insensitively.
  *
@@ -223,6 +233,12 @@ export class DatabaseSessionHandler implements SessionHandler {
   private get sqlite(): any {
     if (this.sqliteHandle === null) {
       this.sqliteHandle = new DatabaseSync(this.dbPath as string);
+      // Wait up to 5 s for another process's write lock instead of failing at
+      // once with "database is locked" - node:sqlite's default is NO wait, so
+      // racing processes collided on the first overlap (five of six died,
+      // measured). 5000 ms matches PHP's busyTimeout(5000) and Python's sqlite3
+      // default. Set BEFORE the WAL pragma so that write waits too.
+      this.sqliteHandle.exec("PRAGMA busy_timeout = 5000");
       this.sqliteHandle.exec("PRAGMA journal_mode = WAL");
     }
     return this.sqliteHandle;
@@ -342,14 +358,55 @@ export class DatabaseSessionHandler implements SessionHandler {
   }
 
   /**
-   * Ensure the session table exists (called once on first use).
+   * Ensure the session table exists (called once on first use) - safely when
+   * several processes race to create it.
+   *
+   * Every per-engine statement above is check-then-act, so two processes can
+   * both find the table absent and both CREATE; the loser errors, and every
+   * engine spells that differently (a pg_type unique violation on PostgreSQL,
+   * Msg 2714 on SQL Server, an RDB$RELATIONS unique violation on Firebird). So
+   * a failure is judged by RE-CHECKING whether the table now exists, never by
+   * parsing the message - the rescue the Firebird note above has always
+   * assumed, and which was not here. MEASURED on the lab before it: six real
+   * processes racing lost one to five of them on PostgreSQL, SQLite and
+   * Firebird.
+   *
+   * The re-check is RETRIED because the loser can fail BEFORE the winner has
+   * committed. On MySQL, CREATE TABLE IF NOT EXISTS takes a shared metadata
+   * lock, checks, then upgrades it to exclusive; two upgrades deadlock, and when
+   * MySQL cannot back the victim off silently it answers 1213 "Deadlock found"
+   * while the winner's table is still invisible (tina4-php CI run 35972320442).
+   * Bounded, so a genuine failure (no CREATE grant) still throws. Same attempts
+   * and delays in all four frameworks.
    */
   private ensureTable(): void {
     if (this.initialized) return;
     const ddl = CREATE_TABLE[this.engine];
-    if (this.target === null) this.sqlite.exec(ddl);
-    else sqlCommandSync(this.target, ddl, []);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        if (this.target === null) this.sqlite.exec(ddl);
+        else sqlCommandSync(this.target, ddl, []);
+        break;
+      } catch (error) {
+        if (this.tableExists()) break;
+        if (attempt >= CREATE_ATTEMPTS) throw error;
+        sleepSync(CREATE_RETRY_DELAY_MS * attempt);
+      }
+    }
     this.initialized = true;
+  }
+
+  /**
+   * Whether tina4_session exists, asked the one way every engine answers alike:
+   * a query against it that returns no rows succeeds only if it is there.
+   */
+  private tableExists(): boolean {
+    try {
+      this.query("SELECT 1 FROM tina4_session WHERE 1 = 0", []);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   read(sessionId: string): SessionData | null {
