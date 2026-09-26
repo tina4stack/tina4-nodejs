@@ -501,12 +501,6 @@ function printResolution(): void {
   process.stderr.write(lines.join("\n"));
 }
 
-function toPlural(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower.endsWith("s")) return lower;
-  if (lower.endsWith("y") && !/[aeiou]y$/i.test(lower)) return lower.slice(0, -1) + "ies";
-  return lower + "s";
-}
 
 function toCamel(name: string): string {
   return name.charAt(0).toLowerCase() + name.slice(1);
@@ -722,7 +716,7 @@ const NEXT_STEPS: Record<string, (c: NextContext) => string[]> = {
   crud: ({ name, table }) => [
     `Apply the migration:   npx tina4nodejs migrate`,
     `Serve and try:         npx tina4nodejs serve  ->  visit /swagger`,
-    `Run the gate test:     npx tsx tests/${toPlural(table)}.test.ts`,
+    `Run the gate test:     npx tsx tests/${pluralizeReserved(toSnake(name))}.test.ts`,
     `Change fields: edit src/models/${name}.ts then re-run generate crud`,
   ],
   migration: () => [
@@ -740,10 +734,10 @@ const NEXT_STEPS: Record<string, (c: NextContext) => string[]> = {
   ],
   form: ({ name, table }) => [
     `Render from a route:  res.render("forms/${table}.twig", { item })`,
-    `Add the POST route:   npx tina4nodejs generate route ${toPlural(table)} --model ${name}`,
+    `Add the POST route:   npx tina4nodejs generate route ${pluralizeReserved(toSnake(name))} --model ${name}`,
   ],
-  view: ({ table }) => [
-    `Wire routes to render list -> ${toPlural(table)}.twig, detail -> ${table}.twig`,
+  view: ({ name, table }) => [
+    `Wire routes to render list -> ${pluralizeReserved(toSnake(name))}.twig, detail -> ${table}.twig`,
     `Customize the templates in src/templates/pages/`,
   ],
   auth: () => [
@@ -1253,7 +1247,7 @@ function generateCrud(name: string, flags: Record<string, string | boolean>): vo
   // Composite: quiet here (announce=false); the generateModel sub-call below is
   // the one that announces, so the reserved-word note prints exactly once.
   const table = resolveTable(name, flags, { announce: false });
-  const routeName = toPlural(table);
+  const routeName = pluralizeReserved(toSnake(name));
   const isPublic = Boolean(flags.public);
 
   // Human-only banners; suppressed under --json to keep stdout parseable
@@ -1602,7 +1596,7 @@ void test${titleName};
 function generateForm(name: string, flags: Record<string, string | boolean>): void {
   const fields = fieldsOrDefault((flags.fields as string) || "");
   const table = resolveTable(name, flags, { announce: false });
-  const routeName = toPlural(table);
+  const routeName = pluralizeReserved(toSnake(name));
 
   const inputTypes: Record<string, string> = {
     string: "text", str: "text", text: "textarea",
@@ -1680,7 +1674,7 @@ function generateForm(name: string, flags: Record<string, string | boolean>): vo
 function generateView(name: string, flags: Record<string, string | boolean>): void {
   const fields = fieldsOrDefault((flags.fields as string) || "");
   const table = resolveTable(name, flags, { announce: false });
-  const routeName = toPlural(table);
+  const routeName = pluralizeReserved(toSnake(name));
 
   const cols = fields.map(([f]) => f);
 

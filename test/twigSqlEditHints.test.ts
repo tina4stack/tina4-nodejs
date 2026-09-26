@@ -154,8 +154,8 @@ console.log("--- 1. `generate form MyForm` — twig `{# tina4:edit ... #}` marke
     assert("stdout is valid JSON", env !== null);
     if (env === null) throw new Error("stopping form test — no envelope");
 
-    // Form emits src/templates/forms/<table>.twig ; toTableName lower-cases +
-    // pluralises MyForm -> myforms (via toSnake then toPlural inside table).
+    // Form emits src/templates/forms/<table>.twig ; the route name is the single
+    // plural of the singular base (pluralizeReserved(toSnake(name))).
     // (Actual filename computed by generator; assert on ANY twig hint under forms/.)
     const res = env.resolution as Record<string, unknown>;
     const hints = (res.edit_hints as EditHintShape[] | undefined) ?? [];
