@@ -279,6 +279,8 @@ test("valid generated session id is accepted unchanged", (check) => {
     const session = new Session("file", { path: dir, ttl: 3600 });
     const minted = session.start();
     check(isValidSessionId(minted), `the framework's own minted id is rejected: ${minted}`);
+    session.set("k", "v"); // stored on its first write; strict mode resumes only stored ids
+    session.save();
 
     const resumed = new Session("file", { path: dir, ttl: 3600 });
     check(resumed.start(minted) === minted, "a self-minted id was not resumed as-is");

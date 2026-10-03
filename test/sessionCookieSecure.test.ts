@@ -69,8 +69,10 @@ function setCookie(
 try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* fresh */ }
 mkdirSync(join(TEST_DIR, "src/routes/api/ping"), { recursive: true });
 writeFileSync(join(TEST_DIR, "package.json"), '{"type":"module"}');
+// It writes the session: a cookie is sent only for a session a request wrote to.
 writeFileSync(join(TEST_DIR, "src/routes/api/ping/get.ts"), `
 export default async function (req: any, res: any) {
+  req.session.set("seen", true);
   return res.json({ ok: true });
 }
 `);

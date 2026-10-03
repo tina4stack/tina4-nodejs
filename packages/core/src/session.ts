@@ -610,12 +610,14 @@ export class Session {
       }
     }
 
-    // Generate new session
+    // Generate new session. Nothing is written for it yet: a session nobody
+    // writes to has nothing to keep, and writing it here stored one record for
+    // every request that arrived without a cookie (static files, 404s and
+    // /health included). Its first save() after a change writes it whole.
     this.sessionId = randomBytes(16).toString("hex");
     const now = Math.floor(Date.now() / 1000);
     this.data = { _created: now, _accessed: now };
     this.dirty = false;
-    this.safeWrite(this.sessionId, this.data, this.ttl);
     this.stored = false;
     this.loaded = new Map();
     this.cleared = false;
@@ -786,6 +788,20 @@ export class Session {
   }
 
   /**
+   * Whether this session is only an id: nothing has stored it and it holds no
+   * data of its own (its `_created` / `_accessed` bookkeeping does not count).
+   * Such a session has no record and needs no cookie, so save() writes nothing
+   * for it and the server sends no cookie for it. It stops being fresh when
+   * something is stored in it. Calls that mark a session changed without leaving
+   * anything in it (deleting a key it never had, clear(), regenerate() on an
+   * empty session) leave it fresh: a record with no data is not a session.
+   */
+  isFresh(): boolean {
+    if (this.stored) return false;
+    return !this.data || Object.keys(this.data).every((k) => k === "_created" || k === "_accessed");
+  }
+
+  /**
    * Get the current session ID.
    */
   getSessionId(): string | null {
@@ -850,7 +866,7 @@ export class Session {
    */
   save(): boolean {
     if (!this.sessionId || !this.data) return true;
-    if (!this.dirty && !this.stored) return true;
+    if (this.isFresh()) return true;
     let record: SessionData = this.data;
     if (this.stored) {
       const current = this.safeRead(this.sessionId);
@@ -1017,4 +1033,30 @@ export function buildSessionCookie(
   if (secure) parts.push("Secure");
   parts.push(`Max-Age=${ttl}`);
   return parts.join("; ");
+}
+
+/**
+ * The Set-Cookie value that hands the client this request's session, or null
+ * when none is owed: the client already holds the id, headers have gone out, or
+ * the session is fresh. A fresh session (only an id: minted for this request
+ * and holding no data) was not stored, so a cookie for it would name nothing:
+ * the next request could not resume it and would be handed another one.
+ */
+export function sessionCookieToSend(
+  sess: { isFresh(): boolean },
+  existingSid: string | undefined,
+  rawReq: { headers: Record<string, string | string[] | undefined>; socket?: unknown },
+  rawRes: { headersSent: boolean },
+): string | null {
+  const newSid = (sess as any).sessionId ?? (sess as any).getSessionId?.();
+  if (!newSid || newSid === existingSid || sess.isFresh() || rawRes.headersSent) return null;
+  const ttl = parseInt(process.env.TINA4_SESSION_TTL ?? "3600", 10);
+  // Thread the client's real scheme in so an HTTPS deploy behind a
+  // TLS-terminating proxy ships the session cookie with `Secure`
+  // (nodejs#34). `x-forwarded-proto` is the same header request.ts trusts
+  // for URL construction; native socket TLS is the fallback.
+  const xfProto = rawReq.headers["x-forwarded-proto"];
+  const forwardedProto = Array.isArray(xfProto) ? xfProto[0] : xfProto;
+  const socketEncrypted = (rawReq.socket as { encrypted?: boolean } | undefined)?.encrypted === true;
+  return buildSessionCookie(newSid, ttl, undefined, forwardedProto, socketEncrypted);
 }

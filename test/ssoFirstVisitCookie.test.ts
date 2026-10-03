@@ -18,10 +18,11 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * the users who had no session yet.
  *
  * NODE IS NOT AFFECTED. sessionAutoStart (dispatchPipeline.ts) emits the cookie
- * whenever the session id differs from the one the request brought, with no
- * emptiness test: a first visit always gets its cookie, and Session.start()
- * persists the new record straight away. all() hiding underscore keys has no
- * bearing on the cookie.
+ * whenever the session id differs from the one the request brought and the
+ * session is not fresh (Session.isFresh(): never stored AND holding no data of
+ * its own). Sso.login() writes the pending state, so the session is not fresh and
+ * its first visit gets its cookie. isFresh() looks at the RAW data, never at all(),
+ * so all() hiding underscore keys has no bearing on the cookie.
  *
  * NO MOCKS: a REAL startServer() mounts the framework's OWN configured SSO routes
  * (/auth/login, /auth/callback via Sso.mountConfigured) against a REAL local
