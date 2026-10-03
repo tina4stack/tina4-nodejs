@@ -154,6 +154,26 @@ const MAX_REDIRECTS = 10;
 const STRIP_ON_CROSS_ORIGIN: ReadonlySet<string> = new Set(["authorization", "cookie"]);
 
 /**
+ * The only headers carried onto a different origin. A caller-set header can
+ * hold a credential under any name (X-Api-Key, X-Auth-Token, ...), so a
+ * denylist cannot contain it: the headers configured on the client (and any
+ * per-call header, on a redirect) are bound to the origin they were meant for,
+ * and only these content-negotiation headers cross. Lower-case.
+ */
+const KEEP_ON_CROSS_ORIGIN: ReadonlySet<string> = new Set([
+    "user-agent", "accept", "accept-encoding", "accept-language", "content-type", "content-length",
+]);
+
+/** Only the headers allowed onto a different origin (KEEP_ON_CROSS_ORIGIN). */
+function keepCrossOriginHeaders(headers: Record<string, string>): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+        if (KEEP_ON_CROSS_ORIGIN.has(key.toLowerCase())) out[key] = value;
+    }
+    return out;
+}
+
+/**
  * Minimal extension → MIME map for guessing a multipart part's Content-Type.
  * Kept in-repo so the client stays zero-dependency (Node has no stdlib
  * mimetypes). Values match Python's `mimetypes.guess_type` for these common
@@ -910,6 +930,19 @@ export class Api {
     }
 
     /**
+     * The headers configured on the client, as they may go to `targetUrl`.
+     *
+     * They belong to the base origin, like the token: an absolute target on
+     * another origin gets only the cross-origin-safe ones. A client with no
+     * base has no origin to bind them to, and sends them to the URL each call
+     * names.
+     */
+    private configuredHeadersFor(targetUrl?: string): Record<string, string> {
+        const offOrigin = targetUrl !== undefined && this.baseUrl !== "" && !sameOrigin(targetUrl, this.baseUrl);
+        return offOrigin ? keepCrossOriginHeaders(this.headers) : this.headers;
+    }
+
+    /**
      * Build the request headers (default User-Agent + auth + cookie jar +
      * extras) and serialize the body to a Buffer. Shared by every verb,
      * upload, and download so the wire shape is identical and the transport
@@ -929,7 +962,7 @@ export class Api {
         extraHeaders?: Record<string, string>,
         targetUrl?: string,
     ): { headers: Record<string, string>; data: Buffer | undefined } {
-        const headers: Record<string, string> = { "User-Agent": `Tina4/${TINA4_VERSION}`, ...this.headers };
+        const headers: Record<string, string> = { "User-Agent": `Tina4/${TINA4_VERSION}`, ...this.configuredHeadersFor(targetUrl) };
         // Attach the configured Authorization / Cookie ONLY when the request
         // target is same-origin as the configured base. A path that is itself
         // an absolute off-origin URL (e.g. get("http://evil/x")) otherwise
@@ -1066,9 +1099,9 @@ export class Api {
      * Location, this drains the intermediate response and re-issues to the new
      * URL: 301/302/303 on a non-GET/HEAD become GET (body dropped, urllib
      * behaviour); 307/308 preserve method + body. When the redirect target is a
-     * DIFFERENT origin, the Authorization and Cookie headers are stripped so a
-     * bearer token / session cookie never leaks to a host you didn't
-     * authenticate to.
+     * DIFFERENT origin, only KEEP_ON_CROSS_ORIGIN headers are carried, so a
+     * bearer token, session cookie or any caller-set credential header never
+     * leaks to a host you didn't authenticate to.
      */
     private async performRequest(
         method: string,
@@ -1128,7 +1161,7 @@ export class Api {
                     const crossOrigin = !sameOrigin(url, nextUrl);
                     let nextMethod = method;
                     let nextData = data;
-                    const nextHeaders: Record<string, string> = { ...headers };
+                    const nextHeaders: Record<string, string> = crossOrigin ? keepCrossOriginHeaders(headers) : { ...headers };
 
                     // 301/302/303 on a body-bearing method → GET, drop the body
                     // (matches urllib's HTTPRedirectHandler); 307/308 preserve.
@@ -1141,12 +1174,6 @@ export class Api {
                         nextData = undefined;
                         deleteHeaderCaseInsensitive(nextHeaders, "content-type");
                         deleteHeaderCaseInsensitive(nextHeaders, "content-length");
-                    }
-
-                    if (crossOrigin) {
-                        for (const name of STRIP_ON_CROSS_ORIGIN) {
-                            deleteHeaderCaseInsensitive(nextHeaders, name);
-                        }
                     }
 
                     this.performRequest(nextMethod, nextUrl, nextHeaders, nextData, redirectsLeft - 1).then(resolve);
