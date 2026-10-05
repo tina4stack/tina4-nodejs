@@ -1,6 +1,6 @@
 ---
 name: tina4-developer-nodejs
-updated_for_version: 3.13.105
+updated_for_version: 3.13.147
 description: >
   Use whenever a developer is building a Node.js / TypeScript application with the Tina4 framework
   (the `tina4-nodejs` package). Trigger when the user wants to create file-based routes, define ORM
