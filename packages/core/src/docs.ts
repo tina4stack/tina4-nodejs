@@ -61,7 +61,7 @@ export interface MethodSpec {
   static: boolean;
   source: "framework" | "user" | "vendor";
   version: string;
-  params: Array<{ name: string; type: string; default?: string | null }>;
+  params: Array<{ name: string; type: string; required: boolean; default: string | null }>;
   return: string;
 }
 
@@ -448,6 +448,59 @@ function scoreFqn(entry: InternalEntry, tokens: string[]): number {
  */
 const sharedFrameworkIndex = new Map<string, { entries: Map<string, InternalEntry>; mtime: number }>();
 
+/** Split `text` on top-level commas, ignoring commas nested in <>, (), [] or {}. */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of text) {
+    if ("<([{".includes(ch)) depth++;
+    else if (">)]}".includes(ch)) depth--;
+    if (ch === "," && depth === 0) { parts.push(current); current = ""; } else current += ch;
+  }
+  if (current.trim()) parts.push(current);
+  return parts;
+}
+
+/** Index of the `)` closing the parameter list that opens at `open`, or -1. */
+function closingParen(signature: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < signature.length; i++) {
+    if (signature[i] === "(") depth++;
+    else if (signature[i] === ")" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/** Structured params `[{name, type, required, default}]` from `name(a: T, b?: U = 1) : R`. */
+export function paramsFromSignature(signature: string): MethodSpec["params"] {
+  const open = signature.indexOf("(");
+  const close = open < 0 ? -1 : closingParen(signature, open);
+  if (close < 0) return [];
+  return splitTopLevel(signature.slice(open + 1, close)).map((raw) => {
+    const [declaration, ...defaultParts] = raw.split(/=(?!>)/);
+    const defaultText = defaultParts.length > 0 ? defaultParts.join("=").trim() : null;
+    const colon = declaration.indexOf(":");
+    const head = (colon < 0 ? declaration : declaration.slice(0, colon)).trim();
+    const optional = head.endsWith("?");
+    return {
+      name: head.replace(/\?$/, ""),
+      type: colon < 0 ? "" : declaration.slice(colon + 1).trim(),
+      required: !optional && defaultText === null && !head.startsWith("..."),
+      default: defaultText,
+    };
+  });
+}
+
+/** Return type text from `name(...) : R` (or `): R`), "" when absent. */
+export function returnFromSignature(signature: string): string {
+  const open = signature.indexOf("(");
+  const close = open < 0 ? -1 : closingParen(signature, open);
+  if (close < 0) return "";
+  const rest = signature.slice(close + 1).trim();
+  return rest.startsWith(":") ? rest.slice(1).trim() : "";
+}
+
 export class Docs {
   private projectRoot: string;
   private frameworkRoots: string[];
@@ -622,8 +675,8 @@ export class Docs {
       static: entry.static ?? false,
       source: entry.source,
       version: entry.version,
-      params: [],
-      return: "",
+      params: paramsFromSignature(entry.signature),
+      return: returnFromSignature(entry.signature),
     };
   }
 
