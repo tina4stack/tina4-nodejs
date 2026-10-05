@@ -542,7 +542,9 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
   const handler = new FileSessionHandler(sessDir);
   const session = new Session();
   session.setHandler(handler);
-  const sid = session.start();            // real bootstrap write succeeds
+  const sid = session.start();
+  session.set("k", "v");                  // a session is stored on its first write
+  session.save();                         // real bootstrap write succeeds
   assert("real file backend accepted the bootstrap write", typeof sid === "string" && sid.length > 0);
 
   // Make the session's OWN FILE read-only. chmod'ing the directory is not

@@ -367,7 +367,7 @@ export async function sessionAutoStart(
   rawRes: ServerResponse,
   req: Tina4Request,
 ): Promise<void> {
-  const { Session, buildSessionCookie, sessionCookieName, sessionStrictMode } =
+  const { Session, sessionCookieToSend, sessionCookieName, sessionStrictMode } =
     await import("./session.js");
   const cookieHeader = rawReq.headers.cookie ?? "";
 
@@ -433,16 +433,8 @@ export async function sessionAutoStart(
       try { sess.gc(); } catch { /* GC failure is non-critical */ }
     }
 
-    const newSid = (sess as any).sessionId ?? (sess as any).getSessionId?.();
-    if (newSid && newSid !== existingSid && !rawRes.headersSent) {
-      const ttl = parseInt(process.env.TINA4_SESSION_TTL ?? "3600", 10);
-      // Thread the client's real scheme in so an HTTPS deploy behind a
-      // TLS-terminating proxy ships the session cookie with `Secure`
-      // (nodejs#34). `x-forwarded-proto` is the same header request.ts trusts
-      // for URL construction; native socket TLS is the fallback.
-      const xfProto = rawReq.headers["x-forwarded-proto"];
-      const forwardedProto = Array.isArray(xfProto) ? xfProto[0] : xfProto;
-      const socketEncrypted = (rawReq.socket as { encrypted?: boolean })?.encrypted === true;
+    const sessionCookie = sessionCookieToSend(sess, existingSid, rawReq, rawRes);
+    if (sessionCookie !== null) {
       // appendHeader, not setHeader (feature 131 fix, found while proving
       // TC-DEC-02): setHeader REPLACES any existing Set-Cookie value wholesale,
       // so a route that had already called response.cookie() of its own — on
@@ -452,7 +444,7 @@ export async function sessionAutoStart(
       // appendHeader adds to whatever is already there (promoting a scalar to
       // an array, extending an existing array) and behaves exactly like
       // setHeader when nothing is set yet, so the common case is unchanged.
-      rawRes.appendHeader("Set-Cookie", buildSessionCookie(newSid, ttl, undefined, forwardedProto, socketEncrypted));
+      rawRes.appendHeader("Set-Cookie", sessionCookie);
     }
     return origEnd(...args);
   } as typeof rawRes.end;
