@@ -240,9 +240,12 @@ the developer can correct.
 ### 1. Keep the main session free — delegate to a worker
 When the developer gives an instruction, don't do the work inline. **Allocate it to a plan, then
 spawn a separate worker to execute it**, so the main session is always free for the next input.
-Tina4 **hot-reloads on save** (DevReload), so as the worker edits routes, models, and templates the
-developer watches the interface change **live in the browser** — keeping the main session open is
-what lets them observe and steer while the work happens. The main agent scopes, dispatches, and
+Under `tina4 serve` the CLI file watcher triggers a reload on save: templates, SCSS and static files
+refresh in the browser, and a route file edited or **added** under `src/routes/` is re-discovered
+(`POST /__dev/api/reload`) without a restart. Run the app any other way (`node app.ts`, no watcher)
+and nothing reloads: restart the server. Model changes are not guaranteed to hot-reload; restart
+after editing a model. Keeping the main session open lets the developer observe and steer while the
+work happens. The dev MCP `route_list` shows routes as loaded in the running process. The main agent scopes, dispatches, and
 reports; workers build and update the plan. When a worker finishes an item, surface it to the
 developer.
 
@@ -438,13 +441,13 @@ running (`tina4 serve` with `TINA4_DEBUG=true`):
 
 - **`api_search("render template")`** — ranked search across framework + your own code; returns fqn, signature, file:line. Run it BEFORE assuming a method exists.
 - **`api_class("BaseModel")`** — every method on a class, with signatures. A bare name, an import path, or the full fqn all resolve.
-- **`api_method("BaseModel", "findById")`** — exact signature, params, return type, file and line for one method. Node methods are **camelCase** (`findById`, `checkPassword`, `getToken`).
+- **`api_method("BaseModel", "findById")`** — exact signature, params, return type, file and line for one method. Over the MCP call the arguments are NAMED **`class`** and **`name`** (`{"class":"BaseModel","name":"findById"}`); `method` is not accepted. A missing or unknown argument returns `missing required argument 'name' (api_method takes class, name)`. Node methods are **camelCase** (`findById`, `checkPassword`, `getToken`).
 - **`code_search("where is the auth token issued?")`** — fuzzy/semantic full-text search over **THIS project's own source + docs** (the native `Context` FTS5 index — zero-dep via `node:sqlite`, kept live on every file save). Ranks the file that *defines* a symbol above tests that merely mention it. The in-repo, semantic counterpart to `api_*`.
 
 ```
 api_search("queue consume")        -> finds Queue.consume and its signature
 api_class("Database")              -> every method on Database, with signatures
-api_method("Auth", "checkPassword") -> checkPassword(password, hash) -> boolean
+api_method(class="Auth", name="checkPassword") -> checkPassword(password, hash) -> boolean
 code_search("send an email")        -> the routes/services in YOUR app that already do it
 ```
 
@@ -510,7 +513,7 @@ Create a project and run it:
 ```bash
 tina4 init nodejs my-app
 cd my-app
-tina4 serve                     # ALWAYS use this — hot-reload, SCSS, Swagger, dev admin
+tina4 serve                     # ALWAYS use this — file-watch reload, SCSS, Swagger, dev admin
 ```
 
 **IMPORTANT:** Run the app with `tina4 serve`, not `npx tina4nodejs serve`, `npm run dev`, or

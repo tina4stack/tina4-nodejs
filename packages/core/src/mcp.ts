@@ -91,6 +91,7 @@ export interface JsonSchema {
   type: string;
   properties: Record<string, { type: string; default?: unknown }>;
   required?: string[];
+  additionalProperties?: boolean;
 }
 
 export interface McpToolParam {
@@ -201,6 +202,36 @@ export function schemaFromParams(params: McpToolParam[]): JsonSchema {
     schema.required = required;
   }
   return schema;
+}
+
+/**
+ * Check call arguments against a tool's input schema BEFORE the handler runs.
+ * Returns null when valid, else the actionable message
+ * `missing required argument '<p>' (<tool> takes <p1>, <p2>)` (or
+ * `unknown argument '<k>' (...)`). Byte-identical to tina4-python's
+ * `_validate_tool_arguments` (tina4-php#271) so a wrong key never surfaces as a
+ * raw TypeError / 500.
+ */
+export function validateToolArguments(toolName: string, schema: JsonSchema, args: unknown): string | null {
+  const properties = Object.keys(schema.properties ?? {});
+  const takes = properties.length > 0 ? properties.join(", ") : "no arguments";
+  if (typeof args !== "object" || args === null || Array.isArray(args)) {
+    return `arguments must be an object (${toolName} takes ${takes})`;
+  }
+  const supplied = args as Record<string, unknown>;
+  for (const requiredName of schema.required ?? []) {
+    if (!(requiredName in supplied)) {
+      return `missing required argument '${requiredName}' (${toolName} takes ${takes})`;
+    }
+  }
+  if (!schema.additionalProperties) {
+    for (const suppliedName of Object.keys(supplied)) {
+      if (!properties.includes(suppliedName)) {
+        return `unknown argument '${suppliedName}' (${toolName} takes ${takes})`;
+      }
+    }
+  }
+  return null;
 }
 
 // ── Localhost detection ──────────────────────────────────────
@@ -574,6 +605,10 @@ export class McpServer {
     }
 
     const args = (params.arguments as Record<string, unknown>) || {};
+    const invalid = validateToolArguments(toolName, tool.inputSchema, args);
+    if (invalid) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: invalid }, null, 2) }] };
+    }
     // Tool handlers may be async (the DB tools await the Database wrapper); a
     // sync handler's plain return value passes through `await` unchanged.
     const result = await tool.handler(args);
@@ -1139,7 +1174,14 @@ export function registerDevTools(server: McpServer): void {
         if (!/^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?$/.test(table)) {
           return { error: "Invalid table name" };
         }
-        return (await db.getColumns?.(table)) ?? [];
+        // Schema metadata (PRAGMA / information_schema via the adapter), never the
+        // first row, so an EMPTY table still reports its columns (tina4-php#271).
+        const columns = (await db.getColumns?.(table)) ?? [];
+        if (columns.length === 0) {
+          const tables = ((await db.getTables?.()) ?? []) as string[];
+          if (!tables.includes(table)) return { error: `table not found: ${table}` };
+        }
+        return columns;
       } catch (e) {
         return { error: (e as Error).message };
       }
@@ -1168,6 +1210,7 @@ export function registerDevTools(server: McpServer): void {
           method: r.method || "",
           path: r.pattern || r.path || "",
           auth_required: r.secure ?? false,
+          middleware: r.middleware ?? [],
         }));
       } catch (e) {
         return { error: (e as Error).message };

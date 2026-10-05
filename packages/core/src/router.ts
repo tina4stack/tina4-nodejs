@@ -187,6 +187,8 @@ export interface RouteInfo {
   path: string;
   handler: string;
   middlewareCount: number;
+  /** Names of the middleware attached to the route (functions / classes / string specs). */
+  middleware: string[];
   cached: boolean;
   secure: boolean;
 }
@@ -486,6 +488,8 @@ export class Router {
           path: route.pattern,
           handler: route.filePath ?? (route.handler.name || "(anonymous)"),
           middlewareCount: route.middlewares?.length ?? 0,
+          middleware: (route.middlewares ?? []).map((attached: any) =>
+            typeof attached === "string" ? attached : (attached?.name || attached?.constructor?.name || "(anonymous)")),
           cached: route.cached ?? false,
           secure: route.secure ?? false,
         });
