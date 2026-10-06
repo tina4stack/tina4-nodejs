@@ -6,6 +6,12 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.148 — 2026-10-05
+### Sessions
+- An anonymous request no longer stores a session. A request that never touches the session leaves no session file behind and sends no `Set-Cookie`, so a crawler or a health check can no longer flood the session store with empty records. A session is written only once the handler actually puts something in it. Cross-framework fix, at parity with Python, PHP, and Ruby.
+### AI skills
+- `tina4-developer-nodejs` skill `updated_for_version` bumped to track the shipped framework.
+
 ## 3.13.147 — 2026-10-05
 ### Dev MCP tools (fixes #271)
 - `database_columns` reads schema metadata so an empty table returns its columns; a missing table returns a clear `table not found` error.
