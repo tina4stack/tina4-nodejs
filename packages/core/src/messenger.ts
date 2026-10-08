@@ -71,6 +71,21 @@ const SMTP_SEND_TIMEOUT_MS = 30_000;
 const SMTP_CHECK_TIMEOUT_MS = 10_000;
 
 /**
+ * Resolve the SMTP send timeout in MILLISECONDS from the constructor arg (seconds),
+ * then the env (TINA4_MAIL_TIMEOUT, SMTP_TIMEOUT — also seconds), defaulting to 30 s
+ * on absence or garbage. A non-finite or non-positive value falls back to 30 rather
+ * than coercing to NaN/0 (which would make every send time out instantly).
+ */
+function resolveSendTimeoutMs(optionTimeout?: number): number {
+  const DEFAULT_SECONDS = 30;
+  const raw = optionTimeout ?? process.env.TINA4_MAIL_TIMEOUT ?? process.env.SMTP_TIMEOUT;
+  if (raw === undefined || raw === null || raw === "") return DEFAULT_SECONDS * 1000;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_SECONDS * 1000;
+  return seconds * 1000;
+}
+
+/**
  * Give a socket an idle timeout that fails it with a clear error. Without one a
  * client that waits for a greeting the server never sends (a plaintext client
  * on a TLS-only port) hangs forever.
@@ -194,6 +209,8 @@ interface MessengerOptions {
   imapPass?: string;
   /** IMAP transport security: "tls" (default), "starttls", or "none". */
   imapEncryption?: string;
+  /** SMTP send timeout in SECONDS (default 30; env TINA4_MAIL_TIMEOUT / SMTP_TIMEOUT). */
+  timeout?: number;
 }
 
 export interface ImapMessage {
@@ -466,6 +483,8 @@ export class Messenger {
   private imapUser: string;
   private imapPass: string;
   private imapEncryption: string;
+  /** Resolved SMTP send timeout, in milliseconds (see the constructor). */
+  public readonly timeoutMs: number;
 
   constructor(options?: MessengerOptions) {
     // Priority: constructor > TINA4_MAIL_* > sensible default.
@@ -527,6 +546,12 @@ export class Messenger {
     this.imapEncryption = normaliseEncryption(options?.imapEncryption
       ?? process.env.TINA4_MAIL_IMAP_ENCRYPTION
       ?? "tls", "IMAP");
+
+    // SMTP send timeout (seconds): constructor > TINA4_MAIL_TIMEOUT > SMTP_TIMEOUT
+    // > 30. A non-finite/garbage value falls back to 30 rather than coercing to
+    // NaN/0, which would make every send time out instantly. Stored as ms, the
+    // unit openSmtpSession/failOnIdle want. Parity with the Python/PHP/Ruby master.
+    this.timeoutMs = resolveSendTimeoutMs(options?.timeout);
   }
 
   /**
@@ -671,7 +696,7 @@ export class Messenger {
   private async sendSmtp(options: SendOptions, recipients: MailRecipients, messageId: string): Promise<SendResult> {
     let socket: SmtpSocket | null = null;
     try {
-      socket = await this.openSmtpSession();
+      socket = await this.openSmtpSession(this.timeoutMs);
       await this.authenticateSmtp(socket);
       await this.sendSmtpEnvelope(socket, recipients.allRecipients);
       await this.sendSmtpMessage(socket, options, recipients, messageId);
