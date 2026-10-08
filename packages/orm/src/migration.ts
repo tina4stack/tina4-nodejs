@@ -6,8 +6,9 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
-import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { Log } from "../../core/src/index.js";
 import type { FieldDefinition, DatabaseAdapter } from "./types.js";
 import type { SQLiteAdapter } from "./adapters/sqlite.js";
@@ -1016,6 +1017,144 @@ function warnUnprefixedMigrations(files: string[]): void {
  * @param adapter - A DatabaseAdapter instance (or omit to use the global adapter).
  * @param options - Optional configuration.
  */
+// ── Cross-process migration lock (issue #277) ──────────────────────────────
+const MIGRATION_LOCK_NAME = "tina4_migration_lock";
+// A stable signed-64-bit key for PostgreSQL's pg_advisory_lock, derived from the
+// name so it cannot collide with an application's own advisory-lock keys. It is a
+// constant (not user input), so inlining it in the SQL is injection-safe.
+const PG_ADVISORY_KEY = BigInt.asIntN(
+  64,
+  BigInt("0x" + createHash("sha256").update(MIGRATION_LOCK_NAME).digest("hex").slice(0, 16)),
+).toString();
+
+type MigrationLock = { kind: "postgres" | "mysql" | "mssql" | "file" | "none"; resource?: string };
+
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Take the run-wide migration lock, blocking until it is held. PostgreSQL/MySQL/
+ * MSSQL use a native session-scoped advisory lock; SQLite, Firebird and anything
+ * else fall back to an atomic mkdir-based lock directory on a sidecar in the
+ * migrations folder (crash-safe via a stale-PID check). A backend that cannot
+ * lock degrades to the file lock, and finally to running unlocked.
+ */
+async function acquireMigrationLock(db: DatabaseAdapter, dir: string): Promise<MigrationLock> {
+  let engine = "";
+  try {
+    engine = (db.getDatabaseType() || "").toLowerCase();
+  } catch {
+    engine = "";
+  }
+
+  try {
+    if (engine.startsWith("postgres")) {
+      await adapterQuery(db, `SELECT pg_advisory_lock(${PG_ADVISORY_KEY}) AS locked`);
+      return { kind: "postgres" };
+    }
+    if (engine.startsWith("mysql")) {
+      // -1 = wait indefinitely; GET_LOCK is connection-scoped.
+      await adapterQuery(db, `SELECT GET_LOCK('${MIGRATION_LOCK_NAME}', -1) AS locked`);
+      return { kind: "mysql" };
+    }
+    if (engine === "mssql" || engine === "sqlserver") {
+      await adapterExecute(
+        db,
+        `DECLARE @res INT; EXEC @res = sp_getapplock @Resource = '${MIGRATION_LOCK_NAME}', ` +
+          `@LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = -1`,
+      );
+      return { kind: "mssql" };
+    }
+  } catch (err) {
+    Log.debug(`DB migration lock unavailable (${engine}): ${err instanceof Error ? err.message : err}; using a file lock`);
+  }
+
+  return acquireFileLock(dir);
+}
+
+/**
+ * Atomic exclusive-file cross-process lock (Node core has no flock). An
+ * O_CREAT|O_EXCL ("wx") write IS the lock: exactly one process creates the file.
+ * It records the holder's PID so a waiter can clear a lock left by a CRASHED
+ * holder — but ONLY when it reads a valid PID that is confirmed dead. An unread-
+ * able, empty or missing PID is treated as NOT stale (the holder created the file
+ * microseconds before writing its PID; stealing on that window double-applied the
+ * migration — the exact 2-rows/1-tracker-row signature of issue #277). Returns
+ * {kind:"none"} rather than blocking boot forever if it cannot be taken.
+ */
+async function acquireFileLock(dir: string): Promise<MigrationLock> {
+  const lockFile = join(dir, ".tina4_migration.lock");
+  const deadline = Date.now() + 60_000;
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    /* ignore — the folder normally exists */
+  }
+  for (;;) {
+    try {
+      writeFileSync(lockFile, String(process.pid), { flag: "wx" }); // atomic create-exclusive
+      return { kind: "file", resource: lockFile };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+        Log.debug(`file migration lock unavailable: ${err instanceof Error ? err.message : err}; running unlocked`);
+        return { kind: "none" };
+      }
+      if (isStaleLock(lockFile)) {
+        try {
+          rmSync(lockFile, { force: true });
+        } catch {
+          /* another process may have cleared it first */
+        }
+        continue;
+      }
+      if (Date.now() > deadline) {
+        Log.debug("file migration lock wait timed out; running unlocked");
+        return { kind: "none" };
+      }
+      await delay(50);
+    }
+  }
+}
+
+/**
+ * Stale ONLY when the lock file records a VALID pid that is confirmed dead. An
+ * empty/unparseable pid (holder mid-write) or a vanished file (holder released)
+ * is NOT stale — treating either as stale lets a waiter steal a live lock.
+ */
+function isStaleLock(lockFile: string): boolean {
+  let raw: string;
+  try {
+    raw = readFileSync(lockFile, "utf-8").trim();
+  } catch {
+    return false; // ENOENT: the lock was released — retry acquisition, don't steal
+  }
+  const pid = parseInt(raw, 10);
+  if (!raw || !Number.isFinite(pid) || pid <= 0) {
+    return false; // holder has not written its pid yet — give it the benefit of the doubt
+  }
+  try {
+    process.kill(pid, 0); // throws ESRCH if the process is gone
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+async function releaseMigrationLock(db: DatabaseAdapter, lock: MigrationLock): Promise<void> {
+  try {
+    if (lock.kind === "postgres") {
+      await adapterQuery(db, `SELECT pg_advisory_unlock(${PG_ADVISORY_KEY}) AS released`);
+    } else if (lock.kind === "mysql") {
+      await adapterQuery(db, `SELECT RELEASE_LOCK('${MIGRATION_LOCK_NAME}') AS released`);
+    } else if (lock.kind === "mssql") {
+      await adapterExecute(db, `EXEC sp_releaseapplock @Resource = '${MIGRATION_LOCK_NAME}', @LockOwner = 'Session'`);
+    } else if (lock.kind === "file" && lock.resource) {
+      rmSync(lock.resource, { recursive: true, force: true });
+    }
+  } catch (err) {
+    Log.debug(`migration lock release failed (${lock.kind}): ${err instanceof Error ? err.message : err}`);
+  }
+}
+
 export async function migrate(
   adapter?: DatabaseAdapter,
   options?: { migrationsDir?: string; delimiter?: string },
@@ -1024,11 +1163,34 @@ export async function migrate(
   const dir = resolve(options?.migrationsDir ?? "migrations");
   const delimiter = options?.delimiter ?? ";";
 
-  const result: MigrationResult = { applied: [], skipped: [], failed: [] };
-
   if (!existsSync(dir)) {
-    return result;
+    return { applied: [], skipped: [], failed: [] };
   }
+
+  // Serialize concurrent startup migrations across processes (#277): the hook
+  // runs once per process on a long-lived server and on every request under
+  // php -S-style servers, so several workers/instances could reach a fresh
+  // database at once and apply the same migration more than once (a data
+  // migration then inserted its rows twice). The winner migrates while the rest
+  // block, then re-read the applied set and find nothing pending. Every backend
+  // auto-releases the lock when the holder's session/process dies.
+  const lock = await acquireMigrationLock(db, dir);
+  try {
+    return await runPendingMigrations(db, dir, delimiter);
+  } finally {
+    await releaseMigrationLock(db, lock);
+  }
+}
+
+/**
+ * Apply every pending migration, in order. Caller holds the run-wide lock.
+ */
+async function runPendingMigrations(
+  db: DatabaseAdapter,
+  dir: string,
+  delimiter: string,
+): Promise<MigrationResult> {
+  const result: MigrationResult = { applied: [], skipped: [], failed: [] };
 
   // Ensure the canonical tracking table exists (creates it, or upgrades an
   // older <= 3.13.54 `name`/`applied_at` table in place). Shared with
