@@ -113,6 +113,8 @@ export { DevMailbox } from "./devMailbox.js";
 export { WSDLService, WSDLOperation } from "./wsdl.js";
 export type { WSDLOperationMeta } from "./wsdl.js";
 export { HtmlElement, htmlElement, addHtmlHelpers, Raw, SafeString } from "./htmlElement.js";
+export { Crud, CRUD, toCrud, registerBackend, generateTable, generateForm, stripOrderAndLimit, _resetCrudRegistrations } from "./crud.js";
+export type { ToCrudOptions } from "./crud.js";
 export { renderErrorOverlay, isDebugMode } from "./errorOverlay.js";
 export {
   cspNonce,

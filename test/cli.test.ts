@@ -340,22 +340,32 @@ async function main(): Promise<void> {
 
   // ── B6: emitted CRUD gate test — created, correct symbols, secure posture ──
   console.log("\n--- B6: CRUD stack ---");
-  assert("crud: model + routes + form + view + gate test all created",
+  // ADR-0094: `generate crud` scaffolds an AutoCrud-backed admin PAGE at
+  // /admin/<table> (table = "gadget", singular non-reserved) + copies the
+  // overridable crud/*.twig templates + a gate test — NO bespoke REST route
+  // files or forms/view.
+  assert("crud: model + admin page + crud templates + gate test all created",
     existsSync(join(tmpDir, "src/models/Gadget.ts")) &&
-    existsSync(join(tmpDir, "src/routes/api/gadgets/get.ts")) &&
-    existsSync(join(tmpDir, "src/templates/forms/gadget.twig")) &&
-    existsSync(join(tmpDir, "tests/gadgets.test.ts")));
-  const gadgetsPost = read("src/routes/api/gadgets/post.ts");
-  assert("crud: default routes are secure (no secure:false on writes)", !gadgetsPost.includes("secure = false"));
-  const gadgetTest = read("tests/gadgets.test.ts");
+    existsSync(join(tmpDir, "src/routes/admin/gadget/get.ts")) &&
+    existsSync(join(tmpDir, "src/templates/crud/page.twig")) &&
+    existsSync(join(tmpDir, "tests/gadget.test.ts")));
+  const gadgetAdmin = read("src/routes/admin/gadget/get.ts");
+  assert("crud: admin page is secure by default + registers AutoCrud + renders toCrud",
+    gadgetAdmin.includes("export const secure = true;") &&
+    gadgetAdmin.includes("Crud.registerBackend(Gadget, { public: false })") &&
+    gadgetAdmin.includes("Crud.toCrud(req, { model: Gadget"));
+  assert("crud: no bespoke REST write route emitted (backend is AutoCrud)",
+    !existsSync(join(tmpDir, "src/routes/api/gadgets/post.ts")) &&
+    !existsSync(join(tmpDir, "src/routes/api/gadget/post.ts")));
+  const gadgetTest = read("tests/gadget.test.ts");
   assert("crud: emitted gate test is a REAL TestClient boot (no mocks)",
-    gadgetTest.includes("TestClient") && gadgetTest.includes("discoverRoutes") && gadgetTest.includes("initDatabase"));
-  assert("crud: emitted gate test asserts anon 401 + authed 201 + read 200",
-    gadgetTest.includes("-> 401") && gadgetTest.includes("-> 201") && gadgetTest.includes("-> 200"));
+    gadgetTest.includes("TestClient") && gadgetTest.includes("discoverRoutes"));
+  assert("crud: emitted gate test asserts the secure-by-default posture (gated + secured page)",
+    gadgetTest.includes("-> 401") && gadgetTest.includes("registered"));
   // Run the emitted gate test for real (in-repo → tina4-nodejs self-resolves).
   let gadgetTestGreen = false;
   try {
-    const out = execFileSync("npx", ["tsx", join(tmpDir, "tests/gadgets.test.ts")],
+    const out = execFileSync("npx", ["tsx", join(tmpDir, "tests/gadget.test.ts")],
       { cwd: tmpDir, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
     gadgetTestGreen = /(\d+) passed, 0 failed/.test(out);
   } catch { gadgetTestGreen = false; }

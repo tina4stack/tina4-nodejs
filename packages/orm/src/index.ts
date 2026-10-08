@@ -60,7 +60,7 @@ export {
 export type { MigrationResult, MigrationStatus } from "./migration.js";
 export { AutoCrud, generateCrudRoutes, crudEligibleModels } from "./autoCrud.js";
 export type { AutoCrudOptions } from "./autoCrud.js";
-export { buildQuery, parseQueryString, UnknownFieldError, InvalidQueryParameterError } from "./query.js";
+export { buildQuery, parseQueryString, resolveField, resolveFieldColumn, UnknownFieldError, InvalidQueryParameterError } from "./query.js";
 export { validate } from "./validation.js";
 export type { ValidationError } from "./validation.js";
 export { BaseModel, snakeToCamel, camelToSnake } from "./baseModel.js";

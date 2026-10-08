@@ -142,19 +142,39 @@ export function buildQuery(
     }
   }
 
+  // ADR-0094: ?search=term filters the list - a LIKE %term% OR'd across the
+  // model's declared string/text columns (already resolved + passed in by the
+  // caller), added to the WHERE before limit/offset so the COUNT below reflects
+  // the filtered set. The columns come from the model, never the request, so the
+  // identifiers are safe; the term itself is bound. A model with no string/text
+  // column simply matches nothing (the handler passes an empty list).
+  const searchTerm = (options.search ?? "").trim();
+  if (searchTerm !== "" && options.searchColumns && options.searchColumns.length > 0) {
+    const likeParts = options.searchColumns.map((col) => `${quote(col)} LIKE ?`);
+    conditions.push(`(${likeParts.join(" OR ")})`);
+    for (const _ of options.searchColumns) params.push(`%${searchTerm}%`);
+  }
+
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
   // Sort: comma-separated parts, empty parts skipped, leading "-" = DESC.
   // ORDER BY is built only from resolved columns and the words ASC / DESC.
+  // ADR-0094: a single bare ?sort=column honours ?sort_dir=asc|desc (the CRUD
+  // grid's spelling); a comma list or a leading "-" keeps its own inline
+  // direction and ignores sort_dir.
   let orderClause = "";
   if (options.sort) {
+    const rawParts = options.sort.split(",");
+    const singleBare = rawParts.length === 1 && rawParts[0].trim() !== "" && !rawParts[0].trim().startsWith("-");
+    const bareDir = singleBare && String(options.sortDir).toLowerCase() === "desc" ? "DESC" : null;
     const parts: string[] = [];
-    for (const part of options.sort.split(",")) {
+    for (const part of rawParts) {
       const trimmed = part.trim();
       if (trimmed === "") continue;
       const descending = trimmed.startsWith("-");
       const col = column("sort", descending ? trimmed.slice(1) : trimmed);
-      parts.push(`${col} ${descending ? "DESC" : "ASC"}`);
+      const direction = bareDir ?? (descending ? "DESC" : "ASC");
+      parts.push(`${col} ${direction}`);
     }
     if (parts.length > 0) orderClause = `ORDER BY ${parts.join(", ")}`;
   }
@@ -225,6 +245,9 @@ export function parseQueryString(query: Record<string, string>): QueryOptions {
   }
 
   if (query.sort) options.sort = query.sort;
+  // ADR-0094: the CRUD grid's search + single-column sort direction.
+  if (query.search !== undefined) options.search = query.search;
+  if (query.sort_dir !== undefined) options.sortDir = query.sort_dir;
   if (query.page) options.page = parseInt(query.page, 10);
   if (query.limit) options.limit = parseInt(query.limit, 10);
   // Allow ?offset= as an alternative to ?page= (offset-based pagination)

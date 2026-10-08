@@ -7,21 +7,19 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
 /**
- * `generate crud` pluralisation contract — the ONE rule, shared across the four
- * frameworks. Run with: npx tsx test/generateCrudPluralisation.test.ts
+ * `generate crud` table-name contract (ADR-0094) — the ONE rule, shared across
+ * the four frameworks. Run with: npx tsx test/generateCrudPluralisation.test.ts
  *
- * The route path, route directory and list/page template are the SINGLE plural
- * of the singular base — pluralizeReserved(toSnake(name)) — never the plural of
- * an already-pluralised table. A SQL reserved-word class (order, table pluralised
- * to `orders`) must route to `orders`, NOT `orderss`. Node derived the route from
- * the TABLE with a weaker pluralizer (`toPlural`), which diverged from
- * python/php/ruby: `Status` routed to `status` where they produce `statuses`.
- * Now every framework pluralises the singular base with the same reserved-word
- * pluralizer, so the names agree.
+ * ADR-0094: `generate crud` scaffolds an AutoCrud-backed admin PAGE at
+ * /admin/<table>; it no longer emits hand-written REST route files or page
+ * views. The admin route directory, the /api/<table> REST path and the migration
+ * all key off the model's TABLE name (resolveTable): SINGULAR for a plain class
+ * (Product -> product), and the reserved-word plural for a reserved class
+ * (Order -> orders), never a double-plural (orderss). This is the same contract
+ * the Ruby master proves in spec/cli_generate_spec.rb "generate crud table-name".
  *
  * No mocks: drives a REAL `tina4nodejs generate crud` subprocess in a REAL
- * mkdtemp project and reads the generated tree back. Port of the same contract
- * test in tina4-python / tina4-php / tina4-ruby.
+ * mkdtemp project and reads the generated tree back.
  */
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -59,24 +57,22 @@ function hasMigration(cwd: string, needle: string): boolean {
 
 console.log("=== `generate crud` pluralisation contract ===\n");
 
-// 1. Reserved-word class: Order -> orders, never orderss.
+// 1. Reserved-word class: Order -> table `orders`, never orderss.
 {
   const dir = mkdtempSync(join(tmpdir(), "tina4-crud-order-"));
   try {
     const r = runCrud(dir, "Order", "total:float");
     assert("subprocess exited 0", r.exitCode === 0, `exit=${r.exitCode} stderr=${r.stderr.slice(0, 400)}`);
 
-    assert("route dir src/routes/api/orders exists", existsSync(join(dir, "src/routes/api/orders")));
-    assert("route dir src/routes/api/orderss does NOT exist", !existsSync(join(dir, "src/routes/api/orderss")));
-    const listRoute = join(dir, "src/routes/api/orders/get.ts");
-    assert("orders list route written", existsSync(listRoute));
-    if (existsSync(listRoute)) {
-      const body = readFileSync(listRoute, "utf-8");
+    assert("admin route dir src/routes/admin/orders exists", existsSync(join(dir, "src/routes/admin/orders")));
+    assert("admin route dir src/routes/admin/orderss does NOT exist", !existsSync(join(dir, "src/routes/admin/orderss")));
+    const route = join(dir, "src/routes/admin/orders/get.ts");
+    assert("orders admin route written", existsSync(route));
+    if (existsSync(route)) {
+      const body = readFileSync(route, "utf-8");
       assert("route body has no double-plural 'orderss'", !body.includes("orderss"), body.slice(0, 300));
+      assert("route registers AutoCrud for the model (serves /api/orders)", body.includes("Crud.registerBackend(Order"));
     }
-
-    assert("template pages/orders.twig exists", existsSync(join(dir, "src/templates/pages/orders.twig")));
-    assert("template pages/orderss.twig does NOT exist", !existsSync(join(dir, "src/templates/pages/orderss.twig")));
 
     assert("model src/models/Order.ts exists", existsSync(join(dir, "src/models/Order.ts")));
     assert("migration create_orders exists", hasMigration(dir, "create_orders"));
@@ -86,31 +82,30 @@ console.log("=== `generate crud` pluralisation contract ===\n");
   }
 }
 
-// 2. Plain class: Product -> products (once); table stays singular (create_product).
+// 2. Plain class: Product -> table stays SINGULAR (product); route /admin/product.
 {
   const dir = mkdtempSync(join(tmpdir(), "tina4-crud-product-"));
   try {
     const r = runCrud(dir, "Product", "name:string");
     assert("Product: subprocess exited 0", r.exitCode === 0, `exit=${r.exitCode}`);
-    assert("route dir src/routes/api/products exists", existsSync(join(dir, "src/routes/api/products")));
-    assert("route dir src/routes/api/productss does NOT exist", !existsSync(join(dir, "src/routes/api/productss")));
+    assert("admin route dir src/routes/admin/product exists (singular)", existsSync(join(dir, "src/routes/admin/product")));
+    assert("admin route dir src/routes/admin/products does NOT exist", !existsSync(join(dir, "src/routes/admin/products")));
     assert("migration create_product exists (table stays singular)", hasMigration(dir, "create_product"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-// 3. Parity case: a class whose plural takes -es. `Status` -> `statuses`
-//    (python/php/ruby pluralize the singular base with the reserved-word
-//    pluralizer). Node used to route to `status` (toPlural short-circuits on a
-//    trailing s); this locks it to the shared rule.
+// 3. Plain non-reserved class Status -> table stays SINGULAR (status), route
+//    /admin/status. ADR-0094 keys the route off the TABLE (resolveTable), which
+//    does not pluralise a non-reserved name.
 {
   const dir = mkdtempSync(join(tmpdir(), "tina4-crud-status-"));
   try {
     const r = runCrud(dir, "Status", "name:string");
     assert("Status: subprocess exited 0", r.exitCode === 0, `exit=${r.exitCode}`);
-    assert("route dir src/routes/api/statuses exists (parity: -es plural)", existsSync(join(dir, "src/routes/api/statuses")));
-    assert("route dir src/routes/api/status does NOT exist", !existsSync(join(dir, "src/routes/api/status")));
+    assert("admin route dir src/routes/admin/status exists (singular, non-reserved)", existsSync(join(dir, "src/routes/admin/status")));
+    assert("migration create_status exists", hasMigration(dir, "create_status"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
