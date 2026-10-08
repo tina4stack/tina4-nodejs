@@ -135,6 +135,7 @@ The HTTP foundation. Handles request/response lifecycle, route matching, middlew
   - `TINA4_MCP` / `TINA4_DEBUG` - capability gate (whether MCP is enabled at all). Explicit `TINA4_MCP` true/false wins on any host; else `TINA4_DEBUG=true` enables it.
   - `TINA4_MCP_TOKEN` - bearer token authorising a REMOTE MCP request (fallback `TINA4_API_KEY`). Accepted as `Authorization: Bearer`, `X-MCP-Token`, or `X-Api-Key`. With no token configured a remote caller is always denied. Loopback callers never need it.
   - `TINA4_MCP_REMOTE` - set `true` to allow non-loopback MCP callers at all (still requires a valid token).
+  - `TINA4_DEV_ALLOWED_PEERS` - opt-in comma-separated IP/CIDR allow-list of RAW socket peers admitted to `/__dev` (v4/v6 via `net.BlockList`; never a forwarded header). Default none. The documented way to reach the dev dashboard from a Docker dev box, where requests arrive from the container-network gateway, e.g. `TINA4_DEV_ALLOWED_PEERS=172.16.0.0/12` (#279). `/__dev/toolbar.css` and `/__dev/toolbar.js` are static and always load; a viewer the gate would refuse gets no toolbar injected.
 - `auth.ts` — Authentication helpers
 - `cache.ts` — In-memory caching
 - `session.ts` — Session management with pluggable handlers. `TINA4_SESSION_SAMESITE` env var (default: Lax)

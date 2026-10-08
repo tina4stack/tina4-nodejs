@@ -341,6 +341,39 @@ const port = (peerServer.address() as any).port;
   assert("health carries the version in debug", r.status === 200 && /^\d+\.\d+\.\d+/.test(version), `version=${version}`);
 }
 
+// ── #279: toolbar assets ungated, dashboard gated, opt-in admits, no inject ──
+{
+  currentPeer = LAN_IP!;
+  // Static toolbar assets load for any peer (no secrets).
+  const css = await get(port, "/__dev/toolbar.css");
+  const js = await get(port, "/__dev/toolbar.js");
+  assert("toolbar.css/.js load for a non-loopback peer (static, ungated)",
+    css.status === 200 && js.status === 200, `css=${css.status} js=${js.status}`);
+
+  // The dashboard stays refused for a non-loopback peer by default.
+  const dash = await get(port, "/__dev");
+  assert("the dashboard is refused for a non-loopback peer by default", dash.status === 403, `dash=${dash.status}`);
+
+  // No toolbar is injected into a page for a viewer the gate would refuse...
+  const refusedPage = await get(port, "/hello");
+  currentPeer = "127.0.0.1";
+  const loopPage = await get(BOOT_PORT, "/hello");
+  assert("the toolbar is withheld from a refused viewer but injected for loopback",
+    !refusedPage.raw.includes("tina4-dev-toolbar") && loopPage.raw.includes("tina4-dev-toolbar"),
+    `refused-has-toolbar=${refusedPage.raw.includes("tina4-dev-toolbar")} loop-has-toolbar=${loopPage.raw.includes("tina4-dev-toolbar")}`);
+
+  // The opt-in admits the raw peer to the dashboard and restores the toolbar.
+  setEnv({ TINA4_DEV_ALLOWED_PEERS: "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8" });
+  currentPeer = LAN_IP!;
+  const dashIn = await get(port, "/__dev");
+  const pageIn = await get(port, "/hello");
+  currentPeer = "127.0.0.1";
+  setEnv({ TINA4_DEV_ALLOWED_PEERS: undefined });
+  assert("TINA4_DEV_ALLOWED_PEERS admits the raw peer to the dashboard and the toolbar",
+    dashIn.status === 200 && pageIn.raw.includes("tina4-dev-toolbar"),
+    `dash=${dashIn.status} page-has-toolbar=${pageIn.raw.includes("tina4-dev-toolbar")}`);
+}
+
 // ── cleanup — reap everything we spawned ────────────────────────────────────
 peerServer.close();
 boot.close();

@@ -46,7 +46,7 @@ import { generateNonce, runWithCspNonce, currentCspNonce } from "./csp.js";
 import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
-import { DevAdmin, RequestInspector, WsTracker, devRequestDenial, devHostAllowed } from "./devAdmin.js";
+import { DevAdmin, RequestInspector, WsTracker, devRequestDenial, devHostAllowed, devToolbarAllowed } from "./devAdmin.js";
 import { CLOSE_GOING_AWAY, devReloadWs, serveWebSocketRoute, wsRouteManager } from "./websocket.js";
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
@@ -1311,7 +1311,10 @@ function isInjectableHtml(res: Tina4Response): boolean {
  * so calling it unconditionally is cheap when it no-ops.
  */
 function injectIntoHtml(ctx: ResponseWrapContext, devToolbar: boolean, html: string): string {
-  if (!devToolbar) return injectFeedbackWidget(ctx.req, html);
+  // Do not inject the toolbar for a viewer the /__dev gate would refuse (#279):
+  // otherwise the page carries toolbar markup whose stylesheet and script 403.
+  // The feedback widget still runs (it re-checks its own gate).
+  if (!devToolbar || !devToolbarAllowed(ctx.req)) return injectFeedbackWidget(ctx.req, html);
 
   const toolbarCtx: DevToolbarContext = {
     version: TINA4_VERSION,
