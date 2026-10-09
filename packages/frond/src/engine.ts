@@ -1379,6 +1379,15 @@ function htmlEscape(str: string): string {
     .replace(/'/g, "&#x27;");
 }
 
+/**
+ * The framework's ONE canonical HTML escaper (the five-character table `& < > " '`,
+ * byte-identical across all four Tina4 frameworks). Exported so a component such as
+ * Crud.toCrud never carries its own copy of the escape table (ADR-0094).
+ */
+export function escapeHtml(value: unknown): string {
+  return htmlEscape(String(value));
+}
+
 // -- Escape strategies (ADR-0077) -------------------------------------------
 // Shared by js_escape and e(strategy); byte-identical to the Python master.
 // Twig-compatible. Iterates code points so astral characters emit a surrogate

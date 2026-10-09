@@ -60,7 +60,13 @@ export {
 export type { MigrationResult, MigrationStatus } from "./migration.js";
 export { AutoCrud, generateCrudRoutes, crudEligibleModels } from "./autoCrud.js";
 export type { AutoCrudOptions } from "./autoCrud.js";
-export { buildQuery, parseQueryString, UnknownFieldError, InvalidQueryParameterError } from "./query.js";
+
+// Crud (ADR-0094) — the server-rendered HTML admin page over AutoCrud. Moved
+// from @tina4/core so it stays out of core's eager import graph; import it from
+// "tina4-nodejs/orm".
+export { Crud, CRUD, toCrud, registerBackend, generateTable, generateForm, stripOrderAndLimit, _resetCrudRegistrations } from "./crud.js";
+export type { ToCrudOptions, CrudModel, FormFieldDef } from "./crud.js";
+export { buildQuery, parseQueryString, resolveField, resolveFieldColumn, UnknownFieldError, InvalidQueryParameterError } from "./query.js";
 export { validate } from "./validation.js";
 export type { ValidationError } from "./validation.js";
 export { BaseModel, snakeToCamel, camelToSnake } from "./baseModel.js";

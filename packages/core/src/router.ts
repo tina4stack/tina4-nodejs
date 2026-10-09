@@ -956,8 +956,18 @@ export async function runRouteMiddlewares(
  * Default global router instance.
  * Top-level get(), post(), etc. register routes here.
  * The server merges these routes on startup.
+ *
+ * Anchored on globalThis so it is a true single instance across bundles. The
+ * published package ships each workspace as its own esbuild bundle, so
+ * @tina4/orm carries an inlined copy of this module; without this, orm code
+ * (e.g. Crud.registerBackend, ADR-0094) would add AutoCrud routes to a second,
+ * private Router that the core server never serves. One globalThis slot makes
+ * every copy resolve to the same instance.
  */
-export const defaultRouter = new Router();
+const TINA4_DEFAULT_ROUTER = Symbol.for("tina4.defaultRouter");
+const globalRouterHost = globalThis as unknown as { [TINA4_DEFAULT_ROUTER]?: Router };
+export const defaultRouter: Router =
+  globalRouterHost[TINA4_DEFAULT_ROUTER] ?? (globalRouterHost[TINA4_DEFAULT_ROUTER] = new Router());
 
 /**
  * Top-level route registration functions — mirrors Python's decorator pattern.

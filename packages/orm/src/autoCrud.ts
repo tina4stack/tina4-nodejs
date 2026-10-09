@@ -217,6 +217,15 @@ export function generateCrudRoutes(models: DiscoveredModel[], options: AutoCrudO
         let built: ReturnType<typeof buildQuery>;
         try {
           const qp = parseQueryString(req.query ?? {});
+          // ADR-0094: resolve the model's declared string/text columns for the
+          // ?search term (OR'd LIKE %term%). Resolved from the model, never the
+          // request, so only declared columns reach SQL (ADR-0069). A model with
+          // no string/text column yields an empty list and search matches nothing.
+          if ((qp.search ?? "").trim() !== "") {
+            qp.searchColumns = Object.entries(fields)
+              .filter(([, def]) => def.type === "string" || def.type === "text")
+              .map(([name]) => getDbCol(name));
+          }
           built = buildQuery(tableName, qp, extraConditions, q, (key) => resolveFieldColumn(fields, getDbCol, key));
         } catch (err) {
           if (err instanceof UnknownFieldError) {

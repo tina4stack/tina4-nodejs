@@ -235,4 +235,23 @@ export interface QueryOptions {
   sort?: string;
   page?: number;
   limit?: number;
+  /**
+   * ADR-0094: full-text search term. LIKE %term% is OR'd across `searchColumns`
+   * and added to the WHERE before limit/offset, so the total reflects the
+   * filtered set. The CRUD admin grid (and any client) drives this via ?search=.
+   */
+  search?: string;
+  /**
+   * DB columns the `search` term matches against (the model's declared
+   * string/text columns, already resolved to their mapped column names). The
+   * caller resolves these from the model; buildQuery only quotes and binds them,
+   * so nothing but a declared column can reach SQL (ADR-0069).
+   */
+  searchColumns?: string[];
+  /**
+   * ADR-0094: direction for a single bare ?sort=column (the CRUD grid's
+   * spelling). "desc" sorts descending; anything else ascending. Ignored for a
+   * Mongo-style "-field,field" sort, which carries its own inline direction.
+   */
+  sortDir?: string;
 }

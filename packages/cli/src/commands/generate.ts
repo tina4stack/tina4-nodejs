@@ -40,8 +40,9 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  *   tina4nodejs generate websocket chat
  *   tina4nodejs generate listener user.created
  */
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, writeFileSync, readdirSync, copyFileSync } from "node:fs";
+import { join, relative, resolve, sep, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseFlags } from "../util.js";
 
 // ── Field type mapping ──────────────────────────────────────────────
@@ -652,7 +653,7 @@ export interface GeneratorSpec {
 export const GENERATORS: Record<string, GeneratorSpec> = {
   model:      { handler: generateModel,                     usage: '<Name> [--fields "name:string,price:float"] [--table-name <name>]', summary: "ORM model + matching migration" },
   route:      { handler: generateRoute,                     usage: "<name> [--model Name] [--public]",            summary: "CRUD route file, secure by default (--public opens writes)" },
-  crud:       { handler: generateCrud,                      usage: '<Name> [--fields "..."] [--public]',          summary: "Model + migration + routes + form + view + test" },
+  crud:       { handler: generateCrud,                      usage: '<Name> [--fields "..."] [--public] [--no-templates]', summary: "Model + migration + AutoCrud-backed admin page (toCrud) + editable crud/ templates + gate test" },
   migration:  { handler: (n, f) => generateMigration(n, f, undefined, undefined, !f["no-test"]), usage: "<description>",                                summary: "Timestamped migration file (UP/DOWN)" },
   middleware: { handler: generateMiddleware,                usage: "<Name>",                                       summary: "Middleware with before/after hooks" },
   test:       { handler: generateTest,                      usage: "<name> [--model Name]",                        summary: "Test file" },
@@ -695,8 +696,9 @@ const NEXT_STEPS: Record<string, (c: NextContext) => string[]> = {
   ],
   crud: ({ name, table }) => [
     `Apply the migration:   npx tina4nodejs migrate`,
-    `Serve and try:         npx tina4nodejs serve  ->  visit /swagger`,
-    `Run the gate test:     npx tsx tests/${pluralizeReserved(toSnake(name))}.test.ts`,
+    `Serve and try:         npx tina4nodejs serve  ->  visit /admin/${table} (or /swagger)`,
+    `Run the gate test:     npx tsx tests/${table}.test.ts`,
+    `Restyle the UI:        edit src/templates/crud/*.twig`,
     `Change fields: edit src/models/${name}.ts then re-run generate crud`,
   ],
   migration: () => [
@@ -1224,40 +1226,197 @@ ${aiFill(`delete_${singular}`, {
 // ── CRUD ────────────────────────────────────────────────────────────
 
 function generateCrud(name: string, flags: Record<string, string | boolean>): void {
-  // Composite: quiet here (announce=false); the generateModel sub-call below is
-  // the one that announces, so the reserved-word note prints exactly once.
+  // ADR-0094: `generate crud` scaffolds an admin PAGE rendered by Crud.toCrud,
+  // whose REST backend is delegated entirely to AutoCrud (no hand-written
+  // list/detail/write routes). The generated page route registers AutoCrud for
+  // the model (secure-by-default; --public opens writes) and renders toCrud; the
+  // overridable crud/*.twig templates are copied into the app so the developer
+  // can edit them immediately.
+  //
+  // The table name (singular, e.g. "product") is the canonical path: the model
+  // declares tableName "<table>", AutoCrud serves /api/<table>, and the gate
+  // test + page route all key off it.
   const table = resolveTable(name, flags, { announce: false });
-  const routeName = pluralizeReserved(toSnake(name));
   const isPublic = Boolean(flags.public);
 
-  // Human-only banners; suppressed under --json to keep stdout parseable
-  // (a console.log during --json produced invalid JSON). writeFileSafe already
-  // gates its own "Created …" lines the same way.
+  // Human-only banners; suppressed under --json to keep stdout parseable.
   if (!__resolution.jsonMode) console.log(`\n  Generating CRUD for ${name}...\n`);
 
   // 1. Model + migration (its own model test is suppressed — the gate test
   //    below is CRUD's single, broader co-emitted test).
   generateModel(name, flags, false);
 
-  // 2. Routes with model — secure by default; thread --public through so
-  //    `generate crud X --public` opens the writes (mirrors AutoCrud public).
-  //    Route test suppressed (the gate test below covers the routes).
-  generateRoute(routeName, { ...flags, model: name }, false);
+  // 2. Admin page route: registers AutoCrud (secure-by-default; --public opens
+  //    writes) and renders the toCrud admin UI at /admin/<table>.
+  generateCrudAdminRoute(name, table, isPublic);
 
-  // 3. Form
-  generateForm(name, flags);
+  // 3. Copy the overridable crud/*.twig templates into the app (unless
+  //    --no-templates) so the developer owns an editable copy straight away.
+  if (!flags["no-templates"]) copyCrudTemplates();
 
-  // 4. View (list + detail)
-  generateView(name, flags);
-
-  // 5. Test — real secure-by-default boot-gate (reads public, writes gated).
-  generateTest(routeName, { model: name, "secure-writes": true, public: isPublic });
+  // 4. Test — secure-by-default gate test (behavioural, real TestClient).
+  generateCrudGateTest(name, table, isPublic);
 
   if (!__resolution.jsonMode) {
     console.log(`\n  CRUD generation complete for ${name}.`);
     console.log("  Run: tina4nodejs migrate");
-    console.log("  Visit: /swagger to see the API docs");
+    console.log(`  Visit: /admin/${table} for the admin UI, or /swagger for the API docs`);
   }
+}
+
+/**
+ * Write the admin page route (src/routes/admin/<table>/get.ts). It registers the
+ * AutoCrud REST backend for the model at load (idempotent) and renders the
+ * toCrud admin page — ADR-0094: toCrud owns no routes of its own, so the backend
+ * is AutoCrud and only the GET page lives here. Secure-by-default; `isPublic`
+ * opens the page AND the writes.
+ */
+function generateCrudAdminRoute(model: string, table: string, isPublic: boolean): void {
+  const dir = resolve("src/routes/admin", table);
+  ensureDir(dir);
+
+  pushRoute(`/admin/${table}`);
+  if (__resolution.target === "crud") {
+    setResolutionField("file_path", `src/routes/admin/${table}/get.ts`);
+  }
+
+  const secureExport = isPublic ? "" : "export const secure = true;\n\n";
+  const publicOpt = isPublic ? ", public: true" : "";
+  const writeDoc = isPublic
+    ? "--public: the admin page and the writes are OPEN (no token)."
+    : "Secure by default: the admin page AND the writes require a valid Bearer token (pass --public to open them).";
+  const pageDoc = isPublic
+    ? ""
+    : `\n// NOTE: the admin page is secured (export const secure = true). A browser needs a valid\n// token/session to open it; wire your login (Auth / Session) or run\n// \`generate crud ${model} --public\` for an open page. The AutoCrud READ API\n// (GET /api/${table}, GET /api/${table}/{id}) stays public by AutoCrud's default.`;
+
+  const content = `import ${model} from "../../../models/${model}.js";
+import { Crud } from "tina4-nodejs/orm";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
+
+// ${model} admin — one server-rendered CRUD page (searchable, sortable,
+// paginated table + create/edit/delete modals). The REST backend (GET list,
+// GET/{id}, POST, PUT, DELETE) is AutoCrud; this file owns only the GET admin
+// page. ${writeDoc}${pageDoc}
+//
+// Restyle the UI by editing src/templates/crud/*.twig (copied into this app).
+// Register the AutoCrud backend for the model at load (idempotent).
+await Crud.registerBackend(${model}, { public: ${isPublic} });
+
+${secureExport}export const meta = { summary: "${model} admin", tags: ["admin"] };
+
+export default async function (req: Tina4Request, res: Tina4Response) {
+  return res.html(await Crud.toCrud(req, { model: ${model}, title: "${model} Admin"${publicOpt} }));
+}
+`;
+  writeFileSafe(join(dir, "get.ts"), content);
+}
+
+/** The framework's shipped crud/ templates directory (monorepo + published). */
+function frameworkCrudTemplatesDir(): string | null {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(here, "../../../core/templates/crud"),   // monorepo: packages/cli/src/commands -> packages/core/templates/crud
+    resolve(here, "../../core/templates/crud"),       // built layout fallback
+    resolve(here, "../templates/crud"),               // flattened publish fallback
+  ];
+  return candidates.find((c) => existsSync(c)) ?? null;
+}
+
+/**
+ * Copy the framework's overridable crud/*.twig templates into the app's
+ * src/templates/crud/ so the developer can edit them in place (an app copy wins
+ * over the framework's via toCrud's app-first resolution). Existing files are
+ * left untouched.
+ */
+function copyCrudTemplates(): void {
+  const sourceDir = frameworkCrudTemplatesDir();
+  if (!sourceDir) {
+    if (!__resolution.jsonMode) console.log("  Skipped crud templates (framework templates not found)");
+    return;
+  }
+  const targetDir = resolve("src/templates/crud");
+  ensureDir(targetDir);
+  for (const file of readdirSync(sourceDir).filter((f) => f.endsWith(".twig")).sort()) {
+    const dest = join(targetDir, file);
+    if (existsSync(dest)) {
+      if (!__resolution.jsonMode) console.log(`  File already exists: ${dest}`);
+      continue;
+    }
+    if (__resolution.dryRun) continue;
+    copyFileSync(join(sourceDir, file), dest);
+    __resolution.actionsTaken.push(`wrote ${dest}`);
+    if (!__resolution.jsonMode) console.log(`  Created ${dest}`);
+  }
+}
+
+/**
+ * Emit the CRUD gate test (tests/<table>.test.ts): a real boot-gate through the
+ * TestClient over the generated admin route + AutoCrud backend. No mocks — real
+ * Router, real auth gate, real JWT, real route discovery. It proves the
+ * secure-by-default POSTURE (the point of a "gate" test): which routes register,
+ * and which are gated vs open. The posture checks are adapter-independent (the
+ * auth gate runs before the handler), so they hold regardless of the DB; the
+ * full DB-backed CRUD behaviour is covered by the framework's own crud tests.
+ */
+function generateCrudGateTest(model: string, table: string, isPublic: boolean): void {
+  const dir = resolve("tests");
+  ensureDir(dir);
+  const posture = isPublic ? "open (--public)" : "gated";
+  const writeCase = isPublic
+    ? `  // --public opened the write: no 401 gate (the handler, not the gate, answers).
+  assert("anonymous POST is NOT gated (--public)",
+    (await client.post("/api/${table}", { json: { name: "test" } })).status !== 401);`
+    : `  // Secure by default: a tokenless POST is rejected by the gate with 401.
+  assert("anonymous POST is gated -> 401",
+    (await client.post("/api/${table}", { json: { name: "test" } })).status === 401);
+  // A valid Bearer token passes the gate (the gate no longer answers 401).
+  const token = getToken({ userId: 1 });
+  assert("authenticated POST passes the gate (not 401)",
+    (await client.post("/api/${table}", { json: { name: "test" }, headers: { authorization: \`Bearer \${token}\` } })).status !== 401);`;
+  const pageCase = isPublic
+    ? `  assert("admin page is NOT gated (--public)", (await client.get("/admin/${table}")).status !== 401);`
+    : `  assert("admin page is secured -> 401 without a token", (await client.get("/admin/${table}")).status === 401);`;
+
+  const content = `/**
+ * ${model} CRUD admin (ADR-0094) — reads public, writes ${posture}, page ${isPublic ? "public" : "secured"}.
+ *
+ * Real end-to-end via TestClient: no mocks — real Router, real auth gate, real
+ * JWT, real route discovery. The admin route registers the AutoCrud backend at
+ * load; discoverRoutes imports it, so the /api/${table} REST routes exist here.
+ * This gate test proves the SECURE-BY-DEFAULT posture (what registers, what is
+ * gated vs open) — adapter-independent, since the auth gate runs before the
+ * handler. Run with: npx tsx tests/${table}.test.ts
+ */
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { defaultRouter, TestClient, getToken, discoverRoutes } from "tina4-nodejs";
+
+process.env.TINA4_SECRET = process.env.TINA4_SECRET ?? "tina4-test-secret-0123456789abcdef0123456789";
+const here = dirname(fileURLToPath(import.meta.url));
+
+let pass = 0;
+let fail = 0;
+function assert(label: string, ok: boolean): void {
+  if (ok) { pass++; console.log(\`  PASS \${label}\`); }
+  else { fail++; console.log(\`  FAIL \${label}\`); }
+}
+
+// Discovering the routes imports src/routes/admin/${table}/get.ts, whose
+// top-level Crud.registerBackend() adds the AutoCrud routes to defaultRouter.
+for (const def of await discoverRoutes(resolve(here, "../src/routes"))) defaultRouter.addRoute(def);
+const patterns = defaultRouter.getRoutes().map((r) => \`\${r.method} \${r.pattern}\`);
+const client = new TestClient();
+
+assert("AutoCrud GET list route registered", patterns.includes("GET /api/${table}"));
+assert("AutoCrud POST route registered", patterns.includes("POST /api/${table}"));
+assert("admin page route registered", patterns.includes("GET /admin/${table}"));
+${pageCase}
+${writeCase}
+
+console.log(\`\\nResults: \${pass} passed, \${fail} failed\`);
+process.exit(fail > 0 ? 1 : 0);
+`;
+  writeFileSafe(join(dir, `${table}.test.ts`), content);
 }
 
 // ── Migration ───────────────────────────────────────────────────────
@@ -1474,7 +1633,7 @@ import { Router, TestClient, getToken, discoverRoutes } from "tina4-nodejs";
 import { initDatabase } from "tina4-nodejs/orm";
 import ${model} from "../src/models/${model}.js";
 
-process.env.TINA4_SECRET = process.env.TINA4_SECRET ?? "test-secret";
+process.env.TINA4_SECRET = process.env.TINA4_SECRET ?? "tina4-test-secret-0123456789abcdef0123456789";
 const here = dirname(fileURLToPath(import.meta.url));
 
 let pass = 0;
@@ -2615,7 +2774,7 @@ import { Router, TestClient, discoverRoutes } from "tina4-nodejs";
 import { initDatabase } from "tina4-nodejs/orm";
 import User from "../src/models/User.js";
 
-process.env.TINA4_SECRET = process.env.TINA4_SECRET ?? "test-secret";
+process.env.TINA4_SECRET = process.env.TINA4_SECRET ?? "tina4-test-secret-0123456789abcdef0123456789";
 delete process.env.TINA4_API_KEY;
 const here = dirname(fileURLToPath(import.meta.url));`;
   const body = `await initDatabase({ url: "sqlite:///test_auth.db" });

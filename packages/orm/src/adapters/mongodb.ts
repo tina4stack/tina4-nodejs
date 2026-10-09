@@ -64,11 +64,114 @@ function isMatchAllWhere(where: string | null | undefined): boolean {
   return where != null && MATCH_ALL_WHERE.test(where);
 }
 
+// ── Non-backtracking SQL scanning helpers (ReDoS-safe) ──────────────
+// The SQL dispatchers below parse with plain string operations (indexOf /
+// slice / single linear scan) instead of regexes with adjacent variable-length
+// groups (`\s+(.*?)\s+`), which CodeQL correctly flags as polynomial ReDoS.
+// This mirrors the Ruby master's string-based SQL parsing. Behaviour is
+// identical to the previous regexes on the ORM-generated SQL these see.
+
+const QUOTE_CHARS = "\"'";
+
+function isSqlWs(ch: string): boolean {
+  return ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "\f" || ch === "\v";
+}
+
+function isWordChar(ch: string): boolean {
+  return (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || (ch >= "0" && ch <= "9") || ch === "_";
+}
+
+/** True when sql[start..end) is empty or all whitespace. */
+function onlyWs(sql: string, start: number, end: number): boolean {
+  for (let i = start; i < end; i++) if (!isSqlWs(sql[i])) return false;
+  return true;
+}
+
+/**
+ * Index of a whitespace-delimited keyword (matched case-insensitively against
+ * `upper`, the upper-cased sql) at or after `from`, or -1. Plain indexOf scan —
+ * no backtracking.
+ */
+function keywordAt(upper: string, keyword: string, from: number): number {
+  let at = upper.indexOf(keyword, from);
+  while (at >= 0) {
+    const end = at + keyword.length;
+    const okBefore = at === 0 || isSqlWs(upper[at - 1]);
+    const okAfter = end >= upper.length || isSqlWs(upper[end]);
+    if (okBefore && okAfter) return at;
+    at = upper.indexOf(keyword, at + 1);
+  }
+  return -1;
+}
+
+/** The lowest index among `positions` that is >= 0, else `fallback`. */
+function earliest(positions: number[], fallback: number): number {
+  let min = fallback;
+  for (const p of positions) if (p >= 0 && p < min) min = p;
+  return min;
+}
+
+/** Read an optionally-quoted identifier (a \w+ run) at/after `from`; [name, end] or null. */
+function readIdentifier(sql: string, from: number): [string, number] | null {
+  let i = from;
+  while (i < sql.length && isSqlWs(sql[i])) i++;
+  if (i < sql.length && QUOTE_CHARS.includes(sql[i])) i++;
+  const start = i;
+  while (i < sql.length && isWordChar(sql[i])) i++;
+  if (i === start) return null;
+  const name = sql.slice(start, i);
+  if (i < sql.length && QUOTE_CHARS.includes(sql[i])) i++;
+  return [name, i];
+}
+
+/**
+ * Index just past `keyword` (whitespace-delimited, case-insensitive) when it is
+ * the next token at/after `from` with only whitespace in between, else -1. Folds
+ * the recurring "find keyword + require all-whitespace gap" guard.
+ */
+function keywordGapEnd(upper: string, sql: string, keyword: string, from: number): number {
+  const at = keywordAt(upper, keyword, from);
+  if (at < 0 || !onlyWs(sql, from, at)) return -1;
+  return at + keyword.length;
+}
+
+/** Strip one leading and one trailing quote (matches /^["']|["']$/g). */
+function stripQuotes(value: string): string {
+  let result = value;
+  if (result.length > 0 && (result[0] === '"' || result[0] === "'")) result = result.slice(1);
+  const last = result.length - 1;
+  if (last >= 0 && (result[last] === '"' || result[last] === "'")) result = result.slice(0, last);
+  return result;
+}
+
+/**
+ * Split a WHERE clause on whitespace-delimited AND (case-insensitive), linearly.
+ * Each part is trimmed by the caller, so the surrounding whitespace that the old
+ * /\s+AND\s+/ delimiter consumed is dropped there too — identical result.
+ */
+function splitOnAnd(where: string): string[] {
+  const parts: string[] = [];
+  const lower = where.toLowerCase();
+  let segStart = 0;
+  let i = 0;
+  while (i < where.length) {
+    if (lower.startsWith("and", i) && i > 0 && isSqlWs(where[i - 1]) && i + 3 < where.length && isSqlWs(where[i + 3])) {
+      parts.push(where.slice(segStart, i));
+      i += 3;
+      segStart = i;
+      continue;
+    }
+    i++;
+  }
+  parts.push(where.slice(segStart));
+  return parts;
+}
+
 /** Convert SQL WHERE clause tokens into a MongoDB filter object. */
 function parseWhereClause(where: string, params: unknown[], paramOffset = 0): { filter: Record<string, unknown>; consumed: number } {
   const filter: Record<string, unknown> = {};
-  // Simple key = ? / key = 'value' patterns separated by AND
-  const parts = where.split(/\s+AND\s+/i);
+  // Simple key = ? / key = 'value' patterns separated by AND (linear split).
+  const parts = splitOnAnd(where);
   let paramIndex = paramOffset;
 
   for (const part of parts) {
@@ -191,27 +294,70 @@ function requireWriteFilter(filter: Record<string, unknown> | undefined, operati
   }
 }
 
-function parseSelect(sql: string, params: unknown[]): MongoOperation | null {
-  const match = sql.match(/^SELECT\s+(.*?)\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.*?))?(?:\s+ORDER\s+BY\s+(.*?))?(?:\s+LIMIT\s+(\d+))?(?:\s+OFFSET\s+(\d+))?$/is);
-  if (!match) return null;
-  const [, cols, collection, whereClause, orderBy, limitStr, skipStr] = match;
+/** Build a MongoDB projection document from a SELECT column list. */
+function buildProjection(cols: string): Record<string, unknown> {
   const projection: Record<string, unknown> = {};
-  if (cols && cols.trim() !== "*") {
-    for (const col of cols.split(",")) {
-      const name = col.trim().replace(/^["']|["']$/g, "");
-      if (name && name !== "*") projection[name] = 1;
-    }
+  if (!cols || cols.trim() === "*") return projection;
+  for (const col of cols.split(",")) {
+    const name = stripQuotes(col.trim());
+    if (name && name !== "*") projection[name] = 1;
   }
-  const filter = whereClause ? parseWhereClause(whereClause.trim(), params).filter : {};
+  return projection;
+}
+
+/** Remove a trailing whitespace-separated ASC/DESC (case-insensitive). */
+function stripTrailingDirection(part: string): string {
+  const lower = part.toLowerCase();
+  let suffix = 0;
+  if (lower.endsWith("asc")) suffix = 3;
+  else if (lower.endsWith("desc")) suffix = 4;
+  else return part;
+  const beforeIdx = part.length - suffix - 1;
+  if (beforeIdx < 0 || !isSqlWs(part[beforeIdx])) return part;
+  let i = beforeIdx;
+  while (i >= 0 && isSqlWs(part[i])) i--;
+  return part.slice(0, i + 1);
+}
+
+/** Build a MongoDB sort document from an ORDER BY clause. */
+function parseOrderBy(orderBy: string): Record<string, 1 | -1> {
   const sort: Record<string, 1 | -1> = {};
-  if (orderBy) {
-    for (const part of orderBy.split(",")) {
-      const trimmed = part.trim();
-      const desc = /DESC$/i.test(trimmed);
-      const col = trimmed.replace(/\s+(ASC|DESC)$/i, "").replace(/^["']|["']$/g, "").trim();
-      sort[col] = desc ? -1 : 1;
-    }
+  for (const rawPart of orderBy.split(",")) {
+    const trimmed = rawPart.trim();
+    const desc = trimmed.toLowerCase().endsWith("desc");
+    const col = stripQuotes(stripTrailingDirection(trimmed)).trim();
+    sort[col] = desc ? -1 : 1;
   }
+  return sort;
+}
+
+function parseSelect(sql: string, params: unknown[]): MongoOperation | null {
+  // Plain string scan — SELECT <cols> FROM <coll> [WHERE ..][ORDER BY ..][LIMIT n][OFFSET n].
+  const upper = sql.toUpperCase();
+  if (!(upper.startsWith("SELECT") && (sql.length === 6 || isSqlWs(sql[6])))) return null;
+  const fromAt = keywordAt(upper, "FROM", 6);
+  if (fromAt < 0) return null;
+  const cols = sql.slice(6, fromAt).trim();
+  const ident = readIdentifier(sql, fromAt + 4);
+  if (!ident) return null;
+  const [collection, afterColl] = ident;
+
+  const whereAt = keywordAt(upper, "WHERE", afterColl);
+  const orderAt = keywordAt(upper, "ORDER BY", afterColl);
+  const limitAt = keywordAt(upper, "LIMIT", afterColl);
+  const offsetAt = keywordAt(upper, "OFFSET", afterColl);
+  const end = sql.length;
+
+  const whereClause = whereAt < 0 ? undefined
+    : sql.slice(whereAt + 5, earliest([orderAt, limitAt, offsetAt], end)).trim();
+  const orderBy = orderAt < 0 ? undefined
+    : sql.slice(orderAt + 8, earliest([limitAt, offsetAt], end)).trim();
+  const limitStr = limitAt < 0 ? undefined
+    : sql.slice(limitAt + 5, earliest([offsetAt], end)).trim();
+  const skipStr = offsetAt < 0 ? undefined : sql.slice(offsetAt + 6).trim();
+
+  const projection = buildProjection(cols);
+  const filter = whereClause ? parseWhereClause(whereClause, params).filter : {};
   return {
     type: "find",
     collection,
@@ -219,7 +365,7 @@ function parseSelect(sql: string, params: unknown[]): MongoOperation | null {
     projection: Object.keys(projection).length > 0 ? projection : undefined,
     limit: limitStr ? parseInt(limitStr, 10) : undefined,
     skip: skipStr ? parseInt(skipStr, 10) : undefined,
-    sort: orderBy ? sort : undefined,
+    sort: orderBy ? parseOrderBy(orderBy) : undefined,
   };
 }
 
@@ -258,21 +404,36 @@ function parseSetClause(setClause: string, params: unknown[]): { document: Recor
 }
 
 function parseUpdate(sql: string, params: unknown[]): MongoOperation | null {
-  const match = sql.match(/^UPDATE\s+["']?(\w+)["']?\s+SET\s+(.*?)(?:\s+WHERE\s+(.+))?$/is);
-  if (!match) return null;
-  const [, collection, setClause, whereClause] = match;
+  // Plain string scan — UPDATE <coll> SET <assignments> [WHERE ..].
+  const upper = sql.toUpperCase();
+  if (!(upper.startsWith("UPDATE") && sql.length > 6 && isSqlWs(sql[6]))) return null;
+  const ident = readIdentifier(sql, 6);
+  if (!ident) return null;
+  const [collection, afterColl] = ident;
+  const setAt = keywordAt(upper, "SET", afterColl);
+  if (setAt < 0 || !onlyWs(sql, afterColl, setAt)) return null;
+  const whereAt = keywordAt(upper, "WHERE", setAt + 3);
+  const setClause = sql.slice(setAt + 3, whereAt < 0 ? sql.length : whereAt).trim();
+  const whereClause = whereAt < 0 ? undefined : sql.slice(whereAt + 5).trim();
   const set = parseSetClause(setClause, params);
-  const matchAll = isMatchAllWhere(whereClause?.trim());
-  const filter = whereClause ? parseWhereClause(whereClause.trim(), params, set.consumed).filter : {};
+  const matchAll = isMatchAllWhere(whereClause);
+  const filter = whereClause ? parseWhereClause(whereClause, params, set.consumed).filter : {};
   return { type: "updateMany", collection, filter, update: { $set: set.document }, matchAll };
 }
 
 function parseDelete(sql: string, params: unknown[]): MongoOperation | null {
-  const match = sql.match(/^DELETE\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.+))?$/is);
-  if (!match) return null;
-  const [, collection, whereClause] = match;
-  const matchAll = isMatchAllWhere(whereClause?.trim());
-  const filter = whereClause ? parseWhereClause(whereClause.trim(), params).filter : {};
+  // Plain string scan — DELETE FROM <coll> [WHERE ..].
+  const upper = sql.toUpperCase();
+  if (!upper.startsWith("DELETE")) return null;
+  const fromAt = keywordAt(upper, "FROM", 6);
+  if (fromAt < 0 || !onlyWs(sql, 6, fromAt)) return null;
+  const ident = readIdentifier(sql, fromAt + 4);
+  if (!ident) return null;
+  const [collection, afterColl] = ident;
+  const whereAt = keywordAt(upper, "WHERE", afterColl);
+  const whereClause = whereAt < 0 ? undefined : sql.slice(whereAt + 5).trim();
+  const matchAll = isMatchAllWhere(whereClause);
+  const filter = whereClause ? parseWhereClause(whereClause, params).filter : {};
   return { type: "deleteMany", collection, filter, matchAll };
 }
 
@@ -282,10 +443,24 @@ function parseCreate(sql: string): MongoOperation | null {
 }
 
 function parseCount(sql: string, params: unknown[]): MongoOperation | null {
-  const match = sql.match(/^SELECT\s+COUNT\(\*\)\s+AS\s+(\w+)\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.+))?$/is);
-  if (!match) return null;
-  const [, alias, collection, whereClause] = match;
-  const filter = whereClause ? parseWhereClause(whereClause.trim(), params).filter : {};
+  // Plain string scan — SELECT COUNT(*) AS <alias> FROM <coll> [WHERE ..].
+  const upper = sql.toUpperCase();
+  if (!upper.startsWith("SELECT")) return null;
+  const afterCount = keywordGapEnd(upper, sql, "COUNT(*)", 6);
+  if (afterCount < 0) return null;
+  const afterAs = keywordGapEnd(upper, sql, "AS", afterCount);
+  if (afterAs < 0) return null;
+  const aliasIdent = readIdentifier(sql, afterAs);
+  if (!aliasIdent) return null;
+  const [alias, afterAlias] = aliasIdent;
+  const afterFrom = keywordGapEnd(upper, sql, "FROM", afterAlias);
+  if (afterFrom < 0) return null;
+  const coll = readIdentifier(sql, afterFrom);
+  if (!coll) return null;
+  const [collection, afterColl] = coll;
+  const whereAt = keywordAt(upper, "WHERE", afterColl);
+  const whereClause = whereAt < 0 ? undefined : sql.slice(whereAt + 5).trim();
+  const filter = whereClause ? parseWhereClause(whereClause, params).filter : {};
   return { type: "aggregate", collection, pipeline: [{ $match: filter }, { $count: alias }] };
 }
 

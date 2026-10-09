@@ -118,7 +118,7 @@ const CASES: Case[] = [
     test: "tests/widget_migration.test.ts" },
   { id: "crud", pre: [],
     gen: ["generate", "crud", "Trinket", "--fields", "name:string,qty:int"],
-    test: "tests/trinkets.test.ts" },
+    test: "tests/trinket.test.ts" },
 ];
 
 console.log("=== CLI generator co-emit meta-tests (real generate → real tsx run) ===\n");
@@ -234,18 +234,17 @@ try {
       db.close();
     }
 
-    // 5. the generated create route must check save() before serialising —
-    //    save() returns false rather than throwing, so an unchecked route
-    //    reports a failed write to the client as a 201 carrying unsaved data.
-    const post = readFileSync(join(cDir, "src/routes/api/todos/post.ts"), "utf-8");
-    assert("generated create route checks save() result",
-      post.includes("=== false"), post);
-    // Require presence explicitly: a bare indexOf comparison passes vacuously
-    // when the guard is ABSENT (-1 < any real offset), which would make this
-    // assertion green against the very bug it exists to catch.
-    assert("the guard comes BEFORE the success serialisation",
-      post.includes("=== false")
-      && post.indexOf("=== false") < post.indexOf("toObject() }, 201"), post);
+    // 5. ADR-0094: `generate crud` no longer emits a bespoke REST write route —
+    //    the backend is 100% AutoCrud. It scaffolds the AutoCrud-backed admin
+    //    PAGE instead, which registers the backend and renders Crud.toCrud. The
+    //    save()-before-serialise guard now lives in AutoCrud's own handler (and
+    //    the `generate route --model` POST file, covered by route_with_model).
+    const adminRoute = readFileSync(join(cDir, "src/routes/admin/todo/get.ts"), "utf-8");
+    assert("crud admin route registers the AutoCrud backend (no bespoke write route)",
+      adminRoute.includes("Crud.registerBackend(Todo") && adminRoute.includes("Crud.toCrud(req, { model: Todo"),
+      adminRoute);
+    assert("crud emits NO bespoke REST write route under src/routes/api/",
+      !existsSync(join(cDir, "src/routes/api/todos/post.ts")) && !existsSync(join(cDir, "src/routes/api/todo/post.ts")));
   }
 } finally {
   rmSync(baseDir, { recursive: true, force: true });
