@@ -34,6 +34,9 @@ export interface CrudModel {
 /** Escape alias used throughout the CRUD HTML assembly. */
 export const h = escapeHtml;
 
+/** The whitespace characters the SQL scanners treat as separators (no regex). */
+const SQL_WS = " \t\n\r\f\v";
+
 /** The DB column a property name maps to (fieldMapping or the property itself). */
 export function columnOf(model: CrudModel, prop: string): string {
   return model.fieldMapping?.[prop] ?? prop;
@@ -125,11 +128,14 @@ export function stripOrderAndLimit(sql: string): string {
     if (content.length <= after) return line;
     return content.slice(0, at) + (hasNewline ? "\n" : "");
   };
-  return String(sql)
-    .split(/(?<=\n)/)
-    .map((line) => cut(cut(line, "ORDER BY "), "LIMIT "))
-    .join("")
-    .trim();
+  const src = String(sql);
+  const lines: string[] = [];
+  let start = 0;
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] === "\n") { lines.push(src.slice(start, i + 1)); start = i + 1; }
+  }
+  lines.push(src.slice(start));
+  return lines.map((line) => cut(cut(line, "ORDER BY "), "LIMIT ")).join("").trim();
 }
 
 /**
@@ -161,7 +167,9 @@ function columnAlias(trimmed: string): string {
   const asAt = keywordIndex(trimmed.toUpperCase(), "AS", 0);
   if (asAt >= 0) {
     const after = trimmed.slice(asAt + "AS".length).trim();
-    const word = after.split(/[\s,]/, 1)[0];
+    let endIdx = 0;
+    while (endIdx < after.length && !SQL_WS.includes(after[endIdx]) && after[endIdx] !== ",") endIdx++;
+    const word = after.slice(0, endIdx);
     if (word) return word;
   }
   if (trimmed.includes(".")) return trimmed.split(".").pop()!.trim();
@@ -177,8 +185,8 @@ function keywordIndex(upperHaystack: string, keyword: string, from: number): num
   let at = upperHaystack.indexOf(keyword, from);
   while (at >= 0) {
     const afterIdx = at + keyword.length;
-    const boundaryBefore = at === 0 || /\s/.test(upperHaystack[at - 1]);
-    const boundaryAfter = afterIdx >= upperHaystack.length || /\s/.test(upperHaystack[afterIdx]);
+    const boundaryBefore = at === 0 || SQL_WS.includes(upperHaystack[at - 1]);
+    const boundaryAfter = afterIdx >= upperHaystack.length || SQL_WS.includes(upperHaystack[afterIdx]);
     if (boundaryBefore && boundaryAfter) return at;
     at = upperHaystack.indexOf(keyword, at + 1);
   }
