@@ -57,15 +57,15 @@ function silentSmtpServer(): Promise<{ port: number; close: () => void }> {
   });
 }
 
-async function timeSend(port: number, opts: Record<string, unknown> = {}): Promise<number> {
+async function timeSend(port: number, opts: Record<string, unknown> = {}): Promise<{ elapsed: number; message: string }> {
   const messenger = new Messenger({ host: "127.0.0.1", port, encryption: "none", fromAddress: "app@localhost", ...opts });
   const start = process.hrtime.bigint();
   const result = await messenger.send("someone@localhost", "test", "hello");
   const elapsed = Number(process.hrtime.bigint() - start) / 1e9;
   // The host never speaks SMTP, so the send always fails — what matters is HOW
-  // LONG it waited.
+  // LONG it waited, and that the failure is reported AS a timeout.
   assert("send fails (host never speaks SMTP)", result.success === false);
-  return elapsed;
+  return { elapsed, message: String((result as { message?: unknown }).message ?? "") };
 }
 
 async function main(): Promise<void> {
@@ -74,26 +74,38 @@ async function main(): Promise<void> {
   // Default is 30 s when nothing is configured.
   assert("default timeout is 30 s", new Messenger({ host: "127.0.0.1", encryption: "none" }).timeoutMs === 30_000);
 
-  // A non-numeric env value falls back to 30 s, never NaN/0.
+  // A non-numeric env value warns once and falls back to 30 s, never NaN/0.
   process.env.TINA4_MAIL_TIMEOUT = "not-a-number";
   assert(
     "bad TINA4_MAIL_TIMEOUT falls back to 30 s",
     new Messenger({ host: "127.0.0.1", encryption: "none" }).timeoutMs === 30_000,
   );
+  // 0 is garbage, not an opt-out.
+  process.env.TINA4_MAIL_TIMEOUT = "0";
+  assert("TINA4_MAIL_TIMEOUT=0 falls back to 30 s", new Messenger({ host: "127.0.0.1", encryption: "none" }).timeoutMs === 30_000);
   delete process.env.TINA4_MAIL_TIMEOUT;
 
-  // A constructor timeout of 1 s is honoured (ms).
+  // SMTP_TIMEOUT is no longer honoured (dropped for parity with the PHP master).
+  process.env.SMTP_TIMEOUT = "1";
+  assert("SMTP_TIMEOUT is ignored", new Messenger({ host: "127.0.0.1", encryption: "none" }).timeoutMs === 30_000);
+  delete process.env.SMTP_TIMEOUT;
+
+  // A constructor timeout of 1 s is honoured (ms); a sub-second one throws.
   assert("constructor timeout: 1 → 1000ms", new Messenger({ host: "127.0.0.1", encryption: "none", timeout: 1 }).timeoutMs === 1000);
+  let threw = false;
+  try { new Messenger({ host: "127.0.0.1", encryption: "none", timeout: 0 }); } catch { threw = true; }
+  assert("an explicit sub-second timeout throws", threw);
 
   const { port, close } = await silentSmtpServer();
   try {
     const byCtor = await timeSend(port, { timeout: 1 });
-    assert("constructor timeout bounds the send (<8s)", byCtor < 8, `took ${byCtor.toFixed(1)}s`);
+    assert("constructor timeout bounds the send (<8s)", byCtor.elapsed < 8, `took ${byCtor.elapsed.toFixed(1)}s`);
+    assert("a silent server is reported as a timeout", /tim(e|ed)?\s*out|timeout/i.test(byCtor.message), `message=${JSON.stringify(byCtor.message)}`);
 
     process.env.TINA4_MAIL_TIMEOUT = "1";
     try {
       const byEnv = await timeSend(port);
-      assert("TINA4_MAIL_TIMEOUT bounds the send (<8s)", byEnv < 8, `took ${byEnv.toFixed(1)}s`);
+      assert("TINA4_MAIL_TIMEOUT bounds the send (<8s)", byEnv.elapsed < 8, `took ${byEnv.elapsed.toFixed(1)}s`);
     } finally {
       delete process.env.TINA4_MAIL_TIMEOUT;
     }

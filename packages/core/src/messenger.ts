@@ -70,18 +70,42 @@ type SmtpTransport = "implicit_tls" | "starttls" | "plain";
 const SMTP_SEND_TIMEOUT_MS = 30_000;
 const SMTP_CHECK_TIMEOUT_MS = 10_000;
 
+/** Raw TINA4_MAIL_TIMEOUT values already warned about, so a bad one is said once. */
+const _timeoutWarned = new Set<string>();
+
 /**
- * Resolve the SMTP send timeout in MILLISECONDS from the constructor arg (seconds),
- * then the env (TINA4_MAIL_TIMEOUT, SMTP_TIMEOUT — also seconds), defaulting to 30 s
- * on absence or garbage. A non-finite or non-positive value falls back to 30 rather
- * than coercing to NaN/0 (which would make every send time out instantly).
+ * Resolve the SMTP send timeout in MILLISECONDS (issue #278). Priority:
+ * constructor (seconds) > TINA4_MAIL_TIMEOUT (seconds) > 30. Whole seconds, at
+ * least 1. An explicit constructor value is the caller's own instruction, so one
+ * that is not a whole second >= 1 is a programming error and THROWS. A bad env
+ * value is a misconfiguration: warn once and use the default. Zero and negative
+ * are garbage, not an opt-out. Mirrors the PHP master (Messenger::resolveTimeout,
+ * tina4-php#286); the SMTP_TIMEOUT fallback was dropped for parity.
  */
 function resolveSendTimeoutMs(optionTimeout?: number): number {
   const DEFAULT_SECONDS = 30;
-  const raw = optionTimeout ?? process.env.TINA4_MAIL_TIMEOUT ?? process.env.SMTP_TIMEOUT;
-  if (raw === undefined || raw === null || raw === "") return DEFAULT_SECONDS * 1000;
-  const seconds = Number(raw);
-  if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_SECONDS * 1000;
+  if (optionTimeout !== undefined && optionTimeout !== null) {
+    if (!Number.isInteger(optionTimeout) || optionTimeout < 1) {
+      throw new Error(
+        `Messenger timeout must be a whole number of seconds and at least 1, got ${optionTimeout}.`,
+      );
+    }
+    return optionTimeout * 1000;
+  }
+  const raw = process.env.TINA4_MAIL_TIMEOUT;
+  if (raw === undefined || raw === null || raw.trim() === "") return DEFAULT_SECONDS * 1000;
+  const trimmed = raw.trim();
+  const seconds = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
+  if (!Number.isInteger(seconds) || seconds < 1) {
+    if (!_timeoutWarned.has(raw)) {
+      _timeoutWarned.add(raw);
+      Log.warning(
+        `TINA4_MAIL_TIMEOUT must be a whole number of seconds and at least 1, got ${JSON.stringify(raw)} ` +
+          `- using the default of ${DEFAULT_SECONDS} seconds`,
+      );
+    }
+    return DEFAULT_SECONDS * 1000;
+  }
   return seconds * 1000;
 }
 
@@ -209,7 +233,7 @@ interface MessengerOptions {
   imapPass?: string;
   /** IMAP transport security: "tls" (default), "starttls", or "none". */
   imapEncryption?: string;
-  /** SMTP send timeout in SECONDS (default 30; env TINA4_MAIL_TIMEOUT / SMTP_TIMEOUT). */
+  /** SMTP send timeout in whole SECONDS, at least 1 (default 30; env TINA4_MAIL_TIMEOUT). */
   timeout?: number;
 }
 
@@ -547,10 +571,10 @@ export class Messenger {
       ?? process.env.TINA4_MAIL_IMAP_ENCRYPTION
       ?? "tls", "IMAP");
 
-    // SMTP send timeout (seconds): constructor > TINA4_MAIL_TIMEOUT > SMTP_TIMEOUT
-    // > 30. A non-finite/garbage value falls back to 30 rather than coercing to
-    // NaN/0, which would make every send time out instantly. Stored as ms, the
-    // unit openSmtpSession/failOnIdle want. Parity with the Python/PHP/Ruby master.
+    // SMTP send timeout (whole seconds, at least 1): constructor >
+    // TINA4_MAIL_TIMEOUT > 30. An explicit sub-second value throws; a bad env
+    // value warns once and uses the default. Stored as ms, the unit
+    // openSmtpSession/failOnIdle want. Parity with the PHP/Python/Ruby master.
     this.timeoutMs = resolveSendTimeoutMs(options?.timeout);
   }
 
