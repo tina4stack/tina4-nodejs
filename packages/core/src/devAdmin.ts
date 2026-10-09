@@ -30,6 +30,7 @@ import { fullAnalysis, fileDetail, MetricsEngineError, metricsScanRoot } from ".
 import { registerFeedbackRoutes } from "./feedback.js";
 import { getDefaultDevServer, mcpEnabled, isRequestAllowed, isLoopback } from "./mcp.js";
 import { timingSafeEqual } from "node:crypto";
+import net from "node:net";
 // VERSION-DEC-01 (feature 130): the dashboard reads the SAME resolved version
 // as server.ts's banner/health and mcp.ts's default dev server -- one shared
 // walk-up resolver in ./version.ts, not this file's own two-fixed-path reader
@@ -54,6 +55,11 @@ export const DEV_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
  * lets the MCP gate govern (keeps the mcp/call refusal a 404, not a 403).
  */
 const DEV_MCP_PREFIXES = ["/__dev/api/mcp", "/__dev/mcp"];
+
+// Static dev-toolbar assets that carry no secrets and expose no actions, so the
+// peer gate does not cover them: wherever the toolbar is injected its stylesheet
+// and script must load (issue #279). Host + same-origin still apply.
+const DEV_PUBLIC_ASSETS = new Set(["/__dev/toolbar.css", "/__dev/toolbar.js"]);
 
 /** Private-key / credential basenames the file endpoints must never serve. */
 const DEV_SECRET_BASENAMES = new Set([
@@ -140,6 +146,65 @@ export function devHostAllowed(hostHeader: string | undefined | null): boolean {
 }
 
 /**
+ * True when raw peer `ip` falls inside `entry` (a bare IP or a CIDR). IPv4 and
+ * IPv6 via node:net's BlockList; an IPv4-mapped IPv6 peer (::ffff:a.b.c.d) is
+ * matched as IPv4. `ip` is the real socket peer, `entry` is operator config -
+ * never a forwarded header.
+ */
+export function ipInCidr(ip: string, entry: string): boolean {
+  try {
+    ip = (ip ?? "").trim();
+    if (ip.toLowerCase().startsWith("::ffff:")) ip = ip.slice(7); // mapped -> IPv4
+    const ipFam = net.isIP(ip);
+    if (!ipFam) return false;
+    entry = (entry ?? "").trim();
+    const bl = new net.BlockList();
+    if (entry.includes("/")) {
+      const [addr, bitsStr] = entry.split("/");
+      const bits = Number(bitsStr);
+      const fam = net.isIP(addr);
+      if (!fam || !Number.isInteger(bits)) return false;
+      bl.addSubnet(addr, bits, fam === 4 ? "ipv4" : "ipv6");
+    } else {
+      const fam = net.isIP(entry);
+      if (!fam) return false;
+      bl.addAddress(entry, fam === 4 ? "ipv4" : "ipv6");
+    }
+    return bl.check(ip, ipFam === 4 ? "ipv4" : "ipv6");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when the RAW socket peer may reach /__dev: loopback always, plus any
+ * IP/CIDR in TINA4_DEV_ALLOWED_PEERS (comma-separated, opt-in, default none).
+ * Reads the real socket peer ONLY, never a forwarded header, so it cannot be
+ * spoofed by X-Forwarded-For. The documented way to reach the dev dashboard from
+ * a Docker dev box, where requests arrive from the container-network gateway
+ * rather than loopback (issue #279).
+ */
+export function devPeerAllowed(remoteIp: string | undefined | null): boolean {
+  const ip = (remoteIp ?? "").trim();
+  if (isLoopback(ip)) return true;
+  const configured = (process.env.TINA4_DEV_ALLOWED_PEERS ?? "").trim();
+  if (!configured) return false;
+  return configured.split(",").some((entry) => entry.trim() !== "" && ipInCidr(ip, entry));
+}
+
+/**
+ * True when the toolbar may be injected for this viewer - the Host allow-list
+ * and the raw-peer gate both pass. A viewer the /__dev gate would refuse gets NO
+ * toolbar markup, so its stylesheet and script are never requested only to 403
+ * (issue #279).
+ */
+export function devToolbarAllowed(req: Tina4Request): boolean {
+  if (!devHostAllowed(req.header("host"))) return false;
+  const peer = (req as unknown as { socket?: { remoteAddress?: string } }).socket?.remoteAddress ?? "";
+  return devPeerAllowed(peer);
+}
+
+/**
  * Return `{status, error}` to REFUSE any /__dev request (read or write), or
  * `null` to allow (ADR-0082): Host allow-list, then same-origin, then the
  * loopback peer (the MCP surface keeps its own 404 gate for the peer part).
@@ -155,9 +220,15 @@ export function devRequestDenial(req: Tina4Request): { status: number; error: st
   if (!devSameOriginOk(req)) {
     return { status: 403, error: "dev-admin: refused (cross-origin request)" };
   }
+  // The static toolbar assets are exempt from the peer gate (#279): they carry
+  // no secrets and the toolbar needs them wherever it is injected. Host +
+  // same-origin above still apply.
+  if (DEV_PUBLIC_ASSETS.has(path)) {
+    return null;
+  }
   if (!isMcp) {
     const peer = (req as unknown as { socket?: { remoteAddress?: string } }).socket?.remoteAddress ?? "";
-    if (!(isLoopback(peer) || mcpTokenOk(req, true))) {
+    if (!(devPeerAllowed(peer) || mcpTokenOk(req, true))) {
       return { status: 403, error: "dev-admin: refused (non-loopback peer)" };
     }
   }
