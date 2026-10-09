@@ -70,6 +70,52 @@ type SmtpTransport = "implicit_tls" | "starttls" | "plain";
 const SMTP_SEND_TIMEOUT_MS = 30_000;
 const SMTP_CHECK_TIMEOUT_MS = 10_000;
 
+/** Raw TINA4_MAIL_TIMEOUT values already warned about, so a bad one is said once. */
+const _timeoutWarned = new Set<string>();
+
+/**
+ * Resolve the SMTP send timeout in MILLISECONDS (issue #278). Priority:
+ * constructor (seconds) > TINA4_MAIL_TIMEOUT (seconds) > 30. Whole seconds, at
+ * least 1. An explicit constructor value is the caller's own instruction, so one
+ * that is not a whole second >= 1 is a programming error and THROWS. A bad env
+ * value is a misconfiguration: warn once and use the default. Zero and negative
+ * are garbage, not an opt-out. Mirrors the PHP master (Messenger::resolveTimeout,
+ * tina4-php#286); the SMTP_TIMEOUT fallback was dropped for parity.
+ */
+const DEFAULT_TIMEOUT_SECONDS = 30;
+
+function resolveSendTimeoutMs(optionTimeout?: number): number {
+  if (optionTimeout === undefined || optionTimeout === null) {
+    return resolveEnvTimeoutSeconds(process.env.TINA4_MAIL_TIMEOUT) * 1000;
+  }
+  if (!Number.isInteger(optionTimeout) || optionTimeout < 1) {
+    throw new Error(
+      `Messenger timeout must be a whole number of seconds and at least 1, got ${optionTimeout}.`,
+    );
+  }
+  return optionTimeout * 1000;
+}
+
+/** TINA4_MAIL_TIMEOUT in whole seconds; a blank value, or garbage/< 1 (warned once), is the default. */
+function resolveEnvTimeoutSeconds(raw?: string): number {
+  if (!raw || raw.trim() === "") return DEFAULT_TIMEOUT_SECONDS;
+  const trimmed = raw.trim();
+  const seconds = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
+  if (Number.isInteger(seconds) && seconds >= 1) return seconds;
+  warnBadMailTimeout(raw);
+  return DEFAULT_TIMEOUT_SECONDS;
+}
+
+/** Warn once per distinct bad TINA4_MAIL_TIMEOUT value. */
+function warnBadMailTimeout(raw: string): void {
+  if (_timeoutWarned.has(raw)) return;
+  _timeoutWarned.add(raw);
+  Log.warning(
+    `TINA4_MAIL_TIMEOUT must be a whole number of seconds and at least 1, got ${JSON.stringify(raw)} ` +
+      `- using the default of ${DEFAULT_TIMEOUT_SECONDS} seconds`,
+  );
+}
+
 /**
  * Give a socket an idle timeout that fails it with a clear error. Without one a
  * client that waits for a greeting the server never sends (a plaintext client
@@ -194,6 +240,8 @@ interface MessengerOptions {
   imapPass?: string;
   /** IMAP transport security: "tls" (default), "starttls", or "none". */
   imapEncryption?: string;
+  /** SMTP send timeout in whole SECONDS, at least 1 (default 30; env TINA4_MAIL_TIMEOUT). */
+  timeout?: number;
 }
 
 export interface ImapMessage {
@@ -466,6 +514,8 @@ export class Messenger {
   private imapUser: string;
   private imapPass: string;
   private imapEncryption: string;
+  /** Resolved SMTP send timeout, in milliseconds (see the constructor). */
+  public readonly timeoutMs: number;
 
   constructor(options?: MessengerOptions) {
     // Priority: constructor > TINA4_MAIL_* > sensible default.
@@ -527,6 +577,12 @@ export class Messenger {
     this.imapEncryption = normaliseEncryption(options?.imapEncryption
       ?? process.env.TINA4_MAIL_IMAP_ENCRYPTION
       ?? "tls", "IMAP");
+
+    // SMTP send timeout (whole seconds, at least 1): constructor >
+    // TINA4_MAIL_TIMEOUT > 30. An explicit sub-second value throws; a bad env
+    // value warns once and uses the default. Stored as ms, the unit
+    // openSmtpSession/failOnIdle want. Parity with the PHP/Python/Ruby master.
+    this.timeoutMs = resolveSendTimeoutMs(options?.timeout);
   }
 
   /**
@@ -671,7 +727,7 @@ export class Messenger {
   private async sendSmtp(options: SendOptions, recipients: MailRecipients, messageId: string): Promise<SendResult> {
     let socket: SmtpSocket | null = null;
     try {
-      socket = await this.openSmtpSession();
+      socket = await this.openSmtpSession(this.timeoutMs);
       await this.authenticateSmtp(socket);
       await this.sendSmtpEnvelope(socket, recipients.allRecipients);
       await this.sendSmtpMessage(socket, options, recipients, messageId);
