@@ -93,6 +93,62 @@ const filterValueError = (field: string): InvalidQueryParameterError =>
  * not resolve throws UnknownFieldError before any SQL exists. With no
  * resolver, no filter or sort key resolves (ADR-0069).
  */
+/**
+ * ADR-0094: ?search=term filters the list - a LIKE %term% OR'd across the
+ * model's declared string/text columns (already resolved + passed in by the
+ * caller), added to the WHERE before limit/offset so the COUNT reflects the
+ * filtered set. The columns come from the model, never the request, so the
+ * identifiers are safe; the term itself is bound. A model with no string/text
+ * column simply matches nothing (the handler passes an empty list).
+ */
+function applySearch(
+  options: QueryOptions,
+  conditions: string[],
+  params: unknown[],
+  quote: (name: string) => string,
+): void {
+  const searchTerm = (options.search ?? "").trim();
+  if (searchTerm === "" || !options.searchColumns || options.searchColumns.length === 0) return;
+  const likeParts = options.searchColumns.map((col) => `${quote(col)} LIKE ?`);
+  conditions.push(`(${likeParts.join(" OR ")})`);
+  for (const _ of options.searchColumns) params.push(`%${searchTerm}%`);
+}
+
+/**
+ * Build the ORDER BY clause from ?sort. Comma-separated parts, empty parts
+ * skipped, a leading "-" = DESC. ORDER BY is built only from resolved columns
+ * and the words ASC / DESC. ADR-0094: a single bare ?sort=column honours
+ * ?sort_dir=asc|desc (the CRUD grid's spelling); a comma list or a leading "-"
+ * keeps its own inline direction and ignores sort_dir.
+ */
+/** One resolved "col ASC|DESC" ORDER BY term, or null for an empty part. */
+function orderPart(
+  rawPart: string,
+  bareDir: string | null,
+  column: (kind: "filter" | "sort", key: string) => string,
+): string | null {
+  const trimmed = rawPart.trim();
+  if (trimmed === "") return null;
+  const descending = trimmed.startsWith("-");
+  const col = column("sort", descending ? trimmed.slice(1) : trimmed);
+  return `${col} ${bareDir ?? (descending ? "DESC" : "ASC")}`;
+}
+
+function buildOrderClause(
+  options: QueryOptions,
+  column: (kind: "filter" | "sort", key: string) => string,
+): string {
+  if (!options.sort) return "";
+  const rawParts = options.sort.split(",");
+  const first = rawParts[0].trim();
+  const singleBare = rawParts.length === 1 && first !== "" && !first.startsWith("-");
+  const bareDir = singleBare && String(options.sortDir).toLowerCase() === "desc" ? "DESC" : null;
+  const parts = rawParts
+    .map((part) => orderPart(part, bareDir, column))
+    .filter((term): term is string => term !== null);
+  return parts.length > 0 ? `ORDER BY ${parts.join(", ")}` : "";
+}
+
 export function buildQuery(
   tableName: string,
   options: QueryOptions,
@@ -142,42 +198,10 @@ export function buildQuery(
     }
   }
 
-  // ADR-0094: ?search=term filters the list - a LIKE %term% OR'd across the
-  // model's declared string/text columns (already resolved + passed in by the
-  // caller), added to the WHERE before limit/offset so the COUNT below reflects
-  // the filtered set. The columns come from the model, never the request, so the
-  // identifiers are safe; the term itself is bound. A model with no string/text
-  // column simply matches nothing (the handler passes an empty list).
-  const searchTerm = (options.search ?? "").trim();
-  if (searchTerm !== "" && options.searchColumns && options.searchColumns.length > 0) {
-    const likeParts = options.searchColumns.map((col) => `${quote(col)} LIKE ?`);
-    conditions.push(`(${likeParts.join(" OR ")})`);
-    for (const _ of options.searchColumns) params.push(`%${searchTerm}%`);
-  }
+  applySearch(options, conditions, params, quote);
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-  // Sort: comma-separated parts, empty parts skipped, leading "-" = DESC.
-  // ORDER BY is built only from resolved columns and the words ASC / DESC.
-  // ADR-0094: a single bare ?sort=column honours ?sort_dir=asc|desc (the CRUD
-  // grid's spelling); a comma list or a leading "-" keeps its own inline
-  // direction and ignores sort_dir.
-  let orderClause = "";
-  if (options.sort) {
-    const rawParts = options.sort.split(",");
-    const singleBare = rawParts.length === 1 && rawParts[0].trim() !== "" && !rawParts[0].trim().startsWith("-");
-    const bareDir = singleBare && String(options.sortDir).toLowerCase() === "desc" ? "DESC" : null;
-    const parts: string[] = [];
-    for (const part of rawParts) {
-      const trimmed = part.trim();
-      if (trimmed === "") continue;
-      const descending = trimmed.startsWith("-");
-      const col = column("sort", descending ? trimmed.slice(1) : trimmed);
-      const direction = bareDir ?? (descending ? "DESC" : "ASC");
-      parts.push(`${col} ${direction}`);
-    }
-    if (parts.length > 0) orderClause = `ORDER BY ${parts.join(", ")}`;
-  }
+  const orderClause = buildOrderClause(options, column);
 
   // Pagination — PAGE-DEC-01: clamp page >= 1 BEFORE deriving offset, so
   // offset=(page-1)*limit can never go negative (a page=0/negative request used
@@ -208,38 +232,50 @@ export function buildQuery(
   };
 }
 
-export function parseQueryString(query: Record<string, string>): QueryOptions {
-  const options: QueryOptions = {};
-
-  // Parse filter params: filter[name]=John or filter[age][gt]=25. ANY key
-  // inside the brackets is captured - buildQuery rejects one that is not a
-  // declared field rather than it being silently ignored here (ADR-0069).
-  // A second bracket must be a known operator; a list (filter[name][]), a map
-  // (filter[name][x]) or a nested key is a wrong-shaped value and throws
-  // InvalidQueryParameterError. `sort[...]` is a list/map where a single
-  // comma-separated string belongs, and throws the same way.
-  // A null-prototype map, so a "__proto__" key is stored (and then rejected)
-  // instead of silently re-pointing the object's prototype.
+/**
+ * Parse filter params: filter[name]=John or filter[age][gt]=25. ANY key
+ * inside the brackets is captured - buildQuery rejects one that is not a
+ * declared field rather than it being silently ignored here (ADR-0069).
+ * A second bracket must be a known operator; a list (filter[name][]), a map
+ * (filter[name][x]) or a nested key is a wrong-shaped value and throws
+ * InvalidQueryParameterError. `sort[...]` is a list/map where a single
+ * comma-separated string belongs, and throws the same way.
+ * A null-prototype map, so a "__proto__" key is stored (and then rejected)
+ * instead of silently re-pointing the object's prototype.
+ */
+function parseFilterParams(query: Record<string, string>): Record<string, unknown> {
   const filter: Record<string, unknown> = Object.create(null);
   for (const [key, value] of Object.entries(query)) {
     if (key.startsWith("sort[")) {
       throw new InvalidQueryParameterError("Query parameter 'sort' must be a single comma-separated string");
     }
     if (!key.startsWith("filter[")) continue;
-    const filterMatch = key.match(/^filter\[([^\]]*)\](.*)$/s);
-    if (!filterMatch) throw new UnknownFieldError("filter", key.slice("filter[".length));
-    const [, field, rest] = filterMatch;
-    if (rest === "") {
-      filter[field] = value;
-      continue;
-    }
-    const operator = rest.match(/^\[([^[\]]*)\]$/)?.[1];
-    if (operator === undefined || !Object.hasOwn(operatorMap, operator)) throw filterValueError(field);
-    if (!filter[field] || typeof filter[field] !== "object") {
-      filter[field] = {};
-    }
-    (filter[field] as Record<string, string>)[operator] = value;
+    addFilterKey(filter, key, value);
   }
+  return filter;
+}
+
+/** Store one filter[field] / filter[field][op] param into the filter map. */
+function addFilterKey(filter: Record<string, unknown>, key: string, value: string): void {
+  const filterMatch = key.match(/^filter\[([^\]]*)\](.*)$/s);
+  if (!filterMatch) throw new UnknownFieldError("filter", key.slice("filter[".length));
+  const [, field, rest] = filterMatch;
+  if (rest === "") {
+    filter[field] = value;
+    return;
+  }
+  const operator = rest.match(/^\[([^[\]]*)\]$/)?.[1];
+  if (operator === undefined || !Object.hasOwn(operatorMap, operator)) throw filterValueError(field);
+  if (!filter[field] || typeof filter[field] !== "object") {
+    filter[field] = {};
+  }
+  (filter[field] as Record<string, string>)[operator] = value;
+}
+
+export function parseQueryString(query: Record<string, string>): QueryOptions {
+  const options: QueryOptions = {};
+
+  const filter = parseFilterParams(query);
   if (Object.keys(filter).length > 0) {
     options.filter = filter;
   }

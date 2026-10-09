@@ -802,7 +802,12 @@ export class SQLTranslator {
     if (limit === undefined || limit === null || limit <= 0) return sql;
     if (SQLTranslator.hasTrailingLimit(sql)) return sql;
 
-    const trimmed = sql.replace(/[\s;]+$/, "");
+    // Strip trailing whitespace/semicolons with a linear end-scan rather than a
+    // `/[\s;]+$/` replace, which backtracks superlinearly on a long run of
+    // whitespace/semicolons followed by a non-matching tail (ReDoS-safe).
+    let end = sql.length;
+    while (end > 0 && /[\s;]/.test(sql[end - 1])) end--;
+    const trimmed = sql.slice(0, end);
     const suffix = offset !== undefined && offset > 0
       ? `LIMIT ${limit} OFFSET ${offset}`
       : `LIMIT ${limit}`;

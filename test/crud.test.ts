@@ -16,9 +16,13 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * spec/crud_spec.rb.
  */
 
-import { BaseModel, initDatabase, getAdapter, adapterExecute, closeDatabase } from "../packages/orm/src/index.ts";
-import { Crud, defaultRouter, get, TestClient } from "../packages/core/src/index.ts";
+import { BaseModel, initDatabase, getAdapter, adapterExecute, closeDatabase, Crud } from "../packages/orm/src/index.ts";
+import { defaultRouter, get, TestClient } from "../packages/core/src/index.ts";
 import type { Tina4Request, Tina4Response } from "../packages/core/src/index.ts";
+// Table/pagination assembly — pure functions exercised directly (no DB).
+import { tableData, pageControls, jsConfig } from "../packages/orm/src/crudTable.ts";
+// The linear (ReDoS-safe) SQL-listing column parser.
+import { extractColumns } from "../packages/orm/src/crudHelpers.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -142,7 +146,7 @@ async function main() {
   // --- CRUD uppercase alias ---
   console.log("\n--- CRUD alias ---");
   assert("Crud === CRUD (uppercase alias resolves to the same implementation)",
-    (await import("../packages/core/src/index.ts")).CRUD === Crud);
+    (await import("../packages/orm/src/index.ts")).CRUD === Crud);
 
   // --- generateTable (sync) ---
   console.log("\n--- generateTable ---");
@@ -175,6 +179,43 @@ async function main() {
   assert("drops a bare LIMIT", Crud.stripOrderAndLimit("SELECT * FROM t LIMIT 10") === "SELECT * FROM t");
   assert("leaves a clause-free query untouched (trimmed)", Crud.stripOrderAndLimit("  SELECT id FROM orders WHERE total > 5  ") === "SELECT id FROM orders WHERE total > 5");
   assert("matches keywords case-insensitively", Crud.stripOrderAndLimit("select id from t order by id limit 3") === "select id from t");
+
+  // --- extractColumns (linear SQL-listing parser, ReDoS-safe) ---
+  console.log("\n--- extractColumns ---");
+  assert("extracts a simple column list",
+    JSON.stringify(extractColumns("SELECT id, name, email FROM users")) === JSON.stringify(["id", "name", "email"]));
+  assert("resolves AS aliases and table-qualified names",
+    JSON.stringify(extractColumns("SELECT u.id, u.name AS full_name FROM users u")) === JSON.stringify(["id", "full_name"]));
+  assert("case-insensitive, returns [*] for SELECT *",
+    JSON.stringify(extractColumns("select * from products")) === JSON.stringify(["*"]));
+  assert("stays linear on a pathological whitespace run (no ReDoS hang)",
+    (() => { const started = Date.now(); extractColumns("SELECT " + " ".repeat(100000)); return Date.now() - started < 1000; })());
+
+  // --- table/pagination assembly (pure logic, crudTable) ---
+  console.log("\n--- crudTable pure helpers ---");
+  const td = tableData({
+    columns: ["id", "name"], records: [{ id: 1, name: "Al & Co <x>" }], pk: "id",
+    tableName: "t", editable: false, sortable: true, inlineScript: false,
+    requestPath: "/admin/t", search: "", sortCol: "id", sortDir: "asc",
+    page: 1, limit: 10, tableId: null, model: null,
+  });
+  assert("tableData builds one header per column", Array.isArray(td.headers) && (td.headers as unknown[]).length === 2);
+  assert("tableData builds one row and escapes cell values",
+    (td.rows as Array<{ cells: string }>).length === 1 &&
+    (td.rows as Array<{ cells: string }>)[0].cells.includes("Al &amp; Co &lt;x&gt;"));
+  assert("tableData colspan = columns + 1", td.colspan === 3);
+
+  const controls = pageControls(2, 3, "/admin/t", "", "id", "asc", 10);
+  assert("pageControls yields Prev + 3 pages + Next", controls.length === 5);
+  assert("pageControls marks the current page active", controls.some((c) => c.active === true && c.label === 2));
+  assert("pageControls returns none for a single page", pageControls(1, 1, "/admin/t", "", "id", "asc", 10).length === 0);
+
+  const cfg = JSON.parse(
+    jsConfig({ apiPath: "/api/t", pk: "id", columns: ["id", "name"], editable: ["name"], model: null as any,
+      limit: 10, search: "x", sortCol: "id", sortDir: "asc", page: 1 })
+      .replace(/\\u003c/g, "<").replace(/\\u003e/g, ">").replace(/\\u0026/g, "&"),
+  );
+  assert("jsConfig carries the api path + pk + editable", cfg.api === "/api/t" && cfg.pk === "id" && cfg.editable[0] === "name");
 
   closeDatabase();
   rmSync(tmpDir, { recursive: true, force: true });

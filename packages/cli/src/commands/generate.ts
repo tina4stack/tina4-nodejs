@@ -1290,7 +1290,7 @@ function generateCrudAdminRoute(model: string, table: string, isPublic: boolean)
     : `\n// NOTE: the admin page is secured (export const secure = true). A browser needs a valid\n// token/session to open it; wire your login (Auth / Session) or run\n// \`generate crud ${model} --public\` for an open page. The AutoCrud READ API\n// (GET /api/${table}, GET /api/${table}/{id}) stays public by AutoCrud's default.`;
 
   const content = `import ${model} from "../../../models/${model}.js";
-import { Crud } from "tina4-nodejs";
+import { Crud } from "tina4-nodejs/orm";
 import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 // ${model} admin — one server-rendered CRUD page (searchable, sortable,

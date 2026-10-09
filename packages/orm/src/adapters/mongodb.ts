@@ -67,8 +67,11 @@ function isMatchAllWhere(where: string | null | undefined): boolean {
 /** Convert SQL WHERE clause tokens into a MongoDB filter object. */
 function parseWhereClause(where: string, params: unknown[], paramOffset = 0): { filter: Record<string, unknown>; consumed: number } {
   const filter: Record<string, unknown> = {};
-  // Simple key = ? / key = 'value' patterns separated by AND
-  const parts = where.split(/\s+AND\s+/i);
+  // Simple key = ? / key = 'value' patterns separated by AND. The whitespace
+  // runs are bounded ({1,32}) so the split is linear-time on any input (a
+  // bounded quantifier cannot backtrack superlinearly) — generated SQL uses
+  // single spaces, so behaviour is unchanged. (ReDoS-safe.)
+  const parts = where.split(/\s{1,32}AND\s{1,32}/i);
   let paramIndex = paramOffset;
 
   for (const part of parts) {
@@ -192,7 +195,9 @@ function requireWriteFilter(filter: Record<string, unknown> | undefined, operati
 }
 
 function parseSelect(sql: string, params: unknown[]): MongoOperation | null {
-  const match = sql.match(/^SELECT\s+(.*?)\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.*?))?(?:\s+ORDER\s+BY\s+(.*?))?(?:\s+LIMIT\s+(\d+))?(?:\s+OFFSET\s+(\d+))?$/is);
+  // Whitespace runs bounded ({1,32}) so no separator can backtrack superlinearly
+  // against the adjacent lazy capture — linear-time on any input (ReDoS-safe).
+  const match = sql.match(/^SELECT\s{1,32}(.*?)\s{1,32}FROM\s{1,32}["']?(\w+)["']?(?:\s{1,32}WHERE\s{1,32}(.*?))?(?:\s{1,32}ORDER\s{1,32}BY\s{1,32}(.*?))?(?:\s{1,32}LIMIT\s{1,32}(\d+))?(?:\s{1,32}OFFSET\s{1,32}(\d+))?$/is);
   if (!match) return null;
   const [, cols, collection, whereClause, orderBy, limitStr, skipStr] = match;
   const projection: Record<string, unknown> = {};
@@ -208,7 +213,7 @@ function parseSelect(sql: string, params: unknown[]): MongoOperation | null {
     for (const part of orderBy.split(",")) {
       const trimmed = part.trim();
       const desc = /DESC$/i.test(trimmed);
-      const col = trimmed.replace(/\s+(ASC|DESC)$/i, "").replace(/^["']|["']$/g, "").trim();
+      const col = trimmed.replace(/\s{1,32}(ASC|DESC)$/i, "").replace(/^["']|["']$/g, "").trim();
       sort[col] = desc ? -1 : 1;
     }
   }
@@ -258,7 +263,8 @@ function parseSetClause(setClause: string, params: unknown[]): { document: Recor
 }
 
 function parseUpdate(sql: string, params: unknown[]): MongoOperation | null {
-  const match = sql.match(/^UPDATE\s+["']?(\w+)["']?\s+SET\s+(.*?)(?:\s+WHERE\s+(.+))?$/is);
+  // Whitespace runs bounded ({1,32}) — linear-time on any input (ReDoS-safe).
+  const match = sql.match(/^UPDATE\s{1,32}["']?(\w+)["']?\s{1,32}SET\s{1,32}(.*?)(?:\s{1,32}WHERE\s{1,32}(.+))?$/is);
   if (!match) return null;
   const [, collection, setClause, whereClause] = match;
   const set = parseSetClause(setClause, params);
@@ -268,7 +274,8 @@ function parseUpdate(sql: string, params: unknown[]): MongoOperation | null {
 }
 
 function parseDelete(sql: string, params: unknown[]): MongoOperation | null {
-  const match = sql.match(/^DELETE\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.+))?$/is);
+  // Whitespace runs bounded ({1,32}) — linear-time on any input (ReDoS-safe).
+  const match = sql.match(/^DELETE\s{1,32}FROM\s{1,32}["']?(\w+)["']?(?:\s{1,32}WHERE\s{1,32}(.+))?$/is);
   if (!match) return null;
   const [, collection, whereClause] = match;
   const matchAll = isMatchAllWhere(whereClause?.trim());
@@ -282,7 +289,8 @@ function parseCreate(sql: string): MongoOperation | null {
 }
 
 function parseCount(sql: string, params: unknown[]): MongoOperation | null {
-  const match = sql.match(/^SELECT\s+COUNT\(\*\)\s+AS\s+(\w+)\s+FROM\s+["']?(\w+)["']?(?:\s+WHERE\s+(.+))?$/is);
+  // Whitespace runs bounded ({1,32}) — linear-time on any input (ReDoS-safe).
+  const match = sql.match(/^SELECT\s{1,32}COUNT\(\*\)\s{1,32}AS\s{1,32}(\w+)\s{1,32}FROM\s{1,32}["']?(\w+)["']?(?:\s{1,32}WHERE\s{1,32}(.+))?$/is);
   if (!match) return null;
   const [, alias, collection, whereClause] = match;
   const filter = whereClause ? parseWhereClause(whereClause.trim(), params).filter : {};

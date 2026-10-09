@@ -113,8 +113,9 @@ export { DevMailbox } from "./devMailbox.js";
 export { WSDLService, WSDLOperation } from "./wsdl.js";
 export type { WSDLOperationMeta } from "./wsdl.js";
 export { HtmlElement, htmlElement, addHtmlHelpers, Raw, SafeString } from "./htmlElement.js";
-export { Crud, CRUD, toCrud, registerBackend, generateTable, generateForm, stripOrderAndLimit, _resetCrudRegistrations } from "./crud.js";
-export type { ToCrudOptions } from "./crud.js";
+// Crud (ADR-0094) lives in @tina4/orm, not core: it is an opt-in feature, not on
+// every request path, so it must not enter core's eager import graph
+// (lazyFeatureLoading). Import it from "tina4-nodejs/orm".
 export { renderErrorOverlay, isDebugMode } from "./errorOverlay.js";
 export {
   cspNonce,
