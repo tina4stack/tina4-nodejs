@@ -38,7 +38,7 @@ const ALIASES: Record<string, string> = {
 
 for (const [scheme, engine] of Object.entries(ALIASES)) {
   const url = scheme === "sqlite" || scheme === "sqlite3"
-    ? `${scheme}:///tmp/x.db`
+    ? `${scheme}:///x.db`
     : `${scheme}://user:pass@localhost:5432/db`;
   let got = "";
   try { got = new DatabaseUrl(url).engine; } catch (e) { got = `THREW:${(e as Error).message}`; }

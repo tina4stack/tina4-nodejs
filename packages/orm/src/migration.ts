@@ -8,6 +8,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { Log } from "../../core/src/index.js";
 import type { FieldDefinition, DatabaseAdapter } from "./types.js";
@@ -1034,8 +1035,8 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /**
  * Take the run-wide migration lock, blocking until it is held. PostgreSQL/MySQL/
  * MSSQL use a native session-scoped advisory lock; SQLite, Firebird and anything
- * else fall back to an atomic mkdir-based lock directory on a sidecar in the
- * migrations folder (crash-safe via a stale-PID check). A backend that cannot
+ * else fall back to an atomic exclusive-create file lock on a sidecar in the
+ * system temp dir (crash-safe via a stale-PID check). A backend that cannot
  * lock degrades to the file lock, and finally to running unlocked.
  */
 async function acquireMigrationLock(db: DatabaseAdapter, dir: string): Promise<MigrationLock> {
@@ -1082,13 +1083,13 @@ async function acquireMigrationLock(db: DatabaseAdapter, dir: string): Promise<M
  * {kind:"none"} rather than blocking boot forever if it cannot be taken.
  */
 async function acquireFileLock(dir: string): Promise<MigrationLock> {
-  const lockFile = join(dir, ".tina4_migration.lock");
+  // The lock file lives in the system temp dir, NOT the migrations folder — a
+  // runtime lock is not a migration, and a dotfile left in the tracked
+  // migrations/ dir gets committed by accident and blocks a plain rmdir. The
+  // name is hashed from the ABSOLUTE migrations path so every worker of the same
+  // app lands on the same file (issue #277, parity with PHP fileLockPath()).
+  const lockFile = join(tmpdir(), `tina4-migration-${createHash("sha256").update(resolve(dir)).digest("hex")}.lock`);
   const deadline = Date.now() + 60_000;
-  try {
-    mkdirSync(dir, { recursive: true });
-  } catch {
-    /* ignore — the folder normally exists */
-  }
   for (;;) {
     try {
       writeFileSync(lockFile, String(process.pid), { flag: "wx" }); // atomic create-exclusive
