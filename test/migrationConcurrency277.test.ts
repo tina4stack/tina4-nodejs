@@ -30,7 +30,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -106,9 +106,33 @@ async function main(): Promise<void> {
   );
 
   // Launch all workers as close to simultaneously as possible.
-  const codes = await Promise.all(
+  const workersDone = Promise.all(
     Array.from({ length: WORKERS }, () => runWorker(worker, dbPath, migDir)),
   );
+
+  // While a worker HOLDS the file lock (the ~0.5s CTE burn), the sidecar must
+  // live in the system temp dir and NEVER appear inside the migrations folder —
+  // a lock file there gets committed and blocks rmdir (#277, parity w/ PHP/Ruby/
+  // Python). Node removes its wx-file on release, so poll DURING the hold: with
+  // the fix migDir stays clean; revert the location and the file shows up here.
+  let litterSeen = false;
+  let polling = true;
+  void workersDone.then(() => {
+    polling = false;
+  });
+  while (polling) {
+    try {
+      if (readdirSync(migDir).some((f) => f.endsWith(".lock"))) {
+        litterSeen = true;
+        break;
+      }
+    } catch {
+      /* dir momentarily unreadable — ignore */
+    }
+    await new Promise((r) => setTimeout(r, 15));
+  }
+
+  const codes = await workersDone;
 
   const db = new DatabaseSync(dbPath, { readOnly: true });
   let firstRows = -1;
@@ -133,6 +157,11 @@ async function main(): Promise<void> {
     "tracker holds exactly one row for the migration",
     trackerRows === 1,
     `expected 1 tracker row, got ${trackerRows}`,
+  );
+  assert(
+    "the file-lock sidecar never appears in the migrations folder",
+    !litterSeen,
+    "a .tina4_migration.lock showed up inside migrations/ — it must live in the system temp dir",
   );
 
   rmSync(dir, { recursive: true, force: true });
