@@ -6,6 +6,16 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.149 — 2026-10-10
+### CRUD
+- A CRUD admin page out of the box: `await Crud.toCrud(req, { model: Model })` renders a searchable, sortable, paginated admin screen and registers the model's AutoCrud routes (ADR-0094).
+### Migrations
+- Startup auto-migration holds a cross-process lock so concurrent boots apply each migration exactly once; the SQLite/Firebird lock file now lives in the system temp dir rather than the tracked migrations folder (#277).
+### Dev server
+- The dev dashboard and toolbar are reachable from a Docker dev box via `TINA4_DEV_ALLOWED_PEERS`; a viewer the gate refuses gets no toolbar (#279).
+- The database layer accepts the `pgsql://` scheme as an alias of postgres (#280).
+- A configurable SMTP timeout is reported as a timeout instead of hanging the request (#278).
+
 ## 3.13.148 — 2026-10-05
 ### Sessions
 - An anonymous request no longer stores a session. A request that never touches the session leaves no session file behind and sends no `Set-Cookie`, so a crawler or a health check can no longer flood the session store with empty records. A session is written only once the handler actually puts something in it. Cross-framework fix, at parity with Python, PHP, and Ruby.
