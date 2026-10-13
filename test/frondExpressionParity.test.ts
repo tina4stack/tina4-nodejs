@@ -36,7 +36,8 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Keep the dataset below byte-identical to the other three runners.
  */
 import { Frond } from "../packages/frond/src/index.ts";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 const FIXTURES = join(import.meta.dirname, "fixtures");
 
@@ -98,7 +99,7 @@ console.log("=== Frond Expression Parity (cross-framework contract) ===\n");
 
 // Guard the guard: a corpus entry with no expected value would otherwise pass
 // by never being asserted.
-assertEq("corpus holds 89 expressions", corpus.length, 89);
+assertEq("corpus holds 108 expressions", corpus.length, 108);
 assertEq(
   "every corpus label has an answer-key entry",
   corpus.filter(([label]) => !expected.has(label)).length,
@@ -297,6 +298,52 @@ console.log("\n-- json_encode output contract --");
   // "a\\/b", and Python alone used to write "caf\\u00e9".
   assertEq("json_encode leaves / unescaped", out.includes('"u":"a/b"'), true);
   assertEq("json_encode leaves non-ASCII raw", out.includes("caf\u00e9"), true);
+}
+
+// -- Approved-spec gaps found porting a Twig app (ranges, arithmetic, maps) --
+{
+  const e = new Frond();
+
+  // a..b and range(a, b[, step]) include the end value and count down when start > end.
+  const r = { n: 3, word: "x" };
+  assertEq("range with a variable bound", e.renderString("{% for i in 1..n %}{{ i }}{% endfor %}", r), "123");
+  assertEq("range counts down", e.renderString("{% for i in n..1 %}{{ i }}{% endfor %}", r), "321");
+  assertEq("range() with a step", e.renderString("{% for i in range(0, 6, 3) %}{{ i }},{% endfor %}", r), "0,3,6,");
+  // Negative: a bound that is not a number, or a zero step, is an empty loop.
+  assertEq("non-numeric range bound is empty", e.renderString("{% for i in 1..word %}{{ i }}{% else %}none{% endfor %}", r), "none");
+  assertEq("zero step is empty", e.renderString("{% for i in range(1, 3, 0) %}{{ i }}{% else %}none{% endfor %}", r), "none");
+  // Negative: a dot inside a string or a decimal is not a range.
+  assertEq("dots in a string or decimal are not a range", e.renderString('{{ "a..b" }}|{{ 1.5 }}', r), "a..b|1.5");
+
+  // 10 - 2 - 3 is 5; n-4 needs no spaces; a - after another operator is a sign.
+  const a = { n: 5, list: ["a", "b", "c"] };
+  assertEq("arithmetic chains left to right", e.renderString("{{ 10 - 2 - 3 }}|{{ 100 / 10 / 2 }}|{{ 2 ** 3 ** 2 }}", a), "5|5|512");
+  assertEq("unspaced arithmetic and unary minus", e.renderString("{{ n-4 }}|{{ list[n-4] }}|{{ n * -1 }}", a), "1|b|-5");
+  assertEq("subscript arithmetic in an is-defined ternary", e.renderString('{{ list[n-4] is defined ? list[n-4] : "-" }}', a), "b");
+  // Negative: an index past the end is not defined.
+  assertEq("index past the end is not defined", e.renderString('{{ list[n+5] is defined ? "y" : "-" }}', a), "-");
+  // Negative: a leading minus is a sign, not a subtraction.
+  assertEq("leading minus is a sign", e.renderString("{{ -7 + 1 }}", a), "-6");
+
+  // {a: 1} is {"a": 1}, as in Twig; {(k): 1} evaluates k.
+  const m = { name: "Andre", k: "dyn", a: "WRONG" };
+  assertEq("bare map key with a concatenated value", e.renderString('{% set m = {a: "x" ~ name} %}{{ m.a }}', m), "xAndre");
+  // Negative: a bare key never reads the variable of the same name.
+  assertEq("bare key is not a variable", e.renderString("{% set m = {a: 1} %}{{ m.WRONG }}", m), "");
+  assertEq("parenthesised key is evaluated", e.renderString("{% set m = {(k): 1} %}{{ m.dyn }}", m), "1");
+
+  // ~ inside include ... with {} used to lose every key, so an email button had no href.
+  const dir = mkdtempSync(join(tmpdir(), "frond-include-with-"));
+  try {
+    writeFileSync(join(dir, "cta.twig"), "[{{ button_url }}|{{ button_label }}]");
+    const included = new Frond(dir);
+    const source = "{% include 'cta.twig' with {button_url: 'https://x/' ~ code, button_label: 'Go'} %}";
+    assertEq("include-with keeps a concatenated map", included.renderString(source, { code: "ABC" }), "[https://x/ABC|Go]");
+    // Negative: without the map the partial sees nothing.
+    assertEq("include without a map sees nothing", included.renderString("{% include 'cta.twig' %}", {}), "[|]");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // -- Summary ----------------------------------------------------------------

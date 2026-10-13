@@ -885,26 +885,163 @@ const ARITHMETIC_OPERATIONS: Record<string, (left: number, right: number) => num
   "**": (left, right) => left ** right,
 };
 
-function evalArithmeticExpression(expr: string, context: Record<string, unknown>): ExprResult {
-  for (const op of [" + ", " - ", " * ", " // ", " / ", " % ", " ** "]) {
-    const pos = findOutsideQuotes(expr, op);
-    if (pos >= 0) {
-      const left = expr.slice(0, pos).trim();
-      const right = expr.slice(pos + op.length).trim();
-      const lVal = evalExpr(left, context);
-      const rVal = evalExpr(right, context);
-      try {
-        let lNum = lVal != null ? Number(lVal) : 0;
-        let rNum = rVal != null ? Number(rVal) : 0;
-        if (isNaN(lNum)) lNum = 0;
-        if (isNaN(rNum)) rNum = 0;
-        return ARITHMETIC_OPERATIONS[op.trim()](lNum, rNum);
-      } catch {
-        return null;
-      }
+/** Arithmetic precedence levels, loosest first. `**` is right-associative; the rest are left-associative. */
+const ARITHMETIC_LEVELS: string[][] = [["+", "-"], ["*", "//", "/", "%"], ["**"]];
+
+/** Every position in expr outside quotes and brackets. */
+function topLevelPositions(expr: string): number[] {
+  const positions: number[] = [];
+  let inQuote: string | null = null;
+  let depth = 0;
+  for (let pos = 0; pos < expr.length; pos++) {
+    const ch = expr[pos];
+    if (inQuote) {
+      if (ch === inQuote) inQuote = null;
+    } else if (ch === '"' || ch === "'") {
+      inQuote = ch;
+    } else if ("([{".includes(ch)) {
+      depth++;
+    } else if (")]}".includes(ch)) {
+      depth--;
+    } else if (depth === 0) {
+      positions.push(pos);
     }
   }
-  return EXPR_NOT_MATCHED;
+  return positions;
+}
+
+/** True when the text before pos ends in an operand, so an operator there is binary; the `-` in `n * -1` or `-7` is a sign. */
+function followsOperand(expr: string, pos: number): boolean {
+  return /[\w)\]'"]$/.test(expr.slice(0, pos).trimEnd());
+}
+
+/** [position, operator] for every binary arithmetic operator outside quotes and brackets (`**` and `//` are two characters). */
+function topLevelArithmeticOperators(expr: string): [number, string][] {
+  const operators: [number, string][] = [];
+  let skipUntil = -1;
+  for (const pos of topLevelPositions(expr)) {
+    if (pos < skipUntil || !"+-*/%".includes(expr[pos])) continue;
+    const pair = expr.slice(pos, pos + 2);
+    const op = pair === "**" || pair === "//" ? pair : expr[pos];
+    skipUntil = pos + op.length;
+    if (followsOperand(expr, pos)) operators.push([pos, op]);
+  }
+  return operators;
+}
+
+/**
+ * Pick the operator that binds loosest, so it is evaluated last. Within a
+ * left-associative level the RIGHTMOST operator is the split point
+ * (`10 - 2 - 3` is `(10 - 2) - 3`); `**` splits at the leftmost.
+ */
+function splitArithmetic(expr: string): [number, string] | null {
+  const operators = topLevelArithmeticOperators(expr);
+  for (const level of ARITHMETIC_LEVELS) {
+    const matches = operators.filter(([, op]) => level.includes(op));
+    if (matches.length > 0) return level[0] === "**" ? matches[0] : matches[matches.length - 1];
+  }
+  return null;
+}
+
+function evalArithmeticExpression(expr: string, context: Record<string, unknown>): ExprResult {
+  const split = splitArithmetic(expr);
+  if (!split) return EXPR_NOT_MATCHED;
+  const [pos, op] = split;
+  const lVal = evalExpr(expr.slice(0, pos).trim(), context);
+  const rVal = evalExpr(expr.slice(pos + op.length).trim(), context);
+  let lNum = lVal != null ? Number(lVal) : 0;
+  let rNum = rVal != null ? Number(rVal) : 0;
+  if (isNaN(lNum)) lNum = 0;
+  if (isNaN(rNum)) rNum = 0;
+  return ARITHMETIC_OPERATIONS[op](lNum, rNum);
+}
+
+/**
+ * Integers from start to end inclusive, counting down when start is greater
+ * than end. Backs both range() and `a..b`; [] for a bound that is not a
+ * number or a zero step.
+ */
+export function frondRange(start: unknown, end: unknown, step: unknown = 1): number[] {
+  const numeric = (value: unknown) => typeof value === "number" || (typeof value === "string" && NUMERIC_RE.test(value));
+  if (!numeric(start) || !numeric(end) || !numeric(step)) return [];
+  const first = Math.trunc(Number(start));
+  const last = Math.trunc(Number(end));
+  const stride = Math.abs(Math.trunc(Number(step)));
+  if (stride === 0) return [];
+  const values: number[] = [];
+  if (first <= last) for (let value = first; value <= last; value += stride) values.push(value);
+  else for (let value = first; value >= last; value -= stride) values.push(value);
+  return values;
+}
+
+/**
+ * Position of a top-level `..` (not part of `...`), or -1. A pipe after the
+ * range (`1..4|join(",")`) applies to the whole range, so it is left to the
+ * filter step.
+ */
+function findRangeOperator(expr: string): number {
+  let pos = findOutsideQuotes(expr, "..");
+  while (pos >= 0) {
+    const partOfEllipsis = expr.startsWith("...", pos) || (pos > 0 && expr[pos - 1] === ".");
+    if (pos > 0 && !partOfEllipsis) return findOutsideQuotes(expr.slice(pos + 2), "|") >= 0 ? -1 : pos;
+    const next = findOutsideQuotes(expr.slice(pos + 2), "..");
+    pos = next >= 0 ? pos + 2 + next : -1;
+  }
+  return -1;
+}
+
+function evalRangeExpression(expr: string, context: Record<string, unknown>): ExprResult {
+  const pos = findRangeOperator(expr);
+  if (pos < 0) return EXPR_NOT_MATCHED;
+  return frondRange(evalExpr(expr.slice(0, pos).trim(), context), evalExpr(expr.slice(pos + 2).trim(), context));
+}
+
+/** Offset of the bracket closing the one that opens expr, skipping quotes; -1 when unbalanced. */
+function closingBracketIndex(expr: string): number {
+  let depth = 0;
+  let inQuote: string | null = null;
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i];
+    if (inQuote) {
+      if (ch === inQuote) inQuote = null;
+    } else if (ch === '"' || ch === "'") {
+      inQuote = ch;
+    } else if ("([{".includes(ch)) {
+      depth++;
+    } else if (")]}".includes(ch) && --depth === 0) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+const BARE_KEY_RE = /^[A-Za-z_]\w*$/;
+
+/** A bare map key is a string, as in Twig; a quoted key is its text; a parenthesised key is evaluated: `{(name): 1}`. */
+function mapLiteralKey(rawKey: string, context: Record<string, unknown>): string {
+  const quoted = rawKey.length >= 2 && (rawKey[0] === '"' || rawKey[0] === "'") && rawKey.endsWith(rawKey[0]);
+  if (quoted) return rawKey.slice(1, -1);
+  return BARE_KEY_RE.test(rawKey) ? rawKey : String(evalExpr(rawKey, context));
+}
+
+function evalMapLiteral(inner: string, context: Record<string, unknown>): Record<string, unknown> {
+  const map: Record<string, unknown> = {};
+  for (const pair of inner === "" ? [] : splitArgs(inner)) {
+    const colon = findOutsideQuotes(pair, ":");
+    if (colon > 0) map[mapLiteralKey(pair.slice(0, colon).trim(), context)] = evalExpr(pair.slice(colon + 1).trim(), context);
+  }
+  return map;
+}
+
+/**
+ * A whole `[...]` or `{...}` literal is one value, so operators inside its
+ * members (`{a: "x" ~ name}`) never split it.
+ */
+function evalCollectionLiteral(expr: string, context: Record<string, unknown>): ExprResult {
+  if ((expr[0] !== "[" && expr[0] !== "{") || closingBracketIndex(expr) !== expr.length - 1) return EXPR_NOT_MATCHED;
+  const inner = expr.slice(1, -1).trim();
+  if (expr[0] === "{") return evalMapLiteral(inner, context);
+  return inner === "" ? [] : splitArgs(inner).map(item => evalExpr(item.trim(), context));
 }
 
 function evalFilterExpression(expr: string, context: Record<string, unknown>): ExprResult {
@@ -969,9 +1106,11 @@ function evalFunctionExpression(expr: string, context: Record<string, unknown>):
 }
 
 const EXPR_EVALUATORS = [
+  evalCollectionLiteral,
   evalPrimary,
   evalConditional,
   evalConcatOrComparison,
+  evalRangeExpression,
   evalArithmeticExpression,
   evalFilterExpression,
   evalFunctionExpression,
@@ -1398,8 +1537,8 @@ function splitArgs(raw: string): string[] {
       current += ch;
       continue;
     }
-    if (ch === "(" || ch === "[") { depth++; current += ch; continue; }
-    if (ch === ")" || ch === "]") { depth--; current += ch; continue; }
+    if (ch === "(" || ch === "[" || ch === "{") { depth++; current += ch; continue; }
+    if (ch === ")" || ch === "]" || ch === "}") { depth--; current += ch; continue; }
     if (ch === "," && depth === 0) {
       args.push(current.trim());
       current = "";
@@ -2073,6 +2212,7 @@ export class Frond {
     this.globals.form_token = (descriptor?: string) => _generateFormToken(descriptor || "");
     this.globals.formTokenValue = (descriptor?: string) => _generateFormTokenValue(descriptor || "");
     this.globals.form_token_value = (descriptor?: string) => _generateFormTokenValue(descriptor || "");
+    this.globals.range = frondRange;
 
     // Debug helper: {{ dump(x) }} — gated on TINA4_DEBUG, see renderDump().
     // Available alongside the |dump filter so both styles work:
