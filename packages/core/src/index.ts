@@ -31,6 +31,7 @@ export { discoverRoutes } from "./routeDiscovery.js";
 export { MiddlewareChain, MiddlewareRunner, cors, requestLogger, CorsMiddleware, RateLimiterMiddleware, RequestLogger, SecurityHeadersMiddleware, CsrfMiddleware, attachCsrfFromEnv } from "./middleware.js";
 export type { CorsConfig } from "./middleware.js";
 export { createRequest, makeCaseInsensitiveHeaders, parseMultipart, saveUpload } from "./request.js";
+export type { FormValue } from "./request.js";
 export {
   createResponse, errorResponse, setDefaultTemplatesDir, getFrond, setFrond, getFrameworkFrond,
   acceptPrefersJson, wantsJson, negotiatedErrorBody,

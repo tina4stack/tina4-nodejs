@@ -273,13 +273,7 @@ async function parseBody(req: Tina4Request): Promise<void> {
       req.body = str;
     }
   } else if (contentType.includes("application/x-www-form-urlencoded")) {
-    const str = raw.toString("utf-8");
-    const params = new URLSearchParams(str);
-    const obj: Record<string, string> = {};
-    for (const [key, value] of params) {
-      obj[key] = value;
-    }
-    req.body = obj;
+    req.body = nestFormFields([...new URLSearchParams(raw.toString("utf-8"))]);
   } else {
     req.body = raw.toString("utf-8");
   }
@@ -300,8 +294,8 @@ function extractBoundary(contentType: string): string | null {
 export function parseMultipart(
   body: Buffer,
   boundary: string,
-): { fields: Record<string, string>; files: Record<string, UploadedFile | UploadedFile[]> } {
-  const fields: Record<string, string> = {};
+): { fields: Record<string, FormValue>; files: Record<string, UploadedFile | UploadedFile[]> } {
+  const pairs: Array<[string, string]> = [];
   const files: Record<string, UploadedFile | UploadedFile[]> = {};
 
   const delimiter = Buffer.from(`--${boundary}`);
@@ -313,7 +307,7 @@ export function parseMultipart(
 
   // Find first delimiter
   const firstIdx = bufferIndexOf(body, delimiter, offset);
-  if (firstIdx === -1) return { fields, files };
+  if (firstIdx === -1) return { fields: {}, files };
   offset = firstIdx + delimiter.length;
 
   // Skip CRLF after delimiter
@@ -358,8 +352,8 @@ export function parseMultipart(
         files[disposition.name] = file;
       }
     } else if (disposition.name) {
-      // Regular field
-      fields[disposition.name] = content.toString("utf-8");
+      // Regular field, nested once every part is read
+      pairs.push([disposition.name, content.toString("utf-8")]);
     }
 
     // Move past the delimiter
@@ -377,7 +371,7 @@ export function parseMultipart(
     }
   }
 
-  return { fields, files };
+  return { fields: nestFormFields(pairs), files };
 }
 
 /**
@@ -464,4 +458,111 @@ function parsePartContentType(headers: string): string | null {
   const match = headers.match(/Content-Type:([^\r\n]*)/i);
   const value = match?.[1]?.trim();
   return value ? value : null;
+}
+
+/** A form field's value once its name is nested: `tags[]` a list, `user[name]` an object. */
+export type FormValue = string | FormValue[] | { [key: string]: FormValue };
+
+/** A field name nested this deep or deeper keeps its flat key. Rack's param_depth_limit. */
+const FORM_DEPTH_LIMIT = 32;
+
+/** A form with more fields than this is not nested at all. Rack's params_limit. */
+const FORM_FIELD_LIMIT = 4096;
+
+/** A field name longer than this keeps its flat key. */
+const FORM_NAME_LIMIT = 1024;
+
+/**
+ * Nest form fields the way PHP and Rack (tina4-ruby) nest a form: `tags[]`
+ * collects an array, `user[name]` builds an object, `a[][x]` an array of
+ * objects, and a repeated plain name keeps its last value. Used for urlencoded
+ * and multipart bodies alike, so a form arrives in one shape however it was
+ * encoded. A field that cannot nest - its name conflicts with an earlier one
+ * (`a=1` then `a[b]=2`), nests too deep or is longer than FORM_NAME_LIMIT -
+ * keeps its flat key; the rest still nest. A later plain name replaces an
+ * earlier nested value of that name, as Rack and parse_str do. A field with a `__proto__` segment anywhere in its name is dropped.
+ */
+function nestFormFields(pairs: Array<[string, string]>): Record<string, FormValue> {
+  const kept = pairs.filter(([name]) => !/(^|[[\]])__proto__([[\]]|$)/.test(name));
+  if (kept.length > FORM_FIELD_LIMIT) return Object.fromEntries(kept);
+  const nested = new WeakSet<object>();
+  const node = (): Record<string, FormValue> => {
+    const created: Record<string, FormValue> = {};
+    nested.add(created);
+    return created;
+  };
+  const isNode = (value: unknown): value is Record<string, FormValue> =>
+    typeof value === "object" && value !== null && nested.has(value);
+  const own = (params: Record<string, FormValue>, key: string): FormValue | undefined =>
+    Object.prototype.hasOwnProperty.call(params, key) ? params[key] : undefined;
+  const list = (params: Record<string, FormValue>, key: string): FormValue[] => {
+    const current = own(params, key) ?? (params[key] = []);
+    if (!Array.isArray(current)) throw new RangeError(`expected an array for '${key}'`);
+    return current;
+  };
+  const object = (params: Record<string, FormValue>, key: string): Record<string, FormValue> => {
+    const current = own(params, key) ?? (params[key] = node());
+    if (!isNode(current)) throw new RangeError(`expected an object for '${key}'`);
+    return current;
+  };
+  const hasKey = (params: Record<string, FormValue>, key: string): boolean => {
+    if (key.includes("[]")) return false;
+    let level: FormValue | undefined = params;
+    for (const part of key.split(/[[\]]+/).filter(Boolean)) {
+      if (!isNode(level) || own(level, part) === undefined) return false;
+      level = level[part];
+    }
+    return true;
+  };
+  const splitName = (name: string, depth: number): [string, string] => {
+    if (depth === 0) {
+      const start = name.indexOf("[", 1);
+      return start === -1 ? [name, ""] : [name.slice(0, start), name.slice(start)];
+    }
+    if (name.startsWith("[]")) return ["[]", name.slice(2)];
+    const close = name.indexOf("]", 1);
+    return name.startsWith("[") && close !== -1 ? [name.slice(1, close), name.slice(close + 1)] : [name, ""];
+  };
+  // `a[][x]`: fill the last record unless it already has `x`, else start one.
+  const putListItem = (items: FormValue[], after: string, value: string, depth: number): void => {
+    let childKey = after[2] === "[" && after.endsWith("]") ? after.slice(3, -1) : "";
+    if (childKey === "" || childKey.includes("[") || childKey.includes("]")) childKey = after.slice(2);
+    const last = items[items.length - 1];
+    if (isNode(last) && !hasKey(last, childKey)) put(last, childKey, value, depth + 1);
+    else items.push(put(node(), childKey, value, depth + 1) as FormValue);
+  };
+  // Rack::QueryParser#normalize_params, ported from tina4-ruby's form parser.
+  const put = (params: Record<string, FormValue>, name: string, value: string, depth: number): FormValue | undefined => {
+    const [key, after] = splitName(name, depth);
+    if (key === "") return undefined;
+    if (after === "" && key === "[]" && depth !== 0) return [value];
+    if (after === "") params[key] = value;
+    else if (after === "[") params[name] = value;
+    else if (after === "[]") list(params, key).push(value);
+    else if (after.startsWith("[]")) putListItem(list(params, key), after, value, depth);
+    else put(object(params, key), after, value, depth + 1);
+    return params;
+  };
+  // Counts brackets only up to the limit, so a name of millions of them costs nothing.
+  const tooDeep = (name: string): boolean => {
+    let count = 0;
+    for (let at = name.indexOf("["); at !== -1; at = name.indexOf("[", at + 1)) {
+      if (++count >= FORM_DEPTH_LIMIT) return true;
+    }
+    return false;
+  };
+  const fields = node();
+  for (const [name, value] of kept) {
+    if (name.length > FORM_NAME_LIMIT || tooDeep(name)) {
+      fields[name] = value;
+      continue;
+    }
+    try {
+      put(fields, name, value, 0);
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error;
+      fields[name] = value;
+    }
+  }
+  return fields;
 }
