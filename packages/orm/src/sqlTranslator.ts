@@ -29,6 +29,53 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { DatabaseUrl } from "./databaseUrl.js";
 import { DEFAULT_SRID, SpatialNotSupportedError } from "./point.js";
+
+// ── placeholder-scan helpers ─────────────────────────────────
+// The `?`-placeholder scanner skips over literals/comments it must not count.
+// Each span-skip is a pure "return the index just past this span" helper so the
+// scan loop itself stays flat (keeps placeholderPositions' complexity down).
+const isIdentChar = (ch: string | undefined): boolean => !!ch && /[A-Za-z0-9_]/.test(ch);
+
+/** Index just past the quoted string/identifier opening at i (sql[i] is the quote). */
+function skipQuoted(sql: string, i: number, backslashEscapes: boolean): number {
+  const c = sql[i];
+  // E'...' (Postgres escape string) honours backslash escapes; so does every
+  // quoted string when the engine does (MySQL).
+  const escapeString = c === "'" && (sql[i - 1] === "E" || sql[i - 1] === "e") && !isIdentChar(sql[i - 2]);
+  const backslash = c !== "`" && (escapeString || backslashEscapes);
+  const n = sql.length;
+  i++;
+  while (i < n) {
+    if (backslash && sql[i] === "\\") { i += 2; continue; }
+    if (sql[i] === c) {
+      if (sql[i + 1] === c) { i += 2; continue; } // doubled quote = escaped quote
+      return i + 1;
+    }
+    i++;
+  }
+  return i;
+}
+
+/** Index just past the `-- ...` line comment opening at i. */
+function skipLineComment(sql: string, i: number): number {
+  while (i < sql.length && sql[i] !== "\n") i++;
+  return i;
+}
+
+/** Index just past the block comment opening at i. */
+function skipBlockComment(sql: string, i: number): number {
+  const end = sql.indexOf("*/", i + 2);
+  return end === -1 ? sql.length : end + 2;
+}
+
+/** Index just past the `$tag$ ... $tag$` dollar-quoted block opening at i, or i if none opens here. */
+function skipDollarQuote(sql: string, i: number): number {
+  const tag = sql.slice(i).match(/^\$([A-Za-z_][A-Za-z0-9_]*)?\$/);
+  if (!tag) return i;
+  const end = sql.indexOf(tag[0], i + tag[0].length);
+  return end === -1 ? sql.length : end + tag[0].length;
+}
+
 export class SQLTranslator {
   private static readonly SPATIAL_ENGINES = new Set(["postgres", "postgresql"]);
   private static readonly SPATIAL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
@@ -357,51 +404,17 @@ export class SQLTranslator {
   static placeholderPositions(sql: string, options: { backslashEscapes?: boolean } = {}): number[] {
     const positions: number[] = [];
     const n = sql.length;
-    const isIdent = (ch: string | undefined): boolean => !!ch && /[A-Za-z0-9_]/.test(ch);
     let i = 0;
     while (i < n) {
       const c = sql[i];
       const next = sql[i + 1];
-
-      if (c === "'" || c === '"' || c === "`") {
-        // E'...' (Postgres escape string) honours backslash escapes; so does
-        // every quoted string when the engine does (MySQL).
-        const prev = sql[i - 1];
-        const escapeString = c === "'" && (prev === "E" || prev === "e") && !isIdent(sql[i - 2]);
-        const backslash = c !== "`" && (escapeString || options.backslashEscapes === true);
-        i++;
-        while (i < n) {
-          if (backslash && sql[i] === "\\") { i += 2; continue; }
-          if (sql[i] === c) {
-            if (sql[i + 1] === c) { i += 2; continue; }
-            i++;
-            break;
-          }
-          i++;
-        }
-        continue;
+      if (c === "'" || c === '"' || c === "`") { i = skipQuoted(sql, i, options.backslashEscapes === true); continue; }
+      if (c === "-" && next === "-") { i = skipLineComment(sql, i); continue; }
+      if (c === "/" && next === "*") { i = skipBlockComment(sql, i); continue; }
+      if (c === "$" && !isIdentChar(sql[i - 1])) {
+        const past = skipDollarQuote(sql, i);
+        if (past !== i) { i = past; continue; }
       }
-
-      if (c === "-" && next === "-") {
-        while (i < n && sql[i] !== "\n") i++;
-        continue;
-      }
-
-      if (c === "/" && next === "*") {
-        const end = sql.indexOf("*/", i + 2);
-        i = end === -1 ? n : end + 2;
-        continue;
-      }
-
-      if (c === "$" && !isIdent(sql[i - 1])) {
-        const tag = sql.slice(i).match(/^\$([A-Za-z_][A-Za-z0-9_]*)?\$/);
-        if (tag) {
-          const end = sql.indexOf(tag[0], i + tag[0].length);
-          i = end === -1 ? n : end + tag[0].length;
-          continue;
-        }
-      }
-
       if (c === "?") positions.push(i);
       i++;
     }

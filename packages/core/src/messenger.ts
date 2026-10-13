@@ -371,6 +371,26 @@ function sendCommand(
 /**
  * Build an RFC 2822 MIME message.
  */
+// The text/html multipart-alternative body, identical in the with- and
+// without-attachments paths of buildMimeMessage.
+function pushAlternativeBody(lines: string[], altBoundary: string, text: string, body: string): void {
+  lines.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`);
+  lines.push("");
+  lines.push(`--${altBoundary}`);
+  lines.push("Content-Type: text/plain; charset=UTF-8");
+  lines.push("Content-Transfer-Encoding: 7bit");
+  lines.push("");
+  lines.push(text);
+  lines.push("");
+  lines.push(`--${altBoundary}`);
+  lines.push("Content-Type: text/html; charset=UTF-8");
+  lines.push("Content-Transfer-Encoding: 7bit");
+  lines.push("");
+  lines.push(body);
+  lines.push("");
+  lines.push(`--${altBoundary}--`);
+}
+
 function buildMimeMessage(options: {
   from: string;
   fromName?: string;
@@ -423,21 +443,7 @@ function buildMimeMessage(options: {
 
     // Body part (with optional text alternative)
     if (hasTextAlt) {
-      lines.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`);
-      lines.push("");
-      lines.push(`--${altBoundary}`);
-      lines.push("Content-Type: text/plain; charset=UTF-8");
-      lines.push("Content-Transfer-Encoding: 7bit");
-      lines.push("");
-      lines.push(options.text!);
-      lines.push("");
-      lines.push(`--${altBoundary}`);
-      lines.push("Content-Type: text/html; charset=UTF-8");
-      lines.push("Content-Transfer-Encoding: 7bit");
-      lines.push("");
-      lines.push(options.body);
-      lines.push("");
-      lines.push(`--${altBoundary}--`);
+      pushAlternativeBody(lines, altBoundary, options.text!, options.body);
     } else {
       const contentType = options.html ? "text/html" : "text/plain";
       lines.push(`Content-Type: ${contentType}; charset=UTF-8`);
@@ -469,21 +475,7 @@ function buildMimeMessage(options: {
     lines.push(`--${boundary}--`);
   } else if (hasTextAlt) {
     // Text alternative without attachments
-    lines.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`);
-    lines.push("");
-    lines.push(`--${altBoundary}`);
-    lines.push("Content-Type: text/plain; charset=UTF-8");
-    lines.push("Content-Transfer-Encoding: 7bit");
-    lines.push("");
-    lines.push(options.text!);
-    lines.push("");
-    lines.push(`--${altBoundary}`);
-    lines.push("Content-Type: text/html; charset=UTF-8");
-    lines.push("Content-Transfer-Encoding: 7bit");
-    lines.push("");
-    lines.push(options.body);
-    lines.push("");
-    lines.push(`--${altBoundary}--`);
+    pushAlternativeBody(lines, altBoundary, options.text!, options.body);
   } else {
     // Simple message
     const contentType = options.html ? "text/html" : "text/plain";
