@@ -1431,18 +1431,74 @@ const handleTables: RouteHandler = async (_req, res) => {
   }
 };
 
-const handleSeed: RouteHandler = async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
-  const body = (req as any).body ?? {};
-  const table = url.searchParams.get("table") ?? body?.table ?? "";
-  const count = parseInt(String(url.searchParams.get("count") ?? body?.count ?? "10"), 10) || 10;
-  // P4b — accept seed/clear/strict; drop the previous hard-coded behaviour.
-  const seedRaw = url.searchParams.get("seed") ?? body?.seed;
+/** A column as the DB adapter's getColumns() reports it, for seeding. */
+interface SeedColumn { name: string; type: string; primaryKey?: boolean }
+
+/** The fake-data surface buildSeedFieldMap draws from (orm's FakeData). */
+interface SeedFake {
+  email(): string; name(): string; phone(): string; address(): string; url(): string;
+  integer(min: number, max: number): number; numeric(min: number, max: number, dp: number): number;
+  boolean(): boolean; date(): unknown; sentence(words: number): string;
+}
+
+/**
+ * Resolve the seed request's options from the query string and JSON body (the
+ * query string wins). Exported so the parsing is tested directly. P4b accepts
+ * seed/clear/strict; an unparseable `seed` becomes undefined (not reproducible).
+ */
+export function parseSeedRequest(url: URL, body: Record<string, unknown> | null | undefined): {
+  table: string; count: number; seed: number | undefined; clear: boolean; strict: boolean;
+} {
+  const b = body ?? {};
+  const table = String(url.searchParams.get("table") ?? b.table ?? "");
+  const count = parseInt(String(url.searchParams.get("count") ?? b.count ?? "10"), 10) || 10;
+  const seedRaw = url.searchParams.get("seed") ?? b.seed;
   const seed = seedRaw !== undefined && seedRaw !== null && String(seedRaw) !== ""
     ? (Number.isNaN(parseInt(String(seedRaw), 10)) ? undefined : parseInt(String(seedRaw), 10))
     : undefined;
-  const clear = String(url.searchParams.get("clear") ?? body?.clear ?? "") === "true" || body?.clear === true;
-  const strict = String(url.searchParams.get("strict") ?? body?.strict ?? "") === "true" || body?.strict === true;
+  const clear = String(url.searchParams.get("clear") ?? b.clear ?? "") === "true" || b.clear === true;
+  const strict = String(url.searchParams.get("strict") ?? b.strict ?? "") === "true" || b.strict === true;
+  return { table, count, seed, clear, strict };
+}
+
+/**
+ * Build a column -> fake-value generator map from the table's columns, keyed on
+ * the column NAME first (email/name/phone/address/url) then its SQL TYPE
+ * (int/float/bool/date), falling back to a short sentence. id / primary-key
+ * columns are skipped (the engine assigns them). Exported so the heuristic is
+ * tested directly. `fake` is seeded by the caller so a run is reproducible; its
+ * generators are closed over by every entry.
+ */
+export function buildSeedFieldMap(columns: SeedColumn[], fake: SeedFake): Record<string, () => unknown> {
+  // Ordered rules, first match wins: column NAME first, then SQL TYPE. Data-driven
+  // so the dispatch stays flat (one scan, no deep if/else ladder) and a new rule is
+  // one row. The order is exactly the old if/else order, so the mapping is unchanged.
+  const rules: Array<[(name: string, type: string) => boolean, () => unknown]> = [
+    [(n) => n.includes("email"), () => fake.email()],
+    [(n) => n.includes("name"), () => fake.name()],
+    [(n) => n.includes("phone"), () => fake.phone()],
+    [(n) => n.includes("address") || n.includes("city") || n.includes("country"), () => fake.address()],
+    [(n) => n.includes("url") || n.includes("website"), () => fake.url()],
+    [(_n, t) => t.includes("int"), () => fake.integer(1, 1000)],
+    [(_n, t) => /real|float|double|numeric|decimal/.test(t), () => fake.numeric(0, 1000, 2)],
+    [(_n, t) => t.includes("bool"), () => fake.boolean()],
+    [(_n, t) => t.includes("date") || t.includes("time"), () => fake.date()],
+  ];
+  const sentence = () => fake.sentence(3); // fallback for an unmatched column
+  const fieldMap: Record<string, () => unknown> = {};
+  for (const col of columns) {
+    if (col.name.toLowerCase() === "id" || col.primaryKey === true) continue; // engine assigns the PK
+    const name = col.name.toLowerCase();
+    const type = col.type.toLowerCase();
+    const rule = rules.find(([matches]) => matches(name, type));
+    fieldMap[col.name] = rule ? rule[1] : sentence;
+  }
+  return fieldMap;
+}
+
+const handleSeed: RouteHandler = async (req, res) => {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const { table, count, seed, clear, strict } = parseSeedRequest(url, (req as any).body);
   if (!table) {
     res.json({ error: "Missing table parameter" });
     return;
@@ -1458,28 +1514,10 @@ const handleSeed: RouteHandler = async (req, res) => {
       res.json({ error: `Table '${table}' not found or has no columns` });
       return;
     }
-    // Build a field map based on column info (skip auto-increment/id PKs).
-    const fieldMap: Record<string, () => unknown> = {};
-    for (const col of columns) {
-      const name = col.name.toLowerCase();
-      const type = col.type.toLowerCase();
-      if (name === "id" || (col as any).primaryKey === true) continue; // skip primary key
-      if (name.includes("email")) { fieldMap[col.name] = () => fake.email(); }
-      else if (name.includes("name")) { fieldMap[col.name] = () => fake.name(); }
-      else if (name.includes("phone")) { fieldMap[col.name] = () => fake.phone(); }
-      else if (name.includes("address") || name.includes("city") || name.includes("country")) { fieldMap[col.name] = () => fake.address(); }
-      else if (name.includes("url") || name.includes("website")) { fieldMap[col.name] = () => fake.url(); }
-      else if (type.includes("int")) { fieldMap[col.name] = () => fake.integer(1, 1000); }
-      else if (type.includes("real") || type.includes("float") || type.includes("double") || type.includes("numeric") || type.includes("decimal")) { fieldMap[col.name] = () => fake.numeric(0, 1000, 2); }
-      else if (type.includes("bool")) { fieldMap[col.name] = () => fake.boolean(); }
-      else if (type.includes("date") || type.includes("time")) { fieldMap[col.name] = () => fake.date(); }
-      else { fieldMap[col.name] = () => fake.sentence(3); }
-    }
-    // P1 — delegate to the shared seedTable so each row is wrapped (no
-    // unhandled failure can crash the endpoint) and we get a summary back.
-    // SEED-TABLE-SEED-INERT: seedTable no longer takes opts.seed (it throws
-    // if supplied) — reproducibility already comes from the seeded `fake`
-    // built above and closed over by every entry in fieldMap.
+    // SEED-TABLE-SEED-INERT: seedTable no longer takes opts.seed; reproducibility
+    // comes from the seeded `fake` closed over by every fieldMap entry. P1 —
+    // seedTable wraps each row so no row failure can crash the endpoint.
+    const fieldMap = buildSeedFieldMap(columns as SeedColumn[], fake as unknown as SeedFake);
     const summary = await seedTable(db, table, count, fieldMap, undefined, { clear, strict });
     res.json({ seeded: summary.seeded, failed: summary.failed, errors: summary.errors, table });
   } catch (e) {
@@ -1656,6 +1694,56 @@ export function supervisorBaseUrl(): string {
  * run completes. When the agent is unreachable we respond with 503 and a
  * hint so the SPA can show a useful error.
  */
+/**
+ * Build the proxied request body for a body-bearing method (POST/PUT/PATCH/
+ * DELETE); other methods and a null/non-serialisable body carry none. A string
+ * body passes through; an object is JSON-encoded, and a bare `/execute`
+ * `plan_file` filename is rewritten to a project-relative `plan/` path (matches
+ * the Python dev_admin's SPA→agent convention).
+ */
+function buildSupervisorBody(method: string, body: unknown): string | undefined {
+  if (method !== "POST" && method !== "PUT" && method !== "PATCH" && method !== "DELETE") return undefined;
+  if (body === undefined || body === null) return undefined;
+  if (typeof body === "string") return body;
+  if (typeof body !== "object") return undefined;
+  let outBody: any = body;
+  if (!Array.isArray(body)) {
+    const pf = (body as any).plan_file;
+    if (typeof pf === "string" && pf && !pf.includes("/")) outBody = { ...body, plan_file: `plan/${pf}` };
+  }
+  return JSON.stringify(outBody);
+}
+
+/**
+ * Relay an upstream text/event-stream to the client chunk by chunk as it
+ * arrives, always clearing the request timer and ending the response when the
+ * stream finishes (or the upstream carried no body).
+ */
+async function streamEventStream(res: any, upstream: Response, timer: ReturnType<typeof setTimeout>): Promise<void> {
+  res.raw.writeHead(upstream.status || 200, {
+    "Content-Type": upstream.headers.get("content-type") ?? "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  if (typeof (res.raw as any).flushHeaders === "function") (res.raw as any).flushHeaders();
+  if (!upstream.body) {
+    res.raw.end();
+    clearTimeout(timer);
+    return;
+  }
+  const reader = upstream.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) res.raw.write(Buffer.from(value));
+    }
+  } finally {
+    clearTimeout(timer);
+    res.raw.end();
+  }
+}
+
 async function proxyToSupervisor(
   req: any,
   res: any,
@@ -1672,29 +1760,7 @@ async function proxyToSupervisor(
   const target = `${base}${downstreamPath}${qs}`;
 
   const method = (req.method ?? "GET").toUpperCase();
-
-  // Build the body for methods that carry one
-  let bodyText: string | undefined;
-  if (method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE") {
-    const body = (req as any).body;
-    if (body !== undefined && body !== null) {
-      if (typeof body === "string") {
-        bodyText = body;
-      } else if (typeof body === "object") {
-        // SPA→agent convention fixup (matches Python): `/execute` sends
-        // plan_file as a bare filename but the rust agent expects a
-        // project-relative path. Prepend `plan/` when no slash is present.
-        let outBody: any = body;
-        if (!Array.isArray(body)) {
-          const pf = (body as any).plan_file;
-          if (typeof pf === "string" && pf && !pf.includes("/")) {
-            outBody = { ...body, plan_file: `plan/${pf}` };
-          }
-        }
-        bodyText = JSON.stringify(outBody);
-      }
-    }
-  }
+  const bodyText = buildSupervisorBody(method, (req as any).body);
 
   // Heavy multi-agent endpoints get a generous timeout; metadata-only
   // /supervise/* and /threads/* calls return fast.
@@ -1727,30 +1793,7 @@ async function proxyToSupervisor(
 
   // SSE / event-stream — stream chunks through as they arrive.
   if (ct.includes("text/event-stream")) {
-    res.raw.writeHead(upstream.status || 200, {
-      "Content-Type": upstream.headers.get("content-type") ?? "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    });
-    if (typeof (res.raw as any).flushHeaders === "function") {
-      (res.raw as any).flushHeaders();
-    }
-    if (!upstream.body) {
-      res.raw.end();
-      clearTimeout(timer);
-      return;
-    }
-    const reader = upstream.body.getReader();
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) res.raw.write(Buffer.from(value));
-      }
-    } finally {
-      clearTimeout(timer);
-      res.raw.end();
-    }
+    await streamEventStream(res, upstream, timer);
     return;
   }
 
@@ -2385,6 +2428,57 @@ async function devGitInfo(root: string): Promise<{ branch: string; gitRoot: stri
   }
 }
 
+/**
+ * The git_status label for one entry: its own porcelain code if git reported
+ * one, else a directory inherits the status of any dirty child, else "clean".
+ */
+function devGitLabel(gitPath: string, isDir: boolean, gitStatus: Map<string, string>): string {
+  const code = gitStatus.get(gitPath);
+  if (code !== undefined) return devGitStatusLabel(code);
+  if (isDir) {
+    const prefix = gitPath + "/"; // propagate dirty status from any child
+    for (const [gf, gc] of gitStatus) {
+      if (gf.startsWith(prefix)) return gc === "??" ? "untracked" : "modified";
+    }
+  }
+  return "clean";
+}
+
+/** True when a directory holds at least one entry the listing would show. */
+function devDirHasVisibleChild(full: string): boolean {
+  try {
+    for (const c of readdirSync(full)) {
+      if (!devFilesHidden(c)) return true;
+    }
+  } catch { /* unreadable dir */ }
+  return false;
+}
+
+/**
+ * One file/dir entry in the dev-admin tree payload: size for a file,
+ * has_children for a directory, git_status for both. An unreadable entry is
+ * reported as a zero-size file rather than dropped.
+ */
+function buildFileEntry(
+  name: string, full: string, entryRel: string, cwdInGit: string, gitStatus: Map<string, string>,
+): Record<string, unknown> {
+  let isDir = false;
+  let size: number | null = null;
+  try {
+    const st = statSync(full);
+    isDir = st.isDirectory();
+    if (!isDir) size = st.size;
+  } catch { /* unreadable entry */ }
+  return {
+    name,
+    path: entryRel,
+    is_dir: isDir,
+    has_children: isDir ? devDirHasVisibleChild(full) : null,
+    git_status: devGitLabel(cwdInGit + entryRel, isDir, gitStatus),
+    size,
+  };
+}
+
 const handleFiles: RouteHandler = async (req, res) => {
   // Response shape matches tina4-python / tina4-php 1:1 so the dev-admin SPA
   // works against every framework with no branching: each entry carries
@@ -2422,49 +2516,7 @@ const handleFiles: RouteHandler = async (req, res) => {
     // DEVADMIN-DEC-03: never surface secrets in the listing (.env, keys, .git/,
     // secrets/). The .env.example template is safe and stays visible.
     if (isSecretPath(entryRel)) continue;
-
-    let isDir = false;
-    let size: number | null = null;
-    try {
-      const st = statSync(full);
-      isDir = st.isDirectory();
-      if (!isDir) size = st.size;
-    } catch { /* unreadable entry */ }
-
-    // git status for this entry (same mapping PHP/Python use)
-    const gitPath = cwdInGit + entryRel;
-    let gitLabel = "clean";
-    const code = gitStatus.get(gitPath);
-    if (code !== undefined) {
-      gitLabel = devGitStatusLabel(code);
-    } else if (isDir) {
-      const prefix = gitPath + "/";          // propagate dirty status from any child
-      for (const [gf, gc] of gitStatus) {
-        if (gf.startsWith(prefix)) { gitLabel = gc === "??" ? "untracked" : "modified"; break; }
-      }
-    }
-
-    // has_children: does the dir contain anything visible?
-    let hasChildren: boolean | null = null;
-    if (isDir) {
-      hasChildren = false;
-      try {
-        for (const c of readdirSync(full)) {
-          if (devFilesHidden(c)) continue;
-          hasChildren = true;
-          break;
-        }
-      } catch { /* ignore */ }
-    }
-
-    entries.push({
-      name,
-      path: entryRel,
-      is_dir: isDir,
-      has_children: hasChildren,
-      git_status: gitLabel,
-      size,
-    });
+    entries.push(buildFileEntry(name, full, entryRel, cwdInGit, gitStatus));
   }
 
   res.json({ path: relative(root, target).replace(/\\/g, "/") || ".", branch, entries });

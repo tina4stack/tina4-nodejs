@@ -143,65 +143,83 @@ const ATTRIBUTE_VALUE = /=\s*(?:"([^"<]*)"|'([^'<]*)')/g;
 function parseXmlDocument(xml: string): XmlElement {
   const stack: XmlElement[] = [];
   let root: XmlElement | null = null;
-  let position = 0;
 
   const addText = (text: string): void => {
     const current = stack[stack.length - 1];
     if (current.children.length === 0) current.text += text;
   };
 
-  while (position < xml.length) {
-    const nextTag = xml.indexOf("<", position);
+  // One handler per markup construct. Each is entered at the "<" that opens the
+  // construct and returns the position just past it; they share stack/root/addText
+  // through this closure. Splitting the old six-arm if/else out of the scan loop
+  // keeps each rule small and named (cyclomatic complexity stays low per function).
+  const skipComment = (at: number): number => {
+    const close = xml.indexOf("-->", at + 4);
+    if (close === -1) malformed();
+    return close + 3;
+  };
+  const readCData = (at: number): number => {
+    const close = xml.indexOf("]]>", at + 9);
+    if (close === -1 || stack.length === 0) malformed();
+    addText(xml.slice(at + 9, close));
+    return close + 3;
+  };
+  const skipProcessingInstruction = (at: number): number => {
+    const close = xml.indexOf("?>", at + 2);
+    if (close === -1) malformed();
+    const target = xml.slice(at + 2, close).split(/\s/, 1)[0];
+    // The XML declaration is only legal as the very first thing in the document.
+    if (target.toLowerCase() === "xml" && at !== 0) malformed();
+    return close + 2;
+  };
+  const closeElement = (at: number): number => {
+    END_TAG.lastIndex = at;
+    const match = END_TAG.exec(xml);
+    const open = stack.pop();
+    if (!match || !open || open.qualifiedName !== match[1]) malformed();
+    return END_TAG.lastIndex;
+  };
+  const openElement = (at: number): number => {
+    START_TAG.lastIndex = at;
+    const match = START_TAG.exec(xml);
+    if (!match || (stack.length === 0 && root !== null)) malformed(); // bad tag, or a second root
+    for (const attribute of match[2].matchAll(ATTRIBUTE_VALUE)) decodeEntities(attribute[1] ?? attribute[2]);
+    const qualifiedName = match[1];
+    const element: XmlElement = {
+      name: qualifiedName.slice(qualifiedName.indexOf(":") + 1),
+      qualifiedName,
+      children: [],
+      text: "",
+    };
+    if (stack.length > 0) stack[stack.length - 1].children.push(element);
+    else root = element;
+    if (match[3] !== "/") stack.push(element);
+    return START_TAG.lastIndex;
+  };
+
+  // Consume the text run before the next "<" (entities decoded inside an element,
+  // only whitespace tolerated outside the root), then dispatch on the construct.
+  const readText = (at: number): number => {
+    const nextTag = xml.indexOf("<", at);
     const textEnd = nextTag === -1 ? xml.length : nextTag;
-    if (textEnd > position) {
-      const raw = xml.slice(position, textEnd);
+    if (textEnd > at) {
+      const raw = xml.slice(at, textEnd);
       if (stack.length > 0) addText(decodeEntities(raw));
       else if (raw.trim() !== "") malformed(); // text outside the root element
-      position = textEnd;
-      if (nextTag === -1) break;
     }
+    return textEnd;
+  };
 
-    if (xml.startsWith("<!--", position)) {
-      const close = xml.indexOf("-->", position + 4);
-      if (close === -1) malformed();
-      position = close + 3;
-    } else if (xml.startsWith("<![CDATA[", position)) {
-      const close = xml.indexOf("]]>", position + 9);
-      if (close === -1 || stack.length === 0) malformed();
-      addText(xml.slice(position + 9, close));
-      position = close + 3;
-    } else if (xml.startsWith("<?", position)) {
-      const close = xml.indexOf("?>", position + 2);
-      if (close === -1) malformed();
-      const target = xml.slice(position + 2, close).split(/\s/, 1)[0];
-      // The XML declaration is only legal as the very first thing in the document.
-      if (target.toLowerCase() === "xml" && position !== 0) malformed();
-      position = close + 2;
-    } else if (xml.startsWith("<!", position)) {
-      malformed(); // any other declaration; DOCTYPE was refused before parsing
-    } else if (xml.startsWith("</", position)) {
-      END_TAG.lastIndex = position;
-      const match = END_TAG.exec(xml);
-      const open = stack.pop();
-      if (!match || !open || open.qualifiedName !== match[1]) malformed();
-      position = END_TAG.lastIndex;
-    } else {
-      START_TAG.lastIndex = position;
-      const match = START_TAG.exec(xml);
-      if (!match || (stack.length === 0 && root !== null)) malformed(); // bad tag, or a second root
-      for (const attribute of match[2].matchAll(ATTRIBUTE_VALUE)) decodeEntities(attribute[1] ?? attribute[2]);
-      const qualifiedName = match[1];
-      const element: XmlElement = {
-        name: qualifiedName.slice(qualifiedName.indexOf(":") + 1),
-        qualifiedName,
-        children: [],
-        text: "",
-      };
-      if (stack.length > 0) stack[stack.length - 1].children.push(element);
-      else root = element;
-      if (match[3] !== "/") stack.push(element);
-      position = START_TAG.lastIndex;
-    }
+  let position = 0;
+  while (position < xml.length) {
+    position = readText(position);
+    if (position >= xml.length) break;
+    if (xml.startsWith("<!--", position)) position = skipComment(position);
+    else if (xml.startsWith("<![CDATA[", position)) position = readCData(position);
+    else if (xml.startsWith("<?", position)) position = skipProcessingInstruction(position);
+    else if (xml.startsWith("<!", position)) malformed(); // any other declaration; DOCTYPE refused before parsing
+    else if (xml.startsWith("</", position)) position = closeElement(position);
+    else position = openElement(position);
   }
 
   if (root === null || stack.length > 0) malformed();

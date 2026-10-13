@@ -96,7 +96,7 @@ export type { ApiResult, ApiOptions, ApiTransport, DownloadResult, UploadOptions
 export { Context, defaultContext, existingContext, fts5Supported, _sharedContexts } from "./context/index.js";
 export type { SearchHit } from "./context/index.js";
 export { Events } from "./events.js";
-export { DevAdmin, MessageLog, RequestInspector, ErrorTracker, DevMailboxStore, DevQueue, WsTracker, supervisorBaseUrl, devAdminLanguage } from "./devAdmin.js";
+export { DevAdmin, MessageLog, RequestInspector, ErrorTracker, DevMailboxStore, DevQueue, WsTracker, supervisorBaseUrl, devAdminLanguage, parseSeedRequest, buildSeedFieldMap } from "./devAdmin.js";
 export {
   feedbackEnabled,
   feedbackWhitelist,
