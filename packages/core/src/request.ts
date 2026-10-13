@@ -84,6 +84,7 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   try {
     const url = new URL(req.url ?? "/", `${proto}://${host}`);
     for (const [key, value] of url.searchParams) {
+      if (isUnsafeFieldName(key)) continue;
       query[key] = value;
     }
     path = url.pathname;
@@ -96,6 +97,7 @@ export function createRequest(req: IncomingMessage): Tina4Request {
     queryString = questionIdx >= 0 ? rawTarget.slice(questionIdx + 1) : "";
     try {
       for (const [key, value] of new URLSearchParams(queryString)) {
+        if (isUnsafeFieldName(key)) continue;
         query[key] = value;
       }
     } catch { /* unparseable query — leave query empty, still route the path */ }
@@ -121,7 +123,8 @@ export function createRequest(req: IncomingMessage): Tina4Request {
   if (cookieHeader) {
     for (const pair of cookieHeader.split(";")) {
       const [k, ...v] = pair.trim().split("=");
-      if (k) cookies[k.trim()] = v.join("=").trim();
+      const name = k ? k.trim() : "";
+      if (name && !isUnsafeFieldName(name)) cookies[name] = v.join("=").trim();
     }
   }
   w.cookies = cookies;
@@ -344,8 +347,12 @@ export function parseMultipart(
         content: Buffer.from(content),
         size: content.length,
       };
-      // Dict keyed by field name — multiple files under same name become array
-      if (files[disposition.name]) {
+      // Dict keyed by field name — multiple files under same name become array.
+      // A file field named __proto__/constructor/prototype is never legitimate
+      // and is dropped (js/remote-property-injection).
+      if (isUnsafeFieldName(disposition.name)) {
+        // skip
+      } else if (files[disposition.name]) {
         const existing = files[disposition.name];
         files[disposition.name] = Array.isArray(existing) ? [...existing, file] : [existing, file];
       } else {
@@ -473,6 +480,21 @@ const FORM_FIELD_LIMIT = 4096;
 const FORM_NAME_LIMIT = 1024;
 
 /**
+ * The three keys that reach the prototype chain. A query param, cookie or file
+ * field literally named one of these is never legitimate, so the flat maps
+ * (query / cookies / files) drop it. The nested body builder does NOT drop
+ * `constructor`/`prototype` - a form MAY carry `user[constructor][name]` as
+ * data - and stays safe a different way: its containers are prototype-less
+ * (`Object.create(null)` in node() below), so assigning any of these as an own
+ * key cannot pollute a prototype. `__proto__` segments are dropped outright
+ * (the kept filter). Together these make prototype pollution structurally
+ * impossible, not merely filtered (js/prototype-polluting-assignment,
+ * js/remote-property-injection).
+ */
+const isUnsafeFieldName = (key: string): boolean =>
+  key === "__proto__" || key === "constructor" || key === "prototype";
+
+/**
  * Nest form fields the way PHP and Rack (tina4-ruby) nest a form: `tags[]`
  * collects an array, `user[name]` builds an object, `a[][x]` an array of
  * objects, and a repeated plain name keeps its last value. Used for urlencoded
@@ -486,8 +508,11 @@ function nestFormFields(pairs: Array<[string, string]>): Record<string, FormValu
   const kept = pairs.filter(([name]) => !/(^|[[\]])__proto__([[\]]|$)/.test(name));
   if (kept.length > FORM_FIELD_LIMIT) return Object.fromEntries(kept);
   const nested = new WeakSet<object>();
+  // Prototype-less: assigning any user key (including `constructor`/`prototype`)
+  // as an own property on these containers cannot reach or mutate a prototype,
+  // so the nested body is safe by construction (js/prototype-polluting-assignment).
   const node = (): Record<string, FormValue> => {
-    const created: Record<string, FormValue> = {};
+    const created: Record<string, FormValue> = Object.create(null);
     nested.add(created);
     return created;
   };
