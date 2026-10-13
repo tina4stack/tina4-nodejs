@@ -224,7 +224,7 @@ jobs:
           done
           echo "GreenMail did not become ready in 60s"; exit 1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Password-protected Redis (requirepass s3cret) on 6381 for the credential
       # tests. GH service containers can't override the command, so run it as a
@@ -374,7 +374,7 @@ jobs:
       # Node 22+ is required — packages/orm/src/adapters/sqlite.ts uses
       # `node:sqlite` (introduced in Node 22, stable in Node 24).
       # Node 20 fails with ERR_UNKNOWN_BUILTIN_MODULE.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
 
@@ -457,7 +457,7 @@ jobs:
     env:
       TINA4_TEST_FIREBIRD_URL: firebird://SYSDBA:masterkey@localhost:3050//var/lib/firebird/data/test.fdb
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Firebird 5.0.2 as a plain container (a GitHub `services:` block cannot
       # wait for Firebird's first-boot DB creation cleanly). FAIL the job if it
@@ -479,7 +479,7 @@ jobs:
           echo "Firebird did not become ready in time"; docker logs tina4-firebird | tail -40; exit 1
 
       # Node 22+ — same version the main `test` job uses (node:sqlite needs 22).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
 

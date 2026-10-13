@@ -73,13 +73,13 @@ function renderModalForm(mode: string, columns: string[], pk: string, edit: bool
       value: "",
       placeholder: h(`Enter ${label.toLowerCase()}`),
       type: "text",
-      required_attr: "",
+      required: false,
       input: true,
     };
   });
   return renderCrudTemplate("form", {
     wrap: true,
-    form_id_attr: ` id="form-${mode}"`,
+    form_id: `form-${mode}`,
     action: "",
     form_method: "POST",
     method_override: null,
@@ -150,7 +150,7 @@ function fieldInputShape(field: FormFieldDef, base: Record<string, unknown>): Re
     case "text":
       return { ...base, textarea: true };
     case "boolean":
-      return { ...base, checkbox: true, checked_attr: value ? " checked" : "" };
+      return { ...base, checkbox: true, checked: !!value };
     case "select":
       return { ...base, select: true, options_html: buildOptions(field.options, value) };
     case "date":
@@ -174,7 +174,7 @@ function buildCustomField(field: FormFieldDef): Record<string, unknown> {
     label: h(String(label)),
     value: h(field.value ?? ""),
     placeholder: "",
-    required_attr: field.required ? " required" : "",
+    required: !!field.required,
   };
   return fieldInputShape(field, base);
 }
@@ -190,7 +190,7 @@ export function generateForm(
   const verb = String(options.method ?? "POST").toUpperCase();
   return renderCrudTemplate("form", {
     wrap: true,
-    form_id_attr: "",
+    form_id: "",
     action: h(options.action ?? "/"),
     form_method: h(verb),
     method_override: ["PUT", "PATCH", "DELETE"].includes(verb) ? verb : null,
