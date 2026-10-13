@@ -192,7 +192,10 @@ export function generate(
     openapi: resolveOpenApiVersion(),
     info: buildInfo(),
     servers: resolveServers(),
-    paths: {},
+    // Prototype-less: route paths are developer-defined, but a null prototype
+    // makes `spec.paths[path][method] = op` structurally pollution-proof
+    // regardless (js/prototype-polluting-assignment). Serialises to JSON the same.
+    paths: Object.create(null),
     components: {
       schemas: {},
       // Configurable security schemes (v3.13.42): bearerFormat via env, optional
@@ -298,7 +301,7 @@ function buildOperation(route: RouteDefinition, spec: OpenAPISpec, ctx: BuildCon
   const method = route.method.toLowerCase();
 
   if (!spec.paths[openApiPath]) {
-    spec.paths[openApiPath] = {};
+    spec.paths[openApiPath] = Object.create(null);
   }
 
   const tags = route.meta?.tags ?? inferTags(route.pattern);
