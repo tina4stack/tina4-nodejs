@@ -400,12 +400,23 @@ export function shouldOpenBrowser(isDevelopment: boolean, noBrowser = false): bo
  * Open the user's default browser after a short delay so the server is ready.
  */
 function openBrowser(url: string) {
-  // execFile (no shell): the URL is passed as an argv entry, never interpolated
-  // into a command line, so it cannot break out into a shell command however the
-  // configured host/port is spelled (js/shell-command-constructed-from-input).
+  // Only ever hand a well-formed http(s) dev URL to the OS browser launcher.
+  // TINA4_HOST / HOST are operator configuration, not remote input, but a value
+  // carrying shell or URL metacharacters must never reach the launch argv — an
+  // unusual host means "do not auto-open", never "run this". Host is a bare
+  // hostname / IPv4 / bracketed IPv6 literal; port is digits only. This guard
+  // is what sanitizes the env-derived host (js/indirect-command-line-injection,
+  // js/shell-command-constructed-from-input).
+  if (!/^https?:\/\/([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:\d{1,5})?\/?$/.test(url)) return;
+  // No shell on any platform: each launcher is an explicit binary and the URL
+  // is a single argv entry, never interpreted by a command processor. Windows
+  // opens via rundll32's FileProtocolHandler, NOT `cmd /c start` — `cmd` is a
+  // shell, so routing a host-derived URL through it is a command-injection sink
+  // (js/indirect-command-line-injection, js/shell-command-constructed-from-input);
+  // rundll32 is not, and it also avoids `start`'s argument-quoting pitfalls.
   setTimeout(() => {
     if (process.platform === "darwin") execFile("open", [url]);
-    else if (process.platform === "win32") execFile("cmd", ["/c", "start", "", url]);
+    else if (process.platform === "win32") execFile("rundll32", ["url.dll,FileProtocolHandler", url]);
     else execFile("xdg-open", [url]);
   }, 2000);
 }

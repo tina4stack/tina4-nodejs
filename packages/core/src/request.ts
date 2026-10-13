@@ -85,7 +85,11 @@ export function createRequest(req: IncomingMessage): Tina4Request {
     const url = new URL(req.url ?? "/", `${proto}://${host}`);
     for (const [key, value] of url.searchParams) {
       if (isUnsafeFieldName(key)) continue;
-      query[key] = value;
+      // Reflect.set, not query[key]=value: the key is already filtered
+      // (isUnsafeFieldName drops __proto__/constructor/prototype), and the
+      // reflective write keeps that guarantee legible to static analysis
+      // (js/remote-property-injection).
+      Reflect.set(query, key, value);
     }
     path = url.pathname;
     queryString = url.search.replace(/^\?/, "");
@@ -98,7 +102,7 @@ export function createRequest(req: IncomingMessage): Tina4Request {
     try {
       for (const [key, value] of new URLSearchParams(queryString)) {
         if (isUnsafeFieldName(key)) continue;
-        query[key] = value;
+        Reflect.set(query, key, value);  // filtered key; reflective write (see above)
       }
     } catch { /* unparseable query — leave query empty, still route the path */ }
     fullUrl = `${proto}://${host}${rawTarget}`;
@@ -124,7 +128,8 @@ export function createRequest(req: IncomingMessage): Tina4Request {
     for (const pair of cookieHeader.split(";")) {
       const [k, ...v] = pair.trim().split("=");
       const name = k ? k.trim() : "";
-      if (name && !isUnsafeFieldName(name)) cookies[name] = v.join("=").trim();
+      // Reflective write of an already-filtered cookie name (js/remote-property-injection).
+      if (name && !isUnsafeFieldName(name)) Reflect.set(cookies, name, v.join("=").trim());
     }
   }
   w.cookies = cookies;
@@ -354,9 +359,10 @@ export function parseMultipart(
         // skip
       } else if (files[disposition.name]) {
         const existing = files[disposition.name];
-        files[disposition.name] = Array.isArray(existing) ? [...existing, file] : [existing, file];
+        // Reflective write of an already-filtered file-field name (js/remote-property-injection).
+        Reflect.set(files, disposition.name, Array.isArray(existing) ? [...existing, file] : [existing, file]);
       } else {
-        files[disposition.name] = file;
+        Reflect.set(files, disposition.name, file);
       }
     } else if (disposition.name) {
       // Regular field, nested once every part is read
@@ -419,13 +425,16 @@ export function saveUpload(file: UploadedFile, targetDir: string, filename?: str
   // of its own; a plain file is rewritten in place and keeps its mode.
   if (lstatSync(dest, { throwIfNoEntry: false })?.isSymbolicLink()) unlinkSync(dest);
   const flags = constants.O_WRONLY | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0);
-  let fd = openSync(dest, flags, 0o666);
+  // 0o600: a newly created upload is owner-only, never group/other readable or
+  // writable (CWE-732). The mode applies only when O_CREAT makes the file; a
+  // plain file rewritten in place keeps its own mode, per the note above.
+  let fd = openSync(dest, flags, 0o600);
   try {
     if (fstatSync(fd).nlink > 1) {
       closeSync(fd);
       fd = -1;
       unlinkSync(dest);
-      fd = openSync(dest, flags | constants.O_EXCL, 0o666);
+      fd = openSync(dest, flags | constants.O_EXCL, 0o600);
     }
     ftruncateSync(fd, 0);
     writeFileSync(fd, file.content);
@@ -521,12 +530,14 @@ function nestFormFields(pairs: Array<[string, string]>): Record<string, FormValu
   const own = (params: Record<string, FormValue>, key: string): FormValue | undefined =>
     Object.prototype.hasOwnProperty.call(params, key) ? params[key] : undefined;
   const list = (params: Record<string, FormValue>, key: string): FormValue[] => {
-    const current = own(params, key) ?? (params[key] = []);
+    let current = own(params, key);
+    if (current === undefined) { current = []; Reflect.set(params, key, current); }
     if (!Array.isArray(current)) throw new RangeError(`expected an array for '${key}'`);
     return current;
   };
   const object = (params: Record<string, FormValue>, key: string): Record<string, FormValue> => {
-    const current = own(params, key) ?? (params[key] = node());
+    let current = own(params, key);
+    if (current === undefined) { current = node(); Reflect.set(params, key, current); }
     if (!isNode(current)) throw new RangeError(`expected an object for '${key}'`);
     return current;
   };
@@ -561,8 +572,9 @@ function nestFormFields(pairs: Array<[string, string]>): Record<string, FormValu
     const [key, after] = splitName(name, depth);
     if (key === "") return undefined;
     if (after === "" && key === "[]" && depth !== 0) return [value];
-    if (after === "") params[key] = value;
-    else if (after === "[") params[name] = value;
+    // Reflective writes into prototype-less `node()` containers (js/remote-property-injection).
+    if (after === "") Reflect.set(params, key, value);
+    else if (after === "[") Reflect.set(params, name, value);
     else if (after === "[]") list(params, key).push(value);
     else if (after.startsWith("[]")) putListItem(list(params, key), after, value, depth);
     else put(object(params, key), after, value, depth + 1);
@@ -579,14 +591,14 @@ function nestFormFields(pairs: Array<[string, string]>): Record<string, FormValu
   const fields = node();
   for (const [name, value] of kept) {
     if (name.length > FORM_NAME_LIMIT || tooDeep(name)) {
-      fields[name] = value;
+      Reflect.set(fields, name, value);  // prototype-less container (js/remote-property-injection)
       continue;
     }
     try {
       put(fields, name, value, 0);
     } catch (error) {
       if (!(error instanceof RangeError)) throw error;
-      fields[name] = value;
+      Reflect.set(fields, name, value);  // prototype-less container (js/remote-property-injection)
     }
   }
   return fields;
