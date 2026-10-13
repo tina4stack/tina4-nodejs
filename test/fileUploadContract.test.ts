@@ -154,6 +154,17 @@ if (process.platform !== "win32") {
     readFileSync(join(target, "run.sh")).toString() === "NEW" && mode === 0o755, `mode=${mode.toString(8)}`);
   rmSync(root, { recursive: true, force: true });
 }
+if (process.platform !== "win32") {
+  // A freshly created upload must be owner-only (0o600): no group or other
+  // read/write bit (CWE-732). Mutating the create mode back to 0o666 leaves the
+  // group/other read bit set and turns this RED.
+  const root = mkdtempSync(join(tmpdir(), "tina4-safesave-owner-"));
+  const target = join(root, "uploads");
+  const saved = saveUpload(upload("pic.txt", "UPLOADED"), target);
+  const leaked = statSync(saved).mode & 0o077;
+  assert("safe save creates an owner-only file", leaked === 0, `group/other bits=${leaked.toString(8)}`);
+  rmSync(root, { recursive: true, force: true });
+}
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const root = mkdtempSync(join(tmpdir(), "tina4-safesave-ro-"));
   const target = join(root, "uploads");

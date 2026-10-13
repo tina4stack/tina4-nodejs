@@ -419,13 +419,16 @@ export function saveUpload(file: UploadedFile, targetDir: string, filename?: str
   // of its own; a plain file is rewritten in place and keeps its mode.
   if (lstatSync(dest, { throwIfNoEntry: false })?.isSymbolicLink()) unlinkSync(dest);
   const flags = constants.O_WRONLY | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0);
-  let fd = openSync(dest, flags, 0o666);
+  // 0o600: a newly created upload is owner-only, never group/other readable or
+  // writable (CWE-732). The mode applies only when O_CREAT makes the file; a
+  // plain file rewritten in place keeps its own mode, per the note above.
+  let fd = openSync(dest, flags, 0o600);
   try {
     if (fstatSync(fd).nlink > 1) {
       closeSync(fd);
       fd = -1;
       unlinkSync(dest);
-      fd = openSync(dest, flags | constants.O_EXCL, 0o666);
+      fd = openSync(dest, flags | constants.O_EXCL, 0o600);
     }
     ftruncateSync(fd, 0);
     writeFileSync(fd, file.content);
