@@ -283,6 +283,15 @@ const FILTER_WITH_ARGS_RE = /^(\w+)\s*\(([\s\S]*)\)$/;
 const FILTER_COMPARISON_RE = /^(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)$/;
 const TITLE_WORD_RE = /\b\w/g;
 const STRIP_TAGS_RE = /<[^>]+>/g;
+
+// Strip tags to a fixed point: a single pass leaves a tag that only appears once
+// the surrounding one is removed (`<<b>b>` -> `<b>`), which CodeQL flags as
+// incomplete multi-character sanitization. Repeat until nothing more matches.
+function stripTags(input: string): string {
+  let s = input, prev: string;
+  do { prev = s; s = s.replace(STRIP_TAGS_RE, ""); } while (s !== prev);
+  return s;
+}
 const FAST_FILTERS: Record<string, (value: unknown) => unknown> = {
   upper: (value) => String(value).toUpperCase(),
   lower: (value) => String(value).toLowerCase(),
@@ -296,7 +305,7 @@ const FAST_FILTERS: Record<string, (value: unknown) => unknown> = {
   int: (value) => value ? parseInt(String(value), 10) || 0 : 0,
   float: (value) => value ? parseFloat(String(value)) || 0.0 : 0.0,
   abs: (value) => typeof value === "number" ? Math.abs(value) : value,
-  striptags: (value) => String(value).replace(STRIP_TAGS_RE, ""),
+  striptags: (value) => stripTags(String(value)),
   first: (value) => Array.isArray(value) ? value[0] ?? null : null,
   last: (value) => Array.isArray(value) ? value[value.length - 1] ?? null : null,
   keys: (value) => typeof value === "object" && value !== null && !Array.isArray(value) ? Object.keys(value) : [],
@@ -1837,7 +1846,7 @@ const BUILTIN_FILTERS: Record<string, FilterFn> = {
   safe: (v) => v,
   escape: (v, ...a) => escapeStrategy(v, (a[0] as string) ?? "html"),
   e: (v, ...a) => escapeStrategy(v, (a[0] as string) ?? "html"),
-  striptags: (v) => String(v).replace(STRIP_TAGS_RE, ""),
+  striptags: (v) => stripTags(String(v)),
   nl2br: (v) => new SafeString(htmlEscape(String(v)).replace(/\n/g, "<br />\n")),
   abs: (v) => typeof v === "number" ? Math.abs(v) : v,
   round: (v, decimals) => {
