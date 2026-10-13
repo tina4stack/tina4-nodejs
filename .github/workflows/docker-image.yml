@@ -60,6 +60,9 @@ env:
   IMAGE: docker.io/tina4stack/tina4-nodejs
   APP_PORT: 7148
 
+permissions:
+  contents: read
+
 jobs:
   boot-gate:
     name: Image boots, binds 0.0.0.0, and reports its real version
