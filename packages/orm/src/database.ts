@@ -1800,6 +1800,16 @@ export async function createAdapterFromUrl(url: string, username?: string, passw
 async function buildAdapterFromUrl(url: string, username?: string, password?: string): Promise<DatabaseAdapter> {
   const parsed = parseDatabaseUrl(url, username, password);
 
+  // The four TCP engines (postgres/mysql/mssql/firebird) take the identical
+  // connection shape from the parsed URL; build it once instead of per case.
+  const serverConfig = {
+    host: parsed.host ?? undefined,
+    port: parsed.port ?? undefined,
+    user: parsed.username ?? undefined,
+    password: parsed.password ?? undefined,
+    database: parsed.database || undefined,
+  };
+
   switch (parsed.engine) {
     case "sqlite": {
       const { SQLiteAdapter } = await import("./adapters/sqlite.js");
@@ -1807,49 +1817,25 @@ async function buildAdapterFromUrl(url: string, username?: string, password?: st
     }
     case "postgres": {
       const { PostgresAdapter } = await import("./adapters/postgres.js");
-      const adapter = new PostgresAdapter({
-        host: parsed.host ?? undefined,
-        port: parsed.port ?? undefined,
-        user: parsed.username ?? undefined,
-        password: parsed.password ?? undefined,
-        database: parsed.database || undefined,
-      });
+      const adapter = new PostgresAdapter(serverConfig);
       await adapter.connect();
       return adapter;
     }
     case "mysql": {
       const { MysqlAdapter } = await import("./adapters/mysql.js");
-      const adapter = new MysqlAdapter({
-        host: parsed.host ?? undefined,
-        port: parsed.port ?? undefined,
-        user: parsed.username ?? undefined,
-        password: parsed.password ?? undefined,
-        database: parsed.database || undefined,
-      });
+      const adapter = new MysqlAdapter(serverConfig);
       await adapter.connect();
       return adapter;
     }
     case "mssql": {
       const { MssqlAdapter } = await import("./adapters/mssql.js");
-      const adapter = new MssqlAdapter({
-        host: parsed.host ?? undefined,
-        port: parsed.port ?? undefined,
-        user: parsed.username ?? undefined,
-        password: parsed.password ?? undefined,
-        database: parsed.database || undefined,
-      });
+      const adapter = new MssqlAdapter(serverConfig);
       await adapter.connect();
       return adapter;
     }
     case "firebird": {
       const { FirebirdAdapter } = await import("./adapters/firebird.js");
-      const adapter = new FirebirdAdapter({
-        host: parsed.host ?? undefined,
-        port: parsed.port ?? undefined,
-        user: parsed.username ?? undefined,
-        password: parsed.password ?? undefined,
-        database: parsed.database || undefined,
-      });
+      const adapter = new FirebirdAdapter(serverConfig);
       await adapter.connect();
       return adapter;
     }
