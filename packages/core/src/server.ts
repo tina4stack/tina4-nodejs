@@ -14,7 +14,7 @@ import { resolve, dirname, join, relative } from "node:path";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isatty } from "node:tty";
 import { fileURLToPath } from "node:url";
-import { execFileSync, exec } from "node:child_process";
+import { execFileSync, execFile } from "node:child_process";
 import cluster from "node:cluster";
 import os from "node:os";
 import type { Socket } from "node:net";
@@ -400,11 +400,13 @@ export function shouldOpenBrowser(isDevelopment: boolean, noBrowser = false): bo
  * Open the user's default browser after a short delay so the server is ready.
  */
 function openBrowser(url: string) {
-  // exec imported at top of file (ESM)
+  // execFile (no shell): the URL is passed as an argv entry, never interpolated
+  // into a command line, so it cannot break out into a shell command however the
+  // configured host/port is spelled (js/shell-command-constructed-from-input).
   setTimeout(() => {
-    if (process.platform === "darwin") exec(`open ${url}`);
-    else if (process.platform === "win32") exec(`start "" "${url}"`);
-    else exec(`xdg-open ${url}`);
+    if (process.platform === "darwin") execFile("open", [url]);
+    else if (process.platform === "win32") execFile("cmd", ["/c", "start", "", url]);
+    else execFile("xdg-open", [url]);
   }, 2000);
 }
 
