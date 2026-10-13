@@ -761,6 +761,7 @@ YOUR app, not just the framework, on every change - never saved for a "cleanup p
   build like a failing test. Before you add to a file, run `tina4 metrics --path <file>` first: if
   it is already an offender, split it before you make it worse. `--top N` / `--json` scope the
   report; `tina4 update` keeps the binary current.
+- **`tina4 codeql` is a local security gate.** Before you push, run `tina4 codeql` in the project: it runs the same CodeQL scan (the security-extended suite) GitHub runs in CI, locally, over your JS/TS and GitHub Actions, and exits non-zero on any finding - so an injection or ReDoS shows up before the PR, not after. `tina4 install codeql` sets it up.
 - **Carbonah before AND after any hot path.** For a change to rendering, serialisation, a query,
   or route dispatch, benchmark energy and latency on both sides. A change that regresses the
   numbers is a regression even when the tests pass - green code is a first-class result.
