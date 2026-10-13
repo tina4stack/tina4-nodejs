@@ -70,7 +70,12 @@ function urlencoded(pairs: Array<[string, string]>) {
 }
 
 function same(name: string, actual: unknown, expected: unknown) {
-  assert(name, isDeepStrictEqual(actual, expected), `got ${JSON.stringify(actual)}`);
+  // The nested form body is built on prototype-less containers (Object.create(null),
+  // the ReDoS/pollution hardening in request.ts), so compare the DATA, not the
+  // prototype: isDeepStrictEqual is prototype-strict. A JSON round-trip normalises
+  // both sides to plain objects without changing any value.
+  const norm = (v: unknown) => JSON.parse(JSON.stringify(v));
+  assert(name, isDeepStrictEqual(norm(actual), expected), `got ${JSON.stringify(actual)}`);
 }
 
 console.log("=== Bracketed form fields ===\n");
@@ -106,7 +111,7 @@ for (const send of [multipart, urlencoded]) {
     (await send([[deep, "v"]])).body, { [deep]: "v" });
   const polluted = (await send([["__proto__[polluted]", "yes"], ["constructor[prototype][polluted]", "yes"], ["a[]__proto__", "x"], ["b[c]__proto__", "x"], ["ok", "1"]])).body as any;
   assert(`${send.name}: a __proto__ or constructor name pollutes no prototype`,
-    ({} as any).polluted === undefined && Object.getPrototypeOf(polluted) === Object.prototype && polluted.ok === "1"
+    ({} as any).polluted === undefined && Object.getPrototypeOf(polluted) === null && polluted.ok === "1"
       && polluted.a === undefined && polluted.b === undefined,
     `got ${JSON.stringify(polluted)}`);
 }
