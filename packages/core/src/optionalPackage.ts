@@ -11,8 +11,8 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * APPLICATION installs, never the framework (ADR-0067).
  *
  * tina4-nodejs installs as exactly one package. `pg`, `mongodb`, `redis` and
- * the `@aws-sdk` S3 client are optional peerDependencies, which npm does not
- * install, so for most apps "missing" is the normal state. Every feature that
+ * the SQL drivers are optional peerDependencies, which npm does not install, so
+ * for most apps "missing" is the normal state. Every feature that
  * reaches for one must therefore fail at the point of use with the exact
  * command that fixes it - never a bare MODULE_NOT_FOUND, never a silent no-op.
  */
