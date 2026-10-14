@@ -165,7 +165,7 @@ export function tableData(opts: TableDataOpts): Record<string, unknown> {
     readonly: !opts.editable,
     inline_script: opts.inlineScript,
     table_name: h(opts.tableName),
-    table_id_attr: opts.tableId ? ` id="${h(opts.tableId)}"` : "",
+    table_id: opts.tableId ? String(opts.tableId) : "",
   };
 }
 
