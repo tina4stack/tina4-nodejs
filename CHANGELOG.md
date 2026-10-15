@@ -6,6 +6,22 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.151 - 2026-10-15
+
+### Security
+- Cross-Origin-Opener-Policy joins the default security-header set (`TINA4_COOP`,
+  default `same-origin-allow-popups`). It pairs with a COEP header to unlock
+  `SharedArrayBuffer` and WASM threads in the browser.
+- S3 storage is a zero-dependency SigV4 client (no @aws-sdk). It now fails loud on a
+  missing credential, retries 429/5xx and dropped connections with capped backoff,
+  honours `Retry-After`, and keeps the endpoint path prefix.
+- CRUD attributes are de-raw'd, the 302 redirect is guarded, CodeQL core and
+  property/command-injection findings are cleared, and uploaded files are created
+  owner-only (0600).
+
+### Docs
+- The README built-in feature count is corrected (55 -> 140).
+
 ## 3.13.150 — 2026-10-11
 
 ### Dev admin
