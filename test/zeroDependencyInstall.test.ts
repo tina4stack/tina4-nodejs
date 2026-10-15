@@ -11,12 +11,12 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Run with: npx tsx test/zeroDependencyInstall.test.ts
  *
  * ADR-0067: database drivers and optional servers are APPLICATION dependencies,
- * never framework runtime dependencies. Through 3.13.137 the five driver
- * packages (pg, mongodb, redis, @aws-sdk/client-s3, @aws-sdk/s3-request-presigner)
- * sat in `optionalDependencies`, which npm INSTALLS BY DEFAULT: a plain
- * `npm install tina4-nodejs` pulled in 64 packages for an app that only ever
- * used SQLite. They are optional PEER dependencies now, which npm does not
- * install, so the app decides.
+ * never framework runtime dependencies. Through 3.13.137 the driver packages
+ * (pg, mongodb, redis, ...) sat in `optionalDependencies`, which npm INSTALLS
+ * BY DEFAULT: a plain `npm install tina4-nodejs` pulled in 64 packages for an
+ * app that only ever used SQLite. They are optional PEER dependencies now,
+ * which npm does not install, so the app decides. (S3 needs no package at all:
+ * S3Storage uses Tina4's own stdlib SigV4 client, so @aws-sdk was dropped.)
  *
  * The flip side is that "missing" becomes the NORMAL state, so every place the
  * framework reaches for one of those packages must say exactly what to run.
@@ -44,7 +44,7 @@ import { join } from "node:path";
 const rootDir = join(import.meta.dirname, "..");
 
 const OPTIONAL_PEERS = [
-  "pg", "mongodb", "redis", "@aws-sdk/client-s3", "@aws-sdk/s3-request-presigner",
+  "pg", "mongodb", "redis",
   "mysql2", "tedious", "node-firebird", "odbc",
 ];
 // The published manifest must DECLARE the SQL drivers too, as optional peers,
@@ -400,7 +400,6 @@ try {
     expectThrow("mongodb queue", "npm install mongodb");
     expectThrow("database session on postgres", "npm install pg");
     expectThrow("redis websocket backplane", "npm install redis");
-    expectThrow("s3 storage", "npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner");
 
     // The cache and storage selectors DEGRADE (parity with the Python master: a
     // real persistent fallback, never a silent no-op) - so the actionable text
@@ -410,14 +409,15 @@ try {
       cache?.threw === false && cache?.value === "FileBackend", JSON.stringify(cache));
     assert("mongodb cache fallback warning names `npm install mongodb`",
       report.warnings.some((line: string) => line.includes("npm install mongodb")), JSON.stringify(report.warnings));
+    // S3Storage is zero-dependency now (Tina4's own SigV4 client), so it
+    // CONSTRUCTS and is SELECTED with zero extra packages — no throw, no
+    // fallback, no missing-package warning.
+    const s3 = report.cases["s3 storage"];
+    assert("S3Storage constructs with zero extra packages (zero-dependency SigV4 client)",
+      s3?.threw === false && s3?.value === "S3Storage", JSON.stringify(s3));
     const storage = report.cases["s3 storage selectStorage"];
-    assert("selectStorage('s3') without its package falls back to LocalStorage",
-      storage?.threw === false && storage?.value === "LocalStorage", JSON.stringify(storage));
-    assert("selectStorage fallback warning names `npm install @aws-sdk/client-s3`",
-      raw.includes("npm install @aws-sdk/client-s3"), raw.slice(-1500));
-    for (const line of [...report.warnings, ...raw.split("\n").filter((text) => text.includes("realtime files: S3"))]) {
-      console.log(`      ${JSON.stringify(line.trim())}`);
-    }
+    assert("selectStorage('s3') returns S3Storage with zero extra packages",
+      storage?.threw === false && storage?.value === "S3Storage", JSON.stringify(storage));
 
     // NEGATIVE: a missing package must never escape as an unhandled rejection -
     // Node's default is to crash the whole process on one.

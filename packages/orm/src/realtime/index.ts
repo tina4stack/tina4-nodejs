@@ -14,6 +14,7 @@ export {
   storageKey,
   type StorageBackend,
 } from "./storage.js";
+export { S3Client, S3Error, uriEncode } from "./s3Client.js";
 export { default as Workspace } from "./models/workspace.js";
 export { default as Channel } from "./models/channel.js";
 export { default as ChannelMember } from "./models/channelMember.js";
