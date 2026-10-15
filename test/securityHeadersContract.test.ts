@@ -65,6 +65,7 @@ const CANONICAL: Record<string, string> = {
   "referrer-policy": "strict-origin-when-cross-origin",
   "x-xss-protection": "0",
   "permissions-policy": "camera=(), microphone=(), geolocation=()",
+  "cross-origin-opener-policy": "same-origin-allow-popups",
 };
 // content-security-policy is asserted separately (assertDefaultCsp): its value
 // carries a per-response random nonce (ADR-0088), so it is never byte-equal.
@@ -122,6 +123,7 @@ delete process.env.TINA4_FRAME_OPTIONS;
 delete process.env.TINA4_REFERRER_POLICY;
 delete process.env.TINA4_PERMISSIONS_POLICY;
 delete process.env.TINA4_CSRF;
+delete process.env.TINA4_COOP;
 
 console.log("=== Security headers (secure-by-default) Tests ===\n");
 
@@ -156,6 +158,18 @@ const server = await startServer({
   const n1 = cspNonceOf(headers["content-security-policy"] as string | undefined);
   const n2 = cspNonceOf(second["content-security-policy"] as string | undefined);
   assert("each response gets a fresh csp nonce", !!n1 && !!n2 && n1 !== n2, `n1=${n1} n2=${n2}`);
+}
+
+// --- COOP default + override ---
+// The default (same-origin-allow-popups) is proven by the canonical-set block
+// above. Here: TINA4_COOP replaces it — same-origin for full isolation.
+{
+  process.env.TINA4_COOP = "same-origin";
+  const headers = await getHeaders();
+  assert("tina4 coop overrides the cross-origin-opener-policy header",
+    headers["cross-origin-opener-policy"] === "same-origin",
+    `got "${String(headers["cross-origin-opener-policy"])}"`);
+  delete process.env.TINA4_COOP;
 }
 
 // --- HSTS HTTPS-guarded ---
