@@ -47,7 +47,7 @@ function assert(name: string, condition: boolean, detail = ""): void {
 }
 
 const CANONICAL = ["x-frame-options", "x-content-type-options", "content-security-policy",
-  "referrer-policy", "x-xss-protection", "permissions-policy"];
+  "referrer-policy", "x-xss-protection", "permissions-policy", "cross-origin-opener-policy"];
 const ROUTE_CSP = "default-src 'none'; img-src 'self'";
 const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-secure-contract-"));
 const SESSION_DIR = mkdtempSync(join(tmpdir(), "tina4-secure-contract-sess-"));

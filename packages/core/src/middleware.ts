@@ -931,6 +931,7 @@ export class RequestLogger {
  *   TINA4_CSP                 — Content-Security-Policy (default: "default-src 'self'")
  *   TINA4_REFERRER_POLICY     — Referrer-Policy (default: "strict-origin-when-cross-origin")
  *   TINA4_PERMISSIONS_POLICY  — Permissions-Policy (default: "camera=(), microphone=(), geolocation=()")
+ *   TINA4_COOP                — Cross-Origin-Opener-Policy (default: "same-origin-allow-popups")
  *
  * Usage:
  *   Router.use(SecurityHeadersMiddleware);
@@ -967,6 +968,7 @@ export class SecurityHeadersMiddleware {
       "Referrer-Policy": process.env.TINA4_REFERRER_POLICY ?? "strict-origin-when-cross-origin",
       "X-XSS-Protection": "0",
       "Permissions-Policy": process.env.TINA4_PERMISSIONS_POLICY ?? "camera=(), microphone=(), geolocation=()",
+      "Cross-Origin-Opener-Policy": process.env.TINA4_COOP ?? "same-origin-allow-popups",
     };
   }
 
@@ -996,7 +998,12 @@ export class SecurityHeadersMiddleware {
     // script-src (ADR-0088), already resolved in canonical, so the framework's
     // own inline <style>/<script> (and user templates using the Frond
     // csp_nonce() global) run under the strict policy without 'unsafe-inline'.
-    for (const name of ["Content-Security-Policy", "Referrer-Policy", "X-XSS-Protection", "Permissions-Policy"]) {
+    // Cross-Origin-Opener-Policy severs the window-reference link to a
+    // cross-origin opener (closing reverse-tab-nabbing + cross-window XS-Leaks
+    // that X-Frame-Options does not). Default same-origin-allow-popups keeps
+    // OAuth/payment popups working; TINA4_COOP=same-origin for full isolation,
+    // unsafe-none to opt out. Secure-context only (https + http://localhost).
+    for (const name of ["Content-Security-Policy", "Referrer-Policy", "X-XSS-Protection", "Permissions-Policy", "Cross-Origin-Opener-Policy"]) {
       res.header(name, canonical[name]);
     }
 
