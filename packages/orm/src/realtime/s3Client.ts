@@ -27,13 +27,39 @@ const ALGORITHM = "AWS4-HMAC-SHA256";
 const SERVICE = "s3";
 const UNRESERVED = /[A-Za-z0-9\-_.~]/;
 
+// Retry policy, as for the AI client (ADR-0053): HTTP 429, any 5xx (S3's
+// SlowDown is a 503) and a dropped connection are sent again, a bounded number
+// of times, honouring Retry-After. Every operation here is idempotent.
+const MAX_RETRIES = 2;
+const BACKOFF_BASE = 0.5; // seconds; retry n waits up to base * 2**n, jittered
+const BACKOFF_CAP = 20.0;
+
 /** An S3 request returned a non-2xx status; `status` holds the HTTP code. */
 export class S3Error extends Error {
+  /** Seconds from a Retry-After header in its delta-seconds form, else null. */
+  retryAfter: number | null = null;
   constructor(public readonly status: number, message: string) {
     super(message);
     this.name = "S3Error";
   }
 }
+
+/** The client cannot sign a request: no access key or secret was given. */
+export class S3ConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "S3ConfigError";
+  }
+}
+
+/** Seconds from a Retry-After header in its delta-seconds form, else null. */
+function retryAfterSeconds(raw: string | null): number | null {
+  if (raw == null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.max(0, n) : null;
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
  * SigV4 canonical encoding: keep the RFC 3986 unreserved set literal; keep "/"
@@ -60,6 +86,7 @@ function hmac(key: Buffer | string, msg: string): Buffer {
 export class S3Client {
   private readonly scheme: string;
   private readonly host: string; // authority (host[:port]) — matches the Host header
+  private readonly prefix: string; // path an endpoint carries (https://host/s3 -> "/s3"), "" if none
   private readonly region: string;
   private readonly accessKey: string;
   private readonly secretKey: string;
@@ -78,9 +105,15 @@ export class S3Client {
     this.timeout = opts.timeout ?? 30000;
     let base = opts.endpoint || `https://s3.${this.region}.amazonaws.com`;
     while (base.endsWith("/")) base = base.slice(0, -1); // strip trailing slashes without a regex
-    const m = /^([a-z][a-z0-9+.-]*):\/\/(.+)$/i.exec(base);
+    // Split scheme :// authority [ / path ]. The authority alone is the Host
+    // header and the signed `host:`; an endpoint behind a path (https://host/s3)
+    // keeps that path in front of every request path, and in what is signed.
+    const m = /^([a-z][a-z0-9+.-]*):\/\/([^/]+)(\/.*)?$/i.exec(base);
     this.scheme = m ? m[1] : "https";
     this.host = m ? m[2] : base;
+    let p = m && m[3] ? m[3] : "";
+    while (p.endsWith("/")) p = p.slice(0, -1);
+    this.prefix = p;
   }
 
   // -- public API (the subset S3Storage uses) --------------------------------
@@ -105,7 +138,7 @@ export class S3Client {
   /** Create the bucket (path-style `PUT /<bucket>`); an already-owned bucket (409) is success. */
   async createBucket(bucket: string): Promise<void> {
     try {
-      await this.request("PUT", `/${uriEncode(bucket, true)}`, Buffer.alloc(0));
+      await this.request("PUT", `${this.prefix}/${uriEncode(bucket, true)}`, Buffer.alloc(0));
     } catch (e) {
       if (!(e instanceof S3Error) || e.status !== 409) throw e;
     }
@@ -113,6 +146,7 @@ export class S3Client {
 
   /** A URL that fetches the object directly, signed via SigV4 query params. */
   presignedGetUrl(bucket: string, key: string, expires = 3600): string {
+    this.requireCredentials();
     const { amzDate, dateStamp } = this.now();
     const uri = this.canonicalUri(bucket, key);
     const scope = `${dateStamp}/${this.region}/${SERVICE}/aws4_request`;
@@ -131,13 +165,23 @@ export class S3Client {
 
   // -- signing + transport ----------------------------------------------------
 
+  private requireCredentials(): void {
+    // Signing with an empty key only earns a 403 from the server, which says
+    // nothing about the cause. Name the settings instead, before sending.
+    if (!this.accessKey || !this.secretKey) {
+      throw new S3ConfigError(
+        "S3 credentials are not set: set TINA4_STORAGE_KEY and TINA4_STORAGE_SECRET",
+      );
+    }
+  }
+
   private now(): { amzDate: string; dateStamp: string } {
     const iso = new Date().toISOString().replace(/[:-]|\.\d{3}/g, "");
     return { amzDate: iso, dateStamp: iso.slice(0, 8) };
   }
 
   private canonicalUri(bucket: string, key: string): string {
-    return `/${uriEncode(bucket, true)}/${uriEncode(key, true)}`;
+    return `${this.prefix}/${uriEncode(bucket, true)}/${uriEncode(key, true)}`;
   }
 
   private canonicalQuery(query: Record<string, string>): string {
@@ -160,6 +204,34 @@ export class S3Client {
   }
 
   private async request(
+    method: string,
+    uri: string,
+    body: Buffer,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<{ status: number; body: Buffer }> {
+    this.requireCredentials();
+    for (let attempt = 0; ; attempt++) {
+      const last = attempt === MAX_RETRIES;
+      let delay: number | null = null;
+      try {
+        // Signed afresh each attempt: x-amz-date moves on.
+        return await this.send(method, uri, body, extraHeaders);
+      } catch (e) {
+        if (e instanceof S3Error) {
+          if (last || !(e.status === 429 || e.status >= 500)) throw e;
+          delay = e.retryAfter;
+        } else {
+          // Connection refused or dropped, timeout: nothing was answered.
+          if (last) throw e;
+          delay = null;
+        }
+      }
+      if (delay == null) delay = Math.random() * (BACKOFF_BASE * 2 ** attempt);
+      await sleep(Math.min(delay, BACKOFF_CAP) * 1000);
+    }
+  }
+
+  private async send(
     method: string,
     uri: string,
     body: Buffer,
@@ -195,7 +267,9 @@ export class S3Client {
 
     const response = await fetch(url, init);
     if (response.status < 200 || response.status >= 300) {
-      throw new S3Error(response.status, `${method} ${uri}: HTTP ${response.status}`);
+      const err = new S3Error(response.status, `${method} ${uri}: HTTP ${response.status}`);
+      err.retryAfter = retryAfterSeconds(response.headers.get("retry-after"));
+      throw err;
     }
     return { status: response.status, body: Buffer.from(await response.arrayBuffer()) };
   }
