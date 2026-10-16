@@ -37,8 +37,8 @@ export interface AuthGateRoute {
  * to `res.raw` and the caller must stop (not run the handler). Returns `false`
  * when the route is public OR a valid token was presented (in which case
  * `req.user` is populated and, for a body formToken, a `FreshToken` header is
- * set). Auth is enforced only for a route that is `secure` and not `noAuth`,
- * and never for `/__dev` dev-admin routes.
+ * set). Auth is enforced only for a route that is `secure` and not `noAuth`
+ * (the dev dashboard registers its own routes `noAuth`).
  *
  * Token sources, in priority order: `Authorization: Bearer` header, a
  * `formToken` in the parsed body, then a session token.
@@ -47,9 +47,8 @@ export function enforceRouteAuth(
   req: Tina4Request,
   res: Tina4Response,
   match: AuthGateRoute,
-  isDevAdmin: boolean,
 ): boolean {
-  if (!(match.secure === true && match.noAuth !== true && !isDevAdmin)) {
+  if (!(match.secure === true && match.noAuth !== true)) {
     return false;
   }
 

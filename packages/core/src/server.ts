@@ -1182,8 +1182,10 @@ async function runMatchedRoute(ctx: MatchedRouteContext): Promise<void> {
   // Auth enforcement lives in enforceRouteAuth (authGate.ts) so the in-process
   // TestClient enforces the EXACT same gate - parity with Python #PY2, where a
   // tokenless write must 401 in tests too, or a green test hides a live 401.
-  // Dev admin routes (/__dev) are always public.
-  if (enforceRouteAuth(req, res, match as never, ctx.pathname.startsWith("/__dev"))) return;
+  // The dev dashboard's own routes are public because DevAdmin registers them
+  // noAuth, not because of their path: a "/__dev" prefix test also opened any
+  // write route of the application's own named /__developer or /__dev/anything.
+  if (enforceRouteAuth(req, res, match as never)) return;
 
   // The route's OWN class middleware: its beforeX hooks run inside
   // runRouteMiddlewares, its afterX hooks join the after pass below - one
