@@ -839,11 +839,14 @@ export class DevAdmin {
       { method: "GET", pattern: "/__dev/toolbar.js", handler: handleToolbarJs },
     ];
 
+    // noAuth: the dashboard's own routes skip the auth gate. Only these do; a
+    // route of the application's own keeps the normal rules, whatever its path.
     for (const route of routes) {
       router.addRoute({
         method: route.method,
         pattern: route.pattern,
         handler: route.handler,
+        noAuth: true,
       });
     }
 
@@ -877,6 +880,7 @@ export class DevAdmin {
           method: route.method,
           pattern: route.pattern,
           handler: route.handler,
+          noAuth: true,
         });
       }
 
