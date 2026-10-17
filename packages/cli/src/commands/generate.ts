@@ -645,28 +645,40 @@ function isoNow(): string {
 
 export interface GeneratorSpec {
   handler: (name: string, flags: Record<string, string | boolean>) => void;
+  /**
+   * Options this generator reads (name -> takes a value), checked by bin.ts
+   * main() before the handler runs. RESOLUTION_FLAGS are added on top.
+   */
+  flags: Record<string, boolean>;
   /** Arg/flag hint shown in `tina4nodejs help` (human only). */
   usage: string;
   summary: string;
 }
 
 export const GENERATORS: Record<string, GeneratorSpec> = {
-  model:      { handler: generateModel,                     usage: '<Name> [--fields "name:string,price:float"] [--table-name <name>]', summary: "ORM model + matching migration" },
-  route:      { handler: generateRoute,                     usage: "<name> [--model Name] [--public]",            summary: "CRUD route file, secure by default (--public opens writes)" },
-  crud:       { handler: generateCrud,                      usage: '<Name> [--fields "..."] [--public] [--no-templates]', summary: "Model + migration + AutoCrud-backed admin page (toCrud) + editable crud/ templates + gate test" },
-  migration:  { handler: (n, f) => generateMigration(n, f, undefined, undefined, !f["no-test"]), usage: "<description>",                                summary: "Timestamped migration file (UP/DOWN)" },
-  middleware: { handler: generateMiddleware,                usage: "<Name>",                                       summary: "Middleware with before/after hooks" },
-  test:       { handler: generateTest,                      usage: "<name> [--model Name]",                        summary: "Test file" },
-  form:       { handler: generateForm,                      usage: '<Name> [--fields "..."]',                      summary: "Form template with inputs matching model fields" },
-  view:       { handler: generateView,                      usage: '<Name> [--fields "..."]',                      summary: "List + detail view templates" },
-  auth:       { handler: (_n, f) => generateAuth(f),        usage: "",                                             summary: "Login/register routes (public) + User model + templates" },
-  service:    { handler: generateService,                   usage: '<Name> [--every 5m | --cron "..."]',           summary: "Scheduled ServiceRunner task (src/services/)" },
-  queue:      { handler: generateQueue,                     usage: "<topic>",                                      summary: "Producer + consumer daemon worker (src/services/)" },
-  validator:  { handler: generateValidator,                 usage: "<Name>",                                       summary: "Request-body Validator (src/validators/)" },
-  seeder:     { handler: generateSeeder,                    usage: "<Model>",                                      summary: "FakeData + seedOrm seeder (src/seeds/)" },
-  websocket:  { handler: generateWebsocket,                 usage: "<path>",                                       summary: "websocket() handler (src/routes/)" },
-  listener:   { handler: generateListener,                  usage: "<event>",                                      summary: "Events.on(event) listener (src/listeners/)" },
+  model:      { handler: generateModel, flags: { fields: true, "table-name": true, "no-migration": false }, usage: '<Name> [--fields "name:string,price:float"] [--table-name <name>]', summary: "ORM model + matching migration" },
+  route:      { handler: generateRoute, flags: { model: true, public: false, "table-name": true }, usage: "<name> [--model Name] [--public]", summary: "CRUD route file, secure by default (--public opens writes)" },
+  crud:       { handler: generateCrud, flags: { fields: true, "table-name": true, public: false, "no-templates": false, "no-migration": false, "skip-model": false }, usage: '<Name> [--fields "..."] [--public] [--no-templates] [--skip-model]', summary: "Model + migration + AutoCrud-backed admin page (toCrud) + editable crud/ templates + gate test" },
+  migration:  { handler: (n, f) => generateMigration(n, f, undefined, undefined, !f["no-test"]), flags: { fields: true, "table-name": true, "no-test": false }, usage: "<description>", summary: "Timestamped migration file (UP/DOWN)" },
+  middleware: { handler: generateMiddleware, flags: {}, usage: "<Name>", summary: "Middleware with before/after hooks" },
+  test:       { handler: generateTest, flags: { model: true, public: false, "secure-writes": false }, usage: "<name> [--model Name]", summary: "Test file" },
+  form:       { handler: generateForm, flags: { fields: true, "table-name": true }, usage: '<Name> [--fields "..."]', summary: "Form template with inputs matching model fields" },
+  view:       { handler: generateView, flags: { fields: true, "table-name": true }, usage: '<Name> [--fields "..."]', summary: "List + detail view templates" },
+  auth:       { handler: (_n, f) => generateAuth(f), flags: {}, usage: "", summary: "Login/register routes (public) + User model + templates" },
+  service:    { handler: generateService, flags: { every: true, cron: true }, usage: '<Name> [--every 5m | --cron "..."]', summary: "Scheduled ServiceRunner task (src/services/)" },
+  queue:      { handler: generateQueue, flags: {}, usage: "<topic>", summary: "Producer + consumer daemon worker (src/services/)" },
+  validator:  { handler: generateValidator, flags: {}, usage: "<Name>", summary: "Request-body Validator (src/validators/)" },
+  seeder:     { handler: generateSeeder, flags: { "table-name": true }, usage: "<Model>", summary: "FakeData + seedOrm seeder (src/seeds/)" },
+  websocket:  { handler: generateWebsocket, flags: {}, usage: "<path>", summary: "websocket() handler (src/routes/)" },
+  listener:   { handler: generateListener, flags: {}, usage: "<event>", summary: "Events.on(event) listener (src/listeners/)" },
 };
+
+/**
+ * Options every generator accepts on top of its own: the resolution envelope
+ * (`--json`) and the write-nothing preview (`--dry-run`) are honoured by every
+ * generator here, because writes go through the shared ensureDir/writeFileSafe.
+ */
+export const RESOLUTION_FLAGS: Record<string, boolean> = { json: false, "dry-run": false };
 
 /** Comma-separated generator names for usage/error output — derived, never a hand-kept list. */
 const GENERATOR_LIST = Object.keys(GENERATORS).join(", ");
@@ -796,6 +808,12 @@ export async function generate(what: string, name: string, extraArgs: string[] =
   if (noNameGenerators.has(what) && name.startsWith("--")) {
     extraArgs = [name, ...extraArgs];
     name = "";
+  }
+  // A name that is really a mistyped option (`generate model --fields x`, the
+  // name forgotten) would otherwise become a file called `--fields`.
+  if (GENERATORS[what] && !noNameGenerators.has(what) && name.startsWith("-")) {
+    console.log(`Invalid ${what} name: '${name}' - names can't start with '-'.`);
+    process.exit(1);
   }
   if (!noNameGenerators.has(what) && !name) {
     console.error(`  Usage: tina4nodejs generate ${what} <name> [options]`);
@@ -1243,8 +1261,9 @@ function generateCrud(name: string, flags: Record<string, string | boolean>): vo
   if (!__resolution.jsonMode) console.log(`\n  Generating CRUD for ${name}...\n`);
 
   // 1. Model + migration (its own model test is suppressed — the gate test
-  //    below is CRUD's single, broader co-emitted test).
-  generateModel(name, flags, false);
+  //    below is CRUD's single, broader co-emitted test). --skip-model builds
+  //    the CRUD around a model that already exists.
+  if (!flags["skip-model"]) generateModel(name, flags, false);
 
   // 2. Admin page route: registers AutoCrud (secure-by-default; --public opens
   //    writes) and renders the toCrud admin UI at /admin/<table>.

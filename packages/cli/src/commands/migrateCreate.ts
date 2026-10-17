@@ -28,15 +28,27 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 import { generate } from "./generate.js";
 
+/** Options migrate:create accepts (name -> takes a value), checked by bin.ts main(). */
+export const MIGRATE_CREATE_FLAGS: Record<string, boolean> = {
+  fields: true, "table-name": true, json: false, "dry-run": false,
+};
+
 export async function createMigration(args: string[] = []): Promise<void> {
   // Split flags from the description so `tina4 migrate:create "add users"
   // --json --dry-run` reaches the same envelope machinery as its
   // `tina4 generate migration` twin (see test/migrateCreateEnvelopeParity.test.ts).
+  // A value option keeps its value: `--fields name:string` must not fold
+  // `name:string` into the description.
   const positionals: string[] = [];
   const flags: string[] = [];
-  for (const arg of args) {
-    if (arg.startsWith("--")) flags.push(arg);
-    else positionals.push(arg);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith("--")) {
+      flags.push(arg);
+      if (!arg.includes("=") && MIGRATE_CREATE_FLAGS[arg.slice(2)] && i + 1 < args.length) flags.push(args[++i]);
+    } else {
+      positionals.push(arg);
+    }
   }
   const description = positionals.join(" ").trim();
 
