@@ -32,29 +32,34 @@ export function parseFlags(args: string[], booleanFlags?: ReadonlySet<string>): 
   const positional: string[] = [];
   let i = 0;
   while (i < args.length) {
-    const arg = args[i];
-    if (arg.startsWith("--") && arg.includes("=")) {
-      const eq = arg.indexOf("=");
-      flags[arg.slice(2, eq)] = arg.slice(eq + 1);
-      i += 1;
-    } else if (arg.startsWith("--")) {
-      const key = arg.slice(2);
-      if (booleanFlags?.has(key)) {
-        flags[key] = true;
-        i += 1;
-      } else if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
-        flags[key] = args[i + 1];
-        i += 2;
-      } else {
-        flags[key] = true;
-        i += 1;
-      }
+    if (args[i].startsWith("--")) {
+      i += readFlag(args, i, flags, booleanFlags);
     } else {
-      positional.push(arg);
+      positional.push(args[i]);
       i += 1;
     }
   }
   return { flags, positional };
+}
+
+/** Store the `--flag` at `i` into `flags`; returns how many arguments it used. */
+function readFlag(
+  args: string[], i: number, flags: Record<string, string | boolean>, booleanFlags?: ReadonlySet<string>,
+): number {
+  const arg = args[i];
+  const eq = arg.indexOf("=");
+  if (eq !== -1) {
+    flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+    return 1;
+  }
+  const key = arg.slice(2);
+  const next = args[i + 1];
+  if (!booleanFlags?.has(key) && next !== undefined && !next.startsWith("--")) {
+    flags[key] = next;
+    return 2;
+  }
+  flags[key] = true;
+  return 1;
 }
 
 /**

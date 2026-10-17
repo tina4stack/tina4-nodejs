@@ -608,15 +608,17 @@ function editDistance(a: string, b: string): number {
   const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
   for (let j = 1; j <= b.length; j++) d[0][j] = j;
   for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
-      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
-        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
-      }
-    }
+    for (let j = 1; j <= b.length; j++) d[i][j] = distanceCell(d, a, b, i, j);
   }
   return d[a.length][b.length];
+}
+
+/** One cell of the editDistance table: delete, insert, substitute, or swap two neighbours. */
+function distanceCell(d: number[][], a: string, b: string, i: number, j: number): number {
+  const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+  const best = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+  const swapped = i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1];
+  return swapped ? Math.min(best, d[i - 2][j - 2] + 1) : best;
 }
 
 /** The accepted option closest to `name`, when it is close enough to be a typo. */
@@ -633,6 +635,48 @@ export function closestOption(name: string, accepted: string[]): string | null {
   return best;
 }
 
+/** The did-you-mean text for an option `label` doesn't have. */
+function unknownOptionMessage(option: string, name: string, accepted: OptionMap, label: string): string {
+  const close = closestOption(name, Object.keys(accepted));
+  return `Unknown option ${option} for "${label}".${close ? ` Did you mean --${close}?` : ""}\n`
+    + `Run "tina4nodejs ${label} --help" for its options.`;
+}
+
+/**
+ * Judge the argument at `i`: the refusal message (or null when it is fine) and
+ * how many arguments it used - 2 for a value option spelled `--name value`.
+ */
+export function optionProblem(args: string[], i: number, accepted: OptionMap, label: string): [string | null, number] {
+  const arg = args[i];
+  if (!arg.startsWith("-") || arg === "-") return [null, 1];
+  const [option, inlineValue] = splitOption(arg);
+  const name = option.replace(/^-+/, "");
+  if (!isAccepted(option, name, accepted)) {
+    return [unknownOptionMessage(option, name, accepted, label), 1];
+  }
+  if (inlineValue || !accepted[name]) return [null, 1];
+  if (!hasValueAfter(args, i)) {
+    return [`Option --${name} for "${label}" needs a value: --${name} <value>`, 1];
+  }
+  return [null, 2];
+}
+
+/** A `--long` option the command declares (single-dash options never are, except -h). */
+function isAccepted(option: string, name: string, accepted: OptionMap): boolean {
+  return option.startsWith("--") && Object.hasOwn(accepted, name);
+}
+
+/** `--name=value` -> ["--name", true]; `--name` -> ["--name", false]. */
+function splitOption(arg: string): [string, boolean] {
+  const eq = arg.indexOf("=");
+  return eq === -1 ? [arg, false] : [arg.slice(0, eq), true];
+}
+
+/** True when the argument after `i` exists and is not itself an option. */
+function hasValueAfter(args: string[], i: number): boolean {
+  return i + 1 < args.length && !args[i + 1].startsWith("-");
+}
+
 /**
  * Refuse an option the command doesn't have, or a value option given no value.
  * Both used to slip through: `--feilds` was silently dropped (the model came
@@ -642,28 +686,33 @@ function checkOptions(command: string, args: string[]): void {
   const accepted = acceptedOptions(command, args);
   if (accepted === null) return;
   const label = command === "generate" || command === "queue" ? `${command} ${args[0].toLowerCase()}` : command;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (!arg.startsWith("-") || arg === "-") continue;
-    const eq = arg.indexOf("=");
-    const name = (eq === -1 ? arg : arg.slice(0, eq)).replace(/^-+/, "");
-    if (!arg.startsWith("--") || !Object.hasOwn(accepted, name)) {
-      const close = closestOption(name, Object.keys(accepted));
-      console.log(`Unknown option ${eq === -1 ? arg : arg.slice(0, eq)} for "${label}".${close ? ` Did you mean --${close}?` : ""}`);
-      console.log(`Run "tina4nodejs ${label} --help" for its options.`);
+  for (let i = 0; i < args.length;) {
+    const [problem, consumed] = optionProblem(args, i, accepted, label);
+    if (problem) {
+      console.log(problem);
       process.exit(1);
     }
-    if (accepted[name] && eq === -1) {
-      if (i + 1 >= args.length || args[i + 1].startsWith("-")) {
-        console.log(`Option --${name} for "${label}" needs a value: --${name} <value>`);
-        process.exit(1);
-      }
-      i++;
-    }
+    i += consumed;
   }
 }
 
 // ── Dispatch ────────────────────────────────────────────────────────
+
+/**
+ * Run one registered command. `--help` / `-h` anywhere after it prints that
+ * command's usage and touches nothing. Handlers never looked for it, so it ran
+ * the command for real: `generate model --help` wrote a model named `--help`,
+ * `ai --help` installed into a folder named `--help`. Delegated commands never
+ * get here - the client answers --help itself.
+ */
+async function runCommand(command: string, spec: CommandSpec, cmdArgs: string[]): Promise<void> {
+  if (command !== "help" && cmdArgs.some((a) => HELP_FLAGS.includes(a))) {
+    printCommandHelp(command, cmdArgs);
+    return;
+  }
+  checkOptions(command, cmdArgs);
+  await spec.handler(cmdArgs);
+}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -677,17 +726,7 @@ async function main(): Promise<void> {
 
   const spec = COMMANDS[command];
   if (spec) {
-    // `--help` / `-h` anywhere after a command prints that command's usage and
-    // touches nothing. Handlers never looked for it, so it ran the command for
-    // real: `generate model --help` wrote a model named `--help`, `ai --help`
-    // installed into a folder named `--help`. Delegated commands are left
-    // alone - the client answers --help itself.
-    if (command !== "help" && cmdArgs.some((a) => HELP_FLAGS.includes(a))) {
-      printCommandHelp(command, cmdArgs);
-      return;
-    }
-    checkOptions(command, cmdArgs);
-    await spec.handler(cmdArgs);
+    await runCommand(command, spec, cmdArgs);
     return;
   }
 
