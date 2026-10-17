@@ -20,7 +20,8 @@ export interface ParsedFlags {
 }
 
 /**
- * Parse `--key value` and bare `--flag` arguments into flags plus positionals.
+ * Parse `--key value`, `--key=value` and bare `--flag` arguments into flags
+ * plus positionals.
  *
  * A name listed in `booleanFlags` never consumes the next token; every other
  * `--key` takes the following token as its value unless that token is itself a
@@ -32,7 +33,11 @@ export function parseFlags(args: string[], booleanFlags?: ReadonlySet<string>): 
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
-    if (arg.startsWith("--")) {
+    if (arg.startsWith("--") && arg.includes("=")) {
+      const eq = arg.indexOf("=");
+      flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+      i += 1;
+    } else if (arg.startsWith("--")) {
       const key = arg.slice(2);
       if (booleanFlags?.has(key)) {
         flags[key] = true;
