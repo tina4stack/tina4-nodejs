@@ -23,7 +23,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { COMMANDS } from "../packages/cli/src/bin.ts";
@@ -84,9 +84,12 @@ function runCli(argv: string[], cwd: string, timeout = 30_000): { code: number; 
 function snapshot(root: string): string {
   const seen: string[] = [];
   const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir).sort()) {
-      const path = join(dir, entry);
-      if (statSync(path).isDirectory()) {
+    // withFileTypes: the type comes with the listing, so there is no separate
+    // stat to race the read below (CodeQL js/file-system-race).
+    const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
         seen.push(`${relative(root, path)}/`);
         walk(path);
       } else {
