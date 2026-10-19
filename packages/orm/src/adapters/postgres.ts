@@ -136,6 +136,11 @@ export class PostgresAdapter implements DatabaseAdapter {
         this.client = typeof this.config === "string"
           ? new Client({ connectionString: this.config, ...timeoutOption })
           : new Client({ ...this.config, ...timeoutOption });
+        // pg emits an async 'error' event when the server drops the link
+        // (failover, idle reap, pg_terminate_backend). With no listener Node
+        // throws it as an uncaught exception and crashes the process, so absorb
+        // it and mark the link dead - the next statement rebuilds it (#236/#242).
+        (this.client as unknown as NodeJS.EventEmitter).on("error", () => { this.connectionIsDead = true; });
         return this.client!.connect();
       },
       budgetMs,
@@ -155,6 +160,48 @@ export class PostgresAdapter implements DatabaseAdapter {
   private ensureConnected(): void {
     if (!this.client) {
       throw new Error("PostgreSQL adapter not connected. Call connect() first.");
+    }
+  }
+
+  // ── Reconnect after a dropped link (parity with the Python master, #236/#242) ──
+  // pg's Client does not reconnect itself: once the server drops the link it must
+  // be rebuilt. A statement that hits a dropped link reconnects and retries once
+  // when nothing uncommitted went down with it; inside an explicit transaction the
+  // error surfaces. A reconnect that itself fails leaves the link dead (not null-
+  // guarded away), so the NEXT statement retries and recovers once a server returns.
+  private connectionIsDead = false;
+
+  private isConnectionError(e: unknown): boolean {
+    const msg = e instanceof Error ? e.message : String(e);
+    return /connection terminated|terminating connection|server closed the connection|encountered a connection error|connection closed|not queryable|ECONNRESET|EPIPE|socket hang up/i.test(msg);
+  }
+
+  private async reconnect(): Promise<void> {
+    // end() on a dropped socket can HANG, so fire-and-forget it (the same
+    // pattern connect() uses for its own timeout cleanup) rather than await it.
+    void Promise.resolve(this.client?.end()).catch(() => { /* already gone */ });
+    this.client = null;
+    this.connectionIsDead = false;
+    await this.connect(); // rebuilds this.client from the stored config
+  }
+
+  private async ensureLiveConnection(): Promise<void> {
+    if (!this._inTransaction && (this.client === null || this.connectionIsDead)) {
+      await this.reconnect();
+    }
+  }
+
+  private async runQuery(sql: string, params?: unknown[]): Promise<import("pg").QueryResult> {
+    await this.ensureLiveConnection();
+    this.ensureConnected();
+    try {
+      return await this.client!.query(sql, params);
+    } catch (e) {
+      if (!this.isConnectionError(e)) throw e;   // a genuine SQL error
+      this.connectionIsDead = true;              // a later statement rebuilds the link
+      if (this._inTransaction) throw e;          // the caller owns the open transaction
+      await this.reconnect();                    // nothing uncommitted: heal and retry once
+      return await this.client!.query(sql, params);
     }
   }
 
@@ -212,7 +259,6 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   execute(sql: string, params?: unknown[]): unknown {
-    this.ensureConnected();
     const convertedSql = this.convertPlaceholders(sql);
     // pg client methods are async — we store a promise-based wrapper
     // Since the interface is sync, we provide executeAsync for real usage
@@ -255,9 +301,8 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   /** Async execute for real usage. */
   async executeAsync(sql: string, params?: unknown[]): Promise<unknown> {
-    this.ensureConnected();
     const convertedSql = this.bindable(sql, params);
-    const result = await this.client!.query(convertedSql, params);
+    const result = await this.runQuery(convertedSql, params);
     if (result.rows?.[0]?.id !== undefined) {
       this._lastInsertId = this.normalizeId(result.rows[0].id);
     }
@@ -270,9 +315,8 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   /** Async query for real usage. */
   async queryAsync<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
-    this.ensureConnected();
     const convertedSql = this.bindable(sql, params);
-    const result = await this.client!.query(convertedSql, params);
+    const result = await this.runQuery(convertedSql, params);
     return (result.rows as T[]).map(row => this.decodeBlobs(row));
   }
 
@@ -308,7 +352,6 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async insertAsync(table: string, data: Record<string, unknown> | Record<string, unknown>[]): Promise<DatabaseResult> {
-    this.ensureConnected();
     // A list of dicts is a batch insert — build one parameterised INSERT and run
     // it once per row via executeManyAsync (ONE connection, wrapped in a single
     // transaction). Database.insert / the docs advertise `data: object | object[]`;
@@ -331,7 +374,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     const { sql, values } = buildInsertRow(POSTGRES_DIALECT, table, data, " RETURNING *");
 
     try {
-      const result = await this.client!.query(sql, values);
+      const result = await this.runQuery(sql, values);
       const insertedRow = result.rows[0];
       const id = this.normalizeId(insertedRow?.id);
       if (id !== null) this._lastInsertId = id;
@@ -350,7 +393,6 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async updateAsync(table: string, data: Record<string, unknown>, filter: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseResult> {
-    this.ensureConnected();
     // The composer numbers the SET markers from $1 and continues the WHERE
     // markers past them; a raw string filter's `?` are rewritten to $N via
     // convertPlaceholders (identity would leave `?`, which pg rejects).
@@ -360,7 +402,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     });
 
     try {
-      const result = await this.client!.query(sql, values);
+      const result = await this.runQuery(sql, values);
       return { success: true, affectedRows: result.rowCount ?? 0 };
     } catch (e) {
       return { success: false, affectedRows: 0, error: (e as Error).message };
@@ -372,7 +414,6 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async deleteAsync(table: string, filter: Record<string, unknown> | string, params?: unknown[]): Promise<DatabaseResult> {
-    this.ensureConnected();
     // bindable() rewrites a raw fragment's `?` to $N only when params are bound
     // (truncate() passes "1 = 1" with none — no rewrite, no error). A hash filter
     // numbers its `$N` from 1.
@@ -382,7 +423,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     });
 
     try {
-      const result = await this.client!.query(sql, values);
+      const result = await this.runQuery(sql, values);
       return { success: true, affectedRows: result.rowCount ?? 0 };
     } catch (e) {
       return { success: false, affectedRows: 0, error: (e as Error).message };
