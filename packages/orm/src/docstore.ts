@@ -155,6 +155,21 @@ function iso(d: Date): string {
   return d.toISOString();
 }
 
+/**
+ * Write `key` as an own data property. A plain `obj[key] = value` with the key
+ * `__proto__` re-points the object's prototype instead of storing a field, and a
+ * path walked that way reaches Object.prototype itself. MongoDB stores
+ * `__proto__` as an ordinary field name, so the fallback does the same.
+ */
+function setOwn(obj: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(obj, key, { value, writable: true, enumerable: true, configurable: true });
+}
+
+/** The own property `key`, never one inherited through the prototype chain. */
+function getOwn(obj: Record<string, unknown>, key: string): unknown {
+  return Object.hasOwn(obj, key) ? obj[key] : undefined;
+}
+
 /** Value -> JSON-serialisable, sortable scalar form (for storage/queries). */
 export function encodeValue(value: unknown): unknown {
   if (value instanceof ObjectId) return value.toString();
@@ -163,7 +178,7 @@ export function encodeValue(value: unknown): unknown {
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = encodeValue(v);
+      setOwn(out, k, encodeValue(v));
     }
     return out;
   }
@@ -184,7 +199,7 @@ export function decodeValue(value: unknown): unknown {
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = decodeValue(v);
+      setOwn(out, k, decodeValue(v));
     }
     return out;
   }
@@ -417,14 +432,14 @@ function project(doc: Record<string, unknown>, projection?: Record<string, unkno
   const exclude = new Set(Object.entries(projection).filter(([, v]) => !v).map(([k]) => k));
   if (include.size > 0) {
     const out: Record<string, unknown> = {};
-    for (const k of include) if (k in doc) out[k] = doc[k];
+    for (const k of include) if (Object.hasOwn(doc, k)) setOwn(out, k, doc[k]);
     const idVal = projection._id;
     if ((idVal === undefined || idVal) && "_id" in doc) out._id = doc._id;
     return out;
   }
   // exclusion projection
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(doc)) if (!exclude.has(k)) out[k] = v;
+  for (const [k, v] of Object.entries(doc)) if (!exclude.has(k)) setOwn(out, k, v);
   return out;
 }
 
@@ -432,19 +447,20 @@ function setPath(doc: Record<string, unknown>, dotted: string, value: unknown): 
   const parts = dotted.split(".");
   let node = doc;
   for (const p of parts.slice(0, -1)) {
-    if (node[p] === undefined || node[p] === null || typeof node[p] !== "object") {
-      node[p] = {};
+    const child = getOwn(node, p);
+    if (child === undefined || child === null || typeof child !== "object") {
+      setOwn(node, p, {});
     }
     node = node[p] as Record<string, unknown>;
   }
-  node[parts[parts.length - 1]] = value;
+  setOwn(node, parts[parts.length - 1], value);
 }
 
 function unsetPath(doc: Record<string, unknown>, dotted: string): void {
   const parts = dotted.split(".");
   let node: Record<string, unknown> | undefined = doc;
   for (const p of parts.slice(0, -1)) {
-    const next = node[p];
+    const next = getOwn(node, p);
     if (next === null || typeof next !== "object") return;
     node = next as Record<string, unknown>;
   }
