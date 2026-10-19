@@ -275,6 +275,14 @@ const QUEUE_SUBCOMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   clear: queueClear,
 };
 
+/** Options per queue subcommand (name -> takes a value), checked by bin.ts main(). */
+export const QUEUE_FLAGS: Record<string, Record<string, boolean>> = {
+  work: { once: false, poll: true, services: true },
+  stats: { json: false },
+  retry: {},
+  clear: {},
+};
+
 /** Subcommand names, in order — surfaced in `commands --json` for the tina4 client. */
 export const QUEUE_SUBCOMMAND_NAMES = Object.keys(QUEUE_SUBCOMMANDS);
 

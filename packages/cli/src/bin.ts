@@ -9,15 +9,15 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 import { initProject } from "./commands/init.js";
 import { serveProject } from "./commands/serve.js";
 import { runMigrations } from "./commands/migrate.js";
-import { createMigration } from "./commands/migrateCreate.js";
+import { createMigration, MIGRATE_CREATE_FLAGS } from "./commands/migrateCreate.js";
 import { migrateStatus } from "./commands/migrateStatus.js";
 import { migrateRollback } from "./commands/migrateRollback.js";
 import { listRoutes } from "./commands/routes.js";
 import { runTests } from "./commands/test.js";
 import { runLint } from "./commands/lint.js";
-import { generate, GENERATORS, RESOLUTION_ENVELOPE_VERSION } from "./commands/generate.js";
+import { generate, GENERATORS, RESOLUTION_ENVELOPE_VERSION, RESOLUTION_FLAGS } from "./commands/generate.js";
 import { runSeeds } from "./commands/seed.js";
-import { queueCommand, QUEUE_SUBCOMMAND_NAMES } from "./commands/queue.js";
+import { queueCommand, QUEUE_FLAGS, QUEUE_SUBCOMMAND_NAMES } from "./commands/queue.js";
 import { buildImage } from "./commands/build.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -246,8 +246,7 @@ function printHelp(): void {
     "    --no-browser         Don't open the browser on serve",
     "    --no-reload          Disable file watcher / live-reload on serve",
     "    --all                Install AI context for all tools (with ai command)",
-    "    --force              Overwrite existing AI context files (with ai command)",
-    "    --help               Show this help message",
+    "    --help, -h           Show this help, or one command's usage (tina4nodejs <command> --help)",
     "",
     "  https://tina4.com",
     "",
@@ -291,7 +290,9 @@ async function openConsole(): Promise<void> {
 
 async function installAiContext(args: string[]): Promise<void> {
   const { showMenu, installSelected, installAll } = await import("../../core/src/ai.js");
-  const root = args[0] || ".";
+  // The project root is the first positional; `--all` is a switch, never the
+  // root (it used to be taken as one, installing into a folder named `--all`).
+  const root = args.find((a) => !a.startsWith("-")) || ".";
 
   if (args.includes("--all")) {
     installAll(root);
@@ -314,6 +315,8 @@ async function installAiContext(args: string[]): Promise<void> {
 //   COMMANDS[name] = {
 //     handler: (cmdArgs) => …,   // args AFTER the command name
 //     summary: string,
+//     flags?: {name: boolean},   // options main() accepts; true = takes a value.
+//                                // Absent = none. null = not checked.
 //     usage?: string,            // arg/flag hint for printHelp (human only)
 //     args?: string[],           // positional args for the manifest ("x?" = optional)
 //     subcommands?: string[],    // sub-names for the manifest (generate)
@@ -322,10 +325,22 @@ async function installAiContext(args: string[]): Promise<void> {
 export interface CommandSpec {
   handler: (cmdArgs: string[]) => void | Promise<void>;
   summary: string;
+  /** Options main() accepts (name -> takes a value). Absent = none; null = not checked. */
+  flags?: OptionMap | null;
   usage?: string;
   args?: string[];
   subcommands?: string[];
 }
+
+/** Option name (without `--`) -> whether it takes a value. */
+export type OptionMap = Record<string, boolean>;
+
+const SERVE_FLAGS: OptionMap = {
+  port: true, "no-browser": false, "no-reload": false, "no-kill": false,
+  // Not read by serve, but the Dockerfile `init` scaffolds runs
+  // `tina4nodejs serve --production`, so refusing it would break every image.
+  production: false,
+};
 
 export const COMMANDS: Record<string, CommandSpec> = {
   init: {
@@ -347,6 +362,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
       await killProcessOnPort(port);
       await serveProject({ port, noBrowser, noReload });
     },
+    flags: SERVE_FLAGS,
     usage: "[--port P] [--no-browser] [--no-reload]",
     summary: "Start the dev server with hot-reload (default: 0.0.0.0:7148)",
   },
@@ -359,6 +375,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
     // reaches the same envelope machinery as `generate migration ...` (ADR-0063).
     // The delegation itself lives in commands/migrateCreate.ts.
     handler: async (a) => { await createMigration(a); },
+    flags: MIGRATE_CREATE_FLAGS,
     usage: "<desc>",
     args: ["description"],
     summary: "Create a new migration file (delegates to generate migration)",
@@ -382,6 +399,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
   },
   lint: {
     handler: (a) => { runLint(a); },
+    flags: { fix: false, "no-install": false },
     usage: "[--fix] [--no-install]",
     summary: "Lint the project (eslint, installed dev-only on demand; else tsc/node --check baseline)",
   },
@@ -393,6 +411,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
   },
   build: {
     handler: (a) => { buildImage(a); },
+    flags: { tag: true, file: true },
     usage: "[--tag NAME] [--file PATH]",
     summary: "Build the deployable Docker image",
   },
@@ -413,16 +432,20 @@ export const COMMANDS: Record<string, CommandSpec> = {
   },
   ai: {
     handler: async (a) => { await installAiContext(a); },
+    flags: { all: false },
     usage: "[--all]",
     summary: "Install AI coding assistant context files",
   },
   commands: {
     handler: (a) => { runCommands(a); },
+    flags: { json: false },
     usage: "[--json]",
     summary: "List available commands (add --json for the machine manifest)",
   },
   help: {
     handler: () => { printHelp(); },
+    // Not option-checked: `help --help` / `help -h` print the reference too.
+    flags: null,
     summary: "Show this help message",
   },
 };
@@ -540,7 +563,156 @@ export function delegateToClient(command: string, args: string[]): number {
   return result.status ?? EXIT_CLIENT_UNAVAILABLE;
 }
 
+// ── Per-command help and option checking ────────────────────────────
+
+const HELP_FLAGS = ["--help", "-h"];
+
+/** Usage for one command (or one generator), from the same registries. */
+function printCommandHelp(command: string, args: string[]): void {
+  if (command === "generate") {
+    const kind = args.find((a) => !a.startsWith("-"))?.toLowerCase();
+    const gen = kind ? GENERATORS[kind] : undefined;
+    if (gen) {
+      console.log(`Usage: tina4nodejs generate ${kind} ${gen.usage}`.trimEnd());
+      console.log(`\n  ${gen.summary}`);
+      return;
+    }
+    console.log("Usage: tina4nodejs generate <what> <name> [options]\n\nGenerators:");
+    const pad = Math.max(...Object.keys(GENERATORS).map((n) => n.length));
+    for (const [name, g] of Object.entries(GENERATORS)) console.log(`  ${name.padEnd(pad)}  ${g.summary}`);
+    return;
+  }
+  const spec = COMMANDS[command];
+  console.log(`Usage: tina4nodejs ${command} ${spec.usage ?? ""}`.trimEnd());
+  console.log(`\n  ${spec.summary}`);
+  if (spec.subcommands?.length) console.log(`  Subcommands: ${spec.subcommands.join(", ")}`);
+}
+
+/**
+ * The options `command` accepts, or null when its arguments are not ours to
+ * check (an unknown generator or queue subcommand is reported by its own handler).
+ */
+export function acceptedOptions(command: string, args: string[]): OptionMap | null {
+  const sub = (args[0] ?? "").toLowerCase();
+  if (command === "generate") {
+    const gen = GENERATORS[sub];
+    return gen ? { ...gen.flags, ...RESOLUTION_FLAGS } : null;
+  }
+  if (command === "queue") return QUEUE_FLAGS[sub] ?? null;
+  const flags = COMMANDS[command].flags;
+  return flags === undefined ? {} : flags;
+}
+
+/** Optimal-string-alignment distance: Levenshtein plus adjacent transposition. */
+function editDistance(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) d[i][j] = distanceCell(d, a, b, i, j);
+  }
+  return d[a.length][b.length];
+}
+
+/** One cell of the editDistance table: delete, insert, substitute, or swap two neighbours. */
+function distanceCell(d: number[][], a: string, b: string, i: number, j: number): number {
+  const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+  const best = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+  const swapped = i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1];
+  return swapped ? Math.min(best, d[i - 2][j - 2] + 1) : best;
+}
+
+/** The accepted option closest to `name`, when it is close enough to be a typo. */
+export function closestOption(name: string, accepted: string[]): string | null {
+  let best: string | null = null;
+  let bestDistance = Math.max(1, Math.floor(name.length / 3)) + 1;
+  for (const option of accepted) {
+    const distance = editDistance(name, option);
+    if (distance < bestDistance) {
+      best = option;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+/** The did-you-mean text for an option `label` doesn't have. */
+function unknownOptionMessage(option: string, name: string, accepted: OptionMap, label: string): string {
+  const close = closestOption(name, Object.keys(accepted));
+  return `Unknown option ${option} for "${label}".${close ? ` Did you mean --${close}?` : ""}\n`
+    + `Run "tina4nodejs ${label} --help" for its options.`;
+}
+
+/**
+ * Judge the argument at `i`: the refusal message (or null when it is fine) and
+ * how many arguments it used - 2 for a value option spelled `--name value`.
+ */
+export function optionProblem(args: string[], i: number, accepted: OptionMap, label: string): [string | null, number] {
+  const arg = args[i];
+  if (!arg.startsWith("-") || arg === "-") return [null, 1];
+  const [option, inlineValue] = splitOption(arg);
+  const name = option.replace(/^-+/, "");
+  if (!isAccepted(option, name, accepted)) {
+    return [unknownOptionMessage(option, name, accepted, label), 1];
+  }
+  if (inlineValue || !accepted[name]) return [null, 1];
+  if (!hasValueAfter(args, i)) {
+    return [`Option --${name} for "${label}" needs a value: --${name} <value>`, 1];
+  }
+  return [null, 2];
+}
+
+/** A `--long` option the command declares (single-dash options never are, except -h). */
+function isAccepted(option: string, name: string, accepted: OptionMap): boolean {
+  return option.startsWith("--") && Object.hasOwn(accepted, name);
+}
+
+/** `--name=value` -> ["--name", true]; `--name` -> ["--name", false]. */
+function splitOption(arg: string): [string, boolean] {
+  const eq = arg.indexOf("=");
+  return eq === -1 ? [arg, false] : [arg.slice(0, eq), true];
+}
+
+/** True when the argument after `i` exists and is not itself an option. */
+function hasValueAfter(args: string[], i: number): boolean {
+  return i + 1 < args.length && !args[i + 1].startsWith("-");
+}
+
+/**
+ * Refuse an option the command doesn't have, or a value option given no value.
+ * Both used to slip through: `--feilds` was silently dropped (the model came
+ * out without its fields) and a bare `--fields` became the value `true`.
+ */
+function checkOptions(command: string, args: string[]): void {
+  const accepted = acceptedOptions(command, args);
+  if (accepted === null) return;
+  const label = command === "generate" || command === "queue" ? `${command} ${args[0].toLowerCase()}` : command;
+  for (let i = 0; i < args.length;) {
+    const [problem, consumed] = optionProblem(args, i, accepted, label);
+    if (problem) {
+      console.log(problem);
+      process.exit(1);
+    }
+    i += consumed;
+  }
+}
+
 // ── Dispatch ────────────────────────────────────────────────────────
+
+/**
+ * Run one registered command. `--help` / `-h` anywhere after it prints that
+ * command's usage and touches nothing. Handlers never looked for it, so it ran
+ * the command for real: `generate model --help` wrote a model named `--help`,
+ * `ai --help` installed into a folder named `--help`. Delegated commands never
+ * get here - the client answers --help itself.
+ */
+async function runCommand(command: string, spec: CommandSpec, cmdArgs: string[]): Promise<void> {
+  if (command !== "help" && cmdArgs.some((a) => HELP_FLAGS.includes(a))) {
+    printCommandHelp(command, cmdArgs);
+    return;
+  }
+  checkOptions(command, cmdArgs);
+  await spec.handler(cmdArgs);
+}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -554,7 +726,7 @@ async function main(): Promise<void> {
 
   const spec = COMMANDS[command];
   if (spec) {
-    await spec.handler(cmdArgs);
+    await runCommand(command, spec, cmdArgs);
     return;
   }
 

@@ -6,6 +6,26 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## Unreleased
+
+### Fixed
+- CLI: `--help` / `-h` on any command prints that command's usage and changes
+  nothing. Before, handlers never looked for it and ran for real:
+  `generate model --help` wrote a model named `--help`, `init --help`
+  scaffolded a project called `--help`; `lint`, `migrate:create`,
+  `migrate:status` and `migrate:rollback` also wrote to the project.
+- CLI: an unknown option is refused with a did-you-mean (`--feilds` →
+  `--fields`) instead of being silently dropped, and a value option given no
+  value is refused instead of becoming `true` (`--fields`) or being ignored
+  (`--every`). `--name=value` works as well as `--name value`.
+- CLI: `generate` refuses a name that starts with `-`.
+- CLI: `ai --all` installs every context file into the project, as its help
+  says; it installed into a folder named `--all` before.
+- CLI: `generate crud <Name> --skip-model` scaffolds CRUD around an existing
+  model, as in the other frameworks.
+- CLI: `migrate:create <desc> --fields name:string` keeps the value with its
+  option; it was folded into the migration's description.
+
 ## 3.13.151 - 2026-10-15
 
 ### Security
