@@ -6,9 +6,17 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
-## Unreleased
+## 3.13.152 - 2026-10-20
 
 ### Fixed
+- Database: the PostgreSQL adapter recovers after a dropped connection even
+  when the first reconnect attempt itself fails, so a query run over a dead
+  link no longer wedges once a reconnect failed (#242). Transaction control
+  (`BEGIN` / `COMMIT` / `ROLLBACK`) stays raw and surfaces its own failure, the
+  in-transaction flag is cleared even when a commit or rollback throws, and the
+  `Client` carries an `error` listener so a mid-flight drop no longer crashes
+  the process. Reconnect-after-drop is now at parity across Python, PHP and
+  Ruby too (#244).
 - CLI: `--help` / `-h` on any command prints that command's usage and changes
   nothing. Before, handlers never looked for it and ran for real:
   `generate model --help` wrote a model named `--help`, `init --help`
