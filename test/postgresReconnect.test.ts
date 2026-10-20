@@ -113,6 +113,32 @@ try {
     const rows = await observer.queryAsync<{ note: string }>(`SELECT note FROM ${TABLE} WHERE note = 'after-failed-reconnect'`);
     assert("the adapter recovers once a reachable server returns", rows.length === 1);
   }
+
+  // ── 3. NEGATIVE — a real SQL error is NOT a dropped link: it surfaces and does
+  //       not trigger a reconnect (the backend stays the same). ──────────────
+  {
+    const samePid = await pid(tested);
+    let threw = false;
+    try { await tested.queryAsync("SELECT * FROM a_table_that_does_not_exist_244"); }
+    catch { threw = true; }
+    assert("a real SQL error surfaces (not swallowed as a drop)", threw);
+    assert("a SQL error does NOT reconnect - same backend", (await pid(tested)) === samePid);
+  }
+
+  // ── 4. NEGATIVE — a drop INSIDE an explicit transaction surfaces (never
+  //       silently retried on a fresh link), and the next statement recovers. ─
+  {
+    await tested.startTransactionAsync();
+    await observer.executeAsync("SELECT pg_terminate_backend(?)", [await pid(tested)]);
+    let surfaced = false;
+    try { await tested.executeAsync(`INSERT INTO ${TABLE} (note) VALUES (?)`, ["in-txn"]); }
+    catch { surfaced = true; }
+    assert("a drop inside a transaction surfaces (not retried on a new link)", surfaced);
+    try { await tested.rollbackAsync(); } catch { /* ROLLBACK on a dead link may fail - the flag still clears */ }
+    await tested.executeAsync(`INSERT INTO ${TABLE} (note) VALUES (?)`, ["after-txn-drop"]);
+    const n = (await observer.queryAsync<{ note: string }>(`SELECT note FROM ${TABLE} WHERE note = 'after-txn-drop'`)).length;
+    assert("the next statement after rollback recovers", n === 1);
+  }
 } finally {
   try { await observer.executeAsync(`DROP TABLE IF EXISTS ${TABLE}`); } catch { /* best effort */ }
   observer.close();

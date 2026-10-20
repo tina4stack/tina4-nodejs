@@ -205,6 +205,17 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
   }
 
+  // Transaction control (BEGIN/COMMIT/ROLLBACK) runs RAW - no reconnect, no
+  // pre-heal. A failed BEGIN/COMMIT/ROLLBACK must surface so the connection-pool
+  // layer can discard the connection and restore capacity; reconnecting or
+  // retrying here would mask that failure (databasePoolIsolation contract).
+  // Dropped-link recovery stays on the DATA path (runQuery): the next data
+  // statement heals the link.
+  private async rawQuery(sql: string): Promise<void> {
+    this.ensureConnected();
+    await this.client!.query(sql);
+  }
+
   /** Convert ? placeholders to $1, $2, ... for pg. */
   /** Ensure bytea columns are Buffer (already the case with pg). No-op guard. */
   private decodeBlobs<T>(row: T): T {
@@ -435,7 +446,7 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async startTransactionAsync(): Promise<void> {
-    await this.executeAsync("BEGIN");
+    await this.rawQuery("BEGIN");
     // Mark the connection as inside an explicit transaction so executeManyAsync's
     // owns-guard (owns = !_inTransaction) joins THIS transaction instead of
     // opening its own inner BEGIN/COMMIT (which would commit this outer
@@ -449,10 +460,14 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async commitAsync(): Promise<void> {
-    await this.executeAsync("COMMIT");
-    // Transaction closed — clear the flag so subsequent standalone batches own
-    // their own transaction again (parity with Python master commit()).
-    this._inTransaction = false;
+    // The transaction ends whether or not COMMIT succeeds, so clear the flag in
+    // finally - a COMMIT that fails on a dropped link would otherwise leave
+    // _inTransaction set and wedge every later reconnect (#244).
+    try {
+      await this.rawQuery("COMMIT");
+    } finally {
+      this._inTransaction = false;
+    }
   }
 
   rollback(): void {
@@ -460,9 +475,13 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async rollbackAsync(): Promise<void> {
-    await this.executeAsync("ROLLBACK");
-    // Transaction closed — clear the flag (parity with Python master rollback()).
-    this._inTransaction = false;
+    // Clear the flag even if ROLLBACK fails on a dropped link - the transaction
+    // is over either way, and leaving it set would wedge every later reconnect (#244).
+    try {
+      await this.rawQuery("ROLLBACK");
+    } finally {
+      this._inTransaction = false;
+    }
   }
 
   getTables(): string[] {
