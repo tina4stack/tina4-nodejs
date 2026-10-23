@@ -94,6 +94,33 @@ export function cspNonce(): string {
  * `'self'`) so the framework's own nonce'd content always works; when present
  * the nonce is appended (idempotently). Every other directive is kept, in order.
  */
+/**
+ * Add the nonce to one directive, deriving an absent one from default-src.
+ *
+ * ADR-0100: a directive whose resolved value - present, or the default-src it
+ * falls back to - already carries 'unsafe-inline' is the app's explicit opt-in
+ * to inline. A browser ignores 'unsafe-inline' the moment a nonce joins the same
+ * directive (CSP Level 2+), so a nonce here would silently block the inline the
+ * app asked for; leave it, the app's choice wins. Otherwise the nonce is added
+ * idempotently, and an absent directive is spawned from default-src so the
+ * framework's own inline runs.
+ */
+function applyNonceToDirective(
+  directives: Array<[string, string]>,
+  directive: string,
+  defaultValue: string,
+  token: string,
+): void {
+  const existing = directives.find(([name]) => name === directive);
+  const resolved = (existing ? existing[1] : defaultValue).split(/\s+/);
+  if (resolved.includes("'unsafe-inline'")) return;
+  if (!existing) {
+    directives.push([directive, `${defaultValue} ${token}`.trim()]);
+  } else if (!resolved.includes(token)) {
+    existing[1] = `${existing[1]} ${token}`.trim();
+  }
+}
+
 export function injectNonceIntoCsp(csp: string, nonce: string): string {
   const token = `'nonce-${nonce}'`;
   const directives: Array<[string, string]> = [];
@@ -110,14 +137,7 @@ export function injectNonceIntoCsp(csp: string, nonce: string): string {
   const defaultValue = defaultEntry && defaultEntry[1] ? defaultEntry[1] : "'self'";
 
   for (const directive of ["style-src", "script-src"]) {
-    const existing = directives.find(([name]) => name === directive);
-    if (existing) {
-      if (!existing[1].split(/\s+/).includes(token)) {
-        existing[1] = `${existing[1]} ${token}`.trim();
-      }
-    } else {
-      directives.push([directive, `${defaultValue} ${token}`.trim()]);
-    }
+    applyNonceToDirective(directives, directive, defaultValue, token);
   }
 
   return directives
