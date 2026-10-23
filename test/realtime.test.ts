@@ -222,6 +222,10 @@ async function waitForMsg(
 }
 
 // ── boot: real DB, real realtime mount, real seed, real server ──────────────
+// ADR-0101: the config route + signalling socket are secured by default. These
+// cases exercise the config CONTENT and the relay MECHANICS, not the auth gate
+// (that is rtcRequireAuthContract.test.ts), so they opt out to stay focused.
+process.env.TINA4_RTC_REQUIRE_AUTH = "false";
 await initDatabase({ url: process.env.TINA4_DATABASE_URL });
 const paths = await realtime({ features: ["calls", "chat", "files"] });
 
