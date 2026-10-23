@@ -121,8 +121,19 @@ export async function realtime(options: RealtimeOptions = {}): Promise<Record<st
 
 // ── route registration ──────────────────────────────────────────────
 
+/**
+ * ADR-0101: the config route mints TURN credentials and the signalling socket
+ * relays calls, so both require a valid token UNLESS the app opts out with
+ * TINA4_RTC_REQUIRE_AUTH=false (anonymous calling). Secure-by-default: only an
+ * explicit false/0/no/off opens them.
+ */
+function rtcRequireAuth(): boolean {
+  const raw = (process.env.TINA4_RTC_REQUIRE_AUTH ?? "true").trim().toLowerCase();
+  return !["false", "0", "no", "off"].includes(raw);
+}
+
 function registerConfig(paths: Record<string, string>, features: string[]): void {
-  Router.get(paths.config, async (_req: Tina4Request, res: Tina4Response) => {
+  const route = Router.get(paths.config, async (_req: Tina4Request, res: Tina4Response) => {
     const body: Record<string, unknown> = { backend: "mesh" };
     if (features.includes("calls")) {
       body.iceServers = iceServers();
@@ -135,12 +146,14 @@ function registerConfig(paths: Record<string, string>, features: string[]): void
     if (features.includes("files")) body.files = paths.files;
     return res.json(body, HTTP_OK);
   });
+  if (rtcRequireAuth()) route.secure(); // ADR-0101
 }
 
 function registerCalls(paths: Record<string, string>): void {
-  // WebRTC signalling relay (mesh). Public room; Tina4 never parses the SDP,
-  // peers filter by `to`. The room id comes from the {room} path param.
-  Router.websocket(`${paths.signalling}/{room}`, (connection, event, data) => {
+  // WebRTC signalling relay (mesh). Tina4 never parses the SDP, peers filter by
+  // `to`; the media is E2E between peers. The room requires auth by default
+  // (ADR-0101) unless TINA4_RTC_REQUIRE_AUTH=false.
+  const route = Router.websocket(`${paths.signalling}/{room}`, (connection, event, data) => {
     const room = connection.params.room ?? "";
     if (!room) return;
     const key = `rtc:${room}`;
@@ -150,6 +163,7 @@ function registerCalls(paths: Record<string, string>): void {
       connection.broadcastToRoom(key, data, true);
     }
   });
+  if (rtcRequireAuth()) route.secure(); // ADR-0101
 }
 
 function registerChat(paths: Record<string, string>): void {
