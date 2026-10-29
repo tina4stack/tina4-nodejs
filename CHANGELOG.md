@@ -6,6 +6,15 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.155 - 2026-10-29
+
+Version bump for cross-framework parity. No Node.js framework changes this
+release — the 3.13.155 fixes were in tina4-python's scaffolding generator and
+development server (generated sync-ORM handlers, the generated test secret, and
+a serve test port above 65535). Node already handled every one of those cases
+(generated handlers `await` the async ORM; the generated secret is already ≥ 32
+bytes; the `aiPortInRange` guard skips an out-of-range test port).
+
 ## 3.13.154 - 2026-10-23
 
 ### BREAKING
