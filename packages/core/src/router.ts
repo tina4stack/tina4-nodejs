@@ -78,6 +78,7 @@ interface MatchResult {
   secure?: boolean;
   cached?: boolean;
   noAuth?: boolean;
+  noCsrf?: boolean;
   requiredRoles?: string[][];
   requiredPerms?: string[][];
 }
@@ -94,6 +95,7 @@ interface CompiledRoute {
   secure?: boolean;
   cached?: boolean;
   noAuth?: boolean;
+  noCsrf?: boolean;
   cacheStore?: Map<string, { data: unknown; expires: number }>;
   cacheTtl?: number;
   template?: string;
@@ -137,6 +139,17 @@ export class RouteRef {
   /** Opt out of secure-by-default auth (for public write routes). */
   noAuth(): this {
     this.route.noAuth = true;
+    return this;
+  }
+
+  /**
+   * Opt a route OUT of CSRF form-token validation (webhooks / server-to-server
+   * callbacks that carry no browser session). `.noAuth()` no longer skips CSRF
+   * (#265): a public form stays CSRF-protected. CSRF (origin) and auth
+   * (identity) are orthogonal — chain `.noAuth().noCsrf()` for a public webhook.
+   */
+  noCsrf(): this {
+    this.route.noCsrf = true;
     return this;
   }
 
@@ -262,6 +275,7 @@ export class Router {
       secure: secureDefault,
       cached: definition.cached,
       noAuth: definition.noAuth,
+      noCsrf: definition.noCsrf,
       template: definition.template,
       requiredRoles: definition.requiredRoles,
       requiredPerms: definition.requiredPerms,
@@ -438,6 +452,7 @@ export class Router {
           secure: route.secure,
           cached: route.cached,
           noAuth: route.noAuth,
+          noCsrf: route.noCsrf,
           requiredRoles: route.requiredRoles,
           requiredPerms: route.requiredPerms,
         };

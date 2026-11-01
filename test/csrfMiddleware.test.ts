@@ -22,7 +22,8 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  *   - POST/PUT/PATCH/DELETE require a valid formToken whose type claim is "form"
  *   - Token accepted in request.body.formToken or X-Form-Token header
  *   - Token rejected if sent in query params (security risk)
- *   - Routes marked noAuth skip CSRF
+ *   - Routes marked noCsrf skip CSRF (webhook opt-out)
+ *   - noAuth does NOT skip CSRF (#265 / CSRF-DEC-03): a public form stays gated
  *   - Requests with a valid Authorization: Bearer skip CSRF
  *   - Session binding: token session_id must match request session
  *   - Fails CLOSED: TINA4_SECRET unset (blank secret) => every write 403
@@ -86,7 +87,7 @@ function mockRequest(overrides: Partial<{
   headers: Record<string, string>;
   body: Record<string, unknown>;
   query: Record<string, string>;
-  route: { noAuth?: boolean };
+  route: { noAuth?: boolean; noCsrf?: boolean };
   session: Record<string, unknown>;
 }>): Tina4Request {
   return {
@@ -348,24 +349,44 @@ console.log("\n-- Invalid tokens --");
   assert("Wrong-secret token returns 403", raw.statusCode === 403);
 }
 
-// ── noAuth handler skips CSRF ────────────────────────────────────
+// ── noAuth stays CSRF-gated; noCsrf is the opt-out (#265) ─────────
 
-console.log("\n-- noAuth route flag --");
+console.log("\n-- noCsrf route flag (#265) --");
 
 {
+  // The #265 regression: a noAuth POST with no token used to pass (CSRF
+  // skipped); it must now be blocked 403 like any other write.
   csrfOn();
   const req = mockRequest({ method: "POST", route: { noAuth: true } });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("noAuth handler skips CSRF", raw.statusCode === 200);
+  assert("noAuth write route without a token is rejected (403)", raw.statusCode === 403);
+}
+
+{
+  // The public-form happy path: noAuth + a real form token → 200.
+  csrfOn();
+  const req = mockRequest({ method: "POST", route: { noAuth: true }, body: { formToken: makeFormToken() } });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("noAuth write route with a valid form token passes (200)", raw.statusCode === 200);
+}
+
+{
+  // The webhook opt-out: noCsrf skips CSRF even with no token.
+  csrfOn();
+  const req = mockRequest({ method: "POST", route: { noCsrf: true } });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("noCsrf handler skips CSRF", raw.statusCode === 200);
 }
 
 {
   csrfOn();
-  const req = mockRequest({ method: "POST", route: { noAuth: false } });
+  const req = mockRequest({ method: "POST", route: { noCsrf: false } });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("Handler without noAuth requires CSRF (403)", raw.statusCode === 403);
+  assert("Handler without noCsrf requires CSRF (403)", raw.statusCode === 403);
 }
 
 // ── Valid Bearer JWT skips CSRF ───────────────────────────────────
@@ -602,13 +623,30 @@ console.log("\n-- Conformance (csrf_contract.json) --");
   assert("a post without a token is rejected", raw.statusCode === 403);
 }
 
-// csrf-noauth-exempt
+// csrf-noauth-still-gated (CSRF-DEC-03, supersedes csrf-noauth-exempt)
 {
   csrfOn();
   const req = mockRequest({ method: "POST", route: { noAuth: true } });
   const { res, raw } = mockResponse();
   CsrfMiddleware.beforeCsrf(req, res);
-  assert("a noauth write route skips csrf", raw.statusCode === 200);
+  assert("a noauth write route without a token is rejected", raw.statusCode === 403);
+}
+
+{
+  csrfOn();
+  const req = mockRequest({ method: "POST", route: { noAuth: true }, body: { formToken: makeFormToken() } });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("a noauth write route with a valid form token passes", raw.statusCode === 200);
+}
+
+// csrf-no-csrf-exempt (CSRF-DEC-03)
+{
+  csrfOn();
+  const req = mockRequest({ method: "POST", route: { noCsrf: true } });
+  const { res, raw } = mockResponse();
+  CsrfMiddleware.beforeCsrf(req, res);
+  assert("a no csrf write route skips csrf", raw.statusCode === 200);
 }
 
 // csrf-bearer-exempt

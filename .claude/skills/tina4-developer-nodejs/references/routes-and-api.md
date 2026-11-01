@@ -160,9 +160,19 @@ State-changing Frond forms include a CSRF token via `{{ formToken() }}`:
 </form>
 ```
 
-The framework validates a `formToken` in the body on write requests (it is one of the accepted
-token sources, alongside the `Authorization: Bearer` header and a session token). Never skip CSRF
-protection on server-rendered forms.
+The framework validates a `formToken` in the body on write requests (enable CSRF with
+`TINA4_CSRF=true`). A form token proves ORIGIN (this write came from a form you rendered), not
+identity. CSRF and `.noAuth()` are orthogonal:
+
+- **Public form** (contact, sign-up): a `.noAuth()` route + `{{ formToken() }}` in the form. It posts
+  with no login AND stays CSRF-protected. `.noAuth()` no longer skips CSRF.
+- **Protected form**: a real identity token authenticates the write (sent as `Authorization: Bearer`).
+  A form token is not an identity, so a protected route 401s without one - send the login token, do
+  not drop `.noAuth()`.
+- **Webhook / server-to-server** (no browser, no form): `.noCsrf()` (or `export const noCsrf = true`
+  in a route file), with `.noAuth()`, opts out of the form-token check.
+
+Never skip CSRF protection on server-rendered forms.
 
 ## CORS, Rate Limiting
 
