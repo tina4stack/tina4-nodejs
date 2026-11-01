@@ -348,8 +348,8 @@ try {
     modelsDir: join(csrfRoot, "src/models"), staticDir: join(csrfRoot, "public") });
   try {
     await check("a form token still passes csrf", async () => {
-      // CSRF skips noAuth routes, so the realistic case is a logged-in user
-      // (auth token in the session) posting a rendered form.
+      // A logged-in user (auth token in the session) posting a rendered form:
+      // the form token satisfies CSRF and the session token provides identity.
       const stored = await request(csrfPort, "POST", "/contract/session", { "X-Form-Token": formToken() },
         { token: getToken({ user_id: 11 }) });
       const cookie = (stored.headers["set-cookie"] ?? []).map((c) => c.split(";")[0]).join("; ");

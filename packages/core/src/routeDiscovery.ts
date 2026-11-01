@@ -13,6 +13,16 @@ import type { RouteDefinition, RouteHandler, RouteMeta } from "./types.js";
 const VALID_METHODS = new Set(["get", "post", "put", "delete", "patch"]);
 
 /**
+ * A route file may export a boolean flag (`secure`, `noAuth`, `noCsrf`). Only a
+ * real boolean is honoured — anything else (including an accidental truthy
+ * string) is ignored and the framework's default applies. Shared so each flag
+ * reads the same way (and the discovery loop stays flat).
+ */
+function boolExport(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+/**
  * Files already discovered by a prior scan. Lets rediscoverRoutes() pick up
  * only the freshly-added files without double-registering anything that was
  * already loaded.
@@ -72,16 +82,20 @@ export async function discoverRoutes(routesDir: string): Promise<RouteDefinition
 
       const meta: RouteMeta | undefined = mod.meta;
       const template: string | undefined = typeof mod.template === "string" ? mod.template : undefined;
-      // Auth opt-outs a route file can export (parity with the imperative
-      // `.noAuth()` / AutoCrud `secure: false`). A generated public write file
-      // (`generate route … --public`, or the always-public auth login/register)
-      // does `export const secure = false;`; without threading it here the
-      // router would keep its secure-by-default write gate and the opt-out
-      // would be inert. Only booleans are honoured — anything else is ignored.
-      const secure: boolean | undefined = typeof mod.secure === "boolean" ? mod.secure : undefined;
-      const noAuth: boolean | undefined = typeof mod.noAuth === "boolean" ? mod.noAuth : undefined;
+      // Flags a route file can export (parity with the imperative modifiers),
+      // each honoured only as a real boolean (see boolExport):
+      //  - `secure` / `noAuth`: the write-auth opt-out (`.noAuth()` / AutoCrud
+      //    `secure: false`). A generated public write file does
+      //    `export const secure = false;`; without threading it the router keeps
+      //    its secure-by-default write gate and the opt-out is inert.
+      //  - `noCsrf`: the CSRF opt-out (`.noCsrf()`) for a server-to-server
+      //    webhook. #265: `noAuth` no longer skips CSRF, so a public webhook that
+      //    must bypass the form-token check opts out explicitly here.
+      const secure = boolExport(mod.secure);
+      const noAuth = boolExport(mod.noAuth);
+      const noCsrf = boolExport(mod.noCsrf);
 
-      definitions.push({ method, pattern, handler, filePath, meta, template, secure, noAuth });
+      definitions.push({ method, pattern, handler, filePath, meta, template, secure, noAuth, noCsrf });
       _seenFiles.add(filePath);
       _seenMtimes.set(filePath, currentMtime);
       registeredFromThisScan++;

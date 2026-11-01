@@ -1073,8 +1073,12 @@ function csrfMethodIsSafe(method: string | undefined): boolean {
 }
 
 function csrfRouteSkips(req: Tina4Request): boolean {
+  // #265 / CSRF-DEC-03: .noAuth() no longer skips CSRF — a public form must be
+  // open to anonymous visitors AND protected against cross-site posts. Only an
+  // explicit .noCsrf() (webhooks / server-to-server callbacks with no browser
+  // session) opts out. noAuth controls IDENTITY (who); CSRF controls ORIGIN.
   const route = (req as any)._route ?? (req as any).route;
-  return Boolean(route?.noAuth);
+  return Boolean(route?.noCsrf);
 }
 
 function csrfBearerIsValid(req: Tina4Request, secret: string): boolean {
@@ -1108,15 +1112,18 @@ function csrfSessionMatches(req: Tina4Request, payload: Record<string, unknown>)
  * Class-based CSRF middleware using the before/after convention.
  * Validates form tokens on state-changing requests (POST, PUT, PATCH, DELETE).
  *
- * OFF by default — a default app has NO CSRF gate because the middleware is
- * NOT attached. Set TINA4_CSRF=true (or 1/yes/on) and the framework
- * auto-attaches it at boot (see attachCsrfFromEnv); or register it explicitly
- * via Router.use(CsrfMiddleware). Once attached, TINA4_CSRF=false (or 0/no) is
- * the kill switch that disables enforcement again.
+ * NOT attached by default — a default app has NO CSRF gate because the
+ * middleware is NOT attached. Set TINA4_CSRF=true (or 1/yes/on) and the
+ * framework auto-attaches it at boot (see attachCsrfFromEnv); or register it
+ * explicitly via Router.use(CsrfMiddleware). Once attached it enforces unless
+ * the kill switch TINA4_CSRF=false (or 0/no) is set — so with it attached but
+ * TINA4_CSRF unset, enforcement is ON (the attach is the opt-in).
  *
  * Behaviour (identical to the Python master, feature 37):
  *   - Skips GET, HEAD, OPTIONS requests.
- *   - Skips routes marked .noAuth().
+ *   - Skips routes that opt out with .noCsrf() (server-to-server webhooks).
+ *     .noAuth() does NOT skip CSRF (#265): a public form can be open to
+ *     anonymous visitors AND still protected against cross-site posts.
  *   - Fails CLOSED: with TINA4_SECRET unset the signing secret resolves to
  *     blank (there is NO built-in default), and a blank HMAC key is publicly
  *     reproducible — so no token can be trusted and every write is rejected

@@ -177,6 +177,8 @@ export interface RouteDefinition {
   cached?: boolean;
   /** Opt out of secure-by-default auth on write routes */
   noAuth?: boolean;
+  /** Opt out of CSRF form-token validation (webhooks / server-to-server callbacks) — #265 */
+  noCsrf?: boolean;
   /** RBAC role guard groups (Feature 138): OR within a group, AND across groups */
   requiredRoles?: string[][];
   /** RBAC permission guard groups (Feature 138) */
