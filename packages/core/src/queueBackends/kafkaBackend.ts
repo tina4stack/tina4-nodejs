@@ -664,31 +664,33 @@ export class KafkaBackend implements QueueBackend {
     }
   }
 
+  /**
+   * Serialize the record value. raw (tina4-nodejs#264) emits the payload exactly
+   * as given — no {id, payload, status, attempts, ...} envelope — so a non-Tina4
+   * consumer reading the topic gets the schema it expects; otherwise the Tina4 job
+   * envelope. pop() unwraps both shapes (payload ?? the whole record).
+   */
+  private static encodeJob(id: string, payload: unknown, raw: boolean): string {
+    if (raw) return JSON.stringify(payload);
+    return JSON.stringify({
+      id,
+      payload,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      attempts: 0,
+      delayUntil: null,
+    });
+  }
+
   push(queue: string, payload: unknown, _delay?: number, _priority?: number, raw: boolean = false): string {
     const id = randomUUID();
-    const now = new Date().toISOString();
-
-    // raw (tina4-nodejs#264): produce the value exactly as given — no
-    // {id, payload, status, attempts, ...} envelope — so a non-Tina4 consumer
-    // reading the topic gets the schema it expects. The symmetric unwrap is
-    // already on pop() (payload ?? the whole record).
-    const job = raw
-      ? payload
-      : {
-          id,
-          payload,
-          status: "pending",
-          createdAt: now,
-          attempts: 0,
-          delayUntil: null,
-        };
 
     // Topic auto-creation is ASYNCHRONOUS, so a brand-new topic answers
     // UNKNOWN_TOPIC_OR_PARTITION (3) or LEADER_NOT_AVAILABLE (5) on the first
     // attempt while the controller is still electing a leader. Retry those
     // (same 10 attempts / 200ms as the Python and PHP backends) instead of
     // failing a cold-start push; every other code throws immediately.
-    const body = JSON.stringify(job);
+    const body = KafkaBackend.encodeJob(id, payload, raw);
     let result = "";
     for (let attempt = 1; attempt <= 10; attempt++) {
       result = this.execSync("publish", queue, body);
