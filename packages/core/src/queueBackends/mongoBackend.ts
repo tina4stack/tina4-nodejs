@@ -54,7 +54,7 @@ export interface MongoConfig {
 }
 
 export interface QueueBackend {
-  push(queue: string, payload: unknown, delay?: number, priority?: number): string;
+  push(queue: string, payload: unknown, delay?: number, priority?: number, raw?: boolean): string;
   pop(queue: string): QueueJob | null;
   size(queue: string): number;
   clear(queue: string): void;
@@ -542,7 +542,17 @@ export class MongoBackend implements QueueBackend {
     }
   }
 
-  push(queue: string, payload: unknown, delay?: number, priority?: number): string {
+  push(queue: string, payload: unknown, delay?: number, priority?: number, raw: boolean = false): string {
+    if (raw) {
+      throw new Error(
+        "The mongodb queue backend cannot honour push(raw=true): raw emits the " +
+          "message with no Tina4 envelope, which only a message bus consumed by " +
+          "non-Tina4 systems (Kafka) needs. This backend stores an internal " +
+          "envelope (payload/priority/attempts) that pop(), the retry lifecycle " +
+          "and dead-lettering depend on, so there is nothing to omit. Use the " +
+          "kafka backend for raw external messages.",
+      );
+    }
     const id = randomUUID();
     const now = new Date().toISOString();
 

@@ -140,7 +140,7 @@ export type { ImapMessage, ImapFullMessage, ImapAttachment } from "./messenger.j
 export { LiteBackend } from "./queueBackends/liteBackend.js";
 export { RabbitMQBackend, parseAmqpUrl } from "./queueBackends/rabbitmqBackend.js";
 export type { RabbitMQConfig } from "./queueBackends/rabbitmqBackend.js";
-export { KafkaBackend, kafkaSecurityConfig } from "./queueBackends/kafkaBackend.js";
+export { KafkaBackend, kafkaSecurityConfig, kafkaOffsetReset } from "./queueBackends/kafkaBackend.js";
 export type {
   KafkaConfig,
   KafkaSecurityConfig,

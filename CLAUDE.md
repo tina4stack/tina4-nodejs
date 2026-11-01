@@ -14,13 +14,13 @@ Even if the skill text is not currently loaded, these are non-negotiable:
 
 The full discipline lives in `.claude/skills/tina4-maintainer/SKILL.md`; this block is the always-on floor.
 
-# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.155)
+# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.156)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.13.155 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.13.156 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -1042,7 +1042,10 @@ import { Queue } from "@tina4/core";
 
 const queue = new Queue("emails", 3 /* maxRetries */);
 
-const id = queue.push({ to: "a@b.c", body: "hi" }, 0 /* delaySec */, 0 /* priority */);
+const id = queue.push({ to: "a@b.c", body: "hi" }, 0 /* delaySec */, 0 /* priority */, false /* raw */);
+// raw=true is Kafka-only: produce the value with NO envelope and no injected id, for a non-Tina4
+// consumer. file/rabbitmq/mongodb refuse raw=true by name. TINA4_KAFKA_AUTO_OFFSET_RESET
+// (earliest default, or latest) sets where a NEW consumer group starts.
 const job = queue.pop();
 queue.size("pending");
 queue.purge("completed");

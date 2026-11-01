@@ -125,7 +125,7 @@ export interface ConsumeOptions {
 }
 
 export interface QueueBackendInterface {
-  push(queue: string, payload: unknown, delay?: number, priority?: number): string;
+  push(queue: string, payload: unknown, delay?: number, priority?: number, raw?: boolean): string;
   pop(queue: string): QueueJob | null;
   size(queue: string, status?: string): number;
   clear(queue: string): void;
@@ -303,15 +303,19 @@ export class Queue {
    *   queue.push(payload, delay, priority) — with delay and priority
    *
    * @param priority — Higher value = higher priority. Default 0.
+   * @param raw — Kafka-only (tina4-nodejs#264): produce the value with NO Tina4
+   *   envelope and no injected id, for a non-Tina4 consumer. The file/rabbitmq/
+   *   mongodb backends refuse raw=true by name (the envelope is internal
+   *   bookkeeping pop/retries/dead-lettering depend on). Default false.
    */
-  push(payload: unknown, delay?: number, priority: number = 0): string {
+  push(payload: unknown, delay?: number, priority: number = 0, raw: boolean = false): string {
     if (this.externalBackend) {
       // priority goes to the external backend too. It used to be passed only to
       // liteBackend, so switching to mongodb silently turned a prioritised
       // queue into a FIFO one.
-      return this.externalBackend.push(this.topic, payload, delay, priority);
+      return this.externalBackend.push(this.topic, payload, delay, priority, raw);
     }
-    return this.liteBackend.push(this.topic, payload, delay, priority);
+    return this.liteBackend.push(this.topic, payload, delay, priority, raw);
   }
 
   /**
@@ -598,11 +602,11 @@ export class Queue {
    * shares the same retarget path consume()/process() use — keeping produce and
    * consume symmetric on the same topic argument.
    */
-  produce(topic: string, payload: unknown, priority: number = 0, delay: number = 0): string {
+  produce(topic: string, payload: unknown, priority: number = 0, delay: number = 0, raw: boolean = false): string {
     const previous = this.topic;
     this.retarget(topic);
     try {
-      return this.push(payload, delay, priority);
+      return this.push(payload, delay, priority, raw);
     } finally {
       this.retarget(previous);
     }
