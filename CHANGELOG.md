@@ -6,6 +6,25 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.156 - 2026-11-01
+
+### Added
+- Kafka queue: `queue.push(payload, delay, priority, true)` (and
+  `produce(..., true)`) now produces the value with NO Tina4 envelope
+  (`{id, payload, status, attempts, ...}`) and no injected `id`, so a non-Tina4
+  service consuming the topic receives the exact top-level schema it expects
+  (tina4-nodejs#264). Kafka-only; the file/rabbitmq/mongodb backends refuse
+  `raw=true` by name (the envelope is internal bookkeeping that pop/retries/
+  dead-lettering depend on). The default path is unchanged.
+
+### Fixed
+- Kafka queue: the consumer config hardcoded `auto.offset.reset: "earliest"`, so
+  a new consumer group could not opt into `latest`. `consumerConfig()` now reads
+  `TINA4_KAFKA_AUTO_OFFSET_RESET` (then the bare `KAFKA_AUTO_OFFSET_RESET`) via
+  the exported `kafkaOffsetReset()` helper, defaulting to `earliest` so current
+  behaviour is unchanged (tina4-nodejs#263). Surfaced on the declared consumer
+  config for parity; this backend reads records from the earliest retained offset.
+
 ## 3.13.155 - 2026-10-29
 
 Version bump for cross-framework parity. No Node.js framework changes this

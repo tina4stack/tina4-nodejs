@@ -95,7 +95,17 @@ export class LiteBackend {
     // descriptor synchronously, so no handle survives a call.
   }
 
-  push(queue: string, payload: unknown, delay?: number, priority?: number): string {
+  push(queue: string, payload: unknown, delay?: number, priority?: number, raw: boolean = false): string {
+    if (raw) {
+      throw new Error(
+        "The file queue backend cannot honour push(raw=true): raw emits the " +
+          "message with no Tina4 envelope, which only a message bus consumed by " +
+          "non-Tina4 systems (Kafka) needs. This backend stores an internal " +
+          "envelope (id/status/attempts/delayUntil) that pop(), the retry " +
+          "lifecycle and dead-lettering depend on, so there is nothing to omit. " +
+          "Use the kafka backend for raw external messages.",
+      );
+    }
     const dir = this.ensureDir(queue);
     const id = randomUUID();
     const now = new Date().toISOString();

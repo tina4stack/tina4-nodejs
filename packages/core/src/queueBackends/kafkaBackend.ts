@@ -99,8 +99,26 @@ export function kafkaSecurityConfig(
   return config;
 }
 
+/**
+ * Resolve the consumer's auto.offset.reset policy from the environment.
+ *
+ * Where a NEW consumer group (one with no committed offset) starts reading:
+ * "earliest" (the default, unchanged) replays the retained backlog; "latest"
+ * skips it. Read from the Tina4-namespaced env var FIRST
+ * (`TINA4_KAFKA_AUTO_OFFSET_RESET`) and fall back to the bare librdkafka-
+ * convention name (`KAFKA_AUTO_OFFSET_RESET`) — the same precedence the TLS/SASL
+ * keys use. A blank value falls through to the default (tina4-nodejs#263).
+ *
+ * Surfaced on the declared consumer config for parity/introspection; this
+ * backend reads records over the raw protocol from the earliest retained offset.
+ * Mirrors Python's `KafkaConnector._offset_reset`.
+ */
+export function kafkaOffsetReset(env: NodeJS.ProcessEnv = process.env): string {
+  return env.TINA4_KAFKA_AUTO_OFFSET_RESET || env.KAFKA_AUTO_OFFSET_RESET || "earliest";
+}
+
 export interface QueueBackend {
-  push(queue: string, payload: unknown, delay?: number, priority?: number): string;
+  push(queue: string, payload: unknown, delay?: number, priority?: number, raw?: boolean): string;
   pop(queue: string): QueueJob | null;
   size(queue: string): number;
   clear(queue: string): void;
@@ -182,7 +200,7 @@ export class KafkaBackend implements QueueBackend {
       "bootstrap.servers": this.brokers,
       "client.id": "tina4-nodejs",
       "group.id": this.groupId,
-      "auto.offset.reset": "earliest",
+      "auto.offset.reset": kafkaOffsetReset(),
       "enable.auto.commit": false,
       ...this.securityConfig(),
     };
@@ -646,25 +664,33 @@ export class KafkaBackend implements QueueBackend {
     }
   }
 
-  push(queue: string, payload: unknown, _delay?: number): string {
-    const id = randomUUID();
-    const now = new Date().toISOString();
-
-    const job = {
+  /**
+   * Serialize the record value. raw (tina4-nodejs#264) emits the payload exactly
+   * as given — no {id, payload, status, attempts, ...} envelope — so a non-Tina4
+   * consumer reading the topic gets the schema it expects; otherwise the Tina4 job
+   * envelope. pop() unwraps both shapes (payload ?? the whole record).
+   */
+  private static encodeJob(id: string, payload: unknown, raw: boolean): string {
+    if (raw) return JSON.stringify(payload);
+    return JSON.stringify({
       id,
       payload,
       status: "pending",
-      createdAt: now,
+      createdAt: new Date().toISOString(),
       attempts: 0,
       delayUntil: null,
-    };
+    });
+  }
+
+  push(queue: string, payload: unknown, _delay?: number, _priority?: number, raw: boolean = false): string {
+    const id = randomUUID();
 
     // Topic auto-creation is ASYNCHRONOUS, so a brand-new topic answers
     // UNKNOWN_TOPIC_OR_PARTITION (3) or LEADER_NOT_AVAILABLE (5) on the first
     // attempt while the controller is still electing a leader. Retry those
     // (same 10 attempts / 200ms as the Python and PHP backends) instead of
     // failing a cold-start push; every other code throws immediately.
-    const body = JSON.stringify(job);
+    const body = KafkaBackend.encodeJob(id, payload, raw);
     let result = "";
     for (let attempt = 1; attempt <= 10; attempt++) {
       result = this.execSync("publish", queue, body);
