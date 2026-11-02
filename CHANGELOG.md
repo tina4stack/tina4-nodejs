@@ -6,6 +6,15 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.157 - 2026-11-02
+
+### Added
+- Parity regression guard for the Frond malformed-`{% endblock %}` contract
+  (`test/frondMalformedEndblockHang.test.ts`). Node's `extractBlocks` is already
+  safe (it advances `pos` after the inner loop); this locks the contract against
+  the hang fixed in tina4-python#271. Version bump keeps all four frameworks in
+  lockstep.
+
 ## 3.13.156 - 2026-11-01
 
 ### Added
