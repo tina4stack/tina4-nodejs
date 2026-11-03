@@ -1,0 +1,13 @@
+name: "tina4-nodejs CodeQL config"
+
+# Scan the shipped TypeScript source (packages/*/src). Everything excluded below
+# is non-shipped or generated, so scanning it is only noise:
+#   - test/        the node:test / vitest suite, not part of any published package
+#   - examples/    demo apps + built bundles
+#   - "**/dist"    esbuild output (generated)
+#   - types        generated .d.ts declarations
+paths-ignore:
+  - test
+  - examples
+  - "**/dist"
+  - types
