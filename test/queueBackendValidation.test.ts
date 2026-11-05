@@ -94,8 +94,10 @@ async function run() {
     wronglyRejected.length === 0, `rejected: ${JSON.stringify(wronglyRejected)}`);
 
   // NEGATIVE: a backend Node deliberately refuses (ADR-0022) must keep its OWN
-  // message, not be swallowed by the generic unknown-backend text.
-  for (const broker of ["rabbitmq", "kafka"]) {
+  // message, not be swallowed by the generic unknown-backend text. Kafka is no
+  // longer refused at construction (it now holds a persistent worker connection
+  // and drains durably), so only rabbitmq is checked here.
+  for (const broker of ["rabbitmq"]) {
     const r = construct(broker);
     assert(`a deliberately refused broker (${broker}) keeps its own message`,
       !r.ok && !r.message.includes("Unknown queue backend"), r.message.slice(0, 80));
