@@ -53,6 +53,7 @@ import { CLOSE_GOING_AWAY, devReloadWs, serveWebSocketRoute, wsRouteManager } fr
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
 import { stopAllBackgroundTasks } from "./background.js";
+import { startAllTcpServices, stopAcceptingAllTcpServices, drainAllTcpServices } from "./tcp.js";
 import { TINA4_VERSION } from "./version.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2360,6 +2361,12 @@ export async function startServer(config?: Tina4Config): Promise<{
       // promise resolves (a client can then rely on both families being up).
       const siblingServers = await startLoopbackSiblings(port, host, dispatch);
 
+      // Raw TCP services (feature 142, ADR-0102 D1) bind on THIS event loop,
+      // beside the HTTP server — one process serves both the device gateway and
+      // its dashboard. Each binds its own port; a worker that finds the port
+      // already bound skips silently (single-owner). Drained on shutdown below.
+      await startAllTcpServices(host);
+
       const displayHost = host === "0.0.0.0" ? "localhost" : host;
       const isDebug = isTruthy(process.env.TINA4_DEBUG);
       const logLevel = (process.env.TINA4_LOG_LEVEL ?? "DEBUG").toUpperCase();
@@ -2545,6 +2552,11 @@ ${reset}
           Log.info(`Closed ${wsClosed} WebSocket connection(s) with 1001 going away`);
         }
 
+        // Raw TCP services stop accepting and drain their live device
+        // connections (firing on_close) alongside the HTTP/WebSocket drain.
+        stopAcceptingAllTcpServices();
+        await drainAllTcpServices();
+
         // Race the drain against the shutdown budget. Whatever is still in
         // flight when the budget expires gets force-closed: SIGKILL is what
         // arrives next, so a bounded drain is strictly better than an
@@ -2613,6 +2625,9 @@ ${reset}
           process.off("SIGINT", onSigint);
           // Clear any registered background timers so graceful shutdown actually exits.
           stopAllBackgroundTasks();
+          // Release raw TCP listeners + connections on an explicit close() too.
+          stopAcceptingAllTcpServices();
+          void drainAllTcpServices();
           if (aiServer) aiServer.close();
           server.close();
           // Sibling loopback listeners share the port — close them alongside the
