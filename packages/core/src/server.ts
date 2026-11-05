@@ -48,7 +48,7 @@ import { generateNonce, runWithCspNonce, currentCspNonce } from "./csp.js";
 import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
-import { DevAdmin, RequestInspector, WsTracker, devRequestDenial, devHostAllowed, devToolbarAllowed } from "./devAdmin.js";
+import { DevAdmin, RequestInspector, WsTracker, devRequestDenial, devHostAllowed, devPeerAllowed, devToolbarAllowed } from "./devAdmin.js";
 import { CLOSE_GOING_AWAY, devReloadWs, serveWebSocketRoute, wsRouteManager } from "./websocket.js";
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
@@ -2320,8 +2320,9 @@ export async function startServer(config?: Tina4Config): Promise<{
     const upPath = (req.url ?? "/").split("?")[0];
     // Dev-reload channel (debug only).
     if (isDevMode() && upPath === "/__dev_reload") {
-      // ADR-0082: the reload socket answers only a loopback / TINA4_HOST Host.
-      if (!devHostAllowed(req.headers.host)) {
+      // ADR-0082: the reload socket answers only a loopback / TINA4_HOST Host,
+      // from a raw socket peer the /__dev HTTP gate would also let in.
+      if (!devHostAllowed(req.headers.host) || !devPeerAllowed(socket.remoteAddress)) {
         try { socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); } catch { /* gone */ }
         return;
       }
