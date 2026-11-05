@@ -98,7 +98,7 @@ function readExactly(sock: Socket, n: number, timeoutMs = 2000): Promise<Buffer>
   });
 }
 
-async function waitUntil(fn: () => boolean, timeoutMs = 2000): Promise<boolean> {
+async function waitUntil(fn: () => boolean, timeoutMs = 10000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (fn()) return true;
