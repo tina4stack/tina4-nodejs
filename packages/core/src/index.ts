@@ -24,6 +24,24 @@ export type {
 
 export { startServer, resolvePortAndHost, loopbackBindHosts, handle, start, stop, httpReason, resolveTemplate, resetTemplateCache, templateAutoRoutingEnabled, isBannerSuppressed } from "./server.js";
 export { background, stopAllBackgroundTasks, backgroundTaskCount } from "./background.js";
+export {
+  tcpService,
+  tcp,
+  TcpService,
+  TcpConnection,
+  registeredTcpServices,
+  clearTcpRegistry,
+  startAllTcpServices,
+  stopAcceptingAllTcpServices,
+  drainAllTcpServices,
+} from "./tcp.js";
+export type {
+  TcpServiceOptions,
+  TcpConnectHandler,
+  TcpDataHandler,
+  TcpCloseHandler,
+  TcpLineHandler,
+} from "./tcp.js";
 export { Router, RouteGroup, RouteRef, WsRouteRef, defaultRouter, runRouteMiddlewares, resolveStringMiddleware, isTrailingSlashRedirectEnabled } from "./router.js";
 export { get, post, put, patch, del, any, websocket, del as delete } from "./router.js";
 export type { RouteInfo } from "./router.js";
