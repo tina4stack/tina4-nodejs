@@ -487,10 +487,11 @@ function parseOffsetCommit(resp) {
   return resp.readInt16BE(pos);
 }
 async function offsetCommit(topic, offset) {
-  let err = parseOffsetCommit(await rpc(await coordinator(), offsetCommitRequest(topic, offset)));
-  if (COORDINATOR_ERRORS.indexOf(err) >= 0) {
-    dropCoordinator();
+  var err = 0;
+  for (var attempt = 0; attempt < 10; attempt++) {
+    if (attempt > 0) { dropCoordinator(); await new Promise(function (r) { setTimeout(r, 200 * attempt); }); }
     err = parseOffsetCommit(await rpc(await coordinator(), offsetCommitRequest(topic, offset)));
+    if (COORDINATOR_ERRORS.indexOf(err) < 0) break;
   }
   if (err !== 0) throw new Error("Kafka rejected the offset commit for " + topic + ": error code " + err);
 }
@@ -512,10 +513,11 @@ function parseOffsetFetch(resp) {
   return { offset: offset, err: err };
 }
 async function offsetFetch(topic) {
-  let r = parseOffsetFetch(await rpc(await coordinator(), offsetFetchRequest(topic)));
-  if (COORDINATOR_ERRORS.indexOf(r.err) >= 0) {
-    dropCoordinator();
+  var r = { offset: -1, err: 0 };
+  for (var attempt = 0; attempt < 10; attempt++) {
+    if (attempt > 0) { dropCoordinator(); await new Promise(function (res) { setTimeout(res, 200 * attempt); }); }
     r = parseOffsetFetch(await rpc(await coordinator(), offsetFetchRequest(topic)));
+    if (COORDINATOR_ERRORS.indexOf(r.err) < 0) break;
   }
   if (r.err !== 0) throw new Error("Kafka rejected the offset fetch for " + topic + ": error code " + r.err);
   return r.offset < 0 ? 0 : r.offset;
