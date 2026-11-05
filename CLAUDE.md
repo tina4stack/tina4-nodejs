@@ -888,7 +888,8 @@ const top = QueryBuilder.fromTable("orders")
 const adults = User.query().where("age > ?", [18]).orderBy("name").get();
 
 // Methods: fromTable, select, where, orWhere, join, leftJoin, groupBy, having,
-// orderBy, limit, get, first, count, exists, toSql, toMongo
+// orderBy, limit, offset, skip, take, get, first, count, exists, toSql, toMongo
+// (skip/take are the Mongo/Eloquent aliases of offset/limit)
 ```
 
 **NoSQL bridge:** `toMongo()` returns `{ filter, projection, sort, limit, skip }` — the same fluent state expressed as a MongoDB query document.

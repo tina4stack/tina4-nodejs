@@ -185,6 +185,36 @@ console.log("\n--- 10. limit() sets LIMIT and OFFSET ---");
   assert("limit(3, 1) returns 3 rows skipping 1", rows.records.length === 3);
 }
 
+// ---------- 10b. skip() / offset() / take() — chainable pagination verbs ----------
+// (an AI harness reached for .skip() and it did not exist; tina4#skip)
+console.log("\n--- 10b. skip() / offset() / take() ---");
+{
+  const skipped = await QueryBuilder.fromTable("users", db).orderBy("id ASC").skip(2).limit(2).get();
+  const skippedNames = skipped.records.map((r: any) => r.name);
+  // Skips Alice + Bob, returns Charlie + Diana
+  assert("skip(2) skips the leading rows", JSON.stringify(skippedNames) === JSON.stringify(["Charlie", "Diana"]), `got: ${skippedNames}`);
+
+  const offsetRows = await QueryBuilder.fromTable("users", db).orderBy("id ASC").offset(2).limit(2).get();
+  assert("offset() is the SQL-native alias", (offsetRows.records[0] as any).name === "Charlie");
+
+  const taken = await QueryBuilder.fromTable("users", db).orderBy("id ASC").take(3).get();
+  const takenNames = taken.records.map((r: any) => r.name);
+  assert("take(3) sets the limit", JSON.stringify(takenNames) === JSON.stringify(["Alice", "Bob", "Charlie"]), `got: ${takenNames}`);
+
+  const empty = await QueryBuilder.fromTable("users", db).orderBy("id ASC").skip(99).limit(5).get();
+  // Negative: skipping beyond the row count yields no rows, not a throw.
+  assert("skipping past the end returns empty, not an error", empty.records.length === 0);
+
+  // The Mongo path already names this concept "skip" — the SQL verb agrees.
+  const mongo = QueryBuilder.fromTable("users", db).skip(5).toMongo();
+  assert("skip() flows into toMongo()", (mongo as any).skip === 5);
+
+  const qb = QueryBuilder.fromTable("users", db);
+  assert("skip() returns same instance", qb.skip(1) === qb);
+  assert("offset() returns same instance", qb.offset(1) === qb);
+  assert("take() returns same instance", qb.take(1) === qb);
+}
+
 // ---------- 11. toSql() generates correct SQL ----------
 console.log("\n--- 11. toSql() generates correct SQL ---");
 {

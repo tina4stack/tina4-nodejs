@@ -223,6 +223,44 @@ export class QueryBuilder {
   }
 
   /**
+   * Set OFFSET (rows to skip) as its own chainable verb.
+   *
+   * `limit(n, offset)` buries the offset as a second positional arg; this
+   * exposes it on its own, so `.offset(20).limit(10)` reads naturally and
+   * matches the SQL keyword.
+   *
+   * @param count - Number of rows to skip.
+   * @returns this for chaining.
+   */
+  offset(count: number): QueryBuilder {
+    this.offsetVal = count;
+    return this;
+  }
+
+  /**
+   * Alias for `offset()` -- the Mongo/Eloquent name for the same thing.
+   *
+   * Mirrors the DocStore cursor's `skip` and the `skip` key that `toMongo()`
+   * already emits, so a query reads the same whether it targets SQL or MongoDB.
+   *
+   * @param count - Number of rows to skip.
+   * @returns this for chaining.
+   */
+  skip(count: number): QueryBuilder {
+    return this.offset(count);
+  }
+
+  /**
+   * Alias for `limit()` -- the Eloquent name; pairs with `skip()`.
+   *
+   * @param count - Maximum rows to return.
+   * @returns this for chaining.
+   */
+  take(count: number): QueryBuilder {
+    return this.limit(count);
+  }
+
+  /**
    * Build and return the SQL string without executing.
    *
    * @returns The constructed SQL query.
