@@ -153,22 +153,32 @@ async function run() {
 
   // ── a backend that cannot answer a question refuses by name ────────────────
   //
-  // Node's half of the rule: a backend it does not offer refuses BY NAME at
-  // construction (ADR-0022 decision 8), naming the backend so the operator can
-  // act, rather than constructing a half-working queue that loses jobs.
+  // Node's half of the rule. RabbitMQ is still NOT offered, so it refuses BY
+  // NAME at construction (ADR-0022 decision 8), naming the backend rather than
+  // constructing a half-working queue that loses jobs. Kafka IS offered now (a
+  // persistent worker connection, ADR-0105), so it constructs — but the
+  // operations a Kafka log genuinely cannot answer (clear/purge: a log is read
+  // in offset order and records leave only by retention) still refuse BY NAME
+  // rather than lying or acting on the wrong store.
   console.log("\n--- a backend that cannot answer a question refuses by name instead of lying ---");
   {
-    const named: string[] = [];
-    for (const backend of ["rabbitmq", "kafka"]) {
-      try {
-        queue(backend);
-      } catch (e: any) {
-        if (String(e?.message ?? e).includes(backend)) named.push(backend);
-      }
+    let rabbitNamed = false;
+    try {
+      queue("rabbitmq");
+    } catch (e: any) {
+      rabbitNamed = String(e?.message ?? e).includes("rabbitmq");
     }
-    assert("a backend that cannot answer a question refuses by name instead of lying",
-      named.length === 2,
-      `only these refused by name: ${JSON.stringify(named)}`);
+    assert("rabbitmq (not offered) refuses by name at construction", rabbitNamed,
+      "constructing rabbitmq did not refuse by name");
+
+    const k = queue("kafka");
+    const refusedByName = (fn: () => unknown) => {
+      try { fn(); return false; } catch (e: any) { return /kafka/i.test(String(e?.message ?? e)); }
+    };
+    assert("kafka (offered) refuses clear() by name instead of lying",
+      refusedByName(() => (k as any).clear()), "clear() did not refuse by name");
+    assert("kafka (offered) refuses purge() by name instead of lying",
+      refusedByName(() => (k as any).purge("completed")), "purge() did not refuse by name");
   }
 
   // ── a supported method returns a real answer rather than a refusal ─────────

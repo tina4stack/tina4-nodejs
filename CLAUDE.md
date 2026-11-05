@@ -14,13 +14,13 @@ Even if the skill text is not currently loaded, these are non-negotiable:
 
 The full discipline lives in `.claude/skills/tina4-maintainer/SKILL.md`; this block is the always-on floor.
 
-# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.157)
+# CLAUDE.md - AI Developer Guide for tina4-nodejs (v3.13.158)
 
 > This file helps AI assistants (Claude, Copilot, Cursor, etc.) understand and work on this codebase effectively.
 
 ## What This Project Is
 
-Tina4 for Node.js/TypeScript v3.13.157 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
+Tina4 for Node.js/TypeScript v3.13.158 - The Intelligent Native Application 4ramework. A convention-over-configuration structural paradigm. The developer writes TypeScript; Tina4 is invisible infrastructure.
 
 The philosophy: zero ceremony, batteries included, file system as source of truth.
 
@@ -888,7 +888,8 @@ const top = QueryBuilder.fromTable("orders")
 const adults = User.query().where("age > ?", [18]).orderBy("name").get();
 
 // Methods: fromTable, select, where, orWhere, join, leftJoin, groupBy, having,
-// orderBy, limit, get, first, count, exists, toSql, toMongo
+// orderBy, limit, offset, skip, take, get, first, count, exists, toSql, toMongo
+// (skip/take are the Mongo/Eloquent aliases of offset/limit)
 ```
 
 **NoSQL bridge:** `toMongo()` returns `{ filter, projection, sort, limit, skip }` — the same fluent state expressed as a MongoDB query document.

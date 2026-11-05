@@ -209,6 +209,39 @@ assert("filter chain", engine.renderString("{{ name | upper | trim }}", { name: 
 // Date filter
 assert("date filter", engine.renderString('{{ d | date("%Y-%m-%d") }}', { d: "2024-06-15T10:30:00" }) === "2024-06-15");
 
+// Date filter: Twig/PHP letters (ADR-0103, #292).
+// Local-time Date objects keep getDate()/getDay() timezone-stable.
+// 2026-03-29 14:05:09 is a Sunday.
+{
+  const d = new Date(2026, 2, 29, 14, 5, 9);
+  assert(
+    "date PHP letters Y-m-d (not printed literally)",
+    engine.renderString('{{ d | date("Y-m-d") }}', { d }) === "2026-03-29",
+  );
+  assert(
+    "date PHP letters and strftime agree",
+    engine.renderString('{{ d | date("Y-m-d H:i:s") }}', { d }) ===
+      engine.renderString('{{ d | date("%Y-%m-%d %H:%M:%S") }}', { d }),
+  );
+  assert(
+    "date PHP letters time + English names",
+    engine.renderString('{{ d | date("l, F j, Y g:i A") }}', { d }) ===
+      "Sunday, March 29, 2026 2:05 PM",
+  );
+  assert(
+    "date PHP letters D M N w",
+    engine.renderString('{{ d | date("D M N w") }}', { d }) === "Sun Mar 7 0",
+  );
+  assert(
+    "date strftime still works",
+    engine.renderString('{{ d | date("%Y/%m/%d") }}', { d }) === "2026/03/29",
+  );
+  assert(
+    "date unparseable string returned unchanged",
+    engine.renderString('{{ d | date("Y-m-d") }}', { d: "not a date" }) === "not a date",
+  );
+}
+
 // ── Custom filters ─────────────────────────────────────────────
 console.log("\n--- Custom Filters ---");
 

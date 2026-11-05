@@ -10,7 +10,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Unit tests for the middleware chain (middleware.ts).
  * Run with: npx tsx test/middleware.test.ts
  */
-import { MiddlewareChain, cors, requestLogger } from "../packages/core/src/index.ts";
+import { MiddlewareChain, cors, requestLogger, RequestLogger } from "../packages/core/src/index.ts";
 import type { Tina4Request, Tina4Response, Middleware } from "../packages/core/src/index.ts";
 
 // ADR-0018 made the CORS default DENY. These assertions are about the CORS
@@ -386,6 +386,36 @@ console.log("\n--- Request Logger behaviour ---");
 
   const offOut = runOnce("false", "true");
   assert("TINA4_LOG_REQUESTS=false silences even in dev", !offOut.includes("GET /widgets"));
+}
+
+// --- request logs carry the path, never the query string ---
+// createRequest sets req.url to the absolute URL with its query; codes and
+// tokens in it must not reach stdout or logs/tina4.log.
+console.log("\n--- Request log omits the query string ---");
+{
+  const { EventEmitter } = await import("node:events");
+  const secretUrl = "http://app.example/auth/callback?code=s3ntinel-code&token=s3ntinel-token";
+  const savedDebug = process.env.TINA4_DEBUG;
+  process.env.TINA4_DEBUG = "true";
+  let captured = "";
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { captured += a.join(" ") + "\n"; };
+  try {
+    const raw: any = new EventEmitter();
+    raw.statusCode = 200;
+    requestLogger()({ method: "GET", url: secretUrl, path: "/auth/callback" } as any, { raw } as any, () => {});
+    raw.emit("finish");
+    const req: any = { method: "GET", url: secretUrl, path: "/auth/callback" };
+    RequestLogger.beforeLog(req, { raw } as any);
+    RequestLogger.afterLog(req, { raw } as any);
+  } finally {
+    console.log = orig;
+    if (savedDebug === undefined) delete process.env.TINA4_DEBUG;
+    else process.env.TINA4_DEBUG = savedDebug;
+  }
+  assert("requestLogger logs the path", captured.includes("GET /auth/callback -> 200 ("));
+  assert("RequestLogger class logs the path", /200\S* GET \/auth\/callback /.test(captured));
+  assert("neither logger writes the query string", !captured.includes("s3ntinel"));
 }
 
 // Summary

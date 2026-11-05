@@ -12,6 +12,19 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Implements the same interface as the file-based queue but uses Apache Kafka
  * for message storage and delivery.
  *
+ * The queue API is synchronous, but a durable Kafka consumer needs a PERSISTENT
+ * connection that holds an in-memory read cursor and commits consumer-group
+ * offsets (ADR-0022 decision 8: the correct fix is "a persistent connection held
+ * on the backend instance, the way Python, PHP and Ruby already do it"). Node
+ * sockets are async, so the connection lives in a worker thread with its own
+ * event loop; the main thread drives it synchronously via a SharedArrayBuffer +
+ * Atomics.wait. The worker owns the broker socket, the group-coordinator socket,
+ * the per-topic read cursor, and the in-flight map (job id -> record offset) so
+ * complete()/fail()/reject()/retry() commit exactly the right record. This
+ * replaces the previous stateless child-process-per-operation design, which
+ * could not keep a cursor, always fetched offset 0, and never committed — so it
+ * replayed the whole topic on every call and every restart.
+ *
  * Configure via environment variables:
  *   TINA4_QUEUE_URL       — broker list (strips a leading kafka:// if present)
  *   TINA4_KAFKA_BROKERS   (override; default: "localhost:9092")
@@ -25,8 +38,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Precedence for brokers: specific TINA4_KAFKA_BROKERS var (if set)
  *   > value derived from TINA4_QUEUE_URL > existing default.
  */
-import net from "node:net";
-import { execFileSync } from "node:child_process";
+import { Worker } from "node:worker_threads";
 import { randomUUID } from "node:crypto";
 import type { QueueJob } from "../queue.js";
 
@@ -109,8 +121,6 @@ export function kafkaSecurityConfig(
  * convention name (`KAFKA_AUTO_OFFSET_RESET`) — the same precedence the TLS/SASL
  * keys use. A blank value falls through to the default (tina4-nodejs#263).
  *
- * Surfaced on the declared consumer config for parity/introspection; this
- * backend reads records over the raw protocol from the earliest retained offset.
  * Mirrors Python's `KafkaConnector._offset_reset`.
  */
 export function kafkaOffsetReset(env: NodeJS.ProcessEnv = process.env): string {
@@ -124,77 +134,585 @@ export interface QueueBackend {
   clear(queue: string): void;
 }
 
-// ── Kafka Protocol Constants ─────────────────────────────────
+/**
+ * The worker source (plain JS, run via `new Worker(src, { eval: true })`). It
+ * owns the sockets, the per-topic read cursor, and the in-flight map, speaks the
+ * Kafka wire protocol by hand (Produce v3 + v2 RecordBatch + CRC-32C, Fetch v4,
+ * FindCoordinator v1, OffsetFetch v1, OffsetCommit v2 — the lowest non-flexible
+ * versions, matching the PHP/Python backends), and answers one request at a time
+ * over a SharedArrayBuffer. No backticks / ${} inside so it embeds cleanly.
+ */
+const WORKER_SRC = `
+const net = require("node:net");
+const tls = require("node:tls");
+const { parentPort, workerData } = require("node:worker_threads");
 
-const API_PRODUCE = 0;
-const API_FETCH = 1;
-const API_LIST_OFFSETS = 2;
-const API_METADATA = 3;
-const API_OFFSET_COMMIT = 8;
-const API_OFFSET_FETCH = 9;
-const API_FIND_COORDINATOR = 10;
-const API_JOIN_GROUP = 11;
-const API_HEARTBEAT = 12;
-const API_LEAVE_GROUP = 13;
-const API_SYNC_GROUP = 14;
+const brokers = workerData.brokers;
+const groupId = workerData.groupId;
+const security = workerData.security || {};
+const offsetReset = workerData.offsetReset || "earliest";
+const header = new Int32Array(workerData.sab, 0, 2); // [0]=flag, [1]=respLen
+const outBytes = new Uint8Array(workerData.sab, 8);
 
-// ── Kafka Backend ────────────────────────────────────────────
+// Lowest versions Kafka 4.x still accepts: it REMOVED Produce v0-v2 / Fetch v0-v3
+// (the old message formats) and answers a removed version by closing the socket,
+// not with an error code. These are named constants so the source invariant test
+// (test/kafkaErrorCodes.test.ts) can assert the floors.
+const PRODUCE_VERSION = 3;
+const FETCH_VERSION = 4;
+
+let correlationId = 0;
+let brokerSock = null;
+let coordSock = null;
+const offsets = {};   // topic -> next read offset (in-memory cursor)
+const inFlight = {};   // job id -> { offset, value, attempts, isEnvelope }
+
+const COORDINATOR_ERRORS = [14, 15, 16];
+
+function parseBroker(list) {
+  const first = String(list).split(",")[0].trim();
+  const i = first.lastIndexOf(":");
+  if (i < 0) return { host: first || "localhost", port: 9092 };
+  return { host: first.slice(0, i) || "localhost", port: parseInt(first.slice(i + 1), 10) || 9092 };
+}
+
+function connect(host, port) {
+  return new Promise(function (resolve, reject) {
+    const proto = String(security["security.protocol"] || "PLAINTEXT").toUpperCase();
+    const useTls = proto.indexOf("SSL") >= 0;
+    let sock;
+    const onErr = function (e) { reject(e); };
+    if (useTls) {
+      const opts = { host: host, port: port, servername: host };
+      if (security["ssl.ca.location"]) opts.ca = require("node:fs").readFileSync(security["ssl.ca.location"]);
+      sock = tls.connect(opts, function () { sock.removeListener("error", onErr); resolve(sock); });
+    } else {
+      sock = net.createConnection({ host: host, port: port }, function () { sock.removeListener("error", onErr); resolve(sock); });
+    }
+    sock.once("error", onErr);
+  });
+}
+
+// One request/response round trip on a socket: write the framed request, read a
+// 4-byte length then that many bytes, resolve with the payload AFTER the length
+// (so it starts at correlationId). Serialized — one in flight per socket.
+function rpc(sock, reqBuf) {
+  return new Promise(function (resolve, reject) {
+    let buf = Buffer.alloc(0);
+    function onData(chunk) {
+      buf = Buffer.concat([buf, chunk]);
+      if (buf.length < 4) return;
+      const size = buf.readInt32BE(0);
+      if (buf.length < 4 + size) return;
+      sock.removeListener("data", onData);
+      sock.removeListener("error", onErr);
+      resolve(buf.subarray(4, 4 + size));
+    }
+    function onErr(e) {
+      sock.removeListener("data", onData);
+      reject(e);
+    }
+    sock.on("data", onData);
+    sock.once("error", onErr);
+    sock.write(reqBuf);
+  });
+}
+
+// ── encoders ──────────────────────────────────────────────────────────────
+function kstr(s) {
+  const b = Buffer.from(s, "utf-8");
+  const out = Buffer.alloc(2 + b.length);
+  out.writeInt16BE(b.length, 0);
+  b.copy(out, 2);
+  return out;
+}
+function frame(apiKey, apiVersion, body) {
+  correlationId++;
+  const client = Buffer.from("tina4-nodejs", "utf-8");
+  const head = Buffer.alloc(2 + 2 + 4 + 2 + client.length);
+  let p = 0;
+  head.writeInt16BE(apiKey, p); p += 2;
+  head.writeInt16BE(apiVersion, p); p += 2;
+  head.writeInt32BE(correlationId, p); p += 4;
+  head.writeInt16BE(client.length, p); p += 2;
+  client.copy(head, p);
+  const payload = Buffer.concat([head, body]);
+  const out = Buffer.alloc(4 + payload.length);
+  out.writeInt32BE(payload.length, 0);
+  payload.copy(out, 4);
+  return out;
+}
+
+// ── CRC-32C + varints + v2 RecordBatch (produce) ────────────────────────────
+const CRC32C_TABLE = (function () {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0x82f63b78 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32c(buf) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) crc = (CRC32C_TABLE[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8)) >>> 0;
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function zig(n) { return ((n << 1) ^ (n >> 31)) >>> 0; }
+function varU(u) {
+  const b = [];
+  let v = u >>> 0;
+  for (;;) { if ((v & ~0x7f) === 0) { b.push(v); break; } b.push((v & 0x7f) | 0x80); v >>>= 7; }
+  return Buffer.from(b);
+}
+function varint(n) { return varU(zig(n)); }
+function readVarint(buf, pos) {
+  let result = 0, shift = 0, b;
+  do { b = buf[pos++]; result |= (b & 0x7f) << shift; shift += 7; } while (b & 0x80);
+  result = result >>> 0;
+  return { value: (result >>> 1) ^ -(result & 1), next: pos };
+}
+function buildRecordBatch(valueBytes) {
+  const now = BigInt(Date.now());
+  const recBody = Buffer.concat([
+    Buffer.from([0]), varint(0), varint(0), varint(-1),
+    varint(valueBytes.length), valueBytes, varint(0),
+  ]);
+  const record = Buffer.concat([varint(recBody.length), recBody]);
+  const crcBody = Buffer.alloc(2 + 4 + 8 + 8 + 8 + 2 + 4 + 4 + record.length);
+  let c = 0;
+  crcBody.writeInt16BE(0, c); c += 2;
+  crcBody.writeInt32BE(0, c); c += 4;
+  crcBody.writeBigInt64BE(now, c); c += 8;
+  crcBody.writeBigInt64BE(now, c); c += 8;
+  crcBody.writeBigInt64BE(-1n, c); c += 8;
+  crcBody.writeInt16BE(-1, c); c += 2;
+  crcBody.writeInt32BE(-1, c); c += 4;
+  crcBody.writeInt32BE(1, c); c += 4;
+  record.copy(crcBody, c);
+  const crc = crc32c(crcBody);
+  const batchLength = 4 + 1 + 4 + crcBody.length;
+  const head = Buffer.alloc(8 + 4 + 4 + 1 + 4);
+  let h = 0;
+  head.writeBigInt64BE(0n, h); h += 8;
+  head.writeInt32BE(batchLength, h); h += 4;
+  head.writeInt32BE(-1, h); h += 4;
+  head.writeInt8(2, h); h += 1;
+  head.writeUInt32BE(crc, h); h += 4;
+  return Buffer.concat([head, crcBody]);
+}
+
+// ── produce ─────────────────────────────────────────────────────────────────
+function produceRequest(topic, valueBytes) {
+  const topicBuf = Buffer.from(topic, "utf-8");
+  const batch = buildRecordBatch(valueBytes);
+  const body = Buffer.alloc(2 + 2 + 4 + 4 + 2 + topicBuf.length + 4 + 4 + 4 + batch.length);
+  let p = 0;
+  body.writeInt16BE(-1, p); p += 2;        // transactionalId null
+  body.writeInt16BE(1, p); p += 2;         // acks 1
+  body.writeInt32BE(10000, p); p += 4;     // timeoutMs
+  body.writeInt32BE(1, p); p += 4;         // topics
+  body.writeInt16BE(topicBuf.length, p); p += 2;
+  topicBuf.copy(body, p); p += topicBuf.length;
+  body.writeInt32BE(1, p); p += 4;         // partitions
+  body.writeInt32BE(0, p); p += 4;         // partition 0
+  body.writeInt32BE(batch.length, p); p += 4;
+  batch.copy(body, p);
+  return frame(0, PRODUCE_VERSION, body);
+}
+function parseProduce(resp) {
+  let pos = 4; // correlationId
+  const topicCount = resp.readInt32BE(pos); pos += 4;
+  let err = 0;
+  for (let t = 0; t < topicCount; t++) {
+    const tl = resp.readInt16BE(pos); pos += 2 + tl;
+    const pc = resp.readInt32BE(pos); pos += 4;
+    for (let pi = 0; pi < pc; pi++) {
+      pos += 4; err = resp.readInt16BE(pos); pos += 2; pos += 8; pos += 8;
+    }
+  }
+  return err;
+}
+async function produce(topic, valueBytes) {
+  const sock = await broker();
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    const err = parseProduce(await rpc(sock, produceRequest(topic, valueBytes)));
+    if (err === 0) return;
+    if ((err !== 3 && err !== 5) || attempt === 10) {
+      throw new Error("Kafka rejected the produce for topic " + topic + ": error code " + err);
+    }
+    await sleep(200);
+  }
+}
+
+// ── fetch ─────────────────────────────────────────────────────────────────
+function fetchRequest(topic, offset) {
+  const topicBuf = Buffer.from(topic, "utf-8");
+  const buf = Buffer.alloc(4 + 4 + 4 + 4 + 1 + 4 + 2 + topicBuf.length + 4 + 4 + 8 + 4);
+  let p = 0;
+  buf.writeInt32BE(-1, p); p += 4;       // replicaId
+  buf.writeInt32BE(1000, p); p += 4;     // maxWaitMs
+  buf.writeInt32BE(1, p); p += 4;        // minBytes
+  buf.writeInt32BE(1048576, p); p += 4;  // maxBytes
+  buf.writeInt8(0, p); p += 1;           // isolation READ_UNCOMMITTED
+  buf.writeInt32BE(1, p); p += 4;        // topics
+  buf.writeInt16BE(topicBuf.length, p); p += 2;
+  topicBuf.copy(buf, p); p += topicBuf.length;
+  buf.writeInt32BE(1, p); p += 4;        // partitions
+  buf.writeInt32BE(0, p); p += 4;        // partition 0
+  buf.writeBigInt64BE(BigInt(offset), p); p += 8;
+  buf.writeInt32BE(1048576, p); p += 4;
+  return frame(1, FETCH_VERSION, buf);
+}
+// Decode the first record of the partition's record-set: its value string and
+// absolute offset (baseOffset + offsetDelta). null = no usable record.
+function firstRecord(buf, start, end) {
+  let pos = start;
+  while (pos + 12 <= end) {
+    const baseOffset = buf.readBigInt64BE(pos);
+    const batchLength = buf.readInt32BE(pos + 8);
+    const batchStart = pos + 12;
+    const batchEnd = batchStart + batchLength;
+    if (batchLength <= 0 || batchEnd > end) break;
+    const magic = buf.readInt8(batchStart + 4);
+    if (magic !== 2) { pos = batchEnd; continue; }
+    let r = batchStart + 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4;
+    const recordsCount = buf.readInt32BE(r); r += 4;
+    for (let i = 0; i < recordsCount && r < batchEnd; i++) {
+      const recLen = readVarint(buf, r);
+      let rp = recLen.next;
+      const recordEnd = rp + recLen.value;
+      rp += 1;
+      rp = readVarint(buf, rp).next;              // timestampDelta
+      const offDelta = readVarint(buf, rp); rp = offDelta.next;
+      const keyLen = readVarint(buf, rp); rp = keyLen.next;
+      if (keyLen.value >= 0) rp += keyLen.value;
+      const valLen = readVarint(buf, rp); rp = valLen.next;
+      if (valLen.value >= 0) {
+        return {
+          value: buf.subarray(rp, rp + valLen.value).toString("utf-8"),
+          offset: Number(baseOffset) + offDelta.value,
+        };
+      }
+      r = recordEnd;
+    }
+    pos = batchEnd;
+  }
+  return null;
+}
+async function fetchAt(topic, offset) {
+  const sock = await broker();
+  const resp = await rpc(sock, fetchRequest(topic, offset));
+  let pos = 4;       // correlationId
+  pos += 4;          // throttleTimeMs
+  const topicCount = resp.readInt32BE(pos); pos += 4;
+  let rec = null;
+  for (let t = 0; t < topicCount; t++) {
+    const tl = resp.readInt16BE(pos); pos += 2 + tl;
+    const pc = resp.readInt32BE(pos); pos += 4;
+    for (let pi = 0; pi < pc; pi++) {
+      pos += 4;
+      const err = resp.readInt16BE(pos); pos += 2;
+      pos += 8; pos += 8;
+      const aborted = resp.readInt32BE(pos); pos += 4;
+      if (aborted > 0) pos += aborted * 16;
+      const recSize = resp.readInt32BE(pos); pos += 4;
+      if (err !== 0 && err !== 3 && err !== 5) {
+        throw new Error("Kafka rejected the fetch for topic " + topic + ": error code " + err);
+      }
+      if (err === 0 && recSize > 0) {
+        const r = firstRecord(resp, pos, pos + recSize);
+        if (r !== null) rec = r;
+      }
+      if (recSize > 0) pos += recSize;
+    }
+  }
+  return rec;
+}
+
+// ── coordinator + offsets ───────────────────────────────────────────────────
+function readNullableString(buf, pos) {
+  const len = buf.readInt16BE(pos); pos += 2;
+  if (len < 0) return { value: null, next: pos };
+  return { value: buf.toString("utf-8", pos, pos + len), next: pos + len };
+}
+async function findCoordinator() {
+  const sock = await broker();
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const body = Buffer.concat([kstr(groupId), Buffer.from([0])]); // key_type 0 = group
+    const resp = await rpc(sock, frame(10, 1, body));
+    let pos = 4;        // correlationId
+    pos += 4;           // throttle
+    const err = resp.readInt16BE(pos); pos += 2;
+    pos = readNullableString(resp, pos).next; // error_message
+    pos += 4;           // node_id
+    const hostRes = readNullableString(resp, pos); pos = hostRes.next;
+    const port = resp.readInt32BE(pos);
+    if (err === 0 && hostRes.value) return { host: hostRes.value, port: port };
+    if (err !== 14 && err !== 15) {
+      throw new Error("Kafka FindCoordinator failed for group " + groupId + ": error code " + err);
+    }
+    await sleep(300);
+  }
+  throw new Error("Kafka group coordinator for " + groupId + " did not become available");
+}
+async function coordinator() {
+  if (coordSock) return coordSock;
+  const c = await findCoordinator();
+  coordSock = await connect(c.host, c.port);
+  return coordSock;
+}
+function dropCoordinator() {
+  if (coordSock) { try { coordSock.destroy(); } catch (e) { /* ignore */ } }
+  coordSock = null;
+}
+function offsetCommitRequest(topic, offset) {
+  const body = Buffer.concat([
+    kstr(groupId),
+    int32(-1),            // generation_id -1 (simple consumer)
+    kstr(""),             // member_id ""
+    int64(-1n),           // retention_time -1
+    int32(1), kstr(topic), int32(1), int32(0), int64(BigInt(offset)), int16(-1),
+  ]);
+  return frame(8, 2, body);
+}
+function parseOffsetCommit(resp) {
+  let pos = 4;
+  const tc = resp.readInt32BE(pos); pos += 4;
+  if (tc === 0) return 16;
+  const tl = resp.readInt16BE(pos); pos += 2 + tl;
+  const pc = resp.readInt32BE(pos); pos += 4;
+  if (pc === 0) return 16;
+  pos += 4;
+  return resp.readInt16BE(pos);
+}
+async function offsetCommit(topic, offset) {
+  var err = 0;
+  for (var attempt = 0; attempt < 10; attempt++) {
+    if (attempt > 0) { dropCoordinator(); await new Promise(function (r) { setTimeout(r, 200 * attempt); }); }
+    err = parseOffsetCommit(await rpc(await coordinator(), offsetCommitRequest(topic, offset)));
+    if (COORDINATOR_ERRORS.indexOf(err) < 0) break;
+  }
+  if (err !== 0) throw new Error("Kafka rejected the offset commit for " + topic + ": error code " + err);
+}
+function offsetFetchRequest(topic) {
+  const body = Buffer.concat([kstr(groupId), int32(1), kstr(topic), int32(1), int32(0)]);
+  return frame(9, 1, body);
+}
+function parseOffsetFetch(resp) {
+  let pos = 4;
+  const tc = resp.readInt32BE(pos); pos += 4;
+  if (tc === 0) return { offset: -1, err: 16 };
+  const tl = resp.readInt16BE(pos); pos += 2 + tl;
+  const pc = resp.readInt32BE(pos); pos += 4;
+  if (pc === 0) return { offset: -1, err: 16 };
+  pos += 4;
+  const offset = Number(resp.readBigInt64BE(pos)); pos += 8;
+  pos = readNullableString(resp, pos).next;
+  const err = resp.readInt16BE(pos);
+  return { offset: offset, err: err };
+}
+async function offsetFetch(topic) {
+  var r = { offset: -1, err: 0 };
+  for (var attempt = 0; attempt < 10; attempt++) {
+    if (attempt > 0) { dropCoordinator(); await new Promise(function (res) { setTimeout(res, 200 * attempt); }); }
+    r = parseOffsetFetch(await rpc(await coordinator(), offsetFetchRequest(topic)));
+    if (COORDINATOR_ERRORS.indexOf(r.err) < 0) break;
+  }
+  if (r.err !== 0) throw new Error("Kafka rejected the offset fetch for " + topic + ": error code " + r.err);
+  return r.offset < 0 ? 0 : r.offset;
+}
+
+function int16(n) { const b = Buffer.alloc(2); b.writeInt16BE(n, 0); return b; }
+function int32(n) { const b = Buffer.alloc(4); b.writeInt32BE(n, 0); return b; }
+function int64(n) { const b = Buffer.alloc(8); b.writeBigInt64BE(BigInt(n), 0); return b; }
+function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+async function broker() {
+  if (brokerSock) return brokerSock;
+  const b = parseBroker(brokers);
+  brokerSock = await connect(b.host, b.port);
+  return brokerSock;
+}
+
+// Resume from the committed offset on the FIRST read of a topic in this worker,
+// then advance the in-memory cursor; the committed offset only moves on a
+// commit, so it lags and a crash before commit replays (at-least-once).
+async function fetchNext(topic) {
+  if (!(topic in offsets)) offsets[topic] = await offsetFetch(topic);
+  const rec = await fetchAt(topic, offsets[topic]);
+  if (rec === null) return null;
+  offsets[topic] = rec.offset + 1;
+  return rec;
+}
+
+function encodeEnvelope(id, payload, attempts) {
+  return JSON.stringify({ id: id, payload: payload, status: "pending", createdAt: new Date().toISOString(), attempts: attempts, delayUntil: null });
+}
+
+async function handle(req) {
+  const op = req.op;
+  if (op === "publish") {
+    await produce(req.topic, Buffer.from(req.value, "utf-8"));
+    return { ok: true };
+  }
+  if (op === "dequeueRaw") {
+    // The value exactly as it sits on the wire (a raw record stays its bare
+    // bytes — tina4-nodejs#264), with no id/offset tracking. For wire
+    // inspection; the facade consumes through "pop", which normalises + tracks.
+    const rec = await fetchNext(req.topic);
+    if (rec === null) return { ok: true, message: null };
+    let decoded;
+    try { decoded = JSON.parse(rec.value); } catch (e) { decoded = rec.value; }
+    return { ok: true, message: decoded };
+  }
+  if (op === "pop") {
+    let rec;
+    try {
+      rec = await fetchNext(req.topic);
+    } catch (e) {
+      // A malformed/short response runs the parser off the end (a RangeError);
+      // anything else is a transport failure. Both name the topic so the cause
+      // is findable, and neither reads as an empty queue (ADR: a real failure
+      // must never look idle). Wording matches the Python/PHP backends.
+      const range = (e instanceof RangeError) || /out of range|bounds/i.test((e && e.message) || "");
+      if (range) throw new Error("Kafka fetch for topic " + req.topic + " returned an unreadable response: " + ((e && e.message) || e));
+      throw new Error("Kafka fetch for topic " + req.topic + " failed: " + ((e && e.message) || e));
+    }
+    if (rec === null) return { ok: true, message: null };
+    const coordinate = req.topic + ":0:" + rec.offset;
+    let decoded;
+    try { decoded = JSON.parse(rec.value); } catch (e) { decoded = null; }
+    let message;
+    let isEnvelope = false;
+    if (decoded !== null && typeof decoded === "object" && !Array.isArray(decoded) && "payload" in decoded) {
+      message = decoded;
+      isEnvelope = true;
+      if (!message.id) message.id = coordinate;
+    } else {
+      message = { id: coordinate, payload: decoded === null ? rec.value : decoded, status: "pending", attempts: 0 };
+    }
+    // The Job lifecycle (complete/fail/retry) routes by the record's own topic,
+    // so it must be carried back (like the file/mongodb backends do).
+    message.topic = req.topic;
+    inFlight[String(message.id)] = { offset: rec.offset, value: rec.value, attempts: message.attempts || 0, isEnvelope: isEnvelope };
+    return { ok: true, message: message };
+  }
+  if (op === "complete") {
+    const rec = inFlight[String(req.id)];
+    if (rec) { delete inFlight[String(req.id)]; await offsetCommit(req.topic, rec.offset + 1); }
+    return { ok: true };
+  }
+  if (op === "fail") {
+    const rec = inFlight[String(req.id)];
+    if (rec) {
+      delete inFlight[String(req.id)];
+      const attempts = (rec.attempts || 0) + 1;
+      const parsed = (function () { try { return JSON.parse(rec.value); } catch (e) { return rec.value; } })();
+      const payload = (parsed && typeof parsed === "object" && "payload" in parsed) ? parsed.payload : parsed;
+      if (attempts < req.maxRetries) {
+        await produce(req.topic, Buffer.from(encodeEnvelope(req.id, payload, attempts), "utf-8"));
+      } else {
+        await produce(req.topic + ".dead_letter", Buffer.from(JSON.stringify({ id: req.id, payload: payload, attempts: attempts, error: req.error }), "utf-8"));
+      }
+      await offsetCommit(req.topic, rec.offset + 1);
+    }
+    return { ok: true };
+  }
+  if (op === "reject") {
+    const rec = inFlight[String(req.id)];
+    if (rec) {
+      delete inFlight[String(req.id)];
+      const parsed = (function () { try { return JSON.parse(rec.value); } catch (e) { return rec.value; } })();
+      const payload = (parsed && typeof parsed === "object" && "payload" in parsed) ? parsed.payload : parsed;
+      await produce(req.topic + ".dead_letter", Buffer.from(JSON.stringify({ id: req.id, payload: payload, attempts: req.maxRetries, error: req.reason }), "utf-8"));
+      await offsetCommit(req.topic, rec.offset + 1);
+    }
+    return { ok: true };
+  }
+  if (op === "retry") {
+    const rec = inFlight[String(req.id)];
+    if (rec) {
+      delete inFlight[String(req.id)];
+      const attempts = (rec.attempts || 0) + 1;
+      const parsed = (function () { try { return JSON.parse(rec.value); } catch (e) { return rec.value; } })();
+      const payload = (parsed && typeof parsed === "object" && "payload" in parsed) ? parsed.payload : parsed;
+      await produce(req.topic, Buffer.from(encodeEnvelope(req.id, payload, attempts), "utf-8"));
+      await offsetCommit(req.topic, rec.offset + 1);
+    }
+    return { ok: true };
+  }
+  if (op === "deadLetters") {
+    // Read the <topic>.dead_letter topic from the beginning; every record on it
+    // is a dead letter by construction. A throwaway cursor that never commits,
+    // so it does not disturb the main consume position.
+    const dlq = req.topic + ".dead_letter";
+    const out = [];
+    let off = 0;
+    for (;;) {
+      const rec = await fetchAt(dlq, off);
+      if (rec === null) break;
+      off = rec.offset + 1;
+      try { out.push(JSON.parse(rec.value)); } catch (e) { /* skip */ }
+      if (out.length > 10000) break;
+    }
+    return { ok: true, deadLetters: out };
+  }
+  if (op === "close") {
+    try { if (brokerSock) brokerSock.destroy(); } catch (e) { /* ignore */ }
+    dropCoordinator();
+    return { ok: true, closing: true };
+  }
+  return { ok: false, error: "unknown op " + op };
+}
+
+parentPort.on("message", async function (req) {
+  let res;
+  try { res = await handle(req); }
+  catch (e) { res = { ok: false, error: (e && e.message) ? e.message : String(e) }; }
+  const bytes = Buffer.from(JSON.stringify(res), "utf-8");
+  outBytes.set(bytes.subarray(0, outBytes.length), 0);
+  Atomics.store(header, 1, Math.min(bytes.length, outBytes.length));
+  Atomics.store(header, 0, 1);
+  Atomics.notify(header, 0);
+});
+`;
 
 /**
- * Kafka queue backend using raw Kafka protocol over TCP.
- *
- * Uses synchronous-style communication by spawning a child process
- * for each operation, similar to the Redis session handler pattern.
+ * Kafka queue backend — a persistent worker-thread connection (see the file
+ * header). The public API stays synchronous; each call blocks the main thread on
+ * Atomics.wait while the worker runs the async socket I/O.
  */
 export class KafkaBackend implements QueueBackend {
   private brokers: string;
   private groupId: string;
+  private worker: Worker | null = null;
+  private sab: SharedArrayBuffer | null = null;
+  private header: Int32Array | null = null;
+  private outBytes: Uint8Array | null = null;
+  private static readonly SAB_SIZE = 1 << 20; // 1 MiB (8-byte header + response bytes)
+  private static readonly CALL_TIMEOUT_MS = 20000;
 
   constructor(config?: KafkaConfig) {
-    // Base layer: brokers derived from TINA4_QUEUE_URL (strip a leading
-    // kafka:// scheme if present; otherwise use the value as-is, e.g.
-    // "localhost:9092").
     const url = process.env.TINA4_QUEUE_URL;
     const fromUrl = url ? url.replace(/^kafka:\/\//, "") : undefined;
-
-    // Precedence: explicit config arg > specific TINA4_KAFKA_BROKERS var
-    // > value from TINA4_QUEUE_URL > existing default.
     this.brokers = config?.brokers ?? process.env.TINA4_KAFKA_BROKERS ?? fromUrl ?? "localhost:9092";
     this.groupId = config?.groupId ?? process.env.TINA4_KAFKA_GROUP_ID ?? "tina4_consumer_group";
   }
 
-  /**
-   * Resolved connection config — exposed for testing/introspection.
-   */
+  /** Resolved connection config — exposed for testing/introspection. */
   getConfig(): Required<Omit<KafkaConfig, "visibilityTimeout">> {
     return { brokers: this.brokers, groupId: this.groupId };
   }
 
-  /**
-   * Resolved SSL/SASL client config from the environment (PLAINTEXT default).
-   * Mirrors Python's `KafkaConnector._security_config`.
-   */
   securityConfig(): KafkaSecurityConfig {
     return kafkaSecurityConfig();
   }
 
-  /**
-   * Full producer config — brokers + client id + the resolved security block.
-   * The security keys are applied to BOTH producer and consumer (matching
-   * Python's `_connect_confluent`).
-   */
   producerConfig(): KafkaClientConfig {
-    return {
-      "bootstrap.servers": this.brokers,
-      "client.id": "tina4-nodejs",
-      ...this.securityConfig(),
-    };
+    return { "bootstrap.servers": this.brokers, "client.id": "tina4-nodejs", ...this.securityConfig() };
   }
 
-  /**
-   * Full consumer config — brokers + client id + group id + the SAME resolved
-   * security block applied to the producer.
-   */
   consumerConfig(): KafkaClientConfig {
     return {
       "bootstrap.servers": this.brokers,
@@ -206,469 +724,51 @@ export class KafkaBackend implements QueueBackend {
     };
   }
 
-  /**
-   * Parse broker string into host:port.
-   */
-  private parseBroker(): { host: string; port: number } {
-    const parts = this.brokers.split(",")[0].trim().split(":");
-    return {
-      host: parts[0] ?? "localhost",
-      port: parts[1] ? parseInt(parts[1], 10) : 9092,
-    };
+  /** Lazily start the persistent worker + its shared buffer. */
+  private ensureWorker(): void {
+    if (this.worker) return;
+    this.sab = new SharedArrayBuffer(KafkaBackend.SAB_SIZE);
+    this.header = new Int32Array(this.sab, 0, 2);
+    this.outBytes = new Uint8Array(this.sab, 8);
+    this.worker = new Worker(WORKER_SRC, {
+      eval: true,
+      workerData: {
+        brokers: this.brokers,
+        groupId: this.groupId,
+        security: this.securityConfig(),
+        offsetReset: kafkaOffsetReset(),
+        sab: this.sab,
+      },
+    });
+    // The worker must not keep the parent process alive by itself.
+    this.worker.unref();
   }
 
-  /**
-   * Execute a Kafka operation synchronously via a child process.
-   *
-   * The wire protocol is hand-rolled (Tina4 is zero-dependency — no npm Kafka
-   * library). Produce uses Produce **v3** carrying a Kafka **v2 RecordBatch**
-   * (magic byte 2) with a **CRC-32C** (Castagnoli) checksum; Fetch uses Fetch
-   * **v4** and parses the v2 RecordBatch out of the response. Both formats are
-   * what a modern KRaft broker (apache/kafka 3.7.0) requires — the old
-   * Produce-v0 / message-format-v0 / CRC=0 batch is rejected by such brokers.
-   */
-  private execSync(operation: string, topic: string, data?: string): string {
-    // execFileSync imported at top level
-    const broker = this.parseBroker();
-
-    const script = `
-      const net = require("node:net");
-      const host = ${JSON.stringify(broker.host)};
-      const port = ${broker.port};
-      const operation = ${JSON.stringify(operation)};
-      const topic = ${JSON.stringify(topic)};
-      const groupId = ${JSON.stringify(this.groupId)};
-      const data = ${JSON.stringify(data ?? "")};
-      const API_PRODUCE = ${API_PRODUCE};
-      const API_FETCH = ${API_FETCH};
-      const PRODUCE_VERSION = 3; // v3+ requires the v2 RecordBatch format
-      const FETCH_VERSION = 4;   // v4 returns v2 RecordBatches + isolation_level
-      let correlationId = 0;
-
-      // ── CRC-32C (Castagnoli, polynomial 0x1EDC6F41), table-based ──────────
-      // Node has no built-in CRC-32C; the v2 RecordBatch mandates it over the
-      // bytes from \`attributes\` to the end of the batch. A wrong CRC makes the
-      // broker drop the connection, so this must be exact.
-      const CRC32C_TABLE = (() => {
-        const table = new Uint32Array(256);
-        for (let n = 0; n < 256; n++) {
-          let c = n;
-          for (let k = 0; k < 8; k++) {
-            c = (c & 1) ? (0x82f63b78 ^ (c >>> 1)) : (c >>> 1);
-          }
-          table[n] = c >>> 0;
-        }
-        return table;
-      })();
-      function crc32c(buf) {
-        let crc = 0xffffffff;
-        for (let i = 0; i < buf.length; i++) {
-          crc = (CRC32C_TABLE[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8)) >>> 0;
-        }
-        return (crc ^ 0xffffffff) >>> 0;
-      }
-
-      // ── Kafka protocol varints (zigzag-encoded signed varints) ────────────
-      function encodeZigZag(n) {
-        // 32-bit zigzag: (n << 1) ^ (n >> 31)
-        return ((n << 1) ^ (n >> 31)) >>> 0;
-      }
-      function encodeVarintUnsigned(u) {
-        const bytes = [];
-        let v = u >>> 0;
-        while (true) {
-          if ((v & ~0x7f) === 0) { bytes.push(v); break; }
-          bytes.push((v & 0x7f) | 0x80);
-          v >>>= 7;
-        }
-        return Buffer.from(bytes);
-      }
-      function encodeVarint(n) {
-        // signed varint = zigzag then unsigned-varint
-        return encodeVarintUnsigned(encodeZigZag(n));
-      }
-      function decodeVarint(buf, pos) {
-        // returns { value, next } — signed (zigzag-decoded)
-        let result = 0, shift = 0, b;
-        do {
-          b = buf[pos++];
-          result |= (b & 0x7f) << shift;
-          shift += 7;
-        } while (b & 0x80);
-        result = result >>> 0;
-        // zigzag decode
-        const value = (result >>> 1) ^ -(result & 1);
-        return { value, next: pos };
-      }
-
-      // ── v2 RecordBatch builder ────────────────────────────────────────────
-      function buildRecordBatch(valueBytes) {
-        const now = BigInt(Date.now());
-
-        // Build the single record body.
-        // record = attributes:int8(0), timestampDelta:varint(0),
-        //          offsetDelta:varint(0), keyLen:varint(-1 null),
-        //          valueLen:varint(len), value, headerCount:varint(0)
-        const recBody = Buffer.concat([
-          Buffer.from([0]),              // attributes (int8)
-          encodeVarint(0),               // timestampDelta
-          encodeVarint(0),               // offsetDelta
-          encodeVarint(-1),              // keyLen (-1 = null key)
-          encodeVarint(valueBytes.length), // valueLen
-          valueBytes,                    // value (JSON payload bytes)
-          encodeVarint(0),               // headerCount
-        ]);
-        // record length prefix = signed varint of recBody length
-        const record = Buffer.concat([encodeVarint(recBody.length), recBody]);
-        const recordsCount = 1;
-
-        // The portion the CRC covers starts at \`attributes\` and runs to end.
-        // crcBody = attributes:int16(0), lastOffsetDelta:int32(count-1),
-        //           firstTimestamp:int64, maxTimestamp:int64,
-        //           producerId:int64(-1), producerEpoch:int16(-1),
-        //           baseSequence:int32(-1), recordsCount:int32, records
-        const crcBody = Buffer.alloc(2 + 4 + 8 + 8 + 8 + 2 + 4 + 4 + record.length);
-        let c = 0;
-        crcBody.writeInt16BE(0, c); c += 2;                 // attributes
-        crcBody.writeInt32BE(recordsCount - 1, c); c += 4;  // lastOffsetDelta
-        crcBody.writeBigInt64BE(now, c); c += 8;            // firstTimestamp
-        crcBody.writeBigInt64BE(now, c); c += 8;            // maxTimestamp
-        crcBody.writeBigInt64BE(-1n, c); c += 8;            // producerId
-        crcBody.writeInt16BE(-1, c); c += 2;                // producerEpoch
-        crcBody.writeInt32BE(-1, c); c += 4;                // baseSequence
-        crcBody.writeInt32BE(recordsCount, c); c += 4;      // recordsCount
-        record.copy(crcBody, c);
-
-        const crc = crc32c(crcBody);
-
-        // Header before the CRC-covered region:
-        // baseOffset:int64(0), batchLength:int32, partitionLeaderEpoch:int32(-1),
-        // magic:int8(2), crc:uint32. batchLength counts everything AFTER itself
-        // (partitionLeaderEpoch through end of records) = 4 + 1 + 4 + crcBody.
-        const batchLength = 4 + 1 + 4 + crcBody.length;
-        const head = Buffer.alloc(8 + 4 + 4 + 1 + 4);
-        let h = 0;
-        head.writeBigInt64BE(0n, h); h += 8;        // baseOffset
-        head.writeInt32BE(batchLength, h); h += 4;  // batchLength
-        head.writeInt32BE(-1, h); h += 4;           // partitionLeaderEpoch
-        head.writeInt8(2, h); h += 1;               // magic = 2
-        head.writeUInt32BE(crc, h); h += 4;         // crc (CRC-32C)
-
-        return Buffer.concat([head, crcBody]);
-      }
-
-      // ── Produce v3 request ─────────────────────────────────────────────────
-      function buildProduceRequest(topicName, valueBytes) {
-        correlationId++;
-        const clientBuf = Buffer.from("tina4", "utf-8");
-        const topicBuf = Buffer.from(topicName, "utf-8");
-        const recordBatch = buildRecordBatch(valueBytes);
-
-        const body = Buffer.alloc(
-          2 + // transactionalId (-1 null nullable_string)
-          2 + // acks
-          4 + // timeoutMs
-          4 + // topics array count
-          2 + topicBuf.length + // topic name
-          4 + // partitions array count
-          4 + // partition index
-          4 + recordBatch.length // recordSetBytes (int32 size) + batch
-        );
-        let p = 0;
-        body.writeInt16BE(-1, p); p += 2;            // transactionalId = null
-        body.writeInt16BE(1, p); p += 2;             // acks = 1
-        body.writeInt32BE(10000, p); p += 4;         // timeoutMs
-        body.writeInt32BE(1, p); p += 4;             // topics count
-        body.writeInt16BE(topicBuf.length, p); p += 2;
-        topicBuf.copy(body, p); p += topicBuf.length;
-        body.writeInt32BE(1, p); p += 4;             // partitions count
-        body.writeInt32BE(0, p); p += 4;             // partition index 0
-        body.writeInt32BE(recordBatch.length, p); p += 4; // recordSetBytes size
-        recordBatch.copy(body, p);
-
-        return frameRequest(API_PRODUCE, PRODUCE_VERSION, clientBuf, body);
-      }
-
-      // ── Fetch v4 request ────────────────────────────────────────────────────
-      function buildFetchRequest(topicName, fetchOffset) {
-        correlationId++;
-        const clientBuf = Buffer.from("tina4", "utf-8");
-        const topicBuf = Buffer.from(topicName, "utf-8");
-
-        // Fetch v4 request body (NO logStartOffset — that arrives in v5+):
-        // replicaId(4), maxWaitMs(4), minBytes(4), maxBytes(4 v3+),
-        // isolationLevel(1 v4+), topics[count]: name, partitions[count]:
-        //   partition(4), fetchOffset(8), partitionMaxBytes(4).
-        const buf = Buffer.alloc(4 + 4 + 4 + 4 + 1 + 4 + (2 + topicBuf.length) + 4 + 4 + 8 + 4);
-        let p = 0;
-        buf.writeInt32BE(-1, p); p += 4;             // replicaId (-1 consumer)
-        buf.writeInt32BE(1000, p); p += 4;           // maxWaitMs
-        buf.writeInt32BE(1, p); p += 4;              // minBytes
-        buf.writeInt32BE(1048576, p); p += 4;        // maxBytes
-        buf.writeInt8(0, p); p += 1;                 // isolationLevel = READ_UNCOMMITTED
-        buf.writeInt32BE(1, p); p += 4;              // topics count
-        buf.writeInt16BE(topicBuf.length, p); p += 2;
-        topicBuf.copy(buf, p); p += topicBuf.length;
-        buf.writeInt32BE(1, p); p += 4;              // partitions count
-        buf.writeInt32BE(0, p); p += 4;              // partition 0
-        buf.writeBigInt64BE(BigInt(fetchOffset), p); p += 8; // fetchOffset
-        buf.writeInt32BE(1048576, p); p += 4;        // partitionMaxBytes
-
-        return frameRequest(API_FETCH, FETCH_VERSION, clientBuf, buf);
-      }
-
-      // Frame a request with header v1: apiKey, apiVersion, correlationId,
-      // clientId (nullable string) + body.
-      function frameRequest(apiKey, apiVersion, clientBuf, body) {
-        const header = Buffer.alloc(2 + 2 + 4 + 2 + clientBuf.length);
-        let p = 0;
-        header.writeInt16BE(apiKey, p); p += 2;
-        header.writeInt16BE(apiVersion, p); p += 2;
-        header.writeInt32BE(correlationId, p); p += 4;
-        header.writeInt16BE(clientBuf.length, p); p += 2;
-        clientBuf.copy(header, p);
-        const payload = Buffer.concat([header, body]);
-        const framed = Buffer.alloc(4 + payload.length);
-        framed.writeInt32BE(payload.length, 0);
-        payload.copy(framed, 4);
-        return framed;
-      }
-
-      // ── Parse a v2 RecordBatch region, return the FIRST record value ───────
-      // \`buf\` is the whole fetch response; [start, end) bounds the partition's
-      // record-set bytes (may contain one or more concatenated batches).
-      function firstRecordValue(buf, start, end) {
-        let pos = start;
-        while (pos + 12 <= end) {
-          // baseOffset(8) + batchLength(4) then batchLength bytes follow.
-          const batchLength = buf.readInt32BE(pos + 8);
-          const batchStart = pos + 12; // first byte of partitionLeaderEpoch
-          const batchEnd = batchStart + batchLength;
-          if (batchLength <= 0 || batchEnd > end) break;
-          // partitionLeaderEpoch(4), magic(1), crc(4), attributes(2),
-          // lastOffsetDelta(4), firstTimestamp(8), maxTimestamp(8),
-          // producerId(8), producerEpoch(2), baseSequence(4), recordsCount(4)
-          const magic = buf.readInt8(batchStart + 4);
-          if (magic !== 2) { pos = batchEnd; continue; }
-          let r = batchStart + 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4;
-          const recordsCount = buf.readInt32BE(r); r += 4;
-          for (let i = 0; i < recordsCount && r < batchEnd; i++) {
-            const recLen = decodeVarint(buf, r); // record length (signed varint)
-            let rp = recLen.next;
-            const recordEnd = rp + recLen.value;
-            rp += 1; // attributes (int8)
-            const tsDelta = decodeVarint(buf, rp); rp = tsDelta.next;
-            const offDelta = decodeVarint(buf, rp); rp = offDelta.next;
-            const keyLen = decodeVarint(buf, rp); rp = keyLen.next;
-            if (keyLen.value >= 0) rp += keyLen.value;
-            const valLen = decodeVarint(buf, rp); rp = valLen.next;
-            if (valLen.value >= 0) {
-              return buf.subarray(rp, rp + valLen.value).toString("utf-8");
-            }
-            r = recordEnd;
-          }
-          pos = batchEnd;
-        }
-        return null;
-      }
-
-      let finished = false;
-      function finish(out, code) {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        try { sock.destroy(); } catch (e) { /* ignore */ }
-        if (out) process.stdout.write(out);
-        // Flush stdout before exiting so execFileSync captures it.
-        process.stdout.write("", () => process.exit(code));
-      }
-
-      const sock = net.createConnection({ host, port }, () => {
-        if (operation === "publish") {
-          const req = buildProduceRequest(topic, Buffer.from(data, "utf-8"));
-          sock.write(req);
-        } else if (operation === "get") {
-          sock.write(buildFetchRequest(topic, 0));
-        } else {
-          finish("__UNSUPPORTED__", 0);
-        }
-      });
-
-      let buffer = Buffer.alloc(0);
-      sock.on("data", (chunk) => {
-        buffer = Buffer.concat([buffer, chunk]);
-        if (buffer.length < 4) return;
-        const respSize = buffer.readInt32BE(0);
-        if (buffer.length < 4 + respSize) return;
-
-        if (operation === "publish") {
-          // Produce v3 response (after the 4-byte frame size): correlationId(4),
-          // topics[count]: name, partitions[count]: partition(4), errorCode(2),
-          //   baseOffset(8), logAppendTime(8); then throttleTimeMs(4) at the END.
-          // Only the per-partition error code matters here.
-          try {
-            let pos = 4 + 4; // skip frame size + correlationId
-            const topicCount = buffer.readInt32BE(pos); pos += 4;
-            let errCode = 0;
-            for (let t = 0; t < topicCount; t++) {
-              const tl = buffer.readInt16BE(pos); pos += 2 + tl;
-              const pc = buffer.readInt32BE(pos); pos += 4;
-              for (let pi = 0; pi < pc; pi++) {
-                pos += 4;                               // partition index
-                errCode = buffer.readInt16BE(pos); pos += 2; // error code
-                pos += 8;                               // baseOffset
-                pos += 8;                               // logAppendTime (v2+)
-              }
-            }
-            if (errCode === 0) {
-              finish("__PUBLISHED__", 0);
-            } else {
-              // Report the CODE, not just "it failed" — the caller decides
-              // whether it is retriable (3/5, the async topic-creation race)
-              // or fatal (e.g. 29 TOPIC_AUTHORIZATION_FAILED).
-              process.stderr.write("Produce error code " + errCode);
-              finish("__PRODUCEERROR__" + errCode, 0);
-            }
-          } catch (e) {
-            process.stderr.write("produce parse: " + e.message);
-            finish("__PARSEERROR__produce: " + e.message, 0);
-          }
-          return;
-        } else if (operation === "get") {
-          // Fetch v4 response (after the 4-byte frame size): correlationId(4),
-          // throttleTimeMs(4), topics[count]: name, partitions[count]:
-          //   partition(4), errorCode(2), highWatermark(8), lastStableOffset(8),
-          //   abortedTxns[count](producerId(8)+firstOffset(8)),
-          //   recordSetBytes(int32)+batch.
-          try {
-            let pos = 4 + 4;                            // frame size + correlationId
-            pos += 4;                                   // throttleTimeMs (v1+)
-            const topicCount = buffer.readInt32BE(pos); pos += 4;
-            let out = "__EMPTY__";
-            let fatalCode = 0;
-            for (let t = 0; t < topicCount; t++) {
-              const tl = buffer.readInt16BE(pos); pos += 2 + tl;
-              const pc = buffer.readInt32BE(pos); pos += 4;
-              for (let pi = 0; pi < pc; pi++) {
-                pos += 4;                               // partition index
-                const errCode = buffer.readInt16BE(pos); pos += 2;
-                pos += 8;                               // highWatermark
-                pos += 8;                               // lastStableOffset (v4+)
-                const abortedCount = buffer.readInt32BE(pos); pos += 4;
-                if (abortedCount > 0) pos += abortedCount * 16; // (-1 => none, skip)
-                const recSetSize = buffer.readInt32BE(pos); pos += 4;
-                // 3 = UNKNOWN_TOPIC_OR_PARTITION, 5 = LEADER_NOT_AVAILABLE:
-                // "nothing to read here yet", which a consumer that starts
-                // before its producer hits on every cold start. Any OTHER code
-                // (29 TOPIC_AUTHORIZATION_FAILED, 13 STALE_CONTROLLER_EPOCH, …)
-                // is a real failure and must NOT be reported as an empty queue.
-                if (errCode !== 0 && errCode !== 3 && errCode !== 5) {
-                  fatalCode = errCode;
-                }
-                if (errCode === 0 && recSetSize > 0) {
-                  const val = firstRecordValue(buffer, pos, pos + recSetSize);
-                  if (val !== null) out = val;
-                }
-                pos += recSetSize > 0 ? recSetSize : 0;
-              }
-            }
-            if (fatalCode !== 0) {
-              process.stderr.write("Fetch error code " + fatalCode);
-              finish("__FETCHERROR__" + fatalCode, 0);
-              return;
-            }
-            finish(out, 0);
-          } catch (e) {
-            // A parse failure is NOT an empty queue either — say so.
-            process.stderr.write("fetch parse: " + e.message);
-            finish("__PARSEERROR__fetch: " + e.message, 0);
-          }
-          return;
-        }
-      });
-
-      // Report the reason on STDOUT and exit 0. Writing it to stderr and
-      // exiting non-zero LOST it: stderr to a pipe is an async write and
-      // process.exit() truncates it, so the parent saw an empty stderr and fell
-      // back to execFileSync's message -- which embeds this entire script.
-      // stdout is flushed by finish()'s write callback, so it survives.
-      sock.on("error", (err) => {
-        finish("__TRANSPORTERROR__" + err.message, 0);
-      });
-
-      var timer = setTimeout(() => {
-        finish("__TRANSPORTERROR__timed out after 10s talking to " + host + ":" + port, 0);
-      }, 10000);
-    `;
-
-    try {
-      const result = execFileSync(process.execPath, ["-e", script], {
-        encoding: "utf-8",
-        timeout: 15000,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      return result;
-    } catch (err) {
-      // Reached only when the child itself could not run (spawn failure, killed,
-      // the outer 15s timeout). The socket-level reasons come back through
-      // stdout as __TRANSPORTERROR__ instead. Swallowing this to "" made every
-      // failure indistinguishable from an empty queue.
-      //
-      // execFileSync's own message embeds the ENTIRE generated script, so it is
-      // truncated here -- a 20KB error that buries the cause is barely better
-      // than no error at all.
-      const e = err as { stderr?: Buffer | string; message?: string };
-      const reason = String(e.stderr ?? "").trim() || e.message || "unknown error";
-      const firstLine = reason.split("\n", 1)[0]!.slice(0, 200);
-      return "__TRANSPORTERROR__" + firstLine;
+  /** One synchronous request to the worker: post, block on Atomics.wait, read. */
+  private request(req: Record<string, unknown>): Record<string, unknown> {
+    this.ensureWorker();
+    const header = this.header!;
+    const outBytes = this.outBytes!;
+    Atomics.store(header, 0, 0); // pending
+    this.worker!.postMessage(req);
+    const waited = Atomics.wait(header, 0, 0, KafkaBackend.CALL_TIMEOUT_MS);
+    if (waited === "timed-out") {
+      throw new Error(`Kafka ${String(req.op)} for topic ${String(req.topic ?? "")} timed out after ${KafkaBackend.CALL_TIMEOUT_MS}ms`);
     }
-  }
-
-  /**
-   * Sleep synchronously between produce retries.
-   *
-   * `push()` is synchronous (the whole backend drives its socket through a child
-   * process), so there is no event loop to await on. `Atomics.wait` on a
-   * SharedArrayBuffer is the stdlib way to block a thread for a fixed time --
-   * no dependency, no busy-wait burning CPU.
-   */
-  private static sleepSync(ms: number): void {
-    const shared = new Int32Array(new SharedArrayBuffer(4));
-    Atomics.wait(shared, 0, 0, ms);
-  }
-
-  /**
-   * Turn a sentinel from the protocol child into a thrown error, or return.
-   *
-   * The wording matches the Python and PHP backends exactly -- the parity rule
-   * covers user-visible error messages, not just behaviour.
-   */
-  private static assertNoError(result: string, operation: string, topic: string): void {
-    const fatal = /^__(PRODUCEERROR|FETCHERROR)__(\d+)/.exec(result);
-    if (fatal) {
-      throw new Error(
-        `Kafka rejected the ${operation} for topic ${topic}: error code ${fatal[2]}`,
-      );
+    const len = Atomics.load(header, 1);
+    const json = Buffer.from(outBytes.buffer, outBytes.byteOffset, len).toString("utf-8");
+    const res = JSON.parse(json) as Record<string, unknown>;
+    if (res.ok === false) {
+      throw new Error(String(res.error ?? "unknown Kafka worker error"));
     }
-    if (result.startsWith("__TRANSPORTERROR__")) {
-      throw new Error(
-        `Kafka ${operation} for topic ${topic} failed: ` +
-          result.slice("__TRANSPORTERROR__".length),
-      );
-    }
-    if (result.startsWith("__PARSEERROR__")) {
-      throw new Error(
-        `Kafka ${operation} for topic ${topic} returned an unreadable response: ` +
-          result.slice("__PARSEERROR__".length),
-      );
-    }
+    return res;
   }
 
   /**
    * Serialize the record value. raw (tina4-nodejs#264) emits the payload exactly
    * as given — no {id, payload, status, attempts, ...} envelope — so a non-Tina4
-   * consumer reading the topic gets the schema it expects; otherwise the Tina4 job
-   * envelope. pop() unwraps both shapes (payload ?? the whole record).
+   * consumer reading the topic gets the schema it expects; otherwise the Tina4
+   * job envelope. pop() unwraps both shapes (payload ?? the whole record).
    */
   private static encodeJob(id: string, payload: unknown, raw: boolean): string {
     if (raw) return JSON.stringify(payload);
@@ -684,59 +784,90 @@ export class KafkaBackend implements QueueBackend {
 
   push(queue: string, payload: unknown, _delay?: number, _priority?: number, raw: boolean = false): string {
     const id = randomUUID();
-
-    // Topic auto-creation is ASYNCHRONOUS, so a brand-new topic answers
-    // UNKNOWN_TOPIC_OR_PARTITION (3) or LEADER_NOT_AVAILABLE (5) on the first
-    // attempt while the controller is still electing a leader. Retry those
-    // (same 10 attempts / 200ms as the Python and PHP backends) instead of
-    // failing a cold-start push; every other code throws immediately.
-    const body = KafkaBackend.encodeJob(id, payload, raw);
-    let result = "";
-    for (let attempt = 1; attempt <= 10; attempt++) {
-      result = this.execSync("publish", queue, body);
-      if (result.includes("__PUBLISHED__")) {
-        return id;
-      }
-      const retriable = /^__PRODUCEERROR__(3|5)\b/.test(result);
-      if (!retriable || attempt === 10) {
-        break;
-      }
-      KafkaBackend.sleepSync(200);
-    }
-
-    KafkaBackend.assertNoError(result, "produce", queue);
-    throw new Error(`Kafka publish failed for topic ${queue}: ${result || "no response"}`);
+    const value = KafkaBackend.encodeJob(id, payload, raw);
+    this.request({ op: "publish", topic: queue, value });
+    return id;
   }
 
   pop(queue: string): QueueJob | null {
-    const result = this.execSync("get", queue);
+    const res = this.request({ op: "pop", topic: queue });
+    const message = res.message as QueueJob | null;
+    return message ?? null;
+  }
 
-    // A real failure must NOT read as an empty queue: a mis-permissioned
-    // consumer would otherwise poll an "idle" topic forever.
-    KafkaBackend.assertNoError(result, "fetch", queue);
+  /**
+   * Read the next record's value exactly as it sits on the wire — a Tina4
+   * envelope as produced, a raw record (tina4-nodejs#264) as its bare bytes —
+   * with no id/offset tracking. For a foreign consumer's view of the schema;
+   * the queue facade consumes through pop(), which also normalises and tracks
+   * the offset so complete()/fail() can commit it.
+   */
+  dequeue(queue: string): unknown {
+    const res = this.request({ op: "dequeueRaw", topic: queue });
+    return res.message ?? null;
+  }
 
-    if (!result || result === "__EMPTY__" || result === "__UNSUPPORTED__") return null;
+  /** Commit the record's offset so a completed job never replays (ADR-0022 d.4). */
+  complete(queue: string, id: string): void {
+    this.request({ op: "complete", topic: queue, id });
+  }
 
-    try {
-      return JSON.parse(result) as QueueJob;
-    } catch {
-      return null;
-    }
+  /**
+   * Record a failed attempt: re-produce the job with an incremented attempts
+   * count while it has retries left, else produce it to the dead-letter topic;
+   * commit the original offset either way (ADR-0022 decision 2).
+   */
+  fail(queue: string, id: string, error: string, maxRetries: number, _retryBackoff?: number): void {
+    this.request({ op: "fail", topic: queue, id, error, maxRetries });
+  }
+
+  /** Dead-letter the job now, no retry (ADR-0023 reject), then commit the offset. */
+  reject(queue: string, id: string, reason: string, maxRetries: number): void {
+    this.request({ op: "reject", topic: queue, id, reason, maxRetries });
+  }
+
+  /** Re-produce the job (manual retry) and commit the original offset. */
+  retry(queue: string, id: string, delaySeconds?: number): boolean {
+    this.request({ op: "retry", topic: queue, id, delaySeconds: delaySeconds ?? 0 });
+    return true;
+  }
+
+  /** Read the dead-letter topic for this queue (every record on it is a dead letter). */
+  deadLetters(queue: string, _maxRetries?: number): QueueJob[] {
+    const res = this.request({ op: "deadLetters", topic: queue });
+    return (res.deadLetters as QueueJob[]) ?? [];
+  }
+
+  /**
+   * Refuse rather than silently answer from the local file store. Kafka keeps no
+   * queryable registry of failed jobs: a failed record is re-produced to a
+   * dead-letter TOPIC and the original offset committed past, and a log cannot be
+   * queried by job state. Returning [] would claim nothing has failed.
+   */
+  failed(_queue: string, _maxRetries?: number): QueueJob[] {
+    throw new Error(
+      "The kafka queue backend cannot answer failed(): Kafka keeps no queryable " +
+        "registry of failed or dead jobs. Consume the dead-letter topic directly " +
+        "(deadLetters()), or use the file or mongodb backend.",
+    );
+  }
+
+  /** Refuse for the same reason failed() does (no queryable failed registry). */
+  retryFailed(_queue: string, _maxRetries?: number): number {
+    throw new Error(
+      "The kafka queue backend cannot perform retryFailed(): Kafka keeps no " +
+        "queryable registry of failed or dead jobs. Consume the dead-letter topic " +
+        "directly, or use the file or mongodb backend.",
+    );
   }
 
   size(_queue: string): number {
-    // Kafka doesn't have a simple "queue size" concept — return 0
-    // Real implementation would need to compare committed offset vs log end offset
+    // Kafka has no queue-depth concept; computing one means an admin round-trip
+    // per call. ADR-0022 decision 5 records 0 as the documented answer.
     return 0;
   }
 
   clear(_queue: string): void {
-    // Not performable on Kafka - throws naming the backend and the operation.
-    // clear() empties the queue, but a Kafka log cannot delete records on
-    // demand: a partition is read in offset order and records leave only by
-    // retention. This used to be a silent no-op, which claimed the queue was
-    // emptied when it was untouched (ADR-0022 invariant 6). PHP, Python and
-    // Ruby already refuse by name; this brings the Node backend class in line.
     throw new Error(
       "The kafka queue backend cannot perform clear(): Kafka has no notion of " +
         "job status and cannot delete records on demand. A log is read in " +
@@ -746,13 +877,25 @@ export class KafkaBackend implements QueueBackend {
   }
 
   purge(_queue: string, _status?: string): number {
-    // Not performable on Kafka - throws naming the backend and the operation.
-    // purge(status) removes jobs SELECTED BY STATUS; a Kafka log has no notion
-    // of status to purge by. Refusing by name is the honest answer.
     throw new Error(
       "The kafka queue backend cannot perform purge(): Kafka has no notion of " +
         "job status to purge by. A log is read in offset order and records " +
         "leave only by retention. Use the file or mongodb backend.",
     );
+  }
+
+  /** Stop the worker and release the connection. Idempotent. */
+  close(): void {
+    if (!this.worker) return;
+    try {
+      this.request({ op: "close" });
+    } catch {
+      // best effort — we are tearing the worker down regardless
+    }
+    void this.worker.terminate();
+    this.worker = null;
+    this.sab = null;
+    this.header = null;
+    this.outBytes = null;
   }
 }

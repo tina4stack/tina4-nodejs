@@ -48,11 +48,12 @@ import { generateNonce, runWithCspNonce, currentCspNonce } from "./csp.js";
 import { createHealthRoutes } from "./health.js";
 import { rateLimiter } from "./rateLimiter.js";
 import { Log } from "./logger.js";
-import { DevAdmin, RequestInspector, WsTracker, devRequestDenial, devHostAllowed, devToolbarAllowed } from "./devAdmin.js";
+import { DevAdmin, RequestInspector, WsTracker, devRequestDenial, devHostAllowed, devPeerAllowed, devToolbarAllowed } from "./devAdmin.js";
 import { CLOSE_GOING_AWAY, devReloadWs, serveWebSocketRoute, wsRouteManager } from "./websocket.js";
 import { feedbackEnabled, injectFeedbackWidget } from "./feedback.js";
 import { I18n } from "./i18n.js";
 import { stopAllBackgroundTasks } from "./background.js";
+import { startAllTcpServices, stopAcceptingAllTcpServices, drainAllTcpServices } from "./tcp.js";
 import { TINA4_VERSION } from "./version.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2320,8 +2321,9 @@ export async function startServer(config?: Tina4Config): Promise<{
     const upPath = (req.url ?? "/").split("?")[0];
     // Dev-reload channel (debug only).
     if (isDevMode() && upPath === "/__dev_reload") {
-      // ADR-0082: the reload socket answers only a loopback / TINA4_HOST Host.
-      if (!devHostAllowed(req.headers.host)) {
+      // ADR-0082: the reload socket answers only a loopback / TINA4_HOST Host,
+      // from a raw socket peer the /__dev HTTP gate would also let in.
+      if (!devHostAllowed(req.headers.host) || !devPeerAllowed(socket.remoteAddress)) {
         try { socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); } catch { /* gone */ }
         return;
       }
@@ -2358,6 +2360,12 @@ export async function startServer(config?: Tina4Config): Promise<{
       // PR #206 / Python / Ruby. Awaited so it is settled before the caller's
       // promise resolves (a client can then rely on both families being up).
       const siblingServers = await startLoopbackSiblings(port, host, dispatch);
+
+      // Raw TCP services (feature 142, ADR-0102 D1) bind on THIS event loop,
+      // beside the HTTP server — one process serves both the device gateway and
+      // its dashboard. Each binds its own port; a worker that finds the port
+      // already bound skips silently (single-owner). Drained on shutdown below.
+      await startAllTcpServices(host);
 
       const displayHost = host === "0.0.0.0" ? "localhost" : host;
       const isDebug = isTruthy(process.env.TINA4_DEBUG);
@@ -2544,6 +2552,11 @@ ${reset}
           Log.info(`Closed ${wsClosed} WebSocket connection(s) with 1001 going away`);
         }
 
+        // Raw TCP services stop accepting and drain their live device
+        // connections (firing on_close) alongside the HTTP/WebSocket drain.
+        stopAcceptingAllTcpServices();
+        await drainAllTcpServices();
+
         // Race the drain against the shutdown budget. Whatever is still in
         // flight when the budget expires gets force-closed: SIGKILL is what
         // arrives next, so a bounded drain is strictly better than an
@@ -2612,6 +2625,9 @@ ${reset}
           process.off("SIGINT", onSigint);
           // Clear any registered background timers so graceful shutdown actually exits.
           stopAllBackgroundTasks();
+          // Release raw TCP listeners + connections on an explicit close() too.
+          stopAcceptingAllTcpServices();
+          void drainAllTcpServices();
           if (aiServer) aiServer.close();
           server.close();
           // Sibling loopback listeners share the port — close them alongside the

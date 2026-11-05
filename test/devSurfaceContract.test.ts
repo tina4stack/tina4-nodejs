@@ -79,9 +79,9 @@ const get = (port: number, path: string, headers: Record<string, string> = {}) =
 const post = (port: number, path: string, body: unknown, headers: Record<string, string> = {}) => request("POST", port, path, body, headers);
 
 /** A raw socket request, so a path like `/../x` reaches the server verbatim. */
-function rawRequest(port: number, head: string): Promise<string> {
+function rawRequest(port: number, head: string, peer = "127.0.0.1"): Promise<string> {
   return new Promise((resolve, reject) => {
-    const socket = net.connect(port, "127.0.0.1", () => socket.write(head));
+    const socket = net.connect(port, peer, () => socket.write(head));
     let raw = "";
     socket.setTimeout(3000, () => socket.destroy());
     socket.on("data", (c) => {
@@ -92,9 +92,9 @@ function rawRequest(port: number, head: string): Promise<string> {
     socket.on("error", reject);
   });
 }
-const wsUpgrade = (port: number, host: string) => rawRequest(port,
+const wsUpgrade = (port: number, host: string, peer = "127.0.0.1") => rawRequest(port,
   `GET /__dev_reload HTTP/1.1\r\nHost: ${host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
-  `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+  `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`, peer);
 
 // ── throwaway project + a sibling that shares its name as a prefix ───────────
 mkdirSync(join(TEST_DIR, "src/routes"), { recursive: true });
@@ -372,6 +372,26 @@ const port = (peerServer.address() as any).port;
   assert("TINA4_DEV_ALLOWED_PEERS admits the raw peer to the dashboard and the toolbar",
     dashIn.status === 200 && pageIn.raw.includes("tina4-dev-toolbar"),
     `dash=${dashIn.status} page-has-toolbar=${pageIn.raw.includes("tina4-dev-toolbar")}`);
+}
+
+// ── the reload socket checks the raw peer, not only the Host header ─────────
+// Last: a second bound server changes shared state the checks above rely on.
+{
+  // The Host header is the caller's to choose; the raw socket peer is not. A
+  // server bound past loopback, so a real LAN peer can reach the upgrade.
+  const lanPort = await freePort();
+  const lanBoot = await startServer({
+    port: lanPort, host: "0.0.0.0", routesDir: join(TEST_DIR, "src/routes"),
+    modelsDir: join(TEST_DIR, "src/models"), staticDir: join(TEST_DIR, "public"),
+  });
+  const remote = await wsUpgrade(lanPort, `localhost:${lanPort}`, LAN_IP!).catch((e) => String(e));
+  setEnv({ TINA4_DEV_ALLOWED_PEERS: LAN_IP! });
+  const allowed = await wsUpgrade(lanPort, `localhost:${lanPort}`, LAN_IP!).catch((e) => String(e));
+  setEnv({ TINA4_DEV_ALLOWED_PEERS: undefined });
+  lanBoot.close();
+  assert("a remote peer cannot open the reload socket by claiming localhost",
+    remote.startsWith("HTTP/1.1 403") && allowed.startsWith("HTTP/1.1 101"),
+    `remote=${JSON.stringify(remote.split("\r\n")[0])} allowed=${JSON.stringify(allowed.split("\r\n")[0])}`);
 }
 
 // ── cleanup — reap everything we spawned ────────────────────────────────────

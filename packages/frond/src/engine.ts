@@ -1691,6 +1691,77 @@ function toOutputString(value: unknown): string {
   return String(value);
 }
 
+/**
+ * Thrown when a Frond template is malformed and cannot be rendered safely
+ * (ADR-0104) — an unclosed `{% block %}` or a cut-short `{% endblock %` whose
+ * closing `%}` is missing. Failing loud surfaces the real cause to a developer
+ * (or an AI agent) instead of a page served 200 with its body quietly dropped.
+ */
+export class FrondSyntaxError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FrondSyntaxError";
+  }
+}
+
+const PHP_MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+// getDay(): 0 == Sunday .. 6 == Saturday
+const PHP_DAYS = [
+  "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+];
+
+/**
+ * Format a Date with Twig/PHP date() letters (English names) — ADR-0103.
+ *
+ * Letters are mapped character by character; a backslash escapes the next
+ * character, and any unmapped character is emitted literally (PHP's rule).
+ * English month/day names are hardcoded so the output matches every other Tina4
+ * framework regardless of the host locale.
+ */
+function phpDate(dt: Date, fmt: string): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const hours = dt.getHours();
+  const h12 = hours % 12 || 12;
+  const dow = dt.getDay();            // 0 == Sunday .. 6 == Saturday
+  const iso = dow === 0 ? 7 : dow;    // ISO day of week: 1 == Monday .. 7 == Sunday
+  let out = "";
+  for (let i = 0; i < fmt.length; i++) {
+    const c = fmt[i];
+    if (c === "\\" && i + 1 < fmt.length) {
+      out += fmt[i + 1];
+      i++;
+      continue;
+    }
+    switch (c) {
+      case "Y": out += String(dt.getFullYear()); break;
+      case "y": out += pad(dt.getFullYear() % 100); break;
+      case "m": out += pad(dt.getMonth() + 1); break;
+      case "n": out += String(dt.getMonth() + 1); break;
+      case "d": out += pad(dt.getDate()); break;
+      case "j": out += String(dt.getDate()); break;
+      case "H": out += pad(hours); break;
+      case "G": out += String(hours); break;
+      case "h": out += pad(h12); break;
+      case "g": out += String(h12); break;
+      case "i": out += pad(dt.getMinutes()); break;
+      case "s": out += pad(dt.getSeconds()); break;
+      case "A": out += hours < 12 ? "AM" : "PM"; break;
+      case "a": out += hours < 12 ? "am" : "pm"; break;
+      case "D": out += PHP_DAYS[dow].slice(0, 3); break;
+      case "l": out += PHP_DAYS[dow]; break;
+      case "M": out += PHP_MONTHS[dt.getMonth()].slice(0, 3); break;
+      case "F": out += PHP_MONTHS[dt.getMonth()]; break;
+      case "N": out += String(iso); break;
+      case "w": out += String(dow); break;
+      default: out += c;
+    }
+  }
+  return out;
+}
+
 function dateFilter(value: unknown, fmt: string): string {
   let dt: Date;
   if (value instanceof Date) {
@@ -1703,6 +1774,10 @@ function dateFilter(value: unknown, fmt: string): string {
   } else {
     return String(value);
   }
+
+  // A strftime-style format (any with %) stays strftime — back-compatible;
+  // any other format is treated as Twig/PHP date() letters (ADR-0103).
+  if (!fmt.includes("%")) return phpDate(dt, fmt);
 
   // Python strftime format to manual conversion
   return fmt
@@ -2507,8 +2582,13 @@ export class Frond {
       }
 
       if (depth > 0) {
-        // malformed, skip forward
-        pos = contentStart;
+        // Unclosed {% block %} (or a cut-short {% endblock % whose %} is
+        // missing, so the close regex never matches) — fail loud
+        // (tina4#286/#290) rather than silently dropping the body. Still
+        // bounded: we throw, we never loop (tina4#271).
+        throw new FrondSyntaxError(
+          `{% block ${name} %} is never closed (missing or malformed {% endblock %})`,
+        );
       }
     }
     return blocks;
@@ -2587,12 +2667,11 @@ export class Frond {
       }
 
       if (!closeMatch) {
-        // Malformed template (no matching endblock) — keep the rest
-        // verbatim rather than lose it, the same leniency extractBlocks
-        // applies to this case.
-        pieces.push(source.slice(mOpen.index));
-        pos = source.length;
-        break;
+        // Unclosed {% block %} — fail loud (tina4#286/#290), matching
+        // extractBlocks, rather than silently keeping the rest verbatim.
+        throw new FrondSyntaxError(
+          `{% block ${name} %} is never closed (missing or malformed {% endblock %})`,
+        );
       }
 
       const parentContent = source.slice(contentStart, closeMatch.index);
