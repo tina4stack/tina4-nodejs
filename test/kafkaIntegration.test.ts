@@ -175,14 +175,16 @@ try {
 }
 
 // #264: push(raw=true) produces the value with NO Tina4 envelope and no injected
-// id. pop() returns exactly the parsed record value — for a raw produce that is
-// the bare schema — so a non-Tina4 consumer gets the shape it expects.
+// id. The low-level dequeue() returns the value exactly as it sits on the wire —
+// for a raw produce that is the bare schema — so a non-Tina4 consumer gets the
+// shape it expects. (pop() normalises + tracks the offset for the queue facade,
+// so it wraps an id-less record; dequeue() is the wire-fidelity view.)
 try {
   const rawTopic = "t_node_raw_" + Math.random().toString(16).slice(2, 12);
   if (ensureTopic(container, broker, rawTopic)) {
     const schema = { event_type: "order.created", order_id: 4242, nonce: Math.random().toString(16).slice(2) };
     backend.push(rawTopic, schema, undefined, undefined, true);
-    const got = backend.pop(rawTopic) as Record<string, unknown> | null;
+    const got = backend.dequeue(rawTopic) as Record<string, unknown> | null;
     assert("raw push: a record is read back", got !== null, JSON.stringify(got));
     assert(
       "raw push: the value is the schema exactly (no envelope)",

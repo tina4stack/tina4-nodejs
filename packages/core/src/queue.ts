@@ -14,14 +14,19 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Supported backends:
  *   - 'file'     — JSON files on disk (default)
  *   - 'mongodb'  — MongoDB via `mongodb` npm package (also 'mongo')
+ *   - 'kafka'    — Apache Kafka over a PERSISTENT worker-thread connection
+ *     (the worker owns the socket, the read cursor and the committed offsets),
+ *     so pop() resumes from the committed offset and complete()/fail() commit
+ *     durably — it drains and survives restarts. This is ADR-0022 decision 8's
+ *     fix; the old child-process-per-op design (which could never commit) is
+ *     gone. See queueBackends/kafkaBackend.ts.
  *
  * REFUSED backends (ADR-0022):
- *   - 'rabbitmq' and 'kafka' THROW on construction. Node drives both through a
- *     child process per operation, so no connection survives between pop() and
- *     complete() and acknowledgement is impossible: RabbitMQ was at-most-once
- *     (a dead consumer lost the job) and Kafka could never drain a topic. They
- *     lost work silently, so they now refuse. tina4-python, tina4-php and
- *     tina4-ruby still offer both. See unsupportedBrokerMessage() below.
+ *   - 'rabbitmq' THROWS on construction. Node drove it through a child process
+ *     per operation, so no connection survived between pop() and complete() and
+ *     acknowledgement was impossible (at-most-once: a dead consumer lost the
+ *     job). It lost work silently, so it now refuses. tina4-python, tina4-php
+ *     and tina4-ruby still offer it. See unsupportedBrokerMessage() below.
  *
  * Environment variables:
  *   TINA4_QUEUE_BACKEND — 'file' or 'mongodb'
@@ -43,6 +48,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  *   queue.push("emails", { to: "alice@test.com" });
  */
 import { MongoBackend } from "./queueBackends/mongoBackend.js";
+import { KafkaBackend } from "./queueBackends/kafkaBackend.js";
 import { LiteBackend } from "./queueBackends/liteBackend.js";
 import { type QueueJob, type JobData, createJob } from "./job.js";
 
@@ -167,44 +173,41 @@ export interface QueueBackendInterface {
 }
 
 /**
- * Why `backend: "rabbitmq"` and `backend: "kafka"` are refused in Node (ADR-0022).
+ * Why `backend: "rabbitmq"` is refused in Node (ADR-0022).
  *
- * Both backends drive the wire protocol through `execFileSync`, spawning a fresh
- * child process for EVERY operation. The child connects, performs one operation,
- * destroys its socket and exits, so no connection, channel, consumer or session
- * survives between push, pop and complete.
+ * The RabbitMQ backend drives the wire protocol through `execFileSync`, spawning
+ * a fresh child process for EVERY operation. The child connects, performs one
+ * operation, destroys its socket and exits, so no connection or channel survives
+ * between push, pop and complete.
  *
- * That makes acknowledgement impossible, not merely unimplemented. An AMQP
+ * That makes acknowledgement impossible, not merely unimplemented: an AMQP
  * delivery tag identifies a delivery on a CHANNEL that is already closed by the
- * time pop() returns, and a Kafka consumer-group offset belongs to a SESSION
- * that never existed. So RabbitMQ ran Basic.Get with no-ack=true (at-most-once:
- * a consumer that dies after pop() loses the job outright) and Kafka fetched
- * from offset 0 every time (the topic could never drain).
+ * time pop() returns, so RabbitMQ ran Basic.Get with no-ack=true (at-most-once:
+ * a consumer that dies after pop() loses the job outright).
  *
  * Refusing loudly follows the same call the session backend already made for
  * `redis-npm`: a silent demotion looks like it is working while the operator
  * believes otherwise, which is worse than an outage you can see. Anyone
- * "successfully" running these today is already losing jobs and does not know it.
+ * "successfully" running it today is already losing jobs and does not know it.
  *
- * This is a HOLDING POSITION, not the design. The fix is a persistent
- * connection held on the backend instance, the way Python, PHP and Ruby already
- * do it. There is deliberately no opt-in escape hatch: nobody has asked for
- * fire-and-forget, and a knob for a hypothetical user is not worth its weight.
+ * This is a HOLDING POSITION, not the design. The fix is a persistent connection
+ * held on the backend instance, the way Python, PHP and Ruby already do it — and
+ * the way the Kafka backend now does (ADR-0022 decision 8 landed for Kafka; the
+ * same approach is owed to RabbitMQ). There is deliberately no opt-in escape
+ * hatch: nobody has asked for fire-and-forget.
  */
 function unsupportedBrokerMessage(backendName: string): string {
-  const broker = backendName === "kafka" ? "Kafka" : "RabbitMQ";
-  const lost = backendName === "kafka"
-    ? "every pop() re-read offset 0, so the topic could never drain"
-    : "pop() destroyed the message with no acknowledgement, so a consumer that died lost the job";
   return (
     `Queue backend "${backendName}" is not available in tina4-nodejs.\n\n` +
-    `Reason: the ${broker} backend runs each operation in a separate child ` +
+    `Reason: the RabbitMQ backend runs each operation in a separate child ` +
     `process, so no connection survives between pop() and complete(). ` +
-    `Acknowledgement is therefore impossible, and ${lost}. It was losing work ` +
-    `silently, so it now refuses instead.\n\n` +
-    `Use backend "mongodb" (at-least-once, with a real reservation and ` +
+    `Acknowledgement is therefore impossible, and pop() destroyed the message ` +
+    `with no acknowledgement, so a consumer that died lost the job. It was ` +
+    `losing work silently, so it now refuses instead.\n\n` +
+    `Use backend "kafka" (now a persistent connection: at-least-once, drains, ` +
+    `survives restarts), "mongodb" (at-least-once, real reservation + ` +
     `visibility timeout) or the default "file" backend. tina4-python, ` +
-    `tina4-php and tina4-ruby still offer ${broker}.\n\n` +
+    `tina4-php and tina4-ruby still offer RabbitMQ.\n\n` +
     `Tracking: ADR-0022 in tina4-documentation/plan/v3/DECISIONS.md, ` +
     `findings in plan/v3/features/048-queue-backends.md.`
   );
@@ -230,7 +233,7 @@ export class Queue {
    *   - new Queue("mongodb", { path: "data/queue" })  // legacy
    *   - new Queue()  // file backend, default topic
    *
-   * Throws on backend "rabbitmq" or "kafka" (ADR-0022).
+   * Throws on backend "rabbitmq" (ADR-0022); "kafka" is now supported.
    */
   constructor(backendOrConfig?: string | QueueConfig, config?: QueueConfig) {
     let resolvedConfig: QueueConfig = {};
@@ -255,8 +258,15 @@ export class Queue {
     this.liteBackend = new LiteBackend(this.basePath, this._visibilityTimeout);
 
     // Initialize external backends
-    if (this.backendName === "rabbitmq" || this.backendName === "kafka") {
+    if (this.backendName === "rabbitmq") {
       throw new Error(unsupportedBrokerMessage(this.backendName));
+    } else if (this.backendName === "kafka") {
+      // Kafka now holds a PERSISTENT connection (a worker thread owning the
+      // socket, the read cursor and the committed offsets), so pop() resumes
+      // from the committed offset and complete()/fail() commit durably — the
+      // backend drains and survives restarts (ADR-0022 decision 8, the fix the
+      // refusal was a holding position for). RabbitMQ stays refused.
+      this.externalBackend = new KafkaBackend({ visibilityTimeout: this._visibilityTimeout });
     } else if (this.backendName === "mongodb" || this.backendName === "mongo") {
       this.externalBackend = new MongoBackend({ visibilityTimeout: this._visibilityTimeout });
     } else if (!["file", "default", "lite"].includes(this.backendName)) {
