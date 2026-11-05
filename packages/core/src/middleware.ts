@@ -913,9 +913,9 @@ export class RequestLogger {
     const duration = Date.now() - ((req as any).startTime ?? Date.now());
     const status = res.raw.statusCode;
     const method = req.method ?? "?";
-    const url = req.url ?? "/";
+    const path = logPath(req);
     const color = status >= 400 ? "\x1b[31m" : status >= 300 ? "\x1b[33m" : "\x1b[32m";
-    console.log(`  ${color}${status}\x1b[0m ${method} ${url} \x1b[90m${duration}ms\x1b[0m`);
+    console.log(`  ${color}${status}\x1b[0m ${method} ${path} \x1b[90m${duration}ms\x1b[0m`);
     return [req, res];
   }
 }
@@ -1238,6 +1238,13 @@ export function attachCsrfFromEnv(): boolean {
   return false;
 }
 
+// The path only, never req.url: createRequest sets that to the absolute URL
+// with its query string, and OAuth codes, reset tokens and API keys ride in
+// the query straight into the log. Python, PHP and Ruby log the path too.
+function logPath(req: Tina4Request): string {
+  return req.path ?? (req.url ?? "/").split("?")[0];
+}
+
 // Built-in request logger middleware.
 //
 // v3.13.14: routes through the Tina4 Log (was a bare console.log) so the
@@ -1255,8 +1262,7 @@ export function requestLogger(): Middleware {
       const duration = Date.now() - start;
       const status = res.raw.statusCode;
       const method = req.method ?? "?";
-      const url = req.url ?? "/";
-      Log.info(`${method} ${url} -> ${status} (${duration}ms)`);
+      Log.info(`${method} ${logPath(req)} -> ${status} (${duration}ms)`);
     });
 
     next();
