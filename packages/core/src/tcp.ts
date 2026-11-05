@@ -136,7 +136,15 @@ export class TcpConnection {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.socket.destroy();
+    // Send FIN first so the peer sees a clean EOF, THEN fully tear down (which
+    // fires the socket "close" event -> on_close). A bare destroy() can surface
+    // as RST on Linux, which the peer reads as an error rather than end-of-stream,
+    // so the client never observes the connection closing.
+    try {
+      this.socket.end(() => this.socket.destroy());
+    } catch {
+      this.socket.destroy();
+    }
   }
 
   /** @internal mark activity for the idle reaper. */
