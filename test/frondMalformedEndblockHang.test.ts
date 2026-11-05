@@ -7,26 +7,20 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
 /**
- * Parity guard for tina4#271. A child template whose last {% endblock %} is
- * malformed (its closing } missing) must not hang the render.
- *
- * Python's extractBlocks looped forever on this (its inner `while...else`
- * skipped the `else` that advances past a malformed open tag on `break`).
- * Node's extractBlocks is already safe -- after the inner loop it runs
- * `if (depth > 0) pos = contentStart;`, advancing past the open tag so the
- * outer loop makes progress -- but the contract must stay locked in all four
- * frameworks, so this renders the exact malformed template and asserts it
- * returns. No mocks: real .twig files in a real temp dir through the real engine.
- *
- * (A regression that reintroduced the loop would hang here; the run-all suite's
- * own timeout surfaces that, which is the intended failure signal.)
+ * Parity guard for tina4#271 + tina4#286/#290. A child template whose
+ * {% block %} is never closed -- or whose last {% endblock %} is cut short to
+ * `{% endblock %` (its closing `}` missing, so the tokenizer never produces the
+ * tag) -- must FAIL LOUD (tina4#286/#290), and must stay bounded so a
+ * reintroduced hang surfaces via the run-all suite timeout rather than locking
+ * the render (tina4#271). No mocks: real .twig files in a real temp dir through
+ * the real engine.
  */
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Frond } from "../packages/frond/src/index.js";
+import { Frond, FrondSyntaxError } from "../packages/frond/src/index.js";
 
 let passed = 0;
 let failed = 0;
@@ -49,14 +43,27 @@ fs.writeFileSync(
 );
 
 try {
-  it("a malformed {% endblock %} in a child does not hang the render", () => {
+  it("a cut-short {% endblock % in a child fails loud", () => {
     // The final tag is missing its closing brace: `{% endblock %` not `%}`.
     fs.writeFileSync(
       path.join(dir, "page.twig"),
       '{% extends "base.twig" %}\n{% block content %}\n<p>hi</p>\n{% endblock %',
     );
-    const out = new Frond(dir).render("page.twig", {});
-    assert.equal(typeof out, "string");
+    assert.throws(
+      () => new Frond(dir).render("page.twig", {}),
+      (err: unknown) => err instanceof FrondSyntaxError && /content/.test((err as Error).message),
+    );
+  });
+
+  it("an unclosed {% block %} in a child fails loud", () => {
+    fs.writeFileSync(
+      path.join(dir, "unclosed.twig"),
+      '{% extends "base.twig" %}\n{% block content %}\n<p>hi</p>\n',
+    );
+    assert.throws(
+      () => new Frond(dir).render("unclosed.twig", {}),
+      FrondSyntaxError,
+    );
   });
 
   it("a well-formed child still substitutes its block (no regression)", () => {
