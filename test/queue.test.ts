@@ -1501,18 +1501,19 @@ await (async () => {
   }
 })();
 
-// ── ADR-0022: Node refuses the two backends it cannot acknowledge ──
+// ── ADR-0022: Node refuses the one backend it still cannot acknowledge ──
 //
-// Node drives RabbitMQ and Kafka through a child process per operation, so no
-// connection survives between pop() and complete(). RabbitMQ was therefore
-// at-most-once (Basic.Get with no-ack=true, so a consumer that died after
-// pop() lost the job) and Kafka always fetched offset 0 (the topic could never
-// drain). Both lost work silently. Constructing either must now THROW.
+// RabbitMQ is still driven through a child process per operation, so no
+// connection survives between pop() and complete(): it was at-most-once
+// (Basic.Get with no-ack=true, so a consumer that died after pop() lost the
+// job) and lost work silently. Constructing it must THROW. Kafka USED to be
+// refused for the same reason, but now holds a persistent worker-thread
+// connection (ADR-0022 decision 8, ADR-0105), so it drains and commits durably
+// and is accepted — asserted below.
 //
-// These need no broker: the refusal happens before any socket is opened, which
-// is the point - it cannot be reached even by someone with a live broker.
+// The rabbitmq refusal needs no broker: it happens before any socket is opened.
 {
-  for (const backendName of ["rabbitmq", "kafka"]) {
+  for (const backendName of ["rabbitmq"]) {
     let threw = false;
     let message = "";
     try {
@@ -1558,9 +1559,16 @@ await (async () => {
   if (savedBackend === undefined) delete process.env.TINA4_QUEUE_BACKEND;
   else process.env.TINA4_QUEUE_BACKEND = savedBackend;
 
-  let legacyThrew = false;
-  try { new Queue("kafka", { topic: "adr0022legacy" }); } catch { legacyThrew = true; }
-  assert("queue refuses kafka via the legacy string constructor", legacyThrew);
+  // Kafka is now ACCEPTED (persistent connection) — constructing it must not
+  // throw, via either the object or the legacy string form. No broker is
+  // touched at construction; the worker connects lazily on the first operation.
+  let kafkaObjOk = true;
+  try { new Queue({ topic: "adr0105obj", backend: "kafka" }); } catch { kafkaObjOk = false; }
+  assert("queue accepts the kafka backend (persistent connection, ADR-0105)", kafkaObjOk);
+
+  let kafkaLegacyOk = true;
+  try { new Queue("kafka", { topic: "adr0105legacy" }); } catch { kafkaLegacyOk = false; }
+  assert("queue accepts kafka via the legacy string constructor", kafkaLegacyOk);
 
   // The backends Node CAN acknowledge must keep working.
   let fileOk = true;
