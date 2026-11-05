@@ -6,5 +6,5 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
-export { Frond, escapeHtml, setCspNonceProvider, setFormTokenSessionProvider } from "./engine.js";
+export { Frond, FrondSyntaxError, escapeHtml, setCspNonceProvider, setFormTokenSessionProvider } from "./engine.js";
 export type { FilterFn, TestFn, LiveProvider, LiveRequest, LiveResponse, LiveBroadcaster } from "./engine.js";
