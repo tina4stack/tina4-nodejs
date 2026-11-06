@@ -937,6 +937,23 @@ function consumeSqlDelimiter(state: SplitState): boolean {
  *   survives as one. Multi-character terminators (e.g. `!!`) are supported.
  * Mirrors the tina4-python `_split_statements` / tina4-php / tina4-ruby scanner (parity).
  */
+const TINA4_EDIT_MARKER_RE = /(?:#|\/\/|--|\/\*|\{#)\s*tina4:edit\b/i;
+
+/** True if any executable statement remains once SQL comments are stripped. */
+function hasExecutableSql(sql: string): boolean {
+  const body = sql.replace(/\/\*[\s\S]*?\*\//g, "").replace(/--[^\n]*/g, "");
+  return body.replace(/[;\s]/g, "") !== "";
+}
+
+/**
+ * True if a migration is still the unedited scaffold placeholder: it bears a
+ * tina4:edit marker AND has no executable statement. Used to keep an empty
+ * placeholder pending rather than apply it as a silent no-op (#288/#297).
+ */
+function isUnappliedScaffold(sql: string): boolean {
+  return TINA4_EDIT_MARKER_RE.test(sql) && !hasExecutableSql(sql);
+}
+
 export function splitStatements(sql: string, delimiter = ";"): string[] {
   const state: SplitState = {
     sql: normalizeQuotes(sql),
@@ -1246,6 +1263,23 @@ async function runPendingMigrations(
     if (!sqlContent) {
       result.skipped.push(file);
       continue;
+    }
+
+    // An empty, unedited scaffold migration — one that still bears a tina4:edit
+    // marker AND has no executable statement (the comment-only ALTER stub from a
+    // non-create migrate:create, or the view stub) — is unfinished. Applying it
+    // (and recording it passed) runs nothing and leaves the real SQL, written
+    // later under the same filename, never applied, with migrate reporting
+    // nothing pending (#288, #297). Keep it pending until it is written. A
+    // scaffolded CREATE TABLE carries the same hint but IS real DDL, so it
+    // applies — generate-model → migrate is untouched.
+    if (isUnappliedScaffold(sqlContent)) {
+      console.warn(
+        `  Migration ${file} is still an unedited scaffold (a 'tina4:edit' ` +
+        `placeholder with no SQL yet) — skipped and kept pending. Write the ` +
+        `migration and remove the tina4:edit line(s), then run migrate again.`,
+      );
+      continue; // neither applied nor failed — it stays pending for next run
     }
 
     const statements = splitStatements(sqlContent, delimiter);

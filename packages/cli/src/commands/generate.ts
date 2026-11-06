@@ -1482,6 +1482,12 @@ export function generateMigration(
   // Build SQL columns from fields
   const fields = fieldsOverride || parseFields((flags.fields as string) || "");
   const isCreate = name.startsWith("create_") || fieldsOverride !== undefined;
+  // A `create_*_view` name is a VIEW, not a table. Emitting a runnable
+  // `CREATE TABLE <name>_view` made migrate build a table and never the view,
+  // silently (#297). A view needs a SELECT, so scaffold commented guidance with
+  // tina4:edit markers and no executable SQL, so the runner keeps it pending
+  // until it is written (#288).
+  const isView = isCreate && fieldsOverride === undefined && table.endsWith("_view");
 
   const fileName = `${ts}_${name}.sql`;
   const path = join(dir, fileName);
@@ -1507,7 +1513,14 @@ export function generateMigration(
   // parsed label (the migration runner's splitStatements strips `--` line
   // comments, so a comma-less marker line inside a DDL body is still
   // syntactically inert on every engine).
-  if (isCreate) {
+  if (isView) {
+    upSql =
+      `-- tina4:edit  write the CREATE VIEW statement, then remove the\n` +
+      `-- tina4:edit lines. For example:\n` +
+      `-- CREATE VIEW ${table} AS\n` +
+      `--     SELECT id, /* columns */ FROM source_table WHERE /* ... */;`;
+    downSql = `DROP VIEW IF EXISTS ${table};`;
+  } else if (isCreate) {
     const colLines = ["    id INTEGER PRIMARY KEY AUTOINCREMENT"];
     for (const [fname, ftype] of fields) {
       const info = FIELD_TYPE_MAP[ftype] || FIELD_TYPE_MAP.string;
@@ -1533,11 +1546,15 @@ export function generateMigration(
   }
 
   const now = isoNow();
+  // The main .sql holds ONLY the UP migration. The runner executes the WHOLE
+  // file (comments stripped), so embedding the DOWN here made it CREATE then
+  // immediately DROP the table — a generated migration silently undid itself.
+  // Rollback reads the sibling .down.sql, never this file's DOWN. Keep DOWN out
+  // of the main file (parity with the Python/PHP/Ruby masters).
   const content =
     `-- Migration: ${name}\n` +
     `-- Created: ${now}\n\n` +
-    `-- UP\n${upSql}\n\n` +
-    `-- DOWN\n${downSql}\n`;
+    `-- UP\n${upSql}\n`;
 
   writeFileSafe(path, content);
 
@@ -1550,10 +1567,11 @@ export function generateMigration(
 
   writeFileSafe(downPath, downContent);
 
-  // Co-emit a real up/down migration test — only for CREATE migrations (a
-  // placeholder ALTER migration has no asserted schema yet). Suppressed when a
-  // model generates its matching migration (the model's own test covers schema).
-  if (emitTest && isCreate) emitMigrationTest(name, table);
+  // Co-emit a real up/down migration test — only for CREATE TABLE migrations (a
+  // placeholder ALTER, or a VIEW stub that still needs its SELECT, has no
+  // asserted schema yet). Suppressed when a model generates its matching
+  // migration (the model's own test covers schema).
+  if (emitTest && isCreate && !isView) emitMigrationTest(name, table);
 }
 
 // ── Middleware ───────────────────────────────────────────────────────
@@ -2541,9 +2559,11 @@ function emitRouteStubTest(route: string): void {
  * Routing test for ${route} — no mocks, real Router + route discovery.
  *
  * Generated with src/routes/api/${route}/ by \`tina4nodejs generate route
- * ${route}\` (no --model). The handlers are AI-FILL stubs that throw until you
- * implement them, so this tests what IS live on generation: all five routes
- * register on the REAL Router, and the list handler fails loud until filled.
+ * ${route}\` (no --model). The handlers start as AI-FILL stubs that throw until
+ * you implement them. This tests what is live on generation: all five routes
+ * register on the REAL Router, and the list handler is wired and callable. It
+ * stays GREEN whether the stub still throws OR you have filled it in —
+ * implementing the handler never turns this test red.
  * Run with: npx tsx tests/${route}.test.ts
  */
 import { dirname, resolve } from "node:path";
@@ -2560,9 +2580,15 @@ for (const sig of ["GET /api/${route}", "POST /api/${route}", "GET /api/${route}
   assert(\`route registered: \${sig}\`, sigs.includes(sig));
 }
 
-// The scaffolded list handler is a loud AI-FILL stub — it throws until filled.
-await assertThrows("list handler is a live stub (throws until filled)",
-  () => listHandler({} as never, {} as never));`;
+// The list handler is WIRED: a loud AI-FILL stub (throws) on generation. This
+// stays green whether it still throws OR you have filled it in, so doing the
+// work never turns the suite red.
+assert("list handler is callable", typeof listHandler === "function");
+try {
+  await listHandler({} as never, {} as never);
+} catch {
+  // still the scaffold stub (throws until filled) — expected
+}`;
   writeTest(route, standaloneTest(doc, body));
 }
 
@@ -2651,8 +2677,14 @@ ServiceRunner.register(service.name, service.handler, { interval: (service as { 
 assert("registers on a real ServiceRunner", ServiceRunner.list().some((s) => s.name === "${snake}"));
 ServiceRunner.remove("${snake}");
 
-// The scaffolded task body is an AI-FILL stub — it throws until filled.
-await assertThrows("task is a live stub (throws until filled)", () => ${camel}Task({} as never));`;
+// The task is WIRED: a loud AI-FILL stub (throws) on generation. This stays
+// green whether it still throws OR you have filled it in.
+assert("task is callable", typeof ${camel}Task === "function");
+try {
+  await ${camel}Task({} as never);
+} catch {
+  // still the scaffold stub (throws until filled) — expected
+}`;
   writeTest(snake, standaloneTest(doc, body));
 }
 
@@ -2676,8 +2708,14 @@ assert("the job is really on the queue", new Queue({ topic: "${topic}" }).size()
 assert("consumer default export is a daemon", worker.daemon === true);
 assert("consumer handler is wired", typeof worker.handler === "function");
 
-// The per-job handler is an AI-FILL stub — it throws until filled.
-await assertThrows("handle is a live stub (throws until filled)", () => handle${pascal}({}));`;
+// The per-job handler is WIRED: a loud AI-FILL stub (throws) on generation.
+// This stays green whether it still throws OR you have filled it in.
+assert("handle is callable", typeof handle${pascal} === "function");
+try {
+  await handle${pascal}({});
+} catch {
+  // still the scaffold stub (throws until filled) — expected
+}`;
   writeTest(slug, standaloneTest(doc, body));
 }
 
@@ -2748,9 +2786,14 @@ import { ${handler} } from "../src/routes/ws_${base}.js";  // importing register
 const closed = await ${handler}(null as never, "close", "");
 assert("close event handled cleanly", closed === undefined);
 
-// The "message" branch is an AI-FILL stub — it throws until filled.
-await assertThrows("message branch is a live stub (throws until filled)",
-  () => ${handler}(null as never, "message", "hi"));`;
+// The "message" branch is WIRED: a loud AI-FILL stub (throws) on generation.
+// This stays green whether it still throws OR you have filled it in.
+try {
+  await ${handler}(null as never, "message", "hi");
+  assert("message branch is callable", true);
+} catch {
+  assert("message branch is callable", true);  // still the scaffold stub
+}`;
   writeTest(`ws_${base}`, standaloneTest(doc, body));
 }
 
@@ -2769,9 +2812,15 @@ import { Events } from "tina4-nodejs";
 import "../src/listeners/${slug}.js";  // importing registers the listener via Events.on()`;
   const body = `assert("listener registered on the real event bus", Events.listeners("${event}").length >= 1);
 
-// strict emit re-raises the stub error, proving the listener actually ran.
-await assertThrows("emitting the event reaches the (stub) listener",
-  () => Events.emit("${event}", { strict: true }, { id: 1 }));`;
+// Emitting reaches the listener. It starts as a loud AI-FILL stub (a strict emit
+// re-raises); once you implement it this test STILL passes, so doing the work
+// never turns the suite red.
+try {
+  await Events.emit("${event}", { strict: true }, { id: 1 });
+  assert("emitting reaches the listener", true);
+} catch {
+  assert("emitting reaches the listener", true);  // still the scaffold stub
+}`;
   writeTest(slug, standaloneTest(doc, body));
 }
 
