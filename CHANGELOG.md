@@ -6,6 +6,29 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.159 - 2026-11-06
+
+### Fixed
+- A route handler that returned a dict/array/string instead of calling `res.json()`
+  answered an empty 200 with no error and no log line — the value was dropped. The
+  return is now coerced through the auto-detecting `response()` callable (dict/array →
+  JSON, string → HTML/text), skipped when the handler already sent (template render,
+  `res.json`, a stream) so an explicit `res.json` is never double-sent (#289).
+- `generate route/service/queue/websocket/listener` co-emitted a test that asserted the
+  stub still threw, so filling the handler in correctly turned the project's own suite
+  red. The generated test now asserts the handler is wired and stays green both as the
+  scaffold stub and once implemented (#270).
+- `tina4nodejs migrate` applied a freshly scaffolded comment-only migration and recorded
+  it passed, so the real SQL written later under the same filename never ran. The runner
+  now keeps a migration pending while it still bears a `tina4:edit` marker and has no
+  executable SQL; a scaffolded `CREATE TABLE` is real DDL and still applies (#288).
+- `generate migration create_*_view` scaffolded a runnable `CREATE TABLE <name>_view`, so
+  `migrate` built a table and never the view. A `*_view` name now scaffolds commented
+  `CREATE VIEW` guidance that is kept pending until written (#297).
+- The generated main migration `.sql` embedded a `-- DOWN DROP TABLE` section that the
+  runner executed right after the CREATE, silently undoing the migration. The main file
+  is now UP-only (rollback reads the sibling `.down.sql`), matching the other frameworks.
+
 ## 3.13.158 - 2026-11-05
 
 ### Added
