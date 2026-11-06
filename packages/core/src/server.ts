@@ -1130,6 +1130,25 @@ async function invokeRouteHandler(
  * other shape - a handler that already wrote, no template, null/undefined, a
  * string, a Buffer - is left exactly as it was.
  */
+/**
+ * Coerce a handler's RETURN value into a response (#289).
+ *
+ * Node's idiom is `res.json()` / `res.send()`, but a handler that `return`s a
+ * dict / array / string without writing used to answer an empty 200 with no
+ * error and no log line — the value was dropped. This mirrors the Python, PHP
+ * and Ruby masters, which coerce a bare return: a non-null, non-undefined
+ * return is run through the auto-detecting `response()` callable (`res` itself),
+ * so `return { open: 3 }` serialises to JSON. It is skipped when the handler
+ * already sent (a template render, `res.json()`, a stream) or returned nothing,
+ * so an explicit `res.json(...)` is never double-sent.
+ */
+function coerceHandlerResult(res: Tina4Response, result: unknown): void {
+  if (res.raw.writableEnded || res.raw.headersSent) return;
+  if (result === undefined || result === null) return;
+  if (result === (res as unknown)) return; // handler returned the response itself
+  (res as unknown as (data: unknown) => void)(result);
+}
+
 async function renderIfTemplateRoute(
   match: { template?: string },
   res: Tina4Response,
@@ -1201,7 +1220,9 @@ async function runMatchedRoute(ctx: MatchedRouteContext): Promise<void> {
   }
 
   if (!handlerSkipped) {
-    await renderIfTemplateRoute(match, res, await invokeRouteHandler(match, req, res));
+    const result = await invokeRouteHandler(match, req, res);
+    await renderIfTemplateRoute(match, res, result);
+    coerceHandlerResult(res, result);
   }
 
   // Global afterX hooks (logging / post-processing), over EVERY global
