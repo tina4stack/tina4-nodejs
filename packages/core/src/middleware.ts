@@ -14,7 +14,7 @@ import { isTruthy } from "./dotenv.js";
 import { defaultRouter, type Router } from "./router.js";
 import { resolveClientIp } from "./trustedProxy.js";
 import { currentCspNonce, resolveCspHeader } from "./csp.js";
-import { getFrond, getFrameworkFrond, wantsJson, negotiatedErrorBody } from "./response.js";
+import { getFrond, getFrameworkFrond, wantsJson, negotiatedErrorBody, renderNegotiatedError } from "./response.js";
 
 /**
  * Whether to emit a per-request log line (v3.13.14). TINA4_LOG_REQUESTS is
@@ -210,12 +210,13 @@ async function interpretHookResult(
  * all — that name belonged to its dispatcher, back when its orchestrator had no
  * exception handling to mirror.
  */
-function middleware500(
+async function middleware500(
   res: Tina4Response,
   mwClass: any,
   methodName: string,
   error: unknown,
-): Tina4Response {
+  req?: Tina4Request,
+): Promise<Tina4Response> {
   const clsName = mwClass?.name ?? mwClass?.constructor?.name ?? "Middleware";
   const err = error as { name?: string; message?: string };
   const type = err?.name ?? (error as object)?.constructor?.name ?? "Error";
@@ -225,7 +226,18 @@ function middleware500(
   } catch {
     /* never let a broken logger swallow the 500 */
   }
-  // res is callable (json) in real Response; tolerate either shape.
+  // ERR-DEC-02 (#342): answer through the SAME negotiation every other framework
+  // error uses — errors/500.twig for a browser, the JSON envelope
+  // {error, code, message, status, request_id} for an API client. The real
+  // exception stays in the log, never in the body (CWE-209). It used to write an
+  // unconditional {error:"Internal Server Error",status:500}. `req` is optional
+  // only for backward safety; the runner always passes it, and with a raw
+  // response available we negotiate.
+  if (req && res?.raw && typeof res.raw.writeHead === "function" && !res.raw.writableEnded) {
+    await renderNegotiatedError(req, res, 500, "Internal Server Error");
+    return res;
+  }
+  // Fallback (no request / no raw response): the bare JSON body, as before.
   if (typeof (res as any).json === "function") {
     (res as any).json({ error: "Internal Server Error", status: 500 }, 500);
   } else if (typeof (res as any) === "function") {
@@ -386,7 +398,7 @@ export class MiddlewareRunner {
           if (stop) return [req, res, false];
         } catch (error) {
           // Throw → logged clean 500, skip the handler (deterministic).
-          res = middleware500(res, cls, method, error);
+          res = await middleware500(res, cls, method, error, req);
           return [req, res, false];
         }
         // LEGACY COMPAT PATH — retained, but NOT the main mechanism. A hook
@@ -443,7 +455,7 @@ export class MiddlewareRunner {
           if (stop) return [req, res];
         } catch (error) {
           // Throw → logged clean 500, but remaining after* STILL run.
-          res = middleware500(res, cls, method, error);
+          res = await middleware500(res, cls, method, error, req);
           continue;
         }
       }

@@ -31,14 +31,30 @@ export interface AuthGateRoute {
 }
 
 /**
+ * A rejection the caller must RENDER (ERR-DEC-02, #342). The gate decides the
+ * status and message but does NOT render — the template engine stays out of the
+ * auth path's import graph (the auth path imports only node: builtins; see
+ * test/authRs256OptIn.test.ts). server.ts, which already depends on Frond,
+ * renders this through the shared negotiated renderer.
+ */
+export interface AuthReject {
+  status: number;
+  message: string;
+}
+
+/**
  * Enforce auth for a matched route.
  *
- * Returns `true` when the request is REJECTED — a 401 has already been written
- * to `res.raw` and the caller must stop (not run the handler). Returns `false`
- * when the route is public OR a valid token was presented (in which case
- * `req.user` is populated and, for a body formToken, a `FreshToken` header is
- * set). Auth is enforced only for a route that is `secure` and not `noAuth`
- * (the dev dashboard registers its own routes `noAuth`).
+ * Returns an `AuthReject` (status + message) when the request is REJECTED — the
+ * caller must render it and stop (not run the handler). Returns `null` when the
+ * route is public OR a valid token was presented (in which case `req.user` is
+ * populated and, for a body formToken, a `FreshToken` header is set). Auth is
+ * enforced only for a route that is `secure` and not `noAuth` (the dev
+ * dashboard registers its own routes `noAuth`).
+ *
+ * The gate deliberately does NOT render the rejection: rendering needs the
+ * template engine, and the auth path's import graph must stay node:-builtins
+ * only (#342). server.ts renders what this returns.
  *
  * Token sources, in priority order: `Authorization: Bearer` header, a
  * `formToken` in the parsed body, then a session token.
@@ -47,9 +63,9 @@ export function enforceRouteAuth(
   req: Tina4Request,
   res: Tina4Response,
   match: AuthGateRoute,
-): boolean {
+): AuthReject | null {
   if (!(match.secure === true && match.noAuth !== true)) {
-    return false;
+    return null;
   }
 
   // Token slots in priority order: Bearer header, body formToken (frond.js
@@ -86,7 +102,7 @@ export function enforceRouteAuth(
     if (identity) {
       req.user = identity;
       // RBAC guards apply to the SSO identity too (Feature 138).
-      return rbacForbidden(match, identity, res);
+      return rbacForbidden(match, identity);
     }
     const sessionToken = (req as any).session?.get?.("token") as string | undefined;
     if (sessionToken) {
@@ -96,9 +112,9 @@ export function enforceRouteAuth(
   }
 
   if (!payload) {
-    res.raw.writeHead(401, { "Content-Type": "application/json" });
-    res.raw.end(JSON.stringify({ error: "Unauthorized" }));
-    return true;
+    // ERR-DEC-02 (#342): the caller negotiates — a browser gets errors/401.twig,
+    // an API client the JSON envelope. Was an unconditional raw JSON write here.
+    return { status: 401, message: "Unauthorized" };
   }
 
   req.user = payload;
@@ -114,7 +130,7 @@ export function enforceRouteAuth(
   // ── RBAC guards (Feature 138): authorization AFTER authentication ──
   // Auth has passed (401 ruled out above). If the route carries role/permission
   // guards, the verified payload must satisfy them, else 403.
-  return rbacForbidden(match, req.user, res);
+  return rbacForbidden(match, req.user);
 }
 
 /** Read a claim as a list of strings; coerce a legacy singular string. */
@@ -144,28 +160,25 @@ function rbacPermGranted(granted: string[], required: string): boolean {
  * the verified payload; return `false` (no write) when authorised or unguarded.
  * AND across guard groups, OR within a group. Feature 138 / ADR-0058.
  */
-function rbacForbidden(match: AuthGateRoute, payload: unknown, res: Tina4Response): boolean {
+function rbacForbidden(match: AuthGateRoute, payload: unknown): AuthReject | null {
   const requiredRoles = match.requiredRoles ?? [];
   const requiredPerms = match.requiredPerms ?? [];
   if (requiredRoles.length === 0 && requiredPerms.length === 0) {
-    return false;
+    return null;
   }
   const subject =
     payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
 
+  // ERR-DEC-02 (#342): the caller negotiates the 403 (HTML page vs JSON
+  // envelope) — the gate only decides the refusal.
+  const forbidden: AuthReject = { status: 403, message: "Forbidden" };
   const roles = rbacClaimList(subject, "roles", "role");
   for (const group of requiredRoles) {
-    if (!group.some((r) => roles.includes(r))) return writeForbidden(res);
+    if (!group.some((r) => roles.includes(r))) return forbidden;
   }
   const perms = rbacClaimList(subject, "permissions");
   for (const group of requiredPerms) {
-    if (!group.some((p) => rbacPermGranted(perms, p))) return writeForbidden(res);
+    if (!group.some((p) => rbacPermGranted(perms, p))) return forbidden;
   }
-  return false;
-}
-
-function writeForbidden(res: Tina4Response): boolean {
-  res.raw.writeHead(403, { "Content-Type": "application/json" });
-  res.raw.end(JSON.stringify({ error: "Forbidden" }));
-  return true;
+  return null;
 }

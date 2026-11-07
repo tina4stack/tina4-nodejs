@@ -79,9 +79,14 @@ async function run(): Promise<void> {
 
   // ── The core contract: a tokenless write is rejected ─────────────
   it("rejects a tokenless write with 401", async () => {
-    const r = await client.post("/tc-secure-write", { json: { name: "Alice" } });
+    // An API client (Accept: application/json) gets the negotiated JSON envelope
+    // now (ERR-DEC-02, #342) — `error` is the boolean envelope flag. The
+    // browser-HTML branch is covered in errorNegotiation401Middleware500.test.ts.
+    const r = await client.post("/tc-secure-write", { json: { name: "Alice" }, headers: { Accept: "application/json" } });
     assert.equal(r.status, 401, "tokenless write must 401, not silently succeed");
-    assert.equal((r.json() as Record<string, unknown>).error, "Unauthorized");
+    const body = r.json() as Record<string, unknown>;
+    assert.equal(body.error, true);
+    assert.equal(body.code, "UNAUTHORIZED");
   });
 
   // ── A valid Bearer token passes ──────────────────────────────────
