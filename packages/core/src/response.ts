@@ -641,11 +641,12 @@ export function wantsJson(req: { headers?: Record<string, string | string[] | un
 }
 
 const ERROR_CODE_NAMES: Record<number, string> = {
-  403: "FORBIDDEN", 404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED", 500: "INTERNAL_SERVER_ERROR",
+  401: "UNAUTHORIZED", 403: "FORBIDDEN", 404: "NOT_FOUND",
+  405: "METHOD_NOT_ALLOWED", 500: "INTERNAL_SERVER_ERROR",
 };
 
 /**
- * The ONE JSON error envelope for a negotiated 403/404/500 (ERR-DEC-02).
+ * The ONE JSON error envelope for a negotiated 401/403/404/500 (ERR-DEC-02).
  *
  * Reuses errorResponse() (error: true, code, message, status) already shared
  * by app-level response.error() calls, plus request_id for correlation
@@ -655,4 +656,61 @@ export function negotiatedErrorBody(code: number, message: string, requestId: st
   const body = errorResponse(ERROR_CODE_NAMES[code] ?? `HTTP_${code}`, message, code);
   body.request_id = requestId;
   return body;
+}
+
+/**
+ * Write a negotiated error straight to the raw response (ERR-DEC-02, #342): a
+ * browser gets errors/{code}.twig (app override first, then the framework
+ * default), an API client the JSON envelope, both carrying request_id. The
+ * ONE cross-module negotiated writer, used by the auth/RBAC gate (authGate.ts)
+ * and the throwing-middleware 500 (middleware.ts), which own no renderer of
+ * their own; server.ts's 404/500 and middleware.ts's renderForbidden keep their
+ * own copies. error_message is ALWAYS empty here (CWE-209 for the 500).
+ *
+ * Lives in response.ts (a leaf module) so authGate/middleware can import it
+ * without the circular dependency a server.ts renderer would create.
+ */
+export async function renderNegotiatedError(
+  req: { headers?: Record<string, string | string[] | undefined>; path?: string },
+  res: Tina4Response,
+  code: number,
+  message: string,
+): Promise<void> {
+  const { Log } = await import("./logger.js");
+  const requestId = Log.getRequestId() ?? "";
+
+  const writeJson = (): void => {
+    const body = negotiatedErrorBody(code, message, requestId);
+    res.raw.statusCode = code;
+    res.raw.setHeader("Content-Type", "application/json");
+    res.raw.end(JSON.stringify(body));
+  };
+
+  if (wantsJson(req)) {
+    writeJson();
+    return;
+  }
+
+  const data = { path: req?.path ?? "", error_message: "", request_id: requestId, status_code: code };
+  const template = `errors/${code}.twig`;
+  let html: string | null = null;
+  try {
+    html = (await getFrond()).render(template, data);
+  } catch {
+    /* fall through to the framework default */
+  }
+  if (!html) {
+    try {
+      const fw = await getFrameworkFrond();
+      html = fw ? fw.render(template, data) : null;
+    } catch {
+      html = null;
+    }
+  }
+  if (html) {
+    res.raw.writeHead(code, { "Content-Type": "text/html; charset=utf-8" });
+    res.raw.end(html);
+    return;
+  }
+  writeJson();
 }

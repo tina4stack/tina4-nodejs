@@ -344,9 +344,11 @@ try {
 
   // 8
   {
-    const r = await hit("/g/throw-before");
+    // An API client so the negotiated 500 (ERR-DEC-02, #342) returns the JSON
+    // envelope rather than the HTML error page.
+    const r = await hit("/g/throw-before", { headers: { Accept: "application/json" } });
     assert("a throwing before hook becomes a clean 500",
-      r.status === 500 && !r.body.includes(HANDLER_MARK) && r.body.includes("Internal Server Error"),
+      r.status === 500 && !r.body.includes(HANDLER_MARK) && JSON.parse(r.body).code === "INTERNAL_SERVER_ERROR",
       `${r.status} body=${r.body.slice(0, 160)}`);
   }
 

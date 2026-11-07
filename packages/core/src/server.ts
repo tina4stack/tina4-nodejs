@@ -39,7 +39,7 @@ import {
   sessionAutoStart,
 } from "./dispatchPipeline.js";
 import { runWithFormTokenSession, currentFormTokenSessionId } from "./session.js";
-import { createResponse, setDefaultTemplatesDir, wantsJson, negotiatedErrorBody } from "./response.js";
+import { createResponse, setDefaultTemplatesDir, wantsJson, negotiatedErrorBody, renderNegotiatedError } from "./response.js";
 import { MiddlewareChain, MiddlewareRunner, cors, requestLogger, isMiddlewareClass, attachCsrfFromEnv, SecurityHeadersMiddleware } from "./middleware.js";
 import { tryServeStatic } from "./static.js";
 import { loadEnv, isTruthy } from "./dotenv.js";
@@ -1205,7 +1205,13 @@ async function runMatchedRoute(ctx: MatchedRouteContext): Promise<void> {
   // The dev dashboard's own routes are public because DevAdmin registers them
   // noAuth, not because of their path: a "/__dev" prefix test also opened any
   // write route of the application's own named /__developer or /__dev/anything.
-  if (enforceRouteAuth(req, res, match as never)) return;
+  // The gate decides; server.ts renders the rejection so the auth path stays
+  // free of the template engine (ERR-DEC-02, #342).
+  const authReject = enforceRouteAuth(req, res, match as never);
+  if (authReject) {
+    await renderNegotiatedError(req, res, authReject.status, authReject.message);
+    return;
+  }
 
   // The route's OWN class middleware: its beforeX hooks run inside
   // runRouteMiddlewares, its afterX hooks join the after pass below - one

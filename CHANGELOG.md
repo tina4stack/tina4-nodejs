@@ -6,6 +6,25 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.160 - 2026-11-07
+
+### Fixed
+- The secure-by-default auth gate answered a tokenless request to a protected route with
+  a raw `401 {"error": "Unauthorized"}` body whatever the client's `Accept`, and a
+  role/permission-guarded (RBAC) route answered a bare `403` the same way — so a browser
+  that posted a form after its session expired saw raw JSON instead of the error page. The
+  gate (`authGate.ts`) now returns the refusal and the server renders it through the shared
+  negotiated renderer (`renderNegotiatedError`, ERR-DEC-02): a browser gets
+  `errors/401.twig` / `errors/403.twig`, an API client the
+  `{error, code, message, status, request_id}` envelope (#342). Keeping the renderer out of
+  the gate preserves the auth path's node:-builtins-only import boundary.
+- A throwing middleware `beforeX`/`afterX` hook answered a raw `500 {"error": "Internal
+  Server Error", "status": 500}` body regardless of `Accept`. `middleware500` now negotiates
+  the same way — `errors/500.twig` for a browser, the JSON envelope with the request id for
+  an API client — while keeping the exception out of the body (CWE-209) (#342).
+- `401` gained its `UNAUTHORIZED` entry in the error-code-name map, so the negotiated 401
+  JSON envelope carries a real code rather than `HTTP_401`.
+
 ## 3.13.159 - 2026-11-06
 
 ### Fixed
