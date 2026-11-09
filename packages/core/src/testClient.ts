@@ -48,6 +48,7 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { defaultRouter, Router } from "./router.js";
 import { runDispatch, buildDispatchContext, getLiveDispatchContext, type DispatchContext } from "./server.js";
+import { loadEnv } from "./dotenv.js";
 
 export class TestResponse {
   public readonly status: number;
@@ -74,7 +75,25 @@ export class TestResponse {
     for (const [name, values] of Object.entries(headerList)) {
       if (values.length > 0) flat[name] = values[values.length - 1]!;
     }
-    this.headers = flat;
+    // #300: HTTP header names are case-insensitive (RFC 9110), and
+    // getHeaderList() already treats them that way. Keys are STORED lower case,
+    // so Object.keys / spread / JSON.stringify are all unchanged — every reader
+    // sees the same object. A Proxy lowercases only the LOOKUP, so
+    // headers["Location"] finds a header emitted as "location" instead of
+    // undefined, while a real own/inherited member (toString, hasOwnProperty…)
+    // is left untouched.
+    this.headers = new Proxy(flat, {
+      get(target, prop, receiver) {
+        if (typeof prop === "string" && !(prop in target) && prop.toLowerCase() in target) {
+          return target[prop.toLowerCase()];
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+      has(target, prop) {
+        if (typeof prop === "string" && prop.toLowerCase() in target) return true;
+        return Reflect.has(target, prop);
+      },
+    }) as Record<string, string>;
     this.contentType = this.headers["content-type"] ?? "";
   }
 
@@ -123,6 +142,16 @@ export class TestClient {
 
   constructor(router?: Router) {
     this.explicitRouter = router;
+
+    // #296: load .env the way startServer does, so a TestClient test that never
+    // started a server still sees TINA4_SECRET etc. loadEnv is override=false
+    // (first-wins, .env.local then .env), so a value the test set in the real
+    // environment is never clobbered — the test still wins.
+    try {
+      loadEnv();
+    } catch {
+      // A missing or unreadable .env must never stop a test from running.
+    }
   }
 
   /**
