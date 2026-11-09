@@ -6,6 +6,13 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.161 - 2026-11-09
+
+### Fixed
+
+- TestClient now loads `.env` the way the app does (first-wins, `.env.local` then `.env`), so a test that does not start a server still sees `TINA4_SECRET` and other variables instead of failing with a misleading error that points at `.env` (#296).
+- `TestResponse` response-header lookups are now case-insensitive, matching `getHeaderList`, so an assertion like `headers["Location"]` finds a header emitted as `location` instead of returning undefined; the stored shape (lower-case keys, last value, emission order) is unchanged (#300).
+
 ## 3.13.160 - 2026-11-07
 
 ### Fixed
