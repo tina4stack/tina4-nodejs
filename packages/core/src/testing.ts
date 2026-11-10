@@ -21,7 +21,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  *       return a + b;
  *     });
  *
- *     runAll();
+ *     await runAll();
  *
  * The builders are named expect* — DESCRIPTORS that record an expectation for the
  * runner — deliberately distinct from the xUnit assert* on Tina4Test (test.ts),
@@ -104,10 +104,15 @@ export function tests(
 
 // ── Runner ─────────────────────────────────────────────────────────
 
-/** Run all registered tests. Returns results summary. */
-export function runAll(
+/**
+ * Run all registered tests. Resolves to the results summary.
+ *
+ * Each test function's return value is awaited, so an async function is judged
+ * on what it resolves to (or rejects with), not on the Promise it returns.
+ */
+export async function runAll(
   options: { quiet?: boolean; failfast?: boolean } = {},
-): TestResults {
+): Promise<TestResults> {
   const { quiet = false, failfast = false } = options;
   const results: TestResults = { passed: 0, failed: 0, errors: 0, details: [] };
 
@@ -119,7 +124,7 @@ export function runAll(
     for (const assertion of entry.assertions) {
       const label = assertionLabel(assertion, entry.name);
       try {
-        runAssertion(entry.fn, assertion);
+        await runAssertion(entry.fn, assertion);
         results.passed++;
         results.details.push({ name: label, status: "passed" });
         if (!quiet) {
@@ -166,12 +171,15 @@ class TestAssertionError extends Error {
   }
 }
 
-function runAssertion(fn: (...args: unknown[]) => unknown, assertion: Assertion): void {
+async function runAssertion(
+  fn: (...args: unknown[]) => unknown,
+  assertion: Assertion,
+): Promise<void> {
   const { type, args } = assertion;
 
   switch (type) {
     case "equal": {
-      const result = fn(...args);
+      const result = await fn(...args);
       const expected = assertion.expected;
       if (result !== expected) {
         throw new TestAssertionError(
@@ -184,7 +192,7 @@ function runAssertion(fn: (...args: unknown[]) => unknown, assertion: Assertion)
     case "raises": {
       const ExcClass = assertion.exception!;
       try {
-        fn(...args);
+        await fn(...args);
       } catch (err) {
         if (err instanceof ExcClass) {
           return; // success
@@ -197,7 +205,7 @@ function runAssertion(fn: (...args: unknown[]) => unknown, assertion: Assertion)
     }
 
     case "true": {
-      const result = fn(...args);
+      const result = await fn(...args);
       if (!result) {
         throw new TestAssertionError(`expected truthy, got ${JSON.stringify(result)}`);
       }
@@ -205,7 +213,7 @@ function runAssertion(fn: (...args: unknown[]) => unknown, assertion: Assertion)
     }
 
     case "false": {
-      const result = fn(...args);
+      const result = await fn(...args);
       if (result) {
         throw new TestAssertionError(`expected falsy, got ${JSON.stringify(result)}`);
       }

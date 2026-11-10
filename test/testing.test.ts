@@ -34,41 +34,41 @@ console.log("--- Exports (behavioural) ---");
 reset();
 tests(expectEqual([1, 1], 2))(function f(a: number, b: number): number { return a + b; });
 {
-  const r = runAll({ quiet: true });
+  const r = await runAll({ quiet: true });
   assert("tests registers one passing entry", r.passed === 1 && r.failed === 0 && r.errors === 0 && r.details.length === 1);
 }
 
 // expectEqual drives a real comparison: 1+1+1 == 3 passes against add3.
 reset();
 tests(expectEqual([1, 1, 1], 3))(function add3(a: number, b: number, c: number): number { return a + b + c; });
-assert("expectEqual is exercised by runAll", runAll({ quiet: true }).passed === 1);
+assert("expectEqual is exercised by runAll", (await runAll({ quiet: true })).passed === 1);
 
 // expectRaises catches a real thrown error.
 reset();
 tests(expectRaises(Error, [null]))(function g(b: number | null): number { if (b === null) throw new Error("x"); return b; });
-assert("expectRaises is exercised by runAll", runAll({ quiet: true }).passed === 1);
+assert("expectRaises is exercised by runAll", (await runAll({ quiet: true })).passed === 1);
 
 // expectTrue verifies a real truthy result.
 reset();
 tests(expectTrue([1]))(function idTrue(x: unknown): unknown { return x; });
-assert("expectTrue is exercised by runAll", runAll({ quiet: true }).passed === 1);
+assert("expectTrue is exercised by runAll", (await runAll({ quiet: true })).passed === 1);
 
 // expectFalse verifies a real falsy result.
 reset();
 tests(expectFalse([0]))(function idFalse(x: unknown): unknown { return x; });
-assert("expectFalse is exercised by runAll", runAll({ quiet: true }).passed === 1);
+assert("expectFalse is exercised by runAll", (await runAll({ quiet: true })).passed === 1);
 
 // runAll returns a real results summary reflecting the registered tests.
 reset();
 tests(expectEqual([2, 2], 4))(function add2(a: number, b: number): number { return a + b; });
-assert("runAll reports the registered pass", runAll({ quiet: true }).passed === 1);
+assert("runAll reports the registered pass", (await runAll({ quiet: true })).passed === 1);
 
 // reset() clears the registry: after reset, runAll sees nothing.
 reset();
 tests(expectEqual([9, 9], 18))(function add9(a: number, b: number): number { return a + b; });
 reset();
 {
-  const r = runAll({ quiet: true });
+  const r = await runAll({ quiet: true });
   assert("reset clears the registry", r.passed === 0 && r.failed === 0 && r.errors === 0 && r.details.length === 0);
 }
 
@@ -80,28 +80,28 @@ function addEq(a: number, b: number): number { return a + b; }
 // The built assertion actually drives a passing test against add(2,3)===5.
 reset();
 tests(expectEqual([2, 3], 5))(addEq);
-assert("expectEqual drives a passing test", runAll({ quiet: true }).passed === 1);
+assert("expectEqual drives a passing test", (await runAll({ quiet: true })).passed === 1);
 
 // The 'equal' assertion FAILS when the function returns the wrong value.
 reset();
 tests(expectEqual([1, 1], 999))(addEq);
 {
-  const r = runAll({ quiet: true });
+  const r = await runAll({ quiet: true });
   assert("expectEqual fails on wrong return value", r.failed === 1 && r.details[0].status === "failed");
 }
 
 // The stored args are actually passed to the function: [2,3] applied -> 5.
 reset();
 tests(expectEqual([2, 3], 5))(function add(a: number, b: number): number { return a + b; });
-assert("expectEqual passes stored args to the function", runAll({ quiet: true }).passed === 1);
+assert("expectEqual passes stored args to the function", (await runAll({ quiet: true })).passed === 1);
 
 // The expected value is the comparison target: 1+1!==3 fails, ===2 passes.
 reset();
 tests(expectEqual([1, 1], 3))(addEq);
-assert("expectEqual expected is the comparison target (mismatch fails)", runAll({ quiet: true }).failed === 1);
+assert("expectEqual expected is the comparison target (mismatch fails)", (await runAll({ quiet: true })).failed === 1);
 reset();
 tests(expectEqual([1, 1], 2))(addEq);
-assert("expectEqual expected is the comparison target (match passes)", runAll({ quiet: true }).passed === 1);
+assert("expectEqual expected is the comparison target (match passes)", (await runAll({ quiet: true })).passed === 1);
 
 // --- expectRaises (behavioural) ---
 console.log("\n--- expectRaises ---");
@@ -109,25 +109,25 @@ console.log("\n--- expectRaises ---");
 // The raises assertion catches a thrown Error.
 reset();
 tests(expectRaises(Error, [null]))(function fRaises(b: number | null): number { if (b === null) throw new Error("x"); return b; });
-assert("expectRaises catches the thrown Error", runAll({ quiet: true }).passed === 1);
+assert("expectRaises catches the thrown Error", (await runAll({ quiet: true })).passed === 1);
 
 // A raises assertion FAILS when no error is thrown.
 reset();
 tests(expectRaises(Error, [1]))(function fNoThrow(b: number): number { return b; });
-assert("expectRaises fails when nothing is thrown", runAll({ quiet: true }).failed === 1);
+assert("expectRaises fails when nothing is thrown", (await runAll({ quiet: true })).failed === 1);
 
 // The exception class is matched: wrong class does NOT pass, right class does.
 reset();
 tests(expectRaises(TypeError, [null]))(function fRange(): number { throw new RangeError("x"); });
-assert("expectRaises fails on wrong exception class", runAll({ quiet: true }).passed === 0);
+assert("expectRaises fails on wrong exception class", (await runAll({ quiet: true })).passed === 0);
 reset();
 tests(expectRaises(RangeError, [null]))(function fRange2(): number { throw new RangeError("x"); });
-assert("expectRaises passes on matching exception class", runAll({ quiet: true }).passed === 1);
+assert("expectRaises passes on matching exception class", (await runAll({ quiet: true })).passed === 1);
 
 // The args reach the function: 'bad' triggers the throw.
 reset();
 tests(expectRaises(Error, ["bad"]))(function fArg(x: string): void { if (x === "bad") throw new Error("boom"); });
-assert("expectRaises passes args through to the function", runAll({ quiet: true }).passed === 1);
+assert("expectRaises passes args through to the function", (await runAll({ quiet: true })).passed === 1);
 
 // --- expectTrue (behavioural) ---
 console.log("\n--- expectTrue ---");
@@ -137,20 +137,20 @@ function idT(x: unknown): unknown { return x; }
 // 42 is truthy -> expectTrue passes.
 reset();
 tests(expectTrue([42]))(idT);
-assert("expectTrue passes on a truthy result", runAll({ quiet: true }).passed === 1);
+assert("expectTrue passes on a truthy result", (await runAll({ quiet: true })).passed === 1);
 
 // 0 is falsy -> expectTrue fails.
 reset();
 tests(expectTrue([0]))(idT);
-assert("expectTrue fails on a falsy result", runAll({ quiet: true }).failed === 1);
+assert("expectTrue fails on a falsy result", (await runAll({ quiet: true })).failed === 1);
 
 // The arg drives truthiness: 0 fails, 42 passes.
 reset();
 tests(expectTrue([0]))(idT);
-assert("expectTrue arg drives truthiness (0 fails)", runAll({ quiet: true }).failed === 1);
+assert("expectTrue arg drives truthiness (0 fails)", (await runAll({ quiet: true })).failed === 1);
 reset();
 tests(expectTrue([42]))(idT);
-assert("expectTrue arg drives truthiness (42 passes)", runAll({ quiet: true }).passed === 1);
+assert("expectTrue arg drives truthiness (42 passes)", (await runAll({ quiet: true })).passed === 1);
 
 // --- expectFalse (behavioural) ---
 console.log("\n--- expectFalse ---");
@@ -160,20 +160,20 @@ function idF(x: unknown): unknown { return x; }
 // 0 is falsy -> expectFalse passes.
 reset();
 tests(expectFalse([0]))(idF);
-assert("expectFalse passes on a falsy result", runAll({ quiet: true }).passed === 1);
+assert("expectFalse passes on a falsy result", (await runAll({ quiet: true })).passed === 1);
 
 // 1 is truthy -> expectFalse fails.
 reset();
 tests(expectFalse([1]))(idF);
-assert("expectFalse fails on a truthy result", runAll({ quiet: true }).failed === 1);
+assert("expectFalse fails on a truthy result", (await runAll({ quiet: true })).failed === 1);
 
 // The arg drives falsiness: 1 fails, 0 passes.
 reset();
 tests(expectFalse([1]))(idF);
-assert("expectFalse arg drives falsiness (1 fails)", runAll({ quiet: true }).failed === 1);
+assert("expectFalse arg drives falsiness (1 fails)", (await runAll({ quiet: true })).failed === 1);
 reset();
 tests(expectFalse([0]))(idF);
-assert("expectFalse arg drives falsiness (0 passes)", runAll({ quiet: true }).passed === 1);
+assert("expectFalse arg drives falsiness (0 passes)", (await runAll({ quiet: true })).passed === 1);
 
 // --- tests decorator ---
 console.log("\n--- tests Decorator ---");
@@ -196,7 +196,7 @@ assert("Decorated function still works", add(10, 20) === 30);
 // --- runAll with passing tests ---
 console.log("\n--- runAll Passing ---");
 
-const results = runAll({ quiet: true });
+const results = await runAll({ quiet: true });
 assert("runAll returns results object", results !== null);
 // passed count is the real number of passing assertions (3 add tests).
 assert("Results passed count is the real value (3)", results.passed === 3);
@@ -223,7 +223,7 @@ tests(
   return a + b;
 });
 
-const failResults = runAll({ quiet: true });
+const failResults = await runAll({ quiet: true });
 assert("Failing test increments failed count", failResults.failed === 1);
 assert("Failing test detail has status 'failed'", failResults.details[0].status === "failed");
 assert("Failing test detail has message", typeof failResults.details[0].message === "string");
@@ -241,7 +241,7 @@ tests(
   return a + b;
 });
 
-const throwResults = runAll({ quiet: true });
+const throwResults = await runAll({ quiet: true });
 assert("expectRaises passes when error thrown", throwResults.passed === 2);
 assert("No failures in throw test", throwResults.failed === 0);
 
@@ -260,14 +260,14 @@ tests(
   return x;
 });
 
-const boolResults = runAll({ quiet: true });
+const boolResults = await runAll({ quiet: true });
 assert("All truthy/falsy assertions pass", boolResults.passed === 5 && boolResults.failed === 0);
 
 // --- reset ---
 console.log("\n--- reset ---");
 
 reset();
-const emptyResults = runAll({ quiet: true });
+const emptyResults = await runAll({ quiet: true });
 assert("After reset, no tests run", emptyResults.passed === 0 && emptyResults.failed === 0 && emptyResults.errors === 0);
 assert("After reset, details empty", emptyResults.details.length === 0);
 
@@ -283,7 +283,7 @@ tests(
   return a + b;
 });
 
-const ffResults = runAll({ quiet: true, failfast: true });
+const ffResults = await runAll({ quiet: true, failfast: true });
 assert("Failfast stops after first failure", ffResults.details.length === 1);
 assert("Failfast reports the failure", ffResults.failed === 1);
 
@@ -300,6 +300,42 @@ reset();
 
 const anonFunc = tests()((x: number) => x * 2);
 assert("Anonymous function works", anonFunc(5) === 10);
+
+// --- async test functions are judged on what they resolve to ---
+console.log("\n--- async ---");
+
+const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+
+reset();
+tests(expectTrue([]))(async function resolvesFalse(): Promise<boolean> { await tick(); return false; });
+assert("expectTrue fails when an async function resolves falsy", (await runAll({ quiet: true })).failed === 1);
+
+reset();
+tests(expectTrue([]))(async function resolvesTrue(): Promise<boolean> { await tick(); return true; });
+assert("expectTrue passes when an async function resolves truthy", (await runAll({ quiet: true })).passed === 1);
+
+reset();
+tests(expectFalse([]))(async function resolvesFalsy(): Promise<number> { await tick(); return 0; });
+assert("expectFalse passes when an async function resolves falsy", (await runAll({ quiet: true })).passed === 1);
+
+reset();
+tests(expectEqual([2], 3))(async function addOne(n: number): Promise<number> { await tick(); return n + 1; });
+assert("expectEqual compares the resolved value", (await runAll({ quiet: true })).passed === 1);
+
+reset();
+tests(expectRaises(RangeError, [-1]))(async function rejects(n: number): Promise<number> {
+  await tick();
+  if (n < 0) throw new RangeError("negative");
+  return n;
+});
+assert("expectRaises passes when an async function rejects with the class", (await runAll({ quiet: true })).passed === 1);
+
+reset();
+tests(expectTrue([]))(async function rejectsUnexpectedly(): Promise<boolean> { await tick(); throw new TypeError("db gone"); });
+{
+  const r = await runAll({ quiet: true });
+  assert("an unexpected async rejection is an error, not a pass", r.errors === 1 && r.passed === 0);
+}
 
 // Cleanup
 reset();

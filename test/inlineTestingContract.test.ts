@@ -55,6 +55,18 @@ const FAILING_INLINE =
   `tests(expectEqual([5, 3], 999))(` +
   `function add(a: number, b: number): number { return a + b; });\n`;
 
+// An async function (the shape of every ORM test) whose resolved value fails the
+// assertion. The Promise it returns is truthy; the value it resolves to is not.
+const FAILING_ASYNC_INLINE =
+  `import { tests, expectTrue } from "@tina4/core";\n` +
+  `tests(expectTrue([]))(` +
+  `async function saved(): Promise<boolean> { await new Promise((r) => setTimeout(r, 5)); return false; });\n`;
+
+const PASSING_ASYNC_INLINE =
+  `import { tests, expectTrue } from "@tina4/core";\n` +
+  `tests(expectTrue([]))(` +
+  `async function saved(): Promise<boolean> { await new Promise((r) => setTimeout(r, 5)); return true; });\n`;
+
 // A src file with NO tests() call and an observable side effect on import.
 const SIDE_EFFECT =
   `import { writeFileSync } from "node:fs";\n` +
@@ -94,6 +106,15 @@ try {
   {
     const dir = makeProject("fail", { "src/inlineMath.ts": FAILING_INLINE });
     assert("tina4 test exits non zero when the inline test fails", runTestCli(dir) !== 0);
+  }
+
+  {
+    const dir = makeProject("asyncfail", { "src/inlineSave.ts": FAILING_ASYNC_INLINE });
+    assert("tina4 test exits non zero when an async inline test resolves to a failure", runTestCli(dir) !== 0);
+  }
+  {
+    const dir = makeProject("asyncpass", { "src/inlineSave.ts": PASSING_ASYNC_INLINE });
+    assert("tina4 test exits zero when an async inline test resolves to a pass", runTestCli(dir) === 0);
   }
 
   // ── B: discovery does not run arbitrary scanned code ───────────────

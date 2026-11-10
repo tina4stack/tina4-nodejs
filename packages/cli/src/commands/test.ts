@@ -81,7 +81,7 @@ async function runInlineTests(cwd: string): Promise<boolean> {
 
   if (discovered === 0) return false;
 
-  const results = runAll();
+  const results = await runAll();
   return results.failed + results.errors > 0;
 }
 
