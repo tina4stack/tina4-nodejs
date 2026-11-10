@@ -271,19 +271,22 @@ function record(results: TestResults, label: string, quiet: boolean, check: () =
   }
 }
 
+/** Judge an expectRaises assertion: the call must have thrown that class. */
+function judgeRaises(assertion: Assertion, outcome: Outcome): void {
+  const ExcClass = assertion.exception!;
+  if (!outcome.threw) throw new TestAssertionError(`expected ${ExcClass.name} to be raised`);
+  const err = outcome.error;
+  if (err instanceof ExcClass) return;
+  throw new TestAssertionError(
+    `expected ${ExcClass.name}, got ${err instanceof Error ? err.constructor.name : typeof err}: ${err}`,
+  );
+}
+
 /** Judge one assertion against what the call produced. */
 function judge(assertion: Assertion, outcome: Outcome): void {
   const { type } = assertion;
 
-  if (type === "raises") {
-    const ExcClass = assertion.exception!;
-    if (!outcome.threw) throw new TestAssertionError(`expected ${ExcClass.name} to be raised`);
-    const err = outcome.error;
-    if (err instanceof ExcClass) return;
-    throw new TestAssertionError(
-      `expected ${ExcClass.name}, got ${err instanceof Error ? err.constructor.name : typeof err}: ${err}`,
-    );
-  }
+  if (type === "raises") return judgeRaises(assertion, outcome);
 
   // Any other assertion: an exception from the function is an error, not a failure.
   if (outcome.threw) throw outcome.error;
