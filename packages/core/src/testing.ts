@@ -148,10 +148,13 @@ export function runAll(options: RunOptions = {}): TestResults {
  *
  * An async function is judged on what it resolves to or rejects with. A call
  * that has not settled after `timeoutMs` (default 30000) is reported as an
- * error, so one stuck test cannot hang the run.
+ * error, so one stuck test cannot hang the run. `timeoutMs: Infinity` turns the
+ * timeout off; any other value must be a positive number of milliseconds no
+ * larger than 2147483647 (the largest delay a Node timer accepts).
  */
 export async function runAllAsync(options: AsyncRunOptions = {}): Promise<TestResults> {
   const { quiet = false, failfast = false, timeoutMs = 30_000 } = options;
+  checkTimeout(timeoutMs);
   const results: TestResults = { passed: 0, failed: 0, errors: 0, details: [] };
 
   for (const entry of registry) {
@@ -224,6 +227,18 @@ function callSync(fn: (...args: unknown[]) => unknown, args: unknown[]): Outcome
   return { threw: false, value };
 }
 
+/** Largest delay setTimeout honours; a larger one fires after 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+function checkTimeout(timeoutMs: number): void {
+  if (timeoutMs === Infinity) return;
+  if (!(timeoutMs > 0 && timeoutMs <= MAX_TIMER_MS)) {
+    throw new RangeError(
+      `timeoutMs must be Infinity or a number of milliseconds in (0, ${MAX_TIMER_MS}], got ${timeoutMs}`,
+    );
+  }
+}
+
 async function callAsync(
   fn: (...args: unknown[]) => unknown,
   args: unknown[],
@@ -233,6 +248,7 @@ async function callAsync(
   try {
     const value = fn(...args);
     if (!isThenable(value)) return { threw: false, value };
+    if (timeoutMs === Infinity) return { threw: false, value: await value };
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(
         () => reject(new TestRunError(`did not settle within ${timeoutMs} ms`)),

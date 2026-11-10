@@ -385,6 +385,18 @@ if (runAllAsync) {
   }
 
   reset();
+  tests(expectTrue([]))(async function slowTrue(): Promise<boolean> { await new Promise((ok) => setTimeout(ok, 20)); return true; });
+  {
+    const r = await runAllAsync({ quiet: true, timeoutMs: Infinity });
+    assert("runAllAsync timeoutMs: Infinity turns the timeout off", r.passed === 1 && r.errors === 0);
+  }
+  for (const bad of [0, -1, Number.NaN, 2 ** 31]) {
+    let threw: unknown;
+    try { await runAllAsync({ quiet: true, timeoutMs: bad }); } catch (error) { threw = error; }
+    assert(`runAllAsync refuses timeoutMs ${bad}`, threw instanceof RangeError);
+  }
+
+  reset();
   tests(expectTrue([]))(function thenable(): PromiseLike<boolean> {
     return { then: (ok: (v: boolean) => void) => { ok(false); } } as PromiseLike<boolean>;
   });
