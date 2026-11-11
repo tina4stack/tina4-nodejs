@@ -2556,6 +2556,95 @@ ${reset}
           for (const sibling of siblingServers) sibling.closeIdleConnections();
         });
 
+      // The teardown steps a handled signal must run. Pulled out of
+      // gracefulShutdown() so the handler itself stays a thin try/catch/exit
+      // (low cyclomatic complexity) — the drain logic lives here, the
+      // exit-safety contract lives in the caller.
+      const runTeardown = async (signal: string): Promise<void> => {
+        Log.info(`Received ${signal}, shutting down gracefully...`);
+
+        // Drop our identity marker so a later takeover does not match a dead PID.
+        if (!cluster.isWorker) removePidfile(port);
+
+        stopAllBackgroundTasks();
+
+        // Tell live WebSocket peers we are going away (RFC 6455 s7.4.1 code
+        // 1001) BEFORE closing the listeners. A WS connection never "finishes"
+        // the way a request does, so waiting for one to drain would burn the
+        // whole budget every time; the honest move is a proper close frame so
+        // a tina4-js client reconnects on a schedule instead of erroring on a
+        // socket that simply vanished.
+        const wsClosed =
+          wsRouteManager.closeAll(CLOSE_GOING_AWAY, "server shutting down") +
+          devReloadWs.closeAll(CLOSE_GOING_AWAY, "server shutting down");
+        if (wsClosed > 0) {
+          Log.info(`Closed ${wsClosed} WebSocket connection(s) with 1001 going away`);
+        }
+
+        // Raw TCP services stop accepting and drain their live device
+        // connections (firing on_close) alongside the HTTP/WebSocket drain.
+        stopAcceptingAllTcpServices();
+        await drainAllTcpServices();
+
+        // Race the drain against the shutdown budget. Whatever is still in
+        // flight when the budget expires gets force-closed: SIGKILL is what
+        // arrives next, so a bounded drain is strictly better than an
+        // unbounded one that the orchestrator truncates anyway.
+        const budgetSeconds = shutdownTimeoutSeconds();
+        let timer: NodeJS.Timeout | undefined;
+        const outcome = await Promise.race([
+          closeListeners().then(() => "drained" as const),
+          new Promise<"timeout">((r) => {
+            timer = setTimeout(() => r("timeout"), budgetSeconds * 1000);
+            timer.unref();
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+
+        if (outcome === "timeout") {
+          Log.warning(
+            `Shutdown timeout (${budgetSeconds}s) reached with requests still in flight - forcing close`,
+          );
+          server.closeAllConnections();
+          aiServer?.closeAllConnections();
+          for (const sibling of siblingServers) sibling.closeAllConnections();
+        }
+
+        try {
+          const orm = await import("../../orm/src/index.js");
+          await orm.closeDatabase();
+        } catch {
+          /* ORM never initialised - nothing to close */
+        }
+
+        Log.info("Server stopped.");
+        // Graceful shutdown owns the final call to reset() (Decision 24 /
+        // LOG-I02): flush the shutdown record above, then clear the resolved
+        // snapshot, exactly once. process.exit() below makes this moot for a
+        // real process, but a test harness that drives gracefulShutdown()
+        // without letting exit() actually kill the process (see
+        // test/gracefulShutdown.test.ts) must not inherit a stale snapshot.
+        Log.reset();
+      };
+
+      // Best-effort degrade when a teardown step throws: try the logger, and
+      // when logging ITSELF is the failing step, fall back to a raw stderr
+      // write (which never routes through the sink). Never throws.
+      const degradeTeardownFailure = (signal: string, err: unknown): void => {
+        const detail = err instanceof Error ? err.message : String(err);
+        try {
+          Log.error(`Teardown step failed during ${signal} shutdown (exiting cleanly): ${detail}`);
+        } catch {
+          try {
+            process.stderr.write(
+              `tina4: teardown step failed during ${signal} shutdown (exiting cleanly): ${detail}\n`,
+            );
+          } catch {
+            /* nothing left to degrade to */
+          }
+        }
+      };
+
       const gracefulShutdown = async (signal: string): Promise<void> => {
         if (shuttingDown) return;
         shuttingDown = true;
@@ -2563,100 +2652,16 @@ ${reset}
         // Exception-safe teardown (parity with PHP Server::cleanup()/
         // forceShutdown() and Ruby). A handled SIGTERM/SIGINT MUST drain and
         // exit 0, never fatal, so NO throw or rejection from any teardown step
-        // may escape this function. The signal handlers below invoke it as
+        // may escape this function. The handlers below invoke it as
         // `void gracefulShutdown(...)`, which discards the promise - an escaping
-        // rejection would therefore surface as an unhandledRejection, and Node's
-        // default disposition terminates the process with a NON-ZERO exit code,
-        // turning a handled signal into exit 1. So every step (a Log write under
-        // TINA4_LOG_STRICT with a failing sink, the invalid-timeout Log.warning,
-        // a drainAllTcpServices() rejection, the final Log.reset()) runs inside
-        // this guard: on any throw we degrade to a best-effort line and STILL
-        // exit 0 - the signal was handled and the drain already ran. The
-        // `shuttingDown` latch above keeps it idempotent under a repeated signal.
+        // rejection would surface as an unhandledRejection and Node's default
+        // disposition would exit NON-ZERO, turning a handled signal into exit 1.
+        // So the whole drain runs inside this guard: on any throw we degrade to
+        // a best-effort line and STILL exit 0. `shuttingDown` keeps it idempotent.
         try {
-          Log.info(`Received ${signal}, shutting down gracefully...`);
-
-          // Drop our identity marker so a later takeover does not match a dead PID.
-          if (!cluster.isWorker) removePidfile(port);
-
-          stopAllBackgroundTasks();
-
-          // Tell live WebSocket peers we are going away (RFC 6455 s7.4.1 code
-          // 1001) BEFORE closing the listeners. A WS connection never "finishes"
-          // the way a request does, so waiting for one to drain would burn the
-          // whole budget every time; the honest move is a proper close frame so
-          // a tina4-js client reconnects on a schedule instead of erroring on a
-          // socket that simply vanished.
-          const wsClosed =
-            wsRouteManager.closeAll(CLOSE_GOING_AWAY, "server shutting down") +
-            devReloadWs.closeAll(CLOSE_GOING_AWAY, "server shutting down");
-          if (wsClosed > 0) {
-            Log.info(`Closed ${wsClosed} WebSocket connection(s) with 1001 going away`);
-          }
-
-          // Raw TCP services stop accepting and drain their live device
-          // connections (firing on_close) alongside the HTTP/WebSocket drain.
-          stopAcceptingAllTcpServices();
-          await drainAllTcpServices();
-
-          // Race the drain against the shutdown budget. Whatever is still in
-          // flight when the budget expires gets force-closed: SIGKILL is what
-          // arrives next, so a bounded drain is strictly better than an
-          // unbounded one that the orchestrator truncates anyway.
-          const budgetSeconds = shutdownTimeoutSeconds();
-          let timer: NodeJS.Timeout | undefined;
-          const outcome = await Promise.race([
-            closeListeners().then(() => "drained" as const),
-            new Promise<"timeout">((r) => {
-              timer = setTimeout(() => r("timeout"), budgetSeconds * 1000);
-              timer.unref();
-            }),
-          ]);
-          if (timer) clearTimeout(timer);
-
-          if (outcome === "timeout") {
-            Log.warning(
-              `Shutdown timeout (${budgetSeconds}s) reached with requests still in flight - forcing close`,
-            );
-            server.closeAllConnections();
-            aiServer?.closeAllConnections();
-            for (const sibling of siblingServers) sibling.closeAllConnections();
-          }
-
-          try {
-            const orm = await import("../../orm/src/index.js");
-            await orm.closeDatabase();
-          } catch {
-            /* ORM never initialised - nothing to close */
-          }
-
-          Log.info("Server stopped.");
-          // Graceful shutdown owns the final call to reset() (Decision 24 /
-          // LOG-I02): flush the shutdown record above, then clear the resolved
-          // snapshot, exactly once. process.exit() below makes this moot for a
-          // real process, but a test harness that drives gracefulShutdown()
-          // without letting exit() actually kill the process (see
-          // test/gracefulShutdown.test.ts) must not inherit a stale snapshot.
-          Log.reset();
+          await runTeardown(signal);
         } catch (err) {
-          // A teardown step threw (most often a Log write under
-          // TINA4_LOG_STRICT with a failing sink). Degrade and still exit 0:
-          // the signal was handled, the accept loop was already stopped by the
-          // listener close above, and SIGKILL is what would arrive next anyway.
-          // Try the logger first; when logging ITSELF is the failing step, fall
-          // back to a raw stderr write, which never routes through the sink.
-          const detail = err instanceof Error ? err.message : String(err);
-          try {
-            Log.error(`Teardown step failed during ${signal} shutdown (exiting cleanly): ${detail}`);
-          } catch {
-            try {
-              process.stderr.write(
-                `tina4: teardown step failed during ${signal} shutdown (exiting cleanly): ${detail}\n`,
-              );
-            } catch {
-              /* nothing left to degrade to */
-            }
-          }
+          degradeTeardownFailure(signal, err);
         }
 
         // Exit 0: this process was ASKED to stop. Reached on the clean path AND
