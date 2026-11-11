@@ -39,7 +39,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * (drained / refused / exit code) rather than to pin Darwin timings.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, openSync, closeSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, openSync, closeSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { createConnection, createServer } from "node:net";
@@ -524,8 +524,11 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
 // straight into the now-read-only strict sink. The very first teardown log line
 // (`Log.info("Received SIGTERM…")`) already throws under strict; the invalid
 // timeout guarantees a warning write lands in the failing sink too, mirroring
-// PHP's GracefulShutdownTest. Platform note: a non-root user cannot append to a
-// 0o444 file — this is verified on Linux CI (as the file header states).
+// PHP's GracefulShutdownTest. The failing sink is a DIRECTORY at the log path
+// (not a 0o444 file): openSync(dir, "a") raises EISDIR for ANY uid, so the gate
+// holds even when the suite runs as root (a 0o444 file does NOT deny root —
+// CAP_DAC_OVERRIDE — the exact ghost this project's strict-write test had to drop
+// uid to avoid). POSIX-only; verified on Linux CI (as the file header states).
 {
   const strictDir = mkdtempSync(join(tmpdir(), "tina4-strictlog-"));
   const strictLog = join(strictDir, "tina4.log");
@@ -542,9 +545,17 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
     // Boot opened the sink writable and wrote the boot line. Confirm the sink is
     // real (so a mis-set env can't make this pass by never writing a file), then
     // make it un-writable so the next (teardown) append raises under strict.
-    assert("strict log sink opened writable at boot", existsSync(strictLog),
+    assert("strict log sink opened writable at boot as a FILE", existsSync(strictLog) && statSync(strictLog).isFile(),
       `(no file at ${strictLog} — the boot sink never opened; the write-fail path would be untested)`);
-    chmodSync(strictLog, 0o444);
+    // Replace the sink file with a DIRECTORY at the same path, so the next
+    // (teardown) append does openSync(dir, "a") → EISDIR for ANY uid (root
+    // included). This is the robust, uid-independent gate; a 0o444 chmod would be
+    // bypassed by root (CAP_DAC_OVERRIDE) and pass for the wrong reason.
+    rmSync(strictLog, { force: true });
+    mkdirSync(strictLog);
+    assert("strict log sink path is now a directory (fails the write even as root)",
+      statSync(strictLog).isDirectory(),
+      `(expected a directory at ${strictLog} to force EISDIR on the teardown write)`);
 
     kill(b.child, "SIGTERM");
     const exit = await waitForExit(b.child, 40_000);
@@ -556,7 +567,6 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
       !exit.timedOut && exit.code === 0 && exit.signal === null,
       `(code=${exit.code} signal=${exit.signal} timedOut=${exit.timedOut} — 1 here is the un-guarded unhandledRejection)`);
   } finally {
-    try { chmodSync(strictLog, 0o644); } catch { /* best effort */ }
     await cleanup(b);
     try { rmSync(strictDir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
