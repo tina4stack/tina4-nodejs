@@ -2388,11 +2388,11 @@ export async function startServer(config?: Tina4Config): Promise<{
       // promise resolves (a client can then rely on both families being up).
       const siblingServers = await startLoopbackSiblings(port, host, dispatch);
 
-      // Raw TCP services (feature 142, ADR-0102 D1) bind on THIS event loop,
-      // beside the HTTP server — one process serves both the device gateway and
-      // its dashboard. Each binds its own port; a worker that finds the port
-      // already bound skips silently (single-owner). Drained on shutdown below.
-      await startAllTcpServices(host);
+      // Raw TCP services start LATER, only after the SIGTERM/SIGINT handlers are
+      // armed (see startAllTcpServices below). Binding a port that accepts work
+      // BEFORE graceful shutdown is wired leaves a window in which a signal kills
+      // the process ungracefully (exit 143) instead of draining to exit 0 — and
+      // a client that connects the instant the port opens lands squarely in it.
 
       const displayHost = host === "0.0.0.0" ? "localhost" : host;
       const isDebug = isTruthy(process.env.TINA4_DEBUG);
@@ -2685,6 +2685,16 @@ ${reset}
       };
       process.on("SIGTERM", onSigterm);
       process.on("SIGINT", onSigint);
+
+      // Raw TCP services (feature 142, ADR-0102 D1) bind on THIS event loop,
+      // beside the HTTP server — one process serves both the device gateway and
+      // its dashboard. Started HERE, AFTER the shutdown handlers are armed and
+      // still BEFORE resolvePromise (so a client can rely on both families being
+      // up), so a device connecting the instant the port opens can never catch
+      // the process in a state where SIGTERM kills it ungracefully instead of
+      // draining (feature 142's SIGTERM-drain contract). Each binds its own port;
+      // a worker that finds it already bound skips silently (single-owner).
+      await startAllTcpServices(host);
 
       const loopWatchdog = startLoopWatchdog();
 
