@@ -402,6 +402,60 @@ console.log("\n=== Resource Registration Tests ===\n");
   assert("string resource mime", resp.result.contents[0].mimeType === "text/plain");
 }
 
+// test_async_resource — resources/read awaits an async handler (as tools/call
+// does), so a resource that reads the async Database wrapper returns its rows,
+// not "{}" from JSON.stringify(Promise); a rejection is a JSON-RPC error, not
+// an unhandled rejection.
+{
+  const db = await initDatabase({ url: "sqlite::memory:" });
+  try {
+    await db.execute("CREATE TABLE res_things (id INTEGER PRIMARY KEY, name TEXT)");
+    await db.execute("INSERT INTO res_things (name) VALUES ('alpha'), ('beta')");
+
+    const server = new McpServer("/test-async-res", "Async Resource Test");
+    mcpResource("app://things", "Things", "application/json", server)(
+      async () => (await db.fetch("SELECT name FROM res_things ORDER BY id")).records,
+    );
+    server.registerResource("app://boom", async () => { throw new Error("db down"); }, "Fails");
+
+    const resp = JSON.parse(
+      await server.handleMessage({
+        jsonrpc: "2.0", id: 5, method: "resources/read",
+        params: { uri: "app://things" },
+      }),
+    );
+    const text = resp.result?.contents?.[0]?.text;
+    assert(
+      "async resource is awaited (rows, not {})",
+      text !== undefined && JSON.stringify(JSON.parse(text)) === JSON.stringify([{ name: "alpha" }, { name: "beta" }]),
+      String(text).slice(0, 160),
+    );
+
+    let unhandled = 0;
+    const onUnhandled = () => { unhandled++; };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const bad = JSON.parse(
+        await server.handleMessage({
+          jsonrpc: "2.0", id: 6, method: "resources/read",
+          params: { uri: "app://boom" },
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 20));
+      assert(
+        "rejecting async resource -> JSON-RPC error",
+        bad.error?.code === INTERNAL_ERROR && bad.error?.message === "db down",
+        JSON.stringify(bad).slice(0, 160),
+      );
+      assert("rejecting async resource leaves no unhandled rejection", unhandled === 0, `unhandled=${unhandled}`);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  } finally {
+    closeDatabase();
+  }
+}
+
 // ══════════════════════════════════════════════════════════════
 // TestDecoratorApi — mcpTool and mcpResource
 // ══════════════════════════════════════════════════════════════
