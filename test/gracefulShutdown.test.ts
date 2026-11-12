@@ -39,7 +39,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * (drained / refused / exit code) rather than to pin Darwin timings.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, openSync, closeSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, openSync, closeSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { createConnection, createServer } from "node:net";
@@ -141,7 +141,7 @@ interface Booted { child: ChildProcess; port: number; logPath: string }
  * keeps the runner's pipe open and wedges a piped `npm test` forever even
  * after the runner itself has finished.
  */
-async function bootServer(opts: { withBackgroundTask?: boolean; slowSeconds?: number; env?: Record<string, string> } = {}): Promise<Booted> {
+async function bootServer(opts: { withBackgroundTask?: boolean; slowSeconds?: number; env?: Record<string, string>; bootLog?: boolean } = {}): Promise<Booted> {
   const port = await freePort();
   const root = mkdtempSync(join(tmpdir(), "tina4-shutdown-"));
   const routes = join(root, "src", "routes");
@@ -168,9 +168,18 @@ async function bootServer(opts: { withBackgroundTask?: boolean; slowSeconds?: nu
   const bg = opts.withBackgroundTask
     ? `import { background } from '${REPO}/packages/core/src/background.ts';\nbackground(() => {}, 5);\n`
     : "";
+  // A real boot-time Log call: it opens the configured file sink (WRITABLE)
+  // before serving, so a later chmod of that file makes only the TEARDOWN write
+  // fail - exactly the "opens at boot, write fails during shutdown" shape, with
+  // no in-test double. Lazy config resolution means this reads the same
+  // TINA4_LOG_* env the server does.
+  const boot = opts.bootLog
+    ? `import { Log } from '${REPO}/packages/core/src/index.ts';\nLog.info('boot: open log sink');\n`
+    : "";
   writeFileSync(
     join(root, "app.ts"),
     `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
+      boot +
       bg +
       `await startServer({ port: ${port}, routesDir: '${routes}' } as never);\n`,
   );
@@ -496,6 +505,70 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
       `(code=${exit.code} signal=${exit.signal} timedOut=${exit.timedOut})`);
   } finally {
     await cleanup(b);
+  }
+}
+
+// ── A teardown THROW during shutdown still exits 0 (exception-safe teardown) ─
+// The contract: a handled SIGTERM must drain and exit 0 even when a teardown
+// step throws. The handlers call `void gracefulShutdown(...)` — the promise is
+// discarded — so before the guard a teardown throw escaped as an
+// unhandledRejection and Node's default disposition exited the process NON-ZERO
+// (code 1), turning a handled signal into a crash.
+//
+// A REAL failing sink, no double: TINA4_LOG_STRICT makes a log-write failure
+// throw; TINA4_LOG_OUTPUT=file routes logging to a real file we control; a
+// boot-time Log call opens that file WRITABLE at boot, after which we chmod it
+// read-only so only the TEARDOWN writes fail (EACCES on append — the sink opened
+// fine at boot, it fails to WRITE during shutdown). TINA4_SHUTDOWN_TIMEOUT=-5 is
+// invalid, so `shutdownTimeoutSeconds()` emits a Log.warning DURING teardown
+// straight into the now-read-only strict sink. The very first teardown log line
+// (`Log.info("Received SIGTERM…")`) already throws under strict; the invalid
+// timeout guarantees a warning write lands in the failing sink too, mirroring
+// PHP's GracefulShutdownTest. The failing sink is a DIRECTORY at the log path
+// (not a 0o444 file): openSync(dir, "a") raises EISDIR for ANY uid, so the gate
+// holds even when the suite runs as root (a 0o444 file does NOT deny root —
+// CAP_DAC_OVERRIDE — the exact ghost this project's strict-write test had to drop
+// uid to avoid). POSIX-only; verified on Linux CI (as the file header states).
+{
+  const strictDir = mkdtempSync(join(tmpdir(), "tina4-strictlog-"));
+  const strictLog = join(strictDir, "tina4.log");
+  const b = await bootServer({
+    bootLog: true,
+    env: {
+      TINA4_LOG_STRICT: "true",
+      TINA4_LOG_OUTPUT: "file",
+      TINA4_LOG_FILE: strictLog,
+      TINA4_SHUTDOWN_TIMEOUT: "-5",
+    },
+  });
+  try {
+    // Boot opened the sink writable and wrote the boot line. Confirm the sink is
+    // real (so a mis-set env can't make this pass by never writing a file), then
+    // make it un-writable so the next (teardown) append raises under strict.
+    assert("strict log sink opened writable at boot as a FILE", existsSync(strictLog) && statSync(strictLog).isFile(),
+      `(no file at ${strictLog} — the boot sink never opened; the write-fail path would be untested)`);
+    // Replace the sink file with a DIRECTORY at the same path, so the next
+    // (teardown) append does openSync(dir, "a") → EISDIR for ANY uid (root
+    // included). This is the robust, uid-independent gate; a 0o444 chmod would be
+    // bypassed by root (CAP_DAC_OVERRIDE) and pass for the wrong reason.
+    rmSync(strictLog, { force: true });
+    mkdirSync(strictLog);
+    assert("strict log sink path is now a directory (fails the write even as root)",
+      statSync(strictLog).isDirectory(),
+      `(expected a directory at ${strictLog} to force EISDIR on the teardown write)`);
+
+    kill(b.child, "SIGTERM");
+    const exit = await waitForExit(b.child, 40_000);
+
+    // Post-fix: the guard catches the strict-sink throw, degrades, exits 0.
+    // Pre-fix: the throw escapes `void gracefulShutdown()` as an
+    // unhandledRejection and Node exits 1 (code 1, signal null).
+    assert("a teardown throw during shutdown still exits 0",
+      !exit.timedOut && exit.code === 0 && exit.signal === null,
+      `(code=${exit.code} signal=${exit.signal} timedOut=${exit.timedOut} — 1 here is the un-guarded unhandledRejection)`);
+  } finally {
+    await cleanup(b);
+    try { rmSync(strictDir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
 }
 

@@ -2388,11 +2388,11 @@ export async function startServer(config?: Tina4Config): Promise<{
       // promise resolves (a client can then rely on both families being up).
       const siblingServers = await startLoopbackSiblings(port, host, dispatch);
 
-      // Raw TCP services (feature 142, ADR-0102 D1) bind on THIS event loop,
-      // beside the HTTP server — one process serves both the device gateway and
-      // its dashboard. Each binds its own port; a worker that finds the port
-      // already bound skips silently (single-owner). Drained on shutdown below.
-      await startAllTcpServices(host);
+      // Raw TCP services start LATER, only after the SIGTERM/SIGINT handlers are
+      // armed (see startAllTcpServices below). Binding a port that accepts work
+      // BEFORE graceful shutdown is wired leaves a window in which a signal kills
+      // the process ungracefully (exit 143) instead of draining to exit 0 — and
+      // a client that connects the instant the port opens lands squarely in it.
 
       const displayHost = host === "0.0.0.0" ? "localhost" : host;
       const isDebug = isTruthy(process.env.TINA4_DEBUG);
@@ -2556,9 +2556,11 @@ ${reset}
           for (const sibling of siblingServers) sibling.closeIdleConnections();
         });
 
-      const gracefulShutdown = async (signal: string): Promise<void> => {
-        if (shuttingDown) return;
-        shuttingDown = true;
+      // The teardown steps a handled signal must run. Pulled out of
+      // gracefulShutdown() so the handler itself stays a thin try/catch/exit
+      // (low cyclomatic complexity) — the drain logic lives here, the
+      // exit-safety contract lives in the caller.
+      const runTeardown = async (signal: string): Promise<void> => {
         Log.info(`Received ${signal}, shutting down gracefully...`);
 
         // Drop our identity marker so a later takeover does not match a dead PID.
@@ -2623,22 +2625,76 @@ ${reset}
         // without letting exit() actually kill the process (see
         // test/gracefulShutdown.test.ts) must not inherit a stale snapshot.
         Log.reset();
-        // Exit 0: this process was ASKED to stop and did so cleanly. 128+signum
-        // is what waitpid reports for a process killed BY a signal, i.e. one
-        // that did NOT handle it - it is a diagnosis, not a target. Gunicorn
-        // and Puma both halt 0 on a handled TERM, and a container exiting 0 is
-        // a clean termination rather than a signal-kill.
+      };
+
+      // Best-effort degrade when a teardown step throws: try the logger, and
+      // when logging ITSELF is the failing step, fall back to a raw stderr
+      // write (which never routes through the sink). Never throws.
+      const degradeTeardownFailure = (signal: string, err: unknown): void => {
+        const detail = err instanceof Error ? err.message : String(err);
+        try {
+          Log.error(`Teardown step failed during ${signal} shutdown (exiting cleanly): ${detail}`);
+        } catch {
+          try {
+            process.stderr.write(
+              `tina4: teardown step failed during ${signal} shutdown (exiting cleanly): ${detail}\n`,
+            );
+          } catch {
+            /* nothing left to degrade to */
+          }
+        }
+      };
+
+      const gracefulShutdown = async (signal: string): Promise<void> => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+
+        // Exception-safe teardown (parity with PHP Server::cleanup()/
+        // forceShutdown() and Ruby). A handled SIGTERM/SIGINT MUST drain and
+        // exit 0, never fatal, so NO throw or rejection from any teardown step
+        // may escape this function. The handlers below invoke it as
+        // `void gracefulShutdown(...)`, which discards the promise - an escaping
+        // rejection would surface as an unhandledRejection and Node's default
+        // disposition would exit NON-ZERO, turning a handled signal into exit 1.
+        // So the whole drain runs inside this guard: on any throw we degrade to
+        // a best-effort line and STILL exit 0. `shuttingDown` keeps it idempotent.
+        try {
+          await runTeardown(signal);
+        } catch (err) {
+          degradeTeardownFailure(signal, err);
+        }
+
+        // Exit 0: this process was ASKED to stop. Reached on the clean path AND
+        // after a degraded teardown. 128+signum is what waitpid reports for a
+        // process killed BY a signal, i.e. one that did NOT handle it - it is a
+        // diagnosis, not a target. Gunicorn and Puma both halt 0 on a handled
+        // TERM, and a container exiting 0 is a clean termination rather than a
+        // signal-kill.
         process.exit(0);
       };
 
       const onSigterm = (): void => {
-        void gracefulShutdown("SIGTERM");
+        // gracefulShutdown is internally exception-safe, so this cannot reject;
+        // the `.catch` is belt-and-braces so the discarded (`void`) promise can
+        // never become an unhandledRejection that exits non-zero on a handled
+        // signal.
+        void gracefulShutdown("SIGTERM").catch(() => process.exit(0));
       };
       const onSigint = (): void => {
-        void gracefulShutdown("SIGINT");
+        void gracefulShutdown("SIGINT").catch(() => process.exit(0));
       };
       process.on("SIGTERM", onSigterm);
       process.on("SIGINT", onSigint);
+
+      // Raw TCP services (feature 142, ADR-0102 D1) bind on THIS event loop,
+      // beside the HTTP server — one process serves both the device gateway and
+      // its dashboard. Started HERE, AFTER the shutdown handlers are armed and
+      // still BEFORE resolvePromise (so a client can rely on both families being
+      // up), so a device connecting the instant the port opens can never catch
+      // the process in a state where SIGTERM kills it ungracefully instead of
+      // draining (feature 142's SIGTERM-drain contract). Each binds its own port;
+      // a worker that finds it already bound skips silently (single-owner).
+      await startAllTcpServices(host);
 
       const loopWatchdog = startLoopWatchdog();
 
