@@ -85,7 +85,10 @@ export interface McpResourceDefinition {
   name: string;
   description: string;
   mimeType: string;
-  handler: () => unknown;
+  // Like tool handlers, resource handlers may be sync or async — the dispatch
+  // (`_handleResourcesRead`) awaits the return value, so a resource that reads
+  // the async Database wrapper serialises its rows, not a pending Promise.
+  handler: () => unknown | Promise<unknown>;
 }
 
 export interface JsonSchema {
@@ -502,7 +505,7 @@ export class McpServer {
 
   registerResource(
     uri: string,
-    handler: () => unknown,
+    handler: () => unknown | Promise<unknown>,
     description = "",
     mimeType = "application/json",
   ): void {
@@ -640,7 +643,7 @@ export class McpServer {
     return { resources };
   }
 
-  private _handleResourcesRead(params: Record<string, unknown>): Record<string, unknown> {
+  private async _handleResourcesRead(params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const uri = params.uri as string | undefined;
     if (!uri) {
       throw new Error("Missing resource URI");
@@ -651,7 +654,10 @@ export class McpServer {
       throw new Error(`Unknown resource: ${uri}`);
     }
 
-    const result = resource.handler();
+    // Await like `_handleToolsCall`: an async handler's rows, not `{}` from
+    // JSON.stringify(Promise), and its rejection becomes a JSON-RPC error
+    // rather than an unhandled rejection.
+    const result = await resource.handler();
 
     let text: string;
     if (typeof result === "string") {
