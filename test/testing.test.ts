@@ -11,6 +11,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Run with: npx tsx test/testing.test.ts
  */
 import { tests, expectEqual, expectRaises, expectTrue, expectFalse, runAll, reset } from "../packages/core/src/index.ts";
+import * as testingApi from "../packages/core/src/index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -300,6 +301,118 @@ reset();
 
 const anonFunc = tests()((x: number) => x * 2);
 assert("Anonymous function works", anonFunc(5) === 10);
+
+// --- async test functions ---
+// runAll() is synchronous: it cannot judge an async function and must say so
+// (an error naming runAllAsync), never count it as a pass. runAllAsync()
+// awaits each call and judges what it resolves to.
+console.log("\n--- async ---");
+
+const runAllAsync = (testingApi as Record<string, unknown>).runAllAsync as
+  | ((o?: { quiet?: boolean; failfast?: boolean; timeoutMs?: number }) => Promise<ReturnType<typeof runAll>>)
+  | undefined;
+assert("runAllAsync is exported", typeof runAllAsync === "function");
+const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+const unhandled: unknown[] = [];
+process.on("unhandledRejection", (e) => { unhandled.push(e); });
+
+reset();
+tests(expectTrue([]))(async function resolvesFalse(): Promise<boolean> { await tick(); return false; });
+{
+  const r = runAll({ quiet: true });
+  assert("runAll never passes an async function", r.passed === 0);
+  assert("runAll reports an async function as an error naming runAllAsync",
+    r.errors === 1 && /runAllAsync/.test(r.details[0]?.message ?? ""));
+}
+
+reset();
+tests(expectTrue([]))(async function rejectsInSync(): Promise<boolean> { await tick(); throw new TypeError("db gone"); });
+{
+  const r = runAll({ quiet: true });
+  await tick(); await tick();
+  assert("runAll leaves no unhandled rejection behind", r.errors === 1 && unhandled.length === 0);
+}
+
+// The documented recipe for synchronous tests keeps working unchanged.
+reset();
+tests(expectEqual([2, 3], 5))(function addSync(a: number, b: number): number { return a + b; });
+{
+  const results = runAll({ quiet: true });
+  assert("documented recipe: const results = runAll(); results.failed === 0", results.failed === 0 && results.passed === 1);
+}
+
+if (runAllAsync) {
+  reset();
+  tests(expectTrue([]))(async function asyncFalse(): Promise<boolean> { await tick(); return false; });
+  assert("runAllAsync fails expectTrue when the function resolves falsy", (await runAllAsync({ quiet: true })).failed === 1);
+
+  reset();
+  tests(expectTrue([]))(async function asyncTrue(): Promise<boolean> { await tick(); return true; });
+  assert("runAllAsync passes expectTrue when the function resolves truthy", (await runAllAsync({ quiet: true })).passed === 1);
+
+  reset();
+  tests(expectEqual([2], 3), expectEqual([2], 5))(async function addOne(n: number): Promise<number> { await tick(); return n + 1; });
+  {
+    const r = await runAllAsync({ quiet: true });
+    assert("runAllAsync compares the resolved value", r.passed === 1 && r.failed === 1);
+  }
+
+  reset();
+  tests(expectRaises(RangeError, [-1]), expectRaises(RangeError, [1]))(async function rejects(n: number): Promise<number> {
+    await tick();
+    if (n < 0) throw new RangeError("negative");
+    return n;
+  });
+  {
+    const r = await runAllAsync({ quiet: true });
+    assert("runAllAsync expectRaises: right rejection passes, no rejection fails", r.passed === 1 && r.failed === 1);
+  }
+
+  reset();
+  tests(expectTrue([]))(async function rejectsUnexpectedly(): Promise<boolean> { await tick(); throw new TypeError("db gone"); });
+  {
+    const r = await runAllAsync({ quiet: true });
+    assert("runAllAsync: an unexpected rejection is an error, not a pass", r.errors === 1 && r.passed === 0);
+  }
+
+  reset();
+  tests(expectTrue([]))(function neverSettles(): Promise<boolean> { return new Promise(() => {}); });
+  {
+    const started = Date.now();
+    const r = await runAllAsync({ quiet: true, timeoutMs: 100 });
+    assert("runAllAsync reports a never-settling call as a timeout error",
+      r.errors === 1 && /did not settle/.test(r.details[0]?.message ?? "") && Date.now() - started < 5000);
+  }
+
+  reset();
+  tests(expectTrue([]))(async function slowTrue(): Promise<boolean> { await new Promise((ok) => setTimeout(ok, 20)); return true; });
+  {
+    const r = await runAllAsync({ quiet: true, timeoutMs: Infinity });
+    assert("runAllAsync timeoutMs: Infinity turns the timeout off", r.passed === 1 && r.errors === 0);
+  }
+  for (const bad of [0, -1, Number.NaN, 2 ** 31]) {
+    let threw: unknown;
+    try { await runAllAsync({ quiet: true, timeoutMs: bad }); } catch (error) { threw = error; }
+    assert(`runAllAsync refuses timeoutMs ${bad}`, threw instanceof RangeError);
+  }
+
+  reset();
+  tests(expectTrue([]))(function thenable(): PromiseLike<boolean> {
+    return { then: (ok: (v: boolean) => void) => { ok(false); } } as PromiseLike<boolean>;
+  });
+  assert("runAllAsync judges a non-Promise thenable on its value", (await runAllAsync({ quiet: true })).failed === 1);
+
+  reset();
+  tests(expectTrue([]), expectTrue([]))(async function failsTwice(): Promise<boolean> { await tick(); return false; });
+  {
+    const r = await runAllAsync({ quiet: true, failfast: true });
+    assert("runAllAsync failfast stops after the first failure", r.details.length === 1 && r.failed === 1);
+  }
+
+  reset();
+  tests(expectEqual([4], 5))(function syncInAsync(n: number): number { return n + 1; });
+  assert("runAllAsync still runs synchronous tests", (await runAllAsync({ quiet: true })).passed === 1);
+}
 
 // Cleanup
 reset();

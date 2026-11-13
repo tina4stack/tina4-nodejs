@@ -57,7 +57,7 @@ async function runInlineTests(cwd: string): Promise<boolean> {
   const srcDir = resolve(cwd, "src");
   if (!existsSync(srcDir)) return false;
 
-  const { runAll, reset } = await import("@tina4/core");
+  const { runAllAsync, reset } = await import("@tina4/core");
   reset();
 
   let discovered = 0;
@@ -81,7 +81,7 @@ async function runInlineTests(cwd: string): Promise<boolean> {
 
   if (discovered === 0) return false;
 
-  const results = runAll();
+  const results = await runAllAsync();
   return results.failed + results.errors > 0;
 }
 
