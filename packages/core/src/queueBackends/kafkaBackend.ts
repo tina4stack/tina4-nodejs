@@ -160,6 +160,12 @@ const outBytes = new Uint8Array(workerData.sab, 8);
 // (test/kafkaErrorCodes.test.ts) can assert the floors.
 const PRODUCE_VERSION = 3;
 const FETCH_VERSION = 4;
+// How long the broker long-polls an empty partition before answering (ms).
+// Deliberately 1000, not tina4-php / tina4-python's 5000: Node's pop() is
+// synchronous (Atomics.wait on this worker), so the long-poll blocks the whole
+// event loop, not one request. The tombstone-skip deadline caps it further while
+// stepping so a stream of tombstones cannot hold pop() past ~1s.
+const FETCH_MAX_WAIT_MS = 1000;
 
 let correlationId = 0;
 let brokerSock = null;
@@ -346,12 +352,13 @@ async function produce(topic, valueBytes) {
 }
 
 // ── fetch ─────────────────────────────────────────────────────────────────
-function fetchRequest(topic, offset) {
+function fetchRequest(topic, offset, maxWaitMs) {
+  if (maxWaitMs === undefined) maxWaitMs = FETCH_MAX_WAIT_MS;
   const topicBuf = Buffer.from(topic, "utf-8");
   const buf = Buffer.alloc(4 + 4 + 4 + 4 + 1 + 4 + 2 + topicBuf.length + 4 + 4 + 8 + 4);
   let p = 0;
   buf.writeInt32BE(-1, p); p += 4;       // replicaId
-  buf.writeInt32BE(1000, p); p += 4;     // maxWaitMs
+  buf.writeInt32BE(maxWaitMs, p); p += 4; // maxWaitMs (long-poll bound; capped by the tombstone-skip deadline)
   buf.writeInt32BE(1, p); p += 4;        // minBytes
   buf.writeInt32BE(1048576, p); p += 4;  // maxBytes
   buf.writeInt8(0, p); p += 1;           // isolation READ_UNCOMMITTED
@@ -364,8 +371,12 @@ function fetchRequest(topic, offset) {
   buf.writeInt32BE(1048576, p); p += 4;
   return frame(1, FETCH_VERSION, buf);
 }
-// Decode the first record of the partition's record-set: its value string and
-// absolute offset (baseOffset + offsetDelta). null = no usable record.
+// Decode the FIRST record of the partition's record-set (the cross-framework
+// contract: only a batch's first record is decoded -- the Tina4 producer writes
+// one record per batch). Returns its value and absolute offset (baseOffset +
+// offsetDelta); a tombstone (null value) comes back with value null and its
+// offset so the caller can step past it. null = no usable record at all (empty /
+// old-format / short response).
 function firstRecord(buf, start, end) {
   let pos = start;
   while (pos + 12 <= end) {
@@ -381,8 +392,7 @@ function firstRecord(buf, start, end) {
     for (let i = 0; i < recordsCount && r < batchEnd; i++) {
       const recLen = readVarint(buf, r);
       let rp = recLen.next;
-      const recordEnd = rp + recLen.value;
-      rp += 1;
+      rp += 1;                                     // record attributes byte
       rp = readVarint(buf, rp).next;              // timestampDelta
       const offDelta = readVarint(buf, rp); rp = offDelta.next;
       const keyLen = readVarint(buf, rp); rp = keyLen.next;
@@ -394,15 +404,23 @@ function firstRecord(buf, start, end) {
           offset: Number(baseOffset) + offDelta.value,
         };
       }
-      r = recordEnd;
+      // Tombstone (null value) or empty value: hand back a marker carrying its
+      // offset instead of null. Returning null here used to mean "no record", so
+      // pop() never advanced and re-fetched the tombstone for ever -- nothing
+      // after it was delivered. The caller (fetchPastTombstones) steps the
+      // offset on and re-fetches.
+      return {
+        value: null,
+        offset: Number(baseOffset) + offDelta.value,
+      };
     }
     pos = batchEnd;
   }
   return null;
 }
-async function fetchAt(topic, offset) {
+async function fetchAt(topic, offset, maxWaitMs) {
   const sock = await broker();
-  const resp = await rpc(sock, fetchRequest(topic, offset));
+  const resp = await rpc(sock, fetchRequest(topic, offset, maxWaitMs));
   let pos = 4;       // correlationId
   pos += 4;          // throttleTimeMs
   const topicCount = resp.readInt32BE(pos); pos += 4;
@@ -538,9 +556,37 @@ async function broker() {
 // Resume from the committed offset on the FIRST read of a topic in this worker,
 // then advance the in-memory cursor; the committed offset only moves on a
 // commit, so it lags and a crash before commit replays (at-least-once).
+// Fetch from the cursor, stepping past tombstones, until a record with a value
+// arrives, the topic is exhausted, or the deadline passes. A tombstone (null
+// value: Debezium deletes, compacted-topic delete markers) carries no job;
+// returning "nothing" without moving the offset re-fetched it for ever, so
+// nothing after it was ever delivered. The 1 s deadline holds while skipping
+// (the same steady-state bound as tina4-php/tina4-python), and the whole loop
+// stays inside this one worker round-trip (ADR-0022) -- well under
+// CALL_TIMEOUT_MS. Nothing is committed here: acknowledging the next record
+// commits past the skipped tombstones, as before.
+async function fetchPastTombstones(topic) {
+  const deadline = Date.now() + 1000;
+  let maxWaitMs = FETCH_MAX_WAIT_MS;
+  while (true) {
+    const offset = offsets[topic];
+    const rec = await fetchAt(topic, offset, maxWaitMs);
+    if (rec === null || rec.value !== null) return rec;   // nothing, or a real record
+    // Anti-spin: the decoder reads only a batch's first record, so a tombstone
+    // sharing a batch with later records comes back at an offset already passed.
+    // That must never loop this fetch.
+    const next = rec.offset + 1;
+    if (next <= offset) return null;
+    offsets[topic] = next;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return null;
+    maxWaitMs = remaining;
+  }
+}
+
 async function fetchNext(topic) {
   if (!(topic in offsets)) offsets[topic] = await offsetFetch(topic);
-  const rec = await fetchAt(topic, offsets[topic]);
+  const rec = await fetchPastTombstones(topic);
   if (rec === null) return null;
   offsets[topic] = rec.offset + 1;
   return rec;
