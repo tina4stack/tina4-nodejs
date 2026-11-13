@@ -439,7 +439,11 @@ interface Booted { child: ChildProcess; httpPort: number; tcpPort: number; logPa
 
 async function bootChild(extraEnv: Record<string, string> = {}): Promise<Booted> {
   const httpPort = await freePort();
-  const tcpPort = httpPort + 1;
+  // Its own free port, never the HTTP port + 1: on a busy runner that port is
+  // sometimes taken, the framework then (correctly) refuses it as "already
+  // bound by another worker" and the readiness wait times out.
+  let tcpPort = await freePort();
+  while (tcpPort === httpPort) tcpPort = await freePort();
   const root = mkdtempSync(join(tmpdir(), "tina4-tcp-"));
   const routes = join(root, "src", "routes", "ping");
   mkdirSync(routes, { recursive: true });
