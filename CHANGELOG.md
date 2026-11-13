@@ -6,6 +6,15 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.163 - 2026-11-13
+
+### Fixed
+
+- A Kafka tombstone (a null-value record, such as a Debezium delete marker) no longer stalls the consumer. The decoder answered a tombstone with the same null it uses for "nothing", without its offset, so the read offset never advanced: every `pop()` returned null, the records behind the tombstone were never delivered, and nothing reported an error. `pop()` now steps past a tombstone (or an empty value) and keeps reading within a 1 s deadline, capping the broker's long-poll wait to the time left once past one, and stops rather than spins if the offset would not advance. The fetch long-poll stays at Node's 1 s (not PHP/Python's 5 s), because `pop()` is synchronous and blocks the event loop while it waits. Nothing is committed on the tombstone path: acknowledging the next record commits past the skipped tombstones. Verified against a live broker producing real tombstones (#194, parity with tina4-python#309, tina4-php#357, tina4-ruby#169).
+- Correction to the 3.13.162 entry below: it says Node "was never affected" by the tombstone bug. That is true of the crash only; the Node consumer stalled at a tombstone in 3.13.162 and earlier, fixed above.
+- `tests()` judged the Promise an async test function returns, not what it resolves to: `expectTrue` always passed (so a failing async test showed green), `expectEqual` always failed, and a rejection escaped unhandled. `runAll()` stays synchronous and now reports a Promise-returning test as an error pointing to the new `runAllAsync({ quiet, failfast, timeoutMs })`, which awaits each call and reports one still pending after `timeoutMs` (default 30000) as an error. The `tina4nodejs test` CLI uses `runAllAsync()` (#191, parity with tina4-python#307).
+- An MCP resource with an async handler read back as `{}`: `resources/read` serialised the Promise instead of awaiting it, and a rejecting handler also returned `{}` with an unhandled rejection. It is now awaited like `tools/call`, and a rejection is a JSON-RPC -32603 error (#193, parity with tina4-python#311).
+
 ## 3.13.162 - 2026-11-10
 
 ### Changed
