@@ -244,9 +244,9 @@ try {
     `got ${JSON.stringify(n)}`
   );
   assert(
-    "it returns within the deadline (< 1600ms), bounded by the maxWait cap",
+    "it returns within the deadline (< 1600ms), not after stalling on the tombstones",
     dt < 1600,
-    `took ${dt}ms (without the shrinking-maxWait deadline the terminal fetch long-polls the full 5s)`
+    `took ${dt}ms (the 1s skip deadline plus a capped terminal long-poll must bound it)`
   );
 } catch (err) {
   assert("case 3 ran without throwing", false, String(err));

@@ -160,10 +160,12 @@ const outBytes = new Uint8Array(workerData.sab, 8);
 // (test/kafkaErrorCodes.test.ts) can assert the floors.
 const PRODUCE_VERSION = 3;
 const FETCH_VERSION = 4;
-// How long the broker long-polls an empty partition before answering (ms). Same
-// value as tina4-php / tina4-python; the tombstone-skip deadline caps it while
+// How long the broker long-polls an empty partition before answering (ms).
+// Deliberately 1000, not tina4-php / tina4-python's 5000: Node's pop() is
+// synchronous (Atomics.wait on this worker), so the long-poll blocks the whole
+// event loop, not one request. The tombstone-skip deadline caps it further while
 // stepping so a stream of tombstones cannot hold pop() past ~1s.
-const FETCH_MAX_WAIT_MS = 5000;
+const FETCH_MAX_WAIT_MS = 1000;
 
 let correlationId = 0;
 let brokerSock = null;
@@ -358,7 +360,7 @@ function fetchRequest(topic, offset, maxWaitMs) {
   buf.writeInt32BE(-1, p); p += 4;       // replicaId
   buf.writeInt32BE(maxWaitMs, p); p += 4; // maxWaitMs (long-poll bound; capped by the tombstone-skip deadline)
   buf.writeInt32BE(1, p); p += 4;        // minBytes
-  buf.writeInt32BE(52428800, p); p += 4; // maxBytes (50MB) -- v3+
+  buf.writeInt32BE(1048576, p); p += 4;  // maxBytes
   buf.writeInt8(0, p); p += 1;           // isolation READ_UNCOMMITTED
   buf.writeInt32BE(1, p); p += 4;        // topics
   buf.writeInt16BE(topicBuf.length, p); p += 2;
@@ -366,7 +368,7 @@ function fetchRequest(topic, offset, maxWaitMs) {
   buf.writeInt32BE(1, p); p += 4;        // partitions
   buf.writeInt32BE(0, p); p += 4;        // partition 0
   buf.writeBigInt64BE(BigInt(offset), p); p += 8;
-  buf.writeInt32BE(52428800, p); p += 4; // partition maxBytes (50MB)
+  buf.writeInt32BE(1048576, p); p += 4;
   return frame(1, FETCH_VERSION, buf);
 }
 // Decode the FIRST record of the partition's record-set (the cross-framework
