@@ -2170,9 +2170,14 @@ function wireLocaleGlobal(frondEngine: any, base: string): void {
   if (!existsSync(localeDir)) return;
   try {
     const localeFiles = readdirSync(localeDir).filter((file: string) => file.endsWith(".json"));
-    if (localeFiles.length === 0 || frondEngine.globals?.t) return;
+    // The engine's class: Frond is imported dynamically, so take it from the instance.
+    const FrondClass = frondEngine.constructor;
+    // Don't overwrite a user-registered t() (class-level, or on this engine).
+    if (localeFiles.length === 0 || FrondClass.hasGlobal("t") || frondEngine.globals?.t) return;
     const i18nInstance = new I18n(process.env.TINA4_LOCALE ?? "en", localeDir);
-    frondEngine.addGlobal("t", (key: string, params?: Record<string, string>) => i18nInstance.t(key, params));
+    // Class-level, so t() reaches every engine (res.render's included) whenever
+    // it was built. Templates call t("key") or t("key", {"name": n}).
+    FrondClass.addGlobal("t", (key: string, params?: Record<string, string>) => i18nInstance.t(key, params));
   } catch {
     // Locale directory unreadable — skip auto-wire.
   }
