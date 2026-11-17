@@ -177,11 +177,52 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+// Listens on argv host:port and exits 0 once bound, 1 on any error. A child
+// process, because takeOverPort is synchronous and a Node bind is not. The
+// host and port arrive as argv, never interpolated into the code.
+const BIND_PROBE = 'const s = require("node:net").createServer();'
+  + 's.on("error", () => process.exit(1));'
+  + 's.listen({ host: process.argv[1], port: Number(process.argv[2]) }, () => s.close(() => process.exit(0)));';
+
+/** True when a plain TCP listener on `host`:`port` binds right now (the same net.listen the server uses). */
+function bindable(host: string, port: number): boolean {
+  try {
+    execFileSync(process.execPath, ["-e", BIND_PROBE, host, String(port)], { stdio: "ignore", timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The result to return before any holder lookup, or null to carry on.
+ *
+ * Takeover is refused when opted out or outside dev mode. Before a bind, the
+ * caller passes the host it will bind: if that bind succeeds, nothing holds the
+ * port, so there is nothing to refuse and nothing to say.
+ */
+function refusal(port: number, dev: boolean, noTakeover: boolean, host?: string): TakeoverResult | null {
+  if (dev && !noTakeover) return null;
+  if (host !== undefined && bindable(host, port)) {
+    return { status: TAKEOVER_NOTHING, port, killed: [], message: "" };
+  }
+  if (noTakeover) {
+    return { status: TAKEOVER_REFUSED_OPTOUT, port, killed: [], message:
+      `Port ${port} is in use and takeover is disabled (TINA4_NO_TAKEOVER/--no-kill) `
+      + `-- free it or choose another port.` };
+  }
+  return { status: TAKEOVER_REFUSED_PROD, port, killed: [], message:
+    `Port ${port} is in use; takeover is disabled outside dev mode `
+    + `-- free it or choose another port.` };
+}
+
 /**
  * Reclaim `port` ONLY from an identity-confirmed Tina4 dev server. The single
  * guarded path for both the CLI (`tina4 serve`) and the runtime bind-failure
  * fallback. `dev`/`noTakeover` are passed in so this stays pure and directly
  * testable; callers resolve them from isDev() / noTakeoverOptedOut().
+ * Before a bind, the caller passes the `host` it will bind, so a free port is
+ * reported as nothing rather than refused as "in use".
  */
 export function takeOverPort(
   port: number,
@@ -189,6 +230,7 @@ export function takeOverPort(
   noTakeover: boolean,
   baseDir?: string,
   grace = 500,
+  host?: string,
 ): TakeoverResult {
   const make = (status: string, killed: number[] = [], message = ""): TakeoverResult => ({
     status,
@@ -197,16 +239,8 @@ export function takeOverPort(
     message,
   });
 
-  if (noTakeover) {
-    return make(TAKEOVER_REFUSED_OPTOUT, [],
-      `Port ${port} is in use and takeover is disabled (TINA4_NO_TAKEOVER/--no-kill) `
-      + `-- free it or choose another port.`);
-  }
-  if (!dev) {
-    return make(TAKEOVER_REFUSED_PROD, [],
-      `Port ${port} is in use; takeover is disabled outside dev mode `
-      + `-- free it or choose another port.`);
-  }
+  const early = refusal(port, dev, noTakeover, host);
+  if (early !== null) return early;
   if (inContainer()) return make(TAKEOVER_SKIPPED_CONTAINER);
 
   const tokens = portHolders(port);
