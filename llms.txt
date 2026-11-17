@@ -1,230 +1,61 @@
-# tina4-nodejs — LLM Context
+# Tina4 Node.js
 
-Tina4 Node.js/TypeScript v3.13.89. 140 cataloged features, zero dependencies. Web framework for Node.js 20+.
-Routes, ORM, templates, auth, queue, websocket, graphql, WSDL — all built in. ESM only.
+> Tina4 Node.js (`tina4-nodejs` on npm) is a TypeScript web framework for Node.js 22+ with zero runtime dependencies: it runs on `node:http` and the built-in `node:sqlite`, and routing, ORM, Frond (Twig-compatible) templates, JWT auth, sessions, queues, WebSocket, GraphQL, WSDL/SOAP and Swagger are all built in. Drivers for other databases (`pg`, `mysql2`, `tedious`, `node-firebird`, ...) are optional peer dependencies. It is one of four Tina4 backends (Python, PHP, Ruby, Node.js) that share the same project layout, CLI, template syntax and `.env` variables.
 
-Install: npm install tina4-nodejs
-Version: 3.10.70
-Default port: 7148 (config priority: explicit > PORT env var > 7148)
+Quick start. Install the Rust `tina4` CLI (`curl -fsSL https://tina4.com/install.sh | sh`, `brew install tina4stack/tap/tina4`, or `irm https://tina4.com/install.ps1 | iex` on Windows), then:
 
----
-
-## Router (File-Based)
-
-Route files go in src/routes/. Filename = HTTP method. Directory path = URL path.
-
-```
-src/routes/
-  api/
-    users/
-      get.ts          → GET /api/users
-      post.ts         → POST /api/users
-      [id]/
-        get.ts        → GET /api/users/{id}
-        put.ts        → PUT /api/users/{id}
-        delete.ts     → DELETE /api/users/{id}
+```bash
+tina4 init nodejs my-app   # the path is required; runs npm install for you
+cd my-app
+tina4 serve                # http://localhost:7148 (TINA4_PORT overrides)
 ```
 
-Each route file exports a default async function:
+Routes are files: `src/routes/<url path>/<method>.ts`, with `[name]` directories for path parameters. For example `src/routes/api/hello/[name]/get.ts` serves `GET /api/hello/{name}`:
 
 ```typescript
-import type { Tina4Request, Tina4Response } from "@tina4/core";
+import type { Tina4Request, Tina4Response } from "tina4-nodejs";
 
 export default async function (req: Tina4Request, res: Tina4Response) {
-  return res.json({ users: [] });
-}
-
-// Optional Swagger metadata
-export const meta = { summary: "List all users", tags: ["Users"] };
-
-// Optional template rendering
-export const template = "page.twig";
-```
-
-### Explicit Route Registration
-
-```typescript
-import { Router } from "@tina4/core";
-
-Router.get("/api/users", async (req, res) => {
-  return res.json({ users: [] });
-});
-
-Router.post("/api/users", async (req, res) => {
-  const body = req.body;
-  return res.json({ created: body.name }, 201);
-});
-
-Router.get("/api/users/{id}", async (req, res) => {
-  const id = req.params.id;
-  return res.json({ id });
-});
-
-// Auth control via JSDoc comments
-/** @noauth */
-Router.post("/api/public", async (req, res) => {
-  return res.json({ open: true });
-});
-
-/** @secure */
-Router.get("/api/private", async (req, res) => {
-  return res.json({ secret: true });
-});
-```
-
----
-
-## Database
-
-```typescript
-import { initDatabase } from "@tina4/orm";
-
-const db = await initDatabase("sqlite:///app.db"); // or postgres://, mysql://, mssql://, firebird://
-
-const result = await db.fetch("SELECT * FROM users WHERE active = ?", [true], 10, 0);
-const row = await db.fetchOne("SELECT * FROM users WHERE id = ?", [1]);
-await db.execute("INSERT INTO users (name) VALUES (?)", ["Alice"]);
-await db.insert("users", { name: "Alice" });
-await db.update("users", { id: 1, name: "Bob" });
-await db.delete("users", { id: 1 });
-const nextId = await db.getNextId("users"); // race-safe atomic ID generation
-```
-
----
-
-## ORM (Convention-Based Models)
-
-Models go in src/models/. Export a default class with static tableName and fields:
-
-```typescript
-export default class User {
-  static tableName = "users";
-  static fields = {
-    id:    { type: "integer" as const, primaryKey: true, autoIncrement: true },
-    name:  { type: "string" as const,  required: true },
-    email: { type: "string" as const,  required: true },
-    active: { type: "boolean" as const, default: true },
-  };
+  return res.json({ message: `Hello, ${req.params.name}!` });
 }
 ```
 
-Field types: "string", "text", "integer", "number", "boolean", "datetime"
-Field options: primaryKey, autoIncrement, required, default, minLength, maxLength, min, max, pattern
+Gotchas an agent most needs:
 
-Auto-CRUD is generated from models: GET/POST/PUT/DELETE at /api/{tableName}.
-File-based routes override auto-CRUD when both match.
+- Only files named after an HTTP method (`get.ts`, `post.ts`, `put.ts`, `patch.ts`, `delete.ts`) are discovered under `src/routes/`. For code-registered routes use `Router.get("/path", handler)` from `tina4-nodejs` in a module you import; `{id}` is a parameter, `{id:int}` a typed one, `{...path}` a catch-all.
+- GET routes are public; POST, PUT, PATCH and DELETE require a bearer token (or form token) by default. In a route file, `export const noAuth = true;` opens a write route and `export const secure = true;` protects a GET; on code routes chain `.noAuth()` or `.secure()`.
+- `res.json(data, status)`, `res.status(201).json(data)` and `await res.render("page.twig", data)` are the usual returns.
+- ESM only. The entry point is `app.ts`: `import { startServer } from "tina4-nodejs"; startServer();`.
+- ORM models extend `BaseModel` from `tina4-nodejs/orm`, live in `src/orm/` (`src/models/` is also scanned) and declare `static tableName` and `static fields`; there are no decorators. Serialise with `toDict()` or `toJson()`.
+- The database comes from `TINA4_DATABASE_URL` (`sqlite:///`, `postgres://`, `mysql://`, `mssql://`, `firebird://`). Change schema only through SQL files in `migrations/`, never in route code.
+- The package's own CLI is `tina4nodejs`; the `tina4` CLI forwards `tina4 generate <model|route|crud|migration|...>` to it. Generated write routes are secure by default.
 
----
+## Docs
 
-## Frond (Templates)
+- [Quick reference](https://tina4.com/nodejs/index.md): one-page cheat sheet of every feature
+- [Getting started](https://tina4.com/nodejs/01-getting-started.md): install, scaffold, project layout, first route
+- [Routing](https://tina4.com/nodejs/02-routing.md): file-based and code routes, path parameters, route groups, auth, wildcards
+- [Request and response](https://tina4.com/nodejs/03-request-response.md): request fields, response helpers, status codes, validation, uploads
+- [Templates](https://tina4.com/nodejs/04-templates.md): Frond template engine, filters, inheritance
+- [Database](https://tina4.com/nodejs/05-database.md): configuration, parameterised queries, transactions, migrations, seeding
+- [ORM](https://tina4.com/nodejs/06-orm.md): models, CRUD, relationships, eager loading, soft delete, auto-CRUD
+- [Authentication](https://tina4.com/nodejs/08-authentication.md): JWT tokens, password hashing, login flow, protecting routes, CSRF
+- [Middleware and security](https://tina4.com/nodejs/10-middleware-security.md): the middleware pipeline, built-in and custom middleware
+- [Queues](https://tina4.com/nodejs/12-queues.md): producers, consumers, retries, dead letters, backends
+- [Scaffolding](https://tina4.com/nodejs/19-scaffolding.md): `tina4 generate` generators
+- [CLI](https://tina4.com/nodejs/31-cli.md): every `tina4` and `tina4nodejs` command
+- [Environment variables](https://tina4.com/nodejs/33-environment-variables.md): the `.env` reference
+- [Deployment](https://tina4.com/nodejs/34-deployment.md): production config, Docker, health checks, reverse proxy, scaling
+- [Release notes](https://tina4.com/nodejs/36-releases.md): what changed in each release
 
-```typescript
-// In a route file
-export const template = "page.twig";
+## Repository
 
-// Or programmatically
-res.render("page.twig", { title: "Home", items });
-```
+- [CLAUDE.md](https://raw.githubusercontent.com/tina4stack/tina4-nodejs/v3/CLAUDE.md): maintainer guide to this codebase
+- [AGENTS.md](https://raw.githubusercontent.com/tina4stack/tina4-nodejs/v3/AGENTS.md): instructions for coding agents
+- [CHANGELOG.md](https://raw.githubusercontent.com/tina4stack/tina4-nodejs/v3/CHANGELOG.md): release history
 
-Templates use Twig syntax. Located in src/templates/.
+## Optional
 
----
-
-## Auth
-
-```typescript
-import { Auth } from "@tina4/core";
-
-const token = Auth.getToken({ userId: 1, role: "admin" });
-const payload = Auth.validToken(token); // returns object or null
-const hashed = Auth.hashPassword("secret");
-const valid = Auth.checkPassword("secret", hashed);
-```
-
----
-
-## Queue
-
-```typescript
-import { Queue } from "@tina4/core";
-
-const queue = new Queue("emails", 3); // topic, maxRetries
-await queue.push({ to: "alice@example.com", subject: "Hello" });
-
-for await (const job of queue.consume("emails")) {
-  process(job.payload);
-  job.complete(); // or job.fail("reason")
-}
-
-await queue.produce("other_topic", { data: "value" });
-const dead = await queue.deadLetters();
-```
-
-Backends: file (default), RabbitMQ, Kafka, MongoDB — configured via TINA4_QUEUE_BACKEND env var.
-
----
-
-## Events
-
-```typescript
-import { Events } from "@tina4/core";
-
-Events.on("user.created", (user) => {
-  console.log(`Welcome ${(user as any).name}`);
-});
-
-Events.emit("user.created", { name: "Alice" });
-Events.once("app.ready", () => console.log("Started!"));
-```
-
----
-
-## Project Structure
-
-```
-src/
-  routes/       # File-based routes (auto-discovered)
-  models/       # ORM model definitions (auto-registered)
-  templates/    # Frond/Twig templates
-  public/       # Static files served at /
-migrations/     # SQL migration files
-test/           # Test files
-app.ts          # Entry point
-package.json    # Dependencies
-tsconfig.json   # TypeScript config
-.env            # Environment variables
-```
-
----
-
-## Entry Point (app.ts)
-
-```typescript
-import { startServer } from "@tina4/core";
-
-const port = parseInt(process.env.PORT || "7149", 10);
-const host = process.env.HOST || "0.0.0.0";
-startServer({ port, host });
-```
-
----
-
-## Known Gotchas
-
-1. ESM only — use .js extensions in imports: `import { Router } from "./router.js"`
-2. No Express/Fastify — uses native node:http
-3. No decorators — convention-based models with static properties
-4. Route dynamic params use {id} in URLs, [id] in directory names
-5. POST/PUT/DELETE require auth by default. Use `/** @noauth */` JSDoc to make public
-6. GET is public by default. Use `/** @secure */` JSDoc to protect
-7. Queue job payload accessed via job.payload not job.data
-8. All packages use barrel exports — import from "@tina4/core", "@tina4/orm", not internal paths
-9. Default port: 7148 (NOT 7145)
-10. TypeScript strict mode, ES2022 target, Node16 module resolution
-
-## Scaffolding (`tina4nodejs generate`)
-Scaffold boilerplate instead of hand-writing it: `tina4nodejs generate <feature>` for model, route, crud,
-migration, service, queue, validator, seeder, websocket, listener, form, view, auth. Generated write
-routes are secure by default (token-gated; pass `--public` to open them); reads are public. Logic
-stubs carry an AI-FILL fill-spec placeholder (Intent/Given/Use/Return/Ground + a loud not-implemented
-throw) — fill only that; working CRUD carries a lighter EXTEND marker.
+- [Tina4 site map](https://tina4.com/llms.txt): llms.txt for all of tina4.com, every language
+- [Tina4 full docs](https://tina4.com/llms-full.txt): the whole documentation in one file
+- [Feature list](https://tina4.com/nodejs/37-feature-list.md): the full cataloged feature inventory

@@ -24,6 +24,15 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # llms.txt must follow the llmstxt.org spec (H1, > summary, no headings in
+      # the free-form zone, H2 sections that hold only '- [name](url): notes'
+      # links). Zero-dependency stdlib Python; the self-test proves the gate
+      # rejects known-bad files before its verdict on the real one is trusted.
+      - name: llms.txt follows the llmstxt.org spec
+        run: |
+          python3 scripts/check_llms_txt.py --self-test
+          python3 scripts/check_llms_txt.py llms.txt
+
       # Node 22+ — tsx runs the TypeScript gate directly (no build step).
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
