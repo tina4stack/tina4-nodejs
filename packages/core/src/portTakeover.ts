@@ -177,20 +177,37 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-// Listens on argv host:port and exits 0 once bound, 1 on any error. A child
-// process, because takeOverPort is synchronous and a Node bind is not. The
-// host and port arrive as argv, never interpolated into the code.
+// Listens on argv host:port and exits 0 once bound, PROBE_HELD when the bind
+// fails with EADDRINUSE, and PROBE_OTHER on any other bind error. A child
+// process, because takeOverPort is synchronous and a Node bind is not. The host
+// and port arrive as argv, never interpolated into the code.
+const PROBE_HELD = 3;
+const PROBE_OTHER = 4;
 const BIND_PROBE = 'const s = require("node:net").createServer();'
-  + 's.on("error", () => process.exit(1));'
+  + `s.on("error", (e) => process.exit(e && e.code === "EADDRINUSE" ? ${PROBE_HELD} : ${PROBE_OTHER}));`
   + 's.listen({ host: process.argv[1], port: Number(process.argv[2]) }, () => s.close(() => process.exit(0)));';
 
-/** True when a plain TCP listener on `host`:`port` binds right now (the same net.listen the server uses). */
-function bindable(host: string, port: number): boolean {
+/** What a bind probe learned about a port. */
+export type BindProbe = "free" | "held" | "unknown";
+
+/**
+ * Try a plain TCP listener on `host`:`port` (the same net.listen the server
+ * uses) and report what happened.
+ *
+ * Only a bind that fails with EADDRINUSE is "held". A probe that times out,
+ * cannot start, or hits any other bind error (EACCES, EADDRNOTAVAIL) is
+ * "unknown": it says nothing about whether something holds the port, so the
+ * caller must not report the port as in use. The real bind then decides, and
+ * it fails loudly with the true error. A probe is a child `node`, so on a slow
+ * host (arm64 under emulation, a small board, a CPU-throttled container) the
+ * child alone can take longer than the timeout to start.
+ */
+export function probeBind(host: string, port: number, timeout = 5000): BindProbe {
   try {
-    execFileSync(process.execPath, ["-e", BIND_PROBE, host, String(port)], { stdio: "ignore", timeout: 5000 });
-    return true;
-  } catch {
-    return false;
+    execFileSync(process.execPath, ["-e", BIND_PROBE, host, String(port)], { stdio: "ignore", timeout });
+    return "free";
+  } catch (err) {
+    return (err as { status?: number | null }).status === PROBE_HELD ? "held" : "unknown";
   }
 }
 
@@ -198,12 +215,13 @@ function bindable(host: string, port: number): boolean {
  * The result to return before any holder lookup, or null to carry on.
  *
  * Takeover is refused when opted out or outside dev mode. Before a bind, the
- * caller passes the host it will bind: if that bind succeeds, nothing holds the
- * port, so there is nothing to refuse and nothing to say.
+ * caller passes the host it will bind: unless a probe sees that port held,
+ * there is nothing to refuse and nothing to say (an inconclusive probe leaves
+ * the decision to the real bind).
  */
 function refusal(port: number, dev: boolean, noTakeover: boolean, host?: string): TakeoverResult | null {
   if (dev && !noTakeover) return null;
-  if (host !== undefined && bindable(host, port)) {
+  if (host !== undefined && probeBind(host, port) !== "held") {
     return { status: TAKEOVER_NOTHING, port, killed: [], message: "" };
   }
   if (noTakeover) {
