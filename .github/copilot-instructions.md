@@ -24,4 +24,4 @@ export default async function (req: Tina4Request, res: Tina4Response) {
 - Import from "@tina4/core", "@tina4/orm" — not internal paths
 - Route params: `{id}` in URLs, `[id]` in directory names
 
-See llms.txt for full API reference.
+For the complete API reference, read `CLAUDE.md` in this repo and the docs it links. `llms.txt` is the link index (llmstxt.org format); https://tina4.com/llms-full.txt has the full documentation in one file.
