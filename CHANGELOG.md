@@ -6,6 +6,22 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.164 - 2026-11-17
+
+### Fixed
+
+- Class-level template globals, filters and tests (`Frond.addGlobal` / `addFilter` / `addTest`) now reach every page `res.render` produces, whenever they are registered; the auto-wired `t()` lived on `startServer`'s own engine, so `{{ t('greeting') }}` rendered empty in `res.render` templates. Instance-level registrations stay local to their engine (#204, #207; ADR-0106, ADR-0107; parity with tina4-python, tina4-php, tina4-ruby).
+- `/__dev/api/system` reports memory truthfully: `memory_mb` and `current_mb` are the process's current RSS (they were the V8 heap, which leaves out Buffers), and `peak_mb` is the real peak (it was the current RSS) (#197).
+- An unreachable database at boot is reported as "Database could not be reached (<url>): <error>" instead of "ORM not available (install @tina4/orm to enable)", and startup migrations no longer claim "no database configured" when one is configured. "ORM not available" now appears only when the module is genuinely missing (#199).
+- `tina4nodejs serve` no longer prints "Port N is in use; takeover is disabled outside dev mode" for a port nothing holds (#198, parity with tina4-php#362, tina4-python#318, tina4-ruby#173).
+
+### Changed
+
+- AI skills: the shared tina4-maintainer and tina4-js skills are synced with tina4-python; tina4-developer-nodejs's contradictions are fixed against the code (`all()` takes limit/offset not a WHERE string, `request.params` is route-only, `export const noAuth` on file routes, the `tina4stack/tina4-nodejs` base image, no `{% query %}` tag); the skill forbids patching the framework (#202, #206).
+- AI tool files point at `CLAUDE.md` for the full API (#203).
+- `llms.txt` follows the llmstxt.org specification, with link lists to the markdown docs and a CI check (#201).
+- Test-only: the dev-admin tests drive every `/__dev/api` endpoint over real HTTP; the fake request/response helpers are gone (#200). The raw-TCP contract tests take their own free port instead of the HTTP port + 1 (#196). The raw-TCP and graceful-shutdown tests start the server as one process, so they read the server's own exit code; a `tsx` wrapper in front of it could exit 143 under load while the server itself drained and exited 0 (#205).
+
 ## 3.13.163 - 2026-11-13
 
 ### Fixed
