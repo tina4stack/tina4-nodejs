@@ -7,8 +7,10 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
 /**
- * A template global registered through the public static API reaches every
- * page res.render() produces, whenever it is registered.
+ * A template global, filter or test registered through the public static API
+ * reaches every page res.render() produces, whenever it is registered
+ * (ADR-0106 for globals, ADR-0107 for filters and tests, which were also
+ * drained into an engine once, at construction).
  *
  * The engine copied Frond's class globals once, in its constructor, so a
  * Frond.addGlobal() made after res.render's engine existed (after the first
@@ -58,6 +60,13 @@ const templates: Record<string, string> = {
   "globals.twig": "[{{ early }}][{{ late }}][{{ shared }}]",
   "flag.twig": "{% if is_admin %}admin{% else %}guest{% endif %}",
   "call.twig": `{{ shout("hi") }}`,
+  "filter.twig": `{{ "hi"|loud }}`,
+  "filter_late.twig": `{{ "HI"|hush }}`,
+  "filter_local.twig": `{{ "x"|mute }}`,
+  "filter_tone.twig": `{{ "x"|tone }}`,
+  "test.twig": "{% if 4 is quad %}yes{% else %}no{% endif %}",
+  "test_late.twig": "{% if 5 is quint %}yes{% else %}no{% endif %}",
+  "test_local.twig": "{% if 1 is never %}yes{% else %}no{% endif %}",
   "greeting.twig": `{{ t("greeting") }}`,
   "welcome.twig": `{{ t("welcome", {"name": "Ana"}) }}`,
 };
@@ -83,6 +92,8 @@ async function main() {
   // Case 1 runs before ANY render in this process, so res.render's engine does
   // not exist yet when the global is registered.
   Frond.addGlobal("early", "E");
+  Frond.addFilter("loud", (value: unknown) => String(value).toUpperCase());
+  Frond.addTest("quad", (value: unknown) => value === 4);
   const firstRender = await new TestClient().get("/globals"); // builds res.render's engine
   assert(
     "class global registered before first render reaches render",
@@ -155,6 +166,70 @@ async function main() {
         "instance global overrides class global",
         classValue === "[E][L][class]" && instanceValue === "[E][L][instance]" && fresh === "[E][L][class]",
         `${classValue} / ${instanceValue} / ${fresh}`,
+      );
+    }
+
+    // ── Filters and tests (ADR-0107) ─────────────────────────────────────
+    {
+      const filtered = await page("/filter");
+      assert("class filter registered before first render reaches render", filtered === "HI", filtered);
+      const tested = await page("/test");
+      assert("class test registered before first render reaches render", tested === "yes", tested);
+    }
+    {
+      const before = await page("/filter_late");
+      Frond.addFilter("hush", (value: unknown) => String(value).toLowerCase());
+      const after = await page("/filter_late");
+      assert(
+        "class filter registered after first render reaches render",
+        before === "HI" && after === "hi",
+        `${before} -> ${after}`,
+      );
+    }
+    {
+      const before = await page("/test_late");
+      Frond.addTest("quint", (value: unknown) => value === 5);
+      const after = await page("/test_late");
+      assert(
+        "class test registered after first render reaches render",
+        before === "no" && after === "yes",
+        `${before} -> ${after}`,
+      );
+    }
+    {
+      const otherEngine = new Frond(join(root, "src/templates"));
+      otherEngine.addFilter("mute", () => "LEAK");
+      const rendered = await page("/filter_local");
+      const other = otherEngine.render("filter_local.twig");
+      assert(
+        "instance filter on another engine does not leak into render",
+        rendered === "x" && other === "LEAK",
+        `${rendered} / ${other}`,
+      );
+    }
+    {
+      const otherEngine = new Frond(join(root, "src/templates"));
+      otherEngine.addTest("never", () => true);
+      const rendered = await page("/test_local");
+      const other = otherEngine.render("test_local.twig");
+      assert(
+        "instance test on another engine does not leak into render",
+        rendered === "no" && other === "yes",
+        `${rendered} / ${other}`,
+      );
+    }
+    {
+      Frond.addFilter("tone", () => "class");
+      const classValue = await page("/filter_tone");
+      (await getFrond()).addFilter("tone", () => "instance"); // res.render's own engine
+      const instanceValue = await page("/filter_tone");
+      Frond.addFilter("tone", () => "class again"); // a later class change
+      const stillInstance = await page("/filter_tone");
+      const fresh = new Frond(join(root, "src/templates")).render("filter_tone.twig");
+      assert(
+        "instance filter overrides class filter",
+        classValue === "class" && instanceValue === "instance" && stillInstance === "instance" && fresh === "class again",
+        `${classValue} / ${instanceValue} / ${stillInstance} / ${fresh}`,
       );
     }
   } finally {

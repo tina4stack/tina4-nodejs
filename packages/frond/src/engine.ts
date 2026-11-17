@@ -2167,6 +2167,9 @@ export class Frond {
   // object rather than a Map so render() can spread it in one step.
   private static classGlobals: Record<string, unknown> = {};
   private static classTests: Map<string, TestFn> = new Map();
+  // Bumped on every class-level filter/test change, so an engine knows when
+  // to rebuild its merged filter/test maps (see syncRegistries).
+  private static classRegistryVersion = 0;
 
   // ── Live-block registries (server-rendered {% live %} regions) ──
   // A {% live %} block registers three things when its page first renders:
@@ -2188,12 +2191,14 @@ export class Frond {
 
   /**
    * Register a custom filter at the class level — available to every
-   * future ``new Frond()`` instance. Callable as ``Frond.addFilter()``
+   * instance, existing ones included: an engine merges the class filters
+   * again at its next render (ADR-0107). Callable as ``Frond.addFilter()``
    * (static) or ``frond.addFilter()`` (instance). See instance method
    * below for the dual-call semantics.
    */
   static addFilter(name: string, fn: FilterFn): void {
     Frond.classFilters.set(name, fn);
+    Frond.classRegistryVersion++;
   }
 
   /**
@@ -2218,6 +2223,7 @@ export class Frond {
    */
   static addTest(name: string, fn: TestFn): void {
     Frond.classTests.set(name, fn);
+    Frond.classRegistryVersion++;
   }
 
   /**
@@ -2230,13 +2236,20 @@ export class Frond {
     Frond.classFilters.clear();
     Frond.classGlobals = {};
     Frond.classTests.clear();
+    Frond.classRegistryVersion++;
     Frond.liveFragments.clear();
     Frond.liveSources.clear();
     Frond.liveWsPaths.clear();
   }
 
   private templateDir: string;
-  private filters: Record<string, FilterFn>;
+  /** Effective filters: built-in < class < instance (see syncRegistries). */
+  private filters: Record<string, FilterFn> = {};
+  /** Filters / tests registered on THIS instance only (ADR-0052). */
+  private localFilters: Record<string, FilterFn> = {};
+  private localTests: Record<string, TestFn> = {};
+  /** The class-registry version `filters` / `tests` were last merged at. */
+  private registryVersion = -1;
   /** Globals registered on THIS instance only (ADR-0052). */
   private globals: Record<string, unknown>;
   /** Built-in globals (formToken, range, dump, csp_nonce, ...). */
@@ -2271,10 +2284,10 @@ export class Frond {
 
   constructor(templateDir: string = "src/templates") {
     this.templateDir = resolve(templateDir);
-    this.filters = { ...BUILTIN_FILTERS };
     this.globals = {};
     this.builtinGlobals = {};
     this.tests = {};
+    this.syncRegistries(); // builds this.filters / this.tests
     this._sandbox = false;
     this._allowedFilters = null;
     this._allowedTags = null;
@@ -2343,13 +2356,24 @@ export class Frond {
     // imports core); standalone Frond returns "".
     this.builtinGlobals.csp_nonce = () => _cspNonceProvider();
 
-    // Drain the class-level filter/test registries. This is the key to
-    // surviving hot-reloads AND the static-facade pattern: app.ts calls
-    // Frond.addFilter("money", fn) once, the class remembers it, and every
-    // future Frond() instance picks it up automatically. Class globals are
-    // not copied: withGlobals() reads them at render time.
-    for (const [k, v] of Frond.classFilters) this.filters[k] = v;
-    for (const [k, v] of Frond.classTests) this.tests[k] = v;
+    // Class registrations are never copied in for good: withGlobals() reads
+    // the class globals at render time and syncRegistries() re-merges the
+    // class filters/tests whenever they change, so a Frond.addGlobal /
+    // addFilter / addTest made after this engine exists still reaches it
+    // (ADR-0106, ADR-0107).
+  }
+
+  /**
+   * Rebuild the merged filter/test maps when the class registry changed.
+   * Same layering as globals -- built-ins < class < this instance. Filter
+   * lookup is on the hot path, so the merge is a plain object rebuilt only
+   * when the class-registry version moves, never a per-lookup chain.
+   */
+  private syncRegistries(): void {
+    if (this.registryVersion === Frond.classRegistryVersion) return;
+    this.filters = { ...BUILTIN_FILTERS, ...Object.fromEntries(Frond.classFilters), ...this.localFilters };
+    this.tests = { ...Object.fromEntries(Frond.classTests), ...this.localTests };
+    this.registryVersion = Frond.classRegistryVersion;
   }
 
   sandbox(filters?: string[], tags?: string[], vars?: string[]): Frond {
@@ -2373,6 +2397,7 @@ export class Frond {
    * for process-global registration. tina4: ADR-0052.
    */
   addFilter(name: string, fn: FilterFn): void {
+    this.localFilters[name] = fn;
     this.filters[name] = fn;
   }
 
@@ -2387,6 +2412,7 @@ export class Frond {
    * Register a custom test on this instance only.
    */
   addTest(name: string, fn: TestFn): void {
+    this.localTests[name] = fn;
     this.tests[name] = fn;
   }
 
@@ -2407,9 +2433,12 @@ export class Frond {
   /**
    * Layer the globals under the render data: built-ins < class globals (read
    * live, so registration order never matters) < this instance's own globals
-   * < the data passed to render().
+   * < the data passed to render(). Every render starts here, so this is also
+   * where the filter/test maps catch up with any class registration made
+   * since the last render.
    */
   private withGlobals(data?: Record<string, unknown>): Record<string, unknown> {
+    this.syncRegistries();
     return { ...this.builtinGlobals, ...Frond.classGlobals, ...this.globals, ...(data || {}) };
   }
 
