@@ -2162,7 +2162,10 @@ export class Frond {
   // and every future ``new Frond()`` inherits it automatically.
   // Mirrors Python's _class_globals / _class_filters / _class_tests.
   private static classFilters: Map<string, FilterFn> = new Map();
-  private static classGlobals: Map<string, unknown> = new Map();
+  // Globals are read LIVE at render time (not copied at construction), so a
+  // Frond.addGlobal() made after an engine exists still reaches it. A plain
+  // object rather than a Map so render() can spread it in one step.
+  private static classGlobals: Record<string, unknown> = {};
   private static classTests: Map<string, TestFn> = new Map();
 
   // ── Live-block registries (server-rendered {% live %} regions) ──
@@ -2195,11 +2198,17 @@ export class Frond {
 
   /**
    * Register a global variable available in all templates of every
-   * future instance. Callable as ``Frond.addGlobal()`` (static) or
+   * instance, existing ones included: class globals are read at render time
+   * (ADR-0106). Callable as ``Frond.addGlobal()`` (static) or
    * ``frond.addGlobal()`` (instance).
    */
   static addGlobal(name: string, value: unknown): void {
-    Frond.classGlobals.set(name, value);
+    Frond.classGlobals[name] = value;
+  }
+
+  /** True when a class-level global with this name is registered. */
+  static hasGlobal(name: string): boolean {
+    return Object.prototype.hasOwnProperty.call(Frond.classGlobals, name);
   }
 
   /**
@@ -2219,7 +2228,7 @@ export class Frond {
    */
   static clearRegistry(): void {
     Frond.classFilters.clear();
-    Frond.classGlobals.clear();
+    Frond.classGlobals = {};
     Frond.classTests.clear();
     Frond.liveFragments.clear();
     Frond.liveSources.clear();
@@ -2228,7 +2237,10 @@ export class Frond {
 
   private templateDir: string;
   private filters: Record<string, FilterFn>;
+  /** Globals registered on THIS instance only (ADR-0052). */
   private globals: Record<string, unknown>;
+  /** Built-in globals (formToken, range, dump, csp_nonce, ...). */
+  private builtinGlobals: Record<string, unknown>;
   private tests: Record<string, TestFn>;
   private _sandbox: boolean;
   private _allowedFilters: Set<string> | null;
@@ -2261,6 +2273,7 @@ export class Frond {
     this.templateDir = resolve(templateDir);
     this.filters = { ...BUILTIN_FILTERS };
     this.globals = {};
+    this.builtinGlobals = {};
     this.tests = {};
     this._sandbox = false;
     this._allowedFilters = null;
@@ -2311,16 +2324,16 @@ export class Frond {
     };
 
     // Built-in global functions
-    this.globals.formToken = (descriptor?: string) => _generateFormToken(descriptor || "");
-    this.globals.form_token = (descriptor?: string) => _generateFormToken(descriptor || "");
-    this.globals.formTokenValue = (descriptor?: string) => _generateFormTokenValue(descriptor || "");
-    this.globals.form_token_value = (descriptor?: string) => _generateFormTokenValue(descriptor || "");
-    this.globals.range = frondRange;
+    this.builtinGlobals.formToken = (descriptor?: string) => _generateFormToken(descriptor || "");
+    this.builtinGlobals.form_token = (descriptor?: string) => _generateFormToken(descriptor || "");
+    this.builtinGlobals.formTokenValue = (descriptor?: string) => _generateFormTokenValue(descriptor || "");
+    this.builtinGlobals.form_token_value = (descriptor?: string) => _generateFormTokenValue(descriptor || "");
+    this.builtinGlobals.range = frondRange;
 
     // Debug helper: {{ dump(x) }} — gated on TINA4_DEBUG, see renderDump().
     // Available alongside the |dump filter so both styles work:
     //   {{ user|dump }}   and   {{ dump(user) }}
-    this.globals.dump = (value: unknown) => renderDump(value);
+    this.builtinGlobals.dump = (value: unknown) => renderDump(value);
 
     // CSP nonce (ADR-0088): {{ csp_nonce() }} returns the current response's
     // nonce so a template can serve an inline <style>/<script> under the strict
@@ -2328,14 +2341,14 @@ export class Frond {
     // value matches the 'nonce-X' the security middleware puts in the CSP header.
     // Frond stays zero-dependency: @tina4/core injects the provider (it never
     // imports core); standalone Frond returns "".
-    this.globals.csp_nonce = () => _cspNonceProvider();
+    this.builtinGlobals.csp_nonce = () => _cspNonceProvider();
 
-    // Drain the class-level registry. This is the key to surviving
-    // hot-reloads AND the static-facade pattern: app.ts calls
-    // Frond.addFilter("money", fn) once, the class remembers it,
-    // and every future Frond() instance picks it up automatically.
+    // Drain the class-level filter/test registries. This is the key to
+    // surviving hot-reloads AND the static-facade pattern: app.ts calls
+    // Frond.addFilter("money", fn) once, the class remembers it, and every
+    // future Frond() instance picks it up automatically. Class globals are
+    // not copied: withGlobals() reads them at render time.
     for (const [k, v] of Frond.classFilters) this.filters[k] = v;
-    for (const [k, v] of Frond.classGlobals) this.globals[k] = v;
     for (const [k, v] of Frond.classTests) this.tests[k] = v;
   }
 
@@ -2391,8 +2404,17 @@ export class Frond {
     return isNaN(n) || n < 0 ? 0 : n;
   }
 
+  /**
+   * Layer the globals under the render data: built-ins < class globals (read
+   * live, so registration order never matters) < this instance's own globals
+   * < the data passed to render().
+   */
+  private withGlobals(data?: Record<string, unknown>): Record<string, unknown> {
+    return { ...this.builtinGlobals, ...Frond.classGlobals, ...this.globals, ...(data || {}) };
+  }
+
   render(template: string, data?: Record<string, unknown>): string {
-    const context = { ...this.globals, ...(data || {}) };
+    const context = this.withGlobals(data);
     const filePath = join(this.templateDir, template);
 
     if (!existsSync(filePath)) {
@@ -2426,7 +2448,7 @@ export class Frond {
   }
 
   renderString(source: string, data?: Record<string, unknown>): string {
-    const context = { ...this.globals, ...(data || {}) };
+    const context = this.withGlobals(data);
 
     const key = createHash("md5").update(source).digest("hex");
     const ttlMs = this.cacheTtlSeconds() * 1000;
