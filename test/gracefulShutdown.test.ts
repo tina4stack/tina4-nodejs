@@ -45,11 +45,21 @@ import { join, resolve, dirname } from "node:path";
 import { createConnection, createServer } from "node:net";
 import { request } from "node:http";
 import { randomBytes } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { shutdownTimeoutSeconds, DEFAULT_SHUTDOWN_TIMEOUT_SECONDS } from "../packages/core/src/server.ts";
 
 const __dirname = import.meta.dirname;
 const REPO = resolve(__dirname, "..");
-const TSX = join(REPO, "node_modules", ".bin", "tsx");
+// The child server runs as ONE process: `node --import <tsx loader>`, never the
+// `tsx` CLI. The CLI is a wrapper that runs the app as ITS child and relays
+// SIGINT/SIGTERM with a fixed 30ms acknowledgement window: when a group signal
+// lands on a loaded runner the wrapper misses the ack twice, SIGKILLs the
+// server and exits 128+signum itself, even though the server drained and
+// exited 0 (the same race failed rawTcpServiceContract on CI run 44081983596
+// with "code=143"). Spawning node directly makes the exit code and signal we
+// read the SERVER's own, so the shutdown contract is measured, not tsx.
+// Resolved to a file URL because the app's temp cwd has no node_modules.
+const TSX_LOADER = pathToFileURL(join(REPO, "node_modules", "tsx", "dist", "loader.mjs")).href;
 
 let pass = 0;
 let fail = 0;
@@ -74,10 +84,11 @@ function reapAll(): void {
     // Kill the process GROUP (negative pid) UNCONDITIONALLY, even when the
     // child handle already looks dead.
     //
-    // tsx runs the real server as a CHILD of the wrapper this handle points
-    // at. When a signal takes the wrapper down but not the server, exitCode
-    // is set while the server keeps listening - so gating this on "handle
-    // still alive" skips the one case that actually leaks. That is exactly
+    // The child is now the server itself (node --import tsx), but anything it
+    // spawns shares its group. Back when the `tsx` CLI wrapper sat in front,
+    // a signal could take the wrapper down but not the server, leaving
+    // exitCode set while the server kept listening - gating this on "handle
+    // still alive" skipped the one case that actually leaks. That is exactly
     // how three orphaned servers were left holding ports 49402/49564/49607
     // during this audit's own measurement run.
     //
@@ -186,7 +197,7 @@ async function bootServer(opts: { withBackgroundTask?: boolean; slowSeconds?: nu
 
   const logPath = join(root, "server.log");
   const logFd = openSync(logPath, "w");
-  const child = spawn(TSX, ["app.ts"], {
+  const child = spawn(process.execPath, ["--import", TSX_LOADER, "app.ts"], {
     cwd: root,
     detached: true, // own process group, so we can signal the GROUP on cleanup
     stdio: ["ignore", logFd, logFd],
@@ -231,15 +242,15 @@ function waitForExit(child: ChildProcess, timeoutMs: number): Promise<{ code: nu
 }
 
 function kill(child: ChildProcess, signal: NodeJS.Signals): void {
-  // Signal the process GROUP so tsx's node child receives it too - signalling
-  // only the wrapper is how a "handled" signal silently never reaches the
-  // server.
+  // Signal the process GROUP, as an orchestrator or a terminal's Ctrl+C does.
+  // The child is the server itself (one process), so the exit code and signal
+  // waitForExit() reports are the server's own, never a wrapper's.
   if (child.pid) process.kill(-child.pid, signal);
 }
 
 async function cleanup(b: Booted): Promise<void> {
-  // Unconditional group kill - see reapAll(). A dead wrapper handle is not
-  // proof the server it spawned is dead.
+  // Unconditional group kill - see reapAll(). A dead handle is not proof that
+  // nothing else in the group is still holding the port.
   if (b.child.pid) {
     try { process.kill(-b.child.pid, "SIGKILL"); } catch { /* group already gone */ }
     await waitForExit(b.child, 5000);

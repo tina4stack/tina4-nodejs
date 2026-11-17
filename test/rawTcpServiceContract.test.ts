@@ -18,11 +18,20 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createConnection, createServer, type Socket } from "node:net";
 import { request } from "node:http";
+import { pathToFileURL } from "node:url";
 import { TcpService, tcpService, tcp, clearTcpRegistry } from "../packages/core/src/tcp.ts";
 
 const __dirname = import.meta.dirname;
 const REPO = resolve(__dirname, "..");
-const TSX = join(REPO, "node_modules", ".bin", "tsx");
+// The child server runs as ONE process: `node --import <tsx loader>`, never the
+// `tsx` CLI. The CLI is a wrapper that runs the app as ITS child and relays
+// signals with a fixed 30ms acknowledgement window: when a group SIGTERM lands
+// on a loaded runner the wrapper misses the ack twice, SIGKILLs the server and
+// exits 128+15=143 itself, even though the server drained and exited 0 (CI run
+// 44081983596: "eof=true code=143"). Spawning node directly makes the exit
+// code we read the SERVER's own, so the drain contract is measured, not tsx.
+// Resolved to a file URL because the app's temp cwd has no node_modules.
+const TSX_LOADER = pathToFileURL(join(REPO, "node_modules", "tsx", "dist", "loader.mjs")).href;
 
 let pass = 0;
 let fail = 0;
@@ -457,7 +466,7 @@ async function bootChild(extraEnv: Record<string, string> = {}): Promise<Booted>
   );
   const logPath = join(root, "server.log");
   const logFd = openSync(logPath, "w");
-  const child = spawn(TSX, ["app.ts"], {
+  const child = spawn(process.execPath, ["--import", TSX_LOADER, "app.ts"], {
     cwd: root,
     detached: true,
     stdio: ["ignore", logFd, logFd],
@@ -509,6 +518,8 @@ async function childCases(): Promise<void> {
 
   // tcp-graceful-shutdown-drain: SIGTERM drains the live TCP connection, exit 0.
   // Mutation: skip drainAllTcpServices() on shutdown and the client EOF/exit stalls.
+  // Mutation: drop process.on("SIGTERM", onSigterm) in server.ts and the server
+  // dies BY the signal (code=null signal=SIGTERM) instead of exiting 0.
   {
     const b = await bootChild({ TINA4_SHUTDOWN_TIMEOUT: "10" });
     const tcpSock = await connect(b.tcpPort);
@@ -518,7 +529,7 @@ async function childCases(): Promise<void> {
     if (b.child.pid) process.kill(-b.child.pid, "SIGTERM");
     await waitUntil(() => eof, 12000);
     const code = await waitForExit(b.child, 12000);
-    assert("SIGTERM drains the live TCP connection and exits 0", eof && code === 0, `eof=${eof} code=${code}`);
+    assert("SIGTERM drains the live TCP connection and exits 0", eof && code === 0, `eof=${eof} code=${code} signal=${b.child.signalCode}`);
     tcpSock.destroy();
   }
 }
