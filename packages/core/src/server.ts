@@ -184,6 +184,31 @@ function isModuleNotFound(err: unknown): boolean {
 let bootDbConnectError: string | null = null;
 
 /**
+ * Say WHY initializeOrm() failed, by the step that failed: only a missing ORM
+ * module is "install @tina4/orm"; a refused connection names the database
+ * (without credentials) and the error (review of tina4-ruby#172).
+ */
+function reportOrmBootFailure(
+  stage: "import" | "connect" | "models",
+  err: unknown,
+  dbConfig: { type?: string; path?: string },
+): void {
+  const message = stripUrlCredentials(err instanceof Error ? err.message : String(err));
+  if (stage === "connect") {
+    const url = (process.env.TINA4_DATABASE_URL ?? "").trim();
+    const target = url ? stripUrlCredentials(url) : `${dbConfig.type ?? "sqlite"} ${dbConfig.path ?? "./data/tina4.db"}`;
+    bootDbConnectError = message;
+    console.warn(`\n  Database could not be reached (${target}): ${message}`);
+  } else if (stage === "import" && isModuleNotFound(err)) {
+    console.warn(`\n  ORM not available (install @tina4/orm to enable): ${message}`);
+  } else if (stage === "import") {
+    console.warn(`\n  ORM failed to load:`, err);
+  } else {
+    console.warn(`\n  ORM model setup failed:`, err);
+  }
+}
+
+/**
  * Apply pending DB migrations on startup — NON-BREAKING.
  *
  * When a `migrations/` folder exists (with at least one `.sql` file, excluding
@@ -2836,19 +2861,7 @@ async function initializeOrm(
           }
         }
       } catch (err) {
-        const message = stripUrlCredentials(err instanceof Error ? err.message : String(err));
-        if (ormStage === "connect") {
-          const url = (process.env.TINA4_DATABASE_URL ?? "").trim();
-          const target = url ? stripUrlCredentials(url) : `${dbConfig.type ?? "sqlite"} ${dbConfig.path ?? "./data/tina4.db"}`;
-          bootDbConnectError = message;
-          console.warn(`\n  Database could not be reached (${target}): ${message}`);
-        } else if (ormStage === "import" && isModuleNotFound(err)) {
-          console.warn(`\n  ORM not available (install @tina4/orm to enable): ${message}`);
-        } else if (ormStage === "import") {
-          console.warn(`\n  ORM failed to load:`, err);
-        } else {
-          console.warn(`\n  ORM model setup failed:`, err);
-        }
+        reportOrmBootFailure(ormStage, err, dbConfig);
       }
 
       // Auto-run pending migrations on startup — AFTER initDatabase()/model sync,
