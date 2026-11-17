@@ -34,4 +34,4 @@ Router.get("/api/users", async (req, res) => res.json({ users: [] }));
 
 Routes in `src/routes/`, models in `src/models/`, templates in `src/templates/`, static in `public/`.
 
-See llms.txt for complete API reference.
+For the complete API reference, read `CLAUDE.md` in this repo and the docs it links. `llms.txt` is the link index (llmstxt.org format); https://tina4.com/llms-full.txt has the full documentation in one file.
