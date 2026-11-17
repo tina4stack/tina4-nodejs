@@ -82,9 +82,9 @@ This is an **npm workspaces monorepo**. All packages are in `packages/*`.
 ## Tech Stack
 
 - **Language:** TypeScript (strict mode, ES2022 target, Node16 module resolution)
-- **Runtime:** Node.js 20+ (ESM only, `"type": "module"` everywhere)
+- **Runtime:** Node.js 22+ (`engines.node >=22.0.0`; ESM only, `"type": "module"` everywhere)
 - **HTTP:** Native `node:http` — no Express, no Fastify
-- **Database:** SQLite via `node:sqlite` (default), with adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird
+- **Database:** SQLite via `node:sqlite` (default), with adapters for Postgres, MySQL, MSSQL/SQL Server, Firebird, MongoDB and ODBC
 - **Templates:** Frond — built-in zero-dependency Twig-compatible engine (`@tina4/frond`)
 - **Dev tooling:** `tsx` for runtime TS execution, `esbuild` for builds
 - **Testing:** 267 `*.test.ts` files via `tsx test/run-all.ts`
@@ -163,6 +163,8 @@ Database layer with auto-CRUD generation, seeding, fake data, and SQL translatio
 - `adapters/mysql.ts` — MySQL adapter
 - `adapters/mssql.ts` — MSSQL / SQL Server adapter (`mssql` or `sqlserver` scheme)
 - `adapters/firebird.ts` — Firebird adapter
+- `adapters/mongodb.ts` — MongoDB adapter (SQL translated to MongoDB queries)
+- `adapters/odbc.ts` — ODBC adapter
 - `model.ts` — Discovers models from `src/models/`, reads `static tableName` and `static fields`
 - `migration.ts` — Schema sync on startup (creates tables, adds columns, warns on destructive changes)
 - `autoCrud.ts` — Generates GET/POST/PUT/DELETE route handlers for each model
@@ -210,11 +212,11 @@ Max upload size: `TINA4_MAX_UPLOAD_SIZE` env var (default 10MB).
 ### Auth
 
 ```typescript
-// expires_in is in MINUTES (default 60). Reads SECRET from env if not passed.
+// expires_in is in MINUTES (default 60). Reads TINA4_SECRET from env if not passed.
 getToken(payload, secret?, expiresIn=60): string
 validToken(token, secret?): Record | null
 getPayload(token): Record | null
-refreshToken(token, expiresIn=60): string | null  // reads SECRET from env
+refreshToken(token, expiresIn=60): string | null  // reads TINA4_SECRET from env
 hashPassword(password, salt?, iterations=260000): string  // PBKDF2-SHA256, $ delimiter
 checkPassword(password, hash): boolean  // timing-safe
 validateApiKey(provided, expected?): boolean  // reads TINA4_API_KEY from env
@@ -1213,6 +1215,8 @@ No configuration needed — set `TINA4_DEBUG=true` to enable. If you're running 
 
 ## Conventions You Must Follow
 
+- **Pull requests only (ADR-0073)** — Never push directly to `v3` or `main` (or `v2`); work on a feature branch, open a PR, wait for the required checks, then merge. Never force-push or move a tag. A tag publishes, merging never does.
+
 ### Route Files
 - Located in `src/routes/`
 - Filename = HTTP method: `get.ts`, `post.ts`, `put.ts`, `delete.ts`, `patch.ts`
@@ -1267,7 +1271,7 @@ import { Router } from "./router.js";  // .js even though the file is .ts
 3. **Convention-based models** — `static fields = {}` over decorators. No special TypeScript config needed.
 4. **CDN for Swagger UI** — Keeps install under 8MB. Single HTML file loads from jsdelivr.net (the same default across all four frameworks).
 5. **Browser reload, not process restart** — The `tina4` Rust CLI watches `src/`, `migrations/`, `.env` and POSTs `/__dev/api/reload` to the running server. The server stays up; only the browser reloads (via WS on `/__dev_reload`, polling fallback on `GET /__dev/api/mtime`). No ESM HMR gymnastics, no server restart, no framework-side watcher.
-6. **SQLite default** — `node:sqlite` is synchronous and fast. Full adapters for Postgres, MySQL, MSSQL/SQL Server, and Firebird.
+6. **SQLite default** — `node:sqlite` is synchronous and fast. Full adapters for Postgres, MySQL, MSSQL/SQL Server, Firebird, MongoDB and ODBC.
 7. **CLI named `tina4nodejs`** (primary) with `tina4` as alias — So `npx tina4nodejs init` or `npx tina4 init` both work.
 8. **Event system** — Static `Events` class, synchronous dispatch, priority ordering, zero deps.
 9. **Inline testing** — Tests as decorators on functions, no external test runner for unit-level checks.
@@ -1481,7 +1485,7 @@ When adding new features, add a corresponding `test/<feature>.test.ts` file.
 - **Frond template engine optimizations**: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - **Production server auto-detect**: `npx tina4nodejs serve --production` auto-uses cluster mode
 - **`tina4 generate`**: model, route, migration, middleware scaffolding. `tina4nodejs` is the Node package's own CLI; the `tina4` client forwards `generate` to it.
-- **Database**: 5 engines (SQLite, PostgreSQL, MySQL, MSSQL, Firebird), DB query caching — request-scoped auto cache **off by default — opt-in via `TINA4_AUTO_CACHING=true`** (TTL `TINA4_AUTO_CACHING_TTL=5`s) which dedupes identical `db.fetch()`/ORM reads within a request and flushes on writes (always in-process); default OFF because a request-scoped cache defaulting on is a read-after-write footgun (cached pre-write `SELECT MAX(id)` → duplicate PKs); persistent cross-request cache opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s) routed through the unified async backend set via `TINA4_DB_CACHE_BACKEND` (memory/file/redis/valkey/memcached/mongodb/database) + `TINA4_DB_CACHE_URL`, so instances share one cache with global write-invalidation (full parity with Python/PHP/Ruby). `db.cacheStats()` reports `mode` (request/persistent/off) + `backend`
+- **Database**: 7 engines (SQLite, PostgreSQL, MySQL, MSSQL, Firebird, MongoDB, ODBC), DB query caching — request-scoped auto cache **off by default — opt-in via `TINA4_AUTO_CACHING=true`** (TTL `TINA4_AUTO_CACHING_TTL=5`s) which dedupes identical `db.fetch()`/ORM reads within a request and flushes on writes (always in-process); default OFF because a request-scoped cache defaulting on is a read-after-write footgun (cached pre-write `SELECT MAX(id)` → duplicate PKs); persistent cross-request cache opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s) routed through the unified async backend set via `TINA4_DB_CACHE_BACKEND` (memory/file/redis/valkey/memcached/mongodb/database) + `TINA4_DB_CACHE_URL`, so instances share one cache with global write-invalidation (full parity with Python/PHP/Ruby). `db.cacheStats()` reports `mode` (request/persistent/off) + `backend`
 - **Cache**: unified backend set — `memory` (default), `file`, `redis`, `valkey`, `memcached`, `mongodb`, `database` — via `TINA4_CACHE_BACKEND` (+ `TINA4_CACHE_URL`/credentials); file-backend fallback if a backend is unreachable. The KV API, the `responseCache` middleware, and the persistent DB query cache all route through this async backend set (native async clients, no child processes) — a network backend distributes them cross-instance, full parity with Python/PHP/Ruby; `memory` (default) keeps them in-process. `await` the async API (`cacheGet`/`cacheSet`/`clearCache`)
 - **Sessions**: file backend (default). `TINA4_SESSION_SAMESITE` env var (default: Lax)
 - **Queue**: file/RabbitMQ/Kafka/MongoDB backends, configured via env vars. **Reservation/visibility timeout** (file + MongoDB): a popped job is reserved for `TINA4_QUEUE_VISIBILITY_TIMEOUT` seconds (default 300; `visibilityTimeout` Queue option; `<= 0` disables) — if the consumer dies before `complete()`/`fail()`, the next `pop()` reclaims it (incrementing `attempts`, dead-lettering past `maxRetries`), so a crashed/evicted consumer never strands a job. RabbitMQ/Kafka delegate redelivery to the broker.

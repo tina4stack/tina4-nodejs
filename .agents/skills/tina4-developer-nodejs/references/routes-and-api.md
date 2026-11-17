@@ -61,9 +61,9 @@ export default async function (request: Tina4Request, response: Tina4Response) {
 
 ### Imperative routes (for public writes, protected GETs, WebSockets)
 
-File-based route files cannot toggle their own auth flag. When you need a **public write route**
-(login/register/webhook) or a **protected GET**, register it imperatively in `app.ts` and chain a
-modifier. `get`/`post`/`put`/`patch`/`del`/`websocket` are exported from `tina4-nodejs`:
+A file-based route sets its auth with exported booleans: `export const noAuth = true;` (public
+write), `export const secure = true;` (protected GET), `export const noCsrf = true;` (webhook). Or
+register the route imperatively in `app.ts` and chain a modifier. `get`/`post`/`put`/`patch`/`del`/`websocket` are exported from `tina4-nodejs`:
 
 ```typescript
 import { post, get, websocket } from "tina4-nodejs";
@@ -95,20 +95,20 @@ Status-code constants are exported from `tina4-nodejs`: `HTTP_OK` (200), `HTTP_C
 
 ## Path & Query Parameters
 
-`request.params` merges **route params and query-string params**. Route params may be coerced
-numbers when typed (e.g. `{id:int}`); query params are always strings.
+`request.params` holds **route params only** (typed ones arrive coerced, e.g. `{id:int}` → number) —
+never the query string or body. Query-string values are on `request.query` (always strings):
 
 ```typescript
 // GET /search?q=hello&page=2   →  src/routes/search/get.ts
 export default async function (request: Tina4Request, response: Tina4Response) {
-  const query = (request.params.q as string) ?? "";
-  const page = parseInt((request.params.page as string) ?? "1", 10);
+  const query = request.query.q ?? "";
+  const page = parseInt(request.query.page ?? "1", 10);
   // …
 }
 ```
 
-`request.getParam(key)` fetches a single merged param. The parsed body is on `request.body`
-(JSON is auto-parsed); headers are on `request.headers`.
+There is no `request.getParam()`. The parsed body is on `request.body` (JSON is auto-parsed); headers
+are on `request.headers`.
 
 ## Middleware
 
@@ -145,8 +145,8 @@ export const meta = {
 ```
 
 > Note: `meta.security` only affects the **Swagger document**. Actual auth enforcement is driven by
-> the HTTP method (writes secure-by-default) and the imperative `.secure()` / `.noAuth()` modifiers —
-> not by `meta.security`.
+> the HTTP method (writes secure-by-default), the imperative `.secure()` / `.noAuth()` modifiers and
+> the file-route `export const secure` / `noAuth` flags — not by `meta.security`.
 
 ## CSRF / Form Token Protection
 
@@ -160,11 +160,24 @@ State-changing Frond forms include a CSRF token via `{{ formToken() }}`:
 </form>
 ```
 
-The framework validates a `formToken` in the body on write requests (it is one of the accepted
-token sources, alongside the `Authorization: Bearer` header and a session token). Never skip CSRF
-protection on server-rendered forms.
+The framework validates a `formToken` in the body on write requests (enable CSRF with
+`TINA4_CSRF=true`). A form token proves ORIGIN (this write came from a form you rendered), not
+identity. CSRF and `.noAuth()` are orthogonal:
+
+- **Public form** (contact, sign-up): a `.noAuth()` route + `{{ formToken() }}` in the form. It posts
+  with no login AND stays CSRF-protected. `.noAuth()` no longer skips CSRF.
+- **Protected form**: a real identity token authenticates the write (sent as `Authorization: Bearer`).
+  A form token is not an identity, so a protected route 401s without one - send the login token, do
+  not drop `.noAuth()`.
+- **Webhook / server-to-server** (no browser, no form): `.noCsrf()` (or `export const noCsrf = true`
+  in a route file), with `.noAuth()`, opts out of the form-token check.
+
+Never skip CSRF protection on server-rendered forms.
 
 ## CORS, Rate Limiting
 
-Both are built in and installed globally with sensible defaults. Override via `.env` or by
-configuring the middleware. No configuration is needed to get started.
+Both are built in and installed globally. Override via `.env` or by configuring the middleware.
+CORS is **deny by default** (ADR-0018), in development too: with `TINA4_CORS_ORIGINS` unset no
+`Access-Control-Allow-Origin` is sent and the browser blocks cross-origin calls. List the origins you
+allow, e.g. `TINA4_CORS_ORIGINS=http://localhost:5173,https://app.example.com` (`*` allows any, and is
+then never paired with credentials). Same-origin requests need nothing.

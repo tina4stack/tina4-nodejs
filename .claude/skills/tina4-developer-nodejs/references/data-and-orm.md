@@ -105,22 +105,24 @@ Use `selectOne` only with a **complete** SQL string:
 ### Read — filtered list
 
 ```typescript
-// find(): a filter OBJECT → array (AND-ed conditions); optional limit / offset / orderBy.
+// find(): a filter OBJECT (AND-ed conditions); find(filter, limit = 100, offset = 0, orderBy?)
 const active = await User.find({ active: true });
 const page   = await User.find({ active: true }, 20, 40);        // limit 20, offset 40
 const sorted = await User.find({}, 100, 0, "name ASC");
 
-// where(): a raw WHERE string + params → array (limit defaults to 20).
-const recent = await User.where("created_at > ?", ["2026-01-01"], 50);
+// where(): a raw WHERE string + params; where(sql, params, limit = 100, offset = 0, include?, orderBy?)
+const recent  = await User.where("created_at > ?", ["2026-01-01"], 50);
+const activeOnes = await User.where("active = ?", [1]);
 
-// all(): optional WHERE STRING (not an options object!). For a plain limit, use find({}, n).
-const everyone   = await User.all();                 // all rows
-const activeOnes = await User.all("active = 1");     // WHERE string
-const firstFifty = await User.find({}, 50);          // ← use find for a limit, NOT User.all({ limit: 50 })
+// all(): NO filter — all(limit = 100, offset = 0, include?, orderBy?)
+const firstHundred = await User.all();               // first 100 rows (the shared row cap), not every row
+const nextPage     = await User.all(20, 40, undefined, "name ASC");
 ```
 
-> **`all()` takes a WHERE clause string, not `{ limit }`.** `User.all({ limit: 50 })` would coerce the
-> object into a bogus WHERE clause. Use `await User.find({}, 50)` to cap the result set.
+> **`all()` takes no WHERE clause.** Its first argument is the LIMIT, so `User.all("active = 1")` is
+> not a filter — use `User.where("active = ?", [1])`. Every list read (`all`, `where`, `find({...})`)
+> defaults to **100 rows**; pass a bigger `limit` or page with `offset` when you need more. They
+> return a `ModelCollection` (an `Array` subclass, plus `getTotalRecords()` / `toPaginate()`).
 
 ### Update
 
@@ -238,7 +240,8 @@ await db.execute("UPDATE users SET active = 0 WHERE id = ?", [1]);       // thro
 `db.fetch()` returns a **`DatabaseResult`**, not a list — rows are on **`.records`**, accessed by key
 (`result.records[0].name`). It is iterable / indexable / `.length`-able and has `.toJson()` / `.toCsv()`
 / `.toArray()` / `.toPaginate()` for convenience, but ORM list methods (`all()`/`where()`/`find({})`)
-return a **plain array** with none of those methods. Always use `?` placeholders with a params array —
+return a **`ModelCollection`** — an `Array` subclass with only `getTotalRecords()` / `toPaginate()` on
+top, none of the `DatabaseResult` methods. Always use `?` placeholders with a params array —
 never string-concatenate values into SQL.
 
 ## Database Connection & Startup
@@ -557,8 +560,8 @@ These bite outside the ORM but hit the same agent-build loop. Verified against s
 
 * **N1 — Auth / unexpected 401 (security).** An unexpected 401 means **the caller needs a token**,
   not that the route should be opened. `.noAuth()` is a **last resort** for genuinely public
-  endpoints only. See **`auth-and-services.md` → "Auth footguns"** for the full treatment (why a
-  file-based write can't opt out, and the docs-only `meta.security` trap).
+  endpoints only. See **`auth-and-services.md` → "Auth footguns"** for the full treatment (the
+  `export const noAuth / secure / noCsrf` file-route flags, and the docs-only `meta.security` trap).
 
 * **N2 — No decorators (the "decorator order" footgun does not apply).** tina4-nodejs uses **no TS
   decorators** — routing is file-based (`get.ts`/`post.ts`) plus imperative chained builders
@@ -583,8 +586,8 @@ These bite outside the ORM but hit the same agent-build loop. Verified against s
 * **N5 — `DatabaseResult` is not a list.** `db.fetch()` returns a `DatabaseResult`; rows live on
   **`.records`** (`databaseResult.ts:20`), accessed by key: `result.records[0].name`. The object is
   iterable/indexable/`.length`-able for convenience, but an ORM **list** (`all()`/`where()`/
-  `find({})`) is a plain array with **no** `.toJson()`/`.toArray()`/`.toCsv()` — those are
-  `DatabaseResult` methods.
+  `find({})`) is a `ModelCollection` (an `Array` subclass with `getTotalRecords()` / `toPaginate()`)
+  with **no** `.toJson()`/`.toArray()`/`.toCsv()` — those are `DatabaseResult` methods.
 
 * **N6 — Periodic work uses `background`, not raw timers.** Register recurring work with
   `background(fn, intervalSeconds)` from `tina4-nodejs` (`background.ts:51`) — it runs in the server

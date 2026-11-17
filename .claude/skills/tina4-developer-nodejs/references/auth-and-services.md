@@ -52,8 +52,8 @@ In CI / production you MUST set `TINA4_SECRET` yourself.
 
 ### Minting a token (login)
 
-A login route is a **public write** — register it imperatively in `app.ts` with `.noAuth()` (a
-file-based `post.ts` is secure-by-default and can't opt out):
+A login route is a **public write**. Open it with `.noAuth()` on an imperative registration in
+`app.ts` (below), or — file-based — with `export const noAuth = true;` in its `post.ts`:
 
 ```typescript
 // app.ts
@@ -92,8 +92,8 @@ export default async function (request: Tina4Request, response: Tina4Response) {
 }
 ```
 
-`validToken(token)` returns the decoded payload (truthy) or `null`. `getPayload(token)` reads claims
-without re-verifying.
+`validToken(token)` returns the decoded payload (truthy) or `null`. `getPayload(token)` only decodes the
+claims — it does NOT check the signature or expiry, so never use it to authorise a request.
 
 ### Password hashing
 
@@ -121,16 +121,28 @@ are *genuinely* public: login, register, health-check, inbound webhooks.
   "fix auth" — it **ships unauthenticated writes**. A 401 on `POST /orders` means the request
   arrived without a valid token; authenticate it, don't open the route.
 
-### A file-based write route CANNOT opt out of auth — register a public write imperatively
+### Auth flags on a file-based route are module exports
 
-This is the load-bearing Node divergence. Route discovery reads only the handler, `meta`, and
-`template` from a `post.ts` file (`routeDiscovery.ts`), and the server discards the `RouteRef`
-`addRoute` returns (`server.ts`). So a file-based `src/routes/login/post.ts` is
-**secure-by-default with no way to `.noAuth()` it** — it will 401 forever. A genuinely public write
-must be registered **imperatively in `app.ts`** where you can chain `.noAuth()`:
+A route file opts in or out with exported booleans that route discovery reads (`routeDiscovery.ts`;
+only a real `true`/`false` counts):
 
 ```typescript
-// app.ts — the ONLY place a public write can opt out
+// src/routes/api/login/post.ts — a public write
+export const noAuth = true;            // opens the write (same as .noAuth()); CSRF still applies
+export default async function (request, response) { /* ... */ }
+
+// src/routes/api/reports/get.ts — protect a GET (public by default)
+export const secure = true;
+
+// src/routes/api/webhooks/stripe/post.ts — server-to-server webhook
+export const noAuth = true;
+export const noCsrf = true;            // opts out of the form-token check (validate the signature!)
+```
+
+The imperative form in `app.ts` is equivalent:
+
+```typescript
+// app.ts
 post("/api/login", loginHandler).noAuth();      // login has no token yet — public by necessity
 post("/api/webhooks/stripe", stripeHandler).noAuth();
 
@@ -264,19 +276,38 @@ listener is logged and does not abort the rest of `emit`.
 
 ## GraphQL
 
-`GraphQL` (from `tina4-nodejs`) can expose an API from your models and custom resolvers registered
-with `GraphQL.resolve("Query" | "Mutation" | "<Type>", "field", fn)`. The exact mounting API varies by
-version — confirm signatures with the live API index (`api_class("GraphQL")`) before wiring it up.
+`GraphQL` (from `tina4-nodejs`) builds a schema from your models with `fromOrm(Model)` (chainable;
+adds `user(id)`, `users(limit, offset)` and create/update/delete mutations) plus custom resolvers
+registered with `GraphQL.resolve("Query" | "Mutation" | "<Type>", "field", fn)`. Node has no
+`register()` / route helper and no GraphiQL page — mount it yourself as a file route, which keeps the
+default Bearer gate on the POST:
+
+```typescript
+// src/routes/graphql/post.ts
+import { GraphQL } from "tina4-nodejs";
+import { User } from "../../models/User.js";
+
+const gql = new GraphQL().fromOrm(User);
+
+export default async function (request, response) {
+  return response.json(await gql.execute(request.body.query, request.body.variables));
+}
+```
 
 ## i18n / Localization
 
-Translation JSON files go in `src/locales/` (`en.json`, `fr.json`, …). Set `TINA4_LOCALE=en` in
-`.env`. Use in Frond templates:
+Translation JSON files go in `src/locales/` (`en.json`, `fr.json`, …; `TINA4_LOCALE_DIR` overrides
+the folder). Set `TINA4_LOCALE=en` in `.env`. In Frond templates use the `t()` function global —
+there is no `trans` filter:
 
 ```twig
-{{ "welcome" | trans({"name": user.name}) }}
-{{ "logout" | trans }}
+{{ t("welcome", {"name": user.name}) }}
+{{ t("logout") }}
 ```
+
+`startServer()` auto-wires `t` when the locale folder holds `.json` files. If a page you render with
+`res.render()` reports `t` as undefined, register it yourself at boot:
+`Frond.addGlobal("t", (key, params) => i18n.t(key, params))` with an `I18n` instance.
 
 `I18n` (from `tina4-nodejs`) exposes the same translations to code.
 

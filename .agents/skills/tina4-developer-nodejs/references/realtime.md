@@ -86,8 +86,8 @@ even a chat-only or files-only mount exposes `/api/rtc/config`.
 
 | feature | routes registered | auth |
 |---|---|---|
-| any | `GET  {p}/api/rtc/config` | **public** (no `.secure()`) |
-| `calls` | `WS   {p}/ws/rtc/{room}` | **public** (unauthenticated — no `secured`) |
+| any | `GET  {p}/api/rtc/config` | **secured by default** — `.secure()`; public only when `TINA4_RTC_REQUIRE_AUTH=false` (ADR-0101) |
+| `calls` | `WS   {p}/ws/rtc/{room}` | **secured by default** — `.secure()`; public only when `TINA4_RTC_REQUIRE_AUTH=false` (ADR-0101) |
 | `chat` | `WS   {p}/ws/chat/{channel}` | **secured** — `Router.websocket(..., { secured: true })`; valid JWT required on upgrade |
 | `chat` | `GET  {p}/api/channels/{id}/messages` | `.secure()` |
 | `files` | `POST {p}/api/files` | auth-required (Tina4 secures write routes by default) |
@@ -97,9 +97,11 @@ If `chat` or `files` is enabled, `ensureChatTables()` runs at mount (see Footgun
 
 ---
 
-## `GET {p}/api/rtc/config` — public
+## `GET {p}/api/rtc/config` — token required by default
 
 The bootstrap the frontend fetches (the `tina4-js` `rtc` module) so client and server never drift.
+**ADR-0101: it mints TURN credentials, so it requires a valid token by default** (`.secure()`,
+skipped only when `TINA4_RTC_REQUIRE_AUTH=false`).
 Body is feature-gated — only keys for enabled features appear, and it's where the template tokens live:
 
 ```jsonc
@@ -141,14 +143,26 @@ TURN credential scheme: `username = String(Math.floor(Date.now()/1000) + ttl)`,
 | `TINA4_RTC_TURN_URL` | — | comma-separated TURN URLs; enables TURN when set with the secret. |
 | `TINA4_RTC_TURN_SECRET` | — | coturn `use-auth-secret` shared secret (ephemeral creds). |
 | `TINA4_RTC_TURN_TTL` | `3600` | ephemeral TURN credential lifetime (seconds). |
+| `TINA4_RTC_REQUIRE_AUTH` | `true` | ADR-0101: the config route and the signalling WS require a valid token. Only an explicit `false`/`0`/`no`/`off` opens both (anonymous calling); any other value, a typo included, stays secured. Chat, history and files are secured regardless. |
 
 (`TINA4_RTC_BACKEND` is **not** read in Node — the backend is always `mesh`.)
 
+### Opting out (anonymous calling)
+
+```bash
+# .env — open /api/rtc/config and /ws/rtc/{room} to unauthenticated callers
+TINA4_RTC_REQUIRE_AUTH=false
+```
+
+Only do this when calls are meant to be anonymous (a public demo room). It hands out ephemeral TURN
+credentials to anyone who asks, and anyone can join any signalling room.
+
 ---
 
-## Signalling WS: `{p}/ws/rtc/{room}` — public
+## Signalling WS: `{p}/ws/rtc/{room}` — token required by default
 
-Registered by `calls`. **Not secured — anyone can join any room** (see Footguns). Uses the framework
+Registered by `calls`, then `.secure()` unless `TINA4_RTC_REQUIRE_AUTH=false` (ADR-0101), so an
+unauthenticated upgrade is rejected by default (see Footguns). Uses the framework
 WebSocket handler convention `(connection, event, data)`:
 
 ```typescript
@@ -328,11 +342,11 @@ seeds no data.
   Call `initDatabase({ url })` / `bindDatabase(db)` first, then `await realtime(...)`.
 - **`realtime()` is async — always `await` it.** Skipping the `await` risks the first chat/history/file
   request racing table creation.
-- **The signalling WS (`/ws/rtc/{room}`) is PUBLIC** — it's not `secured`, so anyone can join any room
-  and receive relayed signalling frames. Only the **chat** WS is JWT-secured. Gate call access at the
-  app layer if you need it.
-- **The config endpoint (`/api/rtc/config`) is PUBLIC** and returns your ICE/TURN config, including
-  freshly-minted ephemeral TURN credentials.
+- **The signalling WS (`/ws/rtc/{room}`) and the config endpoint (`/api/rtc/config`) require a valid
+  token by default** (ADR-0101) — the config route mints ephemeral TURN credentials, and the room
+  relays calls. `TINA4_RTC_REQUIRE_AUTH=false` opens both for anonymous calling; then anyone can
+  fetch TURN credentials and join any room, so gate call access at the app layer if you need it. An
+  authenticated user can still join any room by name either way: room membership is not checked.
 - **WS handler signature is `(connection, event, data)`** — `event` is `"open"`/`"message"`/`"close"`,
   `data` is the string frame on `"message"`. Same order as the Python master. (The **PHP** port fires
   `($connection, $data, $event)` — order differs there, not here.)
