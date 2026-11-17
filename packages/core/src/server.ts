@@ -161,6 +161,54 @@ function swaggerAdvertised(): boolean {
 }
 
 /**
+ * A connection URL (or any text that may embed one) with every `user:pass@`
+ * removed, for a boot log line. Core never imports the ORM statically, so this
+ * cannot borrow its redactCredentials(); stripping the whole userinfo is
+ * stricter than redaction anyway (the user name goes too).
+ */
+function stripUrlCredentials(text: string): string {
+  return text.replace(/:\/\/[^/\s]*@/g, "://");
+}
+
+/** A dynamic import that failed because the module itself is absent. */
+function isModuleNotFound(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND";
+}
+
+/**
+ * The database connect error from this boot's initializeOrm(), if it failed
+ * to connect. autoMigrateOnStartup() reports it instead of the bare "no adapter
+ * configured" that a failed connect leaves behind.
+ */
+let bootDbConnectError: string | null = null;
+
+/**
+ * Say WHY initializeOrm() failed, by the step that failed: only a missing ORM
+ * module is "install @tina4/orm"; a refused connection names the database
+ * (without credentials) and the error (review of tina4-ruby#172).
+ */
+function reportOrmBootFailure(
+  stage: "import" | "connect" | "models",
+  err: unknown,
+  dbConfig: { type?: string; path?: string },
+): void {
+  const message = stripUrlCredentials(err instanceof Error ? err.message : String(err));
+  if (stage === "connect") {
+    const url = (process.env.TINA4_DATABASE_URL ?? "").trim();
+    const target = url ? stripUrlCredentials(url) : `${dbConfig.type ?? "sqlite"} ${dbConfig.path ?? "./data/tina4.db"}`;
+    bootDbConnectError = message;
+    console.warn(`\n  Database could not be reached (${target}): ${message}`);
+  } else if (stage === "import" && isModuleNotFound(err)) {
+    console.warn(`\n  ORM not available (install @tina4/orm to enable): ${message}`);
+  } else if (stage === "import") {
+    console.warn(`\n  ORM failed to load:`, err);
+  } else {
+    console.warn(`\n  ORM model setup failed:`, err);
+  }
+}
+
+/**
  * Apply pending DB migrations on startup — NON-BREAKING.
  *
  * When a `migrations/` folder exists (with at least one `.sql` file, excluding
@@ -205,9 +253,23 @@ export async function autoMigrateOnStartup(
   let orm: typeof import("../../orm/src/index.js");
   try {
     orm = await import("../../orm/src/index.js");
+  } catch (err) {
+    Log.debug(`Startup migrations skipped (ORM not available): ${stripUrlCredentials(err instanceof Error ? err.message : String(err))}`);
+    return;
+  }
+  try {
     orm.getAdapter(); // throws if no adapter configured
   } catch (err) {
-    Log.debug(`Startup migrations skipped (no database configured): ${err instanceof Error ? err.message : String(err)}`);
+    // Only an unset TINA4_DATABASE_URL is "no database configured". A set but
+    // unreachable one must say so, or the operator chases a missing setting
+    // that is in fact present (review of tina4-ruby#172).
+    const configuredUrl = (process.env.TINA4_DATABASE_URL ?? "").trim();
+    const cause = stripUrlCredentials(bootDbConnectError ?? (err instanceof Error ? err.message : String(err)));
+    if (configuredUrl) {
+      Log.debug(`Startup migrations skipped (database configured but could not connect to ${stripUrlCredentials(configuredUrl)}): ${cause}`);
+    } else {
+      Log.debug(`Startup migrations skipped (no database configured): ${cause}`);
+    }
     return;
   }
 
@@ -2742,13 +2804,20 @@ async function initializeOrm(
     const hasOrmDir = existsSync(ormDir);
     const hasModelsDir = existsSync(modelsDir);
     if (hasOrmDir || hasModelsDir) {
+      // Which step failed decides what the warning says: only a missing ORM
+      // module is "install @tina4/orm"; a refused connection is a database
+      // problem and must name the database (review of tina4-ruby#172).
+      let ormStage: "import" | "connect" | "models" = "import";
+      const dbConfig = config?.database ?? {};
       try {
         const orm = await import("../../orm/src/index.js");
-        const dbConfig = config?.database ?? {};
+        ormStage = "connect";
+        bootDbConnectError = null;
         await orm.initDatabase({
           type: dbConfig.type ?? "sqlite",
           path: dbConfig.path ?? "./data/tina4.db",
         });
+        ormStage = "models";
 
         // Discover from src/orm/ (primary) and src/models/ (fallback), merge results
         let models = hasOrmDir ? await orm.discoverModels(ormDir) : [];
@@ -2792,7 +2861,7 @@ async function initializeOrm(
           }
         }
       } catch (err) {
-        console.warn(`\n  ORM not available (install @tina4/orm to enable):`, err);
+        reportOrmBootFailure(ormStage, err, dbConfig);
       }
 
       // Auto-run pending migrations on startup — AFTER initDatabase()/model sync,
