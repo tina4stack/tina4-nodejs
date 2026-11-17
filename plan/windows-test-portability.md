@@ -15,8 +15,8 @@ FAIL plus the whole vitest group (the runner could not start vitest).
 - [x] Classify each failure: test portability / framework bug / service missing / Node bug
 - [x] Fix the test-portability causes (below)
 - [x] Mutation-prove the changed tests that guard behaviour
-- [x] Full Windows run on the branch; compare against baseline (104 failed files -> 49; vitest group now runs: 229/232)
-- [ ] PR against v3 (DCO sign-off)
+- [x] Full Windows run on the branch; compare against baseline (104 failed files -> 32 at the PR HEAD; vitest group now runs: 232/232)
+- [x] PR against v3 (DCO sign-off): tina4stack/tina4-nodejs#210
 
 ## Causes fixed (test side)
 | Cause | Fix | Files |
@@ -45,7 +45,7 @@ FAIL plus the whole vitest group (the runner could not start vitest).
 - [ ] `FakeData.seedDir()` imports a raw Windows path and swallows the error -> seed files silently never run on Windows.
 - [ ] ProjectIndex keys files by native separators (Python too) -> `fileEntry("src/routes/users.ts")` misses on Windows. Cross-framework. Red: projectIndex.
 - [ ] `DatabaseSessionHandler` opens a SQLite file and has no close(); SessionHandler has no close() at all.
-- [ ] Production cluster mode never sets `cluster.schedulingPolicy = SCHED_RR`. Node's default is round-robin everywhere EXCEPT Windows, so there one worker answers every request while the banner claims N. Proven: `NODE_CLUSTER_SCHED_POLICY=rr` makes the case pass. Red: clusterMode (vitest).
+- [ ] Production cluster mode never sets `cluster.schedulingPolicy = SCHED_RR`. Node's default is round-robin everywhere EXCEPT Windows, so there one worker answers every request while the banner claims N. Proven: `NODE_CLUSTER_SCHED_POLICY=rr` makes the case pass. Intermittent: clusterMode failed one full Windows run and passed the next (OS scheduling); `rr` passes reliably.
 
 ## Not test bugs, not framework bugs
 - Node/libuv: `fetch` keep-alive + `server.close()` + `process.exit()` aborts with `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c` (exit 127). Pure-Node repro (3 sequential fetches): reproduces on v25.2.1. Red: aiFetchRetry, devAdminVersionCheck, globalAfterMiddleware, globalMiddlewareSplit, optionsAllowConformance, responseFileTraversal, routeGroupAuth, ssoFirstVisitCookie - all their cases pass first.
@@ -54,6 +54,6 @@ FAIL plus the whole vitest group (the runner could not start vitest).
 - Pre-existing, noted only: static.test uses `mockReq`/`mockRes` doubles; the testProcessHygiene invariant never matched `.bin/tsx` spawns, so loggerFixtureContract, migrationConcurrency277 and sessionDatabaseEngines spawn tsx undetached; run-all's TMPDIR sandbox does not apply on Windows (os.tmpdir() reads TEMP/TMP).
 
 ## Commits
-- (filled at commit time)
+- cc9c3ad  test: make the Node suite portable to Windows
 
 ## Status: In Progress
