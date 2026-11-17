@@ -533,7 +533,7 @@ if (systemHandler) {
     data.pid === process.pid, `got ${data.pid}`);
   assert("handleSystem cpus equals os.cpus().length",
     data.cpus === os.cpus().length, `got ${data.cpus} expected ${os.cpus().length}`);
-  assert("handleSystem memory_mb is a real positive heap-used MB count",
+  assert("handleSystem memory_mb is a real positive MB count",
     typeof data.memory_mb === "number" && data.memory_mb > 0, `got ${data.memory_mb}`);
   assert("handleSystem has memory object", typeof data.memory === "object");
   assert("handleSystem memory has current_mb", typeof data.memory.current_mb === "number");
@@ -542,6 +542,57 @@ if (systemHandler) {
   assert("handleSystem has uptime object", typeof data.uptime === "object");
   assert("handleSystem uptime has seconds", typeof data.uptime.seconds === "number");
   assert("handleSystem has node object", typeof data.node === "object");
+}
+
+// --- handleSystem memory: current RSS vs peak RSS (parity with tina4-python#316) ---
+// memory_mb / memory.current_mb were V8's heapUsed, which leaves out Buffers,
+// and memory.peak_mb was the CURRENT rss. Grow the process by a real 150 MB
+// Buffer, free it with a real GC, and compare with the kernel's own figures.
+console.log("\n--- handleSystem memory is current RSS, peak is the real peak ---");
+
+if (systemHandler) {
+  const fs = await import("node:fs");
+  const v8 = await import("node:v8");
+  const vm = await import("node:vm");
+  v8.setFlagsFromString("--expose-gc");
+  const gc = vm.runInNewContext("gc") as () => void;
+
+  // The kernel's VmRSS / VmHWM where /proc exists (Linux CI), read
+  // independently of Node; elsewhere Node's own rss / ru_maxrss.
+  const kernelMb = (key: "VmRSS" | "VmHWM"): number => {
+    try {
+      const m = fs.readFileSync("/proc/self/status", "utf8").match(new RegExp(`${key}:\\s+(\\d+)`));
+      if (m) return Number(m[1]) / 1024;
+    } catch { /* no /proc on this platform */ }
+    return key === "VmRSS" ? process.memoryUsage().rss / 1048576 : process.resourceUsage().maxRSS / 1024;
+  };
+  const near = (value: number, real: number) => Math.abs(value - real) <= 25 + 0.1 * real;
+  const system = async () => { const r = mockRes(); await systemHandler(mockReq("/__dev/api/system"), r); return r.result; };
+
+  let blob: Buffer | null = Buffer.alloc(150 * 1024 * 1024, 1); // filled, so every page is resident
+  const held = await system();
+  const heldRss = kernelMb("VmRSS");
+  assert("handleSystem memory_mb counts a held 150 MB Buffer (current RSS, not V8 heapUsed)",
+    near(held.memory_mb, heldRss), `memory_mb=${held.memory_mb} MB, kernel current RSS ${heldRss.toFixed(1)} MB`);
+  assert("handleSystem memory.current_mb equals memory_mb",
+    held.memory.current_mb === held.memory_mb, `current_mb=${held.memory.current_mb} memory_mb=${held.memory_mb}`);
+  assert("blob is still alive while measured", blob.length === 150 * 1024 * 1024);
+
+  blob = null;
+  gc(); gc();
+  await new Promise((r) => setTimeout(r, 100));
+  const freed = await system();
+  const nowRss = kernelMb("VmRSS");
+  const peakRss = kernelMb("VmHWM");
+  assert("freeing the Buffer really lowered RSS well below the peak (precondition)",
+    peakRss - nowRss > 100, `kernel current ${nowRss.toFixed(1)} MB, peak ${peakRss.toFixed(1)} MB`);
+  assert("handleSystem memory.peak_mb is the real peak RSS",
+    near(freed.memory.peak_mb, peakRss), `peak_mb=${freed.memory.peak_mb} MB, kernel peak ${peakRss.toFixed(1)} MB`);
+  assert("handleSystem memory.peak_mb is not the current RSS",
+    freed.memory.peak_mb - nowRss > 100, `peak_mb=${freed.memory.peak_mb} MB, kernel current ${nowRss.toFixed(1)} MB`);
+  assert("handleSystem memory_mb is the current RSS after the free, not the peak",
+    near(freed.memory_mb, nowRss) && freed.memory.peak_mb - freed.memory_mb > 100,
+    `memory_mb=${freed.memory_mb} MB, kernel current ${nowRss.toFixed(1)} MB, peak_mb=${freed.memory.peak_mb} MB`);
 }
 
 // --- handleTables ---

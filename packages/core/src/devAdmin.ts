@@ -1102,6 +1102,9 @@ const handleSystem: RouteHandler = async (_req, res) => {
   const mem = process.memoryUsage();
   const heapUsedMb = Math.round(mem.heapUsed / 1048576);
   const rssMb = Math.round(mem.rss / 1048576);
+  // Peak RSS: ru_maxrss, which libuv reports in kilobytes on every platform
+  // (it converts macOS bytes). The current RSS is not the peak.
+  const peakRssMb = Math.round(process.resourceUsage().maxRSS / 1024);
   let dbTableCount: number | undefined;
   let dbConnected = false;
   try {
@@ -1118,12 +1121,14 @@ const handleSystem: RouteHandler = async (_req, res) => {
     architecture: process.arch,
     os: `${process.platform} ${process.arch}`,
     pid: process.pid,
-    memory_mb: heapUsedMb,
+    // The dashboard's "Memory": the process's current RSS, as tina4-python
+    // reports it. V8's heapUsed (below) leaves out Buffers and native memory.
+    memory_mb: rssMb,
     db_tables: dbTableCount !== undefined ? dbTableCount : "N/A",
     db_connected: dbConnected,
     memory: {
-      current_mb: heapUsedMb,
-      peak_mb: rssMb,
+      current_mb: rssMb,
+      peak_mb: peakRssMb,
       limit: "V8 default",
       rss: `${rssMb} MB`,
       heapUsed: `${heapUsedMb} MB`,
