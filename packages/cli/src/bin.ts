@@ -68,12 +68,15 @@ function readCliVersion(): string {
  * message is printed; takeover is also skipped in a container, outside dev mode,
  * and when opted out (`TINA4_NO_TAKEOVER` / `tina4 serve --no-kill`).
  *
+ * `host` is the address serve will bind; a port that binds there is reported
+ * as free, not "in use".
+ *
  * Returns true only when a Tina4 holder was actually signalled.
  */
-async function killProcessOnPort(port: number): Promise<boolean> {
+async function killProcessOnPort(port: number, host?: string): Promise<boolean> {
   const { takeOverPort, isDev, noTakeoverOptedOut, TAKEOVER_KILLED, TAKEOVER_REFUSALS } =
     await import("../../core/src/portTakeover.js");
-  const result = takeOverPort(port, isDev(), noTakeoverOptedOut());
+  const result = takeOverPort(port, isDev(), noTakeoverOptedOut(), undefined, undefined, host);
   if (result.status === TAKEOVER_KILLED) {
     console.log(`  ${result.message}`);
     return true;
@@ -359,7 +362,9 @@ export const COMMANDS: Record<string, CommandSpec> = {
       // path here AND the runtime bind-failure fallback both honour it
       // (TAKEOVER-DEC-03).
       if (a.includes("--no-kill")) process.env.TINA4_NO_TAKEOVER = "true";
-      await killProcessOnPort(port);
+      // Probe the host the server will bind, resolved exactly as it resolves it.
+      const { resolvePortAndHost } = await import("../../core/src/server.js");
+      await killProcessOnPort(port, resolvePortAndHost({ port }).host);
       await serveProject({ port, noBrowser, noReload });
     },
     flags: SERVE_FLAGS,
