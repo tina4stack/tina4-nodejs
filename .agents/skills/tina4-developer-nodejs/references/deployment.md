@@ -1,15 +1,25 @@
 # Deployment Recipes (Node.js)
 
-Node Tina4 apps deploy via Docker built from the official **`node:22-alpine`** image using a
-**multi-stage build**. There is **no** `tina4stack` base image for Node (unlike Python/PHP) — you
-build directly from `node:22-alpine`. The default listen port is **7148**.
+Node Tina4 apps deploy via Docker. The default listen port is **7148**.
 
-The container runs the app's own entry point (`app.ts`) with `tsx`, not `tina4nodejs serve` (the CLI
-is for local dev). `app.ts` must call `startServer()` (and `await initDatabase({ url })` for non-SQLite).
+## Base image (simplest)
 
-## App Dockerfile
+`docker.io/tina4stack/tina4-nodejs` is the published base image (as `tina4stack/tina4-python`,
+`tina4stack/tina4-php` and `tina4stack/tina4-ruby` are for the other frameworks): the Node runtime
+plus the framework already built, with `TINA4_OVERRIDE_CLIENT=true` and `TINA4_DEBUG=false` set.
+Inherit it and copy in only your code:
 
-This is the exact pattern `tina4nodejs init` scaffolds:
+```dockerfile
+FROM docker.io/tina4stack/tina4-nodejs:v3   # prefer an exact version tag; `v3` and `latest` move
+RUN npm install pg                          # only if you use a non-SQLite driver (npm is on PATH)
+COPY src/ /app/src/
+```
+
+## App Dockerfile (own multi-stage build)
+
+This is the pattern `tina4nodejs init` scaffolds (with the deprecated `PORT`/`HOST` replaced by
+`TINA4_PORT`/`TINA4_HOST`). `app.ts` must call `startServer()` (and `await initDatabase({ url })` for
+non-SQLite):
 
 ```dockerfile
 # Build stage
@@ -23,10 +33,11 @@ COPY . .
 FROM node:22-alpine
 WORKDIR /app
 COPY --from=build /app .
-ENV HOST=0.0.0.0
-ENV PORT=7148
+ENV TINA4_HOST=0.0.0.0
+ENV TINA4_PORT=7148
 EXPOSE 7148
-CMD ["npx", "tsx", "app.ts"]
+# tsx is a devDependency, so it is NOT installed after `npm ci --production` — serve with the CLI
+CMD ["npx", "tina4nodejs", "serve", "--production"]
 ```
 
 ### .dockerignore
@@ -117,8 +128,8 @@ docker run -d \
 
 | Variable | Purpose |
 |----------|---------|
-| `PORT` | Listen port (default 7148) |
-| `HOST` | Bind address (`0.0.0.0` in containers) |
+| `TINA4_PORT` | Listen port (default 7148); bare `PORT` is the deprecated legacy name (still read, with a warning) |
+| `TINA4_HOST` | Bind address (`0.0.0.0` in containers); bare `HOST` is the legacy name |
 | `TINA4_SECRET` | JWT signing secret — **required** in production |
 | `TINA4_DATABASE_URL` | Database connection string |
 | `TINA4_DEBUG` | `false` in production (disables the debug overlay + dev admin) |
@@ -126,7 +137,8 @@ docker run -d \
 
 ## Production Checklist
 
-1. Multi-stage build from `node:22-alpine`; `npm ci --production`.
+1. Inherit `tina4stack/tina4-nodejs`, or a multi-stage build from `node:22-alpine` with
+   `npm ci --production` and `CMD ["npx", "tina4nodejs", "serve", "--production"]`.
 2. Mount a volume for `/app/data` (SQLite database, sessions, queue, mailbox).
 3. Set `TINA4_DEBUG=false`.
 4. Pass `TINA4_SECRET` via environment (not committed `.env`).

@@ -28,24 +28,26 @@ engine from `tina4-nodejs/frond`.
 
 ## Globals (values available in every template)
 
-Register a value every template can read with `addGlobal`:
+Register a global with the static form, at boot (in `app.ts`, before `startServer()`):
 
 ```typescript
 import { Frond } from "tina4-nodejs/frond";
-const engine = new Frond();
-engine.addGlobal("app_name", "My App");
+Frond.addGlobal("app_name", "My App");   // class registry — every engine built afterwards gets it
 ```
 
 ```twig
 <title>{{ app_name }}</title>
 ```
 
-**`addGlobal` stores your value as-is, but the Node engine AUTO-CALLS a
-zero-argument function global when you name it bare.** `{% if flag %}` and
-`{{ flag }}` invoke `flag()` and use its RETURN value:
+Do not register on a throwaway `new Frond()` — that instance is discarded and no page ever sees the
+global. The static registry is copied into each engine **when the engine is constructed**
+(ADR-0052); `res.render()` builds its engine lazily on the first render, so register at boot.
+
+**A zero-argument function global is called for you (ADR-0085).** `{% if flag %}` and `{{ flag }}`
+invoke `flag()` and use its RETURN value:
 
 ```typescript
-frond.addGlobal("admin_only", () => access.adminOnly());
+Frond.addGlobal("admin_only", () => access.adminOnly());
 ```
 
 ```twig
@@ -53,9 +55,8 @@ frond.addGlobal("admin_only", () => access.adminOnly());
 ```
 
 Verified on tina4-nodejs 3.13.x with `addGlobal("g", () => false)`: `{% if g %}`
-is **false**, `{{ g }}` prints `false`, and `() => true` makes `{% if g %}` true.
-This differs from the PHP / Python / Ruby engines, where the same closure stays a
-truthy object and must be called explicitly with `g()`. Two consequences in Node:
+is **false**, `{{ g }}` prints `false`, and `() => true` makes `{% if g %}` true. PHP, Python and
+Ruby do the same for a zero-argument closure (ADR-0085). Consequences:
 
 - A boolean flag registered as a zero-arg function **just works** in `{% if flag %}`.
 - The function is called with **no arguments** every time it is named, so a global
@@ -127,14 +128,24 @@ Frond Template Parity note in `SKILL.md`).
 {{ forms.input("email", "", "email") }}
 ```
 
-## Inline SQL Queries (Frond-unique)
+## Data comes from the route (there is no `{% query %}` tag)
+
+Frond has no SQL tag — an unknown tag such as `{% query %}` throws `Frond: unknown tag "query"`.
+Fetch in the route and pass the rows in:
+
+```typescript
+// src/routes/products/get.ts
+import { Database, getAdapter } from "tina4-nodejs/orm";
+export default async function (req, res) {
+  const result = await new Database(getAdapter()).fetch("SELECT * FROM products WHERE active = ?", [1]);
+  return res.render("products.twig", { products: result.records });
+}
+```
 
 ```twig
-{% query "SELECT * FROM products WHERE active = ?" params=[true] as products %}
-{% for product in products.data %}
+{% for product in products %}
     <div>{{ product.name }} — ${{ product.price | number_format(2) }}</div>
 {% endfor %}
-<p>{{ products.total }} products found</p>
 ```
 
 ## Live Blocks (server-rendered, self-refreshing)
@@ -157,15 +168,21 @@ client wires the marker and morphs the result, so a focused input survives the s
 
 The block name is the refresh route (`GET /__frond/live/{name}`); supply its data with a provider
 registered by name. Because the provider runs on every refresh with the live request, auth re-applies
-each time. Confirm the exact provider-registration API for your version with the live API index.
+each time:
+
+```typescript
+import { Frond } from "tina4-nodejs/frond";
+Frond.liveSource("cart", (request) => ({ count: cartCount(request), items: cartItems(request) }));
+```
+
+For a `ws` block, push a fresh render the instant data changes with `Frond.pushLive("cart", {...})`.
 
 ## Cache Blocks
 
 ```twig
 {% cache "sidebar" 300 %}
-    {# cached for 300 seconds #}
-    {% query "SELECT * FROM popular_posts LIMIT 10" as posts %}
-    {% for post in posts.data %}
+    {# cached for 300 seconds — fetch `posts` in the route and pass it in #}
+    {% for post in posts %}
         <a href="/posts/{{ post.id }}">{{ post.title }}</a>
     {% endfor %}
 {% endcache %}
