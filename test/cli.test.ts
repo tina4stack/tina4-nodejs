@@ -36,8 +36,9 @@ import {
 // a second, source-level ORM/core instance whose module-level singletons (DB adapter,
 // Router, Events bus) the dist-resolved scaffold never touches. One instance. (nodejs#32)
 import { Router, TestClient, getToken, discoverRoutes, Events, ServiceRunner } from "tina4-nodejs";
-import { initDatabase, FakeData } from "tina4-nodejs/orm";
+import { closeDatabase, initDatabase, FakeData } from "tina4-nodejs/orm";
 
+import { TSX_CLI, TSC_CLI } from "./_portableSpawn.ts";
 let pass = 0;
 let fail = 0;
 
@@ -231,7 +232,7 @@ async function main(): Promise<void> {
   }, null, 2));
   let tscOut = "";
   try {
-    tscOut = execFileSync("npx", ["tsc", "--noEmit", "-p", join(tmpDir, "tsconfig.json")],
+    tscOut = execFileSync(process.execPath, [TSC_CLI, "--noEmit", "-p", join(tmpDir, "tsconfig.json")],
       { cwd: repoRoot, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
   } catch (err: unknown) {
     const e = err as { stdout?: string; stderr?: string };
@@ -365,7 +366,7 @@ async function main(): Promise<void> {
   // Run the emitted gate test for real (in-repo → tina4-nodejs self-resolves).
   let gadgetTestGreen = false;
   try {
-    const out = execFileSync("npx", ["tsx", join(tmpDir, "tests/gadget.test.ts")],
+    const out = execFileSync(process.execPath, [TSX_CLI, join(tmpDir, "tests/gadget.test.ts")],
       { cwd: tmpDir, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
     gadgetTestGreen = /(\d+) passed, 0 failed/.test(out);
   } catch { gadgetTestGreen = false; }
@@ -490,6 +491,9 @@ try {
   assert("scaffolding matrix ran without an unexpected throw", false, String(err));
 } finally {
   process.chdir(repoRoot);
+  // Release the scaffold's SQLite file first: Windows refuses to delete an
+  // open file, so the directory removal below would throw.
+  closeDatabase();
   rmSync(tmpDir, { recursive: true, force: true });
 }
 

@@ -31,6 +31,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { freePort } from "./freePort.ts";
 
 let pass = 0;
@@ -61,13 +62,13 @@ export default async function (req: any, res: any) {
 }
 `);
 writeFileSync(join(TEST_DIR, "src/routes/cors-contract/ledger/get.ts"), `
-import { corsWarningReasons } from ${JSON.stringify(join(REPO, "packages/core/src/middleware.ts"))};
+import { corsWarningReasons } from ${JSON.stringify(pathToFileURL(join(REPO, "packages/core/src/middleware.ts")).href)};
 export default async function (req: any, res: any) {
   return res.json({ keys: corsWarningReasons() });
 }
 `);
 writeFileSync(join(TEST_DIR, "server.ts"), `
-import { startServer } from ${JSON.stringify(join(REPO, "packages/core/src/index.ts"))};
+import { startServer } from ${JSON.stringify(pathToFileURL(join(REPO, "packages/core/src/index.ts")).href)};
 await startServer({ port: Number(process.env.PORT), basePath: ${JSON.stringify(TEST_DIR)} });
 console.log("TEST-SERVER-READY");
 `);

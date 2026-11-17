@@ -197,6 +197,7 @@ import { tmpdir } from "node:os";
 import http from "node:http";
 import { startServer } from "../packages/core/src/index.ts";
 import { freePort } from "./freePort.ts";
+import { SYMLINKS_PERMITTED, symlinkSkip } from "./_symlinkSupport.ts";
 const customDir = mkdtempSync(join(tmpdir(), "tina4-static-test-"));
 mkdirSync(join(customDir, "images"), { recursive: true });
 mkdirSync(join(customDir, "data"), { recursive: true });
@@ -311,7 +312,7 @@ writeFileSync(join(c41Pub, ".env"), "TINA4_SECRET=leaked");
 writeFileSync(join(c41Pub, ".git", "config"), "[core]");
 // A real secret OUTSIDE the public dir, reached by a real symlink placed INSIDE it.
 writeFileSync(join(c41, "outside-secret.txt"), "SUPER SECRET");
-symlinkSync(join(c41, "outside-secret.txt"), join(c41Pub, "leak.txt"));
+if (SYMLINKS_PERMITTED) symlinkSync(join(c41, "outside-secret.txt"), join(c41Pub, "leak.txt"));
 
 {
   const res = mockRes();
@@ -329,7 +330,7 @@ symlinkSync(join(c41, "outside-secret.txt"), join(c41Pub, "leak.txt"));
   assert("a dot dot traversal path is refused", served === false, `served=${served}`);
 }
 
-{
+if (SYMLINKS_PERMITTED) {
   const res = mockRes();
   const served = tryServeStatic(c41Pub, mockReq("/leak.txt"), res);
   assert(
@@ -337,6 +338,8 @@ symlinkSync(join(c41, "outside-secret.txt"), join(c41Pub, "leak.txt"));
     served === false && res.bodyRef === null,
     `served=${served}`,
   );
+} else {
+  console.log(symlinkSkip("a symlink escaping the public dir is refused"));
 }
 
 {

@@ -35,9 +35,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, openSync, closeSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { TSX_CLI, moduleUrl, killProcessTree } from "./_portableSpawn.ts";
 const HERE = import.meta.dirname;
 const REPO = resolve(HERE, "..");
-const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 
 const spawned = new Set<ChildProcess>();
 const dirs: string[] = [];
@@ -47,7 +47,7 @@ afterEach(() => {
   // the wrapper orphans the server holding the port.
   for (const child of spawned) {
     try {
-      if (child.pid && child.exitCode === null) process.kill(-child.pid, "SIGKILL");
+      if (child.pid && child.exitCode === null) killProcessTree(child.pid);
     } catch {
       /* already gone */
     }
@@ -149,13 +149,13 @@ async function startProbe(port: number, env: Record<string, string> = {}): Promi
   );
   writeFileSync(
     join(root, "app.ts"),
-    `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
-      `await startServer({ port: ${port}, routesDir: '${routes}' } as never);\n`,
+    `import { startServer } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
+      `await startServer({ port: ${port}, routesDir: ${JSON.stringify(routes)} } as never);\n`,
   );
 
   const logPath = join(root, "server.log");
   const logFd = openSync(logPath, "w");
-  const child = spawn(TSX, ["app.ts"], {
+  const child = spawn(process.execPath, [TSX_CLI, "app.ts"], {
     cwd: root,
     detached: true,
     stdio: ["ignore", logFd, logFd],
@@ -262,15 +262,15 @@ describe("event loop block watchdog", () => {
     // own. A leftover timer shows up as a process that never ends.
     writeFileSync(
       join(root, "app.ts"),
-      `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
-        `const h = await startServer({ port: 7845, routesDir: '${routes}' } as never);\n` +
+      `import { startServer } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
+        `const h = await startServer({ port: 7845, routesDir: ${JSON.stringify(routes)} } as never);\n` +
         `await fetch('http://127.0.0.1:7845/fast').then((r) => r.text());\n` +
         `h.close();\n`,
     );
 
     const logPath = join(root, "server.log");
     const logFd = openSync(logPath, "w");
-    const child = spawn(TSX, ["app.ts"], {
+    const child = spawn(process.execPath, [TSX_CLI, "app.ts"], {
       cwd: root,
       detached: true,
       stdio: ["ignore", logFd, logFd],

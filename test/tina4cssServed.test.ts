@@ -36,9 +36,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, openSync, closeSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { TSX_CLI, moduleUrl, killProcessTree } from "./_portableSpawn.ts";
 const HERE = import.meta.dirname;
 const REPO = resolve(HERE, "..");
-const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 const SHIPPED = resolve(REPO, "packages", "core", "public", "css");
 
 const spawned = new Set<ChildProcess>();
@@ -47,7 +47,7 @@ const dirs: string[] = [];
 afterEach(() => {
   for (const child of spawned) {
     try {
-      if (child.pid && child.exitCode === null) process.kill(-child.pid, "SIGKILL");
+      if (child.pid && child.exitCode === null) killProcessTree(child.pid);
     } catch {
       /* gone */
     }
@@ -65,13 +65,13 @@ async function startServer(port: number): Promise<void> {
   writeFileSync(join(root, "package.json"), '{"name":"cssprobe","type":"module","private":true}\n');
   writeFileSync(
     join(root, "app.ts"),
-    `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
-      `await startServer({ port: ${port}, routesDir: '${join(root, "src", "routes")}' } as never);\n`,
+    `import { startServer } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
+      `await startServer({ port: ${port}, routesDir: ${JSON.stringify(join(root, "src", "routes"))} } as never);\n`,
   );
 
   const logPath = join(root, "server.log");
   const fd = openSync(logPath, "w");
-  const child = spawn(TSX, ["app.ts"], {
+  const child = spawn(process.execPath, [TSX_CLI, "app.ts"], {
     cwd: root,
     detached: true,
     stdio: ["ignore", fd, fd],

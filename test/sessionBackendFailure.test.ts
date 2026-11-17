@@ -627,8 +627,13 @@ console.log("\n-- Strict mode (TINA4_SESSION_STRICT=true) re-raises --");
       + "refusal, so the test would pass without the file's own permissions ever being consulted");
     assert("strict mode re-raises a REAL write failure (EACCES on a read-only session file)", threw,
       `the 0400 session file did not produce a real write error${droppedEuid ? " even with the effective uid dropped" : ""}`);
+    // Windows reports a write to a read-only file as EPERM ("operation not
+    // permitted"), POSIX as EACCES: each is that OS's real errno for this denial.
+    const realErrno = process.platform === "win32"
+      ? /EPERM|operation not permitted/i
+      : /EACCES|permission denied/i;
     assert("the re-raised cause is the REAL errno, not a fabricated message",
-      /EACCES|permission denied/i.test(cause), `cause: ${cause}`);
+      realErrno.test(cause), `cause: ${cause}`);
   }
 
   // Safe here and only here: the finally above has already restored the

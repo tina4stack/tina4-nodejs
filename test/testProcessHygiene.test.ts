@@ -32,6 +32,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 import { spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { killProcessTree } from "./_portableSpawn.ts";
 
 let pass = 0;
 let fail = 0;
@@ -61,14 +62,31 @@ function alive(pid: number): boolean {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Spawn a shell that spawns a long-lived grandchild -- the same shape as
- * `npx tsx app.ts`. Returns the shell's pid; the grandchild's pid arrives on
+ * Spawn a parent that spawns a long-lived grandchild -- the same shape as
+ * `npx tsx app.ts`. Returns the parent's pid; the grandchild's pid arrives on
  * stdout so we can watch it independently.
+ *
+ * Both levels are node rather than `sh -c "node ... & echo $!"`: under Git for
+ * Windows' sh, `$!` is an MSYS pid, not the Windows pid, so the survivor checks
+ * below would probe the wrong process. node reports real pids everywhere.
+ *
+ * On Windows the grandchild is spawned `detached`. libuv puts a non-detached
+ * child into a kill-on-close job object, so it dies with its parent no matter
+ * how the parent is killed - which would make case 1 impossible and case 2
+ * unable to tell a real tree kill from a parent-only one. `tsx` re-spawning a
+ * server is not always node-in-node, so a detached grandchild is the shape that
+ * really orphans. POSIX keeps it in the parent's group, which case 2 relies on.
  */
 function spawnTree(detached: boolean): Promise<{ parent: number; child: number; kill: () => void }> {
-  // sh -c "node -e '...' & echo $!; wait" gives a real two-level tree.
-  const inner = 'setInterval(()=>{},1000); process.stdout.write("READY\\n")';
-  const proc = spawn("sh", ["-c", `node -e '${inner}' & echo CHILD=$!; wait`], {
+  const grandchildDetached = process.platform === "win32";
+  const parentScript = [
+    'const { spawn } = require("node:child_process");',
+    'const c = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], '
+      + `{ stdio: "ignore", detached: ${grandchildDetached} });`,
+    'process.stdout.write(`CHILD=${c.pid}\\n`);',
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+  const proc = spawn(process.execPath, ["-e", parentScript], {
     detached,
     stdio: ["ignore", "pipe", "ignore"],
   });
@@ -86,7 +104,7 @@ function spawnTree(detached: boolean): Promise<{ parent: number; child: number; 
         child: parseInt(m[1]!, 10),
         kill: () => {
           try {
-            if (detached) process.kill(-proc.pid!, "SIGKILL");
+            if (detached) killProcessTree(proc.pid);
             else proc.kill("SIGKILL");
           } catch { /* already gone */ }
         },
@@ -121,7 +139,7 @@ console.log("=== Test Process Hygiene ===\n");
 
 {
   const tree = await spawnTree(true);
-  tree.kill();                         // process.kill(-pid) -- the group
+  tree.kill();                         // killProcessTree -- the group / tree
   await sleep(400);
   assert(
     "killing the process GROUP reaps the parent",
@@ -174,12 +192,14 @@ console.log("=== Test Process Hygiene ===\n");
     const src = readFileSync(path.join(HERE, file), "utf-8");
     if (!/detached:\s*true/.test(src)) continue;
     // A detached child outlives us unless something kills the group: look for
-    // the negative-pid form. `proc.kill()` alone would NOT reap the tree.
-    if (!/process\.kill\(\s*-/.test(src)) offenders.push(file);
+    // the negative-pid form, or killProcessTree() (_portableSpawn.ts), which is
+    // that form on POSIX and `taskkill /T` on Windows. `proc.kill()` alone would
+    // NOT reap the tree.
+    if (!/process\.kill\(\s*-|killProcessTree\(/.test(src)) offenders.push(file);
   }
 
   assert(
-    "every detached spawner kills the group (process.kill(-pid)), not just the parent",
+    "every detached spawner kills the group (process.kill(-pid) or killProcessTree), not just the parent",
     offenders.length === 0,
     `detached but no group kill in: ${offenders.join(", ")}`,
   );

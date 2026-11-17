@@ -27,6 +27,7 @@ import { join, resolve } from "node:path";
 import { queueCommand, resolveQueueHandler } from "../packages/cli/src/commands/queue.ts";
 import { Queue } from "../packages/core/src/queue.ts";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 const here = import.meta.dirname;
 const binPath = resolve(here, "../packages/cli/src/bin.ts");
 
@@ -229,7 +230,7 @@ console.log("\n--- resolveQueueHandler ---");
 console.log("\n--- queue dispatch guards (real bin.ts subprocess) ---");
 function runQueue(args: string[]): { code: number; out: string } {
   try {
-    const out = execFileSync("npx", ["tsx", binPath, "queue", ...args], {
+    const out = execFileSync(process.execPath, [TSX_CLI, binPath, "queue", ...args], {
       cwd: baseTmp, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 60_000,
     });
     return { code: 0, out };

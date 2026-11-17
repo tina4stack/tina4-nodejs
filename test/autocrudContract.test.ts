@@ -33,8 +33,10 @@ import http from "node:http";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { getToken } from "../packages/core/src/auth.ts";
 import { startServer } from "../packages/core/src/index.ts";
+import { closeDatabase } from "../packages/orm/src/index.ts";
 
 let passed = 0;
 let failed = 0;
@@ -73,7 +75,7 @@ const ORM_SRC = join(import.meta.dirname, "..", "packages", "orm", "src");
 // with no options) always leaves writes gated.
 writeFileSync(
   join(root, "src/models/CrudItem.ts"),
-  `import { BaseModel } from "file://${ORM_SRC}/baseModel.js";
+  `import { BaseModel } from "${pathToFileURL(join(ORM_SRC, "baseModel.js")).href}";
 
 export default class CrudItem extends BaseModel {
   static tableName = "crud_item";
@@ -289,6 +291,9 @@ async function main() {
     }
   } finally {
     server.close();
+    // close() releases the database asynchronously; release it NOW, because
+    // Windows refuses to delete a directory holding an open SQLite file.
+    closeDatabase();
     rmSync(root, { recursive: true, force: true });
   }
 

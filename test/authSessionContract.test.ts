@@ -174,23 +174,30 @@ test("session id with path separator is rejected and a fresh id minted", (check)
     // PLANT the file each hostile id's raw `join(path, id + ".json")` would
     // land on. Without this the ids are refused for the wrong reason - the
     // read simply misses - and the test passes even WITH the bug present.
-    mkdirSync(join(dir, "a"), { recursive: true });
-    const planted: Record<string, string> = {
-      "a/b": join(dir, "a", "b.json"),
-      "a\\b": join(dir, "a\\b.json"),
-      "a.b": join(dir, "a.b.json"),
-      "..": join(dir, "...json"),
+    //
+    // Each id gets its OWN session directory. On Windows "\" is a separator
+    // too, so "a/b" and "a\\b" both resolve to <path>\a\b.json: planted in one
+    // shared directory, the second marker overwrote the first and the check
+    // blamed the framework for the test's own write.
+    const planters: Record<string, (path: string) => string> = {
+      "a/b": (path) => join(path, "a", "b.json"),
+      "a\\b": (path) => join(path, "a\\b.json"),
+      "a.b": (path) => join(path, "a.b.json"),
+      "..": (path) => join(path, "...json"),
     };
-    for (const [id, target] of Object.entries(planted)) {
-      writeFileSync(target, JSON.stringify({ marker: `planted-${id}` }), "utf-8");
-    }
 
     // Every entry is outside the opaque ALPHABET. Length is deliberately NOT a
     // criterion: a short id like "short" is well-formed (an app calling
     // start("my-session-id") is a trusted caller managing its own id) and is
     // covered by the strict-mode test instead.
-    for (const hostile of ["../../etc/passwd", "a/b", "a\\b", "a.b", "..", ""]) {
-      const session = new Session("file", { path: dir, ttl: 3600 });
+    const hostileIds = ["../../etc/passwd", "a/b", "a\\b", "a.b", "..", ""];
+    for (const [index, hostile] of hostileIds.entries()) {
+      const sessionDir = join(dir, `case-${index}`);
+      mkdirSync(join(sessionDir, "a"), { recursive: true });
+      const target = planters[hostile]?.(sessionDir);
+      if (target) writeFileSync(target, JSON.stringify({ marker: `planted-${hostile}` }), "utf-8");
+
+      const session = new Session("file", { path: sessionDir, ttl: 3600 });
       const adopted = session.start(hostile);
       check(adopted !== hostile, `hostile session id adopted verbatim: ${JSON.stringify(hostile)}`);
       check(
@@ -201,7 +208,6 @@ test("session id with path separator is rejected and a fresh id minted", (check)
         !("marker" in session.all()),
         `hostile id ${JSON.stringify(hostile)} read a planted file: ${JSON.stringify(session.all())}`,
       );
-      const target = planted[hostile];
       if (target) {
         check(
           readFileSync(target, "utf-8") === JSON.stringify({ marker: `planted-${hostile}` }),

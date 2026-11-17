@@ -49,9 +49,9 @@ import type { RouteDefinition } from "../packages/core/src/types.ts";
 import type { ModelDefinition } from "../packages/orm/src/types.ts";
 import { freePort } from "./freePort.ts";
 
+import { TSX_CLI, moduleUrl, killProcessTree } from "./_portableSpawn.ts";
 const __dirname = import.meta.dirname;
 const REPO = resolve(__dirname, "..");
-const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 const FRAMEWORK_PUBLIC = resolve(REPO, "packages", "core", "public");
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -92,8 +92,8 @@ function scaffoldApp(): string {
 
   writeFileSync(
     join(root, "app.ts"),
-    `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
-      `await startServer({ port: Number(process.env.PORT), basePath: '${root}' } as never);\n`,
+    `import { startServer } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
+      `await startServer({ port: Number(process.env.PORT), basePath: ${JSON.stringify(root)} } as never);\n`,
   );
   return root;
 }
@@ -126,7 +126,7 @@ async function bootApp(swaggerEnabled: boolean, debug = false): Promise<{ base: 
     TINA4_OVERRIDE_CLIENT: "true",
   });
 
-  const child = spawn(TSX, ["app.ts"], { cwd: root, detached: true, stdio: ["ignore", fd, fd], env });
+  const child = spawn(process.execPath, [TSX_CLI, "app.ts"], { cwd: root, detached: true, stdio: ["ignore", fd, fd], env });
   children.push(child);
   closeSync(fd);
 
@@ -158,7 +158,7 @@ async function statusOf(base: string, path: string, method = "GET", body?: strin
 afterAll(async () => {
   for (const child of children) {
     try {
-      if (child.pid && child.exitCode === null) process.kill(-child.pid, "SIGKILL");
+      if (child.pid && child.exitCode === null) killProcessTree(child.pid);
     } catch {
       /* already gone */
     }

@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { TSX_LOADER_URL } from "./_portableSpawn.ts";
 let pass = 0;
 let fail = 0;
 function assert(label: string, ok: boolean, detail = ""): void {
@@ -41,7 +42,7 @@ try {
 
   const result = spawnSync(
     process.execPath,
-    ["--import", join(repo, "node_modules/tsx/dist/loader.mjs"), join(repo, "packages/cli/src/bin.ts"), "routes"],
+    ["--import", TSX_LOADER_URL, join(repo, "packages/cli/src/bin.ts"), "routes"],
     { cwd: project, encoding: "utf-8", timeout: 10_000 },
   );
   const output = (result.stdout ?? "") + (result.stderr ?? "");

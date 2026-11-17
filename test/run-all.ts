@@ -25,6 +25,7 @@ import {
 } from "./_serviceGate.ts";
 import { summarizeTestOutput } from "./_testSummary.ts";
 
+import { VITEST_CLI } from "./_portableSpawn.ts";
 const __dirname = import.meta.dirname;
 const rootDir = join(__dirname, "..");
 
@@ -249,7 +250,7 @@ if (VITEST_FILES.size > 0) {
   console.log(`\n${"─".repeat(60)}\n  vitest suites: ${vitestArgs.join(", ")}\n`);
   // Timing suites measure real event-loop stalls. Concurrent test servers can
   // stall an otherwise yielding handler and contaminate that measurement.
-  const vit = spawnSync("npx", ["vitest", "run", "--no-file-parallelism", ...vitestArgs], {
+  const vit = spawnSync(process.execPath, [VITEST_CLI, "run", "--no-file-parallelism", ...vitestArgs], {
     cwd: join(__dirname, ".."),
     encoding: "utf8",
     stdio: "pipe",

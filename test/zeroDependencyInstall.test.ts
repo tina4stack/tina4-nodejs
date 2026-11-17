@@ -40,6 +40,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { npmCommand } from "./_portableSpawn.ts";
 
 const rootDir = join(import.meta.dirname, "..");
 
@@ -338,7 +339,7 @@ console.log("\n=== Zero-dependency install (ADR-0067) - real npm pack + plain np
 
 const workDir = mkdtempSync(join(tmpdir(), "tina4-zero-dep-"));
 try {
-  execFileSync("npm", ["pack", "--pack-destination", workDir], {
+  execFileSync(...npmCommand("pack", "--pack-destination", workDir), {
     cwd: rootDir, encoding: "utf-8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"],
   });
   const tarballName = readdirSync(workDir).find((name) => name.endsWith(".tgz"));
@@ -351,12 +352,12 @@ try {
   writeFileSync(join(appDir, "package.json"), JSON.stringify({ name: "zero-dep-consumer", version: "0.0.0", private: true, type: "module" }));
 
   // A PLAIN install: no --omit=optional, no --no-optional. What a user types.
-  const installOutput = execFileSync("npm", ["install", tarball, "--no-audit", "--no-fund"], {
+  const installOutput = execFileSync(...npmCommand("install", tarball, "--no-audit", "--no-fund"), {
     cwd: appDir, encoding: "utf-8", timeout: 180_000, stdio: ["ignore", "pipe", "pipe"],
   });
   console.log(`    [npm] ${installOutput.trim().split("\n").pop()}`);
 
-  const installed = execFileSync("npm", ["ls", "--all", "--parseable"], { cwd: appDir, encoding: "utf-8" })
+  const installed = execFileSync(...npmCommand("ls", "--all", "--parseable"), { cwd: appDir, encoding: "utf-8" })
     .trim().split("\n").slice(1).filter(Boolean);
   assert("plain `npm install tina4-nodejs` installs exactly ONE package", installed.length === 1,
     `${installed.length} installed: ${installed.map((path) => path.split("node_modules/").pop()).join(", ")}`);
@@ -440,7 +441,7 @@ try {
   if (!services.redis) console.log(`  \x1b[33mSKIP\x1b[0m Redis not reachable at ${redisHost}:${redisPort} - the installed-redis backplane did not run`);
   if (!services.redisAuth) console.log(`  \x1b[33mSKIP\x1b[0m password Redis not reachable at ${redisAuthHost}:${redisAuthPort} - the backplane log-redaction check did not run`);
 
-  const installPeers = execFileSync("npm", ["install", "pg", "mongodb", "redis", "--no-audit", "--no-fund", "--prefer-offline"], {
+  const installPeers = execFileSync(...npmCommand("install", "pg", "mongodb", "redis", "--no-audit", "--no-fund", "--prefer-offline"), {
     cwd: appDir, encoding: "utf-8", timeout: 180_000, stdio: ["ignore", "pipe", "pipe"],
   });
   console.log(`    [npm install pg mongodb redis] ${installPeers.trim().split("\n").pop()}`);

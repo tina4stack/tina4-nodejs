@@ -33,13 +33,13 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 const WORKERS = 8;
 const HERE = fileURLToPath(new URL(".", import.meta.url));
-const ORM_INDEX = join(HERE, "..", "packages", "orm", "src", "index.ts");
-const TSX_BIN = join(HERE, "..", "node_modules", ".bin", "tsx");
+const ORM_INDEX = pathToFileURL(join(HERE, "..", "packages", "orm", "src", "index.ts")).href;
 
 let pass = 0;
 let fail = 0;
@@ -56,7 +56,7 @@ function assert(name: string, cond: boolean, detail = "") {
 
 function runWorker(worker: string, dbPath: string, migDir: string): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn(TSX_BIN, [worker, dbPath, migDir], { stdio: "ignore" });
+    const child = spawn(process.execPath, [TSX_CLI, worker, dbPath, migDir], { stdio: "ignore" });
     child.on("exit", (code) => resolve(code ?? 0));
     child.on("error", () => resolve(1));
   });

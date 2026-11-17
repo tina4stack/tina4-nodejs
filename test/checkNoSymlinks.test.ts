@@ -19,7 +19,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * seen to fail is not known to work.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -76,8 +76,15 @@ try {
 const badRepo = makeTempRepo();
 try {
   writeFileSync(join(badRepo, "target.txt"), "target\n");
-  symlinkSync("target.txt", join(badRepo, "evil-link"));
-  execFileSync("git", ["add", "target.txt", "evil-link"], { cwd: badRepo });
+  execFileSync("git", ["add", "target.txt"], { cwd: badRepo });
+  // Stage the symlink in the INDEX - the only thing the guard reads - exactly
+  // as `git add` records one: mode 120000 over a blob holding the link target.
+  // No filesystem link is needed, so this runs where creating one is refused
+  // (Windows without Developer Mode, or core.symlinks=false).
+  const linkBlob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+    cwd: badRepo, input: "target.txt", encoding: "utf-8",
+  }).trim();
+  execFileSync("git", ["update-index", "--add", "--cacheinfo", `120000,${linkBlob},evil-link`], { cwd: badRepo });
   // Confirm git actually recorded the symlink as mode 120000 — the mutation
   // must be real, or the negative case proves nothing.
   const staged = execFileSync("git", ["ls-files", "-s"], { cwd: badRepo, encoding: "utf-8" });

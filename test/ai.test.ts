@@ -64,7 +64,10 @@ assert("first tool is claude-code", AI_TOOLS[0].name === "claude-code");
     const contextPath = join(dir, tool.contextFile);
     const onDisk = existsSync(contextPath);
     // The created list (relative paths) must reference this tool's contextFile.
-    const reported = created.includes(tool.contextFile);
+    // Those paths use the platform separator (path.relative), so on Windows
+    // ".github/copilot-instructions.md" is reported as ".github\..." - compare
+    // against the contextFile in the same native form.
+    const reported = created.includes(join(tool.contextFile));
     // The written file must actually contain the Tina4 skill/context content.
     const hasContent = onDisk && readFileSync(contextPath, "utf-8").includes("Tina4");
     if (!onDisk || !reported || !hasContent) {

@@ -50,6 +50,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { TSX_CLI, npmCommand } from "./_portableSpawn.ts";
 process.env.TINA4_NO_BROWSER = "true";
 process.env.TINA4_OVERRIDE_CLIENT = "true";
 
@@ -215,7 +216,7 @@ console.log("=== Dynamic framework version (feature 130) ===\n");
 
     const mcpVersion = await mcpInitializeVersion(port);
 
-    const cliOut = execFileSync("npx", ["tsx", cliBinPath, "commands", "--json"], {
+    const cliOut = execFileSync(process.execPath, [TSX_CLI, cliBinPath, "commands", "--json"], {
       cwd: dir, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 60_000,
     });
     const cliVersion = JSON.parse(cliOut).version;
@@ -245,7 +246,7 @@ console.log("=== Dynamic framework version (feature 130) ===\n");
   // exact layout the old fixed-depth-3 reader could not survive.
   const distIndex = join(corePkgDir, "dist", "index.js");
   if (!existsSync(distIndex)) {
-    execFileSync("npm", ["run", "build"], { cwd: corePkgDir, stdio: "inherit" });
+    execFileSync(...npmCommand("run", "build"), { cwd: corePkgDir, stdio: "inherit" });
   }
   const relocated = mkdtempSync(join(tmpdir(), "tina4-relocated-core-"));
   try {

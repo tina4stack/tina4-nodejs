@@ -25,7 +25,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import {
   RESOLUTION_ENVELOPE_VERSION,
   SQL_RESERVED_TABLE_NAMES,
@@ -34,6 +34,7 @@ import {
 } from "../packages/cli/src/commands/generate.ts";
 import { buildCommandManifest } from "../packages/cli/src/bin.ts";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 const here = import.meta.dirname;
 const repoRoot = resolve(here, "..");
 const binPath = resolve(repoRoot, "packages/cli/src/bin.ts");
@@ -59,14 +60,15 @@ function walkFiles(dir: string): string[] {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) out.push(...walkFiles(full));
-    else out.push(full);
+    // "/"-separated on every OS, so the endsWith("/src/...") checks hold on Windows.
+    else out.push(full.split(sep).join("/"));
   }
   return out;
 }
 
 /** Run `tina4nodejs generate` in a temp cwd; return stdout/stderr/exit. */
 function runGenerate(cwd: string, args: string[]): { stdout: string; stderr: string; exitCode: number } {
-  const res = spawnSync("npx", ["tsx", binPath, "generate", ...args], {
+  const res = spawnSync(process.execPath, [TSX_CLI, binPath, "generate", ...args], {
     cwd,
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],

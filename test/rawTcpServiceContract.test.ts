@@ -20,6 +20,7 @@ import { createConnection, createServer, type Socket } from "node:net";
 import { request } from "node:http";
 import { pathToFileURL } from "node:url";
 import { TcpService, tcpService, tcp, clearTcpRegistry } from "../packages/core/src/tcp.ts";
+import { moduleUrl, killProcessTree } from "./_portableSpawn.ts";
 
 const __dirname = import.meta.dirname;
 const REPO = resolve(__dirname, "..");
@@ -50,7 +51,7 @@ const spawned = new Set<ChildProcess>();
 function reapAll(): void {
   for (const child of spawned) {
     if (!child.pid) continue;
-    try { process.kill(-child.pid, "SIGKILL"); } catch { /* group gone */ }
+    try { killProcessTree(child.pid); } catch { /* group gone */ }
     try { child.kill("SIGKILL"); } catch { /* gone */ }
   }
   spawned.clear();
@@ -460,9 +461,9 @@ async function bootChild(extraEnv: Record<string, string> = {}): Promise<Booted>
   writeFileSync(join(routes, "get.ts"), "export default async function (_req: any, res: any) { return res({ ok: true }, 200); }\n");
   writeFileSync(
     join(root, "app.ts"),
-    `import { startServer, tcpService } from '${REPO}/packages/core/src/index.ts';\n` +
+    `import { startServer, tcpService } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
       `tcpService(${tcpPort}, { name: 'trackers', onConnect: (c) => c.send('HELLO\\n'), onData: (c, d) => c.send(Buffer.concat([Buffer.from('ECHO:'), d])) });\n` +
-      `await startServer({ port: ${httpPort}, routesDir: '${join(root, "src", "routes")}' } as never);\n`,
+      `await startServer({ port: ${httpPort}, routesDir: ${JSON.stringify(join(root, "src", "routes"))} } as never);\n`,
   );
   const logPath = join(root, "server.log");
   const logFd = openSync(logPath, "w");
@@ -513,14 +514,19 @@ async function childCases(): Promise<void> {
     const status = await httpStatus(b.httpPort);
     assert("listen+accept in-process while HTTP still serves", greeting.toString() === "HELLO\n" && status === 200, `greeting=${JSON.stringify(greeting.toString())} status=${status}`);
     tcpSock.destroy();
-    if (b.child.pid) { try { process.kill(-b.child.pid, "SIGKILL"); } catch { /* gone */ } }
+    if (b.child.pid) { try { killProcessTree(b.child.pid); } catch { /* gone */ } }
   }
 
   // tcp-graceful-shutdown-drain: SIGTERM drains the live TCP connection, exit 0.
   // Mutation: skip drainAllTcpServices() on shutdown and the client EOF/exit stalls.
   // Mutation: drop process.on("SIGTERM", onSigterm) in server.ts and the server
   // dies BY the signal (code=null signal=SIGTERM) instead of exiting 0.
-  {
+  if (process.platform === "win32") {
+    // Windows delivers no catchable SIGTERM (process.kill() there is an
+    // unconditional TerminateProcess) and has no process group to signal.
+    console.log("  SKIP SIGTERM drains the live TCP connection and exits 0 - "
+      + "POSIX-only: Windows has no catchable SIGTERM");
+  } else {
     const b = await bootChild({ TINA4_SHUTDOWN_TIMEOUT: "10" });
     const tcpSock = await connect(b.tcpPort);
     await readExactly(tcpSock, 6, 5000);

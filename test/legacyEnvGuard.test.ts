@@ -25,6 +25,7 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TSX_CLI, moduleUrl } from "./_portableSpawn.ts";
 const __dirname = import.meta.dirname;
 const rootDir = join(__dirname, "..");
 
@@ -49,7 +50,7 @@ const HARNESS_DIR = mkdtempSync(join(tmpdir(), "tina4-legacy-guard-"));
 const harnessPath = join(HARNESS_DIR, "boot.ts");
 writeFileSync(
   harnessPath,
-  `import { _checkLegacyEnvVars } from "${rootDir}/packages/core/src/server.ts";\n` +
+  `import { _checkLegacyEnvVars } from ${JSON.stringify(moduleUrl(join(rootDir, "packages/core/src/server.ts")))};\n` +
     `_checkLegacyEnvVars();\n` +
     `console.log("BOOT_OK");\n`,
 );
@@ -79,7 +80,7 @@ function runGuard(extraEnv: Record<string, string | undefined> = {}): RunResult 
     else cleanEnv[k] = v;
   }
 
-  const result = spawnSync("npx", ["tsx", harnessPath], {
+  const result = spawnSync(process.execPath, [TSX_CLI, harnessPath], {
     cwd: rootDir,
     env: cleanEnv,
     encoding: "utf-8",

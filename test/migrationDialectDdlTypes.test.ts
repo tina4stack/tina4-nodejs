@@ -42,8 +42,8 @@ import {
   initDatabase,
 } from "../packages/orm/src/index.ts";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 const repoRoot = resolve(import.meta.dirname, "..");
-const tsxBin = join(repoRoot, "node_modules/.bin/tsx");
 const cliBin = join(repoRoot, "packages/cli/src/bin.ts");
 const FIREBIRD_URL = process.env.TINA4_TEST_FIREBIRD_URL;
 
@@ -187,8 +187,8 @@ function generateCreateSql(): { createStmt: string; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "tina4-ddl-"));
   mkdirSync(join(dir, "data"), { recursive: true });
   execFileSync(
-    tsxBin,
-    [
+    process.execPath,
+    [TSX_CLI, 
       cliBin, "generate", "migration", "create_dialect_probe",
       "--fields", "name:string,bio:text,price:float,active:bool,due:datetime",
     ],

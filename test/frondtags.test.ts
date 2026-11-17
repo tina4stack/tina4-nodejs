@@ -28,6 +28,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Frond } from "../packages/frond/src/engine.ts";
+import { SYMLINKS_PERMITTED, symlinkSkip } from "./_symlinkSupport.ts";
 
 let pass = 0;
 let fail = 0;
@@ -141,7 +142,9 @@ function labelFor(template: string): string {
 }
 
 // --- a symlink escaping the templates dir is refused ---
-{
+if (!SYMLINKS_PERMITTED) {
+  console.log(symlinkSkip("a symlink escaping the templates dir is refused"));
+} else {
   const { base, templates, secret } = makeTree();
   try {
     // A REAL symlink INSIDE the templates dir whose target is the secret OUTSIDE

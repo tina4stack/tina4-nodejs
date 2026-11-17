@@ -32,6 +32,7 @@ import {
   TAKEOVER_REFUSED_PROD,
 } from "../packages/core/src/portTakeover.ts";
 import { freePort } from "./freePort.ts";
+import { killProcessTree } from "./_portableSpawn.ts";
 
 const repoRoot = join(import.meta.dirname, "..");
 const tsxLoader = pathToFileURL(join(repoRoot, "node_modules/tsx/dist/loader.mjs")).href;
@@ -122,7 +123,7 @@ function reap(): void {
     if (process.platform === "win32") {
       spawnSync("taskkill", ["/T", "/F", "/PID", String(child.pid)], { stdio: "ignore" });
     } else {
-      try { process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
+      try { killProcessTree(child.pid); } catch { /* already gone */ }
     }
   }
 }

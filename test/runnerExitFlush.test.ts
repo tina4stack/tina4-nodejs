@@ -118,13 +118,20 @@ try {
   // NEGATIVE (proves the gate is not vacuous): process.exit() drops the
   // unflushed backlog, so the trailing summary is lost. It truncates
   // essentially every time; require at least one truncation across three runs.
-  let lostWithExit = 0;
-  for (let i = 0; i < 3; i++) if (!survivedThroughPipe("exit")) lostWithExit++;
-  assert(
-    "process.exit(): trailing summary is truncated on a slow pipe",
-    lostWithExit >= 1,
-    `${lostWithExit}/3 truncated`,
-  );
+  if (process.platform === "win32") {
+    // Node writes to a pipe SYNCHRONOUSLY on Windows (asynchronously on POSIX),
+    // so there is never an unflushed backlog for process.exit() to drop there.
+    console.log("  SKIP process.exit(): trailing summary is truncated on a slow pipe - "
+      + "POSIX-only: Node's pipe writes are synchronous on Windows");
+  } else {
+    let lostWithExit = 0;
+    for (let i = 0; i < 3; i++) if (!survivedThroughPipe("exit")) lostWithExit++;
+    assert(
+      "process.exit(): trailing summary is truncated on a slow pipe",
+      lostWithExit >= 1,
+      `${lostWithExit}/3 truncated`,
+    );
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

@@ -29,9 +29,10 @@ import { request } from "node:http";
 import { parseMultipart, saveUpload } from "../packages/core/src/request.ts";
 import type { UploadedFile } from "../packages/core/src/types.ts";
 
+import { TSX_CLI, moduleUrl, killProcessTree } from "./_portableSpawn.ts";
+import { SYMLINKS_PERMITTED, symlinkSkip } from "./_symlinkSupport.ts";
 const HERE = import.meta.dirname;
 const REPO = resolve(HERE, "..");
-const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 
 let pass = 0;
 let fail = 0;
@@ -120,6 +121,10 @@ console.log("\n--- safe-save confines the write ---");
 }
 
 for (const link of ["symlink", "dangling", "hardlink"]) {
+  if (link !== "hardlink" && !SYMLINKS_PERMITTED) {
+    console.log(symlinkSkip(`safe save replaces a ${link} at the name instead of writing through it`));
+    continue;
+  }
   const root = mkdtempSync(join(tmpdir(), "tina4-safesave-link-"));
   const target = join(root, "uploads");
   const outside = join(root, "outside");
@@ -198,7 +203,7 @@ const dirs: string[] = [];
 function reap(): void {
   for (const child of spawned) {
     try {
-      if (child.pid && child.exitCode === null) process.kill(-child.pid, "SIGKILL");
+      if (child.pid && child.exitCode === null) killProcessTree(child.pid);
     } catch {
       /* gone */
     }
@@ -222,10 +227,10 @@ async function startServer(port: number): Promise<void> {
   );
   writeFileSync(
     join(root, "app.ts"),
-    `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
-      `await startServer({ port: ${port}, routesDir: '${routes}' } as never);\n`,
+    `import { startServer } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
+      `await startServer({ port: ${port}, routesDir: ${JSON.stringify(routes)} } as never);\n`,
   );
-  const child = spawn(TSX, ["app.ts"], {
+  const child = spawn(process.execPath, [TSX_CLI, "app.ts"], {
     cwd: root,
     detached: true,
     stdio: ["ignore", "ignore", "ignore"],

@@ -52,19 +52,20 @@ import {
 } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import { statSync } from "node:fs";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 const __dirname = import.meta.dirname;
 const ROOT = join(__dirname, "..");
-const LOGGER_MODULE = join(ROOT, "packages", "core", "src", "logger.ts");
+const LOGGER_MODULE = pathToFileURL(join(ROOT, "packages", "core", "src", "logger.ts")).href;
 // Invoke the LOCAL tsx binary directly everywhere a child process is
 // spawned, not `npx tsx` -- npx's own startup (resolution, update checks)
 // can itself emit ANSI under a real tty, which would contaminate LOG-F07's
 // "does OUR output carry ansi" measurement, and it is slower everywhere else.
-const TSX_BIN = join(ROOT, "node_modules", ".bin", "tsx");
 
 const { Log, LogConfigurationError, LogArgumentError, LogWriteError } = await import(
   "../packages/core/src/logger.ts"
@@ -749,6 +750,9 @@ console.log("=== Structured logger contract (feature 2) ===\n");
   );
 
   function runViaPty(format: string): string {
+    // `script` is POSIX-only and runs its command through a shell, so it takes
+    // the .bin shim; on Windows the spawn fails and the fallback below runs.
+    const TSX_BIN = join(ROOT, "node_modules", ".bin", "tsx");
     const isLinux = process.platform === "linux";
     const args = isLinux
       ? ["-qec", `${TSX_BIN} ${CHILD}`, "/dev/null"]
@@ -768,7 +772,7 @@ console.log("=== Structured logger contract (feature 2) ===\n");
 
   const CHILD_PIPE = join(TMP, "f07pipe.mjs");
   writeFileSync(CHILD_PIPE, readFileSync(CHILD, "utf-8"), "utf-8");
-  const pipeText = execFileSync(TSX_BIN, [CHILD_PIPE], {
+  const pipeText = execFileSync(process.execPath, [TSX_CLI, CHILD_PIPE], {
     cwd: ROOT, encoding: "utf-8", env: { ...process.env, PROBE_FORMAT: "text" }, timeout: 20_000,
   });
 
@@ -780,7 +784,9 @@ console.log("=== Structured logger contract (feature 2) ===\n");
     ttyJson = runViaPty("json");
   } catch (err) {
     const msg = String((err as Error).message ?? err);
-    if (/tcgetattr|Operation not (permitted|supported)|Device not configured/i.test(msg)) {
+    // `spawnSync script ENOENT`: no `script` binary at all (Windows) - the same
+    // "no pty reachable from here" limitation, so the same fallback applies.
+    if (/tcgetattr|Operation not (permitted|supported)|Device not configured|spawnSync script ENOENT/i.test(msg)) {
       ptyUnavailable = true;
       console.log(`  \x1b[33m--\x1b[0m LOG-F07: no controlling terminal reachable in this process's ancestry (${msg.split("\n")[0]}); falling back to a direct process.stdout.isTTY proof for the decision logic (see comment above)`);
     } else {
@@ -1249,7 +1255,7 @@ console.log("=== Structured logger contract (feature 2) ===\n");
         // group kill for. A direct binary invocation is a single process,
         // sidestepping that requirement at the root instead of satisfying it
         // superficially.
-        const p = spawn(TSX_BIN, [CHILD, dir, String(w), String(RECORDS_PER_WORKER)], {
+        const p = spawn(process.execPath, [TSX_CLI, CHILD, dir, String(w), String(RECORDS_PER_WORKER)], {
           cwd: ROOT,
           stdio: "ignore",
         });
@@ -1437,7 +1443,7 @@ console.log("=== Structured logger contract (feature 2) ===\n");
     if (LOG_ENV_KEYS.includes(k)) continue;
     if (v !== undefined) childEnv[k] = v;
   }
-  const out = execFileSync(TSX_BIN, [CHILD], { cwd: ROOT, encoding: "utf-8", env: childEnv, timeout: 20_000 });
+  const out = execFileSync(process.execPath, [TSX_CLI, CHILD], { cwd: ROOT, encoding: "utf-8", env: childEnv, timeout: 20_000 });
   const childResult = JSON.parse(out.trim().split("\n").pop()!);
 
   const parentRequestIdAfter = Log.getRequestId();

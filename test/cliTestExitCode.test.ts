@@ -33,6 +33,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 let pass = 0;
 let fail = 0;
 function assert(label: string, ok: boolean, detail = ""): void {
@@ -41,7 +42,6 @@ function assert(label: string, ok: boolean, detail = ""): void {
 }
 
 const repoRoot = resolve(import.meta.dirname, "..");
-const tsxBin = join(repoRoot, "node_modules/.bin/tsx");
 const cliBin = join(repoRoot, "packages/cli/src/bin.ts");
 const baseDir = join(repoRoot, `.tmp_testexit_${process.pid}`);
 
@@ -51,7 +51,7 @@ const EXIT1_BODY = 'console.log("failing via exit code");\nprocess.exit(1);\n';
 
 /** Spawn the REAL `tina4nodejs test [args]` in `cwd`; return its real exit code. */
 function runTestCli(cwd: string, args: string[] = []): number {
-  const res = spawnSync(tsxBin, [cliBin, "test", ...args], {
+  const res = spawnSync(process.execPath, [TSX_CLI, cliBin, "test", ...args], {
     cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 60_000,
   });
   if (res.error) throw res.error;

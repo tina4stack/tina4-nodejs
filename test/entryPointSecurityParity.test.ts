@@ -59,6 +59,7 @@ import http from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { freePort } from "./freePort.ts";
 
@@ -66,7 +67,7 @@ const TEST_DIR = mkdtempSync(join(tmpdir(), "tina4-entry-sec-"));
 const SESSION_DIR = mkdtempSync(join(tmpdir(), "tina4-entry-sec-sess-"));
 const LISTENER_PORT = await freePort();
 const EMBED_PORT = await freePort();
-const AUTH_MODULE = resolve(import.meta.dirname, "../packages/core/src/auth.ts");
+const AUTH_MODULE = pathToFileURL(resolve(import.meta.dirname, "../packages/core/src/auth.ts")).href;
 const IDP_PORT = await freePort();
 const ISSUER = `http://127.0.0.1:${IDP_PORT}/realms/entry-sso-node`;
 const CLIENT_ID = "entry-sso-node-app";

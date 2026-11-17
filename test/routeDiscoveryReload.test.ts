@@ -15,6 +15,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, utimesSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import {
   discoverRoutes,
@@ -202,12 +203,12 @@ console.log("=== Route Discovery — Reload Behaviour ===\n");
   const { statSync } = await import("node:fs");
 
   writeFileSync(mod, `export const handler = () => "v1";\n`);
-  const a = await import(`file://${mod}?t=${statSync(mod).mtimeMs}`);
+  const a = await import(`${pathToFileURL(mod).href}?t=${statSync(mod).mtimeMs}`);
   assert("cachebust: first import is v1", a.handler() === "v1");
 
   writeFileSync(mod, `export const handler = () => "v2";\n`);
   bumpMtime(mod);
-  const b = await import(`file://${mod}?t=${statSync(mod).mtimeMs}`);
+  const b = await import(`${pathToFileURL(mod).href}?t=${statSync(mod).mtimeMs}`);
   assert("cachebust: mtime-keyed re-import delivers v2 (not stale v1)", b.handler() === "v2", `got ${b.handler()}`);
 
   rmSync(dir, { recursive: true });

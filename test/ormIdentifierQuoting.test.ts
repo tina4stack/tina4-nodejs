@@ -26,6 +26,7 @@ import net from "node:net";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { startServer } from "../packages/core/src/index.ts";
 import {
   BaseModel, Database, bindDatabase, createAdapterFromUrl, getAdapter,
@@ -221,7 +222,7 @@ async function autoCrudCases(engine: string, url: string, port: number): Promise
   const root = mkdtempSync(join(tmpdir(), "tina4-quote-crud-"));
   mkdirSync(join(root, "src/models"), { recursive: true });
   mkdirSync(join(root, "src/routes"), { recursive: true });
-  writeFileSync(join(root, "src/models/QuoteCrud.ts"), `import { BaseModel } from "file://${ORM_SRC}/baseModel.js";
+  writeFileSync(join(root, "src/models/QuoteCrud.ts"), `import { BaseModel } from "${pathToFileURL(join(ORM_SRC, "baseModel.js")).href}";
 
 export default class QuoteCrud extends BaseModel {
   static tableName = "${table}";

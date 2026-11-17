@@ -36,6 +36,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
+import { TSX_CLI, npmCommand } from "./_portableSpawn.ts";
 
 const __dirname = import.meta.dirname;
 const rootDir = join(__dirname, "..");
@@ -166,7 +167,7 @@ try {
   // 1) Build the real tarball CI would publish.
   let tarball = "";
   try {
-    execFileSync("npm", ["pack", "--pack-destination", workDir], {
+    execFileSync(...npmCommand("pack", "--pack-destination", workDir), {
       cwd: rootDir,
       encoding: "utf-8",
       timeout: 120_000,
@@ -199,11 +200,10 @@ try {
     let installed = false;
     try {
       execFileSync(
-        "npm",
-        [
+        ...npmCommand(
           "install", tarball,
           "--no-audit", "--no-fund", "--ignore-scripts", "--prefer-offline",
-        ],
+        ),
         { cwd: appDir, encoding: "utf-8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] },
       );
       installed = existsSync(join(appDir, "node_modules", "tina4-nodejs"));
@@ -225,13 +225,12 @@ try {
       //    landing in the throwaway's node_modules — never the monorepo.
       const consumer = join(appDir, "consumer.ts");
       writeFileSync(consumer, CONSUMER_SRC);
-      const tsxBin = join(rootDir, "node_modules", ".bin", "tsx");
-      assert("monorepo tsx runner is available", existsSync(tsxBin), tsxBin);
+      assert("monorepo tsx runner is available", existsSync(TSX_CLI), TSX_CLI);
 
       let stdout = "";
       let ran = false;
       try {
-        stdout = execFileSync(tsxBin, [consumer], {
+        stdout = execFileSync(process.execPath, [TSX_CLI, consumer], {
           cwd: appDir,
           encoding: "utf-8",
           timeout: 60_000,
@@ -298,7 +297,7 @@ try {
         let gout = "";
         let gran = false;
         try {
-          gout = execFileSync(tsxBin, [join(appDir, "gallery-driver.ts")], {
+          gout = execFileSync(process.execPath, [TSX_CLI, join(appDir, "gallery-driver.ts")], {
             cwd: appDir,
             encoding: "utf-8",
             timeout: 60_000,

@@ -53,9 +53,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { freePort } from "./freePort.ts";
 
+import { TSX_CLI, moduleUrl, killProcessTree } from "./_portableSpawn.ts";
 const __dirname = import.meta.dirname;
 const REPO = resolve(__dirname, "..");
-const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 
 let pass = 0;
 let fail = 0;
@@ -85,8 +85,8 @@ function scaffoldApp(): string {
   );
   writeFileSync(
     join(root, "app.ts"),
-    `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
-      `await startServer({ port: Number(process.env.PORT), basePath: '${root}' } as never);\n`,
+    `import { startServer } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
+      `await startServer({ port: Number(process.env.PORT), basePath: ${JSON.stringify(root)} } as never);\n`,
   );
   return root;
 }
@@ -148,7 +148,7 @@ async function surfaceUnder(env: Record<string, string>): Promise<Surface> {
     ...env,
   });
 
-  const child = spawn(TSX, ["app.ts"], { cwd: root, detached: true, stdio: ["ignore", fd, fd], env: childEnv });
+  const child = spawn(process.execPath, [TSX_CLI, "app.ts"], { cwd: root, detached: true, stdio: ["ignore", fd, fd], env: childEnv });
   closeSync(fd);
 
   try {
@@ -208,7 +208,7 @@ async function surfaceUnder(env: Record<string, string>): Promise<Surface> {
     return { advertised, ui, doc: docRes.status };
   } finally {
     try {
-      process.kill(-child.pid!, "SIGKILL");
+      killProcessTree(child.pid);
     } catch {
       /* already gone */
     }
