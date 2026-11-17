@@ -14,7 +14,7 @@ import { resolve, dirname, join, relative } from "node:path";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isatty } from "node:tty";
 import { fileURLToPath } from "node:url";
-import { execFileSync, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import cluster from "node:cluster";
 import os from "node:os";
 import type { Socket } from "node:net";
@@ -24,6 +24,7 @@ import { enforceRouteAuth } from "./authGate.js";
 import { discoverRoutes } from "./routeDiscovery.js";
 import {
   takeOverPort,
+  probeBind,
   isDev as isTakeoverDev,
   noTakeoverOptedOut,
   writePidfile,
@@ -412,22 +413,17 @@ export function killPort(port: number): void {
 }
 
 /**
- * Check if *port* is available; if not, kill the process on it and return *port*.
- * The auto-increment behaviour is intentionally removed — the server always
- * claims the requested port.
+ * Check if *port* is held; if it is, reclaim it through the guarded takeover
+ * path and return *port*. The auto-increment behaviour is intentionally
+ * removed — the server always claims the requested port.
+ *
+ * Only a probe that sees EADDRINUSE counts as held. A probe that times out on a
+ * slow start says nothing about the port, so the real bind decides: it used to
+ * count as "in use", and a production server on a slow host refused a free port.
  */
 function findAvailablePort(start: number): number {
-  try {
-    execFileSync(process.execPath, ["-e", `
-      const s = require("net").createServer();
-      s.listen(${start}, "0.0.0.0", () => { s.close(); process.exit(0); });
-      s.on("error", () => process.exit(1));
-    `], { timeout: 1000 });
-    return start;
-  } catch {
-    killPort(start);
-    return start;
-  }
+  if (probeBind("0.0.0.0", start) === "held") killPort(start);
+  return start;
 }
 
 /**
