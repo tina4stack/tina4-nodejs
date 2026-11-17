@@ -320,43 +320,129 @@ assert("fetch with no limit param: returns all 10 rows", noLimitParam.length ===
 limDb.close();
 
 // ── DevAdmin API Endpoint Tests ────────────────────────────
-// These tests register the DevAdmin routes on a real Router instance,
-// then invoke each handler with mock req/res objects and assert the
-// response shape.
+// These tests boot a REAL Tina4 server (startServer, a real listening socket)
+// and drive every /__dev/api endpoint over real HTTP from the loopback
+// address, asserting the response the dashboard actually receives. No handler
+// is called directly and no request/response object is hand-built: the real
+// router, the real dev-admin gate (TINA4_DEBUG=true + a loopback peer) and the
+// real response serialisation all sit between the test and the handler.
 
 console.log("\n--- DevAdmin API Endpoint Tests ---");
 
 import {
-  DevAdmin, DevQueue,
+  DevAdmin, startServer,
 } from "../packages/core/src/index.ts";
 import { Router } from "../packages/core/src/index.ts";
+import http from "node:http";
+import { freePort } from "./freePort.ts";
 
-// Set TINA4_DEBUG so DevAdmin.isEnabled() is true
+// The real env the /__dev gate needs: debug on. The peer is loopback because
+// every request below leaves from 127.0.0.1 over a real socket.
 process.env.TINA4_DEBUG = "true";
+process.env.TINA4_RATE_LIMIT = "100000";
+process.env.TINA4_NO_AI_PORT = "true";
+// A boot secret of at least 32 bytes, so startServer never has to generate one.
+process.env.TINA4_SECRET = "devadmin-test-secret-0123456789abcdef";
 
-const router = new Router();
-DevAdmin.register(router);
+// A throwaway project to serve. startServer and the dev-admin file/reload
+// endpoints resolve paths from process.cwd(), so serve from inside it (the
+// repo checkout is never written to). Restored before exit.
+const { mkdtempSync: mkTmp, mkdirSync: mkDir, writeFileSync: writeF, rmSync: rmTree } = await import("node:fs");
+const { tmpdir: osTmp } = await import("node:os");
+const { join: pjoin } = await import("node:path");
+const APP_DIR = mkTmp(pjoin(osTmp(), "tina4-devadmin-http-"));
+mkDir(pjoin(APP_DIR, "src", "routes"), { recursive: true });
+writeF(pjoin(APP_DIR, "package.json"), '{"type":"module"}');
+writeF(
+  pjoin(APP_DIR, "src", "routes", "get.ts"),
+  "export default async function (_req: any, res: any) { return res.json({ ok: true }); }\n",
+);
+const ORIG_CWD = process.cwd();
+process.chdir(APP_DIR);
 
-// Helper: find a registered handler by method + pattern
-function findHandler(method: string, pattern: string) {
-  const routes = router.getRoutes();
-  const route = routes.find((r) => r.method === method && r.pattern === pattern);
-  return route?.handler;
+// ...and a server booted with TINA4_DEBUG off has no /__dev surface at all.
+{
+  process.env.TINA4_DEBUG = "false";
+  const prodPort = await freePort();
+  const prod = await startServer({
+    port: prodPort,
+    routesDir: pjoin(APP_DIR, "src", "routes"),
+    modelsDir: pjoin(APP_DIR, "src", "models"),
+    staticDir: pjoin(APP_DIR, "public"),
+  });
+  await new Promise((r) => setTimeout(r, 40));
+  const status = await new Promise<number>((resolve, reject) => {
+    http.get({ host: "127.0.0.1", port: prodPort, path: "/__dev/api/system", agent: false }, (r) => {
+      r.resume();
+      r.on("end", () => resolve(r.statusCode ?? 0));
+    }).on("error", reject);
+  });
+  prod.close();
+  await new Promise((r) => setTimeout(r, 30));
+  process.env.TINA4_DEBUG = "true";
+  assert("a server booted with TINA4_DEBUG off serves no /__dev/api/system (404)",
+    status === 404, `status=${status}`);
 }
 
-// Helper: create a mock request
-function mockReq(url = "/"): any {
-  return { url, headers: {}, method: "GET" };
+const PORT = await freePort();
+const boot = await startServer({
+  port: PORT,
+  routesDir: pjoin(APP_DIR, "src", "routes"),
+  modelsDir: pjoin(APP_DIR, "src", "models"),
+  staticDir: pjoin(APP_DIR, "public"),
+});
+await new Promise((r) => setTimeout(r, 40));
+const router = boot.router;
+
+// True when the real server's route table carries method + pattern.
+function isRegistered(method: string, pattern: string): boolean {
+  return router.getRoutes().some((r) => r.method === method && r.pattern === pattern);
 }
 
-// Helper: create a mock response that captures the JSON output
-function mockRes(): any {
-  let captured: any = undefined;
-  return {
-    json(data: any, _status?: number) { captured = data; },
-    html(_data: any, _status?: number) {},
-    get result() { return captured; },
-  };
+// A real HTTP request over a real socket to the real server (fresh connection
+// each time). Returns the status and the parsed JSON body.
+function call(
+  method: string,
+  path: string,
+  body?: unknown,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; data: any; raw: string }> {
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    const req = http.request(
+      {
+        host: "127.0.0.1", port: PORT, path, method, agent: false,
+        headers: {
+          ...(payload !== undefined
+            ? { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(payload)) }
+            : {}),
+          Connection: "close",
+          ...headers,
+        },
+      },
+      (res) => {
+        let raw = "";
+        res.setEncoding("utf-8");
+        res.on("data", (c) => (raw += c));
+        res.on("end", () => {
+          let data: any;
+          try { data = JSON.parse(raw); } catch { data = raw; }
+          resolve({ status: res.statusCode ?? 0, data, raw });
+        });
+      },
+    );
+    req.on("error", reject);
+    if (payload !== undefined) req.write(payload);
+    req.end();
+  });
+}
+const get = (path: string) => call("GET", path);
+
+// The gate is real: the debug server admits a loopback peer...
+{
+  const on = await get("/__dev/api/system");
+  assert("the real /__dev gate admits a loopback peer with TINA4_DEBUG on",
+    on.status === 200, `status=${on.status}`);
 }
 
 // --- Agent chat/execute proxy removed; MCP grounding + editor/metrics kept ---
@@ -394,6 +480,10 @@ console.log("\n--- agent chat/execute proxy removed ---");
   assert("GET /__dev/api/file (editor) kept", has("GET", "/__dev/api/file"));
   assert("GET /__dev/api/metrics/full (metrics) kept", has("GET", "/__dev/api/metrics/full"));
 
+  // And on the real server: a request to a removed endpoint matches no route.
+  const chat = await call("POST", "/__dev/api/chat", { message: "hi" }, { "Sec-Fetch-Site": "same-origin" });
+  assert("a real POST /__dev/api/chat reaches no route (404)", chat.status === 404, `status=${chat.status}`);
+
   if (prevDebug === undefined) delete process.env.TINA4_DEBUG; else process.env.TINA4_DEBUG = prevDebug;
   if (prevMcp === undefined) delete process.env.TINA4_MCP; else process.env.TINA4_MCP = prevMcp;
 }
@@ -401,25 +491,24 @@ console.log("\n--- agent chat/execute proxy removed ---");
 // --- handleStatus ---
 console.log("\n--- handleStatus endpoint ---");
 
-const statusHandler = findHandler("GET", "/__dev/api/status");
-assert("handleStatus handler is registered", statusHandler !== undefined);
+assert("handleStatus handler is registered", isRegistered("GET", "/__dev/api/status"));
 
-if (statusHandler) {
+{
   // Seed some data so status has content
   MessageLog.clear();
   MessageLog.log("test", "info", "status check");
   RequestInspector.clear();
   RequestInspector.capture("GET", "/test", 200, 5);
 
-  // Register a known user route on the SAME router so the reported route
+  // Register a known user route on the SERVER's router so the reported route
   // count must reflect the real route table (not just be a number).
   router.get("/__status_probe_route", async (_req, res2) => res2.json({ ok: true }));
   const realRouteCount = router.getRoutes().length;
 
-  const res = mockRes();
-  await statusHandler(mockReq("/__dev/api/status"), res);
-  const data = res.result;
+  const res = await get("/__dev/api/status");
+  const data = res.data;
 
+  assert("handleStatus answers 200 over HTTP", res.status === 200, `status=${res.status}`);
   assert("handleStatus returns an object", typeof data === "object" && data !== null);
   assert("handleStatus has framework field", typeof data.framework === "string" && data.framework.includes("tina4-nodejs"));
   // routes must equal the live router's real route-table length, and must
@@ -429,6 +518,9 @@ if (statusHandler) {
     `data.routes=${data.routes} expected ${realRouteCount}`);
   assert("handleStatus routes counts our newly-registered probe route",
     data.routes >= 1 && router.getRoutes().some((r) => r.pattern === "/__status_probe_route"));
+  const probe = await get("/__status_probe_route");
+  assert("the probe route is really served by the same server",
+    probe.status === 200 && probe.data?.ok === true, `status=${probe.status}`);
   assert("handleStatus has messages field", data.messages !== undefined);
   assert("handleStatus has requests field", data.requests !== undefined);
   // memory: rss must be a real positive megabyte count from process.memoryUsage().
@@ -461,13 +553,11 @@ if (statusHandler) {
 // --- handleRoutes ---
 console.log("\n--- handleRoutes endpoint ---");
 
-const routesHandler = findHandler("GET", "/__dev/api/routes");
-assert("handleRoutes handler is registered", routesHandler !== undefined);
+assert("handleRoutes handler is registered", isRegistered("GET", "/__dev/api/routes"));
 
-if (routesHandler) {
-  const res = mockRes();
-  routesHandler(mockReq("/__dev/api/routes"), res);
-  const data = res.result;
+{
+  const res = await get("/__dev/api/routes");
+  const data = res.data;
 
   assert("handleRoutes returns an object", typeof data === "object" && data !== null);
   assert("handleRoutes has routes array", Array.isArray(data.routes));
@@ -476,34 +566,35 @@ if (routesHandler) {
   // Internal routes (/__dev) should be filtered out
   const hasDevRoute = data.routes.some((r: any) => r.path.startsWith("/__dev"));
   assert("handleRoutes filters out /__dev routes", !hasDevRoute);
+  // ...while the app's own routes on the real server are listed.
+  assert("handleRoutes lists the server's real user route",
+    data.routes.some((r: any) => r.path === "/__status_probe_route"),
+    `paths=${data.routes.map((r: any) => r.path).join(",")}`);
 }
 
 // --- handleMessages ---
 console.log("\n--- handleMessages endpoint ---");
 
-const messagesHandler = findHandler("GET", "/__dev/api/messages");
-assert("handleMessages handler is registered", messagesHandler !== undefined);
+assert("handleMessages handler is registered", isRegistered("GET", "/__dev/api/messages"));
 
-if (messagesHandler) {
+{
   MessageLog.clear();
   MessageLog.log("api", "info", "Test message 1");
   MessageLog.log("api", "warn", "Test message 2");
 
-  const res = mockRes();
-  messagesHandler(mockReq("/__dev/api/messages"), res);
-  const data = res.result;
+  const res = await get("/__dev/api/messages");
+  const data = res.data;
 
   assert("handleMessages returns an object", typeof data === "object" && data !== null);
   assert("handleMessages has messages array", Array.isArray(data.messages));
-  assert("handleMessages messages has correct count", data.messages.length === 2);
+  assert("handleMessages messages has correct count", data.messages.length === 2,
+    `got ${data.messages?.length}: ${JSON.stringify(data.messages?.map((m: any) => m.message))}`);
   assert("handleMessages has counts field", typeof data.counts === "object");
   assert("handleMessages counts has total", typeof data.counts.total === "number");
 
   // Test category filter via query param
   MessageLog.log("other", "info", "Other category");
-  const resFiltered = mockRes();
-  messagesHandler(mockReq("/__dev/api/messages?category=api"), resFiltered);
-  const filteredData = resFiltered.result;
+  const filteredData = (await get("/__dev/api/messages?category=api")).data;
   assert("handleMessages category filter works", filteredData.messages.length === 2);
   assert("handleMessages filtered messages are all 'api'", filteredData.messages.every((m: any) => m.category === "api"));
 }
@@ -511,18 +602,15 @@ if (messagesHandler) {
 // --- handleSystem ---
 console.log("\n--- handleSystem endpoint ---");
 
-const systemHandler = findHandler("GET", "/__dev/api/system");
-assert("handleSystem handler is registered", systemHandler !== undefined);
+assert("handleSystem handler is registered", isRegistered("GET", "/__dev/api/system"));
 
-if (systemHandler) {
+{
   const os = await import("node:os");
-  const res = mockRes();
-  await systemHandler(mockReq("/__dev/api/system"), res);
-  const data = res.result;
+  const data = (await get("/__dev/api/system")).data;
 
   assert("handleSystem returns an object", typeof data === "object" && data !== null);
   // Each field must equal the real value computed from the live process, not
-  // merely be of the right JS type.
+  // merely be of the right JS type. The server runs in THIS process.
   assert("handleSystem node_version equals process.version",
     data.node_version === process.version, `got ${data.node_version}`);
   assert("handleSystem platform equals process.platform",
@@ -546,11 +634,12 @@ if (systemHandler) {
 
 // --- handleSystem memory: current RSS vs peak RSS (parity with tina4-python#316) ---
 // memory_mb / memory.current_mb were V8's heapUsed, which leaves out Buffers,
-// and memory.peak_mb was the CURRENT rss. Grow the process by a real 150 MB
-// Buffer, free it with a real GC, and compare with the kernel's own figures.
+// and memory.peak_mb was the CURRENT rss. Grow the server process by a real
+// 150 MB Buffer, free it with a real GC, and compare what the real endpoint
+// reports with the kernel's own figures for this (the server's) process.
 console.log("\n--- handleSystem memory is current RSS, peak is the real peak ---");
 
-if (systemHandler) {
+{
   const fs = await import("node:fs");
   const v8 = await import("node:v8");
   const vm = await import("node:vm");
@@ -567,7 +656,11 @@ if (systemHandler) {
     return key === "VmRSS" ? process.memoryUsage().rss / 1048576 : process.resourceUsage().maxRSS / 1024;
   };
   const near = (value: number, real: number) => Math.abs(value - real) <= 25 + 0.1 * real;
-  const system = async () => { const r = mockRes(); await systemHandler(mockReq("/__dev/api/system"), r); return r.result; };
+  const system = async () => {
+    const r = await get("/__dev/api/system");
+    if (r.status !== 200) throw new Error(`/__dev/api/system answered ${r.status}`);
+    return r.data;
+  };
 
   let blob: Buffer | null = Buffer.alloc(150 * 1024 * 1024, 1); // filled, so every page is resident
   const held = await system();
@@ -598,14 +691,11 @@ if (systemHandler) {
 // --- handleTables ---
 console.log("\n--- handleTables endpoint ---");
 
-const tablesHandler = findHandler("GET", "/__dev/api/tables");
-assert("handleTables handler is registered", tablesHandler !== undefined);
+assert("handleTables handler is registered", isRegistered("GET", "/__dev/api/tables"));
 
-if (tablesHandler) {
+{
   // Without a database connected, it should return empty tables array
-  const res = mockRes();
-  await tablesHandler(mockReq("/__dev/api/tables"), res);
-  const data = res.result;
+  const data = (await get("/__dev/api/tables")).data;
 
   assert("handleTables returns an object", typeof data === "object" && data !== null);
   assert("handleTables has tables field", Array.isArray(data.tables));
@@ -616,40 +706,27 @@ if (tablesHandler) {
 // --- handleQueue ---
 console.log("\n--- handleQueue endpoint ---");
 
-const queueHandler = findHandler("GET", "/__dev/api/queue");
-assert("handleQueue handler is registered", queueHandler !== undefined);
+assert("handleQueue handler is registered", isRegistered("GET", "/__dev/api/queue"));
 
-if (queueHandler) {
+{
   // Seed the REAL file-backed queue, not the in-memory DevQueue: handleQueue
   // lists pending jobs by reading data/queue/<topic>/*.queue-data directly (see
   // its comment "this is why real persisted jobs now show even though DevQueue
   // is empty"). The test still seeded DevQueue, so the handler correctly
   // reported zero jobs and these assertions had been failing unseen.
   //
-  // The store is pinned to a fresh temp directory: this file runs at the repo
-  // cwd, whose data/queue/default accumulates jobs from every other run (100 of
-  // them on the lab, measured 2026-08-05), and the stats-vs-list assertions
-  // below are only meaningful against a directory whose contents are known.
-  // It stays a discriminator for the path defect precisely BECAUSE it is not
-  // <cwd>/data/queue — the location the endpoint used to hardcode.
-  const { mkdtempSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join: joinPath } = await import("node:path");
-  process.env.TINA4_QUEUE_PATH = mkdtempSync(joinPath(tmpdir(), "tina4-devadmin-queue-"));
+  // The store is pinned to a fresh temp directory, so the stats-vs-list
+  // assertions below are only meaningful against a directory whose contents
+  // are known. It stays a discriminator for the path defect precisely BECAUSE
+  // it is not <cwd>/data/queue — the location the endpoint used to hardcode.
+  process.env.TINA4_QUEUE_PATH = mkTmp(pjoin(osTmp(), "tina4-devadmin-queue-"));
   process.env.TINA4_QUEUE_BACKEND = "file";
   const { Queue } = await import("../packages/core/src/queue.ts");
   const devQueue = new Queue({ topic: "default" });
   devQueue.push({ job: "send-email", to: "test@example.com" });
   devQueue.push({ job: "process-image", file: "photo.jpg" });
 
-  // handleQueue is async — without the await, res.result is still undefined and
-  // the very next assert dereferences it, killing the file mid-run. That is how
-  // this block went unnoticed: the file died before printing a summary, the
-  // runner read the missing summary as "0 passed, 0 failed", and a genuinely
-  // failing assertion was reported as PASS devAdmin.test (0 passed).
-  const res = mockRes();
-  await queueHandler(mockReq("/__dev/api/queue"), res);
-  const data = res.result;
+  const data = (await get("/__dev/api/queue")).data;
 
   assert("handleQueue returns an object", typeof data === "object" && data !== null);
   assert("handleQueue has jobs array", Array.isArray(data.jobs));
@@ -673,11 +750,10 @@ if (queueHandler) {
   assert("handleQueue job has created_at", typeof job.created_at === "string");
 
   // Test status filter
-  const resFiltered = mockRes();
-  await queueHandler(mockReq("/__dev/api/queue?status=completed"), resFiltered);
-  const filteredData = resFiltered.result;
+  const filteredData = (await get("/__dev/api/queue?status=completed")).data;
   assert("handleQueue status filter returns only matching jobs",
-    filteredData.jobs.every((j: any) => j.status === "completed") || filteredData.jobs.length === 0);
+    Array.isArray(filteredData.jobs) &&
+    (filteredData.jobs.every((j: any) => j.status === "completed") || filteredData.jobs.length === 0));
 }
 
 // --- Hot reload parity ---
@@ -686,32 +762,26 @@ if (queueHandler) {
 // POST /__dev/api/reload is called. No filesystem scan, no sentinel file.
 console.log("\n--- hot reload ---");
 
-const mtimeHandler = findHandler("GET", "/__dev/api/mtime");
-const reloadHandler = findHandler("POST", "/__dev/api/reload");
-assert("mtime handler is registered", mtimeHandler !== undefined);
-assert("reload handler is registered", reloadHandler !== undefined);
+assert("mtime handler is registered", isRegistered("GET", "/__dev/api/mtime"));
+assert("reload handler is registered", isRegistered("POST", "/__dev/api/reload"));
 
-if (mtimeHandler && reloadHandler) {
-  function reqWithBody(url: string, body: any): any {
-    return { url, headers: {}, method: "POST", body };
-  }
+{
+  // The dashboard's own same-origin fetch; the real gate requires it for writes.
+  const sameOrigin = { "Sec-Fetch-Site": "same-origin" };
 
   // POST bumps the counter
   const beforeTs = Math.floor(Date.now() / 1000);
-  const postRes = mockRes();
-  await reloadHandler(reqWithBody("/__dev/api/reload", { file: "src/routes/home.ts", type: "reload" }), postRes);
+  const postRes = await call("POST", "/__dev/api/reload", { file: "src/routes/home.ts", type: "reload" }, sameOrigin);
   const afterTs = Math.floor(Date.now() / 1000);
 
-  assert("reload returns ok", postRes.result?.ok === true);
-  assert("reload echoes type", postRes.result?.type === "reload");
+  assert("reload returns ok", postRes.data?.ok === true, `status=${postRes.status} body=${postRes.raw}`);
+  assert("reload echoes type", postRes.data?.type === "reload");
 
-  const g1 = mockRes();
-  await mtimeHandler(mockReq("/__dev/api/mtime"), g1);
-  const d1 = g1.result;
+  const d1 = (await get("/__dev/api/mtime")).data;
   assert("mtime in [before, after]", d1.mtime >= beforeTs && d1.mtime <= afterTs);
   assert("mtime file echoes POST body", d1.file === "src/routes/home.ts");
 
-  // No sentinel file is written to disk
+  // No sentinel file is written to disk (the server's cwd is APP_DIR)
   const fs = await import("node:fs");
   const path = await import("node:path");
   const srcSentinel = path.join(process.cwd(), "src", ".reload_sentinel");
@@ -719,22 +789,29 @@ if (mtimeHandler && reloadHandler) {
   assert("no src/.reload_sentinel on disk", !fs.existsSync(srcSentinel));
   assert("no .tina4/.reload_sentinel on disk", !fs.existsSync(tinaSentinel));
 
+  // A cross-origin reload is refused by the real gate and does not move mtime.
+  const crossOrigin = await call("POST", "/__dev/api/reload", { file: "evil.ts" },
+    { "Sec-Fetch-Site": "cross-site", Origin: "https://evil.example" });
+  const dX = (await get("/__dev/api/mtime")).data;
+  assert("a cross-origin reload is refused (403) and leaves mtime/file alone",
+    crossOrigin.status === 403 && dX.file === "src/routes/home.ts" && dX.mtime === d1.mtime,
+    `status=${crossOrigin.status} file=${dX.file}`);
+
   // Monotonic across successive reloads
   await new Promise((r) => setTimeout(r, 1100));
-  const postRes2 = mockRes();
-  await reloadHandler(reqWithBody("/__dev/api/reload", { file: "b.ts" }), postRes2);
+  await call("POST", "/__dev/api/reload", { file: "b.ts" }, sameOrigin);
 
-  const g2 = mockRes();
-  await mtimeHandler(mockReq("/__dev/api/mtime"), g2);
-  assert("mtime strictly greater after a later reload", g2.result.mtime > d1.mtime);
-  assert("file updated to latest reload", g2.result.file === "b.ts");
+  const d2 = (await get("/__dev/api/mtime")).data;
+  assert("mtime strictly greater after a later reload", d2.mtime > d1.mtime);
+  assert("file updated to latest reload", d2.file === "b.ts");
 }
 
 // ── Supervisor proxy (threads) ─────────────────────────────
-// Spins up a local HTTP stub on a random port, points
-// TINA4_SUPERVISOR_URL at it, and asserts our /__dev/api/threads*
-// handlers forward correctly. Mirrors Python's proxy parity
-// (tina4_python.dev_admin._api_threads). The /__dev/api/chat proxy was
+// Points TINA4_SUPERVISOR_URL at a real local HTTP server on a random port
+// (the upstream the proxy forwards to; the Rust agent is not available in a
+// test run) and asserts our /__dev/api/threads* endpoints, called over real
+// HTTP on the real Tina4 server, forward correctly. Mirrors Python's proxy
+// parity (tina4_python.dev_admin._api_threads). The /__dev/api/chat proxy was
 // removed in 3.13.132 (dev-admin agent chat panel dropped).
 console.log("\n--- supervisor proxy (threads) ---");
 {
@@ -747,12 +824,12 @@ console.log("\n--- supervisor proxy (threads) ---");
     contentType: string;
   };
 
-  // Tiny stub for the Rust agent. Routes responses based on path:
+  // Upstream server for the Rust agent. Routes responses based on path:
   //   /threads (GET)   → JSON list
   //   /threads (POST)  → JSON echo
   //   /threads/<id>    → JSON echo (handles PATCH/GET)
   const captured: Captured[] = [];
-  const stub = createServer((req, res) => {
+  const upstream = createServer((req, res) => {
     let body = "";
     req.setEncoding("utf-8");
     req.on("data", (chunk) => { body += chunk; });
@@ -786,125 +863,79 @@ console.log("\n--- supervisor proxy (threads) ---");
       }
 
       res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "stub: not found" }));
+      res.end(JSON.stringify({ error: "upstream: not found" }));
     });
   });
 
-  await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
-  const stubPort = (stub.address() as import("node:net").AddressInfo).port;
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const upstreamPort = (upstream.address() as import("node:net").AddressInfo).port;
   const prevSupervisor = process.env.TINA4_SUPERVISOR_URL;
-  process.env.TINA4_SUPERVISOR_URL = `http://127.0.0.1:${stubPort}`;
+  // supervisorBaseUrl() reads process.env on every request.
+  process.env.TINA4_SUPERVISOR_URL = `http://127.0.0.1:${upstreamPort}`;
+  const sameOrigin = { "Sec-Fetch-Site": "same-origin" };
 
-  // Re-register routes so any cached env reads (there are none here, but
-  // safety) settle. The existing `router` already has handlers wired —
-  // supervisorBaseUrl() reads process.env on every call.
-  const threadsListHandler = findHandler("GET", "/__dev/api/threads");
-  const threadsCreateHandler = findHandler("POST", "/__dev/api/threads");
-  const threadsPatchHandler = findHandler("PATCH", "/__dev/api/threads/{id}");
-  const threadsMessagesHandler = findHandler("GET", "/__dev/api/threads/{id}/messages");
-
-  assert("threads GET handler registered", threadsListHandler !== undefined);
-  assert("threads POST handler registered", threadsCreateHandler !== undefined);
-  assert("threads PATCH handler registered", threadsPatchHandler !== undefined);
-  assert("threads messages GET handler registered", threadsMessagesHandler !== undefined);
-
-  // Build a fuller mock res for streaming + status capture
-  function streamingRes(): any {
-    let json: any = undefined;
-    let status: number | undefined = undefined;
-    let chunks: Buffer[] = [];
-    let headers: Record<string, string | number | string[]> = {};
-    return {
-      json(data: any, s?: number) { json = data; status = s; },
-      html(_: any, s?: number) { status = s; },
-      raw: {
-        writeHead(code: number, h?: Record<string, string | number | string[]>) {
-          status = code;
-          if (h) headers = h;
-        },
-        write(buf: Buffer | string) {
-          chunks.push(Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf)));
-        },
-        end(buf?: Buffer | string) {
-          if (buf !== undefined) chunks.push(Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf)));
-        },
-        flushHeaders() { /* noop */ },
-      },
-      get result() { return json; },
-      get status() { return status; },
-      get streamed() { return Buffer.concat(chunks).toString("utf-8"); },
-      get streamHeaders() { return headers; },
-    };
-  }
-
-  function reqWith(opts: { url: string; method: string; body?: any }): any {
-    return { url: opts.url, method: opts.method, headers: {}, body: opts.body };
-  }
+  assert("threads GET handler registered", isRegistered("GET", "/__dev/api/threads"));
+  assert("threads POST handler registered", isRegistered("POST", "/__dev/api/threads"));
+  assert("threads PATCH handler registered", isRegistered("PATCH", "/__dev/api/threads/{id}"));
+  assert("threads messages GET handler registered", isRegistered("GET", "/__dev/api/threads/{id}/messages"));
 
   // 1. proxies threads list to the supervisor
   captured.length = 0;
   {
-    const res = streamingRes();
-    await threadsListHandler!(reqWith({ url: "/__dev/api/threads", method: "GET" }), res);
-    assert("threads list reached the stub", captured.some((c) => c.method === "GET" && c.url === "/threads"));
+    const res = await get("/__dev/api/threads");
+    assert("threads list reached the upstream", captured.some((c) => c.method === "GET" && c.url === "/threads"));
     assert(
       "threads list response forwarded verbatim",
-      res.result && Array.isArray((res.result as any).threads) && (res.result as any).threads.length === 2,
+      res.status === 200 && Array.isArray(res.data?.threads) && res.data.threads.length === 2,
+      `status=${res.status} body=${res.raw}`,
     );
   }
 
   // 2. honours TINA4_SUPERVISOR_URL env var
-  //    The previous assertion already proves it (the stub is on a random
+  //    The previous assertion already proves it (the upstream is on a random
   //    port that only TINA4_SUPERVISOR_URL points at) — assert it
   //    explicitly so the intent is documented.
   assert(
     "honours TINA4_SUPERVISOR_URL env var",
-    captured.length >= 1 && process.env.TINA4_SUPERVISOR_URL === `http://127.0.0.1:${stubPort}`,
+    captured.length >= 1 && process.env.TINA4_SUPERVISOR_URL === `http://127.0.0.1:${upstreamPort}`,
   );
 
   // 3. patches threads on upstream
   captured.length = 0;
   {
-    const res = streamingRes();
-    await threadsPatchHandler!(reqWith({
-      url: "/__dev/api/threads/abc123",
-      method: "PATCH",
-      body: { archived: true },
-    }), res);
+    const res = await call("PATCH", "/__dev/api/threads/abc123", { archived: true }, sameOrigin);
     const patchCall = captured.find((c) => c.method === "PATCH" && c.url === "/threads/abc123");
-    assert("PATCH threads/{id} reached the stub", patchCall !== undefined);
+    assert("PATCH threads/{id} reached the upstream", patchCall !== undefined);
     let forwardedBody: any = {};
     try { forwardedBody = JSON.parse(patchCall?.body ?? "{}"); } catch { /* leave default */ }
-    assert("PATCH body forwarded verbatim", forwardedBody.archived === true);
-    const result = res.result as any;
+    assert("PATCH body forwarded verbatim", forwardedBody.archived === true, `forwarded=${patchCall?.body}`);
     assert(
       "PATCH response forwarded verbatim",
-      result && result.path === "/threads/abc123" && result.method === "PATCH",
+      res.data && res.data.path === "/threads/abc123" && res.data.method === "PATCH",
+      `status=${res.status} body=${res.raw}`,
     );
   }
 
   // 4. threads messages history (sub-path forwarding)
   captured.length = 0;
   {
-    const res = streamingRes();
-    await threadsMessagesHandler!(reqWith({
-      url: "/__dev/api/threads/abc123/messages",
-      method: "GET",
-    }), res);
+    await get("/__dev/api/threads/abc123/messages");
     const msgCall = captured.find((c) => c.method === "GET" && c.url === "/threads/abc123/messages");
     assert("messages sub-path forwarded verbatim", msgCall !== undefined);
   }
 
-  // 5. threads POST create rejects unsupported methods? GET/POST/PATCH all supported here.
-  //    The list+create handler enforces GET/POST only — sanity-check that.
+  // 5. The list+create endpoint serves GET/POST only: a real PUT is refused
+  //    with 405 and never reaches the upstream.
+  captured.length = 0;
   {
-    const res = streamingRes();
-    await threadsListHandler!(reqWith({ url: "/__dev/api/threads", method: "PUT" }), res);
-    assert("threads list/create rejects PUT with 405", res.status === 405 && (res.result as any)?.error === "method not allowed");
+    const res = await call("PUT", "/__dev/api/threads", { x: 1 }, sameOrigin);
+    assert("threads list/create rejects PUT with 405 (never proxied)",
+      res.status === 405 && captured.length === 0,
+      `status=${res.status} proxied=${captured.length}`);
   }
 
   // Cleanup
-  await new Promise<void>((resolve) => stub.close(() => resolve()));
+  await new Promise<void>((resolve) => upstream.close(() => resolve()));
   if (prevSupervisor === undefined) delete process.env.TINA4_SUPERVISOR_URL;
   else process.env.TINA4_SUPERVISOR_URL = prevSupervisor;
 }
@@ -916,13 +947,10 @@ console.log("\n--- supervisor proxy (threads) ---");
 // tina4-python / tina4-php / tina4-ruby files endpoint 1:1.
 console.log("\n--- file browser ---");
 
-const filesHandler = findHandler("GET", "/__dev/api/files");
-assert("files handler is registered", filesHandler !== undefined);
+assert("files handler is registered", isRegistered("GET", "/__dev/api/files"));
 
-if (filesHandler) {
-  const res = mockRes();
-  await filesHandler(mockReq("/__dev/api/files?path=."), res);
-  const data = res.result;
+{
+  const data = (await get("/__dev/api/files?path=.")).data;
 
   assert("files returns path", typeof data?.path === "string");
   assert("files returns branch (string)", typeof data?.branch === "string");
@@ -942,12 +970,15 @@ if (filesHandler) {
   assert("at least one directory (is_dir true, size null)", dir !== undefined && dir.size === null);
   assert("directory reports has_children boolean", dir === undefined || typeof dir.has_children === "boolean");
   assert("at least one file (is_dir false, has_children null)", file !== undefined && file.has_children === null);
+  // The listing is of the served project, not some other directory.
+  assert("files lists the served project's own src/ and package.json",
+    data.entries.some((e: any) => e.name === "src" && e.is_dir === true) &&
+    data.entries.some((e: any) => e.name === "package.json" && e.is_dir === false));
 
   // Missing / invalid path: empty-but-valid shape, never a throwing 404.
-  const resMissing = mockRes();
-  await filesHandler(mockReq("/__dev/api/files?path=__does_not_exist__"), resMissing);
-  assert("missing path returns entries: []", Array.isArray(resMissing.result?.entries) && resMissing.result.entries.length === 0);
-  assert("missing path still returns branch", typeof resMissing.result?.branch === "string");
+  const missing = await get("/__dev/api/files?path=__does_not_exist__");
+  assert("missing path returns entries: []", Array.isArray(missing.data?.entries) && missing.data.entries.length === 0);
+  assert("missing path still returns branch", typeof missing.data?.branch === "string");
 }
 
 // --- file read language detection (/__dev/api/file) ---
@@ -957,16 +988,15 @@ if (filesHandler) {
 // "ts not highlighting on Node" bug — the endpoint returned no language at all.
 console.log("\n--- file read language detection ---");
 
-const fileReadHandler = findHandler("GET", "/__dev/api/file");
-assert("file read handler is registered", fileReadHandler !== undefined);
+assert("file read handler is registered", isRegistered("GET", "/__dev/api/file"));
 
-if (fileReadHandler) {
+{
   const fsmod = await import("node:fs");
   const pathmod = await import("node:path");
   const root = process.cwd();
 
-  // Write two tiny real files under the repo so the handler reads them through
-  // its normal safeJoin/readFileSync path (path is repo-relative).
+  // Write two tiny real files under the served project so the endpoint reads
+  // them through its normal safeJoin/readFileSync path (path is project-relative).
   const tsRel = pathmod.join("data", "__lang_probe.ts");
   const rbRel = pathmod.join("data", "__lang_probe.rb");
   const tsAbs = pathmod.join(root, tsRel);
@@ -976,20 +1006,24 @@ if (fileReadHandler) {
   fsmod.writeFileSync(rbAbs, "x = 1\n", "utf-8");
 
   try {
-    const tsRes = mockRes();
-    await fileReadHandler(mockReq(`/__dev/api/file?path=${encodeURIComponent(tsRel)}`), tsRes);
-    assert("file read returns content", typeof tsRes.result?.content === "string");
-    assert("file read keeps path/bytes", typeof tsRes.result?.path === "string" && typeof tsRes.result?.bytes === "number");
-    assert(".ts yields language typescript", tsRes.result?.language === "typescript", `got ${tsRes.result?.language}`);
+    const ts = (await get(`/__dev/api/file?path=${encodeURIComponent(tsRel)}`)).data;
+    assert("file read returns content", typeof ts?.content === "string");
+    assert("file read returns the real file's bytes", ts?.content === "export const x: number = 1;\n");
+    assert("file read keeps path/bytes", typeof ts?.path === "string" && typeof ts?.bytes === "number");
+    assert(".ts yields language typescript", ts?.language === "typescript", `got ${ts?.language}`);
 
-    const rbRes = mockRes();
-    await fileReadHandler(mockReq(`/__dev/api/file?path=${encodeURIComponent(rbRel)}`), rbRes);
-    assert(".rb yields language ruby", rbRes.result?.language === "ruby", `got ${rbRes.result?.language}`);
+    const rb = (await get(`/__dev/api/file?path=${encodeURIComponent(rbRel)}`)).data;
+    assert(".rb yields language ruby", rb?.language === "ruby", `got ${rb?.language}`);
   } finally {
     try { fsmod.unlinkSync(tsAbs); } catch { /* ignore */ }
     try { fsmod.unlinkSync(rbAbs); } catch { /* ignore */ }
   }
 }
+
+// Stop the real server and leave the throwaway project.
+boot.close();
+process.chdir(ORIG_CWD);
+try { rmTree(APP_DIR, { recursive: true, force: true }); } catch { /* Windows may still hold a handle */ }
 
 // Also exercise the helper directly across the full canonical map coverage,
 // including the no-extension Dockerfile detection and the .env / .env.example
