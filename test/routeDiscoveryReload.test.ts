@@ -23,10 +23,14 @@ import {
   _resetRouteDiscovery,
 } from "../packages/core/src/routeDiscovery.ts";
 
-/** Push a file's mtime forward so an edit isn't masked by same-millisecond writes. */
-function bumpMtime(filePath: string, secondsAhead = 2): void {
+/**
+ * Push a file's mtime forward so an edit isn't masked by same-millisecond writes.
+ * Returns the mtime it set, in ms.
+ */
+function bumpMtime(filePath: string, secondsAhead = 2): number {
   const when = new Date(Date.now() + secondsAhead * 1000);
   utimesSync(filePath, when, when);
+  return when.getTime();
 }
 
 let pass = 0;
@@ -200,15 +204,16 @@ console.log("=== Route Discovery — Reload Behaviour ===\n");
   mkdirSync(dir, { recursive: true });
   const mod = join(dir, "handler.mjs");
 
-  const { statSync } = await import("node:fs");
-
+  // The cache-bust key is the mtime this test SETS, not one read back with
+  // stat(): stat-then-import of the same path is a check-then-use pattern.
   writeFileSync(mod, `export const handler = () => "v1";\n`);
-  const a = await import(`${pathToFileURL(mod).href}?t=${statSync(mod).mtimeMs}`);
+  const t1 = bumpMtime(mod, 0);
+  const a = await import(`${pathToFileURL(mod).href}?t=${t1}`);
   assert("cachebust: first import is v1", a.handler() === "v1");
 
   writeFileSync(mod, `export const handler = () => "v2";\n`);
-  bumpMtime(mod);
-  const b = await import(`${pathToFileURL(mod).href}?t=${statSync(mod).mtimeMs}`);
+  const t2 = bumpMtime(mod);
+  const b = await import(`${pathToFileURL(mod).href}?t=${t2}`);
   assert("cachebust: mtime-keyed re-import delivers v2 (not stale v1)", b.handler() === "v2", `got ${b.handler()}`);
 
   rmSync(dir, { recursive: true });
