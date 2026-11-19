@@ -46,6 +46,7 @@ import { createRequire } from "node:module";
 import { dirname, join, relative } from "node:path";
 import { findOnPath } from "../util.js";
 import { spawnSync } from "node:child_process";
+import { spawnSyncAllowingBatch } from "../../../core/src/batchSpawn.js";
 
 // Source extensions we count as lintable app code. `.d.ts` declaration files are
 // deliberately excluded — they carry no runnable code for `node --check` and are
@@ -237,7 +238,8 @@ function bootstrapEslint(cwd: string, noInstall: boolean): EslintSetup {
   }
   if (!bin) {
     console.log("  · installing eslint (npm i -D eslint @eslint/js typescript-eslint)...");
-    const rc = spawnSync(npm, ["install", "-D", "eslint", "@eslint/js", "typescript-eslint"], { cwd, stdio: "inherit" }).status;
+    // On Windows npm is npm.cmd, which Node will not spawn without a shell.
+    const rc = spawnSyncAllowingBatch(npm, ["install", "-D", "eslint", "@eslint/js", "typescript-eslint"], { cwd, stdio: "inherit" }).status;
     if (rc === 0) bin = resolveEslintBin(cwd);
     else console.log("  · could not install eslint — using the zero-dependency baseline.");
   }

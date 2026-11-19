@@ -19,7 +19,7 @@ import { generate, GENERATORS, RESOLUTION_ENVELOPE_VERSION, RESOLUTION_FLAGS } f
 import { runSeeds } from "./commands/seed.js";
 import { queueCommand, QUEUE_FLAGS, QUEUE_SUBCOMMAND_NAMES } from "./commands/queue.js";
 import { buildImage } from "./commands/build.js";
-import { spawnSync } from "node:child_process";
+import { spawnSyncAllowingBatch } from "../../core/src/batchSpawn.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { findOnPath } from "./util.js";
@@ -557,7 +557,10 @@ export function delegateToClient(command: string, args: string[]): number {
 
   // stdio is inherited, so the client's interactive prompts (setup) and colour
   // output work exactly as if it had been invoked directly.
-  const result = spawnSync(client, [command, ...args], {
+  // A tina4.cmd / tina4.bat client is accepted above, so it must be startable:
+  // Node will not spawn a batch file without a shell, and a plain shell would
+  // not escape the user's arguments.
+  const result = spawnSyncAllowingBatch(client, [command, ...args], {
     stdio: "inherit",
     env: { ...process.env, [DELEGATION_GUARD_ENV]: command },
   });

@@ -8,6 +8,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { readdirSync, statSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join, relative, basename, extname } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { RouteDefinition, RouteHandler, RouteMeta } from "./types.js";
 
 const VALID_METHODS = new Set(["get", "post", "put", "delete", "patch"]);
@@ -71,7 +72,9 @@ export async function discoverRoutes(routesDir: string): Promise<RouteDefinition
     try {
       // Cache-bust for hot-reload, keyed on mtime: identical content reuses the
       // same module URL (no needless re-import), an edit produces a fresh URL.
-      const moduleUrl = `file://${filePath}?t=${currentMtime}`;
+      // pathToFileURL, not a hand-built file:// string: it percent-encodes #, ? and %, which
+      // would otherwise end the path early, and writes a drive letter correctly.
+      const moduleUrl = `${pathToFileURL(filePath).href}?t=${currentMtime}`;
       const mod = await import(moduleUrl);
 
       const handler: RouteHandler = mod.default ?? mod.handler;
@@ -146,7 +149,10 @@ function recordBrokenImport(filePath: string, error: Error): void {
   try {
     const brokenDir = join(process.cwd(), "data", ".broken");
     if (!existsSync(brokenDir)) mkdirSync(brokenDir, { recursive: true });
-    const slug = filePath.replace(/[/\\]/g, "_");
+    // `:` too: an absolute Windows path starts with a drive letter, and on NTFS
+    // a colon in a file name writes an alternate data stream instead of a file,
+    // so no *.broken listing would ever see the marker.
+    const slug = filePath.replace(/[/\\:]/g, "_");
     const payload = JSON.stringify({
       type: "auto_discover_failure",
       file: filePath,

@@ -173,6 +173,25 @@ assert("every delegated command has a summary",
 }
 
 {
+  // Arguments are the user's, and on Windows the client may be a batch file
+  // that cmd.exe parses twice (the /c line, then the batch file's own %*). Each
+  // one must arrive byte for byte, and a metacharacter must never become shell
+  // syntax: the `&` argument would create INJECTED.txt if it were obeyed.
+  freshTmp();
+  const marker = join(tmpRoot, "INJECTED.txt");
+  const hostile = [
+    "with space", `a&echo pwned>"${marker}"`, "100%", "%PATH%", 'quote"inside',
+    "trailing\\", "caret^x", "pipe|x", "<lt>", "(paren)", "!bang!", "", "semi;colon,comma",
+  ];
+  const { code } = runCli(["deploy", ...hostile], pathWithRealClient(0));
+  assert("hostile arguments reach the client verbatim",
+    code === 0 && JSON.stringify(recordedArgv()) === JSON.stringify(["deploy", ...hostile]),
+    `code=${code} argv=${JSON.stringify(recordedArgv())}`);
+  assert("no argument is executed as a command", !existsSync(marker));
+  rmSync(tmpRoot, { recursive: true, force: true });
+}
+
+{
   freshTmp();
   const { code } = runCli(["doctor"], pathWithRealClient(3));
   assert("the client's exit code is propagated, not swallowed", code === 3, `code=${code}`);
