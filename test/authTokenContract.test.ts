@@ -26,6 +26,7 @@ import { isLoopback, isRequestAllowed } from "../packages/core/src/mcp.ts";
 import { startServer } from "../packages/core/src/index.ts";
 import { Frond, setFormTokenSessionId } from "../packages/frond/src/engine.ts";
 import { freePort } from "./freePort.ts";
+import { TSX_LOADER_URL, moduleUrl } from "./_portableSpawn.ts";
 
 let passed = 0;
 let failed = 0;
@@ -51,6 +52,9 @@ delete process.env.TINA4_TOKEN_LIMIT;
 setFormTokenSessionId("");
 
 const repo = join(import.meta.dirname, "..");
+// A child's `--import` and every `import` in a generated script take a URL;
+// a bare Windows path parses as scheme "d:" (see _portableSpawn.ts).
+const repoModule = (relative: string): string => moduleUrl(join(repo, relative));
 const root = mkdtempSync(join(tmpdir(), "tina4-auth-contract-"));
 for (const dir of ["contract/session", "contract/write", "contract/read"]) {
   mkdirSync(join(root, "src/routes", dir), { recursive: true });
@@ -215,7 +219,7 @@ try {
     // verifier's own check is what TELLS the operator why every token fails.
     // Observed in a real child process.
     const token = hs256({ user_id: 1 }, "short");
-    const code = `import { validToken } from ${JSON.stringify(join(repo, "packages/core/src/auth.ts"))};\n` +
+    const code = `import { validToken } from ${JSON.stringify(repoModule("packages/core/src/auth.ts"))};\n` +
       `console.log("RESULT", JSON.stringify(validToken(${JSON.stringify(token)}, "short")));\n` +
       "setTimeout(() => process.exit(0), 200);\n";
     const dir = mkdtempSync(join(tmpdir(), "tina4-weak-"));
@@ -225,7 +229,7 @@ try {
       for (const [key, value] of Object.entries(process.env)) {
         if (!key.startsWith("TINA4_") && value !== undefined) env[key] = value;
       }
-      const result = spawnSync(process.execPath, ["--import", join(repo, "node_modules/tsx/dist/loader.mjs"), join(dir, "weak.ts")],
+      const result = spawnSync(process.execPath, ["--import", TSX_LOADER_URL, join(dir, "weak.ts")],
         { cwd: dir, env, encoding: "utf8", timeout: 60_000 });
       const output = `${result.stdout}${result.stderr}`;
       return [result.status === 0 && output.includes("RESULT null") && output.includes("at least 32 bytes")
@@ -247,7 +251,7 @@ try {
       writeFileSync(join(dir, "package.json"), '{"type":"module"}');
       writeFileSync(join(dir, ".env"), envFile);
       writeFileSync(join(dir, "boot.ts"),
-        `import { startServer } from ${JSON.stringify(join(repo, "packages/core/src/index.ts"))};\n` +
+        `import { startServer } from ${JSON.stringify(repoModule("packages/core/src/index.ts"))};\n` +
         `const server = await startServer({ port: 0, routesDir: ${JSON.stringify(join(dir, "src/routes"))} });\n` +
         "console.log('BOOTED'); server.close(); process.exit(0);\n");
       const env: Record<string, string> = {};
@@ -255,7 +259,7 @@ try {
         if (!key.startsWith("TINA4_") && value !== undefined) env[key] = value;
       }
       env.TINA4_NO_BROWSER = "true";
-      const result = spawnSync(process.execPath, ["--import", join(repo, "node_modules/tsx/dist/loader.mjs"), join(dir, "boot.ts")],
+      const result = spawnSync(process.execPath, ["--import", TSX_LOADER_URL, join(dir, "boot.ts")],
         { cwd: dir, env, encoding: "utf8", timeout: 60_000 });
       return { status: result.status, output: `${result.stdout}${result.stderr}` };
     } finally {

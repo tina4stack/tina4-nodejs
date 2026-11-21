@@ -30,6 +30,7 @@ import { COMMANDS } from "../packages/cli/src/bin.ts";
 import { GENERATORS, RESOLUTION_FLAGS } from "../packages/cli/src/commands/generate.ts";
 import { QUEUE_FLAGS } from "../packages/cli/src/commands/queue.ts";
 
+import { npmCommand } from "./_portableSpawn.ts";
 const repoRoot = resolve(import.meta.dirname, "..");
 const binPath = join(repoRoot, "packages/cli/dist/bin.js");
 
@@ -47,8 +48,8 @@ function assert(name: string, condition: boolean, detail = ""): void {
 
 // ── Build the real CLI so the cases run what ships, not a stale dist ──
 {
-  const build = spawnSync("npm", ["run", "build", "-w", "packages/cli"], {
-    cwd: repoRoot, encoding: "utf-8", shell: process.platform === "win32",
+  const build = spawnSync(...npmCommand("run", "build", "-w", "packages/cli"), {
+    cwd: repoRoot, encoding: "utf-8",
   });
   if (build.status !== 0 || !existsSync(binPath)) {
     console.log(`  FAIL build packages/cli\n${build.stdout}${build.stderr}`);

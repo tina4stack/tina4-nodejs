@@ -33,6 +33,7 @@ import http from "node:http";
 
 import { devReloadWs, computeAcceptKey } from "../packages/core/src/index.ts";
 
+import { TSX_CLI, killProcessTree } from "./_portableSpawn.ts";
 let pass = 0;
 let fail = 0;
 function assert(name: string, condition: boolean, detail = "") {
@@ -168,7 +169,7 @@ await (async () => {
   // pipeline never return. `detached` makes the child a process-GROUP leader so
   // killTree() below can take the whole tree down -- the same killpg lesson the
   // Rust CLI learned for its own `npx -> tsx -> node` respawn.
-  const proc = spawn("npx", ["tsx", "app.ts"], {
+  const proc = spawn(process.execPath, [TSX_CLI, "app.ts"], {
     cwd: proj,
     detached: true,
     env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules"), PORT: String(port) },
@@ -178,7 +179,7 @@ await (async () => {
   const killTree = () => {
     if (proc.pid === undefined) return;
     try {
-      process.kill(-proc.pid, "SIGKILL");   // negative pid = the group
+      killProcessTree(proc.pid);   // negative pid = the group
     } catch {
       /* already gone */
     }

@@ -22,13 +22,13 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, openSync, closeSync, fstatSync, readSync, rmSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, openSync, closeSync, fstatSync, readSync, rmSync, chmodSync, copyFileSync, linkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import net from "node:net";
 
+import { TSX_CLI, moduleUrl, killProcessTree } from "./_portableSpawn.ts";
 const REPO = resolve(import.meta.dirname, "..");
-const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 // Written out, not imported, so the test does not trust the code it checks.
 const CI_VARIABLES = ["CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "JENKINS_URL", "TF_BUILD", "TEAMCITY_VERSION"];
 const OPEN_WAIT_MS = 5000; // the server opens 2s after it listens
@@ -39,7 +39,7 @@ const started: Array<{ child: ChildProcess; root: string }> = [];
 afterEach(() => {
   for (const { child, root } of started.splice(0)) {
     try {
-      if (child.pid && child.exitCode === null) process.kill(-child.pid, "SIGKILL");
+      if (child.pid && child.exitCode === null) killProcessTree(child.pid);
     } catch {
       /* already gone */
     }
@@ -79,6 +79,22 @@ async function bootAndWatch(env: Record<string, string>, launch: "startServer" |
     writeFileSync(join(root, "bin", opener), `#!/bin/sh\nprintf '%s\\n' "$1" >> '${marker}'\n`);
     chmodSync(join(root, "bin", opener), 0o755);
   }
+  if (process.platform === "win32") {
+    // Windows opens with execFile("rundll32", ["url.dll,FileProtocolHandler", url])
+    // (server.ts) and runs no shebang script. A real rundll32.exe earlier on
+    // PATH - a copy of node - treats "url.dll,FileProtocolHandler" as its script,
+    // resolved against the server's cwd (root), and that script records the URL.
+    // It is a DIRECTORY with its own commonjs package.json: under the app's
+    // "type": "module", a FILE of that name has the unknown extension
+    // ".dll,FileProtocolHandler" and node refuses to load it.
+    const fakeRundll = join(root, "bin", "rundll32.exe");
+    try { linkSync(process.execPath, fakeRundll); } catch { copyFileSync(process.execPath, fakeRundll); }
+    const opener = join(root, "url.dll,FileProtocolHandler");
+    mkdirSync(opener);
+    writeFileSync(join(opener, "package.json"), '{"type":"commonjs"}\n');
+    writeFileSync(join(opener, "index.js"),
+      `require("node:fs").appendFileSync(${JSON.stringify(marker)}, process.argv[2] + "\\n");\n`);
+  }
   const routes = join(root, "src", "routes", "hello");
   mkdirSync(routes, { recursive: true });
   writeFileSync(join(routes, "get.ts"), `export default async function (_req: any, res: any) { return res.json({ ok: true }); }\n`);
@@ -89,23 +105,26 @@ async function bootAndWatch(env: Record<string, string>, launch: "startServer" |
     join(root, "app.ts"),
     launch === "cli-no-browser"
       ? // What `tina4nodejs serve --no-browser` runs (bin.ts parses the flag into this call).
-        `import { serveProject } from '${REPO}/packages/cli/src/commands/serve.ts';\n` +
+        `import { serveProject } from ${JSON.stringify(moduleUrl(join(REPO, "packages/cli/src/commands/serve.ts")))};\n` +
           `await serveProject({ port: ${port}, noBrowser: true });\n`
-      : `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
-          `await startServer({ port: ${port}, routesDir: '${routesDir}'${launch === "startServer-noBrowser" ? ", noBrowser: true" : ""} } as never);\n`,
+      : `import { startServer } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
+          `await startServer({ port: ${port}, routesDir: ${JSON.stringify(routesDir)}${launch === "startServer-noBrowser" ? ", noBrowser: true" : ""} } as never);\n`,
   );
 
   const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  // Windows spells it "Path"; drop every casing so the PATH below is the only one.
+  const inheritedPath = process.env.PATH ?? "/usr/bin:/bin";
+  for (const name of Object.keys(childEnv)) if (name.toUpperCase() === "PATH") delete childEnv[name];
   for (const name of ["TINA4_NO_BROWSER", "TINA4_DEBUG", ...CI_VARIABLES]) delete childEnv[name];
   const logPath = join(root, "server.log");
   const fd = openSync(logPath, "w+");
-  const child = spawn(TSX, ["app.ts"], {
+  const child = spawn(process.execPath, [TSX_CLI, "app.ts"], {
     cwd: root,
     detached: true,
     stdio: ["ignore", fd, fd],
     env: {
       ...childEnv,
-      PATH: `${join(root, "bin")}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      PATH: `${join(root, "bin")}${delimiter}${inheritedPath}`,
       TINA4_OVERRIDE_CLIENT: "true",
       TINA4_NO_AI_PORT: "true",
       TINA4_PORT: String(port),

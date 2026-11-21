@@ -60,6 +60,7 @@ import { RedisSessionHandler } from "../packages/core/src/session.js";
 import { ValkeySessionHandler } from "../packages/core/src/sessionHandlers/valkeyHandler.js";
 import { MemcachedSessionHandler } from "../packages/core/src/sessionHandlers/memcachedHandler.js";
 import { MongoSessionHandler } from "../packages/core/src/sessionHandlers/mongoHandler.js";
+import { removeTempDir } from "./_tempDir.ts";
 
 let pass = 0;
 let fail = 0;
@@ -251,7 +252,7 @@ async function main(): Promise<void> {
     }
   } finally {
     await listener.close();
-    rmSync(workDir, { recursive: true, force: true });
+    removeTempDir(workDir);
     const { closeSyncSockets } = await import("../packages/core/src/sessionHandlers/syncSocket.js");
     try { closeSyncSockets(); } catch { /* nothing to reap */ }
   }

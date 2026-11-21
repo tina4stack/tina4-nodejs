@@ -32,6 +32,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join, resolve } from "node:path";
+import { TSX_CLI } from "./_portableSpawn.ts";
 let pass = 0;
 let fail = 0;
 function assert(label: string, ok: boolean, detail = ""): void {
@@ -40,7 +41,6 @@ function assert(label: string, ok: boolean, detail = ""): void {
 }
 
 const repoRoot = resolve(import.meta.dirname, "..");
-const tsxBin = join(repoRoot, "node_modules/.bin/tsx");
 const cliBin = join(repoRoot, "packages/cli/src/bin.ts");
 const baseDir = join(repoRoot, `.tmp_coemit_${process.pid}`);
 
@@ -51,7 +51,7 @@ delete childEnv.TINA4_API_KEY;
 
 /** Run `tina4nodejs <args>` in `cwd` through the real CLI; require success. */
 function runCli(cwd: string, args: string[]): void {
-  execFileSync(tsxBin, [cliBin, ...args], {
+  execFileSync(process.execPath, [TSX_CLI, cliBin, ...args], {
     cwd, env: childEnv, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000,
   });
 }
@@ -59,7 +59,7 @@ function runCli(cwd: string, args: string[]): void {
 /** Run a co-emitted `*.test.ts` with real tsx; return { ok, output }. */
 function runEmittedTest(cwd: string, testRel: string): { ok: boolean; output: string } {
   try {
-    const out = execFileSync(tsxBin, [join(cwd, testRel)], {
+    const out = execFileSync(process.execPath, [TSX_CLI, join(cwd, testRel)], {
       cwd, env: childEnv, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000,
     });
     return { ok: /(\d+) passed, 0 failed/.test(out), output: out };

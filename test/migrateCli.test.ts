@@ -95,6 +95,9 @@ console.log("=== Migrate CLI — Reload-Aware DB Initialisation ===\n");
   } finally {
     process.chdir(originalCwd);
     resetEnv();
+    // runMigrations() leaves the ORM's SQLite connection open (the CLI exits
+    // after it). Release it, because Windows refuses to delete an open file.
+    (await import("../packages/orm/src/index.js")).closeDatabase();
     rmSync(dir, { recursive: true });
   }
 }
@@ -134,6 +137,9 @@ console.log("=== Migrate CLI — Reload-Aware DB Initialisation ===\n");
   } finally {
     process.chdir(originalCwd);
     resetEnv();
+    // runMigrations() leaves the ORM's SQLite connection open (the CLI exits
+    // after it). Release it, because Windows refuses to delete an open file.
+    (await import("../packages/orm/src/index.js")).closeDatabase();
     rmSync(dir, { recursive: true });
   }
 }
@@ -168,6 +174,9 @@ console.log("=== Migrate CLI — Reload-Aware DB Initialisation ===\n");
   } finally {
     process.chdir(originalCwd);
     resetEnv();
+    // runMigrations() leaves the ORM's SQLite connection open (the CLI exits
+    // after it). Release it, because Windows refuses to delete an open file.
+    (await import("../packages/orm/src/index.js")).closeDatabase();
     rmSync(dir, { recursive: true });
   }
 

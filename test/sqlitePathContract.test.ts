@@ -73,11 +73,18 @@ assert(
   // On macOS the tmpdir has a /private symlink prefix; compare by suffix + real existence.
   assert("relative under cwd creates parent mode 0775 (resolved under cwd)", resolved.endsWith(join("sub", "dir", "app.db")), `got "${resolved}"`);
   assert("relative under cwd creates parent mode 0775 (dir exists)", existsSync(parent));
-  assert(
-    "relative under cwd creates parent mode 0775 (mode bits)",
-    existsSync(parent) && (statSync(parent).mode & 0o777) === 0o775,
-    `got ${existsSync(parent) ? (statSync(parent).mode & 0o777).toString(8) : "no dir"}`,
-  );
+  if (process.platform === "win32") {
+    // Windows has no POSIX permission bits: Node reports a directory as 0666 or
+    // 0777 whatever mode it was created with, so there is no 0775 to observe.
+    console.log("  SKIP relative under cwd creates parent mode 0775 (mode bits) - "
+      + "POSIX-only: Windows directories carry no permission bits");
+  } else {
+    assert(
+      "relative under cwd creates parent mode 0775 (mode bits)",
+      existsSync(parent) && (statSync(parent).mode & 0o777) === 0o775,
+      `got ${existsSync(parent) ? (statSync(parent).mode & 0o777).toString(8) : "no dir"}`,
+    );
+  }
   rmSync(work, { recursive: true, force: true });
 }
 

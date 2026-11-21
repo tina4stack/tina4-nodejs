@@ -25,6 +25,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { execSync } from "node:child_process";
 
 const __dirname = import.meta.dirname;
@@ -89,7 +90,8 @@ const EXPECT: Record<string, string[]> = {
 
 for (const [rel, expected] of Object.entries(EXPECT)) {
   try {
-    const mod = await import(join(ROOT, rel));
+    // An ESM import takes a URL; a bare "D:\..." path parses as scheme "d:".
+    const mod = await import(pathToFileURL(join(ROOT, rel)).href);
     const missing = expected.filter((k) => !(k in mod));
     assert(`${rel} loads under plain node and exports ${expected.join(", ")}`,
       missing.length === 0, `missing: ${missing.join(", ")}`);

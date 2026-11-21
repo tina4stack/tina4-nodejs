@@ -32,6 +32,7 @@ import {
   INTERNAL_ERROR,
 } from "../packages/core/src/mcp.js";
 import { initDatabase, closeDatabase } from "../packages/orm/src/index.js";
+import { SYMLINKS_PERMITTED, symlinkSkip } from "./_symlinkSupport.ts";
 
 let pass = 0;
 let fail = 0;
@@ -620,6 +621,10 @@ for (const [label, tool, args] of [
   ["a dangling link", "file_write", { path: "dangle.txt", content: "PWNED" }],
   ["an asset under a linked dir", "asset_upload", { filename: "pub/planted.txt", content: "PWNED" }],
 ] as const) {
+  if (!SYMLINKS_PERMITTED) {
+    console.log(symlinkSkip(`${tool} sandbox blocks a symlink out of the project (${label})`));
+    continue;
+  }
   const lab = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-test-link-"));
   fs.mkdirSync(path.join(lab, "proj", "src", "public"), { recursive: true });
   fs.mkdirSync(path.join(lab, "outside"));
@@ -656,6 +661,10 @@ for (const [label, link, allowed] of [
   ["a dangling link that climbs out through a linked dir", "linkdir/../planted.txt", false],
   ["a dangling link in a loop", "alias.txt", false],
 ] as const) {
+  if (!SYMLINKS_PERMITTED) {
+    console.log(symlinkSkip(`file_write ${allowed ? "follows" : "refuses"} ${label}`));
+    continue;
+  }
   const lab = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-test-dangle-"));
   fs.mkdirSync(path.join(lab, "proj", "data"), { recursive: true });
   fs.mkdirSync(path.join(lab, "outside", "deep"), { recursive: true });
@@ -689,7 +698,9 @@ for (const [label, link, allowed] of [
 }
 
 // test_file_patch_symlink_sandbox: a patch through a symlink out of the project
-{
+if (!SYMLINKS_PERMITTED) {
+  console.log(symlinkSkip("file_patch sandbox blocks a symlink out of the project"));
+} else {
   const lab = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-test-patch-link-"));
   fs.mkdirSync(path.join(lab, "proj"), { recursive: true });
   fs.mkdirSync(path.join(lab, "outside"));

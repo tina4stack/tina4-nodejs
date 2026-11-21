@@ -26,11 +26,13 @@ import http from "node:http";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { startServer } from "../packages/core/src/index.ts";
 import { getToken } from "../packages/core/src/auth.ts";
 import { GraphQL } from "../packages/core/src/graphql.ts";
 import { SQLiteAdapter } from "../packages/orm/src/adapters/sqlite.ts";
+import { closeDatabase } from "../packages/orm/src/index.ts";
 import { safeErrorText } from "./_safeError.ts";
 
 process.env.TINA4_SECRET = "id-argument-lock-in-secret-01234567";
@@ -95,7 +97,7 @@ async function autoCrudCases(): Promise<void> {
   mkdirSync(join(root, "src/models"), { recursive: true });
   mkdirSync(join(root, "src/routes"), { recursive: true });
   const ormSrc = join(import.meta.dirname, "..", "packages", "orm", "src");
-  writeFileSync(join(root, "src/models/IdRow.ts"), `import { BaseModel } from "file://${ormSrc}/baseModel.js";
+  writeFileSync(join(root, "src/models/IdRow.ts"), `import { BaseModel } from "${pathToFileURL(join(ormSrc, "baseModel.js")).href}";
 
 export default class IdRow extends BaseModel {
   static tableName = "id_row";
@@ -145,6 +147,9 @@ export default class IdRow extends BaseModel {
     assert(`${label}: the non-numeric ids changed no rows`, tableState(dbPath, "id_row") === before, `${before} -> ${tableState(dbPath, "id_row")}`);
   } finally {
     server.close();
+    // close() releases the database asynchronously; release it NOW, because
+    // Windows refuses to delete a directory holding an open SQLite file.
+    closeDatabase();
     rmSync(root, { recursive: true, force: true });
   }
 }

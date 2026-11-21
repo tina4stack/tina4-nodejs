@@ -39,11 +39,13 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 const __dirname = import.meta.dirname;
 const ROOT = join(__dirname, "..");
-const LOGGER_MODULE = join(ROOT, "packages", "core", "src", "logger.ts");
+const LOGGER_MODULE = pathToFileURL(join(ROOT, "packages", "core", "src", "logger.ts")).href;
 
 let pass = 0;
 let fail = 0;
@@ -100,7 +102,7 @@ function runChild(env: Record<string, string | undefined>): string[] {
     if (v === undefined) delete childEnv[k];
     else childEnv[k] = v;
   }
-  const out = execFileSync("npx", ["tsx", CHILD], {
+  const out = execFileSync(process.execPath, [TSX_CLI, CHILD], {
     cwd: ROOT,
     encoding: "utf-8",
     env: childEnv,
@@ -486,7 +488,7 @@ function runPrecedenceChild(passArg: boolean): { inEnvDir: boolean; inArgDir: bo
   childEnv.PROBE_ENV_DIR = envDir;
   childEnv.PROBE_ARG_DIR = argDir;
   childEnv.PROBE_PASS_ARG = passArg ? "1" : "0";
-  const out = execFileSync("npx", ["tsx", PREC_CHILD], {
+  const out = execFileSync(process.execPath, [TSX_CLI, PREC_CHILD], {
     cwd: ROOT, encoding: "utf-8", env: childEnv, timeout: 40_000,
   });
   const line = out.trim().split("\n").filter((l) => l.trim().startsWith("{")).pop()!;

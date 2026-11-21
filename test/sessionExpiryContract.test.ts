@@ -47,6 +47,7 @@ import { join } from "node:path";
 import { FileSessionHandler } from "../packages/core/src/session.ts";
 import { DatabaseSessionHandler } from "../packages/core/src/sessionHandlers/databaseHandler.ts";
 import { MongoSessionHandler } from "../packages/core/src/sessionHandlers/mongoHandler.ts";
+import { removeTempDir } from "./_tempDir.ts";
 
 let pass = 0;
 let fail = 0;
@@ -288,7 +289,7 @@ console.log("\n── The database backend never silently demotes to a local SQL
   process.chdir(originalCwd);
   if (originalUrl === undefined) delete process.env.TINA4_DATABASE_URL;
   else process.env.TINA4_DATABASE_URL = originalUrl;
-  rmSync(cwd, { recursive: true, force: true });
+  removeTempDir(cwd);
 }
 
 console.log("\n── The database backend: unstamped row kept, expired row reaped (real SQLite) ──\n");
@@ -381,7 +382,7 @@ if (!(await reachable(MONGO_HOST, MONGO_PORT))) {
   assert("session_mongo_miss_still_returns_null", handler.read("no-such-session") === null);
 }
 
-rmSync(workDir, { recursive: true, force: true });
+removeTempDir(workDir);
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(

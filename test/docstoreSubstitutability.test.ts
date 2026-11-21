@@ -160,11 +160,13 @@ async function run() {
     // real to catch.
     const uriWithCredentials = "mongodb://docstore_user:s3cr3t-p4ssw0rd@192.0.2.1:27017";
 
-    const esbuild = join(REPO_ROOT, "node_modules", ".bin", "esbuild");
-    execFileSync(esbuild, [
-      join(REPO_ROOT, "packages", "orm", "src", "docstore.ts"),
-      "--format=esm", "--platform=node", "--target=node20", `--outfile=${bundled}`,
-    ], { stdio: "pipe" });
+    // esbuild's own API, not the .bin/esbuild shim: that is a .cmd on Windows,
+    // which execFileSync cannot start. Same options as the CLI call it replaces.
+    const { buildSync } = await import("esbuild");
+    buildSync({
+      entryPoints: [join(REPO_ROOT, "packages", "orm", "src", "docstore.ts")],
+      format: "esm", platform: "node", target: "node20", outfile: bundled, logLevel: "silent",
+    });
 
     const probe = join(scratch, "probe.mjs");
     writeFileSync(probe, `

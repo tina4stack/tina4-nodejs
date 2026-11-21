@@ -56,8 +56,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { McpServer, registerDevTools } from "../packages/core/src/mcp.js";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 const here = import.meta.dirname;
 const repoRoot = resolve(here, "..");
 const binPath = resolve(repoRoot, "packages/cli/src/bin.ts");
@@ -85,7 +87,7 @@ function runCli(
   cwd: string,
   argv: string[],
 ): { stdout: string; stderr: string; exitCode: number } {
-  const res = spawnSync("npx", ["tsx", binPath, ...argv], {
+  const res = spawnSync(process.execPath, [TSX_CLI, binPath, ...argv], {
     cwd,
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],
@@ -113,7 +115,7 @@ function invokeMigrationCreateViaSubprocess(
   cwd: string,
   description: string,
 ): { ok: boolean; parsed: Record<string, unknown> | null; stdout: string; stderr: string; exitCode: number } {
-  const mcpImportPath = resolve(repoRoot, "packages/core/src/mcp.ts").replace(/\\/g, "/");
+  const mcpImportPath = pathToFileURL(resolve(repoRoot, "packages/core/src/mcp.ts")).href;
   const script = `import { McpServer, registerDevTools } from ${JSON.stringify(mcpImportPath)};
 process.env.TINA4_DEBUG = "true";
 const server = new McpServer("/mcp-mutation-gate", "Mutation Gate");
@@ -134,7 +136,7 @@ process.stdout.write(JSON.stringify({ rpc: parsed, value }));
   const scriptPath = join(scriptDir, "gate.mts");
   writeFileSync(scriptPath, script, "utf-8");
   try {
-    const res = spawnSync("npx", ["tsx", scriptPath], {
+    const res = spawnSync(process.execPath, [TSX_CLI, scriptPath], {
       cwd,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],

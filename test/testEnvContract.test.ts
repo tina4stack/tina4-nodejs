@@ -219,7 +219,8 @@ let filesRead = 0;
 
 for (const absoluteFilePath of scannedFiles) {
   const relativeFilePath = path.relative(REPO_ROOT, absoluteFilePath);
-  if (relativeFilePath === FIXTURE_RELATIVE_PATH) continue;
+  // "/"-separated before comparing: path.relative() uses backslashes on Windows.
+  if (relativeFilePath.split(path.sep).join("/") === FIXTURE_RELATIVE_PATH) continue;
   let sourceText: string;
   try {
     sourceText = fs.readFileSync(absoluteFilePath, "utf-8");

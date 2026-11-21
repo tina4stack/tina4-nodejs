@@ -55,9 +55,9 @@ import { join, resolve } from "node:path";
 import { request } from "node:http";
 import { createConnection, type Socket } from "node:net";
 
+import { TSX_CLI, moduleUrl, killProcessTree } from "./_portableSpawn.ts";
 const HERE = import.meta.dirname;
 const REPO = resolve(HERE, "..");
-const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 
 const LIMIT_BYTES = 1_048_576; // 1MB
 const PAYLOAD_MB = 24;
@@ -73,7 +73,7 @@ const dirs: string[] = [];
 afterEach(() => {
   for (const child of spawned) {
     try {
-      if (child.pid && child.exitCode === null) process.kill(-child.pid, "SIGKILL");
+      if (child.pid && child.exitCode === null) killProcessTree(child.pid);
     } catch {
       /* gone */
     }
@@ -100,13 +100,13 @@ async function startServer(port: number, tag: string): Promise<{ log: () => stri
   );
   writeFileSync(
     join(root, "app.ts"),
-    `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
-      `await startServer({ port: ${port}, routesDir: '${routes}' } as never);\n`,
+    `import { startServer } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
+      `await startServer({ port: ${port}, routesDir: ${JSON.stringify(routes)} } as never);\n`,
   );
 
   const logPath = join(root, "server.log");
   const fd = openSync(logPath, "w");
-  const child = spawn(TSX, ["app.ts"], {
+  const child = spawn(process.execPath, [TSX_CLI, "app.ts"], {
     cwd: root,
     detached: true,
     stdio: ["ignore", fd, fd],

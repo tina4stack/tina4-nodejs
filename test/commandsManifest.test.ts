@@ -39,6 +39,7 @@ import {
 import { GENERATORS } from "../packages/cli/src/commands/generate.ts";
 import { parseCliManifest } from "./_parseCliManifest.ts";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 const here = import.meta.dirname;
 const binPath = resolve(here, "../packages/cli/src/bin.ts");
 
@@ -182,7 +183,7 @@ try {
   let stdout = "";
   let exitCode = 0;
   try {
-    stdout = execFileSync("npx", ["tsx", binPath, "commands", "--json"], {
+    stdout = execFileSync(process.execPath, [TSX_CLI, binPath, "commands", "--json"], {
       cwd: tmpDir,
       env,
       encoding: "utf-8",

@@ -51,8 +51,8 @@ import net from "node:net";
 import { createResponse } from "../packages/core/src/index.ts";
 import { createTina4HttpServer } from "../packages/core/src/transport.ts";
 
+import { TSX_CLI, moduleUrl, killProcessTree } from "./_portableSpawn.ts";
 const REPO = resolve(import.meta.dirname, "..");
-const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 const LIMIT = 1_048_576; // TINA4_MAX_UPLOAD_SIZE for every server here
 const HEADER_LIMIT = 8192; // TINA4_MAX_REQUEST_HEADER
 const IDLE_SECONDS = 3; // TINA4_REQUEST_TIMEOUT
@@ -165,8 +165,8 @@ async function bootServer(dotenv?: string): Promise<Server> {
   if (dotenv !== undefined) writeFileSync(join(root, ".env"), dotenv);
   writeFileSync(
     join(root, "app.ts"),
-    `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
-      `await startServer({ port: ${port}, routesDir: '${routes}' } as never);\n`,
+    `import { startServer } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
+      `await startServer({ port: ${port}, routesDir: ${JSON.stringify(routes)} } as never);\n`,
   );
   const logPath = join(root, "server.log");
   const fd = openSync(logPath, "w");
@@ -174,7 +174,7 @@ async function bootServer(dotenv?: string): Promise<Server> {
   for (const name of ["TINA4_CSP", "TINA4_FRAME_OPTIONS", "TINA4_REFERRER_POLICY", "TINA4_PERMISSIONS_POLICY", "TINA4_HSTS", "TINA4_MAX_UPLOAD_SIZE", "TINA4_MAX_REQUEST_HEADER", "TINA4_REQUEST_TIMEOUT"]) {
     delete env[name];
   }
-  const child = spawn(TSX, ["app.ts"], {
+  const child = spawn(process.execPath, [TSX_CLI, "app.ts"], {
     cwd: root,
     detached: true,
     stdio: ["ignore", fd, fd],
@@ -212,7 +212,7 @@ async function bootServer(dotenv?: string): Promise<Server> {
 
 function stopServer(server: Server): void {
   try {
-    if (server.child.pid && server.child.exitCode === null) process.kill(-server.child.pid, "SIGKILL");
+    if (server.child.pid && server.child.exitCode === null) killProcessTree(server.child.pid);
   } catch {
     /* already gone */
   }

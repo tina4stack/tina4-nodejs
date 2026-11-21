@@ -40,6 +40,7 @@ import {
   EXIT_UNKNOWN_COMMAND,
   buildCommandManifest,
 } from "../packages/cli/src/bin.ts";
+import { TSX_LOADER_URL } from "./_portableSpawn.ts";
 
 let pass = 0;
 let fail = 0;
@@ -50,7 +51,7 @@ function assert(label: string, ok: boolean, detail = ""): void {
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const nodeBin = process.execPath;
-const tsxLoader = join(repoRoot, "node_modules/tsx/dist/loader.mjs");
+const tsxLoader = TSX_LOADER_URL;
 const cliEntry = join(repoRoot, "packages/cli/src/bin.ts");
 
 let tmpRoot = "";
@@ -101,6 +102,22 @@ function pathWithoutClient(): string {
 function pathWithRealClient(exitCode = 0): string {
   const dir = join(tmpRoot, "clientbin");
   mkdirSync(dir, { recursive: true });
+  if (process.platform === "win32") {
+    // Windows runs neither a shebang nor an extensionless file, so the same
+    // program is a `tina4.cmd` (one of the names findClient() looks up there)
+    // that hands its raw command line to node. %* keeps every argument intact,
+    // where batch's own %1..%9 would split on "=" and ",".
+    const program = join(dir, "client.mjs");
+    writeFileSync(program,
+      'import { appendFileSync, writeFileSync } from "node:fs";\n' +
+      `for (const arg of process.argv.slice(2)) appendFileSync(${JSON.stringify(argvFile())}, arg + "\\n");\n` +
+      `writeFileSync(${JSON.stringify(guardFile())}, (process.env[${JSON.stringify(DELEGATION_GUARD_ENV)}] ?? "") + "\\n");\n` +
+      'console.log("REAL-CLIENT-RAN " + process.argv.slice(2).join(" "));\n' +
+      `process.exit(${exitCode});\n`);
+    writeFileSync(join(dir, `${CLIENT_BINARY}.cmd`),
+      `@"${process.execPath}" "${program}" %*\r\n@exit /b %ERRORLEVEL%\r\n`);
+    return dir;
+  }
   const client = join(dir, CLIENT_BINARY);
   writeFileSync(client,
     "#!/bin/sh\n" +

@@ -28,9 +28,10 @@ import net from "node:net";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { startServer } from "../packages/core/src/index.ts";
-import { BaseModel, Database, bindDatabase, createAdapterFromUrl, getAdapter } from "../packages/orm/src/index.ts";
+import { BaseModel, Database, bindDatabase, closeDatabase, createAdapterFromUrl, getAdapter } from "../packages/orm/src/index.ts";
 import { SqliteDatabase } from "../packages/orm/src/docstore.ts";
 import { getToken } from "../packages/core/src/auth.ts";
 import { safeErrorText } from "./_safeError.ts";
@@ -137,7 +138,7 @@ async function autoCrudCases(): Promise<void> {
 
   writeFileSync(
     join(root, "src/models/IdentItem.ts"),
-    `import { BaseModel } from "file://${ORM_SRC}/baseModel.js";
+    `import { BaseModel } from "${pathToFileURL(join(ORM_SRC, "baseModel.js")).href}";
 
 export default class IdentItem extends BaseModel {
   static tableName = "ident_item";
@@ -304,6 +305,9 @@ export default class IdentItem extends BaseModel {
       `status=${putUndeclared.status} row=${JSON.stringify(afterPut)} body=${putUndeclared.text.slice(0, 200)}`);
   } finally {
     server.close();
+    // close() releases the database asynchronously; release it NOW, because
+    // Windows refuses to delete a directory holding an open SQLite file.
+    closeDatabase();
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -624,6 +628,7 @@ async function docStoreCases(): Promise<void> {
     console.log("\n--- docstore_safe_paths_match_on_real_mongo ---");
     await realMongoParity(fallbackResults);
   } finally {
+    store.close();
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -687,7 +692,7 @@ async function registeredConnectionCases(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "tina4-ident-conn-"));
   mkdirSync(join(root, "src/models"), { recursive: true });
   mkdirSync(join(root, "src/routes"), { recursive: true });
-  writeFileSync(join(root, "src/models/IdentRemote.ts"), `import { BaseModel } from "file://${ORM_SRC}/baseModel.js";
+  writeFileSync(join(root, "src/models/IdentRemote.ts"), `import { BaseModel } from "${pathToFileURL(join(ORM_SRC, "baseModel.js")).href}";
 
 export default class IdentRemote extends BaseModel {
   static tableName = "ident_remote";
@@ -727,6 +732,9 @@ export default class IdentRemote extends BaseModel {
       one.status === 200 && one.json?.data?.name === "remote-b", `status=${one.status} body=${one.text.slice(0, 200)}`);
   } finally {
     server.close();
+    // close() releases the database asynchronously; release it NOW, because
+    // Windows refuses to delete a directory holding an open SQLite file.
+    closeDatabase();
     rmSync(root, { recursive: true, force: true });
   }
 }

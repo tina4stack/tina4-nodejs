@@ -26,6 +26,7 @@ import { mkdtempSync, existsSync, readFileSync, readdirSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 const here = import.meta.dirname;
 const binPath = resolve(here, "..", "packages/cli/src/bin.ts");
 
@@ -42,7 +43,7 @@ function assert(name: string, condition: boolean, detail = ""): void {
 }
 
 function runCrud(cwd: string, cls: string, fields: string): { exitCode: number; stderr: string } {
-  const res = spawnSync("npx", ["tsx", binPath, "generate", "crud", cls, "--fields", fields], {
+  const res = spawnSync(process.execPath, [TSX_CLI, binPath, "generate", "crud", cls, "--fields", fields], {
     cwd,
     encoding: "utf-8",
     env: { ...process.env, TINA4_NO_BROWSER: "true" },

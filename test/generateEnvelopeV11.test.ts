@@ -32,9 +32,10 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { buildCommandManifest } from "../packages/cli/src/bin.ts";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 const here = import.meta.dirname;
 const repoRoot = resolve(here, "..");
 const binPath = resolve(repoRoot, "packages/cli/src/bin.ts");
@@ -57,14 +58,15 @@ function walkFiles(dir: string): string[] {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) out.push(...walkFiles(full));
-    else out.push(full);
+    // "/"-separated on every OS, so the endsWith("/src/...") checks hold on Windows.
+    else out.push(full.split(sep).join("/"));
   }
   return out;
 }
 
 /** Run `tina4nodejs generate` in a temp cwd; return stdout/stderr/exit. */
 function runGenerate(cwd: string, args: string[]): { stdout: string; stderr: string; exitCode: number } {
-  const res = spawnSync("npx", ["tsx", binPath, "generate", ...args], {
+  const res = spawnSync(process.execPath, [TSX_CLI, binPath, "generate", ...args], {
     cwd,
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],
@@ -217,7 +219,7 @@ console.log("\n--- 2. manifest declares resolution_contract.version === '1.1' --
     `got ${manifest.resolution_contract?.envelope}`);
 
   // Same fact via the CLI itself
-  const res = spawnSync("npx", ["tsx", binPath, "commands", "--json"], {
+  const res = spawnSync(process.execPath, [TSX_CLI, binPath, "commands", "--json"], {
     encoding: "utf-8",
     timeout: 60_000,
     env: { ...process.env, NODE_NO_WARNINGS: "1" },

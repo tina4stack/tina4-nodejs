@@ -320,7 +320,14 @@ console.log("\n--- Broadcast resilience ---");
   neverReads.pause();
   await waitFor(() => clientIdOnPath(server, "/slow") !== undefined);
 
-  server.broadcast(Buffer.alloc(8 * 1024 * 1024, 0x61)); // far more than any socket buffer holds
+  // 8MB is more than a POSIX socket buffer holds, so one broadcast saturates it
+  // there. Windows hands a write to the kernel (overlapped I/O), which absorbs
+  // the first ~16MB before a backlog shows - measured: dropped on the 3rd round.
+  // Keep sending, bounded: a client that is never dropped still fails.
+  for (let round = 0; round < 10 && clientIdOnPath(server, "/slow") !== undefined; round++) {
+    server.broadcast(Buffer.alloc(8 * 1024 * 1024, 0x61));
+    await new Promise((r) => setTimeout(r, 25));
+  }
 
   assert("saturated slow client is dropped/closed", clientIdOnPath(server, "/slow") === undefined);
   neverReads.destroy();

@@ -33,6 +33,7 @@ import { dirname, join, resolve } from "node:path";
 import * as core from "../packages/core/src/index.ts";
 import { Tina4Test } from "../packages/core/src/index.ts";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 let pass = 0;
 let fail = 0;
 function assert(label: string, ok: boolean, detail = ""): void {
@@ -41,7 +42,6 @@ function assert(label: string, ok: boolean, detail = ""): void {
 }
 
 const repoRoot = resolve(import.meta.dirname, "..");
-const tsxBin = join(repoRoot, "node_modules/.bin/tsx");
 const cliBin = join(repoRoot, "packages/cli/src/bin.ts");
 const baseDir = join(repoRoot, `.tmp_inlinecontract_${process.pid}`);
 
@@ -74,7 +74,7 @@ const SIDE_EFFECT =
 
 /** Spawn the REAL `tina4nodejs test` in cwd; return its real exit code. */
 function runTestCli(cwd: string): number {
-  const res = spawnSync(tsxBin, [cliBin, "test"], {
+  const res = spawnSync(process.execPath, [TSX_CLI, cliBin, "test"], {
     cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 60_000,
   });
   if (res.error) throw res.error;

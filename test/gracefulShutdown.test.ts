@@ -47,6 +47,7 @@ import { request } from "node:http";
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { shutdownTimeoutSeconds, DEFAULT_SHUTDOWN_TIMEOUT_SECONDS } from "../packages/core/src/server.ts";
+import { moduleUrl, killProcessTree } from "./_portableSpawn.ts";
 
 const __dirname = import.meta.dirname;
 const REPO = resolve(__dirname, "..");
@@ -94,7 +95,7 @@ function reapAll(): void {
     //
     // killpg on an already-empty group throws ESRCH, which is why this is
     // wrapped rather than guarded.
-    try { process.kill(-child.pid, "SIGKILL"); } catch { /* group already gone */ }
+    try { killProcessTree(child.pid); } catch { /* group already gone */ }
     try { child.kill("SIGKILL"); } catch { /* already gone */ }
   }
   spawned.clear();
@@ -177,7 +178,7 @@ async function bootServer(opts: { withBackgroundTask?: boolean; slowSeconds?: nu
   );
 
   const bg = opts.withBackgroundTask
-    ? `import { background } from '${REPO}/packages/core/src/background.ts';\nbackground(() => {}, 5);\n`
+    ? `import { background } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/background.ts")))};\nbackground(() => {}, 5);\n`
     : "";
   // A real boot-time Log call: it opens the configured file sink (WRITABLE)
   // before serving, so a later chmod of that file makes only the TEARDOWN write
@@ -185,14 +186,14 @@ async function bootServer(opts: { withBackgroundTask?: boolean; slowSeconds?: nu
   // no in-test double. Lazy config resolution means this reads the same
   // TINA4_LOG_* env the server does.
   const boot = opts.bootLog
-    ? `import { Log } from '${REPO}/packages/core/src/index.ts';\nLog.info('boot: open log sink');\n`
+    ? `import { Log } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\nLog.info('boot: open log sink');\n`
     : "";
   writeFileSync(
     join(root, "app.ts"),
-    `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
+    `import { startServer } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
       boot +
       bg +
-      `await startServer({ port: ${port}, routesDir: '${routes}' } as never);\n`,
+      `await startServer({ port: ${port}, routesDir: ${JSON.stringify(routes)} } as never);\n`,
   );
 
   const logPath = join(root, "server.log");
@@ -252,7 +253,7 @@ async function cleanup(b: Booted): Promise<void> {
   // Unconditional group kill - see reapAll(). A dead handle is not proof that
   // nothing else in the group is still holding the port.
   if (b.child.pid) {
-    try { process.kill(-b.child.pid, "SIGKILL"); } catch { /* group already gone */ }
+    try { killProcessTree(b.child.pid); } catch { /* group already gone */ }
     await waitForExit(b.child, 5000);
   }
   spawned.delete(b.child);
@@ -295,8 +296,19 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
   }
 }
 
+// Windows delivers no POSIX signals: process.kill(pid, "SIGTERM"/"SIGINT") there
+// is an unconditional TerminateProcess that no handler sees, and there is no
+// process group to signal. Every case below is a signal-drain case, so it is
+// reported as a SKIP there; the resolver cases above run on every platform.
+const SIGNALS_DELIVERABLE = process.platform !== "win32";
+if (!SIGNALS_DELIVERABLE) {
+  for (const section of ["SIGTERM: the core contract", "SIGINT: same contract", "SIGHUP: deliberately NOT trapped", "REGRESSION: the background() hang", "The shutdown budget is real, not decorative", "WebSocket peers are told 1001 \"going away\"", "TINA4_DEFAULT_WEBSERVER is accepted, and is a no-op here", "A teardown THROW during shutdown still exits 0 (exception-safe teardown)"]) {
+    console.log(`  SKIP ${section} - POSIX-only: Windows has no catchable SIGTERM/SIGINT/SIGHUP`);
+  }
+}
+
 // ── SIGTERM: the core contract ─────────────────────────────────────────────
-{
+if (SIGNALS_DELIVERABLE) {
   const b = await bootServer();
   try {
     const warmup = await httpGet(b.port, "/fast");
@@ -343,7 +355,7 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
 }
 
 // ── SIGINT: same contract ──────────────────────────────────────────────────
-{
+if (SIGNALS_DELIVERABLE) {
   const b = await bootServer();
   try {
     const inFlight = httpGet(b.port, "/slow");
@@ -367,7 +379,7 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
 // Pinned so nobody "fixes" this by accident. The Rust CLI owns file watching
 // and production logs go to stdout, so neither Puma's log-reopen nor
 // gunicorn's config-reload use for SIGHUP is a Tina4 need.
-{
+if (SIGNALS_DELIVERABLE) {
   const b = await bootServer();
   try {
     await sleep(200);
@@ -386,7 +398,7 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
 // Registering a listener REPLACES Node's default disposition, so a server with
 // one background task ignored SIGTERM and ran forever. This is the exact
 // scenario, with a real task registered.
-{
+if (SIGNALS_DELIVERABLE) {
   const b = await bootServer({ withBackgroundTask: true });
   try {
     const inFlight = httpGet(b.port, "/slow");
@@ -410,7 +422,7 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
 // TINA4_SHUTDOWN_TIMEOUT=1 against a 6s handler: the process must give up and
 // exit well before the handler would have finished. The in-flight request IS
 // expected to be cut short here - that is the whole point of a bound.
-{
+if (SIGNALS_DELIVERABLE) {
   const b = await bootServer({ slowSeconds: 6, env: { TINA4_SHUTDOWN_TIMEOUT: "1" } });
   try {
     const inFlight = httpGet(b.port, "/slow", 20_000);
@@ -434,7 +446,7 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
 // reconnects on a schedule; a socket that just vanishes looks like a network
 // fault and surfaces as an error. This uses a REAL raw RFC 6455 client over a
 // REAL socket and reads the REAL close frame off the wire.
-{
+if (SIGNALS_DELIVERABLE) {
   const b = await bootServer({ env: { TINA4_DEBUG: "true", TINA4_NO_AI_PORT: "true" } });
   try {
     const key = randomBytes(16).toString("base64");
@@ -501,7 +513,7 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
 // switch. It still has to be ACCEPTED, because the env surface is uniform
 // across the four and an operator setting it must not get an error or a dead
 // server. Booting with it set and serving a real request is the whole contract.
-{
+if (SIGNALS_DELIVERABLE) {
   const b = await bootServer({ env: { TINA4_DEFAULT_WEBSERVER: "TRUE" } });
   try {
     const r = await httpGet(b.port, "/fast");
@@ -540,7 +552,7 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
 // holds even when the suite runs as root (a 0o444 file does NOT deny root —
 // CAP_DAC_OVERRIDE — the exact ghost this project's strict-write test had to drop
 // uid to avoid). POSIX-only; verified on Linux CI (as the file header states).
-{
+if (SIGNALS_DELIVERABLE) {
   const strictDir = mkdtempSync(join(tmpdir(), "tina4-strictlog-"));
   const strictLog = join(strictDir, "tina4.log");
   const b = await bootServer({

@@ -46,6 +46,7 @@ import { spawnSync } from "node:child_process";
 import { runLint } from "../packages/cli/src/commands/lint.ts";
 import { parseCliManifest } from "./_parseCliManifest.ts";
 
+import { TSX_CLI, npmCommand } from "./_portableSpawn.ts";
 let pass = 0;
 let fail = 0;
 function ok(name: string, cond: boolean, detail = ""): void {
@@ -59,7 +60,6 @@ function ok(name: string, cond: boolean, detail = ""): void {
 }
 
 const repoRoot = resolve(import.meta.dirname, "..");
-const tsxBin = join(repoRoot, "node_modules/.bin/tsx");
 const cliBin = join(repoRoot, "packages/cli/src/bin.ts");
 
 /**
@@ -201,7 +201,7 @@ try {
   // ── 4. Registration: lint appears in `commands --json` ──────────────
   console.log("\n--- registration (real `commands --json`) ---");
   {
-    const res = spawnSync(tsxBin, [cliBin, "commands", "--json"], {
+    const res = spawnSync(process.execPath, [TSX_CLI, cliBin, "commands", "--json"], {
       cwd: repoRoot, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
       timeout: 60_000, env: { ...process.env, TINA4_NO_BROWSER: "true" },
     });
@@ -220,12 +220,12 @@ try {
 
   // ── 5. On-demand install (REAL npm i -D eslint @eslint/js) ───────────
   console.log("\n--- on-demand install (real npm + eslint, needs network) ---");
-  const npmPresent = spawnSync("npm", ["--version"], { stdio: "ignore" }).status === 0;
+  const npmPresent = spawnSync(...npmCommand("--version"), { stdio: "ignore" }).status === 0;
   ok("npm is available (the install path needs it)", npmPresent);
 
   /** Spawn the REAL `tina4nodejs lint` (no --no-install) in `cwd`. */
   function runLintCli(cwd: string): { code: number | null; out: string } {
-    const res = spawnSync(tsxBin, [cliBin, "lint"], {
+    const res = spawnSync(process.execPath, [TSX_CLI, cliBin, "lint"], {
       cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
       timeout: 180_000, env: { ...process.env, TINA4_NO_BROWSER: "true" },
     });

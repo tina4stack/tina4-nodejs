@@ -68,6 +68,7 @@ import { join } from "node:path";
 import { Session } from "../packages/core/src/session.js";
 import { mongoCommandSync } from "../packages/core/src/sessionHandlers/mongoClient.js";
 import { closeBridges } from "../packages/core/src/sessionHandlers/syncBridge.js";
+import { removeTempDir } from "./_tempDir.ts";
 
 let pass = 0;
 let fail = 0;
@@ -425,7 +426,7 @@ console.log("\n-- 4. an explicit Session ttl beats the env var in the store --\n
 // exits, which wedges the piped run in test/run-all.ts.
 closeBridges();
 restoreEnv();
-rmSync(workDir, { recursive: true, force: true });
+removeTempDir(workDir);
 
 console.log(`\n${"=".repeat(50)}`);
 console.log(

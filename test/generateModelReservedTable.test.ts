@@ -35,6 +35,7 @@ import {
   resolveTable,
 } from "../packages/cli/src/commands/generate.ts";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 const here = import.meta.dirname;
 const repoRoot = resolve(here, "..");
 const binPath = resolve(repoRoot, "packages/cli/src/bin.ts");
@@ -72,7 +73,7 @@ function captureStderr(fn: () => string): { result: string; out: string } {
 
 /** Run `tina4nodejs generate` in a temp cwd; return stdout/stderr/exit. */
 function runGenerate(cwd: string, args: string[]): { stdout: string; stderr: string; exitCode: number } {
-  const res = spawnSync("npx", ["tsx", binPath, "generate", ...args], {
+  const res = spawnSync(process.execPath, [TSX_CLI, binPath, "generate", ...args], {
     cwd,
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],

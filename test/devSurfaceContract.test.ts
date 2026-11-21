@@ -25,6 +25,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync
 import { tmpdir, networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { freePort } from "./freePort.ts";
+import { SYMLINKS_PERMITTED, symlinkSkip } from "./_symlinkSupport.ts";
 
 const BASE_DIR = mkdtempSync(join(tmpdir(), "tina4-dev-surface-"));
 const LAN_IP = Object.values(networkInterfaces()).flat().find((i) => i && !i.internal && i.family === "IPv4")?.address;
@@ -107,7 +108,7 @@ writeFileSync(join(TEST_DIR, "src/templates/pages/hello.twig"), "PAGE-OK");
 writeFileSync(join(TEST_DIR, "src/templates/partial_secret.twig"), "PARTIAL-LEAK");
 writeFileSync(join(TEST_DIR, "outside.twig"), "ROOT-LEAK");
 writeFileSync(join(SIBLING_DIR, "secret.txt"), "SIBLING-LEAK");
-symlinkSync(join(TEST_DIR, ".env"), join(TEST_DIR, "innocent.txt"));
+if (SYMLINKS_PERMITTED) symlinkSync(join(TEST_DIR, ".env"), join(TEST_DIR, "innocent.txt"));
 
 const ORIG_CWD = process.cwd();
 process.chdir(TEST_DIR);
@@ -174,9 +175,11 @@ const port = (peerServer.address() as any).port;
   }
   assert("a dotenv path with a trailing dot segment is refused", !leaked, results.join(" "));
 }
-{
+if (SYMLINKS_PERMITTED) {
   const r = await get(port, "/__dev/api/file?path=innocent.txt");
   assert("a symlink to dotenv is refused", r.status === 403 && !r.raw.includes(SECRET), `status=${r.status}`);
+} else {
+  console.log(symlinkSkip("a symlink to dotenv is refused"));
 }
 {
   const read = await get(port, "/__dev/api/file?path=../app-sibling/secret.txt");
@@ -196,10 +199,12 @@ const port = (peerServer.address() as any).port;
     `abs=${abs.status} rel=${rel.status}`);
 }
 
-{
+if (SYMLINKS_PERMITTED) {
   symlinkSync(join(SIBLING_DIR, "missing.txt"), join(TEST_DIR, "dangling.txt"));
   const denied = await post(port, "/__dev/api/file/save", { path: "dangling.txt", content: "x" });
   assert("a dangling symlink cannot write outside the project", denied.status === 403 && !existsSync(join(SIBLING_DIR, "missing.txt")));
+} else {
+  console.log(symlinkSkip("a dangling symlink cannot write outside the project"));
 }
 
 // ── reads carry the same gate as writes ─────────────────────────────────────

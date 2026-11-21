@@ -46,7 +46,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
+import { TSX_CLI } from "./_portableSpawn.ts";
 const here = import.meta.dirname;
 const repoRoot = resolve(here, "..");
 const binPath = resolve(repoRoot, "packages/cli/src/bin.ts");
@@ -75,7 +76,8 @@ function walkFiles(dir: string): string[] {
     let s;
     try { s = statSync(full); } catch { continue; }
     if (s.isDirectory()) out.push(...walkFiles(full));
-    else out.push(full);
+    // "/"-separated on every OS, so the "/migrations/" checks hold on Windows.
+    else out.push(full.split(sep).join("/"));
   }
   return out;
 }
@@ -85,7 +87,7 @@ function runCli(
   cwd: string,
   argv: string[],
 ): { stdout: string; stderr: string; exitCode: number } {
-  const res = spawnSync("npx", ["tsx", binPath, ...argv], {
+  const res = spawnSync(process.execPath, [TSX_CLI, binPath, ...argv], {
     cwd,
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],

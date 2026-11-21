@@ -55,6 +55,8 @@ import { DatabaseSessionHandler } from "../packages/core/src/sessionHandlers/dat
 import { sqlCommandSync } from "../packages/core/src/sessionHandlers/sqlClient.js";
 import type { SqlTarget } from "../packages/core/src/sessionHandlers/sqlClient.js";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
+import { removeTempDir } from "./_tempDir.ts";
 let pass = 0;
 let fail = 0;
 let skipped = 0;
@@ -193,7 +195,6 @@ async function concurrentFirstUse(workDir: string): Promise<void> {
   if (FB_URL) scenarios.push({ name: "firebird", url: FB_URL, workers: 6 });
 
   const workerScript = join(import.meta.dirname, "fixtures", "sessionConcurrentFirstUse.ts");
-  const tsx = join(import.meta.dirname, "..", "node_modules", ".bin", "tsx");
   const survived: string[] = [];
   const failures: string[] = [];
 
@@ -214,7 +215,7 @@ async function concurrentFirstUse(workDir: string): Promise<void> {
       const startAt = (Date.now() / 1000 + 6).toFixed(3);
       const exits = await Promise.all(Array.from({ length: scenario.workers }, (_, index) =>
         new Promise<string | null>((resolveExit) => {
-          const child = spawn(tsx, [workerScript, startAt, `race-${scenario.name}-${index}`],
+          const child = spawn(process.execPath, [TSX_CLI, workerScript, startAt, `race-${scenario.name}-${index}`],
             { env, stdio: ["ignore", "ignore", "pipe"] });
           let errorOutput = "";
           child.stderr.on("data", (chunk) => { errorOutput += String(chunk); });
@@ -366,7 +367,7 @@ async function main(): Promise<void> {
     else process.env.TINA4_DATABASE_USERNAME = originalUsername;
     if (originalPassword === undefined) delete process.env.TINA4_DATABASE_PASSWORD;
     else process.env.TINA4_DATABASE_PASSWORD = originalPassword;
-    rmSync(workDir, { recursive: true, force: true });
+    removeTempDir(workDir);
     try {
       const { closeSyncSockets } = await import("../packages/core/src/sessionHandlers/syncSocket.js");
       closeSyncSockets();

@@ -10,7 +10,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "esbuild src/bin.ts --bundle --platform=node --format=esm --outfile=dist/bin.js --banner:js='#!/usr/bin/env node' --packages=external",
+    "build": "esbuild src/bin.ts --bundle --platform=node --format=esm --outfile=dist/bin.js --banner:js=\"#!/usr/bin/env node\" --packages=external",
     "dev": "tsx src/bin.ts"
   },
   "dependencies": {

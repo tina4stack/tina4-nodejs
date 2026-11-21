@@ -32,8 +32,8 @@ import { join, resolve } from "node:path";
 
 import { DEFAULT_MAX_UPLOAD_SIZE, maxUploadSize } from "../packages/core/src/request.ts";
 
+import { TSX_CLI, moduleUrl, killProcessTree } from "./_portableSpawn.ts";
 const REPO = resolve(import.meta.dirname, "..");
-const TSX = resolve(REPO, "node_modules", ".bin", "tsx");
 const UPLOAD_LIMIT = 1000;
 const DOTENV_HEALTH_PATH = "/healthz-from-dotenv";
 
@@ -102,8 +102,8 @@ async function bootFromDotenv(port: number): Promise<void> {
   );
   writeFileSync(
     join(root, "app.ts"),
-    `import { startServer } from '${REPO}/packages/core/src/index.ts';\n` +
-      `await startServer({ port: ${port}, host: '127.0.0.1', routesDir: '${routes}' } as never);\n`,
+    `import { startServer } from ${JSON.stringify(moduleUrl(join(REPO, "packages/core/src/index.ts")))};\n` +
+      `await startServer({ port: ${port}, host: '127.0.0.1', routesDir: ${JSON.stringify(routes)} } as never);\n`,
   );
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -113,7 +113,7 @@ async function bootFromDotenv(port: number): Promise<void> {
   for (const name of ["TINA4_MAX_UPLOAD_SIZE", "TINA4_HEALTH_PATH", "TINA4_ENV_FILE", "TINA4_DEBUG", "TINA4_PORT", "PORT"]) {
     delete env[name];
   }
-  child = spawn(TSX, ["app.ts"], { cwd: root, detached: true, stdio: ["ignore", "ignore", "ignore"], env });
+  child = spawn(process.execPath, [TSX_CLI, "app.ts"], { cwd: root, detached: true, stdio: ["ignore", "ignore", "ignore"], env });
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     try {
@@ -130,7 +130,7 @@ async function bootFromDotenv(port: number): Promise<void> {
 function reap(): void {
   if (child?.pid && child.exitCode === null) {
     try {
-      process.kill(-child.pid, "SIGKILL");
+      killProcessTree(child.pid);
     } catch {
       /* gone */
     }

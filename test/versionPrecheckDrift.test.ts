@@ -29,6 +29,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import { TSX_CLI } from "./_portableSpawn.ts";
 let pass = 0;
 let fail = 0;
 function assert(label: string, ok: boolean, detail = ""): void {
@@ -37,7 +38,6 @@ function assert(label: string, ok: boolean, detail = ""): void {
 }
 
 const repoRoot = resolve(import.meta.dirname, "..");
-const tsxBin = join(repoRoot, "node_modules/.bin/tsx");
 const guardScript = join(repoRoot, "test/versionConsistency.test.ts");
 const currentVersion = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8")).version as string;
 
@@ -71,7 +71,7 @@ function runGuard(args: string[], checkRoot?: string): { status: number; out: st
   delete env.TINA4_VERSION_CHECK_ROOT;
   delete env.RELEASE_VERSION;
   if (checkRoot) env.TINA4_VERSION_CHECK_ROOT = checkRoot;
-  const res = spawnSync(tsxBin, [guardScript, ...args], {
+  const res = spawnSync(process.execPath, [TSX_CLI, guardScript, ...args], {
     cwd: repoRoot, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 60_000, env,
   });
   if (res.error) throw res.error;

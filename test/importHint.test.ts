@@ -35,6 +35,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { TSX_CLI, npmCommand } from "./_portableSpawn.ts";
 const here = import.meta.dirname;
 const repoRoot = resolve(here, "..");
 const coreDir = join(repoRoot, "packages", "core");
@@ -196,7 +197,7 @@ export const _fixture = neverExisted;
         process.exit(1);
       }
     `;
-    const r = spawnSync("npx", ["tsx", "--input-type=module", "-e", code], {
+    const r = spawnSync(process.execPath, [TSX_CLI, "--input-type=module", "-e", code], {
       cwd: repoRoot,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -223,7 +224,7 @@ export const _fixture = neverExisted;
 // ── 5. TS compile safety: typecheck still passes with the new exports ────
 console.log("\n--- 5. tsc safety: `npm run typecheck` exits 0 ---");
 {
-  const r = spawnSync("npm", ["run", "--silent", "typecheck"], {
+  const r = spawnSync(...npmCommand("run", "--silent", "typecheck"), {
     cwd: repoRoot,
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],
