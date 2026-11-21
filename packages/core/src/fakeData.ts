@@ -27,6 +27,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 import { randomInt, randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // ── Word Banks ───────────────────────────────────────────────────
 
@@ -352,7 +353,9 @@ export class FakeData {
     for (const file of files) {
       const fullPath = join(dir, file);
       try {
-        const mod = await import(fullPath);
+        // A raw path is not an import specifier: D:\... reads as a URL scheme,
+        // and a # anywhere in the path starts a URL fragment.
+        const mod = await import(pathToFileURL(fullPath).href);
         if (typeof mod.default === "function") {
           await mod.default();
         }

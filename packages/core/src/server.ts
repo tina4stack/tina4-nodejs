@@ -2143,6 +2143,13 @@ function startProductionCluster(port: number, host: string): {
   Debug:     OFF (Log level: ${logLevel})
 ${reset}`);
   }
+  // Round-robin, so every worker gets requests. Node already defaults to it
+  // everywhere except Windows, where the default is SCHED_NONE (the OS picks a
+  // worker, and under load it may keep picking the same one). Must be set before
+  // the first fork. An operator's explicit NODE_CLUSTER_SCHED_POLICY wins.
+  if (process.env.NODE_CLUSTER_SCHED_POLICY === undefined) {
+    cluster.schedulingPolicy = cluster.SCHED_RR;
+  }
   for (let i = 0; i < numCPUs; i++) cluster.fork();
   cluster.on("exit", (worker, code) => {
     if (code !== 0) {

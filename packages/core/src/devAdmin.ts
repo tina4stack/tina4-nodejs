@@ -21,6 +21,7 @@ import { cpus as osCpus } from "node:os";
 import { rtrimSlashes } from "./slashTrim.js";
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, copyFileSync, statSync, openSync, closeSync, fstatSync, fchmodSync, ftruncateSync, constants, realpathSync, lstatSync } from "node:fs";
 import { join, dirname, resolve, relative, sep, basename } from "node:path";
+import { execFileSyncAllowingBatch } from "./batchSpawn.js";
 import { fileURLToPath } from "node:url";
 import type { Router } from "./router.js";
 import type { RouteHandler, Tina4Request } from "./types.js";
@@ -2752,13 +2753,12 @@ const handleDepsInstall: RouteHandler = async (req, res) => {
     return;
   }
   try {
-    const { execFileSync } = await import("node:child_process");
     const args = ["install", dev ? "--save-dev" : "--save", pkg];
-    const output = execFileSync("npm", args, {
+    // npm is npm.cmd on Windows, which execFileSync cannot find or start.
+    const output = execFileSyncAllowingBatch("npm", args, {
       cwd: resolve(process.cwd()),
       timeout: 120_000,
-      encoding: "utf-8",
-    }).toString();
+    });
     res.json({ ok: true, package: pkg, output });
   } catch (e) {
     res.json({ error: (e as Error).message }, 500);
@@ -2994,12 +2994,11 @@ const handleScaffoldRun: RouteHandler = async (req, res) => {
     return;
   }
   try {
-    const { execFileSync } = await import("node:child_process");
-    const output = execFileSync("npx", ["tina4nodejs", "generate", kind, name], {
+    // npx is npx.cmd on Windows, which execFileSync cannot find or start.
+    const output = execFileSyncAllowingBatch("npx", ["tina4nodejs", "generate", kind, name], {
       cwd: resolve(process.cwd()),
       timeout: 30_000,
-      encoding: "utf-8",
-    }).toString();
+    });
     res.json({ ok: true, kind, name, output });
   } catch (e) {
     res.json({ error: (e as Error).message }, 500);

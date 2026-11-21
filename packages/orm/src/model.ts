@@ -8,6 +8,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { readdirSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ModelDefinition, FieldDefinition, RelationshipDefinition } from "./types.js";
 
 export interface DiscoveredModel {
@@ -35,7 +36,7 @@ export async function discoverModels(modelsDir: string): Promise<DiscoveredModel
     if (ext !== ".ts" && ext !== ".js") continue;
 
     try {
-      const moduleUrl = `file://${filePath}?t=${Date.now()}`;
+      const moduleUrl = `${pathToFileURL(filePath).href}?t=${Date.now()}`;
       const mod = await import(moduleUrl);
       const ModelClass = mod.default ?? mod;
 

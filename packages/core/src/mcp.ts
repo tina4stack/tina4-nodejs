@@ -27,6 +27,7 @@ import { rtrimSlashes } from "./slashTrim.js";
 import * as path from "node:path";
 import * as os from "node:os";
 import { spawnSync } from "node:child_process";
+import { findExecutable, spawnSyncAllowingBatch } from "./batchSpawn.js";
 import { createRequire } from "node:module";
 import { randomBytes } from "node:crypto";
 import { TINA4_VERSION } from "./version.js";
@@ -1109,7 +1110,9 @@ function verifyNodeSyntax(absPath: string, relPath: string): string | null {
   if (!target) return null;
   const { cmd, args } = syntaxCheckCommand(absPath, target.ext);
   try {
-    const proc = spawnSync(cmd, args, {
+    // npx is npx.cmd on Windows: a plain spawnSync gets ENOENT, which reads as
+    // "tsc not installed" below and skips the check without a word.
+    const proc = spawnSyncAllowingBatch(findExecutable(cmd), args, {
       encoding: "utf-8",
       timeout: 5000,
       cwd: path.dirname(path.dirname(absPath)),

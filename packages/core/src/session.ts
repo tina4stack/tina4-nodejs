@@ -181,6 +181,11 @@ export interface SessionHandler {
   destroy(sessionId: string): void;
   /** Garbage-collect expired sessions. Optional — Redis/Valkey/Mongo handle TTL natively. */
   gc?(maxLifetime: number): void;
+  /**
+   * Release a connection the handler opened itself. Optional; idempotent; the
+   * next read or write reopens it.
+   */
+  close?(): void;
 }
 
 // ── File Session Handler ──────────────────────────────────────────

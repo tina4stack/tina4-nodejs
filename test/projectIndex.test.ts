@@ -59,7 +59,8 @@ assert("extractor module detects direct routes", directRouteEntry.routes?.[0]?.p
 const r1 = ProjectIndex.refresh();
 assert("refresh added files", r1.added >= 4);
 assert("refresh total >= 4", r1.total >= 4);
-assert("refresh index path", r1.path === path.join(".tina4", "project_index.json"));
+// "/"-separated on every OS, like every other path the index returns.
+assert("refresh index path", r1.path === ".tina4/project_index.json", r1.path);
 
 // --- second refresh is a no-op ---
 const r2 = ProjectIndex.refresh();

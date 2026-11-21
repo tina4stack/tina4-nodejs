@@ -31,6 +31,14 @@ export interface IndexData {
   generated_at: number;
 }
 
+/**
+ * The index key for a file: its path relative to `root`, always `/`-separated
+ * so the same file has the same key on every OS (PHP's rule).
+ */
+export function indexKey(root: string, fullPath: string): string {
+  return path.relative(root, fullPath).split(path.sep).join("/");
+}
+
 export function projectRoot(): string {
   return path.resolve(process.cwd());
 }
@@ -69,7 +77,7 @@ export function extract(fullPath: string): FileEntry {
     return {};
   }
   const entry: FileEntry = {
-    path: path.relative(projectRoot(), fullPath),
+    path: indexKey(projectRoot(), fullPath),
     size: st.size,
     mtime: Math.floor(st.mtimeMs / 1000),
     language: languageFor(fullPath),

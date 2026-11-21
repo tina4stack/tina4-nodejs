@@ -244,6 +244,22 @@ export class DatabaseSessionHandler implements SessionHandler {
     return this.sqliteHandle;
   }
 
+  /**
+   * Release the SQLite connection this handler opened, so its file (and the
+   * WAL's -wal / -shm side files) is no longer held open: on Windows an open
+   * file cannot be deleted or replaced. Idempotent, and the next read or write
+   * reopens the connection. A server engine needs nothing here - each call goes
+   * through the sync bridge, which holds no connection between calls.
+   */
+  close(): void {
+    if (this.sqliteHandle === null) return;
+    try {
+      this.sqliteHandle.close();
+    } finally {
+      this.sqliteHandle = null;
+    }
+  }
+
   private get engine(): string {
     return this.target === null ? "sqlite" : this.target.engine;
   }

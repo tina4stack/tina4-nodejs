@@ -9,6 +9,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 import type { ServerResponse } from "node:http";
 import fs from "node:fs";
 import nodePath from "node:path";
+import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import type { Tina4Response, CookieOptions } from "./types.js";
 import { currentCspNonce } from "./csp.js";
@@ -108,7 +109,9 @@ export async function getFrond(): Promise<InstanceType<any>> {
  * Syncs custom filters/globals from the user engine.
  */
 export async function getFrameworkFrond(): Promise<InstanceType<any> | null> {
-  const frameworkDir = nodePath.resolve(nodePath.dirname(import.meta.url.replace("file://", "")), "..", "templates");
+  // fileURLToPath, not a string replace of "file://": the URL of a module under
+  // C:\ is file:///C:/..., and any path with a space or # is percent-encoded.
+  const frameworkDir = nodePath.resolve(nodePath.dirname(fileURLToPath(import.meta.url)), "..", "templates");
   if (!_frameworkFrond && fs.existsSync(frameworkDir)) {
     try {
       const { Frond, setCspNonceProvider } = await import("../../frond/src/engine.js");

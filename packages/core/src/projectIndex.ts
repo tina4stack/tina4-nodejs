@@ -17,9 +17,8 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Python) using regex. No LLM involvement — pure static analysis.
  */
 
-import * as path from "node:path";
 import * as fs from "node:fs";
-import { extract, indexPath, loadRaw, projectRoot, saveRaw, walk } from "./projectIndexStorage.js";
+import { extract, indexKey, indexPath, loadRaw, projectRoot, saveRaw, walk } from "./projectIndexStorage.js";
 import type { IndexData } from "./projectIndexStorage.js";
 
 export interface FileRoute {
@@ -80,7 +79,7 @@ export const ProjectIndex = {
     const found: string[] = [];
     walk(root, found);
     for (const fp of found) {
-      const rel = path.relative(root, fp);
+      const rel = indexKey(root, fp);
       seen.add(rel);
       let mtime: number;
       try {
@@ -106,7 +105,7 @@ export const ProjectIndex = {
       updated,
       removed: removed.length,
       total: Object.keys(files).length,
-      path: path.relative(root, indexPath()),
+      path: indexKey(root, indexPath()),
     };
   },
 
