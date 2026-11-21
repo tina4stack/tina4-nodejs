@@ -67,18 +67,19 @@ function escapeBatchCommand(file: string): string {
 export function findExecutable(name: string, platform: NodeJS.Platform = process.platform): string {
   if (platform !== "win32" || /[\\/]/.test(name) || extname(name) !== "") return name;
   const exts = (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-  for (const dir of (process.env.PATH || "").split(delimiter)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      const candidate = join(dir, name + ext.toLowerCase());
-      try {
-        if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
-      } catch {
-        continue;
-      }
-    }
+  const dirs = (process.env.PATH || "").split(delimiter).filter(Boolean);
+  // PATH order first, then PATHEXT order within each directory, as cmd.exe does.
+  const candidates = dirs.flatMap((dir) => exts.map((ext) => join(dir, name + ext.toLowerCase())));
+  return candidates.find(isRegularFile) ?? name;
+}
+
+/** True when `path` exists and is a file (a directory named `npm.cmd` is not). */
+function isRegularFile(path: string): boolean {
+  try {
+    return existsSync(path) && statSync(path).isFile();
+  } catch {
+    return false;
   }
-  return name;
 }
 
 /**
