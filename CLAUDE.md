@@ -1081,10 +1081,17 @@ for await (const job of queue.consume("emails")) {
 ## Graceful shutdown (`packages/core/src/server.ts`)
 
 `startServer()` owns signal handling. It is the ONLY place that registers
-`process.on("SIGTERM"/"SIGINT")` — `background.ts` and the CLI's `serve.ts`
-deliberately register none.
+`process.on("SIGTERM"/"SIGINT")` (plus `"SIGBREAK"` on Windows) — `background.ts`
+and the CLI's `serve.ts` deliberately register none.
 
-On SIGTERM or SIGINT it: stops background tasks, sends RFC 6455 close code
+On Windows, Ctrl+Break and the CTRL_BREAK_EVENT a console or service manager
+sends a process group arrive as **SIGBREAK**; untrapped, Node kills the process
+on the spot (exit `0xC000013A`). `startServer()` traps it into the same drain, at
+parity with tina4-python (SIGINT/SIGBREAK/SIGTERM on Windows).
+`test/gracefulShutdown.test.ts` drives it with a real CTRL_BREAK_EVENT via
+`test/_ctrlBreak.ts`.
+
+On SIGTERM, SIGINT or (Windows) SIGBREAK it: stops background tasks, sends RFC 6455 close code
 **1001 ("going away")** to every live WebSocket, closes the listeners so new
 connections get a clean refusal, waits for in-flight requests to finish (up to
 `TINA4_SHUTDOWN_TIMEOUT`), closes the database, and exits **0**.

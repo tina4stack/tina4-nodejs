@@ -2753,8 +2753,20 @@ ${reset}
       const onSigint = (): void => {
         void gracefulShutdown("SIGINT").catch(() => process.exit(0));
       };
+      // Windows: Ctrl+Break, and the CTRL_BREAK_EVENT a console or service
+      // manager sends a process group, arrive as SIGBREAK. With no listener,
+      // Node's default action is an instant kill (exit 0xC000013A) - in-flight
+      // requests dropped, no drain. Trap it into the same graceful path, at
+      // parity with tina4-python (SIGINT/SIGBREAK/SIGTERM on Windows). Like the
+      // two above, this listener replaces Node's default and therefore MUST
+      // exit (see background.ts). POSIX has no SIGBREAK, so it stays unchanged.
+      const onSigbreak = (): void => {
+        void gracefulShutdown("SIGBREAK").catch(() => process.exit(0));
+      };
+      const trapsSigbreak = process.platform === "win32";
       process.on("SIGTERM", onSigterm);
       process.on("SIGINT", onSigint);
+      if (trapsSigbreak) process.on("SIGBREAK", onSigbreak);
 
       // Raw TCP services (feature 142, ADR-0102 D1) bind on THIS event loop,
       // beside the HTTP server — one process serves both the device gateway and
@@ -2776,6 +2788,7 @@ ${reset}
           // listeners (and trip Node's MaxListeners warning).
           process.off("SIGTERM", onSigterm);
           process.off("SIGINT", onSigint);
+          if (trapsSigbreak) process.off("SIGBREAK", onSigbreak);
           // Clear any registered background timers so graceful shutdown actually exits.
           stopAllBackgroundTasks();
           // Release raw TCP listeners + connections on an explicit close() too.
