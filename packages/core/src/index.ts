@@ -84,7 +84,7 @@ export {
 export { Session, FileSessionHandler, RedisSessionHandler, buildSessionCookie, isSecureScheme, isValidSessionId, sessionCookieName, VALID_SESSION_BACKENDS, CANONICAL_SESSION_BACKENDS } from "./session.js";
 export type { SessionConfig, SessionHandler } from "./session.js";
 export { I18n } from "./i18n.js";
-export { FakeData } from "./fakeData.js";
+export { FakeData, SeedError } from "./fakeData.js";
 export { Queue } from "./queue.js";
 export type { QueueConfig, QueueJob, ProcessOptions } from "./queue.js";
 export { createJob } from "./job.js";

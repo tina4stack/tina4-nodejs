@@ -26,8 +26,27 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { randomInt, randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, basename } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Log } from "./logger.js";
+
+/**
+ * A seed file threw, so the seed run stopped at it (ADR-0108). `seedFile` is
+ * the failing file, `completed` the files that ran before it, and `cause` the
+ * original error.
+ */
+export class SeedError extends Error {
+  readonly seedFile: string;
+  readonly completed: string[];
+
+  constructor(seedFile: string, completed: string[], cause: unknown) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    super(`Seed file failed: ${basename(seedFile)}: ${reason}`, { cause });
+    this.name = "SeedError";
+    this.seedFile = seedFile;
+    this.completed = [...completed];
+  }
+}
 
 // ── Word Banks ───────────────────────────────────────────────────
 
@@ -340,14 +359,18 @@ export class FakeData {
   }
 
   /**
-   * Run seed files from a directory. Each file should export a default async function.
-   * Returns an array of executed file paths.
+   * Run the seed files in a directory in name order, skipping files whose name
+   * starts with "_". A file's default export, or else the named run() that
+   * `generate seeder` writes, is awaited when it is a function.
+   * Returns the executed file paths in order ([] when the directory is missing).
+   * A seed file that throws stops the run: it is logged and a SeedError naming
+   * it is thrown, and no later file runs (ADR-0108).
    */
   async seedDir(seedDir?: string): Promise<string[]> {
     const dir = resolve(seedDir ?? "src/seeds");
     if (!existsSync(dir)) return [];
     const files = readdirSync(dir)
-      .filter((f) => f.endsWith(".ts") || f.endsWith(".js"))
+      .filter((f) => (f.endsWith(".ts") || f.endsWith(".js")) && !f.startsWith("_"))
       .sort();
     const executed: string[] = [];
     for (const file of files) {
@@ -356,13 +379,16 @@ export class FakeData {
         // A raw path is not an import specifier: D:\... reads as a URL scheme,
         // and a # anywhere in the path starts a URL fragment.
         const mod = await import(pathToFileURL(fullPath).href);
-        if (typeof mod.default === "function") {
-          await mod.default();
+        // A default-export function, or the named run() that `generate seeder` writes.
+        const entry = typeof mod.default === "function" ? mod.default : typeof mod.run === "function" ? mod.run : null;
+        if (entry) {
+          await entry();
         }
-        executed.push(fullPath);
-      } catch {
-        // skip failed seed files
+      } catch (error) {
+        Log.error(`Seeder: ${file} failed, seeding stopped: ${error instanceof Error ? error.message : String(error)}`);
+        throw new SeedError(fullPath, executed, error);
       }
+      executed.push(fullPath);
     }
     return executed;
   }

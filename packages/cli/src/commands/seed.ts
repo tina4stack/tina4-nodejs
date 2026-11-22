@@ -12,7 +12,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * Scans src/seeds/ for .ts files and executes them with tsx in alphabetical order.
  */
 import { existsSync, readdirSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, relative, basename } from "node:path";
 import { execSync } from "node:child_process";
 
 export async function runSeeds(seedPath?: string): Promise<void> {
@@ -44,8 +44,10 @@ export async function runSeeds(seedPath?: string): Promise<void> {
 
   let seedFiles: string[];
   try {
+    // Same selection as FakeData.seedDir (ADR-0108): .ts/.js in name order,
+    // skipping files whose name starts with "_".
     seedFiles = readdirSync(seedDir)
-      .filter((f) => f.endsWith(".ts"))
+      .filter((f) => (f.endsWith(".ts") || f.endsWith(".js")) && !f.startsWith("_"))
       .sort()
       .map((f) => join(seedDir, f));
   } catch {
@@ -60,20 +62,17 @@ export async function runSeeds(seedPath?: string): Promise<void> {
 
   console.log(`  Found ${seedFiles.length} seed file(s)\n`);
 
-  let failed = false;
+  // ADR-0108: the first seed file that fails stops the run and exits 1, so a
+  // failed seeder fails `tina4 seed` (the client propagates the code). Later
+  // files are not run: they usually build on the rows the failed one owed.
   for (const file of seedFiles) {
-    const relative = file.replace(cwd + "/", "");
-    console.log(`  Seeding: ${relative}`);
+    console.log(`  Seeding: ${relative(cwd, file)}`);
     try {
       execSync(`npx tsx "${file}"`, { cwd, stdio: "inherit" });
     } catch {
-      failed = true;
+      console.error(`\n  Seed file failed: ${basename(file)} - seeding stopped.`);
+      process.exit(1);
     }
-  }
-
-  if (failed) {
-    console.error("\n  Some seeds failed.");
-    process.exit(1);
   }
 
   console.log("\n  All seeds completed.");
