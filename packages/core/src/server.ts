@@ -116,6 +116,22 @@ export function shutdownTimeoutSeconds(): number {
 }
 
 /**
+ * The signals `startServer()` traps into its graceful shutdown on this platform.
+ *
+ * POSIX: SIGTERM (an orchestrator's stop) and SIGINT (Ctrl+C).
+ *
+ * Windows adds SIGBREAK: Ctrl+Break, and the CTRL_BREAK_EVENT a console or
+ * service manager sends a process group, arrive as SIGBREAK, and with no
+ * listener Node's default action kills the process on the spot (exit
+ * 0xC000013A) - in-flight requests dropped, no drain. Parity with tina4-python,
+ * which traps SIGINT/SIGBREAK/SIGTERM on Windows. Every listener registered for
+ * these replaces Node's default and therefore MUST exit (see background.ts).
+ */
+export function shutdownSignals(platform: NodeJS.Platform = process.platform): NodeJS.Signals[] {
+  return platform === "win32" ? ["SIGTERM", "SIGINT", "SIGBREAK"] : ["SIGTERM", "SIGINT"];
+}
+
+/**
  * Build the startup banner's optional surface lines (issue #99).
  *
  * Only advertise a surface that is actually REACHABLE. In production, or with
@@ -2743,30 +2759,18 @@ ${reset}
         process.exit(0);
       };
 
-      const onSigterm = (): void => {
-        // gracefulShutdown is internally exception-safe, so this cannot reject;
-        // the `.catch` is belt-and-braces so the discarded (`void`) promise can
-        // never become an unhandledRejection that exits non-zero on a handled
-        // signal.
-        void gracefulShutdown("SIGTERM").catch(() => process.exit(0));
-      };
-      const onSigint = (): void => {
-        void gracefulShutdown("SIGINT").catch(() => process.exit(0));
-      };
-      // Windows: Ctrl+Break, and the CTRL_BREAK_EVENT a console or service
-      // manager sends a process group, arrive as SIGBREAK. With no listener,
-      // Node's default action is an instant kill (exit 0xC000013A) - in-flight
-      // requests dropped, no drain. Trap it into the same graceful path, at
-      // parity with tina4-python (SIGINT/SIGBREAK/SIGTERM on Windows). Like the
-      // two above, this listener replaces Node's default and therefore MUST
-      // exit (see background.ts). POSIX has no SIGBREAK, so it stays unchanged.
-      const onSigbreak = (): void => {
-        void gracefulShutdown("SIGBREAK").catch(() => process.exit(0));
-      };
-      const trapsSigbreak = process.platform === "win32";
-      process.on("SIGTERM", onSigterm);
-      process.on("SIGINT", onSigint);
-      if (trapsSigbreak) process.on("SIGBREAK", onSigbreak);
+      // One listener per shutdown signal: SIGTERM + SIGINT everywhere, plus
+      // SIGBREAK on Windows (see shutdownSignals()). gracefulShutdown is
+      // internally exception-safe, so this cannot reject; the `.catch` is
+      // belt-and-braces so the discarded (`void`) promise can never become an
+      // unhandledRejection that exits non-zero on a handled signal.
+      const signalListeners = shutdownSignals().map((signal) => ({
+        signal,
+        listener: (): void => {
+          void gracefulShutdown(signal).catch(() => process.exit(0));
+        },
+      }));
+      signalListeners.forEach(({ signal, listener }) => process.on(signal, listener));
 
       // Raw TCP services (feature 142, ADR-0102 D1) bind on THIS event loop,
       // beside the HTTP server — one process serves both the device gateway and
@@ -2786,9 +2790,7 @@ ${reset}
           // An explicit close() is not a signal shutdown: drop the handlers so
           // a test that starts many servers in one process does not pile up
           // listeners (and trip Node's MaxListeners warning).
-          process.off("SIGTERM", onSigterm);
-          process.off("SIGINT", onSigint);
-          if (trapsSigbreak) process.off("SIGBREAK", onSigbreak);
+          signalListeners.forEach(({ signal, listener }) => process.off(signal, listener));
           // Clear any registered background timers so graceful shutdown actually exits.
           stopAllBackgroundTasks();
           // Release raw TCP listeners + connections on an explicit close() too.

@@ -46,7 +46,7 @@ import { createConnection, createServer } from "node:net";
 import { request } from "node:http";
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { shutdownTimeoutSeconds, DEFAULT_SHUTDOWN_TIMEOUT_SECONDS } from "../packages/core/src/server.ts";
+import { shutdownTimeoutSeconds, DEFAULT_SHUTDOWN_TIMEOUT_SECONDS, shutdownSignals } from "../packages/core/src/server.ts";
 import { moduleUrl, killProcessTree } from "./_portableSpawn.ts";
 import { spawnBreakable, type BreakableChild } from "./_ctrlBreak.ts";
 
@@ -346,6 +346,19 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
   } finally {
     set(saved);
   }
+}
+
+// ── Which signals are trapped, per platform ────────────────────────────────
+// A pure function over the platform name, so both answers are checked on every
+// OS. Windows must add SIGBREAK (Ctrl+Break / CTRL_BREAK_EVENT); POSIX must stay
+// exactly SIGTERM + SIGINT - SIGHUP is deliberately NOT trapped (see below).
+{
+  const posix = shutdownSignals("linux").join(",");
+  assert("POSIX traps exactly SIGTERM and SIGINT", posix === "SIGTERM,SIGINT", `(got ${posix})`);
+  const darwin = shutdownSignals("darwin").join(",");
+  assert("macOS traps exactly SIGTERM and SIGINT", darwin === "SIGTERM,SIGINT", `(got ${darwin})`);
+  const windows = shutdownSignals("win32").join(",");
+  assert("Windows also traps SIGBREAK", windows === "SIGTERM,SIGINT,SIGBREAK", `(got ${windows})`);
 }
 
 // Windows delivers no POSIX signals: process.kill(pid, "SIGTERM"/"SIGINT") there
