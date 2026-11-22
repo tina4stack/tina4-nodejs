@@ -26,8 +26,42 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { randomInt, randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, basename } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Log } from "./logger.js";
+
+/**
+ * A seed file threw, so the seed run stopped at it (ADR-0108). `seedFile` is
+ * the failing file, `completed` the files that ran before it, and `cause` the
+ * original error.
+ */
+/** The message of anything thrown, Error or not. */
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** A .ts/.js seed file that is not a `_`-prefixed helper. */
+function isSeedFile(name: string): boolean {
+  return (name.endsWith(".ts") || name.endsWith(".js")) && !name.startsWith("_");
+}
+
+/** What a seed module runs: its default export, or else the named run() that `generate seeder` writes. */
+function seedEntry(mod: Record<string, unknown>): (() => unknown) | undefined {
+  const entry = typeof mod.default === "function" ? mod.default : mod.run;
+  return typeof entry === "function" ? (entry as () => unknown) : undefined;
+}
+
+export class SeedError extends Error {
+  readonly seedFile: string;
+  readonly completed: string[];
+
+  constructor(seedFile: string, completed: string[], cause: unknown) {
+    super(`Seed file failed: ${basename(seedFile)}: ${errorText(cause)}`, { cause });
+    this.name = "SeedError";
+    this.seedFile = seedFile;
+    this.completed = [...completed];
+  }
+}
 
 // ── Word Banks ───────────────────────────────────────────────────
 
@@ -340,15 +374,17 @@ export class FakeData {
   }
 
   /**
-   * Run seed files from a directory. Each file should export a default async function.
-   * Returns an array of executed file paths.
+   * Run the seed files in a directory in name order, skipping files whose name
+   * starts with "_". A file's default export, or else the named run() that
+   * `generate seeder` writes, is awaited when it is a function.
+   * Returns the executed file paths in order ([] when the directory is missing).
+   * A seed file that throws stops the run: it is logged and a SeedError naming
+   * it is thrown, and no later file runs (ADR-0108).
    */
   async seedDir(seedDir?: string): Promise<string[]> {
     const dir = resolve(seedDir ?? "src/seeds");
     if (!existsSync(dir)) return [];
-    const files = readdirSync(dir)
-      .filter((f) => f.endsWith(".ts") || f.endsWith(".js"))
-      .sort();
+    const files = readdirSync(dir).filter(isSeedFile).sort();
     const executed: string[] = [];
     for (const file of files) {
       const fullPath = join(dir, file);
@@ -356,13 +392,12 @@ export class FakeData {
         // A raw path is not an import specifier: D:\... reads as a URL scheme,
         // and a # anywhere in the path starts a URL fragment.
         const mod = await import(pathToFileURL(fullPath).href);
-        if (typeof mod.default === "function") {
-          await mod.default();
-        }
-        executed.push(fullPath);
-      } catch {
-        // skip failed seed files
+        await seedEntry(mod)?.();
+      } catch (error) {
+        Log.error(`Seeder: ${file} failed, seeding stopped: ${errorText(error)}`);
+        throw new SeedError(fullPath, executed, error);
       }
+      executed.push(fullPath);
     }
     return executed;
   }
