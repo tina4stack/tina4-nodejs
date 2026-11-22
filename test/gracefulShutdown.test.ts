@@ -451,7 +451,7 @@ if (SIGNALS_DELIVERABLE) {
 // console process group (test/_ctrlBreak.ts) - and reaches nothing else.
 // tina4-python traps SIGINT/SIGBREAK/SIGTERM on Windows into the same drain.
 if (process.platform !== "win32") {
-  console.log("  SKIP SIGBREAK: same contract - Windows-only: SIGBREAK/CTRL_BREAK_EVENT does not exist on POSIX (SIGTERM/SIGINT above cover it)");
+  console.log("  SKIP SIGBREAK: same contract - [needs:os=win32] SIGBREAK/CTRL_BREAK_EVENT does not exist on POSIX (SIGTERM/SIGINT above cover it)");
 } else {
   const b = await bootBreakableServer();
   try {
