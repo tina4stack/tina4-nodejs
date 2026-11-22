@@ -35,13 +35,28 @@ import { Log } from "./logger.js";
  * the failing file, `completed` the files that ran before it, and `cause` the
  * original error.
  */
+/** The message of anything thrown, Error or not. */
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** A .ts/.js seed file that is not a `_`-prefixed helper. */
+function isSeedFile(name: string): boolean {
+  return (name.endsWith(".ts") || name.endsWith(".js")) && !name.startsWith("_");
+}
+
+/** What a seed module runs: its default export, or else the named run() that `generate seeder` writes. */
+function seedEntry(mod: Record<string, unknown>): (() => unknown) | undefined {
+  const entry = typeof mod.default === "function" ? mod.default : mod.run;
+  return typeof entry === "function" ? (entry as () => unknown) : undefined;
+}
+
 export class SeedError extends Error {
   readonly seedFile: string;
   readonly completed: string[];
 
   constructor(seedFile: string, completed: string[], cause: unknown) {
-    const reason = cause instanceof Error ? cause.message : String(cause);
-    super(`Seed file failed: ${basename(seedFile)}: ${reason}`, { cause });
+    super(`Seed file failed: ${basename(seedFile)}: ${errorText(cause)}`, { cause });
     this.name = "SeedError";
     this.seedFile = seedFile;
     this.completed = [...completed];
@@ -369,9 +384,7 @@ export class FakeData {
   async seedDir(seedDir?: string): Promise<string[]> {
     const dir = resolve(seedDir ?? "src/seeds");
     if (!existsSync(dir)) return [];
-    const files = readdirSync(dir)
-      .filter((f) => (f.endsWith(".ts") || f.endsWith(".js")) && !f.startsWith("_"))
-      .sort();
+    const files = readdirSync(dir).filter(isSeedFile).sort();
     const executed: string[] = [];
     for (const file of files) {
       const fullPath = join(dir, file);
@@ -379,13 +392,9 @@ export class FakeData {
         // A raw path is not an import specifier: D:\... reads as a URL scheme,
         // and a # anywhere in the path starts a URL fragment.
         const mod = await import(pathToFileURL(fullPath).href);
-        // A default-export function, or the named run() that `generate seeder` writes.
-        const entry = typeof mod.default === "function" ? mod.default : typeof mod.run === "function" ? mod.run : null;
-        if (entry) {
-          await entry();
-        }
+        await seedEntry(mod)?.();
       } catch (error) {
-        Log.error(`Seeder: ${file} failed, seeding stopped: ${error instanceof Error ? error.message : String(error)}`);
+        Log.error(`Seeder: ${file} failed, seeding stopped: ${errorText(error)}`);
         throw new SeedError(fullPath, executed, error);
       }
       executed.push(fullPath);

@@ -93,7 +93,15 @@ console.log("\n--- FakeData.seedDir fails loud ---");
   writeFileSync(second, record(p.tracker, "002_second"));
   writeFileSync(first, record(p.tracker, "001_first"));
   writeFileSync(join(p.seeds, "_helper.ts"), `throw new Error("a helper must never run");\nexport {};\n`);
-  const executed = await new FakeData().seedDir(p.seeds);
+  writeFileSync(join(p.seeds, "README.md"), "# Seeds\nNot a seed file: importing it fails.\n");
+  let executed: string[] = [];
+  let thrown = "";
+  try {
+    executed = await new FakeData().seedDir(p.seeds);
+  } catch (e) {
+    thrown = String(e);
+  }
+  ok("a clean folder seeds without error (no _ helper, no README.md)", thrown === "", thrown);
   ok("a clean folder returns the executed files in order",
     JSON.stringify(executed) === JSON.stringify([first, second]), JSON.stringify(executed));
   ok("underscore files are skipped",
