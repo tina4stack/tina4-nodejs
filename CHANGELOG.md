@@ -6,6 +6,23 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.165 - 2026-11-22
+
+### Fixed
+
+- `tina4nodejs serve` no longer refuses a free port on a slow host. The port check spawned a child `node` with a one-second timeout and treated any failure as "in use", so where starting `node` takes longer (arm64 under emulation, a small board, a CPU-throttled container) a free port was refused outside dev mode. Only a real `EADDRINUSE` counts as held now; when the probe cannot tell, the real bind decides and reports its own error. This was the known issue in 3.13.164, and 3.13.163 had it too (#209).
+- Templates, routes, models and `FakeData.seedDir()` seed files load from any path. They were imported through a hand-built `file://` string, which broke on a Windows drive letter and on `#`, `?` or `%` in a path on any platform, and `seedDir()` swallowed the error, so seeds silently never ran (#211).
+- Windows: `npm`, `npx` and a `tina4.cmd` / `.bat` client start. `tina4nodejs lint`, delegated CLI commands, dev-admin install and generate, and the MCP syntax check failed with ENOENT, then EINVAL after Node's batch-file hardening; the syntax check took ENOENT for "tsc missing" and skipped silently. Batch files run through `cmd.exe` with every argument quoted and escaped, so an argument always arrives as text and never runs as a command (#211).
+- Windows: the broken-import marker name drops the drive letter's colon. It kept `C:` in the filename, so NTFS wrote an alternate data stream and no `data/.broken/*.broken` listing found the marker (#211; same rule in tina4-python#328, tina4-php#372, tina4-ruby#183).
+- Production cluster mode sets round-robin scheduling before the first fork, unless `NODE_CLUSTER_SCHED_POLICY` is set. Node's default on Windows is OS scheduling, which can send every request to one worker (#211).
+- The database session handler's `close()` releases the SQLite connection it opened itself. It never closes an injected one, it is idempotent, and the next use reopens lazily (#211; same rule as tina4-php and tina4-ruby).
+- ProjectIndex keys always use `/`, matching PHP; they used `\` on Windows (#211).
+
+### Changed
+
+- AI skills: tina4-developer-nodejs carries `updated_for_version: 3.13.165`. Its content changed in 3.13.164 while the field still said 3.13.147, so an older install reported itself current; it now reports itself out of date.
+- Test-only: the suite runs on Windows. Tests that assumed POSIX paths, `.cmd` shims, process groups or shell scripts use portable equivalents, the vitest suites start, and the `packages/cli` build banner is quoted for both `sh` and `cmd.exe`, so `npm ci` works on Windows (#210).
+
 ## 3.13.164 - 2026-11-17
 
 ### Fixed
