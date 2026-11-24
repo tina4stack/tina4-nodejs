@@ -36,6 +36,13 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * such as Node's TypeError `.input` - and the whole `cause` chain, plus all
  * captured stdout/stderr.
  *
+ * A FAILURE NEVER PRINTS A SECRET. Every case is named by an id - scheme,
+ * template #N, password #N (their positions in the fixture) - and a leak is
+ * reported as WHICH fragment (#N in secret_fragments) turned up on WHICH
+ * surface (redacted form, a parsed field, error.message, cause[1].stack, the
+ * captured output, the boot log, ...). The produced text itself is never
+ * logged: a test that prints the value it caught leaking is a leak of its own.
+ *
  * KNOWN LIMITS (documented, asserted to be the ONLY exclusions):
  *   - A host-less URL whose password is all digits (postgres://u:123/x) is a
  *     valid URL with port 123. Not in the case list.
@@ -87,8 +94,12 @@ let fail = 0;
 const failsBySurface = new Map<string, number>();
 const groupPass = new Map<string, number>();
 
-/** One assertion. PASS lines are folded per group (thousands of cases); every FAIL prints. */
-function check(group: string, name: string, ok: boolean, detail = ""): void {
+/**
+ * One assertion. PASS lines are folded per group (thousands of cases); every
+ * FAIL prints. `name` and `why` are secret-free BY CONSTRUCTION: case ids,
+ * surface labels and fragment numbers - never produced text.
+ */
+function check(group: string, name: string, ok: boolean, why = ""): void {
   if (ok) {
     pass++;
     groupPass.set(group, (groupPass.get(group) ?? 0) + 1);
@@ -97,7 +108,7 @@ function check(group: string, name: string, ok: boolean, detail = ""): void {
   fail++;
   const surface = group.split(" ")[0];
   failsBySurface.set(surface, (failsBySurface.get(surface) ?? 0) + 1);
-  console.log(`  \x1b[31mFAIL\x1b[0m [${group}] ${name} ${detail.replace(/\s+/g, " ").slice(0, 300)}`);
+  console.log(`  \x1b[31mFAIL\x1b[0m [${group}] ${name}${why ? ` - ${why}` : ""}`);
 }
 
 function flushGroup(group: string): void {
@@ -106,26 +117,47 @@ function flushGroup(group: string): void {
   groupPass.delete(group);
 }
 
-const leakIn = (text: string): string | null => FRAGMENTS.find((f) => text.includes(f)) ?? null;
+/** Which secret fragment `text` carries, by NAME ("fragment #1"), or null. */
+function leakIn(text: string): string | null {
+  const index = FRAGMENTS.findIndex((f) => text.includes(f));
+  return index === -1 ? null : `fragment #${index + 1}`;
+}
+
+/** A labelled piece of output, so a leak can be reported by WHERE it was. */
+interface Surface { label: string; text: string }
+
+/** The first surface carrying a fragment, as "fragment #N in <label>", or null. */
+function leakInSurfaces(surfaces: Surface[]): string | null {
+  for (const s of surfaces) {
+    const leak = leakIn(s.text);
+    if (leak !== null) return `${leak} in ${s.label}`;
+  }
+  return null;
+}
 
 /** Every surface an error offers: message, stack, inspect (own props) and the cause chain. */
-function errorSurfaces(err: unknown): string {
-  const parts: string[] = [];
+function errorSurfaces(err: unknown, prefix = "error"): Surface[] {
+  const parts: Surface[] = [];
   const seen = new Set<unknown>();
   let cur: unknown = err;
+  let depth = 0;
   while (cur !== undefined && cur !== null && !seen.has(cur)) {
     seen.add(cur);
+    const at = depth === 0 ? prefix : `${prefix}.cause[${depth}]`;
     if (cur instanceof Error) {
-      parts.push(String(cur.message), String(cur.stack ?? ""));
-      if (cur instanceof AggregateError) for (const e of cur.errors) parts.push(errorSurfaces(e));
+      parts.push({ label: `${at}.message`, text: String(cur.message) }, { label: `${at}.stack`, text: String(cur.stack ?? "") });
+      if (cur instanceof AggregateError) cur.errors.forEach((e, i) => parts.push(...errorSurfaces(e, `${at}.errors[${i}]`)));
     } else {
-      parts.push(String(cur));
+      parts.push({ label: at, text: String(cur) });
     }
-    try { parts.push(inspect(cur, { depth: 6, showHidden: false })); } catch { /* unrenderable */ }
+    try { parts.push({ label: `inspect(${at})`, text: inspect(cur, { depth: 6, showHidden: false }) }); } catch { /* unrenderable */ }
     cur = (cur as { cause?: unknown })?.cause;
+    depth++;
   }
-  return parts.join("\n");
+  return parts;
 }
+
+const errorLeak = (err: unknown): string | null => leakInSurfaces(errorSurfaces(err));
 
 /** Capture every stdout/stderr write made while `fn` runs. */
 async function captured<T>(fn: () => Promise<T>): Promise<{ value: T; out: string }> {
@@ -150,13 +182,15 @@ const KNOWN_LIMIT_TEMPLATE = "{scheme}://u:{pw}";
 const KNOWN_LIMIT_PASSWORD = "Pq1@Rs2";
 let knownLimitSkips = 0;
 
-interface Case { scheme: string; template: string; pw: string; url: string; hasHost: boolean; known: boolean }
+interface Case { id: string; scheme: string; template: string; pw: string; url: string; hasHost: boolean; known: boolean }
 
 function casesFor(scheme: string): Case[] {
   const out: Case[] = [];
-  for (const template of CASES.templates) {
-    for (const pw of CASES.passwords) {
+  for (const [t, template] of CASES.templates.entries()) {
+    for (const [p, pw] of CASES.passwords.entries()) {
       out.push({
+        // What a failure prints: positions in the fixture, never the URL.
+        id: `${scheme} template #${t + 1} password #${p + 1}`,
         scheme, template, pw,
         url: template.replace("{scheme}", scheme).replace("{pw}", pw),
         hasHost: template.includes("dbhost"),
@@ -278,7 +312,8 @@ console.log("TEST-SERVER-READY");
 
 
 const bootCases = casesFor("postgres").filter((c) => !c.known && BOOT_PASSWORDS.includes(c.pw));
-const allPostgresUrls = casesFor("postgres").filter((c) => !c.known).map((c) => toLoopback(c.url, closedPort));
+const allPostgresCases = casesFor("postgres").filter((c) => !c.known);
+const allPostgresUrls = allPostgresCases.map((c) => toLoopback(c.url, closedPort));
 const bootResults = Promise.all(bootCases.map(async (c, i) => {
   const url = toLoopback(c.url, closedPort);
   const roundTrip = i === 0;
@@ -295,9 +330,9 @@ for (const scheme of [...DB_SCHEMES, ...GRAPH_SCHEMES, ...MQTT_SCHEMES, ...AMQP_
     if (c.known) { knownLimitSkips++; continue; }
     const out = redactCredentials(c.url);
     const leak = leakIn(out);
-    check(group, `${c.url}`, leak === null, `-> ${out}`);
+    check(group, c.id, leak === null, `the redacted form carries ${leak}`);
     const keeps = out.includes(scheme) && out.includes("u") && (!c.hasHost || out.includes("dbhost"));
-    check(group, `${c.url} keeps scheme/user/host`, keeps, `-> ${out}`);
+    check(group, `${c.id} keeps scheme/user/host`, keeps, "the scheme, user or host is missing from the redacted form");
   }
   flushGroup(group);
 }
@@ -312,47 +347,55 @@ for (const scheme of [...DB_SCHEMES, ...GRAPH_SCHEMES, ...MQTT_SCHEMES, ...AMQP_
 async function parseCase(
   group: string,
   c: Case,
-  parse: (url: string) => { fields: string; password: string | null; host: string | null },
+  parse: (url: string) => { fields: Surface[]; password: string | null; host: string | null },
 ): Promise<void> {
   const { value: result, out } = await captured(async () => {
     try { return { ok: true as const, parsed: parse(c.url) }; } catch (err) { return { ok: false as const, err }; }
   });
-  check(group, `${c.url} [output]`, leakIn(out) === null, out);
+  check(group, `${c.id} [output]`, leakIn(out) === null, `the captured output carries ${leakIn(out)}`);
   if (!result.ok) {
-    const surfaces = errorSurfaces(result.err);
-    check(group, `${c.url} [refusal is clean]`, leakIn(surfaces) === null, surfaces);
+    const leak = errorLeak(result.err);
+    check(group, `${c.id} [refusal is clean]`, leak === null, leak ?? "");
     return;
   }
-  check(group, `${c.url} [parsed fields are clean]`, leakIn(result.parsed.fields) === null, result.parsed.fields);
-  check(group, `${c.url} [password split correctly]`, result.parsed.password === c.pw,
-    `got ${JSON.stringify(result.parsed.password)}`);
+  const fieldLeak = leakInSurfaces(result.parsed.fields);
+  check(group, `${c.id} [parsed fields are clean]`, fieldLeak === null, fieldLeak ?? "");
+  check(group, `${c.id} [password split correctly]`, result.parsed.password === c.pw,
+    "the parsed password is not the one written");
   if (c.hasHost && !c.template.includes("notaport")) {
-    check(group, `${c.url} [host is dbhost]`, result.parsed.host === "dbhost", `got ${JSON.stringify(result.parsed.host)}`);
+    check(group, `${c.id} [host is dbhost]`, result.parsed.host === "dbhost", "the parsed host is not dbhost");
   }
 }
+
+/** Named fields, so a leak says which one. */
+const fields = (named: Record<string, unknown>): Surface[] =>
+  Object.entries(named).map(([label, value]) => ({ label: `field ${label}`, text: String(value) }));
 
 const parseDb = (url: string) => {
   const d = new DatabaseUrl(url);
   return {
-    fields: [d.host, d.username, d.database, d.dsn(), d.toSafeString(), JSON.stringify(d), inspect(d), String(d)].join("\n"),
+    fields: fields({
+      host: d.host, username: d.username, database: d.database, "dsn()": d.dsn(), "toSafeString()": d.toSafeString(),
+      "JSON.stringify": JSON.stringify(d), inspect: inspect(d), "String()": String(d),
+    }),
     password: d.password, host: d.host,
   };
 };
 const parseGraph = (url: string) => {
   const g = new GraphUrl(url);
   return {
-    fields: [g.host, g.username, g.graph, g.getDsn(), JSON.stringify(g.params), g.scheme].join("\n"),
+    fields: fields({ host: g.host, username: g.username, graph: g.graph, "getDsn()": g.getDsn(), params: JSON.stringify(g.params), scheme: g.scheme }),
     password: g.password, host: g.host,
   };
 };
 const parseMqtt = (url: string) => {
   const m = Mqtt.parseUrl(url);
-  return { fields: [m.host, m.username, String(m.port)].join("\n"), password: m.password, host: m.host };
+  return { fields: fields({ host: m.host, username: m.username, port: m.port }), password: m.password, host: m.host };
 };
 const parseAmqp = (url: string) => {
   const a = parseAmqpUrl(url);
   return {
-    fields: [a.host, a.username, a.vhost, String(a.port)].join("\n"),
+    fields: fields({ host: a.host, username: a.username, vhost: a.vhost, port: a.port }),
     password: a.password ?? null, host: a.host ?? null,
   };
 };
@@ -379,37 +422,39 @@ for (const [label, schemes, parse] of PARSERS) {
 console.log(`\n--- must_still_parse: valid URLs (and an unencoded / in a password) still parse --- (${elapsed()})`);
 {
   const group = "must-parse";
-  for (const m of CASES.must_still_parse) {
+  /** Which expected fields differ - by NAME, never by value. */
+  const mismatches = (got: Record<string, unknown>, want: Record<string, unknown>): string =>
+    Object.keys(want).filter((k) => want[k] !== undefined && got[k] !== want[k]).join(", ");
+  const threw = (err: unknown): string => `threw ${(err as Error)?.name ?? typeof err}`;
+  for (const [k, m] of CASES.must_still_parse.entries()) {
+    const id = `must_still_parse #${k + 1}`;
+    const want = { host: m.host, port: m.port, user: m.user, password: m.password, database: m.database };
     try {
       const d = new DatabaseUrl(m.url);
-      check(group, `DatabaseUrl ${m.url}`,
-        d.host === m.host && d.username === m.user && d.password === m.password && d.database === m.database
-          && (m.port === undefined || d.port === m.port),
-        JSON.stringify({ host: d.host, port: d.port, user: d.username, db: d.database, pwOk: d.password === m.password }));
+      const differ = mismatches({ host: d.host, port: d.port, user: d.username, password: d.password, database: d.database }, want);
+      check(group, `DatabaseUrl ${id}`, differ === "", `differs in: ${differ}`);
     } catch (err) {
-      check(group, `DatabaseUrl ${m.url}`, false, `threw: ${(err as Error).message}`);
+      check(group, `DatabaseUrl ${id}`, false, threw(err));
     }
     // The same userinfo rule in every parser.
     const swap = (scheme: string) => m.url.replace(/^postgres:/, `${scheme}:`);
     try {
       const g = new GraphUrl(swap("neo4j"));
-      check(group, `GraphUrl ${swap("neo4j")}`,
-        g.host === m.host && g.username === m.user && g.password === m.password && g.graph === m.database
-          && (m.port === undefined || g.port === m.port));
-    } catch (err) { check(group, `GraphUrl ${swap("neo4j")}`, false, `threw: ${(err as Error).message}`); }
+      const differ = mismatches({ host: g.host, port: g.port, user: g.username, password: g.password, database: g.graph }, want);
+      check(group, `GraphUrl ${id}`, differ === "", `differs in: ${differ}`);
+    } catch (err) { check(group, `GraphUrl ${id}`, false, threw(err)); }
     try {
       const q = Mqtt.parseUrl(swap("mqtt"));
-      check(group, `Mqtt.parseUrl ${swap("mqtt")}`,
-        q.host === m.host && q.username === m.user && q.password === m.password && (m.port === undefined || q.port === m.port));
-    } catch (err) { check(group, `Mqtt.parseUrl ${swap("mqtt")}`, false, `threw: ${(err as Error).message}`); }
+      const differ = mismatches({ host: q.host, port: q.port, user: q.username, password: q.password }, { ...want, database: undefined });
+      check(group, `Mqtt.parseUrl ${id}`, differ === "", `differs in: ${differ}`);
+    } catch (err) { check(group, `Mqtt.parseUrl ${id}`, false, threw(err)); }
     try {
       const a = parseAmqpUrl(swap("amqp"));
       // AMQP passes userinfo through undecoded (unchanged behaviour), so compare the raw form.
       const rawPw = m.url.slice(m.url.indexOf(":", 11) + 1, m.url.lastIndexOf("@"));
-      check(group, `parseAmqpUrl ${swap("amqp")}`,
-        a.host === m.host && a.username === m.user && a.password === rawPw && a.vhost === m.database
-          && (m.port === undefined || a.port === m.port));
-    } catch (err) { check(group, `parseAmqpUrl ${swap("amqp")}`, false, `threw: ${(err as Error).message}`); }
+      const differ = mismatches({ host: a.host, port: a.port, user: a.username, password: a.password, database: a.vhost }, { ...want, password: rawPw });
+      check(group, `parseAmqpUrl ${id}`, differ === "", `differs in: ${differ}`);
+    } catch (err) { check(group, `parseAmqpUrl ${id}`, false, threw(err)); }
   }
   flushGroup(group);
 }
@@ -423,8 +468,8 @@ console.log(`\n--- rule: refusals the shared cases do not reach --- (${elapsed()
       fn();
       check(group, `${label} is refused`, false, "accepted");
     } catch (err) {
-      const surfaces = errorSurfaces(err);
-      check(group, `${label} is refused without echoing it`, !surfaces.includes(secret), surfaces);
+      const echoed = errorSurfaces(err).find((s) => s.text.includes(secret));
+      check(group, `${label} is refused without echoing it`, echoed === undefined, `the probe password appears in ${echoed?.label}`);
     }
   };
   // Behaviour change: an unencoded @ after the authority (here in the query)
@@ -448,6 +493,19 @@ console.log(`\n--- rule: refusals the shared cases do not reach --- (${elapsed()
   let ok = false;
   try { ok = new DatabaseUrl("postgres://u:pw@dbhost/appdb?contact=a%40b").host === "dbhost"; } catch { ok = false; }
   check(group, "an encoded %40 in the query still parses", ok);
+  // The shared splitter itself (packages/core/src/connectionUrl.ts), which every
+  // parser above delegates to. Loaded dynamically so this file still REPORTS on
+  // a tree that predates it, instead of dying at import.
+  const splitter = await import("../packages/core/src/connectionUrl.ts").catch(() => null);
+  check(group, "the shared splitter module exists", splitter !== null);
+  if (splitter !== null) {
+    const parts = splitter.splitConnectionUrl("postgres://u:Zz9/pw@dbhost:5432/appdb", { label: "probe" });
+    check(group, "splitConnectionUrl: userinfo ends at the last @, the password keeps its /",
+      parts.username === "u" && parts.password === "Zz9/pw" && parts.host === "dbhost" && parts.port === 5432
+        && parts.tail === "/appdb");
+    check(group, "canonicalConnectionUrl re-encodes the credentials for a driver",
+      splitter.canonicalConnectionUrl(parts) === "postgres://u:Zz9%2Fpw@dbhost:5432/appdb");
+  }
   try { ok = Mqtt.parseUrl("broker:1884").host === "broker" && Mqtt.parseUrl("broker:1884").port === 1884; } catch { ok = false; }
   check(group, "a bare MQTT host:port still parses", ok);
   try { ok = parseAmqpUrl("rabbit:5673/v").host === "rabbit" && parseAmqpUrl("rabbit:5673/v").vhost === "v"; } catch { ok = false; }
@@ -455,7 +513,7 @@ console.log(`\n--- rule: refusals the shared cases do not reach --- (${elapsed()
   // The documented limit, pinned so a change in it is noticed: a host-less URL
   // whose password is all digits IS a URL with a port.
   check(group, "known limit: postgres://u:123/x keeps its digits",
-    redactCredentials("postgres://u:123/x") === "postgres://u:123/x", redactCredentials("postgres://u:123/x"));
+    redactCredentials("postgres://u:123/x") === "postgres://u:123/x", "its redaction changed - update the documented limit");
   flushGroup(group);
 }
 
@@ -474,21 +532,22 @@ async function connectSweep(
   const { value: results, out } = await captured(() =>
     Promise.all(work.map(async ({ scheme, c }) => {
       const url = toLoopback(c.url, closedPort);
-      try { await attempt(url); return { scheme, url, err: null as unknown }; } catch (err) { return { scheme, url, err }; }
+      try { await attempt(url); return { scheme, c, err: null as unknown }; } catch (err) { return { scheme, c, err }; }
     })),
   );
-  check(`connect ${family}`, `captured stdout/stderr of ${work.length} connect attempts`, leakIn(out) === null, out);
+  check(`connect ${family}`, `captured stdout/stderr of ${work.length} connect attempts`, leakIn(out) === null,
+    `the captured output carries ${leakIn(out)}`);
   flushGroup(`connect ${family}`);
   for (const scheme of schemes) {
     const group = `connect ${family} ${scheme}`;
     for (const r of results.filter((x) => x.scheme === scheme)) {
       if (r.err === null) {
         // A closed port never answers, so reaching here means nothing was attempted.
-        check(group, `${r.url} [fails]`, false, "the connect did not fail against a closed port");
+        check(group, `${r.c.id} [fails]`, false, "the connect did not fail against a closed port");
         continue;
       }
-      const surfaces = errorSurfaces(r.err);
-      check(group, `${r.url} [error is clean]`, leakIn(surfaces) === null, surfaces);
+      const leak = errorLeak(r.err);
+      check(group, `${r.c.id} [error is clean]`, leak === null, leak ?? "");
     }
     flushGroup(group);
   }
@@ -527,18 +586,18 @@ console.log(`\n--- connect: Mongo DocStore against a closed 127.0.0.1 port --- (
         // getCollection reads the env synchronously before its first await.
         const pending = getCollection("ghsa_probe");
         await pending;
-        return { url, err: null as unknown };
-      } catch (err) { return { url, err }; }
+        return { c, err: null as unknown };
+      } catch (err) { return { c, err }; }
     })),
   );
   delete process.env.TINA4_MONGO_URI;
   try { await closeDocStore(); } catch { /* nothing open */ }
   const group = "connect DocStore mongodb/mongodb+srv";
-  check(group, `captured output of ${cases.length} attempts`, leakIn(out) === null, out);
+  check(group, `captured output of ${cases.length} attempts`, leakIn(out) === null, `the captured output carries ${leakIn(out)}`);
   for (const r of results) {
-    if (r.err === null) { check(group, `${r.url} [fails]`, false, "connected to a closed port?"); continue; }
-    const surfaces = errorSurfaces(r.err);
-    check(group, `${r.url} [error is clean]`, leakIn(surfaces) === null, surfaces);
+    if (r.err === null) { check(group, `${r.c.id} [fails]`, false, "connected to a closed port?"); continue; }
+    const leak = errorLeak(r.err);
+    check(group, `${r.c.id} [error is clean]`, leak === null, leak ?? "");
   }
   flushGroup(group);
 }
@@ -559,9 +618,9 @@ for (const scheme of AMQP_SCHEMES) {
     const { value: err, out } = await captured(async () => {
       try { new RabbitMQBackend().push("ghsa_probe", { x: 1 }); return null; } catch (e) { return e; }
     });
-    check(group, `${url} [output]`, leakIn(out) === null, out);
-    if (err === null) check(group, `${url} [fails]`, false, "published to a closed port?");
-    else check(group, `${url} [error is clean]`, leakIn(errorSurfaces(err)) === null, errorSurfaces(err));
+    check(group, `${c.id} [output]`, leakIn(out) === null, `the captured output carries ${leakIn(out)}`);
+    if (err === null) check(group, `${c.id} [fails]`, false, "published to a closed port?");
+    else check(group, `${c.id} [error is clean]`, errorLeak(err) === null, errorLeak(err) ?? "");
   }
   delete process.env.TINA4_QUEUE_URL;
   flushGroup(group);
@@ -577,12 +636,12 @@ console.log(`\n--- connect: RedisBackplane against a closed 127.0.0.1 port --- (
     Promise.all(cases.map(async (c) => {
       const url = toLoopback(c.url, closedPort);
       let backplane: any;
-      try { backplane = new RedisBackplane(url); } catch (err) { return { url, err }; }
+      try { backplane = new RedisBackplane(url); } catch (err) { return { c, err }; }
       try {
         await backplane.ready;
-        return { url, err: null as unknown };
+        return { c, err: null as unknown };
       } catch (err) {
-        return { url, err };
+        return { c, err };
       } finally {
         // close() waits on a connection that never opened; drop the clients instead.
         for (const client of [backplane.publisher, backplane.subscriber]) {
@@ -592,11 +651,11 @@ console.log(`\n--- connect: RedisBackplane against a closed 127.0.0.1 port --- (
     })),
   );
   const group = "connect RedisBackplane redis";
-  check(group, `captured output of ${cases.length} attempts`, leakIn(out) === null, out);
+  check(group, `captured output of ${cases.length} attempts`, leakIn(out) === null, `the captured output carries ${leakIn(out)}`);
   for (const r of results) {
-    if (r.err === null) { check(group, `${r.url} [fails]`, false, "connected to a closed port?"); continue; }
-    const surfaces = errorSurfaces(r.err);
-    check(group, `${r.url} [error is clean]`, leakIn(surfaces) === null, surfaces);
+    if (r.err === null) { check(group, `${r.c.id} [fails]`, false, "connected to a closed port?"); continue; }
+    const leak = errorLeak(r.err);
+    check(group, `${r.c.id} [error is clean]`, leak === null, leak ?? "");
   }
   flushGroup(group);
 }
@@ -605,20 +664,28 @@ console.log(`\n--- connect: RedisBackplane against a closed 127.0.0.1 port --- (
 console.log(`\n--- boot: startServer() log and GET /__dev/api/connections --- (${elapsed()})`);
 {
   const group = "boot postgres";
-  check(group, `boot log driven with ${BOOT_PASSWORDS.length} passwords`, BOOT_PASSWORDS.length === 3, BOOT_PASSWORDS.join(","));
+  check(group, `boot log driven with ${BOOT_PASSWORDS.length} passwords`, BOOT_PASSWORDS.length === 3,
+    "the fixture no longer holds all three boot passwords");
+  /** Status and leak of one GET /connections reply - never its body. */
+  const replyProblem = (reply: string): string => {
+    const leak = leakIn(reply);
+    return reply.startsWith("200") ? `the reply carries ${leak}` : `status ${reply.slice(0, 3)}`;
+  };
   for (const r of await bootResults) {
-    check(group, `${r.url} [boot log]`, leakIn(r.log) === null,
-      r.log.split("\n").filter((l) => leakIn(l)).join(" | "));
-    check(group, `${r.url} [/__dev/api/connections]`,
-      r.connections.startsWith("200") && leakIn(r.connections) === null, r.connections);
+    const lineNo = r.log.split("\n").findIndex((l) => leakIn(l) !== null);
+    check(group, `${r.c.id} [boot log]`, lineNo === -1, `boot log line ${lineNo + 1} carries ${leakIn(r.log)}`);
+    check(group, `${r.c.id} [/__dev/api/connections]`,
+      r.connections.startsWith("200") && leakIn(r.connections) === null, replyProblem(r.connections));
     if (r.roundTrip) {
-      check(group, `${r.url} [saving the redacted url keeps the real one in .env]`,
-        r.savedEnv.includes(`TINA4_DATABASE_URL=${r.url}`) && !r.savedEnv.includes("***"), r.savedEnv);
+      check(group, `${r.c.id} [saving the redacted url keeps the real one in .env]`,
+        r.savedEnv.includes(`TINA4_DATABASE_URL=${r.url}`) && !r.savedEnv.includes("***"),
+        "the .env no longer holds the stored URL");
       check(group, `dev admin GET swept every case (${r.sweep.length} of ${allPostgresUrls.length})`,
         r.sweep.length === allPostgresUrls.length);
-      for (const one of r.sweep) {
-        check(group, `${one.url} [/__dev/api/connections]`, one.body.startsWith("200") && leakIn(one.body) === null, one.body);
-      }
+      r.sweep.forEach((one, i) => {
+        check(group, `${allPostgresCases[i].id} [/__dev/api/connections]`,
+          one.body.startsWith("200") && leakIn(one.body) === null, replyProblem(one.body));
+      });
     }
   }
   for (const root of bootRoots) { try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } }
@@ -631,7 +698,7 @@ console.log(`\n--- known limits --- (${elapsed()})`);
   // redact (25 schemes) + parse (23 schemes); connect/boot filter it out of their own lists.
   const expected = [...DB_SCHEMES, ...GRAPH_SCHEMES, ...MQTT_SCHEMES, ...AMQP_SCHEMES, ...REDACT_ONLY_SCHEMES].length
     + [...DB_SCHEMES, ...GRAPH_SCHEMES, ...MQTT_SCHEMES, ...AMQP_SCHEMES].length;
-  check("known-limit", `only "${KNOWN_LIMIT_TEMPLATE}" x "${KNOWN_LIMIT_PASSWORD}" is skipped`,
+  check("known-limit", "only the documented host-less unencoded-@ case is skipped",
     knownLimitSkips === expected, `skipped ${knownLimitSkips}, expected ${expected}`);
   flushGroup("known-limit");
 }

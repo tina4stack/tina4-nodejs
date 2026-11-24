@@ -21,28 +21,33 @@ const URL = "neo4j://graphuser:Pq1Rs2-graph@graphhost:7687/movies";
 let passed = 0;
 let failed = 0;
 
-function check(name: string, ok: boolean, detail = ""): void {
+/**
+ * `why` names the SURFACE that failed, never its text: printing the dump that
+ * leaked would put the password in the test log (GHSA-h2mr-m3v3-cq8c).
+ */
+function check(name: string, ok: boolean, why = ""): void {
   if (ok) {
     passed++;
     console.log(`  ✓ ${name}`);
   } else {
     failed++;
-    console.log(`  ✗ ${name}${detail ? `\n      ${detail}` : ""}`);
+    console.log(`  ✗ ${name}${why ? ` - ${why}` : ""}`);
   }
 }
 
 const url = new GraphUrl(URL);
 
 const shown = inspect(url);
-check("util.inspect hides the password", !shown.includes("Pq1Rs2"), shown);
-check("util.inspect still names the host", shown.includes("graphhost"), shown);
+check("util.inspect hides the password", !shown.includes("Pq1Rs2"), "the password is in the util.inspect output");
+check("util.inspect still names the host", shown.includes("graphhost"), "the host is missing from the util.inspect output");
 
 const json = JSON.stringify(url);
-check("JSON.stringify hides the password", !json.includes("Pq1Rs2"), json);
-check("JSON.stringify still names the host and user", json.includes("graphhost") && json.includes("graphuser"), json);
+check("JSON.stringify hides the password", !json.includes("Pq1Rs2"), "the password is in the JSON");
+check("JSON.stringify still names the host and user", json.includes("graphhost") && json.includes("graphuser"),
+  "the host or user is missing from the JSON");
 
 const nested = JSON.stringify({ graph: url });
-check("a GraphUrl inside a logged object hides the password", !nested.includes("Pq1Rs2"), nested);
+check("a GraphUrl inside a logged object hides the password", !nested.includes("Pq1Rs2"), "the password is in the nested JSON");
 
 check("the driver still reads the real password", url.password === "Pq1Rs2-graph");
 check("the driver still reads the real user", url.username === "graphuser");
