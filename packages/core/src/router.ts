@@ -166,14 +166,7 @@ export class RouteRef {
    * claim. Chain .role()/.can() for AND. Implies auth. Feature 138 / ADR-0058.
    */
   role(...names: string[]): this {
-    const clean = names.filter((n) => n !== "");
-    if (clean.length > 0) {
-      for (const route of this.routes) {
-        (route.requiredRoles ??= []).push(clean);
-        route.secure = true;
-      }
-    }
-    return this;
+    return this.guard("requiredRoles", names);
   }
 
   /**
@@ -182,10 +175,19 @@ export class RouteRef {
    * concrete requirement. Chain for AND. Implies auth. Feature 138.
    */
   can(...permissions: string[]): this {
-    const clean = permissions.filter((p) => p !== "");
+    return this.guard("requiredPerms", permissions);
+  }
+
+  /**
+   * Add one OR-group of roles or permissions to every route this ref covers,
+   * and secure them (a guard implies auth). Empty names are dropped; a call
+   * with none left changes nothing.
+   */
+  private guard(key: "requiredRoles" | "requiredPerms", names: string[]): this {
+    const clean = names.filter((n) => n !== "");
     if (clean.length > 0) {
       for (const route of this.routes) {
-        (route.requiredPerms ??= []).push(clean);
+        (route[key] ??= []).push(clean);
         route.secure = true;
       }
     }
