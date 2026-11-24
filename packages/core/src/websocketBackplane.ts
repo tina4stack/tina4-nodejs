@@ -26,7 +26,8 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 import { randomUUID } from "node:crypto";
 import { resolveOptionalPackage } from "./optionalPackage.js";
-import { redactCredentials } from "../../orm/src/databaseUrl.js";
+import { redactCredentials } from "./urlRedaction.js";
+import { canonicalConnectionUrl, splitConnectionUrl } from "./connectionUrl.js";
 
 /**
  * The one "connected" line both backplanes print. The URL goes through the
@@ -35,6 +36,17 @@ import { redactCredentials } from "../../orm/src/databaseUrl.js";
  */
 function logConnected(backplaneName: string, url: string): void {
   console.log(`[Tina4] ${backplaneName} connected to ${redactCredentials(url)}`);
+}
+
+/**
+ * The backplane URL as the driver receives it: split by the shared rule and
+ * re-encoded, so the driver's own URL parser never re-splits a password that
+ * holds `/`, `?`, `#` or `@` - a mis-split password becomes the "host" every
+ * connect error then prints. A shape the rule cannot split is refused here, in
+ * the constructor, with a message that does not echo it (GHSA-h2mr-m3v3-cq8c).
+ */
+function driverUrl(backplaneName: string, url: string): string {
+  return canonicalConnectionUrl(splitConnectionUrl(url, { label: backplaneName, allowHostList: true }));
 }
 
 /**
@@ -85,7 +97,7 @@ export class RedisBackplane implements WebSocketBackplane {
   private ready: Promise<void>;
 
   constructor(url?: string) {
-    const resolvedUrl = url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "redis://localhost:6379";
+    const resolvedUrl = driverUrl("RedisBackplane", url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "redis://localhost:6379");
     this.url = resolvedUrl;
 
     // Optional peer (ADR-0067): resolved NOW so a missing package throws from
@@ -147,7 +159,7 @@ export class NATSBackplane implements WebSocketBackplane {
   private natsModuleUrl: string;
 
   constructor(url?: string) {
-    const resolvedUrl = url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "nats://localhost:4222";
+    const resolvedUrl = driverUrl("NATSBackplane", url ?? process.env.TINA4_WS_BACKPLANE_URL ?? "nats://localhost:4222");
     this.url = resolvedUrl;
 
     const natsModuleUrl = resolveOptionalPackage("nats", "NATSBackplane");

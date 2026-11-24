@@ -183,10 +183,13 @@ function testConnectByUrl(): void {
   } catch (error) {
     unparsableMessage = (error as Error).message;
   }
+  // GHSA-h2mr-m3v3-cq8c: the refusal is generic - it never echoes the URL, not
+  // even redacted - but still names the scheme and the host:port after the `@`.
   ok(
     "graph_url_parse_error_never_prints_the_password",
     unparsableMessage !== "" && !unparsableMessage.includes("graph-secret-42")
-      && unparsableMessage.includes("ultipa://root:***@h:notaport/g"),
+      && !unparsableMessage.includes("root")
+      && unparsableMessage.includes("ultipa") && unparsableMessage.includes("h:notaport"),
     unparsableMessage,
   );
 }

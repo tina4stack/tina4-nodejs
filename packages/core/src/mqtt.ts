@@ -48,6 +48,7 @@ import { Env } from "./env.js";
 import { Log } from "./logger.js";
 import { background } from "./background.js";
 import { MqttMessage } from "./mqttMessage.js";
+import { splitConnectionUrl, type ConnectionUrlParts } from "./connectionUrl.js";
 
 /** Any MQTT protocol / connection failure. */
 export class MqttError extends Error {
@@ -219,68 +220,43 @@ export class Mqtt {
       throw new Error(`MQTT url is empty -- set TINA4_MQTT_URL (e.g. ${DEFAULT_URL})`);
     }
 
-    let scheme: string | null = null;
-    let rest = raw;
+    // GHSA-h2mr-m3v3-cq8c: no message below may quote the url - it can carry a
+    // password, and four of them used to. The scheme alone is safe to name.
     const schemeMatch = raw.match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//);
+    let target = raw;
     if (schemeMatch) {
-      scheme = schemeMatch[1].toLowerCase();
+      const scheme = schemeMatch[1].toLowerCase();
       if (!["mqtt", "tcp", "mqtts"].includes(scheme)) {
         throw new Error(
-          `unsupported MQTT url scheme '${scheme}' in '${raw}' -- this client speaks ` +
+          `unsupported MQTT url scheme '${scheme}' -- this client speaks ` +
             "mqtt://, tcp:// or mqtts:// (TLS). WebSocket transports are not implemented.",
         );
       }
-      rest = raw.slice(schemeMatch[0].length);
+    } else if (/^(\[[^\]\s]*\]|[^\s:/@?#[\]]+)(:\d*)?$/.test(raw)) {
+      // A bare "host" or "host:port" stays accepted. Anything else without
+      // "scheme://" (`mqtt:/u:pw@h`, `u:pw@h`) is refused by the splitter below.
+      target = `mqtt://${raw}`;
     }
 
-    const tlsFlag = scheme === "mqtts";
-
-    // Split on the LAST "@" so a password containing an un-encoded "@" still
-    // leaves the host intact.
-    let username: string | null = null;
-    let password: string | null = null;
-    const atPos = rest.lastIndexOf("@");
-    if (atPos !== -1) {
-      const userinfo = rest.slice(0, atPos);
-      rest = rest.slice(atPos + 1);
-      const colon = userinfo.indexOf(":");
-      if (colon === -1) {
-        username = Mqtt.percentDecode(userinfo);
-      } else {
-        username = Mqtt.percentDecode(userinfo.slice(0, colon));
-        password = Mqtt.percentDecode(userinfo.slice(colon + 1));
-      }
+    // Userinfo by the shared rule: it ends at the LAST "@", so a password
+    // holding an un-encoded @ : / ? or # still leaves the host intact.
+    let parts: ConnectionUrlParts;
+    try {
+      parts = splitConnectionUrl(target, { label: "Mqtt", expected: "mqtt://[user[:password]@]host[:port]" });
+    } catch (err) {
+      throw new MqttError(`malformed MQTT url -- ${(err as Error).message.replace(/^Mqtt: /, "")}`);
     }
-
-    // host is a [bracketed ipv6] or a run without : or /
-    const hostPort = rest.split("/", 1)[0];
-    let host = hostPort;
-    let portStr: string | null = null;
-    if (hostPort.startsWith("[")) {
-      const close = hostPort.indexOf("]");
-      if (close === -1) throw new Error(`malformed MQTT url '${raw}' -- unclosed IPv6 bracket`);
-      host = hostPort.slice(1, close);
-      const after = hostPort.slice(close + 1);
-      if (after.startsWith(":")) portStr = after.slice(1);
-    } else {
-      const colon = hostPort.indexOf(":");
-      if (colon !== -1) {
-        host = hostPort.slice(0, colon);
-        portStr = hostPort.slice(colon + 1);
-      }
+    if (parts.host === "") {
+      throw new MqttError("malformed MQTT url -- expected mqtt://host:port. The url is not shown because it may contain a password.");
     }
-
-    if (host === "") throw new Error(`malformed MQTT url '${raw}' -- expected mqtt://host:port`);
-    if (portStr !== null && portStr !== "" && !/^\d+$/.test(portStr)) {
-      throw new Error(`malformed MQTT url '${raw}' -- port must be numeric`);
-    }
+    const tlsFlag = parts.scheme === "mqtts";
 
     return {
-      host,
-      port: portStr !== null && portStr !== "" ? parseInt(portStr, 10) : tlsFlag ? DEFAULT_TLS_PORT : DEFAULT_PORT,
+      host: parts.host,
+      port: parts.port !== null ? parts.port : tlsFlag ? DEFAULT_TLS_PORT : DEFAULT_PORT,
       tls: tlsFlag,
-      username: username !== null && username !== "" ? username : null,
-      password,
+      username: parts.rawUsername !== null && parts.rawUsername !== "" ? Mqtt.percentDecode(parts.rawUsername) : null,
+      password: parts.rawPassword !== null ? Mqtt.percentDecode(parts.rawPassword) : null,
     };
   }
 

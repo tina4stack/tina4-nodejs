@@ -14,7 +14,10 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * alias (bolt/neo4j/memgraph all speak Bolt/Cypher and share ONE adapter) resolves
  * to its engine here. See tina4-documentation/plan/v3/features/139-graph-databases.md.
  */
-import { redactCredentials } from "../databaseUrl.js";
+import { inspect } from "node:util";
+
+import { redactCredentials } from "../../../core/src/urlRedaction.js";
+import { ConnectionUrlError, splitConnectionUrl } from "../../../core/src/connectionUrl.js";
 
 /** The canonical graph engine names. */
 export type GraphEngine = "ultipa" | "bolt" | "arango";
@@ -59,13 +62,20 @@ export class GraphUrl {
 
   constructor(url: string) {
     this.raw = url;
+    // Userinfo by the shared last-`@` rule; the URL class only ever sees the
+    // credential-free rest. It used to parse the whole value, so a password
+    // holding `/`, `?` or `#` became the host/port/graph (and then the
+    // "connect to <host>" error), and the refusal quoted the URL back.
+    const expected = "scheme://[user[:password]@]host[:port]/graph (e.g. ultipa://host:60061/mygraph)";
+    const parts = splitConnectionUrl(url, { label: "GraphUrl", expected });
     let parsed: URL;
     try {
-      parsed = new URL(url);
+      parsed = new URL(`${parts.scheme}://${parts.hostPort}${parts.tail}`);
     } catch {
-      throw new Error(
-        `Unsupported graph URL '${redactCredentials(url)}' — expected scheme://[user[:password]@]host[:port]/graph `
-        + `(e.g. ultipa://host:60061/mygraph).`,
+      // No `cause`: the TypeError carries its input.
+      throw new ConnectionUrlError(
+        `GraphUrl: invalid ${parts.scheme} URL - expected ${expected}. `
+        + "The URL itself is not shown because it may contain a password.",
       );
     }
     const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
@@ -83,8 +93,8 @@ export class GraphUrl {
     this.port = parsed.port ? parseInt(parsed.port, 10) : ENGINE_DEFAULT_PORT[engine];
     const path = (parsed.pathname || "").replace(/^\//, "");
     this.graph = path === "" ? null : path;
-    this.username = parsed.username ? decodeURIComponent(parsed.username) : null;
-    this.password = parsed.password ? decodeURIComponent(parsed.password) : null;
+    this.username = parts.username ? parts.username : null;
+    this.password = parts.password ? parts.password : null;
     this.params = {};
     for (const [key, value] of parsed.searchParams) {
       // First value wins, matching Python's parse_qs[0].
@@ -92,6 +102,32 @@ export class GraphUrl {
     }
     // TLS if the scheme says so (…s) or ?tls=1|true.
     this.useTls = scheme.endsWith("s") || this.params.tls === "1" || this.params.tls === "true";
+  }
+
+  /**
+   * What `JSON.stringify` emits, directly or as one field of a logged object.
+   * `password` and `raw` both hold the secret, so the default dump printed it
+   * twice (GHSA-h2mr-m3v3-cq8c). DatabaseUrl guards the same way; PHP has
+   * __debugInfo/jsonSerialize and Ruby a redacted #inspect.
+   */
+  toJSON(): Record<string, unknown> {
+    return {
+      raw: redactCredentials(this.raw),
+      scheme: this.scheme,
+      engine: this.engine,
+      host: this.host,
+      port: this.port,
+      graph: this.graph,
+      username: this.username,
+      password: this.password === null ? null : "***",
+      params: this.params,
+      useTls: this.useTls,
+    };
+  }
+
+  /** What `console.log(url)` / `util.inspect(url)` print. */
+  [inspect.custom](): string {
+    return `GraphUrl('${redactCredentials(this.raw)}')`;
   }
 
   /** host:port/graph — for messages, never carrying credentials. */
