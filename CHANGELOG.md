@@ -6,6 +6,18 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/nodejs/36-releases
 
+## 3.13.166 - 2026-11-24
+
+### Security
+
+- Modifiers chained on `any()` reach every method (GHSA-f82h-25x5-fq7g, high, reported with a patch by Michael Smit). `any()` registered one route per method and returned the ref of the last one, HEAD, so `.secure()`, `.role()`, `.can()`, `.noAuth()`, `.noCsrf()`, `.cache()` and `.middleware()` changed HEAD only: an "admin only" `any()` route answered GET to anonymous callers and every method to any valid token. The ref now covers every route the call registered; `RouteGroup.any`, static `Router.any`, top-level `any()` and `Router.add("ANY")` all go through it. `any().noAuth()` now opens the write methods too (CSRF still applies), a plain OPTIONS to a secured `any()` route answers 401/403 (CORS preflight still 204), and `any().middleware()` runs for every method (#215).
+- Database URL redaction never prints the password (GHSA-h2mr-m3v3-cq8c, reported by Michael Smit). A password containing `/ ? # @ %` or a space, a URL with one slash or no colon after the scheme, a URL with no host, or a non-numeric port printed the password, or part of it, in startup logs, connection errors and exception messages; `new URL`'s `TypeError` (which carries the input) rode along as a cause. One shared rule now finds the password (userinfo ends at the last `@`) and one splitter parses every connection URL. Covered: the database adapters (mssql and firebird no longer split at the first `@`), the Mongo driver and DocStore, MQTT (four messages quoted the raw URL), RabbitMQ, the boot log, the websocket backplane and dev-admin, which returned the raw URL and now treats the redacted form as "unchanged" on save. A logged or JSON-stringified `GraphUrl` hides its password. An unencoded `@` in a query or path is refused (encode it as `%40`); `scheme:/` and `scheme//` are refused (#216).
+
+### Fixed
+
+- A failing seed file fails loud (ADR-0108). `FakeData.seedDir` swallowed a failing file; it now stops at it, logs it and throws `SeedError` (exported from `@tina4/core`) naming the file, the files that ran before it and the cause. It calls a seed module's named `run()` export, the shape `generate seeder` writes, when there is no default export. `tina4nodejs seed` stops at the first failing file and exits 1, picks up `.js` seeds and skips `_` files (#214).
+- Windows: Ctrl+Break and the `CTRL_BREAK_EVENT` a console or service manager sends drain the server and exit 0; with no `SIGBREAK` listener the process was killed mid-request (#213).
+
 ## 3.13.165 - 2026-11-22
 
 ### Fixed
