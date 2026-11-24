@@ -39,6 +39,7 @@ import net from "node:net";
 // (which also floored at "0.0.0" once @tina4/core was relocated out of the
 // monorepo layout).
 import { TINA4_VERSION } from "./version.js";
+import { redactCredentials } from "./urlRedaction.js";
 
 const cpuCount = osCpus().length;
 
@@ -2034,7 +2035,10 @@ function parseEnvFile(): Record<string, string> {
 const handleConnections: RouteHandler = (_req, res) => {
   const env = parseEnvFile();
   res.json({
-    url: env.TINA4_DATABASE_URL ?? "",
+    // Redacted like the password field below: this used to hand the raw .env
+    // URL - password and all - to any page that could reach the dev API
+    // (GHSA-h2mr-m3v3-cq8c). Save recognises this form and keeps the real URL.
+    url: redactCredentials(env.TINA4_DATABASE_URL ?? ""),
     username: env.TINA4_DATABASE_USERNAME ?? "",
     password: env.TINA4_DATABASE_PASSWORD ? "***" : "",
   });
@@ -2042,7 +2046,10 @@ const handleConnections: RouteHandler = (_req, res) => {
 
 const handleConnectionsTest: RouteHandler = async (req, res) => {
   const body = req.body as Record<string, string> | undefined;
-  const url = body?.url ?? "";
+  let url = body?.url ?? "";
+  // The redacted URL served by GET /connections means "the saved one".
+  const current = parseEnvFile().TINA4_DATABASE_URL ?? "";
+  if (url !== "" && current !== "" && url !== current && url === redactCredentials(current)) url = current;
   const username = body?.username ?? "";
   const password = body?.password ?? "";
   if (!url) {
@@ -2099,7 +2106,11 @@ const handleConnectionsTest: RouteHandler = async (req, res) => {
 
 const handleConnectionsSave: RouteHandler = (req, res) => {
   const body = req.body as Record<string, string> | undefined;
-  const url = body?.url ?? "";
+  let url = body?.url ?? "";
+  // The GET above serves the URL redacted. Posting that form straight back
+  // means "unchanged" - writing it would replace the real password with ***.
+  const current = parseEnvFile().TINA4_DATABASE_URL ?? "";
+  if (url !== "" && current !== "" && url !== current && url === redactCredentials(current)) url = current;
   const username = body?.username ?? "";
   const password = body?.password ?? "";
   if (!url) {

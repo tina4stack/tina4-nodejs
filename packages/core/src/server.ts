@@ -56,6 +56,7 @@ import { I18n } from "./i18n.js";
 import { stopAllBackgroundTasks } from "./background.js";
 import { startAllTcpServices, stopAcceptingAllTcpServices, drainAllTcpServices } from "./tcp.js";
 import { TINA4_VERSION } from "./version.js";
+import { stripCredentials } from "./urlRedaction.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -163,12 +164,13 @@ function swaggerAdvertised(): boolean {
 
 /**
  * A connection URL (or any text that may embed one) with every `user:pass@`
- * removed, for a boot log line. Core never imports the ORM statically, so this
- * cannot borrow its redactCredentials(); stripping the whole userinfo is
- * stricter than redaction anyway (the user name goes too).
+ * removed, for a boot log line - stricter than redaction (the user name goes
+ * too). The shared rule (urlRedaction.ts): this used to be a regex that could
+ * not cross a `/` or a space, so `postgres://u:Pq1/Rs2@h/db` and
+ * `postgres:/u:pw@h/db` went into the boot log whole (GHSA-h2mr-m3v3-cq8c).
  */
 function stripUrlCredentials(text: string): string {
-  return text.replace(/:\/\/[^/\s]*@/g, "://");
+  return stripCredentials(text);
 }
 
 /** A dynamic import that failed because the module itself is absent. */

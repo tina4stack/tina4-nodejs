@@ -10,6 +10,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult, ColumnInfo, FieldDefinition } from "./types.js";
 import { DatabaseResult } from "./databaseResult.js";
 import { DatabaseUrl } from "./databaseUrl.js";
+import { canonicalConnectionUrl, splitConnectionUrl } from "../../core/src/urlRedaction.js";
 import { CachedDatabaseAdapter, type CachedAdapterOptions } from "./cachedDatabase.js";
 import { QueryCache, SQLTranslator } from "./sqlTranslator.js";
 import { quoteIdentifierAnsi, assertColumnNames } from "./adapters/sqlDialect.js";
@@ -1841,7 +1842,12 @@ async function buildAdapterFromUrl(url: string, username?: string, password?: st
     }
     case "mongodb": {
       const { MongodbAdapter } = await import("./adapters/mongodb.js");
-      const adapter = new MongodbAdapter(url);
+      // The driver runs its OWN URL parser and quotes what it could not parse
+      // ("Unable to parse u:Pq1 with URL"), so it gets the credentials
+      // percent-encoded - never a raw password holding / ? # @ (GHSA-h2mr-m3v3-cq8c).
+      const adapter = new MongodbAdapter(
+        canonicalConnectionUrl(splitConnectionUrl(url, { label: "DatabaseUrl", allowHostList: true })),
+      );
       await adapter.connect();
       return adapter;
     }

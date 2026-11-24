@@ -143,7 +143,9 @@ async function run() {
   // IS how the resolution failure is handled. A stub would test the stub.
   //
   // So `mongodb` is made GENUINELY unresolvable. docstore.ts imports only
-  // node: builtins, so esbuild can emit it into a directory OUTSIDE the repo,
+  // node: builtins plus one zero-import framework leaf (urlRedaction.ts), so
+  // esbuild bundles the leaf in, leaves every PACKAGE external, and emits the
+  // result into a directory OUTSIDE the repo,
   // where Node's resolution walks up through /tmp and never reaches the repo's
   // node_modules. `import("mongodb")` really fails there with a real
   // ERR_MODULE_NOT_FOUND. That is precisely what a consumer gets from
@@ -161,10 +163,12 @@ async function run() {
     const uriWithCredentials = "mongodb://docstore_user:s3cr3t-p4ssw0rd@192.0.2.1:27017";
 
     // esbuild's own API, not the .bin/esbuild shim: that is a .cmd on Windows,
-    // which execFileSync cannot start. Same options as the CLI call it replaces.
+    // which execFileSync cannot start. `packages: "external"` keeps `mongodb` a
+    // real runtime import - bundling it in would make the probe meaningless.
     const { buildSync } = await import("esbuild");
     buildSync({
       entryPoints: [join(REPO_ROOT, "packages", "orm", "src", "docstore.ts")],
+      bundle: true, packages: "external",
       format: "esm", platform: "node", target: "node20", outfile: bundled, logLevel: "silent",
     });
 

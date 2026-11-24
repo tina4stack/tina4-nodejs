@@ -14,7 +14,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * alias (bolt/neo4j/memgraph all speak Bolt/Cypher and share ONE adapter) resolves
  * to its engine here. See tina4-documentation/plan/v3/features/139-graph-databases.md.
  */
-import { redactCredentials } from "../databaseUrl.js";
+import { ConnectionUrlError, splitConnectionUrl } from "../../../core/src/urlRedaction.js";
 
 /** The canonical graph engine names. */
 export type GraphEngine = "ultipa" | "bolt" | "arango";
@@ -59,13 +59,20 @@ export class GraphUrl {
 
   constructor(url: string) {
     this.raw = url;
+    // Userinfo by the shared last-`@` rule; the URL class only ever sees the
+    // credential-free rest. It used to parse the whole value, so a password
+    // holding `/`, `?` or `#` became the host/port/graph (and then the
+    // "connect to <host>" error), and the refusal quoted the URL back.
+    const expected = "scheme://[user[:password]@]host[:port]/graph (e.g. ultipa://host:60061/mygraph)";
+    const parts = splitConnectionUrl(url, { label: "GraphUrl", expected });
     let parsed: URL;
     try {
-      parsed = new URL(url);
+      parsed = new URL(`${parts.scheme}://${parts.hostPort}${parts.tail}`);
     } catch {
-      throw new Error(
-        `Unsupported graph URL '${redactCredentials(url)}' — expected scheme://[user[:password]@]host[:port]/graph `
-        + `(e.g. ultipa://host:60061/mygraph).`,
+      // No `cause`: the TypeError carries its input.
+      throw new ConnectionUrlError(
+        `GraphUrl: invalid ${parts.scheme} URL - expected ${expected}. `
+        + "The URL itself is not shown because it may contain a password.",
       );
     }
     const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
@@ -83,8 +90,8 @@ export class GraphUrl {
     this.port = parsed.port ? parseInt(parsed.port, 10) : ENGINE_DEFAULT_PORT[engine];
     const path = (parsed.pathname || "").replace(/^\//, "");
     this.graph = path === "" ? null : path;
-    this.username = parsed.username ? decodeURIComponent(parsed.username) : null;
-    this.password = parsed.password ? decodeURIComponent(parsed.password) : null;
+    this.username = parts.username ? parts.username : null;
+    this.password = parts.password ? parts.password : null;
     this.params = {};
     for (const [key, value] of parsed.searchParams) {
       // First value wins, matching Python's parse_qs[0].

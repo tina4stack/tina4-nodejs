@@ -25,6 +25,7 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 import net from "node:net";
 import { execFileSync } from "node:child_process";
+import { splitConnectionUrl } from "../urlRedaction.js";
 import { randomUUID } from "node:crypto";
 import type { QueueJob } from "../queue.js";
 
@@ -53,26 +54,25 @@ export interface RabbitMQConfig {
  */
 export function parseAmqpUrl(url: string): RabbitMQConfig {
   const config: RabbitMQConfig = {};
-  let rest = url.replace(/^amqps:\/\//, "").replace(/^amqp:\/\//, "");
+  // A bare "host[:port][/vhost]" stays accepted, as before. Anything carrying a
+  // scheme marker (`://`, `:/`, `//`), credentials or whitespace goes to the
+  // splitter as written, which refuses every form but `scheme://`.
+  const target = /^[A-Za-z][A-Za-z0-9+.-]*(:\/|\/\/)|[@\s]/.test(url) ? url : `amqp://${url}`;
+  // Userinfo by the shared rule (GHSA-h2mr-m3v3-cq8c): it ends at the LAST "@".
+  // This split at the FIRST, so `amqp://u:p@ss@rabbit/v` connected to a host
+  // named "ss@rabbit", and a password holding "/" became the vhost. A shape the
+  // rule cannot split is refused, naming nothing from the value.
+  const parts = splitConnectionUrl(target, {
+    label: "parseAmqpUrl",
+    expected: "amqp://[user[:password]@]host[:port][/vhost]",
+  });
+  // Credentials pass through as written (undecoded) - unchanged behaviour.
+  if (parts.rawUsername !== null) config.username = parts.rawUsername;
+  if (parts.rawPassword !== null) config.password = parts.rawPassword;
 
-  const atIndex = rest.indexOf("@");
-  if (atIndex !== -1) {
-    const creds = rest.slice(0, atIndex);
-    rest = rest.slice(atIndex + 1);
-    const colonIndex = creds.indexOf(":");
-    if (colonIndex !== -1) {
-      config.username = creds.slice(0, colonIndex);
-      config.password = creds.slice(colonIndex + 1);
-    } else {
-      config.username = creds;
-    }
-  }
-
-  let hostport = rest;
-  const slashIndex = rest.indexOf("/");
-  if (slashIndex !== -1) {
-    hostport = rest.slice(0, slashIndex);
-    const vhost = rest.slice(slashIndex + 1);
+  const hostport = parts.hostPort;
+  if (parts.tail.startsWith("/")) {
+    const vhost = parts.tail.slice(1);
     // THE VHOST IS THE PATH SEGMENT, URL-DECODED, WITH NO LEADING SLASH
     // (RabbitMQ URI spec). This used to prepend "/", so
     // amqp://guest:guest@rabbit:5672/orders asked for a vhost literally named

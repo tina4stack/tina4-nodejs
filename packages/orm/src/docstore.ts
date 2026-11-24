@@ -58,6 +58,7 @@ import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { canonicalConnectionUrl, splitConnectionUrl } from "../../core/src/urlRedaction.js";
 
 // ── ObjectId: zero-dependency 12-byte / 24-hex id ──────────────────────────
 
@@ -1061,7 +1062,13 @@ function mongoConnection(uri: string, dbName: string): Promise<{ client: any; db
   if (!pending) {
     pending = (async () => {
       const { MongoClient } = await importMongoDriver();
-      const client = new MongoClient(uri);
+      // The driver's own parser quotes what it cannot parse ("Protocol and host
+      // list are required in \"mongodb://u:pw@/db\""), so it only ever sees a
+      // URI the shared rule split and re-encoded; anything else is refused
+      // without echoing it (GHSA-h2mr-m3v3-cq8c).
+      const client = new MongoClient(
+        canonicalConnectionUrl(splitConnectionUrl(uri, { label: "DocStore", allowHostList: true })),
+      );
       await client.connect();
       return { client, db: client.db(dbName) };
     })();
