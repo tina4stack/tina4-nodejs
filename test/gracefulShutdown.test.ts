@@ -46,8 +46,9 @@ import { createConnection, createServer } from "node:net";
 import { request } from "node:http";
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { shutdownTimeoutSeconds, DEFAULT_SHUTDOWN_TIMEOUT_SECONDS } from "../packages/core/src/server.ts";
+import { shutdownTimeoutSeconds, DEFAULT_SHUTDOWN_TIMEOUT_SECONDS, shutdownSignals } from "../packages/core/src/server.ts";
 import { moduleUrl, killProcessTree } from "./_portableSpawn.ts";
+import { spawnBreakable, type BreakableChild } from "./_ctrlBreak.ts";
 
 const __dirname = import.meta.dirname;
 const REPO = resolve(__dirname, "..");
@@ -145,15 +146,16 @@ function httpGet(port: number, path: string, timeoutMs = 30000): Promise<HttpOut
 
 interface Booted { child: ChildProcess; port: number; logPath: string }
 
+interface AppOptions { withBackgroundTask?: boolean; slowSeconds?: number; env?: Record<string, string>; bootLog?: boolean }
+
+/** A real Tina4 app on disk, ready to launch: its port, cwd, log and env. */
+interface App { port: number; root: string; logPath: string; env: NodeJS.ProcessEnv }
+
 /**
  * Write a real Tina4 app (file-based routes, exactly how a deployment declares
- * them) and boot it as a detached child.
- *
- * The child's stdout/stderr go to a FILE, never inherited. An inherited fd
- * keeps the runner's pipe open and wedges a piped `npm test` forever even
- * after the runner itself has finished.
+ * them) into a fresh temp directory.
  */
-async function bootServer(opts: { withBackgroundTask?: boolean; slowSeconds?: number; env?: Record<string, string>; bootLog?: boolean } = {}): Promise<Booted> {
+async function writeApp(opts: AppOptions = {}): Promise<App> {
   const port = await freePort();
   const root = mkdtempSync(join(tmpdir(), "tina4-shutdown-"));
   const routes = join(root, "src", "routes");
@@ -196,12 +198,10 @@ async function bootServer(opts: { withBackgroundTask?: boolean; slowSeconds?: nu
       `await startServer({ port: ${port}, routesDir: ${JSON.stringify(routes)} } as never);\n`,
   );
 
-  const logPath = join(root, "server.log");
-  const logFd = openSync(logPath, "w");
-  const child = spawn(process.execPath, ["--import", TSX_LOADER, "app.ts"], {
-    cwd: root,
-    detached: true, // own process group, so we can signal the GROUP on cleanup
-    stdio: ["ignore", logFd, logFd],
+  return {
+    port,
+    root,
+    logPath: join(root, "server.log"),
     env: {
       ...process.env,
       TINA4_OVERRIDE_CLIENT: "true",
@@ -212,19 +212,71 @@ async function bootServer(opts: { withBackgroundTask?: boolean; slowSeconds?: nu
       PORT: String(port),
       ...(opts.env ?? {}),
     },
+  };
+}
+
+/** Poll until the app's port accepts, failing fast if the server died during boot. */
+async function waitReady(app: App, died: () => boolean): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (await portAccepts(app.port)) return;
+    if (died()) {
+      throw new Error(`child died during boot:\n${readFileSync(app.logPath, "utf8").slice(-2000)}`);
+    }
+    await sleep(50);
+  }
+  throw new Error(`server never became ready on ${app.port}:\n${readFileSync(app.logPath, "utf8").slice(-2000)}`);
+}
+
+/**
+ * Boot a real Tina4 app as a detached child.
+ *
+ * The child's stdout/stderr go to a FILE, never inherited. An inherited fd
+ * keeps the runner's pipe open and wedges a piped `npm test` forever even
+ * after the runner itself has finished.
+ */
+async function bootServer(opts: AppOptions = {}): Promise<Booted> {
+  const app = await writeApp(opts);
+  const logFd = openSync(app.logPath, "w");
+  const child = spawn(process.execPath, ["--import", TSX_LOADER, "app.ts"], {
+    cwd: app.root,
+    detached: true, // own process group, so we can signal the GROUP on cleanup
+    stdio: ["ignore", logFd, logFd],
+    env: app.env,
   });
   spawned.add(child);
   closeSync(logFd);
 
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    if (await portAccepts(port)) return { child, port, logPath };
-    if (child.exitCode !== null) {
-      throw new Error(`child died during boot:\n${readFileSync(logPath, "utf8").slice(-2000)}`);
-    }
-    await sleep(50);
+  await waitReady(app, () => child.exitCode !== null);
+  return { child, port: app.port, logPath: app.logPath };
+}
+
+/** Every Windows console-group server we start, reaped on exit like `spawned`. */
+const breakables = new Set<BreakableChild>();
+process.on("exit", () => {
+  for (const b of breakables) b.kill();
+});
+
+/**
+ * Windows only: boot the same app in its OWN console process group (see
+ * _ctrlBreak.ts), so a real CTRL_BREAK_EVENT can reach the server and nothing
+ * else - never this runner, never run-all.
+ */
+async function bootBreakableServer(opts: AppOptions = {}): Promise<{ server: BreakableChild; port: number; logPath: string }> {
+  const app = await writeApp(opts);
+  const server = await spawnBreakable([process.execPath, "--import", TSX_LOADER, "app.ts"], {
+    cwd: app.root,
+    logPath: app.logPath,
+    env: app.env,
+  });
+  breakables.add(server);
+  try {
+    await waitReady(app, () => server.exited());
+  } catch (err) {
+    server.kill();
+    throw err;
   }
-  throw new Error(`server never became ready on ${port}:\n${readFileSync(logPath, "utf8").slice(-2000)}`);
+  return { server, port: app.port, logPath: app.logPath };
 }
 
 /** Resolves with how the child ended: a clean code, or the signal that killed it. */
@@ -296,10 +348,25 @@ console.log("=== Graceful Shutdown (real process, real signal) ===\n");
   }
 }
 
+// ── Which signals are trapped, per platform ────────────────────────────────
+// A pure function over the platform name, so both answers are checked on every
+// OS. Windows must add SIGBREAK (Ctrl+Break / CTRL_BREAK_EVENT); POSIX must stay
+// exactly SIGTERM + SIGINT - SIGHUP is deliberately NOT trapped (see below).
+{
+  const posix = shutdownSignals("linux").join(",");
+  assert("POSIX traps exactly SIGTERM and SIGINT", posix === "SIGTERM,SIGINT", `(got ${posix})`);
+  const darwin = shutdownSignals("darwin").join(",");
+  assert("macOS traps exactly SIGTERM and SIGINT", darwin === "SIGTERM,SIGINT", `(got ${darwin})`);
+  const windows = shutdownSignals("win32").join(",");
+  assert("Windows also traps SIGBREAK", windows === "SIGTERM,SIGINT,SIGBREAK", `(got ${windows})`);
+}
+
 // Windows delivers no POSIX signals: process.kill(pid, "SIGTERM"/"SIGINT") there
 // is an unconditional TerminateProcess that no handler sees, and there is no
 // process group to signal. Every case below is a signal-drain case, so it is
 // reported as a SKIP there; the resolver cases above run on every platform.
+// Windows' own shutdown signal, SIGBREAK, IS catchable and has its own section
+// below, driven by a real CTRL_BREAK_EVENT.
 const SIGNALS_DELIVERABLE = process.platform !== "win32";
 if (!SIGNALS_DELIVERABLE) {
   for (const section of ["SIGTERM: the core contract", "SIGINT: same contract", "SIGHUP: deliberately NOT trapped", "REGRESSION: the background() hang", "The shutdown budget is real, not decorative", "WebSocket peers are told 1001 \"going away\"", "TINA4_DEFAULT_WEBSERVER is accepted, and is a no-op here", "A teardown THROW during shutdown still exits 0 (exception-safe teardown)"]) {
@@ -372,6 +439,56 @@ if (SIGNALS_DELIVERABLE) {
       `(code=${exit.code} signal=${exit.signal} timedOut=${exit.timedOut})`);
   } finally {
     await cleanup(b);
+  }
+}
+
+// ── SIGBREAK (Windows): same contract, real CTRL_BREAK_EVENT ───────────────
+// On Windows, Ctrl+Break and the CTRL_BREAK_EVENT a console or service manager
+// sends a process group arrive in Node as SIGBREAK. Before the fix nothing
+// listened for it, so Node's default action killed the server on the spot:
+// exit 3221225786 (0xC000013A), the in-flight response dropped, no drain.
+// The signal here is REAL - GenerateConsoleCtrlEvent against the server's own
+// console process group (test/_ctrlBreak.ts) - and reaches nothing else.
+// tina4-python traps SIGINT/SIGBREAK/SIGTERM on Windows into the same drain.
+if (process.platform !== "win32") {
+  console.log("  SKIP SIGBREAK: same contract - [needs:os=win32] SIGBREAK/CTRL_BREAK_EVENT does not exist on POSIX (SIGTERM/SIGINT above cover it)");
+} else {
+  const b = await bootBreakableServer();
+  try {
+    const warmup = await httpGet(b.port, "/fast");
+    assert("server is serving before CTRL_BREAK", warmup.status === 200 && warmup.body === "FAST",
+      `(got ${warmup.status} ${warmup.body ?? warmup.error})`);
+
+    const inFlight = httpGet(b.port, "/slow");
+    await sleep(600);
+    const signalledAt = Date.now();
+    const sent = await b.server.sendBreak();
+    assert("CTRL_BREAK_EVENT is delivered to the server's console process group", sent === "SENT 1 0",
+      `(helper reported ${JSON.stringify(sent)})`);
+
+    await sleep(200);
+    const stillAccepting = await portAccepts(b.port);
+
+    const slow = await inFlight;
+    const code = await Promise.race([b.server.exit, sleep(40_000).then(() => "timeout" as const)]);
+    const drainMs = Date.now() - signalledAt;
+
+    assert("SIGBREAK lets the in-flight request finish",
+      slow.status === 200 && slow.body === "SLOW-DONE",
+      `(got status=${slow.status} body=${slow.body} error=${slow.error} after ${slow.elapsedMs}ms)`);
+    assert("SIGBREAK stops accepting new connections", !stillAccepting,
+      "(port still accepting 200ms after the break)");
+    assert("SIGBREAK exits with code 0", code === 0,
+      `(exit=${code} - 3221225786 is 0xC000013A, the untrapped Ctrl+Break kill)`);
+    assert("SIGBREAK drains rather than exiting immediately", drainMs >= 1000,
+      `(exited ${drainMs}ms after the break; the handler had ~1400ms left)`);
+    assert("SIGBREAK releases the listening port",
+      !(await portAccepts(b.port)), "(port still accepting after exit)");
+  } finally {
+    b.server.kill();
+    breakables.delete(b.server);
+    await Promise.race([b.server.exit, sleep(5000)]);
+    try { rmSync(dirname(b.logPath), { recursive: true, force: true }); } catch { /* best effort */ }
   }
 }
 
