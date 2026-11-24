@@ -229,7 +229,7 @@ const elapsed = (): string => `${((Date.now() - T0) / 1000).toFixed(1)}s`;
 const REPO = resolve(import.meta.dirname, "..");
 const SERVER_URL = pathToFileURL(join(REPO, "packages/core/src/index.ts")).href;
 const bootRoots: string[] = [];
-const BOOT_PASSWORDS = ["Pq1/Rs2", "Pq1 Rs2", "12?Pq1Rs2"].filter((pw) => CASES.passwords.includes(pw));
+const BOOT_SHAPES = ["Pq1/Rs2", "Pq1 Rs2", "12?Pq1Rs2"].filter((pw) => CASES.passwords.includes(pw));
 
 async function bootOnce(
   databaseUrl: string,
@@ -311,7 +311,7 @@ console.log("TEST-SERVER-READY");
 }
 
 
-const bootCases = casesFor("postgres").filter((c) => !c.known && BOOT_PASSWORDS.includes(c.pw));
+const bootCases = casesFor("postgres").filter((c) => !c.known && BOOT_SHAPES.includes(c.pw));
 const allPostgresCases = casesFor("postgres").filter((c) => !c.known);
 const allPostgresUrls = allPostgresCases.map((c) => toLoopback(c.url, closedPort));
 const bootResults = Promise.all(bootCases.map(async (c, i) => {
@@ -664,7 +664,7 @@ console.log(`\n--- connect: RedisBackplane against a closed 127.0.0.1 port --- (
 console.log(`\n--- boot: startServer() log and GET /__dev/api/connections --- (${elapsed()})`);
 {
   const group = "boot postgres";
-  check(group, `boot log driven with ${BOOT_PASSWORDS.length} passwords`, BOOT_PASSWORDS.length === 3,
+  check(group, "boot log driven with all three boot shapes", BOOT_SHAPES.length === 3,
     "the fixture no longer holds all three boot passwords");
   /** Status and leak of one GET /connections reply - never its body. */
   const replyProblem = (reply: string): string => {
