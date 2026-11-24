@@ -124,21 +124,29 @@ export class WsRouteRef {
 /**
  * Thin reference to a registered route, enabling chained modifiers.
  *
+ * A ref may cover several compiled routes: `any()` registers one route per
+ * method, and a modifier chained on it must reach every one of them, not only
+ * the last one registered.
+ *
  * Usage:
  *   router.get("/api/data", handler).secure().cache();
  */
 export class RouteRef {
-  constructor(private route: CompiledRoute) {}
+  private routes: CompiledRoute[];
+
+  constructor(route: CompiledRoute | CompiledRoute[]) {
+    this.routes = Array.isArray(route) ? route : [route];
+  }
 
   /** Mark this route as requiring bearer-token authentication. */
   secure(): this {
-    this.route.secure = true;
+    for (const route of this.routes) route.secure = true;
     return this;
   }
 
   /** Opt out of secure-by-default auth (for public write routes). */
   noAuth(): this {
-    this.route.noAuth = true;
+    for (const route of this.routes) route.noAuth = true;
     return this;
   }
 
@@ -149,7 +157,7 @@ export class RouteRef {
    * (identity) are orthogonal — chain `.noAuth().noCsrf()` for a public webhook.
    */
   noCsrf(): this {
-    this.route.noCsrf = true;
+    for (const route of this.routes) route.noCsrf = true;
     return this;
   }
 
@@ -160,8 +168,10 @@ export class RouteRef {
   role(...names: string[]): this {
     const clean = names.filter((n) => n !== "");
     if (clean.length > 0) {
-      (this.route.requiredRoles ??= []).push(clean);
-      this.route.secure = true;
+      for (const route of this.routes) {
+        (route.requiredRoles ??= []).push(clean);
+        route.secure = true;
+      }
     }
     return this;
   }
@@ -174,15 +184,17 @@ export class RouteRef {
   can(...permissions: string[]): this {
     const clean = permissions.filter((p) => p !== "");
     if (clean.length > 0) {
-      (this.route.requiredPerms ??= []).push(clean);
-      this.route.secure = true;
+      for (const route of this.routes) {
+        (route.requiredPerms ??= []).push(clean);
+        route.secure = true;
+      }
     }
     return this;
   }
 
   /** Mark this route's response as cacheable. */
   cache(): this {
-    this.route.cached = true;
+    for (const route of this.routes) route.cached = true;
     return this;
   }
 
@@ -191,7 +203,9 @@ export class RouteRef {
    * string specs (e.g. `"ResponseCache:300"`), resolved when the route runs.
    */
   middleware(...middlewareClasses: MiddlewareSpec[]): this {
-    this.route.middlewares = [...(this.route.middlewares ?? []), ...middlewareClasses];
+    for (const route of this.routes) {
+      route.middlewares = [...(route.middlewares ?? []), ...middlewareClasses];
+    }
     return this;
   }
 }
@@ -240,6 +254,11 @@ export class Router {
    * Add a raw route definition (used internally and by file-based routing).
    */
   addRoute(definition: RouteDefinition): RouteRef {
+    return new RouteRef(this.registerRoute(definition));
+  }
+
+  /** Compile and store one route definition; returns the stored route. */
+  private registerRoute(definition: RouteDefinition): CompiledRoute {
     const method = definition.method.toUpperCase();
     const { regex, paramNames, paramTypes } = this.compilePattern(definition.pattern);
 
@@ -281,7 +300,7 @@ export class Router {
       requiredPerms: definition.requiredPerms,
     };
     routes.push(compiled);
-    return new RouteRef(compiled);
+    return compiled;
   }
 
   /**
@@ -343,13 +362,16 @@ export class Router {
 
   /**
    * Register a route that matches ANY HTTP method.
+   *
+   * One route is stored per method; the returned ref covers all of them, so
+   * `any(...).secure()` / `.role()` / `.noAuth()` apply to every method.
    */
   any(path: string, handler: RouteHandler, middlewares?: MiddlewareSpec[], meta?: RouteMeta): RouteRef {
-    let lastRef!: RouteRef;
+    const compiled: CompiledRoute[] = [];
     for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]) {
-      lastRef = this.addRoute({ method, pattern: path, handler, middlewares, meta });
+      compiled.push(this.registerRoute({ method, pattern: path, handler, middlewares, meta }));
     }
-    return lastRef;
+    return new RouteRef(compiled);
   }
 
   /**
@@ -850,17 +872,7 @@ export class RouteGroup {
   }
 
   any(path: string, handler: RouteHandler, middlewares?: MiddlewareSpec[], meta?: RouteMeta): RouteRef {
-    let lastRef!: RouteRef;
-    for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]) {
-      lastRef = this.router.addRoute({
-        method,
-        pattern: joinGroupPath(this.prefix, path),
-        handler,
-        middlewares: this.mergeMiddlewares(middlewares),
-        meta,
-      });
-    }
-    return lastRef;
+    return this.router.any(joinGroupPath(this.prefix, path), handler, this.mergeMiddlewares(middlewares), meta);
   }
 
   /**
