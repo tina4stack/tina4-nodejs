@@ -10,7 +10,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseAdapter, DatabaseResult as DatabaseWriteResult, ColumnInfo, FieldDefinition } from "./types.js";
 import { DatabaseResult } from "./databaseResult.js";
 import { DatabaseUrl } from "./databaseUrl.js";
-import { canonicalConnectionUrl, splitConnectionUrl } from "../../core/src/urlRedaction.js";
+import { canonicalConnectionUrl, splitConnectionUrl } from "../../core/src/connectionUrl.js";
 import { CachedDatabaseAdapter, type CachedAdapterOptions } from "./cachedDatabase.js";
 import { QueryCache, SQLTranslator } from "./sqlTranslator.js";
 import { quoteIdentifierAnsi, assertColumnNames } from "./adapters/sqlDialect.js";

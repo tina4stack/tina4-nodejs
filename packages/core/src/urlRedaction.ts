@@ -7,14 +7,15 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
 /**
- * Connection URL credentials: the ONE redaction rule and the ONE userinfo
- * splitter, shared by every parser and every path that can put a connection
- * string in front of a human (GHSA-h2mr-m3v3-cq8c).
+ * Connection URL credentials: the ONE redaction rule, shared by every path
+ * that can put a connection string in front of a human (GHSA-h2mr-m3v3-cq8c).
+ * Its parsing half - the ONE userinfo splitter every parser uses - is the
+ * sibling connectionUrl.ts, which takes its port-versus-password test from
+ * here so the two halves cannot drift.
  *
- * IMPORTS NOTHING, on purpose. @tina4/orm imports it (databaseUrl.ts, the graph
- * URL) and so does @tina4/core (mqtt, the AMQP queue, the websocket backplane,
- * the boot log, the dev admin) - a leaf module is the only place both can reach
- * without a cycle.
+ * IMPORTS NOTHING, on purpose. @tina4/orm imports it (databaseUrl.ts) and so
+ * does @tina4/core (the websocket backplane, the boot log, the dev admin) - a
+ * leaf module is the only place both can reach without a cycle.
  *
  * THE RULE
  *   - The authority starts after `scheme://`, `scheme:/` or `scheme//`.
@@ -70,18 +71,20 @@ function endOfKeywordValue(text: string, start: number): number {
     const close = text.indexOf("}", start + 1);
     return close === -1 ? text.length : close + 1;
   }
-  if (open === "'" || open === '"') {
-    let i = start + 1;
-    while (i < text.length) {
-      if (text[i] === "\\") { i += 2; continue; }
-      if (text[i] === open) return i + 1;
-      i++;
-    }
-    return text.length;
+  if (open === "'" || open === '"') return endOfQuoted(text, start, open);
+  const end = text.slice(start).search(/[;&]/);
+  return end === -1 ? text.length : start + end;
+}
+
+/** Just past the closing quote of a quoted value; a backslash escapes. */
+function endOfQuoted(text: string, start: number, quote: string): number {
+  let i = start + 1;
+  while (i < text.length) {
+    if (text[i] === "\\") { i += 2; continue; }
+    if (text[i] === quote) return i + 1;
+    i++;
   }
-  let i = start;
-  while (i < text.length && text[i] !== ";" && text[i] !== "&") i++;
-  return i;
+  return text.length;
 }
 
 /** `PWD=`/`password=`/`passwd=` in an ODBC DSN, a libpq DSN or a query string. */
@@ -128,42 +131,62 @@ function credentialSpans(line: string): CredentialSpan[] {
   let match: RegExpExecArray | null;
   while ((match = marker.exec(line)) !== null) {
     const start = match.index + match[0].length;
-
-    if (lastAt >= start) {
-      const colon = line.indexOf(":", start);
-      if (colon !== -1 && colon < lastAt && !/[/?#]/.test(line.slice(start, colon))) {
-        spans.push({ authorityStart: start, at: lastAt, passwordStart: colon + 1, passwordEnd: lastAt });
-        // Everything up to the last `@` is now accounted for.
-        marker.lastIndex = lastAt + 1;
-        continue;
-      }
+    const withAt = userinfoSpan(line, start, lastAt);
+    if (withAt !== null) {
+      spans.push(withAt);
+      // Everything up to the last `@` is now accounted for.
+      marker.lastIndex = lastAt + 1;
+      continue;
     }
-
-    // No `@` reachable: the authority is host[:port]; a non-numeric port is
-    // the password. Whitespace ends the HOST scan (a host has none) but not the
-    // mask - `u:Pq1 Rs2` has to go to the end of the line.
-    const rest = line.slice(start);
-    const authorityEnd = rest.search(/[/?#\s]/);
-    const authority = authorityEnd === -1 ? rest : rest.slice(0, authorityEnd);
-    const hostEnd = authority.startsWith("[") ? authority.indexOf("]") + 1 : 0;
-    const colon = authority.indexOf(":", Math.max(hostEnd, 0));
-    if (colon === -1) continue;
-    const port = authority.slice(colon + 1);
-    if (port === "") continue;
-    // A numeric port is a port - unless what follows it cannot follow a port:
-    // a fragment, or a query that is not `key=value`. `u:12?Pq1Rs2` and
-    // `u:12#Pq1Rs2` are digit-led passwords, not port 12. (Known limit: an
-    // all-digit password, or digits then a path, `u:12/x`, looks exactly like
-    // a port and stays visible.)
-    if (/^\d+$/.test(port) && !digitLedPassword(rest.slice(authority.length))) continue;
-    const maskStart = start + colon + 1;
-    let maskEnd = line.length;
-    const query = line.indexOf("?", maskStart);
-    if (query !== -1 && KEPT_QUERY.test(line.slice(query))) maskEnd = query;
-    spans.push({ authorityStart: start, at: -1, passwordStart: maskStart, passwordEnd: maskEnd });
-    break; // masked to the end of the line: nothing after it is left to scan
+    const portShaped = portShapedSpan(line, start);
+    if (portShaped !== null) {
+      spans.push(portShaped);
+      break; // masked to the end of the line: nothing after it is left to scan
+    }
   }
   return spans;
+}
+
+/**
+ * `user:password@` for an authority starting at `start`, ending at the line's
+ * last `@` - or null when there is no such `@`, no `:` before it, or a `/`,
+ * `?` or `#` before the `:` (then the text is a path, not a password).
+ */
+function userinfoSpan(line: string, start: number, lastAt: number): CredentialSpan | null {
+  if (lastAt < start) return null;
+  const colon = line.indexOf(":", start);
+  if (colon === -1 || colon >= lastAt || /[/?#]/.test(line.slice(start, colon))) return null;
+  return { authorityStart: start, at: lastAt, passwordStart: colon + 1, passwordEnd: lastAt };
+}
+
+/**
+ * No `@` reachable: the authority is host[:port], and a port that cannot be a
+ * port is the password. Whitespace ends the HOST scan (a host has none) but
+ * not the mask - `u:Pq1 Rs2` has to go to the end of the line.
+ *
+ * A numeric port is a port - unless what follows it cannot follow a port: a
+ * fragment, or a query that is not `key=value`. `u:12?Pq1Rs2` and
+ * `u:12#Pq1Rs2` are digit-led passwords, not port 12. (Known limit: an
+ * all-digit password, or digits then a path, `u:12/x`, looks exactly like a
+ * port and stays visible.)
+ */
+function portShapedSpan(line: string, start: number): CredentialSpan | null {
+  const rest = line.slice(start);
+  const authorityEnd = rest.search(/[/?#\s]/);
+  const authority = authorityEnd === -1 ? rest : rest.slice(0, authorityEnd);
+  const colon = authority.indexOf(":", authority.startsWith("[") ? authority.indexOf("]") + 1 : 0);
+  if (colon === -1) return null;
+  const port = authority.slice(colon + 1);
+  if (port === "") return null;
+  if (/^\d+$/.test(port) && !digitLedPassword(rest.slice(authority.length))) return null;
+  const maskStart = start + colon + 1;
+  return { authorityStart: start, at: -1, passwordStart: maskStart, passwordEnd: keptQueryStart(line, maskStart) };
+}
+
+/** Where the mask stops: before a trailing `?key=value` query, else the line end. */
+function keptQueryStart(line: string, from: number): number {
+  const query = line.indexOf("?", from);
+  return query !== -1 && KEPT_QUERY.test(line.slice(query)) ? query : line.length;
 }
 
 /**
@@ -171,7 +194,7 @@ function credentialSpans(line: string): CredentialSpan[] {
  * port - a `#fragment`, or a `?query` that is not `key=value` pairs - so the
  * digits are the start of a password (`postgres://u:12?Pq1Rs2`).
  */
-function digitLedPassword(afterPort: string): boolean {
+export function digitLedPassword(afterPort: string): boolean {
   if (afterPort.startsWith("#")) return true;
   return afterPort.startsWith("?") && !KEPT_QUERY.test(afterPort.split(/\s/, 1)[0]);
 }
@@ -226,201 +249,4 @@ export function stripCredentials(raw: string): string {
     return out + line.slice(cursor);
   });
   return redactKeywordValues(stripped);
-}
-
-// ── parsing ────────────────────────────────────────────────────────────────
-
-/**
- * The error every parser throws for a connection URL it will not accept.
- *
- * The message NEVER carries the value and the error NEVER has a `cause`: a
- * TypeError from `new URL()` keeps the input on `.input`, and a driver's parse
- * error quotes it, so chaining either would put the password straight back.
- */
-export class ConnectionUrlError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ConnectionUrlError";
-  }
-}
-
-export interface ConnectionUrlParts {
-  /** Lower-cased scheme, e.g. `postgres`, `mongodb+srv`. */
-  scheme: string;
-  /** Raw (still-encoded) userinfo, or null when the URL has no `@`. */
-  userinfo: string | null;
-  /** Raw (still-encoded) user, or null. */
-  rawUsername: string | null;
-  /** Raw (still-encoded) password, or null when no `:` was written. */
-  rawPassword: string | null;
-  /** Decoded user, or null. */
-  username: string | null;
-  /** Decoded password, or null when no `:` was written ("" when written blank). */
-  password: string | null;
-  /** The raw `host[:port]` (or host list) after userinfo - credential-free. */
-  hostPort: string;
-  /** First host, brackets removed for IPv6, or "" when there is none. */
-  host: string;
-  /** First host's port, or null when none was written. */
-  port: number | null;
-  /** Path, query and fragment as written: "" or starting with `/`, `?` or `#`. */
-  tail: string;
-}
-
-export interface SplitOptions {
-  /** Prefix for the error message, e.g. "DatabaseUrl". */
-  label: string;
-  /** What the message says was expected, e.g. "scheme://[user[:password]@]host[:port]/database". */
-  expected?: string;
-  /** Accept `h1:1,h2:2` (MongoDB). */
-  allowHostList?: boolean;
-}
-
-/** Percent-decode, leaving an invalid escape as written instead of throwing. */
-export function decodeComponent(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value.replace(/(?:%[0-9A-Fa-f]{2})+/g, (seq) => {
-      try { return decodeURIComponent(seq); } catch { return seq; }
-    });
-  }
-}
-
-const count = (text: string, ch: string): number => text.split(ch).length - 1;
-
-/** `host[:port]` -> [host, port]; null when the shape is wrong. */
-function splitHostPort(hostPort: string): [string, string | null] | null {
-  if (hostPort.startsWith("[")) {
-    const close = hostPort.indexOf("]");
-    if (close === -1) return null;
-    const after = hostPort.slice(close + 1);
-    if (after !== "" && !after.startsWith(":")) return null;
-    return [hostPort.slice(1, close), after === "" ? null : after.slice(1)];
-  }
-  const colon = hostPort.indexOf(":");
-  if (colon === -1) return [hostPort, null];
-  return [hostPort.slice(0, colon), hostPort.slice(colon + 1)];
-}
-
-/**
- * Split `scheme://[user[:password]@]host[:port][/path][?query][#fragment]`
- * under THE RULE (see the header), refusing what it cannot split safely.
- *
- * Accepts an unencoded `/`, `?`, `#`, `@`, `:` or `%` in a password, which is
- * what people actually paste into a .env file. Refuses, with a message that
- * never echoes the value:
- *   - no `scheme://` (including `scheme:/` and `scheme//`)
- *   - an `@` outside userinfo (`?email=a@b` - encode it as `%40`)
- *   - userinfo with no host after it, a non-numeric port, a bad IPv6 bracket,
- *     or whitespace in the host
- */
-export function splitConnectionUrl(raw: string, options: SplitOptions): ConnectionUrlParts {
-  const expected = options.expected ?? "scheme://[user[:password]@]host[:port]/path";
-  const named = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(raw ?? "")?.[1]?.toLowerCase() ?? null;
-  const refuse = (why: string, hostPort?: string): ConnectionUrlError =>
-    new ConnectionUrlError(
-      `${options.label}: invalid ${named ? `${named} ` : ""}URL${hostPort ? ` at '${hostPort}'` : ""} (${why}) - expected ` +
-        `${expected}. The URL itself is not shown because it may contain a password.`,
-    );
-
-  if (typeof raw !== "string") throw refuse("not a string");
-  const head = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(raw);
-  if (!head) throw refuse(named ? "the scheme must be followed by ://" : "no scheme:// found");
-  const scheme = head[1].toLowerCase();
-  const rest = raw.slice(head[0].length);
-
-  // The RFC reading cuts the authority at the first / ? #. Where every `@` is
-  // inside that, it agrees with the last-`@` rule. Where none is, the cut fell
-  // INSIDE a password holding / ? or #. Anything in between means an `@` sits
-  // in the path or query, and which `@` ends userinfo is a guess - refuse.
-  const rfcEnd = rest.search(/[/?#]/);
-  const rfcAuthority = rfcEnd === -1 ? rest : rest.slice(0, rfcEnd);
-  const totalAt = count(rest, "@");
-  const rfcAt = count(rfcAuthority, "@");
-
-  let userinfo: string | null = null;
-  let afterUserinfo = rest;
-  if (totalAt > 0) {
-    const lastAt = rest.lastIndexOf("@");
-    const candidate = rest.slice(0, lastAt);
-    if (rfcAt === totalAt) {
-      userinfo = candidate;
-    } else if (rfcAt === 0) {
-      const colon = candidate.indexOf(":");
-      if (colon === -1 || /[/?#]/.test(candidate.slice(0, colon))) {
-        throw refuse("an @ outside the user:password part - percent-encode it as %40");
-      }
-      userinfo = candidate;
-    } else {
-      throw refuse("an @ outside the user:password part - percent-encode it as %40");
-    }
-    afterUserinfo = rest.slice(lastAt + 1);
-  }
-
-  const hostEnd = afterUserinfo.search(/[/?#]/);
-  const hostPort = hostEnd === -1 ? afterUserinfo : afterUserinfo.slice(0, hostEnd);
-  const tail = afterUserinfo.slice(hostPort.length);
-  // Only text after the last `@` may be named: with no `@`, "host:port" can be
-  // `user:password` (`postgres://u:secret`).
-  const nameable = userinfo !== null ? hostPort : undefined;
-
-  if (/\s/.test(hostPort)) throw refuse("whitespace in the host");
-  if (userinfo !== null && hostPort === "") throw refuse("no host after the credentials");
-
-  const hosts = options.allowHostList ? hostPort.split(",") : [hostPort];
-  let host = "";
-  let port: number | null = null;
-  for (let i = 0; i < hosts.length; i++) {
-    const split = splitHostPort(hosts[i]);
-    if (split === null) throw refuse("a malformed IPv6 host", nameable);
-    const [h, p] = split;
-    if (p !== null && p !== "" && !/^\d+$/.test(p)) throw refuse("the port must be numeric", nameable);
-    if (i === 0) {
-      host = h;
-      port = p !== null && p !== "" ? parseInt(p, 10) : null;
-    }
-  }
-
-  // No `@`, a numeric port, then a fragment or a non-`key=value` query: that is
-  // a digit-led password (`u:12?Pq1Rs2`), not host `u` port 12 - a whole-value
-  // parser (`new URL` included) would put the password in the query.
-  if (userinfo === null && port !== null && digitLedPassword(tail)) {
-    throw refuse("a port followed by a fragment or a query that is not key=value");
-  }
-
-  let rawUsername: string | null = null;
-  let rawPassword: string | null = null;
-  if (userinfo !== null) {
-    const colon = userinfo.indexOf(":");
-    rawUsername = colon === -1 ? userinfo : userinfo.slice(0, colon);
-    rawPassword = colon === -1 ? null : userinfo.slice(colon + 1);
-  }
-  return {
-    scheme,
-    userinfo,
-    rawUsername,
-    rawPassword,
-    username: rawUsername === null ? null : decodeComponent(rawUsername),
-    password: rawPassword === null ? null : decodeComponent(rawPassword),
-    hostPort,
-    host,
-    port,
-    tail,
-  };
-}
-
-/**
- * The same URL with its credentials percent-encoded - what a driver that runs
- * its own URL parser (mongodb, redis) is handed, so it can never re-split a
- * password holding `/`, `?`, `#` or `@` and quote the pieces in its errors.
- */
-export function canonicalConnectionUrl(parts: ConnectionUrlParts): string {
-  let auth = "";
-  if (parts.userinfo !== null) {
-    auth = encodeURIComponent(parts.username ?? "");
-    if (parts.password !== null) auth += `:${encodeURIComponent(parts.password)}`;
-    auth += "@";
-  }
-  return `${parts.scheme}://${auth}${parts.hostPort}${parts.tail}`;
 }

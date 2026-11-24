@@ -16,7 +16,8 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 import { inspect } from "node:util";
 
-import { ConnectionUrlError, redactCredentials, splitConnectionUrl } from "../../../core/src/urlRedaction.js";
+import { redactCredentials } from "../../../core/src/urlRedaction.js";
+import { ConnectionUrlError, splitConnectionUrl } from "../../../core/src/connectionUrl.js";
 
 /** The canonical graph engine names. */
 export type GraphEngine = "ultipa" | "bolt" | "arango";

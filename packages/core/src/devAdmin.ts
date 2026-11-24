@@ -2032,6 +2032,17 @@ function parseEnvFile(): Record<string, string> {
   return result;
 }
 
+/**
+ * GET /connections serves the saved URL REDACTED. A client that posts that
+ * form straight back (to test or save) means "the saved one" - writing it
+ * would replace the real password in .env with ***.
+ */
+function savedUrlIfRedacted(posted: string): string {
+  const current = parseEnvFile().TINA4_DATABASE_URL ?? "";
+  if (posted === "" || current === "" || posted === current) return posted;
+  return posted === redactCredentials(current) ? current : posted;
+}
+
 const handleConnections: RouteHandler = (_req, res) => {
   const env = parseEnvFile();
   res.json({
@@ -2046,10 +2057,7 @@ const handleConnections: RouteHandler = (_req, res) => {
 
 const handleConnectionsTest: RouteHandler = async (req, res) => {
   const body = req.body as Record<string, string> | undefined;
-  let url = body?.url ?? "";
-  // The redacted URL served by GET /connections means "the saved one".
-  const current = parseEnvFile().TINA4_DATABASE_URL ?? "";
-  if (url !== "" && current !== "" && url !== current && url === redactCredentials(current)) url = current;
+  const url = savedUrlIfRedacted(body?.url ?? "");
   const username = body?.username ?? "";
   const password = body?.password ?? "";
   if (!url) {
@@ -2106,11 +2114,7 @@ const handleConnectionsTest: RouteHandler = async (req, res) => {
 
 const handleConnectionsSave: RouteHandler = (req, res) => {
   const body = req.body as Record<string, string> | undefined;
-  let url = body?.url ?? "";
-  // The GET above serves the URL redacted. Posting that form straight back
-  // means "unchanged" - writing it would replace the real password with ***.
-  const current = parseEnvFile().TINA4_DATABASE_URL ?? "";
-  if (url !== "" && current !== "" && url !== current && url === redactCredentials(current)) url = current;
+  const url = savedUrlIfRedacted(body?.url ?? "");
   const username = body?.username ?? "";
   const password = body?.password ?? "";
   if (!url) {

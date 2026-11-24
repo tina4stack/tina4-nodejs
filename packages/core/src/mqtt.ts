@@ -48,7 +48,7 @@ import { Env } from "./env.js";
 import { Log } from "./logger.js";
 import { background } from "./background.js";
 import { MqttMessage } from "./mqttMessage.js";
-import { splitConnectionUrl, type ConnectionUrlParts } from "./urlRedaction.js";
+import { splitConnectionUrl, type ConnectionUrlParts } from "./connectionUrl.js";
 
 /** Any MQTT protocol / connection failure. */
 export class MqttError extends Error {

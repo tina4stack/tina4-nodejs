@@ -20,13 +20,8 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * key, byte-identical in all four.
  */
 import { inspect } from "node:util";
-import {
-  ConnectionUrlError,
-  REDACTED,
-  redactCredentials,
-  splitConnectionUrl,
-  type ConnectionUrlParts,
-} from "../../core/src/urlRedaction.js";
+import { REDACTED, redactCredentials } from "../../core/src/urlRedaction.js";
+import { ConnectionUrlError, splitConnectionUrl, type ConnectionUrlParts } from "../../core/src/connectionUrl.js";
 
 /** The canonical engine names. Aliases resolve to these ONCE, at parse. */
 export type DatabaseEngine =

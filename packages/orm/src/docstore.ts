@@ -58,7 +58,7 @@ import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
-import { canonicalConnectionUrl, splitConnectionUrl } from "../../core/src/urlRedaction.js";
+import { canonicalConnectionUrl, splitConnectionUrl } from "../../core/src/connectionUrl.js";
 
 // ── ObjectId: zero-dependency 12-byte / 24-hex id ──────────────────────────
 

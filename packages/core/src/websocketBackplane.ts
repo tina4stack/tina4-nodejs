@@ -26,7 +26,8 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 import { randomUUID } from "node:crypto";
 import { resolveOptionalPackage } from "./optionalPackage.js";
-import { canonicalConnectionUrl, redactCredentials, splitConnectionUrl } from "./urlRedaction.js";
+import { redactCredentials } from "./urlRedaction.js";
+import { canonicalConnectionUrl, splitConnectionUrl } from "./connectionUrl.js";
 
 /**
  * The one "connected" line both backplanes print. The URL goes through the
