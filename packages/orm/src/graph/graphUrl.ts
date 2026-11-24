@@ -14,7 +14,9 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
  * alias (bolt/neo4j/memgraph all speak Bolt/Cypher and share ONE adapter) resolves
  * to its engine here. See tina4-documentation/plan/v3/features/139-graph-databases.md.
  */
-import { ConnectionUrlError, splitConnectionUrl } from "../../../core/src/urlRedaction.js";
+import { inspect } from "node:util";
+
+import { ConnectionUrlError, redactCredentials, splitConnectionUrl } from "../../../core/src/urlRedaction.js";
 
 /** The canonical graph engine names. */
 export type GraphEngine = "ultipa" | "bolt" | "arango";
@@ -99,6 +101,32 @@ export class GraphUrl {
     }
     // TLS if the scheme says so (…s) or ?tls=1|true.
     this.useTls = scheme.endsWith("s") || this.params.tls === "1" || this.params.tls === "true";
+  }
+
+  /**
+   * What `JSON.stringify` emits, directly or as one field of a logged object.
+   * `password` and `raw` both hold the secret, so the default dump printed it
+   * twice (GHSA-h2mr-m3v3-cq8c). DatabaseUrl guards the same way; PHP has
+   * __debugInfo/jsonSerialize and Ruby a redacted #inspect.
+   */
+  toJSON(): Record<string, unknown> {
+    return {
+      raw: redactCredentials(this.raw),
+      scheme: this.scheme,
+      engine: this.engine,
+      host: this.host,
+      port: this.port,
+      graph: this.graph,
+      username: this.username,
+      password: this.password === null ? null : "***",
+      params: this.params,
+      useTls: this.useTls,
+    };
+  }
+
+  /** What `console.log(url)` / `util.inspect(url)` print. */
+  [inspect.custom](): string {
+    return `GraphUrl('${redactCredentials(this.raw)}')`;
   }
 
   /** host:port/graph — for messages, never carrying credentials. */
